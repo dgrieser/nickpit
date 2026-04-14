@@ -12,8 +12,8 @@ import (
 
 const (
 	DefaultProfileName     = "default"
-	DefaultModel           = "gpt-4o"
-	DefaultBaseURL         = "https://api.openai.com/v1"
+	DefaultModel           = "openai/gpt-oss-120b:free"
+	DefaultBaseURL         = "https://openrouter.ai/api/v1"
 	DefaultMaxContextToken = 120000
 	DefaultFollowUps       = 1
 	DefaultConfigPath      = ".nickpit.yaml"
@@ -35,6 +35,7 @@ type Profile struct {
 	GitLabToken      string `yaml:"gitlab_token"`
 	GitLabBaseURL    string `yaml:"gitlab_base_url"`
 	PromptFile       string `yaml:"prompt_file"`
+	APIKeyConfigured bool   `yaml:"-"`
 }
 
 type Overrides struct {
@@ -77,7 +78,6 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	if _, err := loadFile(cfg, path); err != nil {
 		return nil, Profile{}, err
 	}
-	applyEnv(cfg)
 
 	activeProfile := cfg.ActiveProfile
 	if overrides.Profile != "" {
@@ -86,6 +86,7 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	if activeProfile == "" {
 		activeProfile = DefaultProfileName
 	}
+	applyEnv(cfg, activeProfile)
 
 	profile, err := ResolveProfile(cfg, activeProfile)
 	if err != nil {
@@ -111,6 +112,9 @@ func loadFile(cfg *Config, path string) (bool, error) {
 	if err := yaml.Unmarshal([]byte(expanded), &fileCfg); err != nil {
 		return false, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
+	if err := markConfiguredFields(data, &fileCfg); err != nil {
+		return false, fmt.Errorf("config: parsing %s: %w", path, err)
+	}
 
 	if fileCfg.ActiveProfile != "" {
 		cfg.ActiveProfile = fileCfg.ActiveProfile
@@ -122,15 +126,17 @@ func loadFile(cfg *Config, path string) (bool, error) {
 	return true, nil
 }
 
-func applyEnv(cfg *Config) {
-	profile := cfg.Profiles[cfg.ActiveProfile]
+func applyEnv(cfg *Config, profileName string) {
+	profile := cfg.Profiles[profileName]
 	if value := os.Getenv("NICKPIT_MODEL"); value != "" {
 		profile.Model = value
 	}
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
 	}
-	if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
+	if value := os.Getenv("OPENROUTER_API_KEY"); value != "" {
+		profile.APIKey = value
+	} else if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
 		profile.APIKey = value
 	}
 	if value := os.Getenv("NICKPIT_LOCAL_REPO"); value != "" {
@@ -145,7 +151,7 @@ func applyEnv(cfg *Config) {
 	if value := os.Getenv("GITLAB_BASE_URL"); value != "" {
 		profile.GitLabBaseURL = value
 	}
-	cfg.Profiles[cfg.ActiveProfile] = profile
+	cfg.Profiles[profileName] = profile
 }
 
 func applyOverrides(profile Profile, overrides Overrides) Profile {
@@ -225,4 +231,40 @@ func getEnvOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func markConfiguredFields(data []byte, cfg *Config) error {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if len(root.Content) == 0 {
+		return nil
+	}
+
+	profiles := mappingValue(root.Content[0], "profiles")
+	if profiles == nil || profiles.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(profiles.Content); i += 2 {
+		name := profiles.Content[i].Value
+		profileNode := profiles.Content[i+1]
+		profile := cfg.Profiles[name]
+		profile.APIKeyConfigured = mappingValue(profileNode, "api_key") != nil
+		cfg.Profiles[name] = profile
+	}
+	return nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
 }

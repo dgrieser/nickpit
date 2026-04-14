@@ -79,8 +79,8 @@ func newRootCmd() *cobra.Command {
 	return root
 }
 
-func (a *app) loadProfile() (config.Profile, error) {
-	_, profile, err := config.Load(a.configPath, config.Overrides{
+func (a *app) loadProfile() (string, config.Profile, error) {
+	cfg, profile, err := config.Load(a.configPath, config.Overrides{
 		Profile:          a.profile,
 		Model:            a.model,
 		BaseURL:          a.baseURL,
@@ -93,7 +93,10 @@ func (a *app) loadProfile() (config.Profile, error) {
 		GitLabBaseURL:    a.gitlabBaseURL,
 		PromptFile:       a.promptFile,
 	})
-	return profile, err
+	if err != nil {
+		return "", config.Profile{}, err
+	}
+	return cfg.ActiveProfile, profile, nil
 }
 
 func (a *app) newLocalCmd() *cobra.Command {
@@ -114,7 +117,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfile()
 			if err != nil {
 				return err
 			}
@@ -133,7 +136,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				PromptOverride:    a.promptFile,
 				Submode:           submode,
 			}
-			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profile, req)
+			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
 	switch submode {
@@ -158,7 +161,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 		Use:   "pr",
 		Short: "Review a GitHub PR",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfile()
 			if err != nil {
 				return err
 			}
@@ -176,7 +179,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				PromptOverride:    a.promptFile,
 				Offline:           a.offline,
 			}
-			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profile, req)
+			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
 	prCmd.Flags().StringVar(&repo, "repo", "", "GitHub repo owner/name")
@@ -198,7 +201,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 		Use:   "mr",
 		Short: "Review a GitLab merge request",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfile()
 			if err != nil {
 				return err
 			}
@@ -216,7 +219,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				PromptOverride:    a.promptFile,
 				Offline:           a.offline,
 			}
-			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profile, req)
+			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
 	mrCmd.Flags().StringVar(&project, "project", "", "GitLab project group/name")
@@ -343,7 +346,14 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profile config.Profile, req model.ReviewRequest) error {
+func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
+	if profile.APIKey == "" {
+		if profile.APIKeyConfigured {
+			return fmt.Errorf("profile %q has an empty api_key value; set OPENROUTER_API_KEY or provide a non-empty api_key in config", profileName)
+		}
+		return fmt.Errorf("missing LLM API key for profile %q; set OPENROUTER_API_KEY or provide api_key in config", profileName)
+	}
+
 	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
 	if err != nil {
 		return err

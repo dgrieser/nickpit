@@ -55,6 +55,8 @@ make build
 
 ## Notes
 
+- The default LLM endpoint is OpenRouter (`https://openrouter.ai/api/v1`) using `openai/gpt-oss-120b:free`.
+- The default API key env var is `OPENROUTER_API_KEY`.
 - The CLI expects an OpenAI-compatible `/chat/completions` endpoint.
 - Remote reviews clone the requested PR/MR head into a temporary checkout when retrieval needs local files.
 - Use `--local-repo` or profile `local_repo` to reuse an existing clone; NickPit creates a temporary worktree at the requested revision instead of cloning again.

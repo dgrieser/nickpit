@@ -20,7 +20,10 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.BaseURL != "" {
 		base.BaseURL = override.BaseURL
 	}
-	if override.APIKey != "" {
+	if override.APIKeyConfigured {
+		base.APIKeyConfigured = true
+		base.APIKey = override.APIKey
+	} else if override.APIKey != "" {
 		base.APIKey = override.APIKey
 	}
 	if override.MaxContextTokens != 0 {

@@ -6,6 +6,57 @@ import (
 	"testing"
 )
 
+func TestDefaultConfigUsesOpenRouterDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	profile := cfg.Profiles[DefaultProfileName]
+
+	if profile.Model != "openai/gpt-oss-120b:free" {
+		t.Fatalf("model = %q", profile.Model)
+	}
+	if profile.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("base url = %q", profile.BaseURL)
+	}
+}
+
+func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.APIKey != "from-openrouter-env" {
+		t.Fatalf("api key = %q", profile.APIKey)
+	}
+}
+
+func TestLoadConfigTracksEmptyConfiguredAPIKey(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("NICKPIT_API_KEY", "")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    api_key:
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.APIKeyConfigured {
+		t.Fatal("expected api_key to be marked as configured")
+	}
+	if profile.APIKey != "" {
+		t.Fatalf("api key = %q", profile.APIKey)
+	}
+}
+
 func TestLoadConfigWithOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
