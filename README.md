@@ -14,7 +14,7 @@ NickPit is a Go CLI for LLM-assisted code review across local git changes, GitHu
 ## Installation
 
 ```bash
-go build ./cmd/llm-review
+go build ./cmd/nickpit
 ```
 
 ## Configuration
@@ -22,26 +22,26 @@ go build ./cmd/llm-review
 NickPit loads configuration in this order:
 
 1. Built-in defaults
-2. YAML config file from `--config` or `.llm-review.yaml`
+2. YAML config file from `--config` or `.nickpit.yaml`
 3. Environment variables
 4. CLI flags
 
-See [.llm-review.yaml.example](/home/grieser/workspace/dgrieser/nickpit/.llm-review.yaml.example) for a complete example.
+See [.nickpit.yaml.example](/home/grieser/workspace/dgrieser/nickpit/.nickpit.yaml.example) for a complete example.
 
 ## Usage
 
 ```bash
-llm-review local uncommitted
-llm-review local commits --from HEAD~3 --to HEAD
-llm-review local branch --base main --head feature/my-branch
+nickpit local uncommitted
+nickpit local commits --from HEAD~3 --to HEAD
+nickpit local branch --base main --head feature/my-branch
 
-llm-review github pr --repo owner/repo --pr 123
-llm-review gitlab mr --project group/project --mr 456
+nickpit github pr --repo owner/repo --pr 123
+nickpit gitlab mr --project group/project --mr 456
 
-llm-review retrieve file --path internal/review/engine.go
-llm-review retrieve lines --path internal/review/engine.go --start 1 --end 80
-llm-review retrieve callers --symbol Run --depth 2
-llm-review retrieve function-stack --symbol Run --direction callees --depth 3
+nickpit retrieve file --path internal/review/engine.go
+nickpit retrieve lines --path internal/review/engine.go --start 1 --end 80
+nickpit retrieve callers --symbol Run --depth 2
+nickpit retrieve function-stack --symbol Run --direction callees --depth 3
 ```
 
 ## Development

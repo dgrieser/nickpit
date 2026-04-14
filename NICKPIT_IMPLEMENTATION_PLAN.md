@@ -1,4 +1,4 @@
-# NickPit (llm-review) — Full Implementation Plan
+# NickPit — Full Implementation Plan
 
 ## 1. Project Overview
 
@@ -11,7 +11,7 @@
 ```
 nickpit/
 ├── cmd/
-│   └── llm-review/
+│   └── nickpit/
 │       └── main.go                    # Cobra entrypoint, wires all subcommands
 ├── internal/
 │   ├── config/
@@ -84,7 +84,7 @@ nickpit/
 ├── go.sum
 ├── Makefile
 ├── README.md
-└── .llm-review.yaml.example          # Example config file
+└── .nickpit.yaml.example          # Example config file
 ```
 
 ---
@@ -268,7 +268,7 @@ type TokenUsage struct {
 
 ## 5. Package-by-Package Design
 
-### 5.1 `cmd/llm-review` — CLI Entrypoint
+### 5.1 `cmd/nickpit` — CLI Entrypoint
 
 **File:** `main.go`
 
@@ -277,7 +277,7 @@ type TokenUsage struct {
 **Subcommand tree:**
 
 ```
-llm-review
+nickpit
 ├── local
 │   ├── uncommitted       # git diff (working tree + staged)
 │   ├── commits           # --from <ref> --to <ref>
@@ -298,9 +298,9 @@ llm-review
 
 | Flag | Env Var | Default | Description |
 |---|---|---|---|
-| `--model` | `LLM_REVIEW_MODEL` | `gpt-4o` | Model identifier |
-| `--base-url` | `LLM_REVIEW_BASE_URL` | `https://api.openai.com/v1` | API base URL |
-| `--api-key` | `LLM_REVIEW_API_KEY` | — | API key |
+| `--model` | `NICKPIT_MODEL` | `gpt-4o` | Model identifier |
+| `--base-url` | `NICKPIT_BASE_URL` | `https://api.openai.com/v1` | API base URL |
+| `--api-key` | `NICKPIT_API_KEY` | — | API key |
 | `--profile` | — | `default` | Config profile name |
 | `--max-context-tokens` | — | `120000` | Hard token budget |
 | `--include-full-files` | — | `false` | Send full changed files |
@@ -311,7 +311,7 @@ llm-review
 | `--offline` | — | `false` | Skip remote SCM APIs |
 | `--severity-threshold` | — | `info` | Minimum severity to display |
 | `--prompt-file` | — | — | Path to custom prompt template |
-| `--config` | — | `.llm-review.yaml` | Config file path |
+| `--config` | — | `.nickpit.yaml` | Config file path |
 
 **Initialization sequence in each command's `RunE`:**
 
@@ -330,8 +330,8 @@ llm-review
 **Config resolution order (later wins):**
 
 1. Built-in defaults.
-2. YAML config file (`~/.llm-review.yaml` or `--config` path).
-3. Environment variables (`LLM_REVIEW_*` prefix).
+2. YAML config file (`~/.nickpit.yaml` or `--config` path).
+3. Environment variables (`NICKPIT_*` prefix).
 4. CLI flags.
 
 **Config struct:**
@@ -355,7 +355,7 @@ type Profile struct {
 }
 ```
 
-**Example `.llm-review.yaml`:**
+**Example `.nickpit.yaml`:**
 
 ```yaml
 active_profile: work
@@ -1244,12 +1244,12 @@ jobs:
           go-version: '1.22'
       - run: |
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-          go build -ldflags="-s -w" -o llm-review-${{ matrix.goos }}-${{ matrix.goarch }} \
-          ./cmd/llm-review
+          go build -ldflags="-s -w" -o nickpit-${{ matrix.goos }}-${{ matrix.goarch }} \
+          ./cmd/nickpit
       - uses: actions/upload-artifact@v4
         with:
-          name: llm-review-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: llm-review-*
+          name: nickpit-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: nickpit-*
 ```
 
 ### 10.2 Docker Workflow (`.github/workflows/docker.yml`)
@@ -1290,13 +1290,13 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /llm-review ./cmd/llm-review
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /nickpit ./cmd/nickpit
 
 FROM alpine:3.19
 RUN apk add --no-cache git ca-certificates
-COPY --from=builder /llm-review /usr/local/bin/llm-review
-COPY prompts/ /etc/llm-review/prompts/
-ENTRYPOINT ["llm-review"]
+COPY --from=builder /nickpit /usr/local/bin/nickpit
+COPY prompts/ /etc/nickpit/prompts/
+ENTRYPOINT ["nickpit"]
 ```
 
 ---
@@ -1314,11 +1314,11 @@ ENTRYPOINT ["llm-review"]
 | Define all core types | `internal/review/context.go` | All structs from §4 |
 | Define all interfaces | `internal/review/context.go`, `internal/llm/client.go`, `internal/retrieval/engine.go` | `ReviewSource`, `LLMClient`, `RetrievalEngine` |
 | Stub all packages | Every `*.go` file | Compiles but returns "not implemented" |
-| Create CLI skeleton | `cmd/llm-review/main.go` | All subcommands wired, print "not implemented" |
+| Create CLI skeleton | `cmd/nickpit/main.go` | All subcommands wired, print "not implemented" |
 | Config loader | `internal/config/config.go` | YAML + env + flag merging works |
 | Makefile | `Makefile` | `make build`, `make test`, `make lint` |
 
-**Exit criteria:** `go build ./...` succeeds. `llm-review local uncommitted` prints "not implemented". Config loads from file.
+**Exit criteria:** `go build ./...` succeeds. `nickpit local uncommitted` prints "not implemented". Config loads from file.
 
 ### Phase 2: Local Mode (Days 3–5)
 
@@ -1340,7 +1340,7 @@ ENTRYPOINT ["llm-review"]
 | JSON output | `internal/output/json.go` | `--json` flag works |
 | Unit tests | `*_test.go` | Diff parser, config, trimmer, output formatting |
 
-**Exit criteria:** `llm-review local uncommitted` produces a real review from a real LLM. `llm-review local commits --from HEAD~3 --to HEAD` works. `--json` output is valid JSON. Tests pass.
+**Exit criteria:** `nickpit local uncommitted` produces a real review from a real LLM. `nickpit local commits --from HEAD~3 --to HEAD` works. `--json` output is valid JSON. Tests pass.
 
 ### Phase 3: GitHub & GitLab Adapters (Days 6–9)
 
@@ -1359,7 +1359,7 @@ ENTRYPOINT ["llm-review"]
 | GitLab fixtures | `testdata/fixtures/gitlab/*.json` | All API response fixtures |
 | GitLab tests | `internal/scm/gitlab/client_test.go` | Fixture-based tests with httptest |
 
-**Exit criteria:** `llm-review github pr --repo owner/repo --pr 123` produces a review. Same for GitLab. Comment threading works. Pagination tested.
+**Exit criteria:** `nickpit github pr --repo owner/repo --pr 123` produces a review. Same for GitLab. Comment threading works. Pagination tested.
 
 ### Phase 4: Retrieval Engine (Days 10–13)
 
@@ -1374,14 +1374,14 @@ ENTRYPOINT ["llm-review"]
 | Fallback parser | `internal/retrieval/fallback/regex.go` | Regex-based function finder |
 | Symbol expansion | `internal/retrieval/symbols.go` | `GetSymbol`, `ExpandFunctions` |
 | Call hierarchy | `internal/retrieval/callgraph.go` | `FindCallers`, `FindCallees` |
-| Retrieval CLI commands | `cmd/llm-review/main.go` | `retrieve file`, `lines`, `callers`, `function-stack` |
+| Retrieval CLI commands | `cmd/nickpit/main.go` | `retrieve file`, `lines`, `callers`, `function-stack` |
 | Follow-up handler | `internal/review/followup.go` | Execute LLM follow-up requests |
 | Wire follow-ups into engine | `internal/review/engine.go` | Two-pass review works |
 | Follow-up prompt | `prompts/followup_request.tmpl` | Supplemental context prompt |
 | Retrieval tests | `internal/retrieval/*_test.go` | Unit tests for all primitives |
 | Go parser tests | `internal/retrieval/goparser/parser_test.go` | Real Go files as test fixtures |
 
-**Exit criteria:** `llm-review retrieve function-stack --symbol parseDatetime --direction callers --depth 4` returns the expected hierarchy. A review with `--followups 1` performs a retrieval round when the model requests it.
+**Exit criteria:** `nickpit retrieve function-stack --symbol parseDatetime --direction callers --depth 4` returns the expected hierarchy. A review with `--followups 1` performs a retrieval round when the model requests it.
 
 ### Phase 5: Testing, Polish & CI (Days 14–16)
 
@@ -1399,7 +1399,7 @@ ENTRYPOINT ["llm-review"]
 | Docker workflow | `.github/workflows/docker.yml` | Multi-arch image build |
 | Dockerfile | `Dockerfile` | Multi-stage Alpine build |
 | README | `README.md` | Full setup, config, and usage docs |
-| Example config | `.llm-review.yaml.example` | Annotated example |
+| Example config | `.nickpit.yaml.example` | Annotated example |
 | Makefile polish | `Makefile` | All standard targets |
 
 **Exit criteria:** CI passes. Docker image builds. README is complete. All tests pass with `-race`. `go vet` and `golangci-lint` produce zero warnings.
@@ -1445,9 +1445,9 @@ No other external dependencies. The GitHub and GitLab clients use `net/http` dir
 
 | Variable | Description |
 |---|---|
-| `LLM_REVIEW_API_KEY` | API key for the LLM provider |
-| `LLM_REVIEW_BASE_URL` | Base URL for the LLM API |
-| `LLM_REVIEW_MODEL` | Model identifier |
+| `NICKPIT_API_KEY` | API key for the LLM provider |
+| `NICKPIT_BASE_URL` | Base URL for the LLM API |
+| `NICKPIT_MODEL` | Model identifier |
 | `GITHUB_TOKEN` | GitHub personal access token |
 | `GITLAB_TOKEN` | GitLab personal access token |
 | `GITLAB_BASE_URL` | GitLab instance URL (for self-hosted) |
@@ -1457,9 +1457,9 @@ No other external dependencies. The GitHub and GitLab clients use `net/http` dir
 
 | CLI Flag | Env Var | YAML Key | Default |
 |---|---|---|---|
-| `--api-key` | `LLM_REVIEW_API_KEY` | `profiles.<name>.api_key` | — |
-| `--base-url` | `LLM_REVIEW_BASE_URL` | `profiles.<name>.base_url` | `https://api.openai.com/v1` |
-| `--model` | `LLM_REVIEW_MODEL` | `profiles.<name>.model` | `gpt-4o` |
+| `--api-key` | `NICKPIT_API_KEY` | `profiles.<name>.api_key` | — |
+| `--base-url` | `NICKPIT_BASE_URL` | `profiles.<name>.base_url` | `https://api.openai.com/v1` |
+| `--model` | `NICKPIT_MODEL` | `profiles.<name>.model` | `gpt-4o` |
 | `--max-context-tokens` | — | `profiles.<name>.max_context_tokens` | `120000` |
 | `--followups` | — | `profiles.<name>.default_followups` | `1` |
 

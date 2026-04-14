@@ -1,4 +1,4 @@
-APP=llm-review
+APP=nickpit
 
 .PHONY: build test lint fmt
 

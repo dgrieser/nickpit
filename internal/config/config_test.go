@@ -21,7 +21,7 @@ profiles:
 		t.Fatal(err)
 	}
 
-	t.Setenv("LLM_REVIEW_MODEL", "from-env")
+	t.Setenv("NICKPIT_MODEL", "from-env")
 	cfg, profile, err := Load(path, Overrides{
 		Profile:          "work",
 		BaseURL:          "https://override.invalid/v1",

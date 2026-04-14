@@ -16,7 +16,7 @@ const (
 	DefaultBaseURL         = "https://api.openai.com/v1"
 	DefaultMaxContextToken = 120000
 	DefaultFollowUps       = 1
-	DefaultConfigPath      = ".llm-review.yaml"
+	DefaultConfigPath      = ".nickpit.yaml"
 )
 
 type Config struct {
@@ -72,7 +72,7 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 		path = DefaultConfigPath
 	}
 
-	if err := loadFile(cfg, path); err != nil {
+	if _, err := loadFile(cfg, path); err != nil {
 		return nil, Profile{}, err
 	}
 	applyEnv(cfg)
@@ -95,19 +95,19 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	return cfg, profile, nil
 }
 
-func loadFile(cfg *Config, path string) error {
+func loadFile(cfg *Config, path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("config: reading %s: %w", path, err)
+		return false, fmt.Errorf("config: reading %s: %w", path, err)
 	}
 
 	expanded := os.ExpandEnv(string(data))
 	var fileCfg Config
 	if err := yaml.Unmarshal([]byte(expanded), &fileCfg); err != nil {
-		return fmt.Errorf("config: parsing %s: %w", path, err)
+		return false, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
 
 	if fileCfg.ActiveProfile != "" {
@@ -117,18 +117,18 @@ func loadFile(cfg *Config, path string) error {
 		base := cfg.Profiles[name]
 		cfg.Profiles[name] = mergeProfiles(base, profile)
 	}
-	return nil
+	return true, nil
 }
 
 func applyEnv(cfg *Config) {
 	profile := cfg.Profiles[cfg.ActiveProfile]
-	if value := os.Getenv("LLM_REVIEW_MODEL"); value != "" {
+	if value := os.Getenv("NICKPIT_MODEL"); value != "" {
 		profile.Model = value
 	}
-	if value := os.Getenv("LLM_REVIEW_BASE_URL"); value != "" {
+	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
 	}
-	if value := os.Getenv("LLM_REVIEW_API_KEY"); value != "" {
+	if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
 		profile.APIKey = value
 	}
 	if value := os.Getenv("GITHUB_TOKEN"); value != "" {

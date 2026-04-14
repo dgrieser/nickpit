@@ -48,7 +48,7 @@ func main() {
 func newRootCmd() *cobra.Command {
 	cli := &app{}
 	root := &cobra.Command{
-		Use:   "llm-review",
+		Use:   "nickpit",
 		Short: "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
 	}
 
@@ -65,7 +65,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.severityThreshold, "severity-threshold", "info", "Minimum severity to display")
 	root.PersistentFlags().StringVar(&cli.promptFile, "prompt-file", "", "Custom prompt file")
-	root.PersistentFlags().StringVar(&cli.configPath, "config", ".llm-review.yaml", "Config file path")
+	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
 	root.PersistentFlags().StringVar(&cli.gitlabToken, "gitlab-token", "", "GitLab token override")
 	root.PersistentFlags().StringVar(&cli.gitlabBaseURL, "gitlab-base-url", "", "GitLab API base URL")

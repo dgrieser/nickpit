@@ -3,7 +3,7 @@ profiles:
   default:
     model: gpt-4o
     base_url: https://api.openai.com/v1
-    api_key: ${LLM_REVIEW_API_KEY}
+    api_key: ${NICKPIT_API_KEY}
     max_context_tokens: 120000
     default_followups: 1
     github_token: ${GITHUB_TOKEN}
