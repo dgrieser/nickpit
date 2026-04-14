@@ -22,7 +22,12 @@ func NewLocalSource(repoRoot string) *LocalSource {
 }
 
 func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
-	diff, err := s.diffForRequest(ctx, req)
+	resolvedReq, err := s.resolveDefaults(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	diff, err := s.diffForRequest(ctx, resolvedReq)
 	if err != nil {
 		return nil, err
 	}
@@ -30,25 +35,46 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 	if err != nil {
 		return nil, err
 	}
-	commits, err := s.commitSummaries(ctx, req)
+	commits, err := s.commitSummaries(ctx, resolvedReq)
 	if err != nil {
 		return nil, err
 	}
 	repoName := filepath.Base(s.repoRoot)
 	return &model.ReviewContext{
-		Mode: req.Mode,
+		Mode: resolvedReq.Mode,
 		Repository: model.RepositoryInfo{
 			FullName: repoName,
-			BaseRef:  req.BaseRef,
-			HeadRef:  req.HeadRef,
+			BaseRef:  resolvedReq.BaseRef,
+			HeadRef:  resolvedReq.HeadRef,
 		},
-		Title:        localTitle(req),
-		Description:  localDescription(req),
+		Title:        localTitle(resolvedReq),
+		Description:  localDescription(resolvedReq),
 		Commits:      commits,
 		ChangedFiles: files,
 		Diff:         diff,
 		DiffHunks:    hunks,
 	}, nil
+}
+
+func (s *LocalSource) resolveDefaults(ctx context.Context, req model.ReviewRequest) (model.ReviewRequest, error) {
+	if req.Submode != "branch" || req.BaseRef != "" {
+		return req, nil
+	}
+
+	baseRef, err := s.defaultBranch(ctx)
+	if err != nil {
+		return req, err
+	}
+	req.BaseRef = baseRef
+	return req, nil
+}
+
+func (s *LocalSource) defaultBranch(ctx context.Context) (string, error) {
+	out, err := s.git.Run(ctx, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(strings.TrimSpace(out), "origin/"), nil
 }
 
 func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewRequest) (string, error) {
