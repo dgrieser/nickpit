@@ -68,16 +68,15 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 
 	trimmed := trimmer.Trim(reviewCtx)
 	e.logf("Trimmed review context: changed_files=%d supplemental=%d omitted_sections=%d token_budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
+	e.logJSON("Rendered review context JSON:", trimmed)
 	systemPrompt, err := e.loadPrompt(req.PromptOverride, "default_review.tmpl")
 	if err != nil {
 		return nil, err
 	}
-	e.logBlock("System prompt:", systemPrompt)
 	userPrompt, err := llm.RenderPrompt(systemPrompt, trimmed)
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering review prompt: %w", err)
 	}
-	e.logBlock("Rendered review prompt:", userPrompt)
 
 	llmReq := &llm.ReviewRequest{
 		SystemPrompt: systemPrompt,
@@ -102,17 +101,16 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		reviewCtx.SupplementalContext = append(reviewCtx.SupplementalContext, ExecuteRetrievals(ctx, e.retrieval, req.RepoRoot, resp.FollowUpRequests, e.logf)...)
 		trimmed = trimmer.Trim(reviewCtx)
 		e.logf("Trimmed context after follow-up round %d: supplemental=%d omitted_sections=%d", round+1, len(trimmed.SupplementalContext), len(trimmed.OmittedSections))
+		e.logJSON("Rendered follow-up context JSON:", trimmed)
 
 		followupTemplate, err := e.loadPrompt("", "followup_request.tmpl")
 		if err != nil {
 			return nil, err
 		}
-		e.logBlock("Follow-up prompt template:", followupTemplate)
 		userPrompt, err = llm.RenderPrompt(followupTemplate, trimmed)
 		if err != nil {
 			return nil, fmt.Errorf("review: rendering follow-up prompt: %w", err)
 		}
-		e.logBlock("Rendered follow-up prompt:", userPrompt)
 		llmReq.UserContent = userPrompt
 		resp, err = e.llm.Review(ctx, llmReq)
 		if err != nil {
@@ -182,5 +180,11 @@ func (e *Engine) logf(format string, args ...any) {
 func (e *Engine) logBlock(label, content string) {
 	if e.logger != nil {
 		e.logger.PrintBlock(label, content)
+	}
+}
+
+func (e *Engine) logJSON(label string, value any) {
+	if e.logger != nil {
+		e.logger.PrintJSON(label, value)
 	}
 }

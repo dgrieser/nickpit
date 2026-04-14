@@ -120,7 +120,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		return nil, fmt.Errorf("llm: encoding request: %w", err)
 	}
 	c.logf("LLM request prepared: model=%s endpoint=%s/chat/completions max_tokens=%d temperature=%.2f", payload.Model, c.baseURL, payload.MaxTokens, payload.Temperature)
-	c.logBlock("LLM request payload:", string(body))
+	c.logJSON("LLM request payload:", payload)
 
 	var httpResp *http.Response
 	var responseBody []byte
@@ -153,7 +153,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			return nil, fmt.Errorf("llm: reading response: %w", err)
 		}
 		c.logf("LLM response status: %s", httpResp.Status)
-		c.logBlock("LLM raw response body:", string(responseBody))
+		c.logMaybeJSON("LLM raw response body:", responseBody)
 		if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
 			break
 		}
@@ -214,6 +214,24 @@ func (c *OpenAIClient) logBlock(label, content string) {
 	if c.logger != nil {
 		c.logger.PrintBlock(label, content)
 	}
+}
+
+func (c *OpenAIClient) logJSON(label string, value any) {
+	if c.logger != nil {
+		c.logger.PrintJSON(label, value)
+	}
+}
+
+func (c *OpenAIClient) logMaybeJSON(label string, data []byte) {
+	if c.logger == nil {
+		return
+	}
+	var value any
+	if err := json.Unmarshal(data, &value); err == nil {
+		c.logger.PrintJSON(label, value)
+		return
+	}
+	c.logger.PrintBlock(label, string(data))
 }
 
 func parseReviewResponse(content string) (*ReviewResponse, error) {
