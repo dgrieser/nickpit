@@ -4,19 +4,18 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/prompts"
 )
 
 type Engine struct {
 	source    model.ReviewSource
 	llm       llm.Client
 	retrieval retrieval.Engine
-	promptDir string
 	config    config.Profile
 	trimmer   *Trimmer
 }
@@ -26,7 +25,6 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		source:    source,
 		llm:       llmClient,
 		retrieval: retrievalEngine,
-		promptDir: "prompts",
 		config:    profile,
 	}
 }
@@ -121,14 +119,14 @@ func (e *Engine) loadPrompt(override, fallback string) (string, error) {
 	if path == "" {
 		path = e.config.PromptFile
 	}
-	if path == "" {
-		path = filepath.Join(e.promptDir, fallback)
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("review: reading prompt %s: %w", path, err)
+		}
+		return string(data), nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("review: reading prompt %s: %w", path, err)
-	}
-	return string(data), nil
+	return prompts.Load(fallback)
 }
 
 func filterBySeverity(findings []model.Finding, threshold string) []model.Finding {

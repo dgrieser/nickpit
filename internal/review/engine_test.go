@@ -2,7 +2,6 @@ package review
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -42,7 +41,6 @@ func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse,
 
 func TestEngineSeverityFilter(t *testing.T) {
 	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	engine.promptDir = filepath.Join("..", "..", "prompts")
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:              model.ModeLocal,
 		MaxContextTokens:  1000,
