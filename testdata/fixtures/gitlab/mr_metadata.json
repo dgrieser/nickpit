@@ -2,6 +2,9 @@
   "title": "Example MR",
   "description": "MR description",
   "web_url": "https://gitlab.com/group/project/-/merge_requests/456",
+  "sha": "abc123",
   "source_branch": "feature",
-  "target_branch": "main"
+  "target_branch": "main",
+  "source_project_id": 99,
+  "target_project_id": 42
 }

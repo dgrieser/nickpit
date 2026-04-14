@@ -35,6 +35,7 @@ const (
 type ReviewRequest struct {
 	Mode              ReviewMode
 	RepoRoot          string
+	LocalRepo         string
 	Repo              string
 	Identifier        int
 	BaseRef           string
@@ -158,6 +159,19 @@ type SupplementalFile struct {
 
 type ReviewSource interface {
 	ResolveContext(ctx context.Context, req ReviewRequest) (*ReviewContext, error)
+}
+
+type RemoteCheckoutSource interface {
+	ReviewSource
+	ResolveCheckout(ctx context.Context, req ReviewRequest) (*CheckoutSpec, error)
+}
+
+type CheckoutSpec struct {
+	Provider ReviewMode
+	Repo     string
+	CloneURL string
+	HeadRef  string
+	HeadSHA  string
 }
 
 type TokenEstimator interface {

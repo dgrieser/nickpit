@@ -36,6 +36,7 @@ nickpit local commits --from HEAD~3 --to HEAD
 nickpit local branch --base main --head feature/my-branch
 
 nickpit github pr --repo owner/repo --pr 123
+nickpit github pr --repo owner/repo --pr 123 --local-repo ~/src/repo
 nickpit gitlab mr --project group/project --mr 456
 
 nickpit retrieve file --path internal/review/engine.go
@@ -55,5 +56,6 @@ make build
 ## Notes
 
 - The CLI expects an OpenAI-compatible `/chat/completions` endpoint.
-- Retrieval for remote reviews assumes the repository is available locally when follow-up file access is needed.
+- Remote reviews clone the requested PR/MR head into a temporary checkout when retrieval needs local files.
+- Use `--local-repo` or profile `local_repo` to reuse an existing clone; NickPit creates a temporary worktree at the requested revision instead of cloning again.
 - SARIF output is stubbed and returns a not-implemented error.

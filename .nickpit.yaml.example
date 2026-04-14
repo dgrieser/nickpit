@@ -6,6 +6,7 @@ profiles:
     api_key: ${NICKPIT_API_KEY}
     max_context_tokens: 120000
     default_followups: 1
+    local_repo: ~/src/repo
     github_token: ${GITHUB_TOKEN}
     gitlab_token: ${GITLAB_TOKEN}
     gitlab_base_url: ${GITLAB_BASE_URL}

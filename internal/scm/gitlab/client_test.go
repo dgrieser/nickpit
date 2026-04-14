@@ -42,3 +42,34 @@ func TestFetchMR(t *testing.T) {
 		t.Fatalf("comments = %d", len(ctx.Comments))
 	}
 }
+
+func TestFetchMRCheckout(t *testing.T) {
+	fixtures := map[string][]byte{
+		"/projects/group%2Fproject/merge_requests/456": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_metadata.json")),
+		"/projects/99": []byte(`{"http_url_to_repo":"https://gitlab.com/fork/project.git"}`),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.EscapedPath()]
+		if !ok {
+			data, ok = fixtures[r.URL.Path]
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	spec, err := client.FetchMRCheckout(context.Background(), "group/project", 456)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.CloneURL != "https://gitlab.com/fork/project.git" {
+		t.Fatalf("clone url = %q", spec.CloneURL)
+	}
+	if spec.HeadSHA != "abc123" {
+		t.Fatalf("head sha = %q", spec.HeadSHA)
+	}
+}

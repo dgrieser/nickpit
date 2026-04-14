@@ -30,6 +30,7 @@ type Profile struct {
 	APIKey           string `yaml:"api_key"`
 	MaxContextTokens int    `yaml:"max_context_tokens"`
 	DefaultFollowUps int    `yaml:"default_followups"`
+	LocalRepo        string `yaml:"local_repo"`
 	GitHubToken      string `yaml:"github_token"`
 	GitLabToken      string `yaml:"gitlab_token"`
 	GitLabBaseURL    string `yaml:"gitlab_base_url"`
@@ -43,6 +44,7 @@ type Overrides struct {
 	APIKey           string
 	MaxContextTokens int
 	FollowUps        int
+	LocalRepo        string
 	GitHubToken      string
 	GitLabToken      string
 	GitLabBaseURL    string
@@ -131,6 +133,9 @@ func applyEnv(cfg *Config) {
 	if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
 		profile.APIKey = value
 	}
+	if value := os.Getenv("NICKPIT_LOCAL_REPO"); value != "" {
+		profile.LocalRepo = value
+	}
 	if value := os.Getenv("GITHUB_TOKEN"); value != "" {
 		profile.GitHubToken = value
 	}
@@ -159,6 +164,9 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	if overrides.FollowUps >= 0 {
 		profile.DefaultFollowUps = overrides.FollowUps
 	}
+	if overrides.LocalRepo != "" {
+		profile.LocalRepo = overrides.LocalRepo
+	}
 	if overrides.GitHubToken != "" {
 		profile.GitHubToken = overrides.GitHubToken
 	}
@@ -186,6 +194,9 @@ func normalizeProfile(profile Profile) Profile {
 	}
 	if profile.DefaultFollowUps == 0 {
 		profile.DefaultFollowUps = DefaultFollowUps
+	}
+	if profile.LocalRepo != "" {
+		profile.LocalRepo = expandPath(profile.LocalRepo)
 	}
 	if profile.GitLabBaseURL == "" {
 		profile.GitLabBaseURL = "https://gitlab.com/api/v4"

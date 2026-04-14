@@ -1,7 +1,21 @@
 {
   "title": "Example PR",
   "body": "PR description",
-  "base": {"ref": "main", "sha": "abc"},
-  "head": {"ref": "feature", "sha": "def"},
+  "base": {
+    "ref": "main",
+    "sha": "abc",
+    "repo": {
+      "full_name": "owner/repo",
+      "clone_url": "https://github.com/owner/repo.git"
+    }
+  },
+  "head": {
+    "ref": "feature",
+    "sha": "def",
+    "repo": {
+      "full_name": "contrib/repo",
+      "clone_url": "https://github.com/contrib/repo.git"
+    }
+  },
   "html_url": "https://github.com/owner/repo/pull/123"
 }

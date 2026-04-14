@@ -14,12 +14,20 @@ type prResponse struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 	Base  struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+			CloneURL string `json:"clone_url"`
+		} `json:"repo"`
 	} `json:"base"`
 	Head struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+			CloneURL string `json:"clone_url"`
+		} `json:"repo"`
 	} `json:"head"`
 	HTMLURL string `json:"html_url"`
 }
@@ -71,8 +79,8 @@ type userRef struct {
 }
 
 func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeComments bool) (*model.ReviewContext, error) {
-	escaped := escapeRepo(repo)
 	var pr prResponse
+	escaped := escapeRepo(repo)
 	if err := c.Get(ctx, fmt.Sprintf("/repos/%s/pulls/%d", escaped, number), &pr); err != nil {
 		return nil, err
 	}
@@ -173,6 +181,28 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		Diff:         diff.String(),
 		DiffHunks:    hunks,
 		Comments:     comments,
+	}, nil
+}
+
+func (c *Client) FetchPRCheckout(ctx context.Context, repo string, number int) (*model.CheckoutSpec, error) {
+	var pr prResponse
+	escaped := escapeRepo(repo)
+	if err := c.Get(ctx, fmt.Sprintf("/repos/%s/pulls/%d", escaped, number), &pr); err != nil {
+		return nil, err
+	}
+	cloneURL := ""
+	if pr.Head.Repo != nil {
+		cloneURL = pr.Head.Repo.CloneURL
+	}
+	if cloneURL == "" && pr.Base.Repo != nil {
+		cloneURL = pr.Base.Repo.CloneURL
+	}
+	return &model.CheckoutSpec{
+		Provider: model.ModeGitHub,
+		Repo:     repo,
+		CloneURL: cloneURL,
+		HeadRef:  pr.Head.Ref,
+		HeadSHA:  pr.Head.SHA,
 	}, nil
 }
 

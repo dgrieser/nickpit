@@ -41,3 +41,30 @@ func TestFetchPR(t *testing.T) {
 		t.Fatalf("changed files = %d", len(ctx.ChangedFiles))
 	}
 }
+
+func TestFetchPRCheckout(t *testing.T) {
+	fixtures := map[string][]byte{
+		"/repos/owner/repo/pulls/123": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "github", "pr_metadata.json")),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	spec, err := client.FetchPRCheckout(context.Background(), "owner/repo", 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.CloneURL != "https://github.com/contrib/repo.git" {
+		t.Fatalf("clone url = %q", spec.CloneURL)
+	}
+	if spec.HeadSHA != "def" {
+		t.Fatalf("head sha = %q", spec.HeadSHA)
+	}
+}

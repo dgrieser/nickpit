@@ -11,11 +11,14 @@ import (
 )
 
 type mrResponse struct {
-	Title        string `json:"title"`
-	Description  string `json:"description"`
-	WebURL       string `json:"web_url"`
-	SourceBranch string `json:"source_branch"`
-	TargetBranch string `json:"target_branch"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	WebURL          string `json:"web_url"`
+	SHA             string `json:"sha"`
+	SourceBranch    string `json:"source_branch"`
+	TargetBranch    string `json:"target_branch"`
+	SourceProjectID int    `json:"source_project_id"`
+	TargetProjectID int    `json:"target_project_id"`
 }
 
 type commitResponse struct {
@@ -49,6 +52,10 @@ type discussionsResponse []struct {
 			NewLine int    `json:"new_line"`
 		} `json:"position"`
 	} `json:"notes"`
+}
+
+type projectResponse struct {
+	HTTPURLToRepo string `json:"http_url_to_repo"`
 }
 
 func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeComments bool) (*model.ReviewContext, error) {
@@ -131,6 +138,43 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		DiffHunks:    hunks,
 		Comments:     comments,
 	}, nil
+}
+
+func (c *Client) FetchMRCheckout(ctx context.Context, project string, iid int) (*model.CheckoutSpec, error) {
+	escaped := escapeProject(project)
+	var mr mrResponse
+	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d", escaped, iid), &mr); err != nil {
+		return nil, err
+	}
+	sourceProject := mr.SourceProjectID
+	if sourceProject == 0 {
+		sourceProject = mr.TargetProjectID
+	}
+	cloneURL, err := c.projectCloneURL(ctx, sourceProject, escaped)
+	if err != nil {
+		return nil, err
+	}
+	return &model.CheckoutSpec{
+		Provider: model.ModeGitLab,
+		Repo:     project,
+		CloneURL: cloneURL,
+		HeadRef:  mr.SourceBranch,
+		HeadSHA:  mr.SHA,
+	}, nil
+}
+
+func (c *Client) projectCloneURL(ctx context.Context, projectID int, fallbackProject string) (string, error) {
+	var path string
+	if projectID > 0 {
+		path = fmt.Sprintf("/projects/%d", projectID)
+	} else {
+		path = fmt.Sprintf("/projects/%s", fallbackProject)
+	}
+	var project projectResponse
+	if err := c.Get(ctx, path, &project); err != nil {
+		return "", err
+	}
+	return project.HTTPURLToRepo, nil
 }
 
 func normalizeMRCommits(in []commitResponse) []model.CommitSummary {

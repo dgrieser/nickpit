@@ -33,6 +33,7 @@ type app struct {
 	severityThreshold string
 	promptFile        string
 	configPath        string
+	localRepo         string
 	githubToken       string
 	gitlabToken       string
 	gitlabBaseURL     string
@@ -66,6 +67,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.severityThreshold, "severity-threshold", "info", "Minimum severity to display")
 	root.PersistentFlags().StringVar(&cli.promptFile, "prompt-file", "", "Custom prompt file")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
+	root.PersistentFlags().StringVar(&cli.localRepo, "local-repo", "", "Use an existing local clone for remote retrieval instead of cloning")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
 	root.PersistentFlags().StringVar(&cli.gitlabToken, "gitlab-token", "", "GitLab token override")
 	root.PersistentFlags().StringVar(&cli.gitlabBaseURL, "gitlab-base-url", "", "GitLab API base URL")
@@ -85,6 +87,7 @@ func (a *app) loadProfile() (config.Profile, error) {
 		APIKey:           a.apiKey,
 		MaxContextTokens: a.maxContextTokens,
 		FollowUps:        a.followUps,
+		LocalRepo:        a.localRepo,
 		GitHubToken:      a.githubToken,
 		GitLabToken:      a.gitlabToken,
 		GitLabBaseURL:    a.gitlabBaseURL,
@@ -118,6 +121,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 			req := model.ReviewRequest{
 				Mode:              model.ModeLocal,
 				RepoRoot:          repoRoot,
+				LocalRepo:         profile.LocalRepo,
 				BaseRef:           firstNonEmpty(base, from),
 				HeadRef:           firstNonEmpty(head, to),
 				IncludeComments:   a.includeComments,
@@ -161,6 +165,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
 			req := model.ReviewRequest{
 				Mode:              model.ModeGitHub,
+				LocalRepo:         profile.LocalRepo,
 				Repo:              repo,
 				Identifier:        pr,
 				IncludeComments:   a.includeComments,
@@ -200,6 +205,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
 			req := model.ReviewRequest{
 				Mode:              model.ModeGitLab,
+				LocalRepo:         profile.LocalRepo,
 				Repo:              project,
 				Identifier:        mr,
 				IncludeComments:   a.includeComments,
@@ -338,11 +344,12 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 }
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profile config.Profile, req model.ReviewRequest) error {
-	repoRoot := req.RepoRoot
-	if repoRoot == "" {
-		if wd, err := os.Getwd(); err == nil {
-			repoRoot = wd
-		}
+	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 	req.RepoRoot = repoRoot
 	if req.MaxContextTokens == 0 {
@@ -364,6 +371,52 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		formatter = output.NewTerminalFormatter(os.Stdout, true)
 	}
 	return formatter.FormatFindings(result)
+}
+
+func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
+	if req.RepoRoot != "" {
+		return req.RepoRoot, nil, nil
+	}
+	if req.Mode == model.ModeLocal {
+		wd, err := os.Getwd()
+		return wd, nil, err
+	}
+	followUpRounds := req.FollowUpRounds
+	if followUpRounds == 0 {
+		followUpRounds = profile.DefaultFollowUps
+	}
+	if !req.IncludeFullFiles && followUpRounds <= 0 {
+		return "", nil, nil
+	}
+	remote, ok := source.(model.RemoteCheckoutSource)
+	if !ok {
+		wd, err := os.Getwd()
+		return wd, nil, err
+	}
+	spec, err := remote.ResolveCheckout(ctx, req)
+	if err != nil {
+		return "", nil, err
+	}
+	manager := git.NewCheckoutManager()
+	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
+		LocalRepo: req.LocalRepo,
+		Token:     checkoutToken(req.Mode, profile),
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return repoRoot, cleanup, nil
+}
+
+func checkoutToken(mode model.ReviewMode, profile config.Profile) string {
+	switch mode {
+	case model.ModeGitHub:
+		return profile.GitHubToken
+	case model.ModeGitLab:
+		return profile.GitLabToken
+	default:
+		return ""
+	}
 }
 
 func writeJSON(value any) error {
