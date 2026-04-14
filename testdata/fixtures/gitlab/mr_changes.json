@@ -1,0 +1,12 @@
+{
+  "changes": [
+    {
+      "new_path": "main.go",
+      "old_path": "main.go",
+      "new_file": false,
+      "deleted_file": false,
+      "renamed_file": false,
+      "diff": "@@ -1 +1 @@\n-old\n+new"
+    }
+  ]
+}

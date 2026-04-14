@@ -1,0 +1,8 @@
+diff --git a/main.go b/main.go
+new file mode 100644
+--- /dev/null
++++ b/main.go
+@@ -0,0 +1,3 @@
++package main
++
++func main() {}

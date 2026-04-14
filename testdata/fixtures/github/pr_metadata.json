@@ -1,0 +1,7 @@
+{
+  "title": "Example PR",
+  "body": "PR description",
+  "base": {"ref": "main", "sha": "abc"},
+  "head": {"ref": "feature", "sha": "def"},
+  "html_url": "https://github.com/owner/repo/pull/123"
+}

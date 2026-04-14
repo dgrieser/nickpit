@@ -1,0 +1,13 @@
+[
+  {
+    "id": "thread-1",
+    "notes": [
+      {
+        "body": "Discussion note",
+        "created_at": "2024-01-01T00:00:00Z",
+        "author": {"username": "reviewer"},
+        "position": {"new_path": "main.go", "new_line": 1}
+      }
+    ]
+  }
+]

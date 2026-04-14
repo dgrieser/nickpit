@@ -1,0 +1,10 @@
+[
+  {
+    "body": "Inline comment",
+    "path": "main.go",
+    "line": 1,
+    "side": "RIGHT",
+    "created_at": "2024-01-01T00:00:00Z",
+    "user": {"login": "reviewer"}
+  }
+]

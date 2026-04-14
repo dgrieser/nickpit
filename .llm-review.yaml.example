@@ -1,0 +1,16 @@
+active_profile: default
+profiles:
+  default:
+    model: gpt-4o
+    base_url: https://api.openai.com/v1
+    api_key: ${LLM_REVIEW_API_KEY}
+    max_context_tokens: 120000
+    default_followups: 1
+    github_token: ${GITHUB_TOKEN}
+    gitlab_token: ${GITLAB_TOKEN}
+    gitlab_base_url: ${GITLAB_BASE_URL}
+  local-llama:
+    model: llama3
+    base_url: http://localhost:11434/v1
+    max_context_tokens: 8000
+    default_followups: 0

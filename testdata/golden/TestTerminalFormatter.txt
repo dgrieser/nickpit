@@ -1,0 +1,11 @@
+NickPit Review
+
+1 findings (0 critical, 0 error, 1 warning, 0 info)
+
+WARNING a.go:10-12 [bug]
+Problem
+Description
+Confidence: 0.82
+
+Summary: Summary text
+Tokens: 10 prompt / 4 completion / 14 total

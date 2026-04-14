@@ -1,0 +1,22 @@
+You previously requested additional context. Here it is. Update the review accordingly.
+
+Do not repeat unchanged findings. Only keep findings that still matter after reading the new context.
+Return JSON only.
+
+Repository: {{.Repository.FullName}}
+Mode: {{.Mode}}
+Title: {{.Title}}
+Description:
+{{.Description}}
+
+Diff:
+```diff
+{{.Diff}}
+```
+
+Additional context:
+{{range .SupplementalContext}}### {{.Kind}} {{.Path}}{{if .StartLine}} (lines {{.StartLine}}-{{.EndLine}}){{end}}
+```{{.Language}}
+{{.Content}}
+```
+{{end}}
