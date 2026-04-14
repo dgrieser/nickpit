@@ -3,7 +3,8 @@ APP=nickpit
 .PHONY: build test lint fmt
 
 build:
-	go build ./...
+	mkdir -p ./bin
+	go build -o ./bin/$(APP) ./cmd/$(APP)
 
 test:
 	go test ./...
