@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -37,6 +38,8 @@ type app struct {
 	githubToken       string
 	gitlabToken       string
 	gitlabBaseURL     string
+	verbose           bool
+	logger            *debuglog.Logger
 }
 
 func main() {
@@ -71,6 +74,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
 	root.PersistentFlags().StringVar(&cli.gitlabToken, "gitlab-token", "", "GitLab token override")
 	root.PersistentFlags().StringVar(&cli.gitlabBaseURL, "gitlab-base-url", "", "GitLab API base URL")
+	root.PersistentFlags().BoolVar(&cli.verbose, "verbose", false, "Print debug execution details")
+	root.PersistentFlags().BoolVar(&cli.verbose, "debug", false, "Print debug execution details")
 
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
@@ -347,6 +352,9 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 }
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
+	logger := debuglog.New(os.Stderr, a.verbose, true)
+	a.logger = logger
+
 	if profile.APIKey == "" {
 		if profile.APIKeyConfigured {
 			return fmt.Errorf("profile %q has an empty api_key value; set OPENROUTER_API_KEY or provide a non-empty api_key in config", profileName)
@@ -369,7 +377,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.FollowUpRounds = profile.DefaultFollowUps
 	}
 
-	engine := review.NewEngine(source, llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model), retrievalEngine, profile)
+	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
+	client.SetLogger(logger)
+	engine := review.NewEngine(source, client, retrievalEngine, profile)
+	engine.SetLogger(logger)
 	result, err := engine.Run(ctx, req)
 	if err != nil {
 		return err
@@ -385,10 +396,14 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 
 func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
 	if req.RepoRoot != "" {
+		a.logf("Using provided repo root: %s", req.RepoRoot)
 		return req.RepoRoot, nil, nil
 	}
 	if req.Mode == model.ModeLocal {
 		wd, err := os.Getwd()
+		if err == nil {
+			a.logf("Resolved local repo root from working directory: %s", wd)
+		}
 		return wd, nil, err
 	}
 	followUpRounds := req.FollowUpRounds
@@ -396,17 +411,22 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 		followUpRounds = profile.DefaultFollowUps
 	}
 	if !req.IncludeFullFiles && followUpRounds <= 0 {
+		a.logf("Skipping remote checkout: include_full_files=%t follow_up_rounds=%d", req.IncludeFullFiles, followUpRounds)
 		return "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)
 	if !ok {
 		wd, err := os.Getwd()
+		if err == nil {
+			a.logf("Source has no remote checkout support; falling back to working directory: %s", wd)
+		}
 		return wd, nil, err
 	}
 	spec, err := remote.ResolveCheckout(ctx, req)
 	if err != nil {
 		return "", nil, err
 	}
+	a.logf("Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
 	manager := git.NewCheckoutManager()
 	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
 		LocalRepo: req.LocalRepo,
@@ -415,6 +435,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if err != nil {
 		return "", nil, err
 	}
+	a.logf("Prepared repo root: %s", repoRoot)
 	return repoRoot, cleanup, nil
 }
 
@@ -442,4 +463,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func (a *app) logf(format string, args ...any) {
+	if a.logger == nil {
+		return
+	}
+	a.logger.Printf(format, args...)
 }

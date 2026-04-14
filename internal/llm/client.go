@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -24,6 +25,7 @@ type OpenAIClient struct {
 	model      string
 	httpClient *http.Client
 	retrier    *Retrier
+	logger     *debuglog.Logger
 }
 
 type ReviewRequest struct {
@@ -79,6 +81,10 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	}
 }
 
+func (c *OpenAIClient) SetLogger(logger *debuglog.Logger) {
+	c.logger = logger
+}
+
 func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("llm: nil review request")
@@ -113,10 +119,13 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if err != nil {
 		return nil, fmt.Errorf("llm: encoding request: %w", err)
 	}
+	c.logf("LLM request prepared: model=%s endpoint=%s/chat/completions max_tokens=%d temperature=%.2f", payload.Model, c.baseURL, payload.MaxTokens, payload.Temperature)
+	c.logBlock("LLM request payload:", string(body))
 
 	var httpResp *http.Response
 	var responseBody []byte
 	for attempt := 0; ; attempt++ {
+		c.logf("Sending LLM request (attempt %d)", attempt+1)
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("llm: building request: %w", err)
@@ -128,6 +137,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 
 		httpResp, err = c.httpClient.Do(httpReq)
 		if err != nil {
+			c.logf("LLM request failed on attempt %d: %v", attempt+1, err)
 			if attempt >= c.retrier.MaxRetries {
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
@@ -142,9 +152,12 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		if err != nil {
 			return nil, fmt.Errorf("llm: reading response: %w", err)
 		}
+		c.logf("LLM response status: %s", httpResp.Status)
+		c.logBlock("LLM raw response body:", string(responseBody))
 		if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
 			break
 		}
+		c.logf("Retrying after non-success status %d", httpResp.StatusCode)
 		if attempt >= c.retrier.MaxRetries || !c.retrier.ShouldRetry(httpResp.StatusCode) {
 			return nil, fmt.Errorf("llm: api returned status %d", httpResp.StatusCode)
 		}
@@ -186,7 +199,21 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		CompletionTokens: envelope.Usage.CompletionTokens,
 		TotalTokens:      envelope.Usage.TotalTokens,
 	}
+	c.logf("Parsed LLM response: findings=%d follow_up_requests=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		len(resp.Findings), len(resp.FollowUpRequests), resp.TokensUsed.PromptTokens, resp.TokensUsed.CompletionTokens, resp.TokensUsed.TotalTokens)
 	return resp, nil
+}
+
+func (c *OpenAIClient) logf(format string, args ...any) {
+	if c.logger != nil {
+		c.logger.Printf(format, args...)
+	}
+}
+
+func (c *OpenAIClient) logBlock(label, content string) {
+	if c.logger != nil {
+		c.logger.PrintBlock(label, content)
+	}
 }
 
 func parseReviewResponse(content string) (*ReviewResponse, error) {

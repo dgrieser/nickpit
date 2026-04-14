@@ -14,9 +14,14 @@ func ExecuteRetrievals(
 	engine retrieval.Engine,
 	repoRoot string,
 	requests []model.FollowUpRequest,
+	log func(string, ...any),
 ) []model.SupplementalFile {
 	results := make([]model.SupplementalFile, 0, len(requests))
 	for _, req := range requests {
+		if log != nil {
+			log("Executing follow-up retrieval: type=%s path=%s symbol=%s start=%d end=%d depth=%d reason=%s",
+				req.Type, req.Path, req.Symbol, req.StartLine, req.EndLine, req.Depth, req.Reason)
+		}
 		switch req.Type {
 		case "file":
 			content, err := engine.GetFile(ctx, repoRoot, req.Path)
