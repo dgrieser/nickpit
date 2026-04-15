@@ -37,10 +37,10 @@ func (l *Logger) Printf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if l.useANSI {
 		if idx := strings.IndexByte(msg, ':'); idx >= 0 {
-			_, _ = fmt.Fprintf(l.w, "\x1b[1;33m+ %s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:])
+			_, _ = fmt.Fprintf(l.w, "\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:])
 			return
 		}
-		_, _ = fmt.Fprintf(l.w, "\x1b[1;33m+ %s\x1b[0m\n", msg)
+		_, _ = fmt.Fprintf(l.w, "\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\n", msg)
 		return
 	}
 	_, _ = fmt.Fprintf(l.w, "+ %s\n", msg)

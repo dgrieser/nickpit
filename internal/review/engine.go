@@ -84,12 +84,13 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	}
 
 	llmReq := &llm.ReviewRequest{
-		SystemPrompt: systemPrompt,
-		UserContent:  userPrompt,
-		Schema:       llm.FindingsSchema,
-		Model:        e.config.Model,
-		MaxTokens:    4096,
-		Temperature:  0.2,
+		SystemPrompt:    systemPrompt,
+		UserContent:     userPrompt,
+		Schema:          llm.FindingsSchema,
+		Model:           e.config.Model,
+		MaxTokens:       4096,
+		Temperature:     0.2,
+		ReasoningEffort: e.config.ReasoningEffort,
 	}
 
 	resp, err := e.llm.Review(ctx, llmReq)

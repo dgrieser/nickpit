@@ -32,6 +32,9 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.DefaultFollowUps != 0 {
 		base.DefaultFollowUps = override.DefaultFollowUps
 	}
+	if override.ReasoningEffort != "" {
+		base.ReasoningEffort = override.ReasoningEffort
+	}
 	if override.GitHubToken != "" {
 		base.GitHubToken = override.GitHubToken
 	}

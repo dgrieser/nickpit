@@ -29,12 +29,13 @@ type OpenAIClient struct {
 }
 
 type ReviewRequest struct {
-	SystemPrompt string
-	UserContent  string
-	Schema       json.RawMessage
-	Model        string
-	MaxTokens    int
-	Temperature  float64
+	SystemPrompt    string
+	UserContent     string
+	Schema          json.RawMessage
+	Model           string
+	MaxTokens       int
+	Temperature     float64
+	ReasoningEffort string
 }
 
 type ReviewResponse struct {
@@ -47,12 +48,17 @@ type ReviewResponse struct {
 	TokensUsed             model.TokenUsage        `json:"tokens_used"`
 }
 
+type reasoningConfig struct {
+	Effort string `json:"effort"`
+}
+
 type chatCompletionRequest struct {
-	Model          string         `json:"model"`
-	Messages       []chatMessage  `json:"messages"`
-	MaxTokens      int            `json:"max_tokens,omitempty"`
-	Temperature    float64        `json:"temperature,omitempty"`
-	ResponseFormat map[string]any `json:"response_format,omitempty"`
+	Model          string           `json:"model"`
+	Messages       []chatMessage    `json:"messages"`
+	MaxTokens      int              `json:"max_tokens,omitempty"`
+	Temperature    float64          `json:"temperature,omitempty"`
+	ResponseFormat map[string]any   `json:"response_format,omitempty"`
+	Reasoning      *reasoningConfig `json:"reasoning,omitempty"`
 }
 
 type chatMessage struct {
@@ -107,6 +113,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if payload.Model == "" {
 		payload.Model = c.model
 	}
+	if req.ReasoningEffort != "" {
+		payload.Reasoning = &reasoningConfig{Effort: req.ReasoningEffort}
+	}
 	if len(req.Schema) > 0 {
 		payload.ResponseFormat = map[string]any{
 			"type": "json_schema",
@@ -121,7 +130,11 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if err != nil {
 		return nil, fmt.Errorf("llm: encoding request: %w", err)
 	}
-	c.logf("LLM request prepared: model=%s endpoint=%s max_tokens=%d temperature=%.2f", payload.Model, c.baseURL+"/chat/completions", payload.MaxTokens, payload.Temperature)
+	reasoningEffort := ""
+	if payload.Reasoning != nil {
+		reasoningEffort = payload.Reasoning.Effort
+	}
+	c.logf("LLM request prepared: model=%s endpoint=%s max_tokens=%d temperature=%.2f reasoning_effort=%s", payload.Model, c.baseURL+"/chat/completions", payload.MaxTokens, payload.Temperature, reasoningEffort)
 	c.logJSON("LLM request payload:", payload)
 
 	var httpResp *http.Response

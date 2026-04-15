@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	DefaultProfileName     = "default"
-	DefaultModel           = "openai/gpt-oss-120b:free"
-	DefaultBaseURL         = "https://openrouter.ai/api/v1"
-	DefaultMaxContextToken = 120000
-	DefaultFollowUps       = 5
-	DefaultConfigPath      = ".nickpit.yaml"
+	DefaultProfileName      = "default"
+	DefaultModel            = "openai/gpt-oss-120b:free"
+	DefaultBaseURL          = "https://openrouter.ai/api/v1"
+	DefaultMaxContextToken  = 120000
+	DefaultFollowUps        = 5
+	DefaultConfigPath       = ".nickpit.yaml"
+	DefaultReasoningEffort  = "high"
 )
 
 type Config struct {
@@ -30,6 +31,7 @@ type Profile struct {
 	APIKey                   string `yaml:"api_key"`
 	MaxContextTokens         int    `yaml:"max_context_tokens"`
 	DefaultFollowUps         int    `yaml:"default_followups"`
+	ReasoningEffort          string `yaml:"reasoning_effort"`
 	LocalRepo                string `yaml:"local_repo"`
 	GitHubToken              string `yaml:"github_token"`
 	GitLabToken              string `yaml:"gitlab_token"`
@@ -48,6 +50,7 @@ type Overrides struct {
 	APIKey                   string
 	MaxContextTokens         int
 	FollowUps                int
+	ReasoningEffort          string
 	LocalRepo                string
 	GitHubToken              string
 	GitLabToken              string
@@ -67,6 +70,7 @@ func DefaultConfig() *Config {
 				BaseURL:          DefaultBaseURL,
 				MaxContextTokens: DefaultMaxContextToken,
 				DefaultFollowUps: DefaultFollowUps,
+				ReasoningEffort:  DefaultReasoningEffort,
 				GitHubToken:      os.Getenv("GITHUB_TOKEN"),
 				GitLabToken:      os.Getenv("GITLAB_TOKEN"),
 				GitLabBaseURL:    getEnvOrDefault("GITLAB_BASE_URL", "https://gitlab.com/api/v4"),
@@ -175,6 +179,9 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	}
 	if overrides.FollowUps >= 0 {
 		profile.DefaultFollowUps = overrides.FollowUps
+	}
+	if overrides.ReasoningEffort != "" {
+		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
 	if overrides.LocalRepo != "" {
 		profile.LocalRepo = overrides.LocalRepo
