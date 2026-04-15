@@ -414,13 +414,13 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 
 func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
 	if req.RepoRoot != "" {
-		a.logf("Using provided repo root: %s", req.RepoRoot)
+		a.logf("Resolved repo root: source=provided path=%s", req.RepoRoot)
 		return req.RepoRoot, nil, nil
 	}
 	if req.Mode == model.ModeLocal {
 		wd, err := os.Getwd()
 		if err == nil {
-			a.logf("Resolved local repo root from working directory: %s", wd)
+			a.logf("Resolved repo root: source=working_dir path=%s", wd)
 		}
 		return wd, nil, err
 	}
@@ -436,7 +436,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if !ok {
 		wd, err := os.Getwd()
 		if err == nil {
-			a.logf("Source has no remote checkout support; falling back to working directory: %s", wd)
+			a.logf("Skipping remote checkout: reason=no_support fallback=%s", wd)
 		}
 		return wd, nil, err
 	}
@@ -453,7 +453,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if err != nil {
 		return "", nil, err
 	}
-	a.logf("Prepared repo root: %s", repoRoot)
+	a.logf("Prepared repo root: path=%s", repoRoot)
 	return repoRoot, cleanup, nil
 }
 

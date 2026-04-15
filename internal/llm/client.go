@@ -121,13 +121,13 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if err != nil {
 		return nil, fmt.Errorf("llm: encoding request: %w", err)
 	}
-	c.logf("LLM request prepared: model=%s endpoint=%s/chat/completions max_tokens=%d temperature=%.2f", payload.Model, c.baseURL, payload.MaxTokens, payload.Temperature)
+	c.logf("LLM request prepared: model=%s endpoint=%s max_tokens=%d temperature=%.2f", payload.Model, c.baseURL+"/chat/completions", payload.MaxTokens, payload.Temperature)
 	c.logJSON("LLM request payload:", payload)
 
 	var httpResp *http.Response
 	var responseBody []byte
 	for attempt := 0; ; attempt++ {
-		c.logf("Sending LLM request (attempt %d)", attempt+1)
+		c.logf("Sending LLM request: attempt=%d", attempt+1)
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("llm: building request: %w", err)
@@ -139,7 +139,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 
 		httpResp, err = c.httpClient.Do(httpReq)
 		if err != nil {
-			c.logf("LLM request failed on attempt %d: %v", attempt+1, err)
+			c.logf("LLM request failed: attempt=%d error=%v", attempt+1, err)
 			if attempt >= c.retrier.MaxRetries {
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
@@ -154,12 +154,12 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		if err != nil {
 			return nil, fmt.Errorf("llm: reading response: %w", err)
 		}
-		c.logf("LLM response status: %s", httpResp.Status)
+		c.logf("LLM response received: status=%s", httpResp.Status)
 		c.logMaybeJSON("LLM raw response body:", responseBody)
 		if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
 			break
 		}
-		c.logf("Retrying after non-success status %d", httpResp.StatusCode)
+		c.logf("Retrying request: status=%d", httpResp.StatusCode)
 		if attempt >= c.retrier.MaxRetries || !c.retrier.ShouldRetry(httpResp.StatusCode) {
 			return nil, fmt.Errorf("llm: api returned status %d", httpResp.StatusCode)
 		}
@@ -207,7 +207,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		CompletionTokens: envelope.Usage.CompletionTokens,
 		TotalTokens:      envelope.Usage.TotalTokens,
 	}
-	c.logf("Parsed LLM response: findings=%d follow_up_requests=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+	c.logf("Parsed LLM response: findings=%d follow_up=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(resp.Findings), len(resp.FollowUpRequests), resp.TokensUsed.PromptTokens, resp.TokensUsed.CompletionTokens, resp.TokensUsed.TotalTokens)
 	return resp, nil
 }

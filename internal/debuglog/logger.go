@@ -34,7 +34,16 @@ func (l *Logger) Printf(format string, args ...any) {
 	if !l.Enabled() {
 		return
 	}
-	l.writeLines(fmt.Sprintf(format, args...), "33")
+	msg := fmt.Sprintf(format, args...)
+	if l.useANSI {
+		if idx := strings.IndexByte(msg, ':'); idx >= 0 {
+			_, _ = fmt.Fprintf(l.w, "\x1b[1;33m+ %s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:])
+			return
+		}
+		_, _ = fmt.Fprintf(l.w, "\x1b[1;33m+ %s\x1b[0m\n", msg)
+		return
+	}
+	_, _ = fmt.Fprintf(l.w, "+ %s\n", msg)
 }
 
 func (l *Logger) PrintBlock(label, content string) {
