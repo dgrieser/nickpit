@@ -5,56 +5,31 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dgrieser/nickpit/internal/retrieval/fallback"
 	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 )
 
 func (e *LocalEngine) FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error) {
 	graph, err := goparser.BuildGraph(ctx, repoRoot)
-	if err == nil && graph != nil {
-		hierarchy, findErr := graph.Find(symbol.Name, symbol.Path, depth, true)
-		if findErr == nil {
-			return convertHierarchy(hierarchy), nil
-		}
-	}
-	info, err := fallback.FindSymbol(ctx, repoRoot, symbol.Name, symbol.Path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building Go call graph: %w", err)
 	}
-	return &CallHierarchy{
-		Root: CallNode{
-			Name:      info.Name,
-			Path:      info.Path,
-			StartLine: info.StartLine,
-			EndLine:   info.EndLine,
-		},
-		Mode:  "callers",
-		Depth: depth,
-	}, nil
+	hierarchy, err := graph.Find(symbol.Name, symbol.Path, depth, true)
+	if err != nil {
+		return nil, fmt.Errorf("finding callers for %q in %q: %w", symbol.Name, symbol.Path, err)
+	}
+	return convertHierarchy(hierarchy), nil
 }
 
 func (e *LocalEngine) FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error) {
 	graph, err := goparser.BuildGraph(ctx, repoRoot)
-	if err == nil && graph != nil {
-		hierarchy, findErr := graph.Find(symbol.Name, symbol.Path, depth, false)
-		if findErr == nil {
-			return convertHierarchy(hierarchy), nil
-		}
-	}
-	info, err := fallback.FindSymbol(ctx, repoRoot, symbol.Name, symbol.Path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building Go call graph: %w", err)
 	}
-	return &CallHierarchy{
-		Root: CallNode{
-			Name:      info.Name,
-			Path:      info.Path,
-			StartLine: info.StartLine,
-			EndLine:   info.EndLine,
-		},
-		Mode:  "callees",
-		Depth: depth,
-	}, nil
+	hierarchy, err := graph.Find(symbol.Name, symbol.Path, depth, false)
+	if err != nil {
+		return nil, fmt.Errorf("finding callees for %q in %q: %w", symbol.Name, symbol.Path, err)
+	}
+	return convertHierarchy(hierarchy), nil
 }
 
 func convertHierarchy(src *goparser.Hierarchy) *CallHierarchy {

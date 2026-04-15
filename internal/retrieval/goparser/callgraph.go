@@ -4,17 +4,20 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
+	"go/types"
 	"path/filepath"
 	"sort"
+
+	"golang.org/x/tools/go/packages"
 )
 
 type Graph struct {
-	nodes   map[string]Node
-	callers map[string]map[string]struct{}
-	callees map[string]map[string]struct{}
+	nodes      map[string]Node
+	callers    map[string]map[string]struct{}
+	callees    map[string]map[string]struct{}
+	byPathName map[string][]string
+	byName     map[string][]string
 }
 
 type Hierarchy struct {
@@ -31,55 +34,98 @@ type Node struct {
 	Children  []Node
 }
 
-func BuildGraph(_ context.Context, repoRoot string) (*Graph, error) {
-	graph := &Graph{
-		nodes:   map[string]Node{},
-		callers: map[string]map[string]struct{}{},
-		callees: map[string]map[string]struct{}{},
+func BuildGraph(ctx context.Context, repoRoot string) (*Graph, error) {
+	cfg := &packages.Config{
+		Context: ctx,
+		Dir:     repoRoot,
+		Mode: packages.NeedName |
+			packages.NeedFiles |
+			packages.NeedCompiledGoFiles |
+			packages.NeedSyntax |
+			packages.NeedTypes |
+			packages.NeedTypesInfo |
+			packages.NeedModule,
 	}
-	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".go" {
-			return err
+	pkgs, err := packages.Load(cfg, "./...")
+	if err != nil {
+		return nil, fmt.Errorf("loading packages: %w", err)
+	}
+
+	graph := &Graph{
+		nodes:      map[string]Node{},
+		callers:    map[string]map[string]struct{}{},
+		callees:    map[string]map[string]struct{}{},
+		byPathName: map[string][]string{},
+		byName:     map[string][]string{},
+	}
+
+	for _, pkg := range pkgs {
+		if pkg == nil || pkg.TypesInfo == nil || pkg.Fset == nil {
+			continue
 		}
-		fset := token.NewFileSet()
-		file, parseErr := parser.ParseFile(fset, path, nil, 0)
-		if parseErr != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(repoRoot, path)
-		ast.Inspect(file, func(n ast.Node) bool {
-			fn, ok := n.(*ast.FuncDecl)
-			if !ok {
-				return true
-			}
-			name := fn.Name.Name
-			key := nodeKey(name, rel)
-			graph.nodes[key] = Node{
-				Name:      name,
-				Path:      filepath.ToSlash(rel),
-				StartLine: fset.Position(fn.Pos()).Line,
-				EndLine:   fset.Position(fn.End()).Line,
-			}
-			ast.Inspect(fn.Body, func(child ast.Node) bool {
-				call, ok := child.(*ast.CallExpr)
+		for _, file := range pkg.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				fn, ok := n.(*ast.FuncDecl)
 				if !ok {
 					return true
 				}
-				callee := exprName(call.Fun)
-				if callee == "" {
+				obj, ok := pkg.TypesInfo.Defs[fn.Name].(*types.Func)
+				if !ok || obj == nil {
+					return false
+				}
+				node, id, ok := buildNode(repoRoot, pkg.Fset, fn, obj)
+				if !ok {
+					return false
+				}
+				graph.nodes[id] = node
+				graph.byPathName[pathNameKey(node.Name, node.Path)] = append(graph.byPathName[pathNameKey(node.Name, node.Path)], id)
+				graph.byName[node.Name] = append(graph.byName[node.Name], id)
+				return false
+			})
+		}
+	}
+
+	for _, pkg := range pkgs {
+		if pkg == nil || pkg.TypesInfo == nil || pkg.Fset == nil {
+			continue
+		}
+		for _, file := range pkg.Syntax {
+			ast.Inspect(file, func(n ast.Node) bool {
+				fn, ok := n.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
 					return true
 				}
-				addEdge(graph.callees, key, callee)
-				addEdge(graph.callers, nodeKey(callee, ""), key)
-				return true
+				obj, ok := pkg.TypesInfo.Defs[fn.Name].(*types.Func)
+				if !ok || obj == nil {
+					return false
+				}
+				callerID := objectID(pkg.Fset, obj)
+				if _, ok := graph.nodes[callerID]; !ok {
+					return false
+				}
+
+				ast.Inspect(fn.Body, func(child ast.Node) bool {
+					call, ok := child.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					callee := resolveCallee(pkg.TypesInfo, call.Fun)
+					if callee == nil {
+						return true
+					}
+					calleeID := objectID(pkg.Fset, callee)
+					if _, ok := graph.nodes[calleeID]; !ok {
+						return true
+					}
+					addEdge(graph.callees, callerID, calleeID)
+					addEdge(graph.callers, calleeID, callerID)
+					return true
+				})
+				return false
 			})
-			return false
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		}
 	}
+
 	if len(graph.nodes) == 0 {
 		return nil, fmt.Errorf("no Go functions found")
 	}
@@ -87,7 +133,10 @@ func BuildGraph(_ context.Context, repoRoot string) (*Graph, error) {
 }
 
 func (g *Graph) Find(name, path string, depth int, reverse bool) (*Hierarchy, error) {
-	key := g.resolveKey(name, path)
+	key, err := g.resolveKey(name, path)
+	if err != nil {
+		return nil, err
+	}
 	root, ok := g.nodes[key]
 	if !ok {
 		if path != "" {
@@ -111,66 +160,115 @@ func (g *Graph) Find(name, path string, depth int, reverse bool) (*Hierarchy, er
 	}, nil
 }
 
-func (g *Graph) expand(name string, depth int, reverse bool, seen map[string]struct{}) []Node {
+func (g *Graph) expand(id string, depth int, reverse bool, seen map[string]struct{}) []Node {
 	if depth == 0 {
 		return nil
 	}
-	edges := g.callees[name]
+	edges := g.callees[id]
 	if reverse {
-		edges = g.callers[name]
-		if len(edges) == 0 {
-			if node, ok := g.nodes[name]; ok {
-				edges = g.callers[node.Name]
-			}
-		}
+		edges = g.callers[id]
 	}
-	names := make([]string, 0, len(edges))
+	childIDs := make([]string, 0, len(edges))
 	for candidate := range edges {
-		names = append(names, candidate)
+		childIDs = append(childIDs, candidate)
 	}
-	sort.Strings(names)
+	sort.Slice(childIDs, func(i, j int) bool {
+		left := g.nodes[childIDs[i]]
+		right := g.nodes[childIDs[j]]
+		if left.Path == right.Path {
+			return left.StartLine < right.StartLine
+		}
+		return left.Path < right.Path
+	})
+
 	var out []Node
-	for _, childName := range names {
-		childKey, node, ok := g.lookupNode(childName)
-		if _, exists := seen[childKey]; exists {
+	for _, childID := range childIDs {
+		if _, exists := seen[childID]; exists {
 			continue
 		}
+		node, ok := g.nodes[childID]
 		if !ok {
 			continue
 		}
 		nextSeen := copySeen(seen)
-		nextSeen[childKey] = struct{}{}
-		node.Children = g.expand(childKey, depth-1, reverse, nextSeen)
+		nextSeen[childID] = struct{}{}
+		node.Children = g.expand(childID, depth-1, reverse, nextSeen)
 		out = append(out, node)
 	}
 	return out
 }
 
-func (g *Graph) resolveKey(name, path string) string {
+func (g *Graph) resolveKey(name, path string) (string, error) {
 	if path != "" {
-		return nodeKey(name, path)
-	}
-	if _, ok := g.nodes[name]; ok {
-		return name
-	}
-	for key, node := range g.nodes {
-		if node.Name == name {
-			return key
+		candidates := g.byPathName[pathNameKey(name, path)]
+		switch len(candidates) {
+		case 0:
+			return "", fmt.Errorf("symbol %q not found in %q", name, path)
+		case 1:
+			return candidates[0], nil
+		default:
+			return "", fmt.Errorf("symbol %q is ambiguous in %q", name, path)
 		}
 	}
-	return name
+
+	candidates := g.byName[name]
+	switch len(candidates) {
+	case 0:
+		return "", fmt.Errorf("symbol %q not found", name)
+	case 1:
+		return candidates[0], nil
+	default:
+		return "", fmt.Errorf("symbol %q is ambiguous; provide --path", name)
+	}
 }
 
-func (g *Graph) lookupNode(key string) (string, Node, bool) {
-	if node, ok := g.nodes[key]; ok {
-		return key, node, true
+func buildNode(repoRoot string, fset *token.FileSet, fn *ast.FuncDecl, obj *types.Func) (Node, string, bool) {
+	start := fset.Position(fn.Pos())
+	end := fset.Position(fn.End())
+	if start.Filename == "" {
+		return Node{}, "", false
 	}
-	for candidateKey, node := range g.nodes {
-		if node.Name == key {
-			return candidateKey, node, true
+	rel, err := filepath.Rel(repoRoot, start.Filename)
+	if err != nil {
+		return Node{}, "", false
+	}
+	node := Node{
+		Name:      fn.Name.Name,
+		Path:      filepath.ToSlash(rel),
+		StartLine: start.Line,
+		EndLine:   end.Line,
+	}
+	return node, objectID(fset, obj), true
+}
+
+func resolveCallee(info *types.Info, expr ast.Expr) *types.Func {
+	switch value := expr.(type) {
+	case *ast.Ident:
+		obj, _ := info.Uses[value].(*types.Func)
+		return obj
+	case *ast.SelectorExpr:
+		if sel := info.Selections[value]; sel != nil {
+			obj, _ := sel.Obj().(*types.Func)
+			return obj
 		}
+		obj, _ := info.Uses[value.Sel].(*types.Func)
+		return obj
+	default:
+		return nil
 	}
-	return "", Node{}, false
+}
+
+func objectID(fset *token.FileSet, obj *types.Func) string {
+	pkgPath := ""
+	if obj.Pkg() != nil {
+		pkgPath = obj.Pkg().Path()
+	}
+	pos := fset.Position(obj.Pos())
+	return fmt.Sprintf("%s:%s:%d:%d", pkgPath, filepath.ToSlash(pos.Filename), pos.Line, pos.Column)
+}
+
+func pathNameKey(name, path string) string {
+	return filepath.ToSlash(path) + "\x00" + name
 }
 
 func addEdge(index map[string]map[string]struct{}, from, to string) {
@@ -178,25 +276,6 @@ func addEdge(index map[string]map[string]struct{}, from, to string) {
 		index[from] = map[string]struct{}{}
 	}
 	index[from][to] = struct{}{}
-}
-
-func nodeKey(name, path string) string {
-	path = filepath.ToSlash(path)
-	if path == "" {
-		return name
-	}
-	return path + ":" + name
-}
-
-func exprName(expr ast.Expr) string {
-	switch value := expr.(type) {
-	case *ast.Ident:
-		return value.Name
-	case *ast.SelectorExpr:
-		return value.Sel.Name
-	default:
-		return ""
-	}
 }
 
 func copySeen(in map[string]struct{}) map[string]struct{} {
