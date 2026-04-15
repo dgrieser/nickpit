@@ -287,6 +287,9 @@ func (a *app) newInspectCmd() *cobra.Command {
 		Use:   "lines",
 		Short: "Retrieve file lines",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if start <= 0 && end <= 0 {
+				return fmt.Errorf("inspect lines requires --start or --end")
+			}
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
@@ -299,8 +302,8 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	linesCmd.Flags().StringVar(&path, "path", "", "Relative file path")
-	linesCmd.Flags().IntVar(&start, "start", 1, "Start line")
-	linesCmd.Flags().IntVar(&end, "end", 1, "End line")
+	linesCmd.Flags().IntVar(&start, "start", 0, "Start line (optional if --end is set)")
+	linesCmd.Flags().IntVar(&end, "end", 0, "End line (optional if --start is set)")
 	_ = linesCmd.MarkFlagRequired("path")
 
 	var callersSymbol, callersPath string
