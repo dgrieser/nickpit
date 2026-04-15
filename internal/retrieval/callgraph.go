@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -49,11 +50,20 @@ func convertNode(src goparser.Node) CallNode {
 		Path:      src.Path,
 		StartLine: src.StartLine,
 		EndLine:   src.EndLine,
+		Children:  []CallNode{},
 	}
 	for _, child := range src.Children {
 		node.Children = append(node.Children, convertNode(child))
 	}
 	return node
+}
+
+func (h *CallHierarchy) RenderJSON() string {
+	b, err := json.MarshalIndent(h, "", "  ")
+	if err != nil {
+		return h.Render()
+	}
+	return string(b)
 }
 
 func (h *CallHierarchy) Render() string {

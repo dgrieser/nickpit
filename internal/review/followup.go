@@ -73,7 +73,7 @@ func ExecuteRetrievals(
 			}
 			results = append(results, model.SupplementalFile{
 				Path:    hierarchy.Root.Path,
-				Content: hierarchy.Render(),
+				Content: hierarchy.RenderJSON(),
 				Kind:    "callers",
 				Reason:  req.Reason,
 			})
@@ -85,7 +85,7 @@ func ExecuteRetrievals(
 			}
 			results = append(results, model.SupplementalFile{
 				Path:    hierarchy.Root.Path,
-				Content: hierarchy.Render(),
+				Content: hierarchy.RenderJSON(),
 				Kind:    "callees",
 				Reason:  req.Reason,
 			})
