@@ -276,7 +276,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(content)
+			return a.writeInspectOutput(content)
 		},
 	}
 	fileCmd.Flags().StringVar(&path, "path", "", "Relative file path")
@@ -298,7 +298,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(content)
+			return a.writeInspectOutput(content)
 		},
 	}
 	linesCmd.Flags().StringVar(&path, "path", "", "Relative file path")
@@ -320,13 +320,12 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stdout, hierarchy.Render())
-			return nil
+			return a.writeInspectOutput(hierarchy)
 		},
 	}
 	callersCmd.Flags().StringVar(&callersSymbol, "symbol", "", "Function name")
 	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file path containing the function")
-	callersCmd.Flags().IntVar(&callersDepth, "depth", 2, "Traversal depth")
+	callersCmd.Flags().IntVar(&callersDepth, "depth", 10, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
 	_ = callersCmd.MarkFlagRequired("path")
 
@@ -344,13 +343,12 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stdout, hierarchy.Render())
-			return nil
+			return a.writeInspectOutput(hierarchy)
 		},
 	}
 	calleesCmd.Flags().StringVar(&calleesSymbol, "symbol", "", "Function name")
 	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file path containing the function")
-	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 2, "Traversal depth")
+	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 10, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
 	_ = calleesCmd.MarkFlagRequired("path")
 
@@ -461,6 +459,39 @@ func writeJSON(value any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(value)
+}
+
+func (a *app) writeInspectOutput(value any) error {
+	if a.jsonOutput {
+		return writeJSON(value)
+	}
+	switch typed := value.(type) {
+	case *retrieval.FileContent:
+		if _, err := fmt.Fprintf(os.Stdout, "%s (%s)\n", typed.Path, typed.Language); err != nil {
+			return err
+		}
+		if typed.Content == "" {
+			_, err := fmt.Fprintln(os.Stdout)
+			return err
+		}
+		_, err := fmt.Fprintln(os.Stdout, typed.Content)
+		return err
+	case *retrieval.FileSlice:
+		if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", typed.Path, typed.StartLine, typed.EndLine, typed.Language); err != nil {
+			return err
+		}
+		if typed.Content == "" {
+			_, err := fmt.Fprintln(os.Stdout)
+			return err
+		}
+		_, err := fmt.Fprintln(os.Stdout, typed.Content)
+		return err
+	case *retrieval.CallHierarchy:
+		_, err := fmt.Fprintln(os.Stdout, typed.Render())
+		return err
+	default:
+		return writeJSON(value)
+	}
 }
 
 func firstNonEmpty(values ...string) string {
