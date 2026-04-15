@@ -83,10 +83,15 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		return nil, fmt.Errorf("review: rendering review prompt: %w", err)
 	}
 
+	var schema []byte
+	if req.UseJSONSchema {
+		schema = llm.FindingsSchema
+	}
+
 	llmReq := &llm.ReviewRequest{
 		SystemPrompt:    systemPrompt,
 		UserContent:     userPrompt,
-		Schema:          llm.FindingsSchema,
+		Schema:          schema,
 		Model:           e.config.Model,
 		MaxTokens:       4096,
 		Temperature:     0.2,

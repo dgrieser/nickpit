@@ -32,6 +32,7 @@ type app struct {
 	includeComments          bool
 	includeCommits           bool
 	jsonOutput               bool
+	useJSONSchema            bool
 	followUps                int
 	offline                  bool
 	priorityThreshold        string
@@ -73,6 +74,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
+	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
 	root.PersistentFlags().IntVar(&cli.followUps, "followups", 5, "Maximum follow-up rounds")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
@@ -101,6 +103,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		Model:                    a.model,
 		BaseURL:                  a.baseURL,
 		APIKey:                   a.apiKey,
+		UseJSONSchema:            a.useJSONSchema,
 		MaxContextTokens:         a.maxContextTokens,
 		FollowUps:                a.followUps,
 		LocalRepo:                a.localRepo,
@@ -151,6 +154,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				IncludeFullFiles:         a.includeFullFiles,
 				MaxContextTokens:         profile.MaxContextTokens,
 				FollowUpRounds:           profile.DefaultFollowUps,
+				UseJSONSchema:            profile.UseJSONSchema,
 				PriorityThreshold:        a.priorityThreshold,
 				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
 				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
@@ -203,6 +207,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				IncludeCommits:           a.includeCommits,
 				MaxContextTokens:         profile.MaxContextTokens,
 				FollowUpRounds:           profile.DefaultFollowUps,
+				UseJSONSchema:            profile.UseJSONSchema,
 				PriorityThreshold:        a.priorityThreshold,
 				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
 				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
@@ -251,6 +256,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				IncludeCommits:           a.includeCommits,
 				MaxContextTokens:         profile.MaxContextTokens,
 				FollowUpRounds:           profile.DefaultFollowUps,
+				UseJSONSchema:            profile.UseJSONSchema,
 				PriorityThreshold:        a.priorityThreshold,
 				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
 				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
@@ -270,9 +276,9 @@ func (a *app) newGitLabCmd() *cobra.Command {
 
 func (a *app) newInspectCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "inspect",
-		Short:   "Use retrieval features without running review",
-		Long:    "Use retrieval features directly against the current repository without running an LLM review.",
+		Use:   "inspect",
+		Short: "Use retrieval features without running review",
+		Long:  "Use retrieval features directly against the current repository without running an LLM review.",
 	}
 	engine := retrieval.NewLocalEngine()
 

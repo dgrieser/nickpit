@@ -100,3 +100,34 @@ profiles:
 		t.Fatalf("local repo = %q", profile.LocalRepo)
 	}
 }
+
+func TestLoadConfigUseJSONSchemaOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    use_json_schema: true
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.UseJSONSchema {
+		t.Fatal("expected use_json_schema from config to be enabled")
+	}
+}
+
+func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
+	_, profile, err := Load("", Overrides{UseJSONSchema: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.UseJSONSchema {
+		t.Fatal("expected use_json_schema override to be enabled")
+	}
+}

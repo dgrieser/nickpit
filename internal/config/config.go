@@ -11,13 +11,13 @@ import (
 )
 
 const (
-	DefaultProfileName      = "default"
-	DefaultModel            = "openai/gpt-oss-120b:free"
-	DefaultBaseURL          = "https://openrouter.ai/api/v1"
-	DefaultMaxContextToken  = 120000
-	DefaultFollowUps        = 5
-	DefaultConfigPath       = ".nickpit.yaml"
-	DefaultReasoningEffort  = "high"
+	DefaultProfileName     = "default"
+	DefaultModel           = "openai/gpt-oss-120b:free"
+	DefaultBaseURL         = "https://openrouter.ai/api/v1"
+	DefaultMaxContextToken = 120000
+	DefaultFollowUps       = 5
+	DefaultConfigPath      = ".nickpit.yaml"
+	DefaultReasoningEffort = "high"
 )
 
 type Config struct {
@@ -29,6 +29,7 @@ type Profile struct {
 	Model                    string `yaml:"model"`
 	BaseURL                  string `yaml:"base_url"`
 	APIKey                   string `yaml:"api_key"`
+	UseJSONSchema            bool   `yaml:"use_json_schema"`
 	MaxContextTokens         int    `yaml:"max_context_tokens"`
 	DefaultFollowUps         int    `yaml:"default_followups"`
 	ReasoningEffort          string `yaml:"reasoning_effort"`
@@ -48,6 +49,7 @@ type Overrides struct {
 	Model                    string
 	BaseURL                  string
 	APIKey                   string
+	UseJSONSchema            bool
 	MaxContextTokens         int
 	FollowUps                int
 	ReasoningEffort          string
@@ -173,6 +175,9 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	}
 	if overrides.APIKey != "" {
 		profile.APIKey = overrides.APIKey
+	}
+	if overrides.UseJSONSchema {
+		profile.UseJSONSchema = true
 	}
 	if overrides.MaxContextTokens > 0 {
 		profile.MaxContextTokens = overrides.MaxContextTokens

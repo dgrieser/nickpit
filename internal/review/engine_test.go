@@ -100,6 +100,45 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	}
 }
 
+func TestEngineDoesNotUseAPISchemaByDefault(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	if len(llmClient.reqs[0].Schema) != 0 {
+		t.Fatalf("schema should be empty by default, got %s", string(llmClient.reqs[0].Schema))
+	}
+}
+
+func TestEngineUsesAPISchemaWhenEnabled(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		UseJSONSchema:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	if string(llmClient.reqs[0].Schema) != string(llm.FindingsSchema) {
+		t.Fatalf("schema = %s", string(llmClient.reqs[0].Schema))
+	}
+}
+
 func intPtr(v int) *int {
 	return &v
 }

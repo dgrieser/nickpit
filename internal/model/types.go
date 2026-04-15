@@ -36,6 +36,7 @@ type ReviewRequest struct {
 	IncludeFullFiles         bool
 	MaxContextTokens         int
 	FollowUpRounds           int
+	UseJSONSchema            bool
 	PriorityThreshold        string
 	ReviewSystemPromptFile   string
 	ReviewUserPromptFile     string

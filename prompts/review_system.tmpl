@@ -25,5 +25,42 @@ Use these priority levels:
 
 At the end, decide whether the patch is correct. "patch is correct" means the patch is free of blocking issues and should not break existing code or tests. Otherwise return "patch is incorrect".
 
-Produce JSON only and follow the provided schema exactly. If more context is required before you can decide, include precise optional `follow_up_requests` and keep them limited to the specific code needed. Do not repeat unchanged findings across follow-up rounds.
+OUTPUT FORMAT:
+Make sure to output the findings in JSON format.
+
+## Output schema - MUST MATCH exactly
+
+```json
+{
+  "findings": [
+    {
+      "title": "<less than 80 chars, imperative>",
+      "body": "<valid Markdown explaining why this is a problem; cite files/lines/functions>",
+      "confidence_score": <float 0.0-1.0>,
+      "priority": <int 0-3, optional>,
+      "code_location": {
+        "absolute_file_path": "<file path>",
+        "line_range": {"start": <int>, "end": <int>}
+      }
+    }
+  ],
+  "overall_correctness": "patch is correct" | "patch is incorrect",
+  "overall_explanation": "<1-3 sentence explanation justifying the overall_correctness verdict>",
+  "overall_confidence_score": <float 0.0-1.0>,
+  "follow_up_requests": [
+    {
+      "type": "file" | "lines" | "function" | "callers" | "callees",
+      "path": "<relative file path, when applicable>",
+      "symbol": "<symbol name, for function/callers/callees>",
+      "start_line": <int, for lines requests>,
+      "end_line": <int, for lines requests>,
+      "depth": <int, for callers/callees requests>,
+      "reason": "<why this extra context is needed>"
+    }
+  ]
+}
+```
+
+Do not wrap the JSON in markdown fences or extra prose.
+Produce JSON only and match the schema exactly. If more context is required before you can decide, include precise optional `follow_up_requests` and keep them limited to the specific code needed. Do not repeat unchanged findings across follow-up rounds.
 For `function`, `callers`, and `callees` follow-up requests, include both `symbol` and `path` so retrieval targets the correct function definition.

@@ -26,6 +26,9 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.APIKey != "" {
 		base.APIKey = override.APIKey
 	}
+	if override.UseJSONSchema {
+		base.UseJSONSchema = true
+	}
 	if override.MaxContextTokens != 0 {
 		base.MaxContextTokens = override.MaxContextTokens
 	}

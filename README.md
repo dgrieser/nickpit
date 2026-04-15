@@ -12,6 +12,7 @@ NickPit is a CLI for LLM-assisted code review across local git changes, GitHub p
 - GitHub PR and GitLab MR review via direct REST clients
 - OpenAI-compatible chat completions client
 - Structured JSON findings with priority filtering and overall verdicts
+- Prompt-embedded JSON output schema by default, with optional API-enforced JSON schema mode
 - Retrieval commands for files, slices, symbols, callers, and callees
 - Terminal and JSON output modes
 
@@ -67,6 +68,12 @@ Prompt overrides are split by role:
 - `--prompt-file-user-review`
 - `--prompt-file-system-followup`
 - `--prompt-file-user-followup`
+
+### Output Schema Mode
+
+By default, NickPit includes the expected JSON schema directly in the system prompt.
+
+Use `--use-json-schema` to additionally send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
 
 ### Filtering by Priority
 
