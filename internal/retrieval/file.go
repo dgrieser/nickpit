@@ -20,17 +20,9 @@ func (e *LocalEngine) GetFile(_ context.Context, repoRoot, path string) (*FileCo
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", path, err)
 	}
-	lines := splitLines(string(data))
-	lineMap := make(map[int]int, len(lines))
-	offset := 0
-	for i, line := range lines {
-		lineMap[i+1] = offset
-		offset += len(line) + 1
-	}
 	return &FileContent{
 		Path:     path,
-		Lines:    lines,
-		LineMap:  lineMap,
+		Content:  normalizeText(string(data)),
 		Language: detectLanguage(path),
 	}, nil
 }
@@ -40,11 +32,12 @@ func (e *LocalEngine) GetFileSlice(ctx context.Context, repoRoot, path string, s
 	if err != nil {
 		return nil, err
 	}
+	lines := splitLines(full.Content)
 	if start <= 0 {
 		start = 1
 	}
-	if end <= 0 || end > len(full.Lines) {
-		end = len(full.Lines)
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
 	}
 	if start > end {
 		return nil, fmt.Errorf("retrieval: invalid line range %d-%d", start, end)
@@ -53,14 +46,18 @@ func (e *LocalEngine) GetFileSlice(ctx context.Context, repoRoot, path string, s
 		Path:      path,
 		StartLine: start,
 		EndLine:   end,
-		Lines:     append([]string(nil), full.Lines[start-1:end]...),
+		Content:   strings.Join(lines[start-1:end], "\n"),
 		Language:  full.Language,
 	}, nil
 }
 
-func splitLines(text string) []string {
+func normalizeText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.TrimSuffix(text, "\n")
+	return strings.TrimSuffix(text, "\n")
+}
+
+func splitLines(text string) []string {
+	text = normalizeText(text)
 	if text == "" {
 		return []string{}
 	}

@@ -3,7 +3,6 @@ package review
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
@@ -32,7 +31,7 @@ func ExecuteRetrievals(
 			results = append(results, model.SupplementalFile{
 				Path:     req.Path,
 				Language: content.Language,
-				Content:  strings.Join(content.Lines, "\n"),
+				Content:  content.Content,
 				Kind:     "file",
 				Reason:   req.Reason,
 			})
@@ -47,7 +46,7 @@ func ExecuteRetrievals(
 				StartLine: slice.StartLine,
 				EndLine:   slice.EndLine,
 				Language:  slice.Language,
-				Content:   strings.Join(slice.Lines, "\n"),
+				Content:   slice.Content,
 				Kind:      "lines",
 				Reason:    req.Reason,
 			})

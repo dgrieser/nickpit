@@ -55,7 +55,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			}
 			reviewCtx.SupplementalContext = append(reviewCtx.SupplementalContext, model.SupplementalFile{
 				Path:     file.Path,
-				Content:  joinLines(content.Lines),
+				Content:  content.Content,
 				Language: content.Language,
 				Kind:     "full_file",
 			})
@@ -166,17 +166,6 @@ func filterByPriority(findings []model.Finding, threshold string) []model.Findin
 		}
 	}
 	return filtered
-}
-
-func joinLines(lines []string) string {
-	if len(lines) == 0 {
-		return ""
-	}
-	out := lines[0]
-	for _, line := range lines[1:] {
-		out += "\n" + line
-	}
-	return out
 }
 
 func (e *Engine) logf(format string, args ...any) {

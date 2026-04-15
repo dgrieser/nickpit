@@ -11,18 +11,17 @@ type Engine interface {
 }
 
 type FileContent struct {
-	Path     string
-	Lines    []string
-	LineMap  map[int]int
-	Language string
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Language string `json:"language"`
 }
 
 type FileSlice struct {
-	Path      string
-	StartLine int
-	EndLine   int
-	Lines     []string
-	Language  string
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Content   string `json:"content"`
+	Language  string `json:"language"`
 }
 
 type SymbolInfo struct {
