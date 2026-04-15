@@ -86,21 +86,25 @@ func renderNode(b *strings.Builder, node CallNode, prefix string, last, root boo
 	fmt.Fprintf(b, "%s%s%s (%s:%d-%d)\n", prefix, connector, node.Name, node.Path, node.StartLine, node.EndLine)
 	if node.Source != "" {
 		sourcePrefix := nextPrefix
+		separatorPrefix := nextPrefix
 		if root {
 			sourcePrefix = ""
+			separatorPrefix = ""
 		}
-		renderSource(b, node.Source, sourcePrefix)
+		renderSource(b, node.Source, sourcePrefix, separatorPrefix, len(node.Children) > 0 || !last)
 	}
 	for i, child := range node.Children {
 		renderNode(b, child, nextPrefix, i == len(node.Children)-1, false)
 	}
 }
 
-func renderSource(b *strings.Builder, source, prefix string) {
+func renderSource(b *strings.Builder, source, prefix, separatorPrefix string, addSeparator bool) {
 	lines := strings.Split(source, "\n")
 	for _, line := range lines {
 		normalized := strings.ReplaceAll(line, "\t", "    ")
 		fmt.Fprintf(b, "%s%s\n", prefix, normalized)
 	}
-	b.WriteString("\n")
+	if addSeparator {
+		fmt.Fprintf(b, "%s\n", separatorPrefix)
+	}
 }
