@@ -50,6 +50,7 @@ func convertNode(src goparser.Node) CallNode {
 		Path:      src.Path,
 		StartLine: src.StartLine,
 		EndLine:   src.EndLine,
+		Source:    src.Source,
 		Children:  []CallNode{},
 	}
 	for _, child := range src.Children {
@@ -68,14 +69,14 @@ func (h *CallHierarchy) RenderJSON() string {
 
 func (h *CallHierarchy) Render() string {
 	var b strings.Builder
-	renderNode(&b, h.Root, "", true)
+	renderNode(&b, h.Root, "", true, true)
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderNode(b *strings.Builder, node CallNode, prefix string, last bool) {
+func renderNode(b *strings.Builder, node CallNode, prefix string, last, root bool) {
 	connector := "├── "
 	nextPrefix := prefix + "│   "
-	if prefix == "" {
+	if root {
 		connector = ""
 		nextPrefix = ""
 	} else if last {
@@ -83,7 +84,23 @@ func renderNode(b *strings.Builder, node CallNode, prefix string, last bool) {
 		nextPrefix = prefix + "    "
 	}
 	fmt.Fprintf(b, "%s%s%s (%s:%d-%d)\n", prefix, connector, node.Name, node.Path, node.StartLine, node.EndLine)
-	for i, child := range node.Children {
-		renderNode(b, child, nextPrefix, i == len(node.Children)-1)
+	if node.Source != "" {
+		sourcePrefix := nextPrefix
+		if root {
+			sourcePrefix = ""
+		}
+		renderSource(b, node.Source, sourcePrefix)
 	}
+	for i, child := range node.Children {
+		renderNode(b, child, nextPrefix, i == len(node.Children)-1, false)
+	}
+}
+
+func renderSource(b *strings.Builder, source, prefix string) {
+	lines := strings.Split(source, "\n")
+	for _, line := range lines {
+		normalized := strings.ReplaceAll(line, "\t", "    ")
+		fmt.Fprintf(b, "%s%s\n", prefix, normalized)
+	}
+	b.WriteString("\n")
 }

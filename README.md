@@ -81,7 +81,10 @@ nickpit inspect file --path internal/review/engine.go
 nickpit inspect lines --path internal/review/engine.go --start 1 --end 80
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2
 nickpit inspect callees --path internal/review/engine.go --symbol Run --depth 3
+nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 --json
 ```
+
+`inspect callers` and `inspect callees` now include each mentioned function's full source in JSON output and print the source inline in terminal output.
 
 ## Notes
 

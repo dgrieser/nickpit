@@ -49,5 +49,6 @@ type CallNode struct {
 	Path      string     `json:"path"`
 	StartLine int        `json:"start_line"`
 	EndLine   int        `json:"end_line"`
+	Source    string     `json:"source"`
 	Children  []CallNode `json:"children"`
 }

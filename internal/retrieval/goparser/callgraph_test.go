@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,12 @@ func Start() {
 	if got := callees.Root.Children[0].Path; got != "a/a.go" {
 		t.Fatalf("callee path = %q", got)
 	}
+	if !strings.Contains(callees.Root.Source, "func Run()") || !strings.Contains(callees.Root.Source, "a.Run()") {
+		t.Fatalf("callee root source = %q", callees.Root.Source)
+	}
+	if !strings.Contains(callees.Root.Children[0].Source, "func Run()") {
+		t.Fatalf("callee child source = %q", callees.Root.Children[0].Source)
+	}
 
 	callers, err := graph.Find("Run", "b/b.go", 2, true)
 	if err != nil {
@@ -56,6 +63,9 @@ func Start() {
 	}
 	if got := callers.Root.Children[0].Name; got != "Start" {
 		t.Fatalf("caller name = %q", got)
+	}
+	if !strings.Contains(callers.Root.Children[0].Source, "func Start()") || !strings.Contains(callers.Root.Children[0].Source, "b.Run()") {
+		t.Fatalf("caller source = %q", callers.Root.Children[0].Source)
 	}
 
 	runCallers, err := graph.Find("Run", "a/a.go", 3, true)
@@ -73,6 +83,15 @@ func Start() {
 	}
 	if got := runCallers.Root.Children[0].Children[0].Name; got != "Start" {
 		t.Fatalf("a.Run caller grandchild name = %q", got)
+	}
+	if !strings.Contains(runCallers.Root.Source, "func Run()") {
+		t.Fatalf("run root source = %q", runCallers.Root.Source)
+	}
+	if !strings.Contains(runCallers.Root.Children[0].Source, "func Run()") || !strings.Contains(runCallers.Root.Children[0].Source, "a.Run()") {
+		t.Fatalf("run child source = %q", runCallers.Root.Children[0].Source)
+	}
+	if !strings.Contains(runCallers.Root.Children[0].Children[0].Source, "func Start()") || !strings.Contains(runCallers.Root.Children[0].Children[0].Source, "b.Run()") {
+		t.Fatalf("run grandchild source = %q", runCallers.Root.Children[0].Children[0].Source)
 	}
 }
 

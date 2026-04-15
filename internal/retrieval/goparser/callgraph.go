@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -31,6 +33,7 @@ type Node struct {
 	Path      string
 	StartLine int
 	EndLine   int
+	Source    string
 	Children  []Node
 }
 
@@ -228,6 +231,10 @@ func buildNode(repoRoot string, fset *token.FileSet, fn *ast.FuncDecl, obj *type
 	if start.Filename == "" {
 		return Node{}, "", false
 	}
+	var buf strings.Builder
+	if err := printer.Fprint(&buf, fset, fn); err != nil {
+		return Node{}, "", false
+	}
 	rel, err := filepath.Rel(repoRoot, start.Filename)
 	if err != nil {
 		return Node{}, "", false
@@ -237,6 +244,7 @@ func buildNode(repoRoot string, fset *token.FileSet, fn *ast.FuncDecl, obj *type
 		Path:      filepath.ToSlash(rel),
 		StartLine: start.Line,
 		EndLine:   end.Line,
+		Source:    buf.String(),
 	}
 	return node, objectID(fset, obj), true
 }
