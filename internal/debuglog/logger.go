@@ -72,14 +72,72 @@ func (l *Logger) PrintJSON(label string, value any) {
 		l.writeLines(fmt.Sprintf("failed to encode json: %v", err), "90")
 		return
 	}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		if l.useANSI {
-			_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\n", colorizeJSON(line))
+	for _, line := range strings.Split(string(data), "\n") {
+		keyPrefix, contentLines := splitJSONStringValue(line)
+		if contentLines == nil {
+			if l.useANSI {
+				_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\n", colorizeJSON(keyPrefix))
+			} else {
+				_, _ = fmt.Fprintf(l.w, "+ %s\n", keyPrefix)
+			}
 			continue
 		}
-		_, _ = fmt.Fprintf(l.w, "+ %s\n", line)
+		if l.useANSI {
+			_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\x1b[32m%s\x1b[0m\n", colorizeJSON(keyPrefix), contentLines[0])
+			for _, cl := range contentLines[1:] {
+				_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[32m%s\x1b[0m\n", cl)
+			}
+		} else {
+			_, _ = fmt.Fprintf(l.w, "+ %s%s\n", keyPrefix, contentLines[0])
+			for _, cl := range contentLines[1:] {
+				_, _ = fmt.Fprintf(l.w, "+ %s\n", cl)
+			}
+		}
 	}
+}
+
+// splitJSONStringValue detects a JSON line whose string value contains \n escapes and
+// expands them. Returns the key prefix (without the value's opening quote, suitable for
+// colorizeJSON) and the content lines. The first content line has a leading `"`, the last
+// has a trailing `"`, and all continuation lines are indented to align with the value start.
+// Returns (line, nil) if no expansion is needed.
+func splitJSONStringValue(line string) (string, []string) {
+	colonIdx := strings.Index(line, `": "`)
+	if colonIdx < 0 {
+		return line, nil
+	}
+	valueStart := colonIdx + 4
+	if valueStart >= len(line) {
+		return line, nil
+	}
+	rest := line[valueStart:]
+
+	var raw string
+	switch {
+	case strings.HasSuffix(rest, `",`):
+		raw = rest[:len(rest)-2]
+	case strings.HasSuffix(rest, `"`):
+		raw = rest[:len(rest)-1]
+	default:
+		return line, nil
+	}
+
+	if !strings.Contains(raw, `\n`) {
+		return line, nil
+	}
+
+	unescaped := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\\`, `\`, `\"`, `"`).Replace(raw)
+	keyPrefix := line[:colonIdx+3]                    // `  "key": ` without the opening value `"`
+	valueIndent := strings.Repeat(" ", len(keyPrefix)+1) // align continuation to after the `"`
+
+	parts := strings.Split(unescaped, "\n")
+	contentLines := make([]string, 0, len(parts))
+	contentLines = append(contentLines, `"`+parts[0]) // opening `"` on first line
+	for _, p := range parts[1:] {
+		contentLines = append(contentLines, valueIndent+p)
+	}
+	contentLines[len(contentLines)-1] += `"` // closing `"` on last line
+	return keyPrefix, contentLines
 }
 
 func (l *Logger) writeLines(text, color string) {
