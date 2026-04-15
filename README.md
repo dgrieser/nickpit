@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="nickpit.png" alt="NickPit logo" width="320">
+</p>
+
 # NickPit
 
 NickPit is a Go CLI for LLM-assisted code review across local git changes, GitHub pull requests, and GitLab merge requests. It uses a normalized review context, a provider-compatible chat completions client, and optional follow-up retrieval rounds for additional code context.
