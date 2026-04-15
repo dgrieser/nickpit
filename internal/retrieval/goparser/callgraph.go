@@ -70,7 +70,7 @@ func BuildGraph(_ context.Context, repoRoot string) (*Graph, error) {
 					return true
 				}
 				addEdge(graph.callees, key, callee)
-				addEdge(graph.callers, callee, key)
+				addEdge(graph.callers, nodeKey(callee, ""), key)
 				return true
 			})
 			return false
@@ -118,6 +118,11 @@ func (g *Graph) expand(name string, depth int, reverse bool, seen map[string]str
 	edges := g.callees[name]
 	if reverse {
 		edges = g.callers[name]
+		if len(edges) == 0 {
+			if node, ok := g.nodes[name]; ok {
+				edges = g.callers[node.Name]
+			}
+		}
 	}
 	names := make([]string, 0, len(edges))
 	for candidate := range edges {
