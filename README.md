@@ -7,7 +7,7 @@ NickPit is a Go CLI for LLM-assisted code review across local git changes, GitHu
 - Local review modes for uncommitted changes, commit ranges, and branch diffs
 - GitHub PR and GitLab MR review via direct REST clients
 - OpenAI-compatible chat completions client
-- Structured JSON findings with severity filtering
+- Structured JSON findings with priority filtering and overall verdicts
 - Retrieval commands for files, slices, symbols, callers, and callees
 - Terminal and JSON output modes
 
@@ -55,6 +55,8 @@ Prompt overrides are split by role:
 - `--review-user-prompt-file`
 - `--followup-system-prompt-file`
 - `--followup-user-prompt-file`
+
+Review output filtering uses `--priority-threshold` with `p0` through `p3`, where `p0` is highest priority and `p3` is lowest.
 
 ## Development
 

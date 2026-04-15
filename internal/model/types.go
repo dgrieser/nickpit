@@ -14,15 +14,6 @@ const (
 	ModeGitLab ReviewMode = "gitlab"
 )
 
-type Severity string
-
-const (
-	SeverityInfo     Severity = "info"
-	SeverityWarning  Severity = "warning"
-	SeverityError    Severity = "error"
-	SeverityCritical Severity = "critical"
-)
-
 type FileStatus string
 
 const (
@@ -45,7 +36,7 @@ type ReviewRequest struct {
 	IncludeFullFiles         bool
 	MaxContextTokens         int
 	FollowUpRounds           int
-	SeverityThreshold        string
+	PriorityThreshold        string
 	ReviewSystemPromptFile   string
 	ReviewUserPromptFile     string
 	FollowUpSystemPromptFile string
@@ -55,18 +46,21 @@ type ReviewRequest struct {
 }
 
 type ReviewResult struct {
-	Findings      []Finding  `json:"findings"`
-	Summary       string     `json:"summary"`
-	TokensUsed    TokenUsage `json:"tokens_used"`
-	Model         string     `json:"model,omitempty"`
-	Mode          string     `json:"mode,omitempty"`
-	Repo          string     `json:"repo,omitempty"`
-	Identifier    int        `json:"identifier,omitempty"`
-	FollowUpRound int        `json:"followup_rounds,omitempty"`
+	Findings               []Finding  `json:"findings"`
+	OverallCorrectness     string     `json:"overall_correctness"`
+	OverallExplanation     string     `json:"overall_explanation"`
+	OverallConfidenceScore float64    `json:"overall_confidence_score"`
+	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
+	Model                  string     `json:"model,omitempty"`
+	Mode                   string     `json:"mode,omitempty"`
+	Repo                   string     `json:"repo,omitempty"`
+	Identifier             int        `json:"identifier,omitempty"`
+	FollowUpRound          int        `json:"followup_rounds,omitempty"`
 }
 
 type ReviewContext struct {
 	Mode                ReviewMode         `json:"mode"`
+	CheckoutRoot        string             `json:"checkout_root,omitempty"`
 	Repository          RepositoryInfo     `json:"repository"`
 	Title               string             `json:"title"`
 	Description         string             `json:"description"`
@@ -122,16 +116,21 @@ type CommitSummary struct {
 }
 
 type Finding struct {
-	ID          string   `json:"id,omitempty"`
-	Severity    Severity `json:"severity"`
-	Category    string   `json:"category"`
-	FilePath    string   `json:"file_path"`
-	StartLine   int      `json:"start_line,omitempty"`
-	EndLine     int      `json:"end_line,omitempty"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Suggestion  string   `json:"suggestion,omitempty"`
-	Confidence  float64  `json:"confidence"`
+	Title           string       `json:"title"`
+	Body            string       `json:"body"`
+	ConfidenceScore float64      `json:"confidence_score"`
+	Priority        *int         `json:"priority,omitempty"`
+	CodeLocation    CodeLocation `json:"code_location"`
+}
+
+type CodeLocation struct {
+	AbsoluteFilePath string    `json:"absolute_file_path"`
+	LineRange        LineRange `json:"line_range"`
+}
+
+type LineRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
 type FollowUpRequest struct {
@@ -187,25 +186,29 @@ func (SimpleEstimator) Estimate(text string) int {
 	return len(text) / 4
 }
 
-func SeverityRank(severity Severity) int {
-	switch severity {
-	case SeverityCritical:
-		return 4
-	case SeverityError:
+func PriorityRank(priority *int) int {
+	if priority == nil {
 		return 3
-	case SeverityWarning:
-		return 2
-	default:
-		return 1
 	}
+	if *priority < 0 {
+		return 0
+	}
+	if *priority > 3 {
+		return 3
+	}
+	return *priority
 }
 
-func ParseSeverity(value string) Severity {
-	switch Severity(value) {
-	case SeverityCritical, SeverityError, SeverityWarning, SeverityInfo:
-		return Severity(value)
+func PriorityThresholdRank(value string) int {
+	switch value {
+	case "p0":
+		return 0
+	case "p1":
+		return 1
+	case "p2":
+		return 2
 	default:
-		return SeverityInfo
+		return 3
 	}
 }
 

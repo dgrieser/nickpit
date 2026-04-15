@@ -33,10 +33,12 @@ type stubLLM struct{}
 func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	return &llm.ReviewResponse{
 		Findings: []model.Finding{
-			{Severity: model.SeverityInfo, Category: "style", FilePath: "main.go", Title: "info", Description: "low", Confidence: 0.5},
-			{Severity: model.SeverityError, Category: "bug", FilePath: "main.go", Title: "error", Description: "high", Confidence: 0.9},
+			{Title: "[P3] info", Body: "low", ConfidenceScore: 0.5, Priority: intPtr(3), CodeLocation: model.CodeLocation{AbsoluteFilePath: "/tmp/main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{Title: "[P1] error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{AbsoluteFilePath: "/tmp/main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 		},
-		Summary: "summary",
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     "summary",
+		OverallConfidenceScore: 0.9,
 	}, nil
 }
 
@@ -46,15 +48,19 @@ type capturingLLM struct {
 
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	s.reqs = append(s.reqs, req)
-	return &llm.ReviewResponse{Summary: "summary"}, nil
+	return &llm.ReviewResponse{
+		OverallCorrectness:     "patch is correct",
+		OverallExplanation:     "summary",
+		OverallConfidenceScore: 0.5,
+	}, nil
 }
 
-func TestEngineSeverityFilter(t *testing.T) {
+func TestEnginePriorityFilter(t *testing.T) {
 	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:              model.ModeLocal,
 		MaxContextTokens:  1000,
-		SeverityThreshold: "error",
+		PriorityThreshold: "p1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -86,10 +92,14 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if req.SystemPrompt == "" || req.UserContent == "" {
 		t.Fatal("system and user prompts should both be populated")
 	}
-	if want := "You are a senior engineer performing a production-grade code review."; !strings.Contains(req.SystemPrompt, want) {
+	if want := "You are acting as a reviewer for a proposed code change made by another engineer."; !strings.Contains(req.SystemPrompt, want) {
 		t.Fatalf("system prompt = %q", req.SystemPrompt)
 	}
 	if contains := "Repository: repo"; !strings.Contains(req.UserContent, contains) {
 		t.Fatalf("user prompt missing %q: %q", contains, req.UserContent)
 	}
+}
+
+func intPtr(v int) *int {
+	return &v
 }

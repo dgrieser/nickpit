@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
 )
@@ -27,47 +26,56 @@ func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
 }
 
 func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
-	counts := map[model.Severity]int{}
+	counts := map[int]int{}
 	for _, finding := range result.Findings {
-		counts[finding.Severity]++
+		counts[model.PriorityRank(finding.Priority)]++
 	}
-	_, err := fmt.Fprintf(f.w, "NickPit Review\n\n%d findings (%d critical, %d error, %d warning, %d info)\n\n",
-		len(result.Findings), counts[model.SeverityCritical], counts[model.SeverityError], counts[model.SeverityWarning], counts[model.SeverityInfo],
+	_, err := fmt.Fprintf(f.w, "NickPit Review\n\n%d findings (%d P0, %d P1, %d P2, %d P3)\n\n",
+		len(result.Findings), counts[0], counts[1], counts[2], counts[3],
 	)
 	if err != nil {
 		return err
 	}
 	sort.Slice(result.Findings, func(i, j int) bool {
-		return model.SeverityRank(result.Findings[i].Severity) > model.SeverityRank(result.Findings[j].Severity)
+		return model.PriorityRank(result.Findings[i].Priority) < model.PriorityRank(result.Findings[j].Priority)
 	})
 	for _, finding := range result.Findings {
-		if _, err := fmt.Fprintf(f.w, "%s %s:%d-%d [%s]\n%s\nConfidence: %.2f\n\n",
-			f.colorize(strings.ToUpper(string(finding.Severity)), finding.Severity),
-			finding.FilePath, finding.StartLine, max(finding.EndLine, finding.StartLine),
-			finding.Category, finding.Title+"\n"+finding.Description, finding.Confidence,
+		if _, err := fmt.Fprintf(f.w, "%s %s:%d-%d\n%s\n%s\nConfidence: %.2f\n\n",
+			f.colorize(priorityLabel(finding.Priority), model.PriorityRank(finding.Priority)),
+			finding.CodeLocation.AbsoluteFilePath,
+			finding.CodeLocation.LineRange.Start,
+			max(finding.CodeLocation.LineRange.End, finding.CodeLocation.LineRange.Start),
+			finding.Title,
+			finding.Body,
+			finding.ConfidenceScore,
 		); err != nil {
 			return err
 		}
 	}
-	_, err = fmt.Fprintf(f.w, "Summary: %s\nTokens: %d prompt / %d completion / %d total\n",
-		result.Summary, result.TokensUsed.PromptTokens, result.TokensUsed.CompletionTokens, result.TokensUsed.TotalTokens)
+	_, err = fmt.Fprintf(f.w, "Overall: %s\n%s\nConfidence: %.2f\nTokens: %d prompt / %d completion / %d total\n",
+		result.OverallCorrectness, result.OverallExplanation, result.OverallConfidenceScore,
+		result.TokensUsed.PromptTokens, result.TokensUsed.CompletionTokens, result.TokensUsed.TotalTokens)
 	return err
 }
 
-func (f *TerminalFormatter) colorize(text string, severity model.Severity) string {
+func (f *TerminalFormatter) colorize(text string, priority int) string {
 	if !f.useANSI {
 		return text
 	}
 	code := "36"
-	switch severity {
-	case model.SeverityCritical:
+	switch priority {
+	case 0:
 		code = "1;31"
-	case model.SeverityError:
+	case 1:
 		code = "31"
-	case model.SeverityWarning:
+	case 2:
 		code = "33"
 	}
 	return "\x1b[" + code + "m" + text + "\x1b[0m"
+}
+
+func priorityLabel(priority *int) string {
+	return fmt.Sprintf("P%d", model.PriorityRank(priority))
 }
 
 func max(a, b int) int {

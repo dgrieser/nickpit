@@ -31,7 +31,7 @@ type app struct {
 	jsonOutput               bool
 	followUps                int
 	offline                  bool
-	severityThreshold        string
+	priorityThreshold        string
 	reviewSystemPromptFile   string
 	reviewUserPromptFile     string
 	followUpSystemPromptFile string
@@ -72,7 +72,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().IntVar(&cli.followUps, "followups", 1, "Maximum follow-up rounds")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
-	root.PersistentFlags().StringVar(&cli.severityThreshold, "severity-threshold", "info", "Minimum severity to display")
+	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.reviewSystemPromptFile, "review-system-prompt-file", "", "Custom review system prompt file")
 	root.PersistentFlags().StringVar(&cli.reviewUserPromptFile, "review-user-prompt-file", "", "Custom review user prompt file")
 	root.PersistentFlags().StringVar(&cli.followUpSystemPromptFile, "followup-system-prompt-file", "", "Custom follow-up system prompt file")
@@ -148,7 +148,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				IncludeFullFiles:         a.includeFullFiles,
 				MaxContextTokens:         profile.MaxContextTokens,
 				FollowUpRounds:           profile.DefaultFollowUps,
-				SeverityThreshold:        a.severityThreshold,
+				PriorityThreshold:        a.priorityThreshold,
 				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
 				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
 				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
@@ -194,7 +194,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				IncludeCommits:           a.includeCommits,
 				MaxContextTokens:         profile.MaxContextTokens,
 				FollowUpRounds:           profile.DefaultFollowUps,
-				SeverityThreshold:        a.severityThreshold,
+				PriorityThreshold:        a.priorityThreshold,
 				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
 				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
 				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
@@ -237,7 +237,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				IncludeCommits:           a.includeCommits,
 				MaxContextTokens:         profile.MaxContextTokens,
 				FollowUpRounds:           profile.DefaultFollowUps,
-				SeverityThreshold:        a.severityThreshold,
+				PriorityThreshold:        a.priorityThreshold,
 				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
 				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
 				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,

@@ -14,7 +14,7 @@ func TestClientReview(t *testing.T) {
 			"choices": []map[string]any{
 				{
 					"message": map[string]any{
-						"content": `{"findings":[{"severity":"warning","category":"bug","file_path":"main.go","title":"Issue","description":"Something is wrong","confidence":0.9}],"summary":"summary"}`,
+						"content": `{"findings":[{"title":"[P2] Flag issue","body":"Something is wrong","confidence_score":0.9,"priority":2,"code_location":{"absolute_file_path":"/tmp/main.go","line_range":{"start":10,"end":10}}}],"overall_correctness":"patch is incorrect","overall_explanation":"summary","overall_confidence_score":0.9}`,
 					},
 				},
 			},

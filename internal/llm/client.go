@@ -38,11 +38,13 @@ type ReviewRequest struct {
 }
 
 type ReviewResponse struct {
-	Findings         []model.Finding         `json:"findings"`
-	FollowUpRequests []model.FollowUpRequest `json:"follow_up_requests,omitempty"`
-	Summary          string                  `json:"summary"`
-	RawResponse      string                  `json:"raw_response,omitempty"`
-	TokensUsed       model.TokenUsage        `json:"tokens_used"`
+	Findings               []model.Finding         `json:"findings"`
+	FollowUpRequests       []model.FollowUpRequest `json:"follow_up_requests,omitempty"`
+	OverallCorrectness     string                  `json:"overall_correctness"`
+	OverallExplanation     string                  `json:"overall_explanation"`
+	OverallConfidenceScore float64                 `json:"overall_confidence_score"`
+	RawResponse            string                  `json:"raw_response,omitempty"`
+	TokensUsed             model.TokenUsage        `json:"tokens_used"`
 }
 
 type chatCompletionRequest struct {
@@ -180,17 +182,23 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		resp = &ReviewResponse{
 			Findings: []model.Finding{
 				{
-					ID:          "parse_error",
-					Severity:    model.SeverityWarning,
-					Category:    "parse",
-					FilePath:    "",
-					Title:       "Failed to parse model response",
-					Description: strings.TrimSpace(content),
-					Confidence:  0.2,
+					Title:           "[P2] Return valid review JSON",
+					Body:            "The model response could not be parsed as the configured review schema, so the review output is unusable until the prompt or schema alignment is fixed.",
+					ConfidenceScore: 0.2,
+					Priority:        intPtr(2),
+					CodeLocation: model.CodeLocation{
+						AbsoluteFilePath: "",
+						LineRange: model.LineRange{
+							Start: 1,
+							End:   1,
+						},
+					},
 				},
 			},
-			Summary:     "Model response could not be parsed as structured JSON.",
-			RawResponse: content,
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     strings.TrimSpace(content),
+			OverallConfidenceScore: 0.2,
+			RawResponse:            content,
 		}
 	}
 	resp.RawResponse = content
@@ -202,6 +210,10 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	c.logf("Parsed LLM response: findings=%d follow_up_requests=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(resp.Findings), len(resp.FollowUpRequests), resp.TokensUsed.PromptTokens, resp.TokensUsed.CompletionTokens, resp.TokensUsed.TotalTokens)
 	return resp, nil
+}
+
+func intPtr(v int) *int {
+	return &v
 }
 
 func (c *OpenAIClient) logf(format string, args ...any) {

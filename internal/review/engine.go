@@ -42,6 +42,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		return nil, err
 	}
 	e.logf("Resolved review context: title=%q changed_files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
+	reviewCtx.CheckoutRoot = req.RepoRoot
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
 		e.logf("Including full changed files in supplemental context")
@@ -127,17 +128,19 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		}
 	}
 
-	filtered := filterBySeverity(resp.Findings, req.SeverityThreshold)
-	e.logf("Review complete: findings_before_filter=%d findings_after_filter=%d threshold=%s", len(resp.Findings), len(filtered), req.SeverityThreshold)
+	filtered := filterByPriority(resp.Findings, req.PriorityThreshold)
+	e.logf("Review complete: findings_before_filter=%d findings_after_filter=%d threshold=%s", len(resp.Findings), len(filtered), req.PriorityThreshold)
 	return &model.ReviewResult{
-		Findings:      filtered,
-		Summary:       resp.Summary,
-		TokensUsed:    resp.TokensUsed,
-		Model:         e.config.Model,
-		Mode:          string(req.Mode),
-		Repo:          req.Repo,
-		Identifier:    req.Identifier,
-		FollowUpRound: req.FollowUpRounds,
+		Findings:               filtered,
+		OverallCorrectness:     resp.OverallCorrectness,
+		OverallExplanation:     resp.OverallExplanation,
+		OverallConfidenceScore: resp.OverallConfidenceScore,
+		TokensUsed:             resp.TokensUsed,
+		Model:                  e.config.Model,
+		Mode:                   string(req.Mode),
+		Repo:                   req.Repo,
+		Identifier:             req.Identifier,
+		FollowUpRound:          req.FollowUpRounds,
 	}, nil
 }
 
@@ -154,11 +157,11 @@ func (e *Engine) loadPrompt(path, fallback string) (string, error) {
 	return prompts.Load(fallback)
 }
 
-func filterBySeverity(findings []model.Finding, threshold string) []model.Finding {
-	minimum := model.SeverityRank(model.ParseSeverity(threshold))
+func filterByPriority(findings []model.Finding, threshold string) []model.Finding {
+	maxPriority := model.PriorityThresholdRank(threshold)
 	filtered := make([]model.Finding, 0, len(findings))
 	for _, finding := range findings {
-		if model.SeverityRank(finding.Severity) >= minimum {
+		if model.PriorityRank(finding.Priority) <= maxPriority {
 			filtered = append(filtered, finding)
 		}
 	}

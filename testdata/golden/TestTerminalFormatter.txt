@@ -1,11 +1,13 @@
 NickPit Review
 
-1 findings (0 critical, 0 error, 1 warning, 0 info)
+1 findings (0 P0, 0 P1, 1 P2, 0 P3)
 
-WARNING a.go:10-12 [bug]
-Problem
+P2 a.go:10-12
+[P2] Problem
 Description
 Confidence: 0.82
 
-Summary: Summary text
+Overall: patch is incorrect
+Summary text
+Confidence: 0.77
 Tokens: 10 prompt / 4 completion / 14 total

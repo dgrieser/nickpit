@@ -10,18 +10,27 @@ var FindingsSchema = json.RawMessage(`{
       "items": {
         "type": "object",
         "properties": {
-          "id": {"type": "string"},
-          "severity": {"type": "string", "enum": ["info","warning","error","critical"]},
-          "category": {"type": "string"},
-          "file_path": {"type": "string"},
-          "start_line": {"type": "integer"},
-          "end_line": {"type": "integer"},
           "title": {"type": "string"},
-          "description": {"type": "string"},
-          "suggestion": {"type": "string"},
-          "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+          "body": {"type": "string"},
+          "confidence_score": {"type": "number", "minimum": 0, "maximum": 1},
+          "priority": {"type": "integer", "minimum": 0, "maximum": 3},
+          "code_location": {
+            "type": "object",
+            "properties": {
+              "absolute_file_path": {"type": "string"},
+              "line_range": {
+                "type": "object",
+                "properties": {
+                  "start": {"type": "integer"},
+                  "end": {"type": "integer"}
+                },
+                "required": ["start","end"]
+              }
+            },
+            "required": ["absolute_file_path","line_range"]
+          }
         },
-        "required": ["severity","category","file_path","title","description","confidence"]
+        "required": ["title","body","confidence_score","code_location"]
       }
     },
     "follow_up_requests": {
@@ -40,7 +49,9 @@ var FindingsSchema = json.RawMessage(`{
         "required": ["type","reason"]
       }
     },
-    "summary": {"type": "string"}
+    "overall_correctness": {"type": "string", "enum": ["patch is correct","patch is incorrect"]},
+    "overall_explanation": {"type": "string"},
+    "overall_confidence_score": {"type": "number", "minimum": 0, "maximum": 1}
   },
-  "required": ["findings","summary"]
+  "required": ["findings","overall_correctness","overall_explanation","overall_confidence_score"]
 }`)

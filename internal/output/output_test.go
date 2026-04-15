@@ -14,9 +14,11 @@ func TestTerminalFormatter(t *testing.T) {
 	formatter := NewTerminalFormatter(&buf, false)
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
-			{Severity: model.SeverityWarning, Category: "bug", FilePath: "a.go", StartLine: 10, EndLine: 12, Title: "Problem", Description: "Description", Confidence: 0.82},
+			{Title: "[P2] Problem", Body: "Description", ConfidenceScore: 0.82, Priority: intPtr(2), CodeLocation: model.CodeLocation{AbsoluteFilePath: "a.go", LineRange: model.LineRange{Start: 10, End: 12}}},
 		},
-		Summary: "Summary text",
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     "Summary text",
+		OverallConfidenceScore: 0.77,
 		TokensUsed: model.TokenUsage{
 			PromptTokens:     10,
 			CompletionTokens: 4,
@@ -27,4 +29,8 @@ func TestTerminalFormatter(t *testing.T) {
 		t.Fatal(err)
 	}
 	testutil.AssertGolden(t, buf.String(), filepath.Join("..", "..", "testdata", "golden", "TestTerminalFormatter.txt"))
+}
+
+func intPtr(v int) *int {
+	return &v
 }
