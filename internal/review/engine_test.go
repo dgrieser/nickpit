@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -39,6 +40,15 @@ func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse,
 	}, nil
 }
 
+type capturingLLM struct {
+	reqs []*llm.ReviewRequest
+}
+
+func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	s.reqs = append(s.reqs, req)
+	return &llm.ReviewResponse{Summary: "summary"}, nil
+}
+
 func TestEngineSeverityFilter(t *testing.T) {
 	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
@@ -51,5 +61,35 @@ func TestEngineSeverityFilter(t *testing.T) {
 	}
 	if len(result.Findings) != 1 {
 		t.Fatalf("findings = %d", len(result.Findings))
+	}
+}
+
+func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+
+	req := llmClient.reqs[0]
+	if req.SystemPrompt == req.UserContent {
+		t.Fatal("system and user prompts should differ")
+	}
+	if req.SystemPrompt == "" || req.UserContent == "" {
+		t.Fatal("system and user prompts should both be populated")
+	}
+	if want := "You are a senior engineer performing a production-grade code review."; !strings.Contains(req.SystemPrompt, want) {
+		t.Fatalf("system prompt = %q", req.SystemPrompt)
+	}
+	if contains := "Repository: repo"; !strings.Contains(req.UserContent, contains) {
+		t.Fatalf("user prompt missing %q: %q", contains, req.UserContent)
 	}
 }

@@ -20,26 +20,29 @@ import (
 )
 
 type app struct {
-	model             string
-	baseURL           string
-	apiKey            string
-	profile           string
-	maxContextTokens  int
-	includeFullFiles  bool
-	includeComments   bool
-	includeCommits    bool
-	jsonOutput        bool
-	followUps         int
-	offline           bool
-	severityThreshold string
-	promptFile        string
-	configPath        string
-	localRepo         string
-	githubToken       string
-	gitlabToken       string
-	gitlabBaseURL     string
-	verbose           bool
-	logger            *debuglog.Logger
+	model                    string
+	baseURL                  string
+	apiKey                   string
+	profile                  string
+	maxContextTokens         int
+	includeFullFiles         bool
+	includeComments          bool
+	includeCommits           bool
+	jsonOutput               bool
+	followUps                int
+	offline                  bool
+	severityThreshold        string
+	reviewSystemPromptFile   string
+	reviewUserPromptFile     string
+	followUpSystemPromptFile string
+	followUpUserPromptFile   string
+	configPath               string
+	localRepo                string
+	githubToken              string
+	gitlabToken              string
+	gitlabBaseURL            string
+	verbose                  bool
+	logger                   *debuglog.Logger
 }
 
 func main() {
@@ -52,8 +55,10 @@ func main() {
 func newRootCmd() *cobra.Command {
 	cli := &app{}
 	root := &cobra.Command{
-		Use:   "nickpit",
-		Short: "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
+		Use:           "nickpit",
+		Short:         "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 
 	root.PersistentFlags().StringVar(&cli.model, "model", "", "Model identifier")
@@ -68,7 +73,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().IntVar(&cli.followUps, "followups", 1, "Maximum follow-up rounds")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.severityThreshold, "severity-threshold", "info", "Minimum severity to display")
-	root.PersistentFlags().StringVar(&cli.promptFile, "prompt-file", "", "Custom prompt file")
+	root.PersistentFlags().StringVar(&cli.reviewSystemPromptFile, "review-system-prompt-file", "", "Custom review system prompt file")
+	root.PersistentFlags().StringVar(&cli.reviewUserPromptFile, "review-user-prompt-file", "", "Custom review user prompt file")
+	root.PersistentFlags().StringVar(&cli.followUpSystemPromptFile, "followup-system-prompt-file", "", "Custom follow-up system prompt file")
+	root.PersistentFlags().StringVar(&cli.followUpUserPromptFile, "followup-user-prompt-file", "", "Custom follow-up user prompt file")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
 	root.PersistentFlags().StringVar(&cli.localRepo, "local-repo", "", "Use an existing local clone for remote retrieval instead of cloning")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
@@ -86,17 +94,20 @@ func newRootCmd() *cobra.Command {
 
 func (a *app) loadProfile() (string, config.Profile, error) {
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile:          a.profile,
-		Model:            a.model,
-		BaseURL:          a.baseURL,
-		APIKey:           a.apiKey,
-		MaxContextTokens: a.maxContextTokens,
-		FollowUps:        a.followUps,
-		LocalRepo:        a.localRepo,
-		GitHubToken:      a.githubToken,
-		GitLabToken:      a.gitlabToken,
-		GitLabBaseURL:    a.gitlabBaseURL,
-		PromptFile:       a.promptFile,
+		Profile:                  a.profile,
+		Model:                    a.model,
+		BaseURL:                  a.baseURL,
+		APIKey:                   a.apiKey,
+		MaxContextTokens:         a.maxContextTokens,
+		FollowUps:                a.followUps,
+		LocalRepo:                a.localRepo,
+		GitHubToken:              a.githubToken,
+		GitLabToken:              a.gitlabToken,
+		GitLabBaseURL:            a.gitlabBaseURL,
+		ReviewSystemPromptFile:   a.reviewSystemPromptFile,
+		ReviewUserPromptFile:     a.reviewUserPromptFile,
+		FollowUpSystemPromptFile: a.followUpSystemPromptFile,
+		FollowUpUserPromptFile:   a.followUpUserPromptFile,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -127,19 +138,22 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				return err
 			}
 			req := model.ReviewRequest{
-				Mode:              model.ModeLocal,
-				RepoRoot:          repoRoot,
-				LocalRepo:         profile.LocalRepo,
-				BaseRef:           firstNonEmpty(base, from),
-				HeadRef:           firstNonEmpty(head, to),
-				IncludeComments:   a.includeComments,
-				IncludeCommits:    a.includeCommits,
-				IncludeFullFiles:  a.includeFullFiles,
-				MaxContextTokens:  profile.MaxContextTokens,
-				FollowUpRounds:    profile.DefaultFollowUps,
-				SeverityThreshold: a.severityThreshold,
-				PromptOverride:    a.promptFile,
-				Submode:           submode,
+				Mode:                     model.ModeLocal,
+				RepoRoot:                 repoRoot,
+				LocalRepo:                profile.LocalRepo,
+				BaseRef:                  firstNonEmpty(base, from),
+				HeadRef:                  firstNonEmpty(head, to),
+				IncludeComments:          a.includeComments,
+				IncludeCommits:           a.includeCommits,
+				IncludeFullFiles:         a.includeFullFiles,
+				MaxContextTokens:         profile.MaxContextTokens,
+				FollowUpRounds:           profile.DefaultFollowUps,
+				SeverityThreshold:        a.severityThreshold,
+				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
+				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
+				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
+				FollowUpUserPromptFile:   profile.FollowUpUserPromptFile,
+				Submode:                  submode,
 			}
 			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -172,17 +186,20 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			}
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
 			req := model.ReviewRequest{
-				Mode:              model.ModeGitHub,
-				LocalRepo:         profile.LocalRepo,
-				Repo:              repo,
-				Identifier:        pr,
-				IncludeComments:   a.includeComments,
-				IncludeCommits:    a.includeCommits,
-				MaxContextTokens:  profile.MaxContextTokens,
-				FollowUpRounds:    profile.DefaultFollowUps,
-				SeverityThreshold: a.severityThreshold,
-				PromptOverride:    a.promptFile,
-				Offline:           a.offline,
+				Mode:                     model.ModeGitHub,
+				LocalRepo:                profile.LocalRepo,
+				Repo:                     repo,
+				Identifier:               pr,
+				IncludeComments:          a.includeComments,
+				IncludeCommits:           a.includeCommits,
+				MaxContextTokens:         profile.MaxContextTokens,
+				FollowUpRounds:           profile.DefaultFollowUps,
+				SeverityThreshold:        a.severityThreshold,
+				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
+				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
+				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
+				FollowUpUserPromptFile:   profile.FollowUpUserPromptFile,
+				Offline:                  a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -212,17 +229,20 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			}
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
 			req := model.ReviewRequest{
-				Mode:              model.ModeGitLab,
-				LocalRepo:         profile.LocalRepo,
-				Repo:              project,
-				Identifier:        mr,
-				IncludeComments:   a.includeComments,
-				IncludeCommits:    a.includeCommits,
-				MaxContextTokens:  profile.MaxContextTokens,
-				FollowUpRounds:    profile.DefaultFollowUps,
-				SeverityThreshold: a.severityThreshold,
-				PromptOverride:    a.promptFile,
-				Offline:           a.offline,
+				Mode:                     model.ModeGitLab,
+				LocalRepo:                profile.LocalRepo,
+				Repo:                     project,
+				Identifier:               mr,
+				IncludeComments:          a.includeComments,
+				IncludeCommits:           a.includeCommits,
+				MaxContextTokens:         profile.MaxContextTokens,
+				FollowUpRounds:           profile.DefaultFollowUps,
+				SeverityThreshold:        a.severityThreshold,
+				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
+				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
+				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
+				FollowUpUserPromptFile:   profile.FollowUpUserPromptFile,
+				Offline:                  a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},

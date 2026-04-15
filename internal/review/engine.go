@@ -69,11 +69,15 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	trimmed := trimmer.Trim(reviewCtx)
 	e.logf("Trimmed review context: changed_files=%d supplemental=%d omitted_sections=%d token_budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	e.logJSON("Rendered review context JSON:", trimmed)
-	systemPrompt, err := e.loadPrompt(req.PromptOverride, "default_review.tmpl")
+	systemPrompt, err := e.loadPrompt(req.ReviewSystemPromptFile, "review_system.tmpl")
 	if err != nil {
 		return nil, err
 	}
-	userPrompt, err := llm.RenderPrompt(systemPrompt, trimmed)
+	userTemplate, err := e.loadPrompt(req.ReviewUserPromptFile, "review_user.tmpl")
+	if err != nil {
+		return nil, err
+	}
+	userPrompt, err := llm.RenderPrompt(userTemplate, trimmed)
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering review prompt: %w", err)
 	}
@@ -103,7 +107,11 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		e.logf("Trimmed context after follow-up round %d: supplemental=%d omitted_sections=%d", round+1, len(trimmed.SupplementalContext), len(trimmed.OmittedSections))
 		e.logJSON("Rendered follow-up context JSON:", trimmed)
 
-		followupTemplate, err := e.loadPrompt("", "followup_request.tmpl")
+		systemPrompt, err = e.loadPrompt(req.FollowUpSystemPromptFile, "followup_system.tmpl")
+		if err != nil {
+			return nil, err
+		}
+		followupTemplate, err := e.loadPrompt(req.FollowUpUserPromptFile, "followup_user.tmpl")
 		if err != nil {
 			return nil, err
 		}
@@ -111,6 +119,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		if err != nil {
 			return nil, fmt.Errorf("review: rendering follow-up prompt: %w", err)
 		}
+		llmReq.SystemPrompt = systemPrompt
 		llmReq.UserContent = userPrompt
 		resp, err = e.llm.Review(ctx, llmReq)
 		if err != nil {
@@ -132,11 +141,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	}, nil
 }
 
-func (e *Engine) loadPrompt(override, fallback string) (string, error) {
-	path := override
-	if path == "" {
-		path = e.config.PromptFile
-	}
+func (e *Engine) loadPrompt(path, fallback string) (string, error) {
 	if path != "" {
 		e.logf("Loading prompt override from %s", path)
 		data, err := os.ReadFile(path)

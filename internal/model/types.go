@@ -33,22 +33,25 @@ const (
 )
 
 type ReviewRequest struct {
-	Mode              ReviewMode
-	RepoRoot          string
-	LocalRepo         string
-	Repo              string
-	Identifier        int
-	BaseRef           string
-	HeadRef           string
-	IncludeComments   bool
-	IncludeCommits    bool
-	IncludeFullFiles  bool
-	MaxContextTokens  int
-	FollowUpRounds    int
-	SeverityThreshold string
-	PromptOverride    string
-	Offline           bool
-	Submode           string
+	Mode                     ReviewMode
+	RepoRoot                 string
+	LocalRepo                string
+	Repo                     string
+	Identifier               int
+	BaseRef                  string
+	HeadRef                  string
+	IncludeComments          bool
+	IncludeCommits           bool
+	IncludeFullFiles         bool
+	MaxContextTokens         int
+	FollowUpRounds           int
+	SeverityThreshold        string
+	ReviewSystemPromptFile   string
+	ReviewUserPromptFile     string
+	FollowUpSystemPromptFile string
+	FollowUpUserPromptFile   string
+	Offline                  bool
+	Submode                  string
 }
 
 type ReviewResult struct {

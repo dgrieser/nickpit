@@ -41,8 +41,17 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.GitLabBaseURL != "" {
 		base.GitLabBaseURL = override.GitLabBaseURL
 	}
-	if override.PromptFile != "" {
-		base.PromptFile = override.PromptFile
+	if override.ReviewSystemPromptFile != "" {
+		base.ReviewSystemPromptFile = override.ReviewSystemPromptFile
+	}
+	if override.ReviewUserPromptFile != "" {
+		base.ReviewUserPromptFile = override.ReviewUserPromptFile
+	}
+	if override.FollowUpSystemPromptFile != "" {
+		base.FollowUpSystemPromptFile = override.FollowUpSystemPromptFile
+	}
+	if override.FollowUpUserPromptFile != "" {
+		base.FollowUpUserPromptFile = override.FollowUpUserPromptFile
 	}
 	return normalizeProfile(base)
 }

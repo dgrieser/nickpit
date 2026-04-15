@@ -25,31 +25,37 @@ type Config struct {
 }
 
 type Profile struct {
-	Model            string `yaml:"model"`
-	BaseURL          string `yaml:"base_url"`
-	APIKey           string `yaml:"api_key"`
-	MaxContextTokens int    `yaml:"max_context_tokens"`
-	DefaultFollowUps int    `yaml:"default_followups"`
-	LocalRepo        string `yaml:"local_repo"`
-	GitHubToken      string `yaml:"github_token"`
-	GitLabToken      string `yaml:"gitlab_token"`
-	GitLabBaseURL    string `yaml:"gitlab_base_url"`
-	PromptFile       string `yaml:"prompt_file"`
-	APIKeyConfigured bool   `yaml:"-"`
+	Model                    string `yaml:"model"`
+	BaseURL                  string `yaml:"base_url"`
+	APIKey                   string `yaml:"api_key"`
+	MaxContextTokens         int    `yaml:"max_context_tokens"`
+	DefaultFollowUps         int    `yaml:"default_followups"`
+	LocalRepo                string `yaml:"local_repo"`
+	GitHubToken              string `yaml:"github_token"`
+	GitLabToken              string `yaml:"gitlab_token"`
+	GitLabBaseURL            string `yaml:"gitlab_base_url"`
+	ReviewSystemPromptFile   string `yaml:"review_system_prompt_file"`
+	ReviewUserPromptFile     string `yaml:"review_user_prompt_file"`
+	FollowUpSystemPromptFile string `yaml:"followup_system_prompt_file"`
+	FollowUpUserPromptFile   string `yaml:"followup_user_prompt_file"`
+	APIKeyConfigured         bool   `yaml:"-"`
 }
 
 type Overrides struct {
-	Profile          string
-	Model            string
-	BaseURL          string
-	APIKey           string
-	MaxContextTokens int
-	FollowUps        int
-	LocalRepo        string
-	GitHubToken      string
-	GitLabToken      string
-	GitLabBaseURL    string
-	PromptFile       string
+	Profile                  string
+	Model                    string
+	BaseURL                  string
+	APIKey                   string
+	MaxContextTokens         int
+	FollowUps                int
+	LocalRepo                string
+	GitHubToken              string
+	GitLabToken              string
+	GitLabBaseURL            string
+	ReviewSystemPromptFile   string
+	ReviewUserPromptFile     string
+	FollowUpSystemPromptFile string
+	FollowUpUserPromptFile   string
 }
 
 func DefaultConfig() *Config {
@@ -182,8 +188,17 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	if overrides.GitLabBaseURL != "" {
 		profile.GitLabBaseURL = overrides.GitLabBaseURL
 	}
-	if overrides.PromptFile != "" {
-		profile.PromptFile = overrides.PromptFile
+	if overrides.ReviewSystemPromptFile != "" {
+		profile.ReviewSystemPromptFile = overrides.ReviewSystemPromptFile
+	}
+	if overrides.ReviewUserPromptFile != "" {
+		profile.ReviewUserPromptFile = overrides.ReviewUserPromptFile
+	}
+	if overrides.FollowUpSystemPromptFile != "" {
+		profile.FollowUpSystemPromptFile = overrides.FollowUpSystemPromptFile
+	}
+	if overrides.FollowUpUserPromptFile != "" {
+		profile.FollowUpUserPromptFile = overrides.FollowUpUserPromptFile
 	}
 	return normalizeProfile(profile)
 }
@@ -207,9 +222,10 @@ func normalizeProfile(profile Profile) Profile {
 	if profile.GitLabBaseURL == "" {
 		profile.GitLabBaseURL = "https://gitlab.com/api/v4"
 	}
-	if profile.PromptFile != "" {
-		profile.PromptFile = expandPath(profile.PromptFile)
-	}
+	profile.ReviewSystemPromptFile = expandPath(profile.ReviewSystemPromptFile)
+	profile.ReviewUserPromptFile = expandPath(profile.ReviewUserPromptFile)
+	profile.FollowUpSystemPromptFile = expandPath(profile.FollowUpSystemPromptFile)
+	profile.FollowUpUserPromptFile = expandPath(profile.FollowUpUserPromptFile)
 	return profile
 }
 

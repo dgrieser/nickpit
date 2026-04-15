@@ -10,6 +10,10 @@ profiles:
     github_token: ${GITHUB_TOKEN}
     gitlab_token: ${GITLAB_TOKEN}
     gitlab_base_url: ${GITLAB_BASE_URL}
+    review_system_prompt_file: ~/prompts/review_system.tmpl
+    review_user_prompt_file: ~/prompts/review_user.tmpl
+    followup_system_prompt_file: ~/prompts/followup_system.tmpl
+    followup_user_prompt_file: ~/prompts/followup_user.tmpl
   local-llama:
     model: llama3
     base_url: http://localhost:11434/v1

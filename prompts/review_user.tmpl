@@ -1,0 +1,30 @@
+Repository: {{.Repository.FullName}}
+Mode: {{.Mode}}
+Title: {{.Title}}
+Description:
+{{.Description}}
+
+{{if .Commits}}Commits:
+{{range .Commits}}- {{.SHA}} {{.Message}} ({{.Author}})
+{{end}}
+{{end}}
+{{if .Comments}}Existing comments:
+{{range .Comments}}- [{{.Author}}] {{if .Path}}{{.Path}}:{{.Line}} {{end}}{{.Body}}
+{{end}}
+{{end}}
+Changed files:
+{{range .ChangedFiles}}- {{.Status}} {{.Path}} (+{{.Additions}}/-{{.Deletions}})
+{{end}}
+
+Diff:
+```diff
+{{.Diff}}
+```
+
+{{if .SupplementalContext}}Additional context:
+{{range .SupplementalContext}}### {{.Kind}} {{.Path}}{{if .StartLine}} (lines {{.StartLine}}-{{.EndLine}}){{end}}
+```{{.Language}}
+{{.Content}}
+```
+{{end}}
+{{end}}

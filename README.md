@@ -49,6 +49,13 @@ nickpit retrieve function-stack --symbol Run --direction callees --depth 3
 
 `--verbose` and `--debug` are aliases. They print step-by-step execution details to stderr, prefixed with `+ ` in grey when ANSI colors are enabled, including prompt rendering and raw LLM request/response payloads.
 
+Prompt overrides are split by role:
+
+- `--review-system-prompt-file`
+- `--review-user-prompt-file`
+- `--followup-system-prompt-file`
+- `--followup-user-prompt-file`
+
 ## Development
 
 ```bash
