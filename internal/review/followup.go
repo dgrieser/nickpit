@@ -52,7 +52,7 @@ func ExecuteRetrievals(
 				Reason:    req.Reason,
 			})
 		case "function":
-			info, err := engine.GetSymbol(ctx, repoRoot, req.Symbol)
+			info, err := engine.GetSymbol(ctx, repoRoot, retrieval.SymbolRef{Name: req.Symbol, Path: req.Path})
 			if err != nil {
 				results = append(results, retrievalError(req, err))
 				continue
@@ -67,7 +67,7 @@ func ExecuteRetrievals(
 				Reason:    req.Reason,
 			})
 		case "callers":
-			hierarchy, err := engine.FindCallers(ctx, repoRoot, retrieval.SymbolRef{Name: req.Symbol}, reqDepth(req.Depth))
+			hierarchy, err := engine.FindCallers(ctx, repoRoot, retrieval.SymbolRef{Name: req.Symbol, Path: req.Path}, reqDepth(req.Depth))
 			if err != nil {
 				results = append(results, retrievalError(req, err))
 				continue
@@ -79,7 +79,7 @@ func ExecuteRetrievals(
 				Reason:  req.Reason,
 			})
 		case "callees":
-			hierarchy, err := engine.FindCallees(ctx, repoRoot, retrieval.SymbolRef{Name: req.Symbol}, reqDepth(req.Depth))
+			hierarchy, err := engine.FindCallees(ctx, repoRoot, retrieval.SymbolRef{Name: req.Symbol, Path: req.Path}, reqDepth(req.Depth))
 			if err != nil {
 				results = append(results, retrievalError(req, err))
 				continue

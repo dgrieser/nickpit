@@ -53,7 +53,8 @@ func BuildGraph(_ context.Context, repoRoot string) (*Graph, error) {
 				return true
 			}
 			name := fn.Name.Name
-			graph.nodes[name] = Node{
+			key := nodeKey(name, rel)
+			graph.nodes[key] = Node{
 				Name:      name,
 				Path:      filepath.ToSlash(rel),
 				StartLine: fset.Position(fn.Pos()).Line,
@@ -68,8 +69,8 @@ func BuildGraph(_ context.Context, repoRoot string) (*Graph, error) {
 				if callee == "" {
 					return true
 				}
-				addEdge(graph.callees, name, callee)
-				addEdge(graph.callers, callee, name)
+				addEdge(graph.callees, key, callee)
+				addEdge(graph.callers, callee, key)
 				return true
 			})
 			return false
@@ -85,20 +86,24 @@ func BuildGraph(_ context.Context, repoRoot string) (*Graph, error) {
 	return graph, nil
 }
 
-func (g *Graph) Find(name string, depth int, reverse bool) (*Hierarchy, error) {
-	root, ok := g.nodes[name]
+func (g *Graph) Find(name, path string, depth int, reverse bool) (*Hierarchy, error) {
+	key := g.resolveKey(name, path)
+	root, ok := g.nodes[key]
 	if !ok {
+		if path != "" {
+			return nil, fmt.Errorf("symbol %q not found in %q", name, path)
+		}
 		return nil, fmt.Errorf("symbol %q not found", name)
 	}
 	if depth <= 0 {
 		depth = 1
 	}
-	seen := map[string]struct{}{name: {}}
+	seen := map[string]struct{}{key: {}}
 	mode := "callees"
 	if reverse {
 		mode = "callers"
 	}
-	root.Children = g.expand(name, depth, reverse, seen)
+	root.Children = g.expand(key, depth, reverse, seen)
 	return &Hierarchy{
 		Root:  root,
 		Mode:  mode,
@@ -121,19 +126,46 @@ func (g *Graph) expand(name string, depth int, reverse bool, seen map[string]str
 	sort.Strings(names)
 	var out []Node
 	for _, childName := range names {
-		if _, exists := seen[childName]; exists {
+		childKey, node, ok := g.lookupNode(childName)
+		if _, exists := seen[childKey]; exists {
 			continue
 		}
-		node, ok := g.nodes[childName]
 		if !ok {
 			continue
 		}
 		nextSeen := copySeen(seen)
-		nextSeen[childName] = struct{}{}
-		node.Children = g.expand(childName, depth-1, reverse, nextSeen)
+		nextSeen[childKey] = struct{}{}
+		node.Children = g.expand(childKey, depth-1, reverse, nextSeen)
 		out = append(out, node)
 	}
 	return out
+}
+
+func (g *Graph) resolveKey(name, path string) string {
+	if path != "" {
+		return nodeKey(name, path)
+	}
+	if _, ok := g.nodes[name]; ok {
+		return name
+	}
+	for key, node := range g.nodes {
+		if node.Name == name {
+			return key
+		}
+	}
+	return name
+}
+
+func (g *Graph) lookupNode(key string) (string, Node, bool) {
+	if node, ok := g.nodes[key]; ok {
+		return key, node, true
+	}
+	for candidateKey, node := range g.nodes {
+		if node.Name == key {
+			return candidateKey, node, true
+		}
+	}
+	return "", Node{}, false
 }
 
 func addEdge(index map[string]map[string]struct{}, from, to string) {
@@ -141,6 +173,14 @@ func addEdge(index map[string]map[string]struct{}, from, to string) {
 		index[from] = map[string]struct{}{}
 	}
 	index[from][to] = struct{}{}
+}
+
+func nodeKey(name, path string) string {
+	path = filepath.ToSlash(path)
+	if path == "" {
+		return name
+	}
+	return path + ":" + name
 }
 
 func exprName(expr ast.Expr) string {

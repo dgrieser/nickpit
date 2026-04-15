@@ -41,10 +41,10 @@ nickpit gitlab mr --project group/project --mr 456
 nickpit local uncommitted --verbose
 nickpit github pr --repo owner/repo --pr 123 --debug
 
-nickpit retrieve file --path internal/review/engine.go
-nickpit retrieve lines --path internal/review/engine.go --start 1 --end 80
-nickpit retrieve callers --symbol Run --depth 2
-nickpit retrieve function-stack --symbol Run --direction callees --depth 3
+nickpit inspect file --path internal/review/engine.go
+nickpit inspect lines --path internal/review/engine.go --start 1 --end 80
+nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2
+nickpit inspect callees --path internal/review/engine.go --symbol Run --depth 3
 ```
 
 `--verbose` and `--debug` are aliases. They print step-by-step execution details to stderr, prefixed with `+ ` in grey when ANSI colors are enabled, including prompt rendering and raw LLM request/response payloads.
@@ -57,6 +57,8 @@ Prompt overrides are split by role:
 - `--followup-user-prompt-file`
 
 Review output filtering uses `--priority-threshold` with `p0` through `p3`, where `p0` is highest priority and `p3` is lowest.
+
+`inspect` is the standalone retrieval command tree for using retrieval without review.
 
 ## Development
 

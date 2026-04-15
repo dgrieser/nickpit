@@ -29,46 +29,22 @@ var patterns = []struct {
 	{language: "java", extensions: set(".java"), def: regexp.MustCompile(`^\s*(?:public|private|protected)?\s*(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\(`)},
 }
 
-func FindSymbol(_ context.Context, repoRoot, name string) (*Symbol, error) {
+func FindSymbol(_ context.Context, repoRoot, name, path string) (*Symbol, error) {
 	var result *Symbol
+	if path != "" {
+		fullPath := filepath.Join(repoRoot, path)
+		result = findSymbolInFile(repoRoot, fullPath, name)
+		if result == nil {
+			return nil, fmt.Errorf("symbol %q not found in %q", name, path)
+		}
+		return result, nil
+	}
 	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		ext := filepath.Ext(path)
-		pattern := findPattern(ext)
-		if pattern == nil {
-			return nil
-		}
-		data, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
-		lines := strings.Split(string(data), "\n")
-		for idx, line := range lines {
-			matches := pattern.def.FindStringSubmatch(line)
-			if len(matches) == 0 {
-				continue
-			}
-			funcName := firstNonEmpty(matches[1:]...)
-			if funcName != name {
-				continue
-			}
-			end := idx + 1
-			for ; end < len(lines); end++ {
-				if strings.TrimSpace(lines[end]) == "" {
-					break
-				}
-			}
-			rel, _ := filepath.Rel(repoRoot, path)
-			result = &Symbol{
-				Name:      name,
-				Path:      filepath.ToSlash(rel),
-				StartLine: idx + 1,
-				EndLine:   end,
-				Source:    strings.Join(lines[idx:end], "\n"),
-				Language:  pattern.language,
-			}
+		result = findSymbolInFile(repoRoot, path, name)
+		if result != nil {
 			return filepath.SkipAll
 		}
 		return nil
@@ -80,6 +56,45 @@ func FindSymbol(_ context.Context, repoRoot, name string) (*Symbol, error) {
 		return nil, fmt.Errorf("symbol %q not found", name)
 	}
 	return result, nil
+}
+
+func findSymbolInFile(repoRoot, path, name string) *Symbol {
+	ext := filepath.Ext(path)
+	pattern := findPattern(ext)
+	if pattern == nil {
+		return nil
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	for idx, line := range lines {
+		matches := pattern.def.FindStringSubmatch(line)
+		if len(matches) == 0 {
+			continue
+		}
+		funcName := firstNonEmpty(matches[1:]...)
+		if funcName != name {
+			continue
+		}
+		end := idx + 1
+		for ; end < len(lines); end++ {
+			if strings.TrimSpace(lines[end]) == "" {
+				break
+			}
+		}
+		rel, _ := filepath.Rel(repoRoot, path)
+		return &Symbol{
+			Name:      name,
+			Path:      filepath.ToSlash(rel),
+			StartLine: idx + 1,
+			EndLine:   end,
+			Source:    strings.Join(lines[idx:end], "\n"),
+			Language:  pattern.language,
+		}
+	}
+	return nil
 }
 
 func findPattern(ext string) *struct {

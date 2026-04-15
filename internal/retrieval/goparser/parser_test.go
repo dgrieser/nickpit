@@ -18,7 +18,7 @@ func beta() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	symbol, err := FindSymbol(context.Background(), dir, "beta")
+	symbol, err := FindSymbol(context.Background(), dir, "beta", "main.go")
 	if err != nil {
 		t.Fatal(err)
 	}

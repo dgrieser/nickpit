@@ -15,7 +15,7 @@ const (
 	DefaultModel           = "openai/gpt-oss-120b:free"
 	DefaultBaseURL         = "https://openrouter.ai/api/v1"
 	DefaultMaxContextToken = 120000
-	DefaultFollowUps       = 1
+	DefaultFollowUps       = 5
 	DefaultConfigPath      = ".nickpit.yaml"
 )
 

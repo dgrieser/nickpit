@@ -12,12 +12,12 @@ import (
 func (e *LocalEngine) FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error) {
 	graph, err := goparser.BuildGraph(ctx, repoRoot)
 	if err == nil && graph != nil {
-		hierarchy, findErr := graph.Find(symbol.Name, depth, true)
+		hierarchy, findErr := graph.Find(symbol.Name, symbol.Path, depth, true)
 		if findErr == nil {
 			return convertHierarchy(hierarchy), nil
 		}
 	}
-	info, err := fallback.FindSymbol(ctx, repoRoot, symbol.Name)
+	info, err := fallback.FindSymbol(ctx, repoRoot, symbol.Name, symbol.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -36,12 +36,12 @@ func (e *LocalEngine) FindCallers(ctx context.Context, repoRoot string, symbol S
 func (e *LocalEngine) FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error) {
 	graph, err := goparser.BuildGraph(ctx, repoRoot)
 	if err == nil && graph != nil {
-		hierarchy, findErr := graph.Find(symbol.Name, depth, false)
+		hierarchy, findErr := graph.Find(symbol.Name, symbol.Path, depth, false)
 		if findErr == nil {
 			return convertHierarchy(hierarchy), nil
 		}
 	}
-	info, err := fallback.FindSymbol(ctx, repoRoot, symbol.Name)
+	info, err := fallback.FindSymbol(ctx, repoRoot, symbol.Name, symbol.Path)
 	if err != nil {
 		return nil, err
 	}

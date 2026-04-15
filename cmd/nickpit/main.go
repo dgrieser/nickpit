@@ -70,7 +70,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
-	root.PersistentFlags().IntVar(&cli.followUps, "followups", 1, "Maximum follow-up rounds")
+	root.PersistentFlags().IntVar(&cli.followUps, "followups", 5, "Maximum follow-up rounds")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.reviewSystemPromptFile, "review-system-prompt-file", "", "Custom review system prompt file")
@@ -88,7 +88,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
 	root.AddCommand(cli.newGitLabCmd())
-	root.AddCommand(cli.newRetrieveCmd())
+	root.AddCommand(cli.newInspectCmd())
 	return root
 }
 
@@ -255,8 +255,12 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *app) newRetrieveCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "retrieve", Short: "Inspect retrieval engine output"}
+func (a *app) newInspectCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "inspect",
+		Short:   "Use retrieval features without running review",
+		Long:    "Use retrieval features directly against the current repository without running an LLM review.",
+	}
 	engine := retrieval.NewLocalEngine()
 
 	var path string
@@ -299,34 +303,8 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 	linesCmd.Flags().IntVar(&end, "end", 1, "End line")
 	_ = linesCmd.MarkFlagRequired("path")
 
-	var symbol, direction string
-	var depth int
-	stackCmd := &cobra.Command{
-		Use:   "function-stack",
-		Short: "Retrieve caller or callee hierarchy",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			repoRoot, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-			var hierarchy *retrieval.CallHierarchy
-			if direction == "callers" {
-				hierarchy, err = engine.FindCallers(context.Background(), repoRoot, retrieval.SymbolRef{Name: symbol}, depth)
-			} else {
-				hierarchy, err = engine.FindCallees(context.Background(), repoRoot, retrieval.SymbolRef{Name: symbol}, depth)
-			}
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(os.Stdout, hierarchy.Render())
-			return nil
-		},
-	}
-	stackCmd.Flags().StringVar(&symbol, "symbol", "", "Function name")
-	stackCmd.Flags().StringVar(&direction, "direction", "callers", "callers or callees")
-	stackCmd.Flags().IntVar(&depth, "depth", 2, "Traversal depth")
-	_ = stackCmd.MarkFlagRequired("symbol")
-
+	var callersSymbol, callersPath string
+	var callersDepth int
 	callersCmd := &cobra.Command{
 		Use:   "callers",
 		Short: "Retrieve callers",
@@ -335,7 +313,7 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			hierarchy, err := engine.FindCallers(context.Background(), repoRoot, retrieval.SymbolRef{Name: symbol}, depth)
+			hierarchy, err := engine.FindCallers(context.Background(), repoRoot, retrieval.SymbolRef{Name: callersSymbol, Path: callersPath}, callersDepth)
 			if err != nil {
 				return err
 			}
@@ -343,10 +321,14 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 			return nil
 		},
 	}
-	callersCmd.Flags().StringVar(&symbol, "symbol", "", "Function name")
-	callersCmd.Flags().IntVar(&depth, "depth", 2, "Traversal depth")
+	callersCmd.Flags().StringVar(&callersSymbol, "symbol", "", "Function name")
+	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file path containing the function")
+	callersCmd.Flags().IntVar(&callersDepth, "depth", 2, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
+	_ = callersCmd.MarkFlagRequired("path")
 
+	var calleesSymbol, calleesPath string
+	var calleesDepth int
 	calleesCmd := &cobra.Command{
 		Use:   "callees",
 		Short: "Retrieve callees",
@@ -355,7 +337,7 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			hierarchy, err := engine.FindCallees(context.Background(), repoRoot, retrieval.SymbolRef{Name: symbol}, depth)
+			hierarchy, err := engine.FindCallees(context.Background(), repoRoot, retrieval.SymbolRef{Name: calleesSymbol, Path: calleesPath}, calleesDepth)
 			if err != nil {
 				return err
 			}
@@ -363,11 +345,13 @@ func (a *app) newRetrieveCmd() *cobra.Command {
 			return nil
 		},
 	}
-	calleesCmd.Flags().StringVar(&symbol, "symbol", "", "Function name")
-	calleesCmd.Flags().IntVar(&depth, "depth", 2, "Traversal depth")
+	calleesCmd.Flags().StringVar(&calleesSymbol, "symbol", "", "Function name")
+	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file path containing the function")
+	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 2, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
+	_ = calleesCmd.MarkFlagRequired("path")
 
-	cmd.AddCommand(fileCmd, linesCmd, callersCmd, calleesCmd, stackCmd)
+	cmd.AddCommand(fileCmd, linesCmd, callersCmd, calleesCmd)
 	return cmd
 }
 

@@ -26,3 +26,4 @@ Use these priority levels:
 At the end, decide whether the patch is correct. "patch is correct" means the patch is free of blocking issues and should not break existing code or tests. Otherwise return "patch is incorrect".
 
 Produce JSON only and follow the provided schema exactly. If more context is required before you can decide, include precise optional `follow_up_requests` and keep them limited to the specific code needed. Do not repeat unchanged findings across follow-up rounds.
+For `function`, `callers`, and `callees` follow-up requests, include both `symbol` and `path` so retrieval targets the correct function definition.

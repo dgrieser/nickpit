@@ -9,8 +9,8 @@ import (
 	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 )
 
-func (e *LocalEngine) GetSymbol(ctx context.Context, repoRoot string, symbol string) (*SymbolInfo, error) {
-	if info, err := goparser.FindSymbol(ctx, repoRoot, symbol); err == nil && info != nil {
+func (e *LocalEngine) GetSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*SymbolInfo, error) {
+	if info, err := goparser.FindSymbol(ctx, repoRoot, symbol.Name, symbol.Path); err == nil && info != nil {
 		return &SymbolInfo{
 			Name:      info.Name,
 			Path:      info.Path,
@@ -20,9 +20,9 @@ func (e *LocalEngine) GetSymbol(ctx context.Context, repoRoot string, symbol str
 			Language:  "go",
 		}, nil
 	}
-	info, err := fallback.FindSymbol(ctx, repoRoot, symbol)
+	info, err := fallback.FindSymbol(ctx, repoRoot, symbol.Name, symbol.Path)
 	if err != nil {
-		return nil, fmt.Errorf("retrieval: finding symbol %q: %w", symbol, err)
+		return nil, fmt.Errorf("retrieval: finding symbol %q in %q: %w", symbol.Name, symbol.Path, err)
 	}
 	info.Path = filepath.ToSlash(info.Path)
 	return &SymbolInfo{
@@ -33,16 +33,4 @@ func (e *LocalEngine) GetSymbol(ctx context.Context, repoRoot string, symbol str
 		Source:    info.Source,
 		Language:  info.Language,
 	}, nil
-}
-
-func (e *LocalEngine) ExpandFunctions(ctx context.Context, repoRoot string, refs []FunctionRef, depth int) (*FunctionBundle, error) {
-	out := &FunctionBundle{Functions: make([]SymbolInfo, 0, len(refs))}
-	for _, ref := range refs {
-		info, err := e.GetSymbol(ctx, repoRoot, ref.Name)
-		if err != nil {
-			return nil, err
-		}
-		out.Functions = append(out.Functions, *info)
-	}
-	return out, nil
 }
