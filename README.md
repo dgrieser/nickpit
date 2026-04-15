@@ -46,9 +46,9 @@ nickpit local uncommitted
 nickpit local commits --from HEAD~3 --to HEAD
 nickpit local branch --base main --head feature/my-branch
 
-nickpit github pr --repo owner/repo --pr 123
-nickpit github pr --repo owner/repo --pr 123 --local-repo ~/src/repo
-nickpit gitlab mr --project group/project --mr 456
+nickpit github pr --repo owner/repo --id 123
+nickpit github pr --repo owner/repo --id 123 --local-repo ~/src/repo
+nickpit gitlab mr --repo group/project --id 456
 nickpit local uncommitted --verbose
 nickpit github pr --repo owner/repo --pr 123 --debug
 
@@ -63,10 +63,10 @@ Append `--verbose` or `--debug` to print step-by-step execution details to stder
 
 Prompt overrides are split by role:
 
-- `--review-system-prompt-file`
-- `--review-user-prompt-file`
-- `--followup-system-prompt-file`
-- `--followup-user-prompt-file`
+- `--prompt-file-system-review`
+- `--prompt-file-user-review`
+- `--prompt-file-system-followup`
+- `--prompt-file-user-followup`
 
 ### Filtering by Priority
 

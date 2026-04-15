@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/debuglog"
@@ -73,10 +76,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().IntVar(&cli.followUps, "followups", 5, "Maximum follow-up rounds")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
-	root.PersistentFlags().StringVar(&cli.reviewSystemPromptFile, "review-system-prompt-file", "", "Custom review system prompt file")
-	root.PersistentFlags().StringVar(&cli.reviewUserPromptFile, "review-user-prompt-file", "", "Custom review user prompt file")
-	root.PersistentFlags().StringVar(&cli.followUpSystemPromptFile, "followup-system-prompt-file", "", "Custom follow-up system prompt file")
-	root.PersistentFlags().StringVar(&cli.followUpUserPromptFile, "followup-user-prompt-file", "", "Custom follow-up user prompt file")
+	root.PersistentFlags().StringVar(&cli.reviewSystemPromptFile, "prompt-file-system-review", "", "Custom review system prompt file")
+	root.PersistentFlags().StringVar(&cli.reviewUserPromptFile, "prompt-file-user-review", "", "Custom review user prompt file")
+	root.PersistentFlags().StringVar(&cli.followUpSystemPromptFile, "prompt-file-system-followup", "", "Custom follow-up system prompt file")
+	root.PersistentFlags().StringVar(&cli.followUpUserPromptFile, "prompt-file-user-followup", "", "Custom follow-up user prompt file")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
 	root.PersistentFlags().StringVar(&cli.localRepo, "local-repo", "", "Use an existing local clone for remote retrieval instead of cloning")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
@@ -180,6 +183,12 @@ func (a *app) newGitHubCmd() *cobra.Command {
 		Use:   "pr",
 		Short: "Review a GitHub PR",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if repo == "" {
+				repo = inferRepo()
+				if repo == "" {
+					return fmt.Errorf("--repo is required (could not infer from git remote)")
+				}
+			}
 			profileName, profile, err := a.loadProfile()
 			if err != nil {
 				return err
@@ -204,10 +213,9 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
-	prCmd.Flags().StringVar(&repo, "repo", "", "GitHub repo owner/name")
-	prCmd.Flags().IntVar(&pr, "pr", 0, "Pull request number")
-	_ = prCmd.MarkFlagRequired("repo")
-	_ = prCmd.MarkFlagRequired("pr")
+	prCmd.Flags().StringVar(&repo, "repo", "", "GitHub repo owner/name (inferred from git remote if omitted)")
+	prCmd.Flags().IntVar(&pr, "id", 0, "Pull request number")
+	_ = prCmd.MarkFlagRequired("id")
 	cmd.AddCommand(prCmd)
 	return cmd
 }
@@ -223,6 +231,12 @@ func (a *app) newGitLabCmd() *cobra.Command {
 		Use:   "mr",
 		Short: "Review a GitLab merge request",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if project == "" {
+				project = inferRepo()
+				if project == "" {
+					return fmt.Errorf("--repo is required (could not infer from git remote)")
+				}
+			}
 			profileName, profile, err := a.loadProfile()
 			if err != nil {
 				return err
@@ -247,10 +261,9 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
-	mrCmd.Flags().StringVar(&project, "project", "", "GitLab project group/name")
-	mrCmd.Flags().IntVar(&mr, "mr", 0, "Merge request IID")
-	_ = mrCmd.MarkFlagRequired("project")
-	_ = mrCmd.MarkFlagRequired("mr")
+	mrCmd.Flags().StringVar(&project, "repo", "", "GitLab project group/name (inferred from git remote if omitted)")
+	mrCmd.Flags().IntVar(&mr, "id", 0, "Merge request IID")
+	_ = mrCmd.MarkFlagRequired("id")
 	cmd.AddCommand(mrCmd)
 	return cmd
 }
@@ -492,6 +505,34 @@ func (a *app) writeInspectOutput(value any) error {
 	default:
 		return writeJSON(value)
 	}
+}
+
+func inferRepo() string {
+	out, err := exec.Command("git", "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	return parseRepoFromRemoteURL(strings.TrimSpace(string(out)))
+}
+
+func parseRepoFromRemoteURL(raw string) string {
+	// URL schemes: https://, ssh://, git://
+	// e.g. https://github.com/owner/repo.git
+	//      ssh://git@gitlab.example.com:29418/group/project.git
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		path := strings.TrimPrefix(u.Path, "/")
+		return strings.TrimSuffix(path, ".git")
+	}
+	// SCP-style: git@github.com:owner/repo.git
+	//            git@gitlab.com:group/project.git
+	if i := strings.Index(raw, ":"); i != -1 {
+		return strings.TrimSuffix(raw[i+1:], ".git")
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {
