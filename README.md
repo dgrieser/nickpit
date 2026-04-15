@@ -18,7 +18,20 @@ NickPit is a Go CLI for LLM-assisted code review across local git changes, GitHu
 ## Installation
 
 ```bash
-go build ./cmd/nickpit
+make build
+sudo make install
+```
+
+To install somewhere other than `/usr/local/bin`, override `PREFIX`:
+
+```bash
+make install PREFIX=$HOME/.local
+```
+
+To see the available build targets:
+
+```bash
+make help
 ```
 
 ## Configuration
@@ -67,6 +80,7 @@ Review output filtering uses `--priority-threshold` with `p0` through `p3`, wher
 ## Development
 
 ```bash
+make help
 make fmt
 make test
 make build
