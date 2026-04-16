@@ -92,8 +92,17 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if req.SystemPrompt == "" || req.UserContent == "" {
 		t.Fatal("system and user prompts should both be populated")
 	}
-	if want := "You are acting as a reviewer for a proposed code change made by another engineer."; !strings.Contains(req.SystemPrompt, want) {
+	if want := "You are acting as a senior engineer performing a thorough code review for a proposed code change made by another engineer."; !strings.Contains(req.SystemPrompt, want) {
 		t.Fatalf("system prompt = %q", req.SystemPrompt)
+	}
+	if want := "Example JSON output:"; !strings.Contains(req.SystemPrompt, want) {
+		t.Fatalf("system prompt missing example JSON instructions: %q", req.SystemPrompt)
+	}
+	if want := "\"overall_correctness\": \"patch is correct\""; !strings.Contains(req.SystemPrompt, want) {
+		t.Fatalf("system prompt missing rendered example JSON: %q", req.SystemPrompt)
+	}
+	if want := "\"title\": \"[P1] Example title\""; !strings.Contains(req.SystemPrompt, want) {
+		t.Fatalf("system prompt missing example finding JSON: %q", req.SystemPrompt)
 	}
 	if contains := "Repository: repo"; !strings.Contains(req.UserContent, contains) {
 		t.Fatalf("user prompt missing %q: %q", contains, req.UserContent)
@@ -136,6 +145,9 @@ func TestEngineUsesAPISchemaWhenEnabled(t *testing.T) {
 	}
 	if string(llmClient.reqs[0].Schema) != string(llm.FindingsSchema) {
 		t.Fatalf("schema = %s", string(llmClient.reqs[0].Schema))
+	}
+	if strings.Contains(llmClient.reqs[0].SystemPrompt, "Example JSON output:") {
+		t.Fatalf("system prompt should omit example snippet when API schema is enabled: %q", llmClient.reqs[0].SystemPrompt)
 	}
 }
 

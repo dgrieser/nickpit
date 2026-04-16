@@ -70,9 +70,17 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	trimmed := trimmer.Trim(reviewCtx)
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	e.logJSON("Rendered review context JSON:", trimmed)
-	systemPrompt, err := e.loadPrompt(req.ReviewSystemPromptFile, "review_system.tmpl")
+	systemTemplate, err := e.loadPrompt(req.ReviewSystemPromptFile, "review_system.tmpl")
 	if err != nil {
 		return nil, err
+	}
+	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
+		OutputSchemaSnippet string
+	}{
+		OutputSchemaSnippet: reviewOutputSchemaSnippetFor(req.UseJSONSchema),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("review: rendering review system prompt: %w", err)
 	}
 	userTemplate, err := e.loadPrompt(req.ReviewUserPromptFile, "review_user.tmpl")
 	if err != nil {
@@ -172,6 +180,13 @@ func filterByPriority(findings []model.Finding, threshold string) []model.Findin
 		}
 	}
 	return filtered
+}
+
+func reviewOutputSchemaSnippetFor(useJSONSchema bool) string {
+	if useJSONSchema {
+		return ""
+	}
+	return llm.FindingsExamplePromptSnippet()
 }
 
 func (e *Engine) logf(format string, args ...any) {
