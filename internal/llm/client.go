@@ -162,6 +162,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if err != nil {
 		return nil, err
 	}
+	c.logBlock("LLM raw model response:", streamed.content)
 
 	resp, err := parseReviewResponse(streamed.content)
 	if err != nil {
@@ -283,9 +284,6 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 			}
 		}
 
-		if c.logger != nil && c.logger.Enabled() {
-			c.logger.PrintJSON("LLM stream chunk:", chunk)
-		}
 		if chunk.Usage != nil {
 			sawUsage = true
 			usage = model.TokenUsage{
