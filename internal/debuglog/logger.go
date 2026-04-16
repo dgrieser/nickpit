@@ -96,6 +96,46 @@ func (l *Logger) PrintJSON(label string, value any) {
 	}
 }
 
+func (l *Logger) PrintReasoningBanner() {
+	if l == nil {
+		return
+	}
+	if l.useANSI {
+		_, _ = fmt.Fprintf(l.w, "\x1b[90mReasoning...\x1b[0m\n")
+		return
+	}
+	_, _ = fmt.Fprintln(l.w, "Reasoning...")
+}
+
+func (l *Logger) PrintReasoningDelta(delta string) {
+	if l == nil || delta == "" {
+		return
+	}
+	if l.useANSI {
+		_, _ = fmt.Fprintf(l.w, "\x1b[3;90m%s\x1b[0m", delta)
+		return
+	}
+	_, _ = fmt.Fprint(l.w, delta)
+}
+
+func (l *Logger) PrintBlankLine() {
+	if l == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(l.w)
+}
+
+func (l *Logger) PrintStatusLine(text string) {
+	if l == nil || text == "" {
+		return
+	}
+	if l.useANSI {
+		_, _ = fmt.Fprintf(l.w, "\x1b[90m%s\x1b[0m\n", text)
+		return
+	}
+	_, _ = fmt.Fprintln(l.w, text)
+}
+
 // splitJSONStringValue detects a JSON line whose string value contains \n escapes and
 // expands them. Returns the key prefix (without the value's opening quote, suitable for
 // colorizeJSON) and the content lines. The first content line has a leading `"`, the last
@@ -127,7 +167,7 @@ func splitJSONStringValue(line string) (string, []string) {
 	}
 
 	unescaped := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\\`, `\`, `\"`, `"`).Replace(raw)
-	keyPrefix := line[:colonIdx+3]                    // `  "key": ` without the opening value `"`
+	keyPrefix := line[:colonIdx+3]                       // `  "key": ` without the opening value `"`
 	valueIndent := strings.Repeat(" ", len(keyPrefix)+1) // align continuation to after the `"`
 
 	parts := strings.Split(unescaped, "\n")

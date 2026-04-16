@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/model"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 type Client interface {
@@ -24,8 +28,10 @@ type OpenAIClient struct {
 	apiKey     string
 	model      string
 	httpClient *http.Client
+	sdkClient  *openai.Client
 	retrier    *Retrier
 	logger     *debuglog.Logger
+	transport  *capturingTransport
 }
 
 type ReviewRequest struct {
@@ -48,44 +54,51 @@ type ReviewResponse struct {
 	TokensUsed             model.TokenUsage        `json:"tokens_used"`
 }
 
-type reasoningConfig struct {
-	Effort string `json:"effort"`
+type capture struct {
+	status string
+	code   int
+	header http.Header
+	body   []byte
 }
 
-type chatCompletionRequest struct {
-	Model          string           `json:"model"`
-	Messages       []chatMessage    `json:"messages"`
-	MaxTokens      int              `json:"max_tokens,omitempty"`
-	Temperature    float64          `json:"temperature,omitempty"`
-	ResponseFormat map[string]any   `json:"response_format,omitempty"`
-	Reasoning      *reasoningConfig `json:"reasoning,omitempty"`
+type streamedResponse struct {
+	content  string
+	usage    model.TokenUsage
+	reasoned bool
 }
 
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+type streamReadError struct {
+	err       error
+	retryable bool
 }
 
-type chatCompletionResponse struct {
-	Choices []struct {
-		Message chatMessage `json:"message"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+func (e *streamReadError) Error() string {
+	return e.err.Error()
+}
+
+func (e *streamReadError) Unwrap() error {
+	return e.err
 }
 
 func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
+	transport := &capturingTransport{base: http.DefaultTransport}
+	httpClient := &http.Client{
+		Timeout:   90 * time.Second,
+		Transport: transport,
+	}
+
+	config := openai.DefaultConfig(apiKey)
+	config.BaseURL = strings.TrimRight(baseURL, "/")
+	config.HTTPClient = httpClient
+
 	return &OpenAIClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
-		model:   model,
-		httpClient: &http.Client{
-			Timeout: 90 * time.Second,
-		},
-		retrier: NewRetrier(),
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		apiKey:     apiKey,
+		model:      model,
+		httpClient: httpClient,
+		sdkClient:  openai.NewClientWithConfig(config),
+		retrier:    NewRetrier(),
+		transport:  transport,
 	}
 }
 
@@ -98,63 +111,106 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		return nil, fmt.Errorf("llm: nil review request")
 	}
 
-	payload := chatCompletionRequest{
+	payload := openai.ChatCompletionRequest{
 		Model: req.Model,
-		Messages: []chatMessage{
-			{Role: "system", Content: req.SystemPrompt},
-			{Role: "user", Content: req.UserContent},
+		Messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
+			{Role: openai.ChatMessageRoleUser, Content: req.UserContent},
 		},
 		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		ResponseFormat: map[string]any{
-			"type": "json_object",
+		Temperature: float32(req.Temperature),
+		ResponseFormat: &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+		},
+		StreamOptions: &openai.StreamOptions{
+			IncludeUsage: true,
 		},
 	}
 	if payload.Model == "" {
 		payload.Model = c.model
 	}
 	if req.ReasoningEffort != "" {
-		payload.Reasoning = &reasoningConfig{Effort: req.ReasoningEffort}
+		payload.ReasoningEffort = req.ReasoningEffort
 	}
 	if len(req.Schema) > 0 {
-		payload.ResponseFormat = map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   "review_response",
-				"schema": json.RawMessage(req.Schema),
+		payload.ResponseFormat = &openai.ChatCompletionResponseFormat{
+			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
+			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
+				Name:   "review_response",
+				Schema: json.RawMessage(req.Schema),
+				Strict: true,
 			},
 		}
 	}
 
-	body, err := json.Marshal(payload)
-	if err != nil {
+	if _, err := json.Marshal(payload); err != nil {
 		return nil, fmt.Errorf("llm: encoding request: %w", err)
 	}
-	reasoningEffort := ""
-	if payload.Reasoning != nil {
-		reasoningEffort = payload.Reasoning.Effort
-	}
-	c.logf("LLM request prepared: model=%s endpoint=%s max_tokens=%d temperature=%.2f reasoning_effort=%s", payload.Model, c.baseURL+"/chat/completions", payload.MaxTokens, payload.Temperature, reasoningEffort)
+
+	c.logf(
+		"LLM request prepared: model=%s endpoint=%s max_tokens=%d temperature=%.2f reasoning_effort=%s stream=%t",
+		payload.Model,
+		c.baseURL+"/chat/completions",
+		payload.MaxTokens,
+		payload.Temperature,
+		payload.ReasoningEffort,
+		true,
+	)
 	c.logJSON("LLM request payload:", payload)
 
-	var httpResp *http.Response
-	var responseBody []byte
+	streamed, err := c.reviewStream(ctx, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := parseReviewResponse(streamed.content)
+	if err != nil {
+		resp = invalidJSONFallback(streamed.content)
+	}
+
+	resp.RawResponse = streamed.content
+	resp.TokensUsed = streamed.usage
+	c.logf(
+		"Parsed LLM response: findings=%d follow_up=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		len(resp.Findings),
+		len(resp.FollowUpRequests),
+		resp.TokensUsed.PromptTokens,
+		resp.TokensUsed.CompletionTokens,
+		resp.TokensUsed.TotalTokens,
+	)
+	return resp, nil
+}
+
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest) (*streamedResponse, error) {
 	for attempt := 0; ; attempt++ {
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-		if err != nil {
-			return nil, fmt.Errorf("llm: building request: %w", err)
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		if c.apiKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-		}
+		c.transport.reset()
 
-		httpResp, err = c.httpClient.Do(httpReq)
+		stream, err := c.sdkClient.CreateChatCompletionStream(ctx, payload)
+		capture := c.transport.snapshot()
+		if capture != nil && capture.code != 0 {
+			c.logf("LLM stream opened: status=%s", capture.status)
+		}
 		if err != nil {
 			c.logf("LLM request failed: attempt=%d error=%v", attempt+1, err)
-			if attempt >= c.retrier.MaxRetries {
+			if status := statusCodeFromError(err); status > 0 {
+				if capture != nil && len(capture.body) > 0 {
+					c.logMaybeJSON("LLM raw response body:", capture.body)
+				}
+				if attempt >= c.retrier.MaxRetries || !c.retrier.ShouldRetry(status) {
+					return nil, fmt.Errorf("llm: api returned status %d: %w", status, err)
+				}
+				c.logf("Retrying request: status=%d", status)
+				if waitErr := c.retrier.Wait(ctx, attempt, responseFromCapture(capture)); waitErr != nil {
+					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
+				}
+				continue
+			}
+			if !isRetryableNetworkError(err) || attempt >= c.retrier.MaxRetries {
 				return nil, fmt.Errorf("llm: request failed: %w", err)
+			}
+			if c.logger != nil {
+				c.logger.PrintStatusLine("LLM request hit a network error, retrying...")
 			}
 			if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
 				return nil, fmt.Errorf("llm: request canceled: %w", waitErr)
@@ -162,67 +218,250 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			continue
 		}
 
-		responseBody, err = io.ReadAll(httpResp.Body)
-		httpResp.Body.Close()
+		resp, streamErr := c.collectStream(stream)
+		closeErr := stream.Close()
+		if streamErr != nil {
+			if closeErr != nil {
+				c.logf("LLM stream close failed after error: %v", closeErr)
+			}
+			var readErr *streamReadError
+			if errors.As(streamErr, &readErr) && readErr.retryable && attempt < c.retrier.MaxRetries {
+				if c.logger != nil {
+					c.logger.PrintStatusLine("LLM stream hit a network error, retrying...")
+				}
+				c.logf("Retrying request: stream network error")
+				if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
+					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
+				}
+				continue
+			}
+			return nil, streamErr
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("llm: closing stream: %w", closeErr)
+		}
+		return resp, nil
+	}
+}
+
+func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*streamedResponse, error) {
+	var (
+		contentBuilder   strings.Builder
+		usage            model.TokenUsage
+		reasoningStarted bool
+		sawUsage         bool
+	)
+
+	for {
+		chunk, err := stream.Recv()
 		if err != nil {
-			return nil, fmt.Errorf("llm: reading response: %w", err)
+			if errors.Is(err, io.EOF) {
+				if !sawUsage {
+					if reasoningStarted {
+						c.logger.PrintBlankLine()
+					}
+					return nil, &streamReadError{
+						err:       fmt.Errorf("llm: reading stream: interrupted before final usage chunk"),
+						retryable: true,
+					}
+				}
+				if reasoningStarted {
+					c.logger.PrintBlankLine()
+				}
+				return &streamedResponse{
+					content:  contentBuilder.String(),
+					usage:    usage,
+					reasoned: reasoningStarted,
+				}, nil
+			}
+			if reasoningStarted {
+				c.logger.PrintBlankLine()
+			}
+			return nil, &streamReadError{
+				err:       fmt.Errorf("llm: reading stream: %w", err),
+				retryable: isRetryableNetworkError(err),
+			}
 		}
-		c.logf("LLM response received: status=%s", httpResp.Status)
-		c.logMaybeJSON("LLM raw response body:", responseBody)
-		if httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 {
-			break
-		}
-		c.logf("Retrying request: status=%d", httpResp.StatusCode)
-		if attempt >= c.retrier.MaxRetries || !c.retrier.ShouldRetry(httpResp.StatusCode) {
-			return nil, fmt.Errorf("llm: api returned status %d", httpResp.StatusCode)
-		}
-		if waitErr := c.retrier.Wait(ctx, attempt, httpResp); waitErr != nil {
-			return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
-		}
-	}
 
-	var envelope chatCompletionResponse
-	if err := json.Unmarshal(responseBody, &envelope); err != nil {
-		return nil, fmt.Errorf("llm: parsing response envelope: %w", err)
+		if c.logger != nil && c.logger.Enabled() {
+			c.logger.PrintJSON("LLM stream chunk:", chunk)
+		}
+		if chunk.Usage != nil {
+			sawUsage = true
+			usage = model.TokenUsage{
+				PromptTokens:     chunk.Usage.PromptTokens,
+				CompletionTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:      chunk.Usage.TotalTokens,
+			}
+		}
+		for _, choice := range chunk.Choices {
+			if choice.Index != 0 {
+				continue
+			}
+			if choice.Delta.ReasoningContent != "" {
+				if !reasoningStarted {
+					reasoningStarted = true
+					if c.logger != nil {
+						c.logger.PrintReasoningBanner()
+					}
+				}
+				if c.logger != nil {
+					c.logger.PrintReasoningDelta(choice.Delta.ReasoningContent)
+				}
+			}
+			if choice.Delta.Content != "" {
+				contentBuilder.WriteString(choice.Delta.Content)
+			}
+		}
 	}
-	if len(envelope.Choices) == 0 {
-		return nil, fmt.Errorf("llm: response contained no choices")
-	}
+}
 
-	content := envelope.Choices[0].Message.Content
-	resp, err := parseReviewResponse(content)
-	if err != nil {
-		resp = &ReviewResponse{
-			Findings: []model.Finding{
-				{
-					Title:           "[P2] Return valid review JSON",
-					Body:            "The model response could not be parsed as the configured review schema, so the review output is unusable until the prompt or schema alignment is fixed.",
-					ConfidenceScore: 0.2,
-					Priority:        intPtr(2),
-					CodeLocation: model.CodeLocation{
-						AbsoluteFilePath: "",
-						LineRange: model.LineRange{
-							Start: 1,
-							End:   1,
-						},
+func invalidJSONFallback(content string) *ReviewResponse {
+	return &ReviewResponse{
+		Findings: []model.Finding{
+			{
+				Title:           "[P2] Return valid review JSON",
+				Body:            "The model response could not be parsed as the configured review schema, so the review output is unusable until the prompt or schema alignment is fixed.",
+				ConfidenceScore: 0.2,
+				Priority:        intPtr(2),
+				CodeLocation: model.CodeLocation{
+					AbsoluteFilePath: "",
+					LineRange: model.LineRange{
+						Start: 1,
+						End:   1,
 					},
 				},
 			},
-			OverallCorrectness:     "patch is incorrect",
-			OverallExplanation:     strings.TrimSpace(content),
-			OverallConfidenceScore: 0.2,
-			RawResponse:            content,
-		}
+		},
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     strings.TrimSpace(content),
+		OverallConfidenceScore: 0.2,
+		RawResponse:            content,
 	}
-	resp.RawResponse = content
-	resp.TokensUsed = model.TokenUsage{
-		PromptTokens:     envelope.Usage.PromptTokens,
-		CompletionTokens: envelope.Usage.CompletionTokens,
-		TotalTokens:      envelope.Usage.TotalTokens,
+}
+
+type capturingTransport struct {
+	base http.RoundTripper
+	last *capture
+}
+
+func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		t.last = nil
+		return nil, err
 	}
-	c.logf("Parsed LLM response: findings=%d follow_up=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-		len(resp.Findings), len(resp.FollowUpRequests), resp.TokensUsed.PromptTokens, resp.TokensUsed.CompletionTokens, resp.TokensUsed.TotalTokens)
+
+	captured := &capture{
+		status: resp.Status,
+		code:   resp.StatusCode,
+		header: resp.Header.Clone(),
+	}
+
+	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
+		t.last = captured
+		return resp, nil
+	}
+
+	data, readErr := readAndRestoreBody(resp)
+	captured.body = data
+	t.last = captured
+	if readErr != nil {
+		return nil, readErr
+	}
+
 	return resp, nil
+}
+
+func (t *capturingTransport) reset() {
+	t.last = nil
+}
+
+func (t *capturingTransport) snapshot() *capture {
+	if t.last == nil {
+		return nil
+	}
+
+	cloned := *t.last
+	if cloned.header != nil {
+		cloned.header = cloned.header.Clone()
+	}
+	if cloned.body != nil {
+		cloned.body = append([]byte(nil), cloned.body...)
+	}
+	return &cloned
+}
+
+func readAndRestoreBody(resp *http.Response) ([]byte, error) {
+	if resp.Body == nil {
+		return nil, nil
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+	if err := resp.Body.Close(); err != nil {
+		return nil, err
+	}
+
+	resp.Body = io.NopCloser(bytes.NewReader(data))
+	return data, nil
+}
+
+func responseFromCapture(c *capture) *http.Response {
+	if c == nil || c.code == 0 {
+		return nil
+	}
+	return &http.Response{
+		Status:     c.status,
+		StatusCode: c.code,
+		Header:     c.header.Clone(),
+	}
+}
+
+func statusCodeFromError(err error) int {
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.HTTPStatusCode
+	}
+
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		return reqErr.HTTPStatusCode
+	}
+
+	return 0
+}
+
+func isRetryableNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return isRetryableNetworkError(urlErr.Err)
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
+	return false
 }
 
 func intPtr(v int) *int {
