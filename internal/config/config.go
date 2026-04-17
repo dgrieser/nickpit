@@ -15,7 +15,7 @@ const (
 	DefaultModel           = "openai/gpt-oss-120b:free"
 	DefaultBaseURL         = "https://openrouter.ai/api/v1"
 	DefaultMaxContextToken = 120000
-	DefaultFollowUps       = 5
+	DefaultToolRounds      = 5
 	DefaultConfigPath      = ".nickpit.yaml"
 	DefaultReasoningEffort = "high"
 )
@@ -26,20 +26,20 @@ type Config struct {
 }
 
 type Profile struct {
-	Model            string   `yaml:"model"`
-	BaseURL          string   `yaml:"base_url"`
-	APIKey           string   `yaml:"api_key"`
-	MaxTokens        *int     `yaml:"max_tokens"`
-	Temperature      *float64 `yaml:"temperature"`
-	UseJSONSchema    bool     `yaml:"use_json_schema"`
-	MaxContextTokens int      `yaml:"max_context_tokens"`
-	DefaultFollowUps int      `yaml:"default_followups"`
-	ReasoningEffort  string   `yaml:"reasoning_effort"`
-	LocalRepo        string   `yaml:"local_repo"`
-	GitHubToken      string   `yaml:"github_token"`
-	GitLabToken      string   `yaml:"gitlab_token"`
-	GitLabBaseURL    string   `yaml:"gitlab_base_url"`
-	APIKeyConfigured bool     `yaml:"-"`
+	Model             string   `yaml:"model"`
+	BaseURL           string   `yaml:"base_url"`
+	APIKey            string   `yaml:"api_key"`
+	MaxTokens         *int     `yaml:"max_tokens"`
+	Temperature       *float64 `yaml:"temperature"`
+	UseJSONSchema     bool     `yaml:"use_json_schema"`
+	MaxContextTokens  int      `yaml:"max_context_tokens"`
+	DefaultToolRounds int      `yaml:"default_tool_rounds"`
+	ReasoningEffort   string   `yaml:"reasoning_effort"`
+	LocalRepo         string   `yaml:"local_repo"`
+	GitHubToken       string   `yaml:"github_token"`
+	GitLabToken       string   `yaml:"gitlab_token"`
+	GitLabBaseURL     string   `yaml:"gitlab_base_url"`
+	APIKeyConfigured  bool     `yaml:"-"`
 }
 
 type Overrides struct {
@@ -51,7 +51,7 @@ type Overrides struct {
 	Temperature      *float64
 	UseJSONSchema    bool
 	MaxContextTokens int
-	FollowUps        int
+	ToolRounds       int
 	ReasoningEffort  string
 	LocalRepo        string
 	GitHubToken      string
@@ -64,14 +64,14 @@ func DefaultConfig() *Config {
 		ActiveProfile: DefaultProfileName,
 		Profiles: map[string]Profile{
 			DefaultProfileName: {
-				Model:            DefaultModel,
-				BaseURL:          DefaultBaseURL,
-				MaxContextTokens: DefaultMaxContextToken,
-				DefaultFollowUps: DefaultFollowUps,
-				ReasoningEffort:  DefaultReasoningEffort,
-				GitHubToken:      os.Getenv("GITHUB_TOKEN"),
-				GitLabToken:      os.Getenv("GITLAB_TOKEN"),
-				GitLabBaseURL:    getEnvOrDefault("GITLAB_BASE_URL", "https://gitlab.com/api/v4"),
+				Model:             DefaultModel,
+				BaseURL:           DefaultBaseURL,
+				MaxContextTokens:  DefaultMaxContextToken,
+				DefaultToolRounds: DefaultToolRounds,
+				ReasoningEffort:   DefaultReasoningEffort,
+				GitHubToken:       os.Getenv("GITHUB_TOKEN"),
+				GitLabToken:       os.Getenv("GITLAB_TOKEN"),
+				GitLabBaseURL:     getEnvOrDefault("GITLAB_BASE_URL", "https://gitlab.com/api/v4"),
 			},
 		},
 	}
@@ -184,8 +184,8 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	if overrides.MaxContextTokens > 0 {
 		profile.MaxContextTokens = overrides.MaxContextTokens
 	}
-	if overrides.FollowUps >= 0 {
-		profile.DefaultFollowUps = overrides.FollowUps
+	if overrides.ToolRounds > 0 {
+		profile.DefaultToolRounds = overrides.ToolRounds
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
@@ -215,8 +215,8 @@ func normalizeProfile(profile Profile) Profile {
 	if profile.MaxContextTokens == 0 {
 		profile.MaxContextTokens = DefaultMaxContextToken
 	}
-	if profile.DefaultFollowUps == 0 {
-		profile.DefaultFollowUps = DefaultFollowUps
+	if profile.DefaultToolRounds == 0 {
+		profile.DefaultToolRounds = DefaultToolRounds
 	}
 	if profile.LocalRepo != "" {
 		profile.LocalRepo = expandPath(profile.LocalRepo)

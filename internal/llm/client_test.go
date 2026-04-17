@@ -291,6 +291,111 @@ func TestClientReviewUsesJSONSchemaWhenProvided(t *testing.T) {
 	}
 }
 
+func TestClientReviewReassemblesStreamedToolCalls(t *testing.T) {
+	var payload map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []map[string]any{
+							{
+								"index": 0,
+								"id":    "call_1",
+								"type":  "function",
+								"function": map[string]any{
+									"name":      "inspect_file",
+									"arguments": "{\"path\":\"ex",
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []map[string]any{
+							{
+								"index": 0,
+								"function": map[string]any{
+									"arguments": "tra.go\"}",
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-3",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "user"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d", len(resp.ToolCalls))
+	}
+	if resp.ToolCalls[0].Name != "inspect_file" {
+		t.Fatalf("tool name = %q", resp.ToolCalls[0].Name)
+	}
+	if resp.ToolCalls[0].Arguments != `{"path":"extra.go"}` {
+		t.Fatalf("arguments = %q", resp.ToolCalls[0].Arguments)
+	}
+
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v", payload["tools"])
+	}
+	if payload["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %#v", payload["parallel_tool_calls"])
+	}
+}
+
 func TestClientReviewStreamsReasoningToLogger(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeSSEChunk(t, w, map[string]any{

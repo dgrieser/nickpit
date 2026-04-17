@@ -23,27 +23,27 @@ import (
 )
 
 type app struct {
-	model                    string
-	baseURL                  string
-	apiKey                   string
-	workDir                  string
-	profile                  string
-	maxContextTokens         int
-	includeFullFiles         bool
-	includeComments          bool
-	includeCommits           bool
-	jsonOutput               bool
-	useJSONSchema            bool
-	followUps                int
-	offline                  bool
-	priorityThreshold        string
-	configPath               string
-	localRepo                string
-	githubToken              string
-	gitlabToken              string
-	gitlabBaseURL            string
-	verbose                  bool
-	logger                   *debuglog.Logger
+	model             string
+	baseURL           string
+	apiKey            string
+	workDir           string
+	profile           string
+	maxContextTokens  int
+	includeFullFiles  bool
+	includeComments   bool
+	includeCommits    bool
+	jsonOutput        bool
+	useJSONSchema     bool
+	toolRounds        int
+	offline           bool
+	priorityThreshold string
+	configPath        string
+	localRepo         string
+	githubToken       string
+	gitlabToken       string
+	gitlabBaseURL     string
+	verbose           bool
+	logger            *debuglog.Logger
 }
 
 func main() {
@@ -82,7 +82,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
-	root.PersistentFlags().IntVar(&cli.followUps, "followups", 5, "Maximum follow-up rounds")
+	root.PersistentFlags().IntVar(&cli.toolRounds, "tool-rounds", 0, "Maximum tool-call rounds (0 uses profile/default)")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -102,17 +102,17 @@ func newRootCmd() *cobra.Command {
 
 func (a *app) loadProfile() (string, config.Profile, error) {
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile:                  a.profile,
-		Model:                    a.model,
-		BaseURL:                  a.baseURL,
-		APIKey:                   a.apiKey,
-		UseJSONSchema:            a.useJSONSchema,
-		MaxContextTokens:         a.maxContextTokens,
-		FollowUps:                a.followUps,
-		LocalRepo:                a.localRepo,
-		GitHubToken:              a.githubToken,
-		GitLabToken:              a.gitlabToken,
-		GitLabBaseURL:            a.gitlabBaseURL,
+		Profile:          a.profile,
+		Model:            a.model,
+		BaseURL:          a.baseURL,
+		APIKey:           a.apiKey,
+		UseJSONSchema:    a.useJSONSchema,
+		MaxContextTokens: a.maxContextTokens,
+		ToolRounds:       a.toolRounds,
+		LocalRepo:        a.localRepo,
+		GitHubToken:      a.githubToken,
+		GitLabToken:      a.gitlabToken,
+		GitLabBaseURL:    a.gitlabBaseURL,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -143,19 +143,19 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				return err
 			}
 			req := model.ReviewRequest{
-				Mode:                     model.ModeLocal,
-				RepoRoot:                 repoRoot,
-				LocalRepo:                profile.LocalRepo,
-				BaseRef:                  firstNonEmpty(base, from),
-				HeadRef:                  firstNonEmpty(head, to),
-				IncludeComments:          a.includeComments,
-				IncludeCommits:           a.includeCommits,
-				IncludeFullFiles:         a.includeFullFiles,
-				MaxContextTokens:         profile.MaxContextTokens,
-				FollowUpRounds:           profile.DefaultFollowUps,
-				UseJSONSchema:            profile.UseJSONSchema,
-				PriorityThreshold:        a.priorityThreshold,
-				Submode:                  submode,
+				Mode:              model.ModeLocal,
+				RepoRoot:          repoRoot,
+				LocalRepo:         profile.LocalRepo,
+				BaseRef:           firstNonEmpty(base, from),
+				HeadRef:           firstNonEmpty(head, to),
+				IncludeComments:   a.includeComments,
+				IncludeCommits:    a.includeCommits,
+				IncludeFullFiles:  a.includeFullFiles,
+				MaxContextTokens:  profile.MaxContextTokens,
+				ToolRounds:        profile.DefaultToolRounds,
+				UseJSONSchema:     profile.UseJSONSchema,
+				PriorityThreshold: a.priorityThreshold,
+				Submode:           submode,
 			}
 			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -194,17 +194,17 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			}
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
 			req := model.ReviewRequest{
-				Mode:                     model.ModeGitHub,
-				LocalRepo:                profile.LocalRepo,
-				Repo:                     repo,
-				Identifier:               pr,
-				IncludeComments:          a.includeComments,
-				IncludeCommits:           a.includeCommits,
-				MaxContextTokens:         profile.MaxContextTokens,
-				FollowUpRounds:           profile.DefaultFollowUps,
-				UseJSONSchema:            profile.UseJSONSchema,
-				PriorityThreshold:        a.priorityThreshold,
-				Offline:                  a.offline,
+				Mode:              model.ModeGitHub,
+				LocalRepo:         profile.LocalRepo,
+				Repo:              repo,
+				Identifier:        pr,
+				IncludeComments:   a.includeComments,
+				IncludeCommits:    a.includeCommits,
+				MaxContextTokens:  profile.MaxContextTokens,
+				ToolRounds:        profile.DefaultToolRounds,
+				UseJSONSchema:     profile.UseJSONSchema,
+				PriorityThreshold: a.priorityThreshold,
+				Offline:           a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -239,17 +239,17 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			}
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
 			req := model.ReviewRequest{
-				Mode:                     model.ModeGitLab,
-				LocalRepo:                profile.LocalRepo,
-				Repo:                     project,
-				Identifier:               mr,
-				IncludeComments:          a.includeComments,
-				IncludeCommits:           a.includeCommits,
-				MaxContextTokens:         profile.MaxContextTokens,
-				FollowUpRounds:           profile.DefaultFollowUps,
-				UseJSONSchema:            profile.UseJSONSchema,
-				PriorityThreshold:        a.priorityThreshold,
-				Offline:                  a.offline,
+				Mode:              model.ModeGitLab,
+				LocalRepo:         profile.LocalRepo,
+				Repo:              project,
+				Identifier:        mr,
+				IncludeComments:   a.includeComments,
+				IncludeCommits:    a.includeCommits,
+				MaxContextTokens:  profile.MaxContextTokens,
+				ToolRounds:        profile.DefaultToolRounds,
+				UseJSONSchema:     profile.UseJSONSchema,
+				PriorityThreshold: a.priorityThreshold,
+				Offline:           a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -384,8 +384,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if req.MaxContextTokens == 0 {
 		req.MaxContextTokens = profile.MaxContextTokens
 	}
-	if req.FollowUpRounds == 0 {
-		req.FollowUpRounds = profile.DefaultFollowUps
+	if req.ToolRounds == 0 {
+		req.ToolRounds = profile.DefaultToolRounds
 	}
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
@@ -417,12 +417,12 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 		}
 		return wd, nil, err
 	}
-	followUpRounds := req.FollowUpRounds
-	if followUpRounds == 0 {
-		followUpRounds = profile.DefaultFollowUps
+	toolRounds := req.ToolRounds
+	if toolRounds == 0 {
+		toolRounds = profile.DefaultToolRounds
 	}
-	if !req.IncludeFullFiles && followUpRounds <= 0 {
-		a.logf("Skipping remote checkout: include_full_files=%t follow_up_rounds=%d", req.IncludeFullFiles, followUpRounds)
+	if !req.IncludeFullFiles && toolRounds <= 0 {
+		a.logf("Skipping remote checkout: include_full_files=%t tool_rounds=%d", req.IncludeFullFiles, toolRounds)
 		return "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)

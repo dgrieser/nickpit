@@ -45,12 +45,19 @@ func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse,
 }
 
 type capturingLLM struct {
-	reqs []*llm.ReviewRequest
+	reqs  []*llm.ReviewRequest
 	resps []*llm.ReviewResponse
 }
 
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
-	s.reqs = append(s.reqs, req)
+	cloned := *req
+	if len(req.Messages) > 0 {
+		cloned.Messages = append([]llm.Message(nil), req.Messages...)
+	}
+	if len(req.Tools) > 0 {
+		cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)
+	}
+	s.reqs = append(s.reqs, &cloned)
 	if len(s.resps) > 0 {
 		resp := s.resps[0]
 		s.resps = s.resps[1:]
@@ -120,27 +127,33 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	}
 
 	req := llmClient.reqs[0]
-	if req.SystemPrompt == req.UserContent {
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %d", len(req.Messages))
+	}
+	if req.Messages[0].Content == req.Messages[1].Content {
 		t.Fatal("system and user prompts should differ")
 	}
-	if req.SystemPrompt == "" || req.UserContent == "" {
+	if req.Messages[0].Content == "" || req.Messages[1].Content == "" {
 		t.Fatal("system and user prompts should both be populated")
 	}
-	if want := "You are acting as a senior engineer performing a thorough code review for a proposed code change made by another engineer."; !strings.Contains(req.SystemPrompt, want) {
-		t.Fatalf("system prompt = %q", req.SystemPrompt)
+	if want := "You are acting as a senior engineer performing a thorough code review for a proposed code change made by another engineer."; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt = %q", req.Messages[0].Content)
 	}
-	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.SystemPrompt, want) {
-		t.Fatalf("system prompt missing example JSON instructions: %q", req.SystemPrompt)
+	if want := "If you need more code context, call the `inspect_file` tool"; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing tool instructions: %q", req.Messages[0].Content)
 	}
-	if want := "\"overall_correctness\": \"patch is correct\""; !strings.Contains(req.SystemPrompt, want) {
-		t.Fatalf("system prompt missing rendered example JSON: %q", req.SystemPrompt)
+	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing example JSON instructions: %q", req.Messages[0].Content)
 	}
-	if want := "\"title\": \"[P1] Example title\""; !strings.Contains(req.SystemPrompt, want) {
-		t.Fatalf("system prompt missing example finding JSON: %q", req.SystemPrompt)
+	if want := "\"overall_correctness\": \"patch is correct\""; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing rendered example JSON: %q", req.Messages[0].Content)
+	}
+	if want := "\"title\": \"[P1] Example title\""; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing example finding JSON: %q", req.Messages[0].Content)
 	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(req.UserContent), &payload); err != nil {
-		t.Fatalf("user prompt should be valid json: %v\n%s", err, req.UserContent)
+	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
+		t.Fatalf("user prompt should be valid json: %v\n%s", err, req.Messages[1].Content)
 	}
 	repository, ok := payload["repository"].(map[string]any)
 	if !ok {
@@ -159,6 +172,12 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 		if _, exists := payload[unwanted]; exists {
 			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])
 		}
+	}
+	if len(req.Tools) != 1 {
+		t.Fatalf("tools = %d", len(req.Tools))
+	}
+	if req.Tools[0].Name != "inspect_file" {
+		t.Fatalf("tool name = %q", req.Tools[0].Name)
 	}
 }
 
@@ -181,30 +200,31 @@ func TestEngineDoesNotUseAPISchemaByDefault(t *testing.T) {
 	}
 }
 
-func TestEngineFollowUpPromptUsesJSONInspectPayload(t *testing.T) {
+func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
-				FollowUpRequests: []model.FollowUpRequest{
-					{Type: "file", Path: "extra.go", Reason: "need more context"},
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				Findings: []model.Finding{
+					{Title: "[P1] error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 				},
 				OverallCorrectness:     "patch is correct",
 				OverallExplanation:     "summary",
 				OverallConfidenceScore: 0.5,
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
+				TokensUsed:             model.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10},
 			},
 		},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		FollowUpRounds:   1,
+		ToolRounds:       1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -212,29 +232,32 @@ func TestEngineFollowUpPromptUsesJSONInspectPayload(t *testing.T) {
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("requests = %d", len(llmClient.reqs))
 	}
+	if result.ToolRounds != 1 {
+		t.Fatalf("tool rounds = %d", result.ToolRounds)
+	}
+	if got := result.TokensUsed.TotalTokens; got != 10 {
+		t.Fatalf("total tokens = %d", got)
+	}
 
+	req := llmClient.reqs[1]
+	if len(req.Messages) != 4 {
+		t.Fatalf("messages = %d", len(req.Messages))
+	}
+	if req.Messages[2].Role != "assistant" {
+		t.Fatalf("assistant role = %q", req.Messages[2].Role)
+	}
+	if len(req.Messages[2].ToolCalls) != 1 || req.Messages[2].ToolCalls[0].Name != "inspect_file" {
+		t.Fatalf("assistant tool calls = %#v", req.Messages[2].ToolCalls)
+	}
+	if req.Messages[3].Role != "tool" {
+		t.Fatalf("tool role = %q", req.Messages[3].Role)
+	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].UserContent), &payload); err != nil {
-		t.Fatalf("follow-up prompt should be valid json: %v\n%s", err, llmClient.reqs[1].UserContent)
+	if err := json.Unmarshal([]byte(req.Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v\n%s", err, req.Messages[3].Content)
 	}
-	if _, ok := payload["follow_up_requests"]; !ok {
-		t.Fatalf("follow-up prompt missing follow_up_requests: %#v", payload)
-	}
-	items, ok := payload["supplemental_context"].([]any)
-	if !ok || len(items) != 1 {
-		t.Fatalf("supplemental_context = %#v", payload["supplemental_context"])
-	}
-	item, ok := items[0].(map[string]any)
-	if !ok {
-		t.Fatalf("supplemental item = %#v", items[0])
-	}
-	if item["path"] != "extra.go" || item["content"] != "package extra" || item["language"] != "go" {
-		t.Fatalf("supplemental item = %#v", item)
-	}
-	for _, unwanted := range []string{"reason", "kind"} {
-		if _, exists := item[unwanted]; exists {
-			t.Fatalf("supplemental item unexpectedly contains %q: %#v", unwanted, item[unwanted])
-		}
+	if payload["path"] != "extra.go" || payload["content"] != "package extra" || payload["language"] != "go" {
+		t.Fatalf("tool payload = %#v", payload)
 	}
 }
 
@@ -256,8 +279,76 @@ func TestEngineUsesAPISchemaWhenEnabled(t *testing.T) {
 	if string(llmClient.reqs[0].Schema) != string(llm.FindingsSchema) {
 		t.Fatalf("schema = %s", string(llmClient.reqs[0].Schema))
 	}
-	if strings.Contains(llmClient.reqs[0].SystemPrompt, "Example JSON output:") {
-		t.Fatalf("system prompt should omit example snippet when API schema is enabled: %q", llmClient.reqs[0].SystemPrompt)
+	if strings.Contains(llmClient.reqs[0].Messages[0].Content, "Example JSON output:") {
+		t.Fatalf("system prompt should omit example snippet when API schema is enabled: %q", llmClient.reqs[0].Messages[0].Content)
+	}
+}
+
+func TestEngineReturnsToolErrorsToModel(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":""}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["error"] != "missing required argument: path" {
+		t.Fatalf("tool error payload = %#v", payload)
+	}
+}
+
+func TestEngineStopsAtToolRoundLimit(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OverallCorrectness != "patch is incorrect" {
+		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %d", len(result.Findings))
 	}
 }
 

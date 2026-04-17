@@ -4,7 +4,7 @@
 
 # NickPit
 
-NickPit is a CLI for LLM-assisted code review across local git changes, GitHub pull requests, and GitLab merge requests. It uses a normalized review context, a provider-compatible chat completions client, and optional follow-up retrieval rounds for additional code context.
+NickPit is a CLI for LLM-assisted code review across local git changes, GitHub pull requests, and GitLab merge requests. It uses a normalized review context, a provider-compatible chat completions client, and optional tool-driven retrieval rounds for additional code context.
 
 ## Features
 
@@ -67,6 +67,8 @@ By default, NickPit includes the expected JSON schema directly in the system pro
 NickPit does not send `response_format` unless `--use-json-schema` is enabled.
 
 Use `--use-json-schema` to send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
+
+NickPit can also let the model request additional file context during review. Control the maximum number of tool-call iterations with `--tool-rounds` or `default_tool_rounds` in config.
 
 ### Temperature
 

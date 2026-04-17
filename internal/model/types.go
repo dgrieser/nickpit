@@ -24,22 +24,22 @@ const (
 )
 
 type ReviewRequest struct {
-	Mode                     ReviewMode
-	RepoRoot                 string
-	LocalRepo                string
-	Repo                     string
-	Identifier               int
-	BaseRef                  string
-	HeadRef                  string
-	IncludeComments          bool
-	IncludeCommits           bool
-	IncludeFullFiles         bool
-	MaxContextTokens         int
-	FollowUpRounds           int
-	UseJSONSchema            bool
-	PriorityThreshold        string
-	Offline                  bool
-	Submode                  string
+	Mode              ReviewMode
+	RepoRoot          string
+	LocalRepo         string
+	Repo              string
+	Identifier        int
+	BaseRef           string
+	HeadRef           string
+	IncludeComments   bool
+	IncludeCommits    bool
+	IncludeFullFiles  bool
+	MaxContextTokens  int
+	ToolRounds        int
+	UseJSONSchema     bool
+	PriorityThreshold string
+	Offline           bool
+	Submode           string
 }
 
 type ReviewResult struct {
@@ -52,7 +52,7 @@ type ReviewResult struct {
 	Mode                   string     `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`
-	FollowUpRound          int        `json:"followup_rounds,omitempty"`
+	ToolRounds             int        `json:"tool_rounds,omitempty"`
 }
 
 type ReviewContext struct {
@@ -82,20 +82,6 @@ type ReviewPromptPayload struct {
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	OmittedSections     []string           `json:"omitted_sections,omitempty"`
-}
-
-type FollowUpPromptPayload struct {
-	Repository          RepositoryInfo       `json:"repository"`
-	Identifier          int                  `json:"identifier,omitempty"`
-	Title               string               `json:"title"`
-	Description         string               `json:"description"`
-	Commits             []CommitSummary      `json:"commits,omitempty"`
-	ChangedFiles        []ChangedFile        `json:"changed_files"`
-	DiffHunks           []DiffHunk           `json:"diff_hunks,omitempty"`
-	Comments            []Comment            `json:"comments,omitempty"`
-	FollowUpRequests    []FollowUpRequest    `json:"follow_up_requests,omitempty"`
-	SupplementalContext []json.RawMessage    `json:"supplemental_context,omitempty"`
-	OmittedSections     []string             `json:"omitted_sections,omitempty"`
 }
 
 type RepositoryInfo struct {
@@ -156,16 +142,6 @@ type CodeLocation struct {
 type LineRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
-}
-
-type FollowUpRequest struct {
-	Type      string `json:"type"`
-	Path      string `json:"path,omitempty"`
-	Symbol    string `json:"symbol,omitempty"`
-	StartLine int    `json:"start_line,omitempty"`
-	EndLine   int    `json:"end_line,omitempty"`
-	Depth     int    `json:"depth,omitempty"`
-	Reason    string `json:"reason"`
 }
 
 type TokenUsage struct {
@@ -263,73 +239,4 @@ func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
 		SupplementalContext: src.SupplementalContext,
 		OmittedSections:     src.OmittedSections,
 	}
-}
-
-func FollowUpPayloadFromContext(src *ReviewContext, requests []FollowUpRequest) *FollowUpPromptPayload {
-	if src == nil {
-		return nil
-	}
-	return &FollowUpPromptPayload{
-		Repository:          src.Repository,
-		Identifier:          src.Identifier,
-		Title:               src.Title,
-		Description:         src.Description,
-		Commits:             src.Commits,
-		ChangedFiles:        src.ChangedFiles,
-		DiffHunks:           src.DiffHunks,
-		Comments:            src.Comments,
-		FollowUpRequests:    requests,
-		SupplementalContext: supplementalContextJSON(src.SupplementalContext),
-		OmittedSections:     src.OmittedSections,
-	}
-}
-
-func supplementalContextJSON(files []SupplementalFile) []json.RawMessage {
-	if len(files) == 0 {
-		return nil
-	}
-	out := make([]json.RawMessage, 0, len(files))
-	for _, file := range files {
-		var payload any
-		switch file.Kind {
-		case "lines":
-			payload = map[string]any{
-				"path":       file.Path,
-				"start_line": file.StartLine,
-				"end_line":   file.EndLine,
-				"content":    file.Content,
-				"language":   file.Language,
-			}
-		case "function":
-			payload = map[string]any{
-				"path":       file.Path,
-				"start_line": file.StartLine,
-				"end_line":   file.EndLine,
-				"source":     file.Content,
-				"language":   file.Language,
-			}
-		case "callers", "callees":
-			var raw json.RawMessage
-			if err := json.Unmarshal([]byte(file.Content), &raw); err == nil && len(raw) > 0 {
-				out = append(out, raw)
-				continue
-			}
-			payload = map[string]any{
-				"path":    file.Path,
-				"content": file.Content,
-			}
-		default:
-			payload = map[string]any{
-				"path":     file.Path,
-				"content":  file.Content,
-				"language": file.Language,
-			}
-		}
-		data, err := json.Marshal(payload)
-		if err != nil {
-			continue
-		}
-		out = append(out, data)
-	}
-	return out
 }

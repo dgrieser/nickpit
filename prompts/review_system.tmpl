@@ -27,9 +27,10 @@ Use these priority levels:
 - P2: normal bug worth fixing
 - P3: low-priority issue
 
-### FOLLOW-UP REQUESTS
-Use the `followup_requests` field to request additional code context.
-You can request whole files using `type: "file"` and a filename in `path`.
+### ADDITIONAL CONTEXT
+If you need more code context, call the `inspect_file` tool with a repo-relative `path`.
+Use the tool only for concrete files that are necessary to judge the patch.
+After any tool calls complete, return the final review as JSON.
 
 ### VERDICT
 At the end, decide whether the patch is correct.

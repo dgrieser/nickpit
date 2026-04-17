@@ -37,6 +37,8 @@ type OpenAIClient struct {
 type ReviewRequest struct {
 	SystemPrompt    string
 	UserContent     string
+	Messages        []Message
+	Tools           []ToolDefinition
 	Schema          json.RawMessage
 	Model           string
 	MaxTokens       *int
@@ -44,14 +46,34 @@ type ReviewRequest struct {
 	ReasoningEffort string
 }
 
+type Message struct {
+	Role       string
+	Content    string
+	Name       string
+	ToolCallID string
+	ToolCalls  []ToolCall
+}
+
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
+}
+
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
 type ReviewResponse struct {
-	Findings               []model.Finding         `json:"findings"`
-	FollowUpRequests       []model.FollowUpRequest `json:"follow_up_requests,omitempty"`
-	OverallCorrectness     string                  `json:"overall_correctness"`
-	OverallExplanation     string                  `json:"overall_explanation"`
-	OverallConfidenceScore float64                 `json:"overall_confidence_score"`
-	RawResponse            string                  `json:"raw_response,omitempty"`
-	TokensUsed             model.TokenUsage        `json:"tokens_used"`
+	Findings               []model.Finding  `json:"findings"`
+	OverallCorrectness     string           `json:"overall_correctness"`
+	OverallExplanation     string           `json:"overall_explanation"`
+	OverallConfidenceScore float64          `json:"overall_confidence_score"`
+	ToolCalls              []ToolCall       `json:"tool_calls,omitempty"`
+	RawResponse            string           `json:"raw_response,omitempty"`
+	TokensUsed             model.TokenUsage `json:"tokens_used"`
 }
 
 type capture struct {
@@ -63,11 +85,19 @@ type capture struct {
 
 type streamedResponse struct {
 	content          string
+	toolCalls        []ToolCall
 	usage            model.TokenUsage
 	reasoned         bool
 	sawContent       bool
+	sawToolCalls     bool
 	sawUsage         bool
 	lastFinishReason string
+}
+
+type toolCallBuilder struct {
+	id        string
+	name      string
+	arguments strings.Builder
 }
 
 type streamReadError struct {
@@ -116,11 +146,10 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 
 	payload := openai.ChatCompletionRequest{
-		Model: req.Model,
-		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
-			{Role: openai.ChatMessageRoleUser, Content: req.UserContent},
-		},
+		Model:             req.Model,
+		Messages:          buildMessages(req),
+		Tools:             buildTools(req.Tools),
+		ParallelToolCalls: false,
 		StreamOptions: &openai.StreamOptions{
 			IncludeUsage: true,
 		},
@@ -157,13 +186,15 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 
 	c.logf(
-		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s reasoning_effort=%s stream=%t",
+		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
 		payload.Model,
 		c.baseURL+"/chat/completions",
 		maxTokensLog,
 		temperatureLog,
 		payload.ReasoningEffort,
 		true,
+		len(payload.Messages),
+		len(payload.Tools),
 	)
 	c.logJSON("LLM request payload:", payload)
 
@@ -172,8 +203,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		return nil, err
 	}
 	c.logf(
-		"LLM stream summary: content_chunks=%t reasoning_chunks=%t usage_chunk=%t last_finish_reason=%q raw_response_bytes=%d",
+		"LLM stream summary: content_chunks=%t tool_calls=%t reasoning_chunks=%t usage_chunk=%t last_finish_reason=%q raw_response_bytes=%d",
 		streamed.sawContent,
+		streamed.sawToolCalls,
 		streamed.reasoned,
 		streamed.sawUsage,
 		streamed.lastFinishReason,
@@ -181,22 +213,83 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	)
 	c.logBlock("LLM raw model response:", streamed.content)
 
-	resp, err := parseReviewResponse(streamed.content)
-	if err != nil {
-		resp = invalidJSONFallback(streamed.content)
+	var resp *ReviewResponse
+	if len(streamed.toolCalls) > 0 {
+		resp = &ReviewResponse{ToolCalls: streamed.toolCalls}
+	} else {
+		var err error
+		resp, err = parseReviewResponse(streamed.content)
+		if err != nil {
+			resp = invalidJSONFallback(streamed.content)
+		}
 	}
-
 	resp.RawResponse = streamed.content
 	resp.TokensUsed = streamed.usage
 	c.logf(
-		"Parsed LLM response: findings=%d follow_up=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(resp.Findings),
-		len(resp.FollowUpRequests),
+		len(resp.ToolCalls),
 		resp.TokensUsed.PromptTokens,
 		resp.TokensUsed.CompletionTokens,
 		resp.TokensUsed.TotalTokens,
 	)
 	return resp, nil
+}
+
+func buildMessages(req *ReviewRequest) []openai.ChatCompletionMessage {
+	if len(req.Messages) > 0 {
+		messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages))
+		for _, msg := range req.Messages {
+			messages = append(messages, toOpenAIMessage(msg))
+		}
+		return messages
+	}
+	return []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
+		{Role: openai.ChatMessageRoleUser, Content: req.UserContent},
+	}
+}
+
+func buildTools(tools []ToolDefinition) []openai.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	converted := make([]openai.Tool, 0, len(tools))
+	for _, tool := range tools {
+		converted = append(converted, openai.Tool{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  tool.Parameters,
+				Strict:      true,
+			},
+		})
+	}
+	return converted
+}
+
+func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
+	converted := openai.ChatCompletionMessage{
+		Role:       msg.Role,
+		Content:    msg.Content,
+		Name:       msg.Name,
+		ToolCallID: msg.ToolCallID,
+	}
+	if len(msg.ToolCalls) > 0 {
+		converted.ToolCalls = make([]openai.ToolCall, 0, len(msg.ToolCalls))
+		for _, call := range msg.ToolCalls {
+			converted.ToolCalls = append(converted.ToolCalls, openai.ToolCall{
+				ID:   call.ID,
+				Type: openai.ToolTypeFunction,
+				Function: openai.FunctionCall{
+					Name:      call.Name,
+					Arguments: call.Arguments,
+				},
+			})
+		}
+	}
+	return converted
 }
 
 func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest) (*streamedResponse, error) {
@@ -265,10 +358,12 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
+		toolCalls        []*toolCallBuilder
 		usage            model.TokenUsage
 		reasoningStarted bool
 		sawUsage         bool
 		sawContent       bool
+		sawToolCalls     bool
 		lastFinishReason string
 		receivedChunk    bool
 	)
@@ -292,9 +387,11 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 				}
 				return &streamedResponse{
 					content:          contentBuilder.String(),
+					toolCalls:        finalizeToolCalls(toolCalls),
 					usage:            usage,
 					reasoned:         reasoningStarted,
 					sawContent:       sawContent,
+					sawToolCalls:     sawToolCalls,
 					sawUsage:         sawUsage,
 					lastFinishReason: lastFinishReason,
 				}, nil
@@ -344,8 +441,55 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 				contentBuilder.WriteString(choice.Delta.Content)
 				sawContent = true
 			}
+			if len(choice.Delta.ToolCalls) > 0 {
+				sawToolCalls = true
+				mergeToolCallDeltas(&toolCalls, choice.Delta.ToolCalls)
+			}
 		}
 	}
+}
+
+func mergeToolCallDeltas(builders *[]*toolCallBuilder, deltas []openai.ToolCall) {
+	for _, delta := range deltas {
+		index := 0
+		if delta.Index != nil && *delta.Index >= 0 {
+			index = *delta.Index
+		}
+		for len(*builders) <= index {
+			*builders = append(*builders, nil)
+		}
+		if (*builders)[index] == nil {
+			(*builders)[index] = &toolCallBuilder{}
+		}
+		builder := (*builders)[index]
+		if delta.ID != "" {
+			builder.id = delta.ID
+		}
+		if delta.Function.Name != "" {
+			builder.name = delta.Function.Name
+		}
+		if delta.Function.Arguments != "" {
+			builder.arguments.WriteString(delta.Function.Arguments)
+		}
+	}
+}
+
+func finalizeToolCalls(builders []*toolCallBuilder) []ToolCall {
+	if len(builders) == 0 {
+		return nil
+	}
+	toolCalls := make([]ToolCall, 0, len(builders))
+	for _, builder := range builders {
+		if builder == nil {
+			continue
+		}
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        builder.id,
+			Name:      builder.name,
+			Arguments: builder.arguments.String(),
+		})
+	}
+	return toolCalls
 }
 
 func invalidJSONFallback(content string) *ReviewResponse {

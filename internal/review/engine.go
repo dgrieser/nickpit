@@ -2,7 +2,9 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/debuglog"
@@ -20,6 +22,18 @@ type Engine struct {
 	trimmer   *Trimmer
 	logger    *debuglog.Logger
 }
+
+var inspectFileToolParameters = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Repo-relative file path"
+    }
+  },
+  "required": ["path"],
+  "additionalProperties": false
+}`)
 
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {
 	return &Engine{
@@ -92,9 +106,19 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		schema = llm.FindingsSchema
 	}
 
+	messages := []llm.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
 	llmReq := &llm.ReviewRequest{
-		SystemPrompt:    systemPrompt,
-		UserContent:     userPrompt,
+		Messages: messages,
+		Tools: []llm.ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve the complete contents of one repo-relative file for code review.",
+				Parameters:  inspectFileToolParameters,
+			},
+		},
 		Schema:          schema,
 		Model:           e.config.Model,
 		MaxTokens:       e.config.MaxTokens,
@@ -102,36 +126,33 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		ReasoningEffort: e.config.ReasoningEffort,
 	}
 
-	resp, err := e.llm.Review(ctx, llmReq)
-	if err != nil {
-		return nil, err
-	}
+	totalUsage := model.TokenUsage{}
+	toolRoundsUsed := 0
+	var resp *llm.ReviewResponse
 
-	for round := 0; round < req.FollowUpRounds; round++ {
-		if len(resp.FollowUpRequests) == 0 || e.retrieval == nil {
-			e.logf("Follow-up loop stopped: round=%d requests=%d retrieval=%t", round+1, len(resp.FollowUpRequests), e.retrieval != nil)
-			break
-		}
-		e.logf("Running follow-up round: round=%d requests=%d", round+1, len(resp.FollowUpRequests))
-		reviewCtx.SupplementalContext = append(reviewCtx.SupplementalContext, ExecuteRetrievals(ctx, e.retrieval, req.RepoRoot, resp.FollowUpRequests, e.logf)...)
-		trimmed = trimmer.Trim(reviewCtx)
-		e.logf("Trimmed context: round=%d supplemental=%d omitted=%d", round+1, len(trimmed.SupplementalContext), len(trimmed.OmittedSections))
-		e.logJSON("Rendered follow-up context JSON:", trimmed)
-
-		systemPrompt, err = e.loadPrompt("followup_system.tmpl")
-		if err != nil {
-			return nil, err
-		}
-		userPrompt, err = llm.RenderJSON(model.FollowUpPayloadFromContext(trimmed, resp.FollowUpRequests))
-		if err != nil {
-			return nil, fmt.Errorf("review: rendering follow-up prompt json: %w", err)
-		}
-		llmReq.SystemPrompt = systemPrompt
-		llmReq.UserContent = userPrompt
+	for {
+		llmReq.Messages = messages
 		resp, err = e.llm.Review(ctx, llmReq)
 		if err != nil {
 			return nil, err
 		}
+		totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
+		totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
+		totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
+
+		if len(resp.ToolCalls) == 0 {
+			break
+		}
+		if toolRoundsUsed >= req.ToolRounds {
+			resp = toolRoundLimitResponse(req.ToolRounds, resp.ToolCalls)
+			break
+		}
+		e.logf("Executing tool round: round=%d tool_calls=%d", toolRoundsUsed+1, len(resp.ToolCalls))
+		assistantMessage := llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
+		messages = append(messages, assistantMessage)
+		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls)
+		messages = append(messages, toolMessages...)
+		toolRoundsUsed++
 	}
 
 	filtered := filterByPriority(resp.Findings, req.PriorityThreshold)
@@ -141,12 +162,12 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		OverallCorrectness:     resp.OverallCorrectness,
 		OverallExplanation:     resp.OverallExplanation,
 		OverallConfidenceScore: resp.OverallConfidenceScore,
-		TokensUsed:             resp.TokensUsed,
+		TokensUsed:             totalUsage,
 		Model:                  e.config.Model,
 		Mode:                   string(req.Mode),
 		Repo:                   req.Repo,
 		Identifier:             req.Identifier,
-		FollowUpRound:          req.FollowUpRounds,
+		ToolRounds:             toolRoundsUsed,
 	}, nil
 }
 
@@ -171,6 +192,101 @@ func reviewOutputSchemaSnippetFor(useJSONSchema bool) string {
 		return ""
 	}
 	return llm.FindingsExamplePromptSnippet()
+}
+
+func toolRoundLimitResponse(limit int, toolCalls []llm.ToolCall) *llm.ReviewResponse {
+	names := make([]string, 0, len(toolCalls))
+	for _, call := range toolCalls {
+		names = append(names, call.Name)
+	}
+	return &llm.ReviewResponse{
+		Findings: []model.Finding{
+			{
+				Title:           "[P2] Return final review JSON instead of more tool calls",
+				Body:            fmt.Sprintf("The model requested additional tool calls after reaching the configured tool-call limit (%d), so the review could not be finalized as structured JSON.", limit),
+				ConfidenceScore: 0.2,
+				Priority:        priorityPtr(2),
+				CodeLocation: model.CodeLocation{
+					FilePath: "",
+					LineRange: model.LineRange{
+						Start: 1,
+						End:   1,
+					},
+				},
+			},
+		},
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     fmt.Sprintf("tool round limit reached after tool calls: %s", strings.Join(names, ", ")),
+		OverallConfidenceScore: 0.2,
+		ToolCalls:              toolCalls,
+	}
+}
+
+func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall) []llm.Message {
+	results := make([]llm.Message, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		results = append(results, llm.Message{
+			Role:       "tool",
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Name,
+			Content:    e.executeToolCall(ctx, repoRoot, toolCall),
+		})
+	}
+	return results
+}
+
+func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall) string {
+	if e.retrieval == nil {
+		return mustToolResultJSON(map[string]any{
+			"error": "retrieval is unavailable for this review",
+		})
+	}
+	if toolCall.Name != "inspect_file" {
+		return mustToolResultJSON(map[string]any{
+			"error": fmt.Sprintf("unsupported tool %q", toolCall.Name),
+		})
+	}
+
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		return mustToolResultJSON(map[string]any{
+			"error": fmt.Sprintf("invalid tool arguments: %v", err),
+		})
+	}
+	args.Path = strings.TrimSpace(args.Path)
+	if args.Path == "" {
+		return mustToolResultJSON(map[string]any{
+			"error": "missing required argument: path",
+		})
+	}
+
+	e.logf("Executing tool call: name=%s path=%s", toolCall.Name, args.Path)
+	content, err := e.retrieval.GetFile(ctx, repoRoot, args.Path)
+	if err != nil {
+		return mustToolResultJSON(map[string]any{
+			"path":  args.Path,
+			"error": err.Error(),
+		})
+	}
+	return mustToolResultJSON(map[string]any{
+		"path":     content.Path,
+		"language": content.Language,
+		"content":  content.Content,
+	})
+}
+
+func mustToolResultJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return `{"error":"failed to encode tool result"}`
+	}
+	return string(data)
+}
+
+func priorityPtr(v int) *int {
+	return &v
 }
 
 func (e *Engine) logf(format string, args ...any) {

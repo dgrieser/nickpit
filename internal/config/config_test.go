@@ -10,7 +10,7 @@ func TestDefaultConfigUsesOpenRouterDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	profile := cfg.Profiles[DefaultProfileName]
 
-	if profile.Model != "nvidia/nemotron-3-super-120b-a12b:free" {
+	if profile.Model != "openai/gpt-oss-120b:free" {
 		t.Fatalf("model = %q", profile.Model)
 	}
 	if profile.BaseURL != "https://openrouter.ai/api/v1" {
@@ -177,5 +177,34 @@ profiles:
 	}
 	if *profile.MaxTokens != 2048 {
 		t.Fatalf("max_tokens = %d", *profile.MaxTokens)
+	}
+}
+
+func TestLoadConfigToolRoundsFromFileAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    default_tool_rounds: 2
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.DefaultToolRounds != 2 {
+		t.Fatalf("default tool rounds = %d", profile.DefaultToolRounds)
+	}
+
+	_, profile, err = Load(path, Overrides{ToolRounds: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.DefaultToolRounds != 4 {
+		t.Fatalf("override default tool rounds = %d", profile.DefaultToolRounds)
 	}
 }
