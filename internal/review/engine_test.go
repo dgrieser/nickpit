@@ -2,6 +2,8 @@ package review
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -44,15 +46,47 @@ func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse,
 
 type capturingLLM struct {
 	reqs []*llm.ReviewRequest
+	resps []*llm.ReviewResponse
 }
 
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	s.reqs = append(s.reqs, req)
+	if len(s.resps) > 0 {
+		resp := s.resps[0]
+		s.resps = s.resps[1:]
+		return resp, nil
+	}
 	return &llm.ReviewResponse{
 		OverallCorrectness:     "patch is correct",
 		OverallExplanation:     "summary",
 		OverallConfidenceScore: 0.5,
 	}, nil
+}
+
+type stubRetrieval struct{}
+
+func (stubRetrieval) GetFile(context.Context, string, string) (*retrieval.FileContent, error) {
+	return &retrieval.FileContent{
+		Path:     "extra.go",
+		Content:  "package extra",
+		Language: "go",
+	}, nil
+}
+
+func (stubRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
+	return nil, errors.New("unexpected GetFileSlice call")
+}
+
+func (stubRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
+	return nil, errors.New("unexpected GetSymbol call")
+}
+
+func (stubRetrieval) FindCallers(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
+	return nil, errors.New("unexpected FindCallers call")
+}
+
+func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
+	return nil, errors.New("unexpected FindCallees call")
 }
 
 func TestEnginePriorityFilter(t *testing.T) {
@@ -104,8 +138,27 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "\"title\": \"[P1] Example title\""; !strings.Contains(req.SystemPrompt, want) {
 		t.Fatalf("system prompt missing example finding JSON: %q", req.SystemPrompt)
 	}
-	if contains := "Repository: repo"; !strings.Contains(req.UserContent, contains) {
-		t.Fatalf("user prompt missing %q: %q", contains, req.UserContent)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(req.UserContent), &payload); err != nil {
+		t.Fatalf("user prompt should be valid json: %v\n%s", err, req.UserContent)
+	}
+	repository, ok := payload["repository"].(map[string]any)
+	if !ok {
+		t.Fatalf("user prompt missing repository object: %#v", payload)
+	}
+	if repository["full_name"] != "repo" {
+		t.Fatalf("repository.full_name = %#v", repository["full_name"])
+	}
+	if payload["title"] != "title" {
+		t.Fatalf("title = %#v", payload["title"])
+	}
+	if _, ok := payload["changed_files"]; !ok {
+		t.Fatalf("user prompt missing changed_files: %#v", payload)
+	}
+	for _, unwanted := range []string{"mode", "checkout_root", "diff"} {
+		if _, exists := payload[unwanted]; exists {
+			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])
+		}
 	}
 }
 
@@ -125,6 +178,63 @@ func TestEngineDoesNotUseAPISchemaByDefault(t *testing.T) {
 	}
 	if len(llmClient.reqs[0].Schema) != 0 {
 		t.Fatalf("schema should be empty by default, got %s", string(llmClient.reqs[0].Schema))
+	}
+}
+
+func TestEngineFollowUpPromptUsesJSONInspectPayload(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				FollowUpRequests: []model.FollowUpRequest{
+					{Type: "file", Path: "extra.go", Reason: "need more context"},
+				},
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		FollowUpRounds:   1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].UserContent), &payload); err != nil {
+		t.Fatalf("follow-up prompt should be valid json: %v\n%s", err, llmClient.reqs[1].UserContent)
+	}
+	if _, ok := payload["follow_up_requests"]; !ok {
+		t.Fatalf("follow-up prompt missing follow_up_requests: %#v", payload)
+	}
+	items, ok := payload["supplemental_context"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("supplemental_context = %#v", payload["supplemental_context"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("supplemental item = %#v", items[0])
+	}
+	if item["path"] != "extra.go" || item["content"] != "package extra" || item["language"] != "go" {
+		t.Fatalf("supplemental item = %#v", item)
+	}
+	for _, unwanted := range []string{"reason", "kind"} {
+		if _, exists := item[unwanted]; exists {
+			t.Fatalf("supplemental item unexpectedly contains %q: %#v", unwanted, item[unwanted])
+		}
 	}
 }
 

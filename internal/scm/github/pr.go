@@ -167,7 +167,8 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 	}
 	hunks, _, _ := git.ParseUnifiedDiff(diff.String())
 	return &model.ReviewContext{
-		Mode: model.ModeGitHub,
+		Mode:       model.ModeGitHub,
+		Identifier: number,
 		Repository: model.RepositoryInfo{
 			FullName: repo,
 			BaseRef:  pr.Base.Ref,

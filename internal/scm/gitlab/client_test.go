@@ -38,6 +38,12 @@ func TestFetchMR(t *testing.T) {
 	if ctx.Title != "Example MR" {
 		t.Fatalf("title = %q", ctx.Title)
 	}
+	if ctx.Identifier != 456 {
+		t.Fatalf("identifier = %d", ctx.Identifier)
+	}
+	if ctx.Repository.URL != "https://gitlab.com/group/project/-/merge_requests/456" {
+		t.Fatalf("repository url = %q", ctx.Repository.URL)
+	}
 	if len(ctx.Comments) != 1 {
 		t.Fatalf("comments = %d", len(ctx.Comments))
 	}

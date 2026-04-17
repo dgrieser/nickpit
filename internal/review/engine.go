@@ -3,7 +3,6 @@ package review
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/debuglog"
@@ -43,6 +42,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	}
 	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	reviewCtx.CheckoutRoot = req.RepoRoot
+	reviewCtx.Identifier = req.Identifier
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
 		e.logf("Including full files: count=%d", len(reviewCtx.ChangedFiles))
@@ -70,7 +70,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	trimmed := trimmer.Trim(reviewCtx)
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	e.logJSON("Rendered review context JSON:", trimmed)
-	systemTemplate, err := e.loadPrompt(req.ReviewSystemPromptFile, "review_system.tmpl")
+	systemTemplate, err := e.loadPrompt("review_system.tmpl")
 	if err != nil {
 		return nil, err
 	}
@@ -82,13 +82,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering review system prompt: %w", err)
 	}
-	userTemplate, err := e.loadPrompt(req.ReviewUserPromptFile, "review_user.tmpl")
+	userPrompt, err := llm.RenderJSON(model.PromptPayloadFromContext(trimmed))
 	if err != nil {
-		return nil, err
-	}
-	userPrompt, err := llm.RenderPrompt(userTemplate, trimmed)
-	if err != nil {
-		return nil, fmt.Errorf("review: rendering review prompt: %w", err)
+		return nil, fmt.Errorf("review: rendering review prompt json: %w", err)
 	}
 
 	var schema []byte
@@ -122,17 +118,13 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		e.logf("Trimmed context: round=%d supplemental=%d omitted=%d", round+1, len(trimmed.SupplementalContext), len(trimmed.OmittedSections))
 		e.logJSON("Rendered follow-up context JSON:", trimmed)
 
-		systemPrompt, err = e.loadPrompt(req.FollowUpSystemPromptFile, "followup_system.tmpl")
+		systemPrompt, err = e.loadPrompt("followup_system.tmpl")
 		if err != nil {
 			return nil, err
 		}
-		followupTemplate, err := e.loadPrompt(req.FollowUpUserPromptFile, "followup_user.tmpl")
+		userPrompt, err = llm.RenderJSON(model.FollowUpPayloadFromContext(trimmed, resp.FollowUpRequests))
 		if err != nil {
-			return nil, err
-		}
-		userPrompt, err = llm.RenderPrompt(followupTemplate, trimmed)
-		if err != nil {
-			return nil, fmt.Errorf("review: rendering follow-up prompt: %w", err)
+			return nil, fmt.Errorf("review: rendering follow-up prompt json: %w", err)
 		}
 		llmReq.SystemPrompt = systemPrompt
 		llmReq.UserContent = userPrompt
@@ -158,17 +150,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	}, nil
 }
 
-func (e *Engine) loadPrompt(path, fallback string) (string, error) {
-	if path != "" {
-		e.logf("Loading prompt: source=override path=%s", path)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", fmt.Errorf("review: reading prompt %s: %w", path, err)
-		}
-		return string(data), nil
-	}
-	e.logf("Loading prompt: source=embedded name=%s", fallback)
-	return prompts.Load(fallback)
+func (e *Engine) loadPrompt(name string) (string, error) {
+	e.logf("Loading prompt: source=embedded name=%s", name)
+	return prompts.Load(name)
 }
 
 func filterByPriority(findings []model.Finding, threshold string) []model.Finding {

@@ -123,7 +123,8 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 	}
 	hunks, _, _ := git.ParseUnifiedDiff(diff.String())
 	return &model.ReviewContext{
-		Mode: model.ModeGitLab,
+		Mode:       model.ModeGitLab,
+		Identifier: iid,
 		Repository: model.RepositoryInfo{
 			FullName: project,
 			BaseRef:  mr.TargetBranch,

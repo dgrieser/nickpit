@@ -12,7 +12,7 @@ import (
 
 const (
 	DefaultProfileName     = "default"
-	DefaultModel           = "nvidia/nemotron-3-super-120b-a12b:free"
+	DefaultModel           = "openai/gpt-oss-120b:free"
 	DefaultBaseURL         = "https://openrouter.ai/api/v1"
 	DefaultMaxContextToken = 120000
 	DefaultFollowUps       = 5
@@ -26,45 +26,37 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                    string   `yaml:"model"`
-	BaseURL                  string   `yaml:"base_url"`
-	APIKey                   string   `yaml:"api_key"`
-	MaxTokens                *int     `yaml:"max_tokens"`
-	Temperature              *float64 `yaml:"temperature"`
-	UseJSONSchema            bool     `yaml:"use_json_schema"`
-	MaxContextTokens         int      `yaml:"max_context_tokens"`
-	DefaultFollowUps         int      `yaml:"default_followups"`
-	ReasoningEffort          string   `yaml:"reasoning_effort"`
-	LocalRepo                string   `yaml:"local_repo"`
-	GitHubToken              string   `yaml:"github_token"`
-	GitLabToken              string   `yaml:"gitlab_token"`
-	GitLabBaseURL            string   `yaml:"gitlab_base_url"`
-	ReviewSystemPromptFile   string   `yaml:"review_system_prompt_file"`
-	ReviewUserPromptFile     string   `yaml:"review_user_prompt_file"`
-	FollowUpSystemPromptFile string   `yaml:"followup_system_prompt_file"`
-	FollowUpUserPromptFile   string   `yaml:"followup_user_prompt_file"`
-	APIKeyConfigured         bool     `yaml:"-"`
+	Model            string   `yaml:"model"`
+	BaseURL          string   `yaml:"base_url"`
+	APIKey           string   `yaml:"api_key"`
+	MaxTokens        *int     `yaml:"max_tokens"`
+	Temperature      *float64 `yaml:"temperature"`
+	UseJSONSchema    bool     `yaml:"use_json_schema"`
+	MaxContextTokens int      `yaml:"max_context_tokens"`
+	DefaultFollowUps int      `yaml:"default_followups"`
+	ReasoningEffort  string   `yaml:"reasoning_effort"`
+	LocalRepo        string   `yaml:"local_repo"`
+	GitHubToken      string   `yaml:"github_token"`
+	GitLabToken      string   `yaml:"gitlab_token"`
+	GitLabBaseURL    string   `yaml:"gitlab_base_url"`
+	APIKeyConfigured bool     `yaml:"-"`
 }
 
 type Overrides struct {
-	Profile                  string
-	Model                    string
-	BaseURL                  string
-	APIKey                   string
-	MaxTokens                *int
-	Temperature              *float64
-	UseJSONSchema            bool
-	MaxContextTokens         int
-	FollowUps                int
-	ReasoningEffort          string
-	LocalRepo                string
-	GitHubToken              string
-	GitLabToken              string
-	GitLabBaseURL            string
-	ReviewSystemPromptFile   string
-	ReviewUserPromptFile     string
-	FollowUpSystemPromptFile string
-	FollowUpUserPromptFile   string
+	Profile          string
+	Model            string
+	BaseURL          string
+	APIKey           string
+	MaxTokens        *int
+	Temperature      *float64
+	UseJSONSchema    bool
+	MaxContextTokens int
+	FollowUps        int
+	ReasoningEffort  string
+	LocalRepo        string
+	GitHubToken      string
+	GitLabToken      string
+	GitLabBaseURL    string
 }
 
 func DefaultConfig() *Config {
@@ -210,18 +202,6 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	if overrides.GitLabBaseURL != "" {
 		profile.GitLabBaseURL = overrides.GitLabBaseURL
 	}
-	if overrides.ReviewSystemPromptFile != "" {
-		profile.ReviewSystemPromptFile = overrides.ReviewSystemPromptFile
-	}
-	if overrides.ReviewUserPromptFile != "" {
-		profile.ReviewUserPromptFile = overrides.ReviewUserPromptFile
-	}
-	if overrides.FollowUpSystemPromptFile != "" {
-		profile.FollowUpSystemPromptFile = overrides.FollowUpSystemPromptFile
-	}
-	if overrides.FollowUpUserPromptFile != "" {
-		profile.FollowUpUserPromptFile = overrides.FollowUpUserPromptFile
-	}
 	return normalizeProfile(profile)
 }
 
@@ -244,10 +224,6 @@ func normalizeProfile(profile Profile) Profile {
 	if profile.GitLabBaseURL == "" {
 		profile.GitLabBaseURL = "https://gitlab.com/api/v4"
 	}
-	profile.ReviewSystemPromptFile = expandPath(profile.ReviewSystemPromptFile)
-	profile.ReviewUserPromptFile = expandPath(profile.ReviewUserPromptFile)
-	profile.FollowUpSystemPromptFile = expandPath(profile.FollowUpSystemPromptFile)
-	profile.FollowUpUserPromptFile = expandPath(profile.FollowUpUserPromptFile)
 	return profile
 }
 

@@ -37,10 +37,6 @@ type app struct {
 	followUps                int
 	offline                  bool
 	priorityThreshold        string
-	reviewSystemPromptFile   string
-	reviewUserPromptFile     string
-	followUpSystemPromptFile string
-	followUpUserPromptFile   string
 	configPath               string
 	localRepo                string
 	githubToken              string
@@ -89,10 +85,6 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().IntVar(&cli.followUps, "followups", 5, "Maximum follow-up rounds")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
-	root.PersistentFlags().StringVar(&cli.reviewSystemPromptFile, "prompt-file-system-review", "", "Custom review system prompt file")
-	root.PersistentFlags().StringVar(&cli.reviewUserPromptFile, "prompt-file-user-review", "", "Custom review user prompt file")
-	root.PersistentFlags().StringVar(&cli.followUpSystemPromptFile, "prompt-file-system-followup", "", "Custom follow-up system prompt file")
-	root.PersistentFlags().StringVar(&cli.followUpUserPromptFile, "prompt-file-user-followup", "", "Custom follow-up user prompt file")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
 	root.PersistentFlags().StringVar(&cli.localRepo, "local-repo", "", "Use an existing local clone for remote retrieval instead of cloning")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
@@ -121,10 +113,6 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		GitHubToken:              a.githubToken,
 		GitLabToken:              a.gitlabToken,
 		GitLabBaseURL:            a.gitlabBaseURL,
-		ReviewSystemPromptFile:   a.reviewSystemPromptFile,
-		ReviewUserPromptFile:     a.reviewUserPromptFile,
-		FollowUpSystemPromptFile: a.followUpSystemPromptFile,
-		FollowUpUserPromptFile:   a.followUpUserPromptFile,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -167,10 +155,6 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				FollowUpRounds:           profile.DefaultFollowUps,
 				UseJSONSchema:            profile.UseJSONSchema,
 				PriorityThreshold:        a.priorityThreshold,
-				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
-				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
-				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
-				FollowUpUserPromptFile:   profile.FollowUpUserPromptFile,
 				Submode:                  submode,
 			}
 			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
@@ -220,10 +204,6 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				FollowUpRounds:           profile.DefaultFollowUps,
 				UseJSONSchema:            profile.UseJSONSchema,
 				PriorityThreshold:        a.priorityThreshold,
-				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
-				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
-				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
-				FollowUpUserPromptFile:   profile.FollowUpUserPromptFile,
 				Offline:                  a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
@@ -269,10 +249,6 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				FollowUpRounds:           profile.DefaultFollowUps,
 				UseJSONSchema:            profile.UseJSONSchema,
 				PriorityThreshold:        a.priorityThreshold,
-				ReviewSystemPromptFile:   profile.ReviewSystemPromptFile,
-				ReviewUserPromptFile:     profile.ReviewUserPromptFile,
-				FollowUpSystemPromptFile: profile.FollowUpSystemPromptFile,
-				FollowUpUserPromptFile:   profile.FollowUpUserPromptFile,
 				Offline:                  a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)

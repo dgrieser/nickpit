@@ -37,6 +37,12 @@ func TestFetchPR(t *testing.T) {
 	if ctx.Title != "Example PR" {
 		t.Fatalf("title = %q", ctx.Title)
 	}
+	if ctx.Identifier != 123 {
+		t.Fatalf("identifier = %d", ctx.Identifier)
+	}
+	if ctx.Repository.URL != "https://github.com/owner/repo/pull/123" {
+		t.Fatalf("repository url = %q", ctx.Repository.URL)
+	}
 	if len(ctx.ChangedFiles) != 1 {
 		t.Fatalf("changed files = %d", len(ctx.ChangedFiles))
 	}

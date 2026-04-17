@@ -60,15 +60,6 @@ nickpit github pr --repo owner/repo --pr 123 --debug
 Append `--verbose` or `--debug` to print step-by-step execution details to stderr, including prompt rendering and raw LLM request/response payloads.
 
 
-### Custom Prompts
-
-Prompt overrides are split by role:
-
-- `--prompt-file-system-review`
-- `--prompt-file-user-review`
-- `--prompt-file-system-followup`
-- `--prompt-file-user-followup`
-
 ### Output Schema Mode
 
 By default, NickPit includes the expected JSON schema directly in the system prompt.

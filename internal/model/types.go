@@ -38,10 +38,6 @@ type ReviewRequest struct {
 	FollowUpRounds           int
 	UseJSONSchema            bool
 	PriorityThreshold        string
-	ReviewSystemPromptFile   string
-	ReviewUserPromptFile     string
-	FollowUpSystemPromptFile string
-	FollowUpUserPromptFile   string
 	Offline                  bool
 	Submode                  string
 }
@@ -62,6 +58,7 @@ type ReviewResult struct {
 type ReviewContext struct {
 	Mode                ReviewMode         `json:"mode"`
 	CheckoutRoot        string             `json:"checkout_root,omitempty"`
+	Identifier          int                `json:"identifier,omitempty"`
 	Repository          RepositoryInfo     `json:"repository"`
 	Title               string             `json:"title"`
 	Description         string             `json:"description"`
@@ -72,6 +69,33 @@ type ReviewContext struct {
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	OmittedSections     []string           `json:"omitted_sections,omitempty"`
+}
+
+type ReviewPromptPayload struct {
+	Repository          RepositoryInfo     `json:"repository"`
+	Identifier          int                `json:"identifier,omitempty"`
+	Title               string             `json:"title"`
+	Description         string             `json:"description"`
+	Commits             []CommitSummary    `json:"commits,omitempty"`
+	ChangedFiles        []ChangedFile      `json:"changed_files"`
+	DiffHunks           []DiffHunk         `json:"diff_hunks,omitempty"`
+	Comments            []Comment          `json:"comments,omitempty"`
+	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
+	OmittedSections     []string           `json:"omitted_sections,omitempty"`
+}
+
+type FollowUpPromptPayload struct {
+	Repository          RepositoryInfo       `json:"repository"`
+	Identifier          int                  `json:"identifier,omitempty"`
+	Title               string               `json:"title"`
+	Description         string               `json:"description"`
+	Commits             []CommitSummary      `json:"commits,omitempty"`
+	ChangedFiles        []ChangedFile        `json:"changed_files"`
+	DiffHunks           []DiffHunk           `json:"diff_hunks,omitempty"`
+	Comments            []Comment            `json:"comments,omitempty"`
+	FollowUpRequests    []FollowUpRequest    `json:"follow_up_requests,omitempty"`
+	SupplementalContext []json.RawMessage    `json:"supplemental_context,omitempty"`
+	OmittedSections     []string             `json:"omitted_sections,omitempty"`
 }
 
 type RepositoryInfo struct {
@@ -221,4 +245,91 @@ func CloneContext(src *ReviewContext) *ReviewContext {
 	var out ReviewContext
 	_ = json.Unmarshal(data, &out)
 	return &out
+}
+
+func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
+	if src == nil {
+		return nil
+	}
+	return &ReviewPromptPayload{
+		Repository:          src.Repository,
+		Identifier:          src.Identifier,
+		Title:               src.Title,
+		Description:         src.Description,
+		Commits:             src.Commits,
+		ChangedFiles:        src.ChangedFiles,
+		DiffHunks:           src.DiffHunks,
+		Comments:            src.Comments,
+		SupplementalContext: src.SupplementalContext,
+		OmittedSections:     src.OmittedSections,
+	}
+}
+
+func FollowUpPayloadFromContext(src *ReviewContext, requests []FollowUpRequest) *FollowUpPromptPayload {
+	if src == nil {
+		return nil
+	}
+	return &FollowUpPromptPayload{
+		Repository:          src.Repository,
+		Identifier:          src.Identifier,
+		Title:               src.Title,
+		Description:         src.Description,
+		Commits:             src.Commits,
+		ChangedFiles:        src.ChangedFiles,
+		DiffHunks:           src.DiffHunks,
+		Comments:            src.Comments,
+		FollowUpRequests:    requests,
+		SupplementalContext: supplementalContextJSON(src.SupplementalContext),
+		OmittedSections:     src.OmittedSections,
+	}
+}
+
+func supplementalContextJSON(files []SupplementalFile) []json.RawMessage {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(files))
+	for _, file := range files {
+		var payload any
+		switch file.Kind {
+		case "lines":
+			payload = map[string]any{
+				"path":       file.Path,
+				"start_line": file.StartLine,
+				"end_line":   file.EndLine,
+				"content":    file.Content,
+				"language":   file.Language,
+			}
+		case "function":
+			payload = map[string]any{
+				"path":       file.Path,
+				"start_line": file.StartLine,
+				"end_line":   file.EndLine,
+				"source":     file.Content,
+				"language":   file.Language,
+			}
+		case "callers", "callees":
+			var raw json.RawMessage
+			if err := json.Unmarshal([]byte(file.Content), &raw); err == nil && len(raw) > 0 {
+				out = append(out, raw)
+				continue
+			}
+			payload = map[string]any{
+				"path":    file.Path,
+				"content": file.Content,
+			}
+		default:
+			payload = map[string]any{
+				"path":     file.Path,
+				"content":  file.Content,
+				"language": file.Language,
+			}
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			continue
+		}
+		out = append(out, data)
+	}
+	return out
 }
