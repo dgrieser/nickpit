@@ -100,10 +100,6 @@ func (l *Logger) PrintReasoningBanner() {
 	if l == nil {
 		return
 	}
-	if l.useANSI {
-		_, _ = fmt.Fprintf(l.w, "\x1b[90mReasoning...\x1b[0m\n")
-		return
-	}
 	_, _ = fmt.Fprintln(l.w, "Reasoning...")
 }
 

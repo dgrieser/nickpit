@@ -4,6 +4,8 @@ profiles:
     model: openai/gpt-oss-120b:free
     base_url: https://openrouter.ai/api/v1
     api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 4096
+    temperature: 0.2
     max_context_tokens: 120000
     default_followups: 1
     local_repo: ~/src/repo

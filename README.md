@@ -73,7 +73,15 @@ Prompt overrides are split by role:
 
 By default, NickPit includes the expected JSON schema directly in the system prompt.
 
-Use `--use-json-schema` to additionally send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
+NickPit does not send `response_format` unless `--use-json-schema` is enabled.
+
+Use `--use-json-schema` to send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
+
+### Temperature
+
+NickPit does not send a `temperature` parameter unless it is explicitly configured in the active profile, for example `temperature: 0.2`.
+
+NickPit also does not send `max_tokens` unless it is explicitly configured in the active profile, for example `max_tokens: 4096`.
 
 ### Filtering by Priority
 

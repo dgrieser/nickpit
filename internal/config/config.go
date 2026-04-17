@@ -12,7 +12,7 @@ import (
 
 const (
 	DefaultProfileName     = "default"
-	DefaultModel           = "openai/gpt-oss-120b:free"
+	DefaultModel           = "nvidia/nemotron-3-super-120b-a12b:free"
 	DefaultBaseURL         = "https://openrouter.ai/api/v1"
 	DefaultMaxContextToken = 120000
 	DefaultFollowUps       = 5
@@ -26,22 +26,24 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                    string `yaml:"model"`
-	BaseURL                  string `yaml:"base_url"`
-	APIKey                   string `yaml:"api_key"`
-	UseJSONSchema            bool   `yaml:"use_json_schema"`
-	MaxContextTokens         int    `yaml:"max_context_tokens"`
-	DefaultFollowUps         int    `yaml:"default_followups"`
-	ReasoningEffort          string `yaml:"reasoning_effort"`
-	LocalRepo                string `yaml:"local_repo"`
-	GitHubToken              string `yaml:"github_token"`
-	GitLabToken              string `yaml:"gitlab_token"`
-	GitLabBaseURL            string `yaml:"gitlab_base_url"`
-	ReviewSystemPromptFile   string `yaml:"review_system_prompt_file"`
-	ReviewUserPromptFile     string `yaml:"review_user_prompt_file"`
-	FollowUpSystemPromptFile string `yaml:"followup_system_prompt_file"`
-	FollowUpUserPromptFile   string `yaml:"followup_user_prompt_file"`
-	APIKeyConfigured         bool   `yaml:"-"`
+	Model                    string   `yaml:"model"`
+	BaseURL                  string   `yaml:"base_url"`
+	APIKey                   string   `yaml:"api_key"`
+	MaxTokens                *int     `yaml:"max_tokens"`
+	Temperature              *float64 `yaml:"temperature"`
+	UseJSONSchema            bool     `yaml:"use_json_schema"`
+	MaxContextTokens         int      `yaml:"max_context_tokens"`
+	DefaultFollowUps         int      `yaml:"default_followups"`
+	ReasoningEffort          string   `yaml:"reasoning_effort"`
+	LocalRepo                string   `yaml:"local_repo"`
+	GitHubToken              string   `yaml:"github_token"`
+	GitLabToken              string   `yaml:"gitlab_token"`
+	GitLabBaseURL            string   `yaml:"gitlab_base_url"`
+	ReviewSystemPromptFile   string   `yaml:"review_system_prompt_file"`
+	ReviewUserPromptFile     string   `yaml:"review_user_prompt_file"`
+	FollowUpSystemPromptFile string   `yaml:"followup_system_prompt_file"`
+	FollowUpUserPromptFile   string   `yaml:"followup_user_prompt_file"`
+	APIKeyConfigured         bool     `yaml:"-"`
 }
 
 type Overrides struct {
@@ -49,6 +51,8 @@ type Overrides struct {
 	Model                    string
 	BaseURL                  string
 	APIKey                   string
+	MaxTokens                *int
+	Temperature              *float64
 	UseJSONSchema            bool
 	MaxContextTokens         int
 	FollowUps                int
@@ -175,6 +179,12 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	}
 	if overrides.APIKey != "" {
 		profile.APIKey = overrides.APIKey
+	}
+	if overrides.MaxTokens != nil {
+		profile.MaxTokens = overrides.MaxTokens
+	}
+	if overrides.Temperature != nil {
+		profile.Temperature = overrides.Temperature
 	}
 	if overrides.UseJSONSchema {
 		profile.UseJSONSchema = true

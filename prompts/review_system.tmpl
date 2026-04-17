@@ -27,24 +27,23 @@ Use these priority levels:
 - P2: normal bug worth fixing
 - P3: low-priority issue
 
+### FOLLOW-UP REQUESTS
+Use the `followup_requests` field to request additional code context.
+
 ### VERDICT
 At the end, decide whether the patch is correct.
 "patch is correct" means the patch is free of blocking issues and should not break existing code or tests.
 Otherwise return "patch is incorrect".
 
 ## OUTPUT FORMAT
-Make sure to output the findings in JSON format.
-
-- DO NOT wrap the JSON in markdown fences or extra prose
-- produce JSON only and match the schema EXACTLY
-- if more context is required before you can decide, include precise optional `follow_up_requests`
-- DO NOT repeat unchanged findings across follow-up rounds
-- for `callers`, and `callees` follow-up requests, include both `symbol` and `path`
 {{if .OutputSchemaSnippet}}
-
-Example JSON output:
+Make sure to output the findings in the following JSON format:
 
 ```json
 {{.OutputSchemaSnippet}}
 ```
+- DO NOT wrap the JSON in markdown fences or extra prose
+- produce JSON only and match the schema EXACTLY
+{{else}}
+Make sure to output the findings using the specifed `response_format`
 {{end}}

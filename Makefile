@@ -16,6 +16,10 @@ build: ## Build the nickpit binary into ./bin
 	mkdir -p ./bin
 	go build -o ./bin/$(APP) ./cmd/$(APP)
 
+debug: ## Build debug version of nickpit binary into ./bin
+	mkdir -p ./bin
+	go build -o ./bin/$(APP) -gcflags "-N -l" ./cmd/$(APP)
+
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z0-9_.-]+:.*## / {printf "%-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 

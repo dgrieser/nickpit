@@ -26,6 +26,7 @@ type app struct {
 	model                    string
 	baseURL                  string
 	apiKey                   string
+	workDir                  string
 	profile                  string
 	maxContextTokens         int
 	includeFullFiles         bool
@@ -63,11 +64,21 @@ func newRootCmd() *cobra.Command {
 		Short:         "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			if cli.workDir == "" {
+				return nil
+			}
+			if err := os.Chdir(cli.workDir); err != nil {
+				return fmt.Errorf("changing working directory to %q: %w", cli.workDir, err)
+			}
+			return nil
+		},
 	}
 
 	root.PersistentFlags().StringVar(&cli.model, "model", "", "Model identifier")
 	root.PersistentFlags().StringVar(&cli.baseURL, "base-url", "", "LLM API base URL")
 	root.PersistentFlags().StringVar(&cli.apiKey, "api-key", "", "LLM API key")
+	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Set the process working directory before running the command")
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
 	root.PersistentFlags().IntVar(&cli.maxContextTokens, "max-context-tokens", 120000, "Context token budget")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")

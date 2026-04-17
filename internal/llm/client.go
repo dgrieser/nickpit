@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -24,14 +23,15 @@ type Client interface {
 }
 
 type OpenAIClient struct {
-	baseURL    string
-	apiKey     string
-	model      string
-	httpClient *http.Client
-	sdkClient  *openai.Client
-	retrier    *Retrier
-	logger     *debuglog.Logger
-	transport  *capturingTransport
+	baseURL            string
+	apiKey             string
+	model              string
+	emptyMessagesLimit uint
+	httpClient         *http.Client
+	sdkClient          *openai.Client
+	retrier            *Retrier
+	logger             *debuglog.Logger
+	transport          *capturingTransport
 }
 
 type ReviewRequest struct {
@@ -39,8 +39,8 @@ type ReviewRequest struct {
 	UserContent     string
 	Schema          json.RawMessage
 	Model           string
-	MaxTokens       int
-	Temperature     float64
+	MaxTokens       *int
+	Temperature     *float64
 	ReasoningEffort string
 }
 
@@ -62,9 +62,12 @@ type capture struct {
 }
 
 type streamedResponse struct {
-	content  string
-	usage    model.TokenUsage
-	reasoned bool
+	content          string
+	usage            model.TokenUsage
+	reasoned         bool
+	sawContent       bool
+	sawUsage         bool
+	lastFinishReason string
 }
 
 type streamReadError struct {
@@ -83,22 +86,23 @@ func (e *streamReadError) Unwrap() error {
 func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	transport := &capturingTransport{base: http.DefaultTransport}
 	httpClient := &http.Client{
-		Timeout:   90 * time.Second,
 		Transport: transport,
 	}
 
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = strings.TrimRight(baseURL, "/")
 	config.HTTPClient = httpClient
+	config.EmptyMessagesLimit = 100000
 
 	return &OpenAIClient{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		apiKey:     apiKey,
-		model:      model,
-		httpClient: httpClient,
-		sdkClient:  openai.NewClientWithConfig(config),
-		retrier:    NewRetrier(),
-		transport:  transport,
+		baseURL:            strings.TrimRight(baseURL, "/"),
+		apiKey:             apiKey,
+		model:              model,
+		emptyMessagesLimit: config.EmptyMessagesLimit,
+		httpClient:         httpClient,
+		sdkClient:          openai.NewClientWithConfig(config),
+		retrier:            NewRetrier(),
+		transport:          transport,
 	}
 }
 
@@ -117,17 +121,22 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			{Role: openai.ChatMessageRoleSystem, Content: req.SystemPrompt},
 			{Role: openai.ChatMessageRoleUser, Content: req.UserContent},
 		},
-		MaxTokens:   req.MaxTokens,
-		Temperature: float32(req.Temperature),
-		ResponseFormat: &openai.ChatCompletionResponseFormat{
-			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
-		},
 		StreamOptions: &openai.StreamOptions{
 			IncludeUsage: true,
 		},
 	}
 	if payload.Model == "" {
 		payload.Model = c.model
+	}
+	maxTokensLog := "unset"
+	if req.MaxTokens != nil {
+		payload.MaxTokens = *req.MaxTokens
+		maxTokensLog = fmt.Sprintf("%d", *req.MaxTokens)
+	}
+	temperatureLog := "unset"
+	if req.Temperature != nil {
+		payload.Temperature = float32(*req.Temperature)
+		temperatureLog = fmt.Sprintf("%.2f", *req.Temperature)
 	}
 	if req.ReasoningEffort != "" {
 		payload.ReasoningEffort = req.ReasoningEffort
@@ -148,11 +157,11 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 
 	c.logf(
-		"LLM request prepared: model=%s endpoint=%s max_tokens=%d temperature=%.2f reasoning_effort=%s stream=%t",
+		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s reasoning_effort=%s stream=%t",
 		payload.Model,
 		c.baseURL+"/chat/completions",
-		payload.MaxTokens,
-		payload.Temperature,
+		maxTokensLog,
+		temperatureLog,
 		payload.ReasoningEffort,
 		true,
 	)
@@ -162,6 +171,14 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if err != nil {
 		return nil, err
 	}
+	c.logf(
+		"LLM stream summary: content_chunks=%t reasoning_chunks=%t usage_chunk=%t last_finish_reason=%q raw_response_bytes=%d",
+		streamed.sawContent,
+		streamed.reasoned,
+		streamed.sawUsage,
+		streamed.lastFinishReason,
+		len(streamed.content),
+	)
 	c.logBlock("LLM raw model response:", streamed.content)
 
 	resp, err := parseReviewResponse(streamed.content)
@@ -251,7 +268,11 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 		usage            model.TokenUsage
 		reasoningStarted bool
 		sawUsage         bool
+		sawContent       bool
+		lastFinishReason string
+		receivedChunk    bool
 	)
+	c.logf("LLM waiting for first stream chunk")
 
 	for {
 		chunk, err := stream.Recv()
@@ -270,9 +291,12 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 					c.logger.PrintBlankLine()
 				}
 				return &streamedResponse{
-					content:  contentBuilder.String(),
-					usage:    usage,
-					reasoned: reasoningStarted,
+					content:          contentBuilder.String(),
+					usage:            usage,
+					reasoned:         reasoningStarted,
+					sawContent:       sawContent,
+					sawUsage:         sawUsage,
+					lastFinishReason: lastFinishReason,
 				}, nil
 			}
 			if reasoningStarted {
@@ -292,11 +316,20 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 				TotalTokens:      chunk.Usage.TotalTokens,
 			}
 		}
+		if !receivedChunk {
+			receivedChunk = true
+			c.logf("LLM first stream chunk received")
+		}
+
 		for _, choice := range chunk.Choices {
 			if choice.Index != 0 {
 				continue
 			}
+			if choice.FinishReason != "" {
+				lastFinishReason = string(choice.FinishReason)
+			}
 			if choice.Delta.ReasoningContent != "" {
+
 				if !reasoningStarted {
 					reasoningStarted = true
 					if c.logger != nil {
@@ -309,6 +342,7 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 			}
 			if choice.Delta.Content != "" {
 				contentBuilder.WriteString(choice.Delta.Content)
+				sawContent = true
 			}
 		}
 	}

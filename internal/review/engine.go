@@ -101,8 +101,8 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		UserContent:     userPrompt,
 		Schema:          schema,
 		Model:           e.config.Model,
-		MaxTokens:       4096,
-		Temperature:     0.2,
+		MaxTokens:       e.config.MaxTokens,
+		Temperature:     e.config.Temperature,
 		ReasoningEffort: e.config.ReasoningEffort,
 	}
 

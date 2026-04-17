@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/debuglog"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 func TestClientReview(t *testing.T) {
@@ -67,11 +68,13 @@ func TestClientReview(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
+	maxTokens := 10
+	temperature := 0.25
 	resp, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt:    "system",
 		UserContent:     "user",
-		MaxTokens:       10,
-		Temperature:     0.25,
+		MaxTokens:       &maxTokens,
+		Temperature:     &temperature,
 		ReasoningEffort: "high",
 	})
 	if err != nil {
@@ -99,12 +102,126 @@ func TestClientReview(t *testing.T) {
 	if streamOptions["include_usage"] != true {
 		t.Fatalf("include_usage = %v", streamOptions["include_usage"])
 	}
-	responseFormat, ok := payload["response_format"].(map[string]any)
-	if !ok {
-		t.Fatalf("response_format = %#v", payload["response_format"])
+	if _, ok := payload["response_format"]; ok {
+		t.Fatalf("response_format should be omitted, payload=%#v", payload)
 	}
-	if responseFormat["type"] != "json_object" {
-		t.Fatalf("response_format.type = %v", responseFormat["type"])
+}
+
+func TestClientReviewOmitsMaxTokensWhenUnset(t *testing.T) {
+	var payload map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["max_tokens"]; ok {
+		t.Fatalf("max_tokens should be omitted, payload=%#v", payload)
+	}
+}
+
+func TestClientReviewOmitsTemperatureWhenUnset(t *testing.T) {
+	var payload map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["temperature"]; ok {
+		t.Fatalf("temperature should be omitted, payload=%#v", payload)
+	}
+}
+
+func TestNewOpenAIClientDisablesHTTPClientTimeoutForStreaming(t *testing.T) {
+	client := NewOpenAIClient("https://example.com", "token", "model")
+	if client.httpClient.Timeout != 0 {
+		t.Fatalf("http client timeout = %v", client.httpClient.Timeout)
+	}
+}
+
+func TestNewOpenAIClientRaisesEmptyMessageLimitForStreaming(t *testing.T) {
+	client := NewOpenAIClient("https://example.com", "token", "model")
+	config := openai.DefaultConfig("token")
+	if client.emptyMessagesLimit != 100000 {
+		t.Fatalf("empty message limit = %d", client.emptyMessagesLimit)
+	}
+	if config.EmptyMessagesLimit >= 100000 {
+		t.Fatalf("default empty message limit unexpectedly high: %d", config.EmptyMessagesLimit)
 	}
 }
 
@@ -150,7 +267,6 @@ func TestClientReviewUsesJSONSchemaWhenProvided(t *testing.T) {
 		SystemPrompt: "system",
 		UserContent:  "user",
 		Schema:       FindingsSchema,
-		MaxTokens:    10,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -10,7 +10,7 @@ func TestDefaultConfigUsesOpenRouterDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	profile := cfg.Profiles[DefaultProfileName]
 
-	if profile.Model != "openai/gpt-oss-120b:free" {
+	if profile.Model != "nvidia/nemotron-3-super-120b-a12b:free" {
 		t.Fatalf("model = %q", profile.Model)
 	}
 	if profile.BaseURL != "https://openrouter.ai/api/v1" {
@@ -129,5 +129,53 @@ func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
 	}
 	if !profile.UseJSONSchema {
 		t.Fatal("expected use_json_schema override to be enabled")
+	}
+}
+
+func TestLoadConfigTemperatureFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    temperature: 0.35
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Temperature == nil {
+		t.Fatal("expected temperature from config")
+	}
+	if *profile.Temperature != 0.35 {
+		t.Fatalf("temperature = %v", *profile.Temperature)
+	}
+}
+
+func TestLoadConfigMaxTokensFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    max_tokens: 2048
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxTokens == nil {
+		t.Fatal("expected max_tokens from config")
+	}
+	if *profile.MaxTokens != 2048 {
+		t.Fatalf("max_tokens = %d", *profile.MaxTokens)
 	}
 }
