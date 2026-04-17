@@ -125,8 +125,8 @@ type Finding struct {
 }
 
 type CodeLocation struct {
-	AbsoluteFilePath string    `json:"absolute_file_path"`
-	LineRange        LineRange `json:"line_range"`
+	FilePath  string    `json:"file_path"`
+	LineRange LineRange `json:"line_range"`
 }
 
 type LineRange struct {

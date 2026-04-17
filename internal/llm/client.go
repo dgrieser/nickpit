@@ -357,7 +357,7 @@ func invalidJSONFallback(content string) *ReviewResponse {
 				ConfidenceScore: 0.2,
 				Priority:        intPtr(2),
 				CodeLocation: model.CodeLocation{
-					AbsoluteFilePath: "",
+					FilePath: "",
 					LineRange: model.LineRange{
 						Start: 1,
 						End:   1,

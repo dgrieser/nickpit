@@ -32,7 +32,7 @@ func TestClientReview(t *testing.T) {
 				{
 					"index": 0,
 					"delta": map[string]any{
-						"content": `{"findings":[{"title":"[P2] Flag issue","body":"Something is wrong","confidence_score":0.9,"priority":2,"code_location":{"absolute_file_path":"/tmp/main.go","line_range":{"start":10,"end":10}}}],"overall_correctness":"patch is incorrect",`,
+						"content": `{"findings":[{"title":"[P2] Flag issue","body":"Something is wrong","confidence_score":0.9,"priority":2,"code_location":{"file_path":"main.go","line_range":{"start":10,"end":10}}}],"overall_correctness":"patch is incorrect",`,
 					},
 				},
 			},

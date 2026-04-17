@@ -33,8 +33,8 @@ type stubLLM struct{}
 func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	return &llm.ReviewResponse{
 		Findings: []model.Finding{
-			{Title: "[P3] info", Body: "low", ConfidenceScore: 0.5, Priority: intPtr(3), CodeLocation: model.CodeLocation{AbsoluteFilePath: "/tmp/main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-			{Title: "[P1] error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{AbsoluteFilePath: "/tmp/main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+			{Title: "[P3] info", Body: "low", ConfidenceScore: 0.5, Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{Title: "[P1] error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 		},
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "summary",
@@ -95,7 +95,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "You are acting as a senior engineer performing a thorough code review for a proposed code change made by another engineer."; !strings.Contains(req.SystemPrompt, want) {
 		t.Fatalf("system prompt = %q", req.SystemPrompt)
 	}
-	if want := "Example JSON output:"; !strings.Contains(req.SystemPrompt, want) {
+	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.SystemPrompt, want) {
 		t.Fatalf("system prompt missing example JSON instructions: %q", req.SystemPrompt)
 	}
 	if want := "\"overall_correctness\": \"patch is correct\""; !strings.Contains(req.SystemPrompt, want) {

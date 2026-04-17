@@ -42,7 +42,7 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 	for _, finding := range result.Findings {
 		if _, err := fmt.Fprintf(f.w, "%s %s:%d-%d\n%s\n%s\nConfidence: %.2f\n\n",
 			f.colorize(priorityLabel(finding.Priority), model.PriorityRank(finding.Priority)),
-			finding.CodeLocation.AbsoluteFilePath,
+			finding.CodeLocation.FilePath,
 			finding.CodeLocation.LineRange.Start,
 			max(finding.CodeLocation.LineRange.End, finding.CodeLocation.LineRange.Start),
 			finding.Title,

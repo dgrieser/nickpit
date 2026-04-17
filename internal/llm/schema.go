@@ -22,7 +22,7 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 					"code_location": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"absolute_file_path": map[string]any{"type": "string"},
+							"file_path": map[string]any{"type": "string"},
 							"line_range": map[string]any{
 								"type": "object",
 								"properties": map[string]any{
@@ -32,7 +32,7 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 								"required": []string{"start", "end"},
 							},
 						},
-						"required": []string{"absolute_file_path", "line_range"},
+						"required": []string{"file_path", "line_range"},
 					},
 				},
 				"required": []string{"title", "body", "confidence_score", "code_location"},
@@ -43,15 +43,11 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 			"items": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"type":       map[string]any{"type": "string", "enum": []string{"file", "lines", "function", "callers", "callees"}},
-					"path":       map[string]any{"type": "string"},
-					"symbol":     map[string]any{"type": "string"},
-					"start_line": map[string]any{"type": "integer"},
-					"end_line":   map[string]any{"type": "integer"},
-					"depth":      map[string]any{"type": "integer"},
-					"reason":     map[string]any{"type": "string"},
+					"type":   map[string]any{"type": "string", "enum": []string{"file"}},
+					"path":   map[string]any{"type": "string"},
+					"reason": map[string]any{"type": "string"},
 				},
-				"required": []string{"type", "reason"},
+				"required": []string{"type", "path", "reason"},
 			},
 		},
 		"overall_correctness":      map[string]any{"type": "string", "enum": []string{"patch is correct", "patch is incorrect"}},
@@ -142,22 +138,14 @@ func exampleValueForProperty(name string, schema map[string]any) any {
 		return 0.85
 	case "priority":
 		return 1
-	case "absolute_file_path":
-		return "/repo/path/file.go"
+	case "file_path":
+		return "file.go"
 	case "overall_explanation":
 		return "The patch is incorrect because it introduces a correctness issue."
 	case "reason":
 		return "Example reason more context is needed."
 	case "path":
-		return "relative/path/to/file.go"
-	case "symbol":
-		return "ExampleFunction"
-	case "start_line":
-		return 10
-	case "end_line":
-		return 20
-	case "depth":
-		return 1
+		return "file.go"
 	}
 
 	return exampleFromSchema(schema)
