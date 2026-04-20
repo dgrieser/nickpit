@@ -35,7 +35,7 @@ var inspectFileToolParameters = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-var inspectListFilesToolParameters = json.RawMessage(`{
+var listFilesToolParameters = json.RawMessage(`{
   "type": "object",
   "properties": {
     "path": {
@@ -131,9 +131,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 				Parameters:  inspectFileToolParameters,
 			},
 			{
-				Name:        "inspect_list_files",
+				Name:        "list_files",
 				Description: "List files in one repo-relative folder to discover candidate files for review.",
-				Parameters:  inspectListFilesToolParameters,
+				Parameters:  listFilesToolParameters,
 			},
 		},
 		Schema:          schema,
@@ -262,8 +262,8 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	switch toolCall.Name {
 	case "inspect_file":
 		return e.executeInspectFile(ctx, repoRoot, toolCall, seenFiles)
-	case "inspect_list_files":
-		return e.executeInspectListFiles(ctx, repoRoot, toolCall)
+	case "list_files":
+		return e.executeListFiles(ctx, repoRoot, toolCall)
 	default:
 		return mustToolResultJSON(map[string]any{
 			"error": fmt.Sprintf("unsupported tool %q", toolCall.Name),
@@ -313,7 +313,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	return payload
 }
 
-func (e *Engine) executeInspectListFiles(ctx context.Context, repoRoot string, toolCall llm.ToolCall) string {
+func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall llm.ToolCall) string {
 	var args struct {
 		Path string `json:"path"`
 	}

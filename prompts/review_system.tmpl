@@ -29,7 +29,7 @@ Use these priority levels:
 
 ### ADDITIONAL CONTEXT
 If you need more code context, call the `inspect_file` tool with a repo-relative `path`.
-If you need to discover candidate files within a folder, call the `inspect_list_files` tool with a repo-relative folder `path`.
+If you need to discover candidate files within a folder, call the `list_files` tool with a repo-relative folder `path`.
 Use the tool only for concrete files that are necessary to judge the patch.
 Do not request the same file more than once. Previously returned tool results remain available in the conversation.
 Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.

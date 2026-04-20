@@ -226,7 +226,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if req.Tools[0].Name != "inspect_file" {
 		t.Fatalf("tool name = %q", req.Tools[0].Name)
 	}
-	if req.Tools[1].Name != "inspect_list_files" {
+	if req.Tools[1].Name != "list_files" {
 		t.Fatalf("tool name = %q", req.Tools[1].Name)
 	}
 }
@@ -463,7 +463,7 @@ func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 		resps: []*llm.ReviewResponse{
 			{
 				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_list_files", Arguments: `{"path":"pkg"}`},
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg"}`},
 				},
 			},
 			{
@@ -511,7 +511,7 @@ func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
 			},
 			{
 				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "inspect_list_files", Arguments: `{"path":"pkg"}`},
+					{ID: "call_2", Name: "list_files", Arguments: `{"path":"pkg"}`},
 				},
 			},
 			{
