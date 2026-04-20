@@ -29,11 +29,14 @@ Use these priority levels:
 
 ### ADDITIONAL CONTEXT
 If you need more code context, call of the following tools:
-- `inspect_file` tool with a repo-relative `path` to retrieve the file contents.
-- `list_files` tool with a repo-relative `path` to list all files in a folder.
+- `inspect_file` tool with a repo-relative `path` to retrieve the contents of a file.
+- `list_files` tool with a repo-relative `path` to list all files in a folder (recursively).
+- `find_callers` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function.
+- `find_callees` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls.
 - `search` tool with a repo-relative `path` and a `query` to search recursively for relevant matches.
 Use the tools only for concrete files that are necessary to judge the patch.
 Do not request the same file more than once.
+When inspecting function symbols, prefer `find_callers`, `find_callees` over `search`.
 Previously returned tool results remain available in the conversation.
 Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
 

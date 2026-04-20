@@ -91,6 +91,27 @@ var searchToolParameters = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
+var callHierarchyToolParameters = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "symbol": {
+      "type": "string",
+      "description": "Function name to inspect"
+    },
+    "path": {
+      "type": "string",
+      "description": "Optional repo-relative file or folder path containing the function; omit or pass an empty string to search from the repo root"
+    },
+    "depth": {
+      "type": "integer",
+      "description": "Optional traversal depth for the call hierarchy; defaults to 10",
+      "minimum": 1
+    }
+  },
+  "required": ["symbol"],
+  "additionalProperties": false
+}`)
+
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {
 	return &Engine{
 		source:    source,
@@ -183,6 +204,16 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 				Name:        "search",
 				Description: "Search recursively for a string in one repo-relative file or folder and return matching snippets.",
 				Parameters:  searchToolParameters,
+			},
+			{
+				Name:        "find_callers",
+				Description: "Resolve one function by symbol name and optional path, then return its caller hierarchy.",
+				Parameters:  callHierarchyToolParameters,
+			},
+			{
+				Name:        "find_callees",
+				Description: "Resolve one function by symbol name and optional path, then return its callee hierarchy.",
+				Parameters:  callHierarchyToolParameters,
 			},
 		},
 		Schema:          schema,
@@ -333,6 +364,10 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 		return e.executeListFiles(ctx, repoRoot, toolCall)
 	case "search":
 		return e.executeSearch(ctx, repoRoot, toolCall)
+	case "find_callers":
+		return e.executeCallHierarchy(ctx, repoRoot, toolCall, true)
+	case "find_callees":
+		return e.executeCallHierarchy(ctx, repoRoot, toolCall, false)
 	default:
 		return toolError("", "unsupported_tool", fmt.Sprintf("unsupported tool %q", toolCall.Name))
 	}
@@ -454,6 +489,48 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	})
 }
 
+func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, toolCall llm.ToolCall, callers bool) string {
+	var args struct {
+		Symbol string `json:"symbol"`
+		Path   string `json:"path"`
+		Depth  int    `json:"depth"`
+	}
+	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		return toolError("", "invalid_arguments", fmt.Sprintf("invalid tool arguments: %v", err))
+	}
+	args.Symbol = strings.TrimSpace(args.Symbol)
+	args.Path = strings.TrimSpace(args.Path)
+	if args.Symbol == "" {
+		return toolError(normalizeToolPath(args.Path), "missing_argument", "missing required argument: symbol")
+	}
+	if args.Depth <= 0 {
+		args.Depth = 10
+	}
+	normalizedPath := normalizeToolPath(args.Path)
+	e.logf("Executing tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
+
+	symbol := retrieval.SymbolRef{Name: args.Symbol, Path: normalizedPath}
+	var (
+		hierarchy *retrieval.CallHierarchy
+		err       error
+	)
+	if callers {
+		hierarchy, err = e.retrieval.FindCallers(ctx, repoRoot, symbol, args.Depth)
+	} else {
+		hierarchy, err = e.retrieval.FindCallees(ctx, repoRoot, symbol, args.Depth)
+	}
+	if err != nil {
+		return toolError(normalizedPath, "retrieval_failed", err.Error())
+	}
+	return mustToolResultJSON(map[string]any{
+		"symbol": args.Symbol,
+		"path":   normalizedPath,
+		"mode":   hierarchy.Mode,
+		"depth":  hierarchy.Depth,
+		"root":   hierarchy.Root,
+	})
+}
+
 func mustToolResultJSON(value any) string {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -502,6 +579,7 @@ func syntheticToolCallSummary(toolCall llm.ToolCall, result toolResultSummary) s
 		LineStart     int    `json:"line_start"`
 		LineEnd       int    `json:"line_end"`
 		Depth         int    `json:"depth"`
+		Symbol        string `json:"symbol"`
 		Query         string `json:"query"`
 		ContextLines  int    `json:"context_lines"`
 		MaxResults    int    `json:"max_results"`
@@ -581,7 +659,43 @@ func parseToolResultSummary(content string) toolResultSummary {
 	if resultCount, ok := payload["result_count"].(float64); ok {
 		summary.ResultCount = int(resultCount)
 	}
+	if root, ok := payload["root"].(map[string]any); ok {
+		summary.Files = countCallHierarchyFiles(root)
+		summary.Lines = countCallHierarchyLines(root)
+	}
 	return summary
+}
+
+func countCallHierarchyFiles(root map[string]any) int {
+	distinct := make(map[string]struct{})
+	walkCallHierarchy(root, func(node map[string]any) {
+		path, _ := node["path"].(string)
+		if path != "" {
+			distinct[path] = struct{}{}
+		}
+	})
+	return len(distinct)
+}
+
+func countCallHierarchyLines(root map[string]any) int {
+	lines := 0
+	walkCallHierarchy(root, func(node map[string]any) {
+		source, _ := node["source"].(string)
+		lines += lineCount(source)
+	})
+	return lines
+}
+
+func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
+	visit(node)
+	children, _ := node["children"].([]any)
+	for _, child := range children {
+		childNode, ok := child.(map[string]any)
+		if !ok {
+			continue
+		}
+		walkCallHierarchy(childNode, visit)
+	}
 }
 
 func syntheticToolArguments(toolName string, args struct {
@@ -589,6 +703,7 @@ func syntheticToolArguments(toolName string, args struct {
 	LineStart     int    `json:"line_start"`
 	LineEnd       int    `json:"line_end"`
 	Depth         int    `json:"depth"`
+	Symbol        string `json:"symbol"`
 	Query         string `json:"query"`
 	ContextLines  int    `json:"context_lines"`
 	MaxResults    int    `json:"max_results"`
@@ -619,6 +734,13 @@ func syntheticToolArguments(toolName string, args struct {
 		parts = append(parts, fmt.Sprintf("context_lines=%d", args.ContextLines))
 		parts = append(parts, fmt.Sprintf("max_results=%d", args.MaxResults))
 		parts = append(parts, fmt.Sprintf("case_sensitive=%t", args.CaseSensitive))
+	case "find_callers", "find_callees":
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<repo root>")))
+		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
+		if args.Depth <= 0 {
+			args.Depth = 10
+		}
+		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	default:
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
 	}

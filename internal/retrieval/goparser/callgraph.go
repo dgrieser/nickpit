@@ -7,6 +7,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 )
 
 type Graph struct {
+	repoRoot   string
 	nodes      map[string]Node
 	callers    map[string]map[string]struct{}
 	callees    map[string]map[string]struct{}
@@ -55,6 +57,7 @@ func BuildGraph(ctx context.Context, repoRoot string) (*Graph, error) {
 	}
 
 	graph := &Graph{
+		repoRoot:   repoRoot,
 		nodes:      map[string]Node{},
 		callers:    map[string]map[string]struct{}{},
 		callees:    map[string]map[string]struct{}{},
@@ -202,15 +205,24 @@ func (g *Graph) expand(id string, depth int, reverse bool, seen map[string]struc
 }
 
 func (g *Graph) resolveKey(name, path string) (string, error) {
-	if path != "" {
-		candidates := g.byPathName[pathNameKey(name, path)]
+	normalizedPath := normalizeLookupPath(path)
+	if normalizedPath != "" {
+		candidates := g.byPathName[pathNameKey(name, normalizedPath)]
 		switch len(candidates) {
 		case 0:
-			return "", fmt.Errorf("symbol %q not found in %q", name, path)
+			scopeCandidates, err := g.resolveScopedCandidates(name, normalizedPath)
+			if err != nil {
+				return "", err
+			}
+			if len(scopeCandidates) == 0 {
+				return "", fmt.Errorf("symbol %q not found in %q", name, normalizedPath)
+			}
+			return scopeCandidates[0], nil
 		case 1:
 			return candidates[0], nil
 		default:
-			return "", fmt.Errorf("symbol %q is ambiguous in %q", name, path)
+			sortNodeIDs(candidates, g.nodes)
+			return candidates[0], nil
 		}
 	}
 
@@ -218,11 +230,58 @@ func (g *Graph) resolveKey(name, path string) (string, error) {
 	switch len(candidates) {
 	case 0:
 		return "", fmt.Errorf("symbol %q not found", name)
-	case 1:
-		return candidates[0], nil
 	default:
-		return "", fmt.Errorf("symbol %q is ambiguous; provide --path", name)
+		sortNodeIDs(candidates, g.nodes)
+		return candidates[0], nil
 	}
+}
+
+func (g *Graph) resolveScopedCandidates(name, path string) ([]string, error) {
+	info, err := os.Stat(filepath.Join(g.repoRoot, filepath.FromSlash(path)))
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+
+	prefix := path
+	if prefix != "" {
+		prefix += "/"
+	}
+	candidates := make([]string, 0)
+	for _, id := range g.byName[name] {
+		node, ok := g.nodes[id]
+		if !ok {
+			continue
+		}
+		if node.Path == path || strings.HasPrefix(node.Path, prefix) {
+			candidates = append(candidates, id)
+		}
+	}
+	sortNodeIDs(candidates, g.nodes)
+	return candidates, nil
+}
+
+func sortNodeIDs(ids []string, nodes map[string]Node) {
+	sort.Slice(ids, func(i, j int) bool {
+		left := nodes[ids[i]]
+		right := nodes[ids[j]]
+		if left.Path == right.Path {
+			return left.StartLine < right.StartLine
+		}
+		return left.Path < right.Path
+	})
+}
+
+func normalizeLookupPath(path string) string {
+	normalized := filepath.ToSlash(path)
+	normalized = strings.TrimPrefix(normalized, "./")
+	normalized = strings.TrimSuffix(normalized, "/")
+	if normalized == "." {
+		return ""
+	}
+	return normalized
 }
 
 func buildNode(repoRoot string, fset *token.FileSet, fn *ast.FuncDecl, obj *types.Func) (Node, string, bool) {

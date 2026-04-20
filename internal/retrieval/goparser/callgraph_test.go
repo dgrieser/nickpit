@@ -95,6 +95,72 @@ func Start() {
 	}
 }
 
+func TestBuildGraphResolvesRepoWideSymbolWhenPathEmpty(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.22.0\n")
+	writeTestFile(t, dir, "a/a.go", `package a
+
+func Alpha() {}
+`)
+	writeTestFile(t, dir, "b/b.go", `package b
+
+import "example.com/test/a"
+
+func Beta() {
+	a.Alpha()
+}
+`)
+
+	graph, err := BuildGraph(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callers, err := graph.Find("Alpha", "", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := callers.Root.Path; got != "a/a.go" {
+		t.Fatalf("root path = %q", got)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "Beta" {
+		t.Fatalf("callers = %#v", callers.Root.Children)
+	}
+}
+
+func TestBuildGraphResolvesDirectoryScopedSymbol(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.22.0\n")
+	writeTestFile(t, dir, "pkg/one.go", `package pkg
+
+func Shared() {}
+`)
+	writeTestFile(t, dir, "pkg/nested/two.go", `package nested
+
+func Shared() {}
+
+func Use() {
+	Shared()
+}
+`)
+
+	graph, err := BuildGraph(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callers, err := graph.Find("Shared", "pkg/nested", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := callers.Root.Path; got != "pkg/nested/two.go" {
+		t.Fatalf("root path = %q", got)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "Use" {
+		t.Fatalf("callers = %#v", callers.Root.Children)
+	}
+}
+
 func writeTestFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	path := filepath.Join(root, rel)

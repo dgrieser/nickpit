@@ -151,12 +151,52 @@ func (countingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef)
 	return nil, errors.New("unexpected GetSymbol call")
 }
 
-func (countingRetrieval) FindCallers(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
-	return nil, errors.New("unexpected FindCallers call")
+func (r *countingRetrieval) FindCallers(_ context.Context, _ string, symbol retrieval.SymbolRef, depth int) (*retrieval.CallHierarchy, error) {
+	r.paths = append(r.paths, fmt.Sprintf("callers:%s:%s:%d", symbol.Path, symbol.Name, depth))
+	return &retrieval.CallHierarchy{
+		Mode:  "callers",
+		Depth: depth,
+		Root: retrieval.CallNode{
+			Name:      symbol.Name,
+			Path:      pathOrDefault(symbol.Path, "pkg/root.go"),
+			StartLine: 10,
+			EndLine:   12,
+			Source:    "func Run() {}",
+			Children: []retrieval.CallNode{
+				{
+					Name:      "Start",
+					Path:      "pkg/caller.go",
+					StartLine: 20,
+					EndLine:   24,
+					Source:    "func Start() {}",
+				},
+			},
+		},
+	}, nil
 }
 
-func (countingRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
-	return nil, errors.New("unexpected FindCallees call")
+func (r *countingRetrieval) FindCallees(_ context.Context, _ string, symbol retrieval.SymbolRef, depth int) (*retrieval.CallHierarchy, error) {
+	r.paths = append(r.paths, fmt.Sprintf("callees:%s:%s:%d", symbol.Path, symbol.Name, depth))
+	return &retrieval.CallHierarchy{
+		Mode:  "callees",
+		Depth: depth,
+		Root: retrieval.CallNode{
+			Name:      symbol.Name,
+			Path:      pathOrDefault(symbol.Path, "pkg/root.go"),
+			StartLine: 10,
+			EndLine:   12,
+			Source:    "func Run() {}",
+			Children: []retrieval.CallNode{
+				{
+					Name:      "Helper",
+					Path:      "pkg/callee.go",
+					StartLine: 30,
+					EndLine:   34,
+					Source:    "func Helper() {}",
+				},
+			},
+		},
+	}, nil
 }
 
 func (stubRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
@@ -230,6 +270,12 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "`list_files` tool"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing list-files instructions: %q", req.Messages[0].Content)
 	}
+	if want := "`find_callers` tool"; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing callers instructions: %q", req.Messages[0].Content)
+	}
+	if want := "`find_callees` tool"; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing callees instructions: %q", req.Messages[0].Content)
+	}
 	if want := "Do not request the same file more than once."; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing duplicate-request guard: %q", req.Messages[0].Content)
 	}
@@ -270,7 +316,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])
 		}
 	}
-	if len(req.Tools) != 3 {
+	if len(req.Tools) != 5 {
 		t.Fatalf("tools = %d", len(req.Tools))
 	}
 	if req.Tools[0].Name != "inspect_file" {
@@ -281,6 +327,12 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	}
 	if req.Tools[2].Name != "search" {
 		t.Fatalf("tool name = %q", req.Tools[2].Name)
+	}
+	if req.Tools[3].Name != "find_callers" {
+		t.Fatalf("tool name = %q", req.Tools[3].Name)
+	}
+	if req.Tools[4].Name != "find_callees" {
+		t.Fatalf("tool name = %q", req.Tools[4].Name)
 	}
 }
 
@@ -768,6 +820,90 @@ func TestEngineAllowsEmptyPathForListFilesToolCalls(t *testing.T) {
 	}
 }
 
+func TestEngineExecutesCallersToolCalls(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "find_callers", Arguments: `{"symbol":"Run","path":"pkg","depth":2}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:2" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["symbol"] != "Run" || payload["path"] != "pkg" || payload["mode"] != "callers" {
+		t.Fatalf("callers payload = %#v", payload)
+	}
+	if want := "1. find_callers: tool_call_id=\"call_1\", arguments=[path=\"pkg\", symbol=\"Run\", depth=2]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+func TestEngineAllowsEmptyPathForCalleesToolCalls(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "find_callees", Arguments: `{"symbol":"Run"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callees::Run:10" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["symbol"] != "Run" || payload["path"] != "" || payload["mode"] != "callees" {
+		t.Fatalf("callees payload = %#v", payload)
+	}
+	if want := "1. find_callees: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", symbol=\"Run\", depth=10]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
 func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -880,4 +1016,11 @@ func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
 
 func intPtr(v int) *int {
 	return &v
+}
+
+func pathOrDefault(path, fallback string) string {
+	if path == "" {
+		return fallback
+	}
+	return path + "/root.go"
 }

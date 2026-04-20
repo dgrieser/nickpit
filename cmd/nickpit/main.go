@@ -360,10 +360,9 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	callersCmd.Flags().StringVar(&callersSymbol, "symbol", "", "Function name")
-	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file path containing the function")
+	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
 	callersCmd.Flags().IntVar(&callersDepth, "depth", 10, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
-	_ = callersCmd.MarkFlagRequired("path")
 
 	var calleesSymbol, calleesPath string
 	var calleesDepth int
@@ -383,10 +382,9 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	calleesCmd.Flags().StringVar(&calleesSymbol, "symbol", "", "Function name")
-	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file path containing the function")
+	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
 	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 10, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
-	_ = calleesCmd.MarkFlagRequired("path")
 
 	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd)
 	return cmd
