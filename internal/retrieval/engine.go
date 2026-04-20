@@ -4,6 +4,7 @@ import "context"
 
 type Engine interface {
 	GetFile(ctx context.Context, repoRoot, path string) (*FileContent, error)
+	ListFiles(ctx context.Context, repoRoot, path string) (*DirectoryListing, error)
 	GetFileSlice(ctx context.Context, repoRoot, path string, start, end int) (*FileSlice, error)
 	GetSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*SymbolInfo, error)
 	FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
@@ -22,6 +23,11 @@ type FileSlice struct {
 	EndLine   int    `json:"end_line"`
 	Content   string `json:"content"`
 	Language  string `json:"language"`
+}
+
+type DirectoryListing struct {
+	Path  string   `json:"path"`
+	Files []string `json:"files"`
 }
 
 type SymbolInfo struct {

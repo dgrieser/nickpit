@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -47,17 +49,21 @@ func (l *Logger) Printf(format string, args ...any) {
 }
 
 func (l *Logger) PrintBlock(label, content string) {
+	l.PrintBlockColor(label, content, "90")
+}
+
+func (l *Logger) PrintBlockColor(label, content, color string) {
 	if !l.Enabled() {
 		return
 	}
 	if label != "" {
-		l.writeLines(label, "90")
+		l.writeLines(label, color)
 	}
 	if content == "" {
-		l.writeLines("(empty)", "90")
+		l.writeLines("(empty)", color)
 		return
 	}
-	l.writeLines(content, "90")
+	l.writeLines(content, color)
 }
 
 func (l *Logger) PrintJSON(label string, value any) {
@@ -67,32 +73,19 @@ func (l *Logger) PrintJSON(label string, value any) {
 	if label != "" {
 		l.writeLines(label, "90")
 	}
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := json.Marshal(value)
 	if err != nil {
 		l.writeLines(fmt.Sprintf("failed to encode json: %v", err), "90")
 		return
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		keyPrefix, contentLines := splitJSONStringValue(line)
-		if contentLines == nil {
-			if l.useANSI {
-				_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\n", colorizeJSON(keyPrefix))
-			} else {
-				_, _ = fmt.Fprintf(l.w, "+ %s\n", keyPrefix)
-			}
-			continue
-		}
-		if l.useANSI {
-			_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\x1b[32m%s\x1b[0m\n", colorizeJSON(keyPrefix), contentLines[0])
-			for _, cl := range contentLines[1:] {
-				_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[32m%s\x1b[0m\n", cl)
-			}
-		} else {
-			_, _ = fmt.Fprintf(l.w, "+ %s%s\n", keyPrefix, contentLines[0])
-			for _, cl := range contentLines[1:] {
-				_, _ = fmt.Fprintf(l.w, "+ %s\n", cl)
-			}
-		}
+	var normalized any
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		l.writeLines(fmt.Sprintf("failed to decode json: %v", err), "90")
+		return
+	}
+	normalized = normalizeEmbeddedJSON(normalized)
+	for _, line := range renderJSONLines(normalized, 0, "", false) {
+		l.writeRenderedJSONLine(line)
 	}
 }
 
@@ -132,50 +125,6 @@ func (l *Logger) PrintStatusLine(text string) {
 	_, _ = fmt.Fprintln(l.w, text)
 }
 
-// splitJSONStringValue detects a JSON line whose string value contains \n escapes and
-// expands them. Returns the key prefix (without the value's opening quote, suitable for
-// colorizeJSON) and the content lines. The first content line has a leading `"`, the last
-// has a trailing `"`, and all continuation lines are indented to align with the value start.
-// Returns (line, nil) if no expansion is needed.
-func splitJSONStringValue(line string) (string, []string) {
-	colonIdx := strings.Index(line, `": "`)
-	if colonIdx < 0 {
-		return line, nil
-	}
-	valueStart := colonIdx + 4
-	if valueStart >= len(line) {
-		return line, nil
-	}
-	rest := line[valueStart:]
-
-	var raw string
-	switch {
-	case strings.HasSuffix(rest, `",`):
-		raw = rest[:len(rest)-2]
-	case strings.HasSuffix(rest, `"`):
-		raw = rest[:len(rest)-1]
-	default:
-		return line, nil
-	}
-
-	if !strings.Contains(raw, `\n`) {
-		return line, nil
-	}
-
-	unescaped := strings.NewReplacer(`\n`, "\n", `\t`, "\t", `\\`, `\`, `\"`, `"`).Replace(raw)
-	keyPrefix := line[:colonIdx+3]                       // `  "key": ` without the opening value `"`
-	valueIndent := strings.Repeat(" ", len(keyPrefix)+1) // align continuation to after the `"`
-
-	parts := strings.Split(unescaped, "\n")
-	contentLines := make([]string, 0, len(parts))
-	contentLines = append(contentLines, `"`+parts[0]) // opening `"` on first line
-	for _, p := range parts[1:] {
-		contentLines = append(contentLines, valueIndent+p)
-	}
-	contentLines[len(contentLines)-1] += `"` // closing `"` on last line
-	return keyPrefix, contentLines
-}
-
 func (l *Logger) writeLines(text, color string) {
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	for _, line := range lines {
@@ -188,6 +137,167 @@ func (l *Logger) writeLines(text, color string) {
 		}
 		_, _ = fmt.Fprintf(l.w, "+ %s\n", line)
 	}
+}
+
+type renderedJSONLine struct {
+	text       string
+	stringOnly bool
+}
+
+func (l *Logger) writeRenderedJSONLine(line renderedJSONLine) {
+	if l.useANSI {
+		if line.stringOnly {
+			_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m\x1b[32m%s\x1b[0m\n", line.text)
+			return
+		}
+		_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\n", colorizeJSON(line.text))
+		return
+	}
+	_, _ = fmt.Fprintf(l.w, "+ %s\n", line.text)
+}
+
+func normalizeEmbeddedJSON(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = normalizeEmbeddedJSON(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = normalizeEmbeddedJSON(item)
+		}
+		return out
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+			var embedded any
+			if err := json.Unmarshal([]byte(trimmed), &embedded); err == nil {
+				return normalizeEmbeddedJSON(embedded)
+			}
+		}
+		return strings.ReplaceAll(typed, "\r\n", "\n")
+	default:
+		return typed
+	}
+}
+
+func renderJSONLines(value any, indent int, prefix string, trailingComma bool) []renderedJSONLine {
+	switch typed := value.(type) {
+	case map[string]any:
+		return renderJSONObjectLines(typed, indent, prefix, trailingComma)
+	case []any:
+		return renderJSONArrayLines(typed, indent, prefix, trailingComma)
+	case string:
+		return renderJSONStringLines(typed, prefix, trailingComma)
+	default:
+		return []renderedJSONLine{{
+			text: prefix + marshalJSONScalar(typed) + trailingCommaSuffix(trailingComma),
+		}}
+	}
+}
+
+func renderJSONObjectLines(value map[string]any, indent int, prefix string, trailingComma bool) []renderedJSONLine {
+	if len(value) == 0 {
+		return []renderedJSONLine{{
+			text: prefix + "{}" + trailingCommaSuffix(trailingComma),
+		}}
+	}
+
+	lines := []renderedJSONLine{{text: prefix + "{"}}
+	keys := make([]string, 0, len(value))
+	for key := range value {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for i, key := range keys {
+		childPrefix := strings.Repeat("  ", indent+1) + marshalJSONString(key) + ": "
+		lines = append(lines, renderJSONLines(value[key], indent+1, childPrefix, i < len(keys)-1)...)
+	}
+	lines = append(lines, renderedJSONLine{
+		text: strings.Repeat("  ", indent) + "}" + trailingCommaSuffix(trailingComma),
+	})
+	return lines
+}
+
+func renderJSONArrayLines(value []any, indent int, prefix string, trailingComma bool) []renderedJSONLine {
+	if len(value) == 0 {
+		return []renderedJSONLine{{
+			text: prefix + "[]" + trailingCommaSuffix(trailingComma),
+		}}
+	}
+
+	lines := []renderedJSONLine{{text: prefix + "["}}
+	for i, item := range value {
+		childPrefix := strings.Repeat("  ", indent+1)
+		lines = append(lines, renderJSONLines(item, indent+1, childPrefix, i < len(value)-1)...)
+	}
+	lines = append(lines, renderedJSONLine{
+		text: strings.Repeat("  ", indent) + "]" + trailingCommaSuffix(trailingComma),
+	})
+	return lines
+}
+
+func renderJSONStringLines(value, prefix string, trailingComma bool) []renderedJSONLine {
+	if !strings.Contains(value, "\n") {
+		return []renderedJSONLine{{
+			text: prefix + marshalJSONString(value) + trailingCommaSuffix(trailingComma),
+		}}
+	}
+
+	parts := strings.Split(value, "\n")
+	continuation := strings.Repeat(" ", len(prefix)+1)
+	lines := make([]renderedJSONLine, 0, len(parts))
+	lines = append(lines, renderedJSONLine{
+		text:       prefix + `"` + escapeJSONStringFragment(parts[0]),
+		stringOnly: true,
+	})
+	for _, part := range parts[1 : len(parts)-1] {
+		lines = append(lines, renderedJSONLine{
+			text:       continuation + escapeJSONStringFragment(part),
+			stringOnly: true,
+		})
+	}
+	lines = append(lines, renderedJSONLine{
+		text:       continuation + escapeJSONStringFragment(parts[len(parts)-1]) + `"` + trailingCommaSuffix(trailingComma),
+		stringOnly: true,
+	})
+	return lines
+}
+
+func marshalJSONString(value string) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return `""`
+	}
+	return string(data)
+}
+
+func escapeJSONStringFragment(value string) string {
+	marshaled := marshalJSONString(value)
+	unquoted, err := strconv.Unquote(marshaled)
+	if err != nil {
+		return strings.TrimSuffix(strings.TrimPrefix(marshaled, `"`), `"`)
+	}
+	return unquoted
+}
+
+func marshalJSONScalar(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "null"
+	}
+	return string(data)
+}
+
+func trailingCommaSuffix(enabled bool) string {
+	if enabled {
+		return ","
+	}
+	return ""
 }
 
 func colorizeJSON(line string) string {

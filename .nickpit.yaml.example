@@ -1,13 +1,13 @@
 active_profile: default
 profiles:
   default:
-    model: openai/gpt-oss-120b:free
-    base_url: https://openrouter.ai/api/v1
-    api_key: ${OPENROUTER_API_KEY}
+    model: gpt-oss-120b
+    base_url: https://llm.aihosting.mittwald.de/v1
+    api_key: ${MITTWALD_LLM_API_KEY}
     max_tokens: 4096
     temperature: 0.2
     max_context_tokens: 120000
-    default_tool_rounds: 1
+    default_tool_rounds: 0
     local_repo: ~/src/repo
     github_token: ${GITHUB_TOKEN}
     gitlab_token: ${GITLAB_TOKEN}

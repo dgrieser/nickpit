@@ -444,7 +444,7 @@ func TestClientReviewStreamsReasoningToLogger(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(debuglog.New(&buf, false, false))
+	client.SetLogger(debuglog.New(&buf, true, false))
 
 	if _, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt: "system",
@@ -462,6 +462,89 @@ func TestClientReviewStreamsReasoningToLogger(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "\n") {
 		t.Fatalf("expected trailing newline, got %q", got)
+	}
+}
+
+func TestClientReviewLogsToolCallOnlyRawResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"tool_calls": []map[string]any{
+							{
+								"index": 0,
+								"id":    "call_1",
+								"type":  "function",
+								"function": map[string]any{
+									"name":      "inspect_file",
+									"arguments": "{\"path\":\"extra.go\"}",
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.SetLogger(debuglog.New(&buf, true, false))
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "user"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "LLM raw model response:") {
+		t.Fatalf("missing raw response banner: %q", got)
+	}
+	if !strings.Contains(got, "\"content\": \"\"") {
+		t.Fatalf("raw response should include content field even when empty: %q", got)
+	}
+	if !strings.Contains(got, "\"tool_calls\": [") {
+		t.Fatalf("raw response should include tool calls: %q", got)
+	}
+	if !strings.Contains(got, "\"usage\": {") {
+		t.Fatalf("raw response should include usage: %q", got)
+	}
+	if !strings.Contains(got, "\"saw_tool_calls\": true") {
+		t.Fatalf("raw response should include saw_tool_calls: %q", got)
+	}
+	if strings.Contains(got, "(empty)") {
+		t.Fatalf("raw response should not print empty for tool calls: %q", got)
 	}
 }
 

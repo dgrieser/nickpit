@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -24,6 +25,31 @@ func (e *LocalEngine) GetFile(_ context.Context, repoRoot, path string) (*FileCo
 		Path:     path,
 		Content:  normalizeText(string(data)),
 		Language: detectLanguage(path),
+	}, nil
+}
+
+func (e *LocalEngine) ListFiles(_ context.Context, repoRoot, path string) (*DirectoryListing, error) {
+	normalizedPath := strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
+	fullPath := filepath.Join(repoRoot, normalizedPath)
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("retrieval: listing %s: %w", normalizedPath, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if normalizedPath != "" {
+			name = normalizedPath + "/" + name
+		}
+		if entry.IsDir() {
+			name += "/"
+		}
+		files = append(files, name)
+	}
+	sort.Strings(files)
+	return &DirectoryListing{
+		Path:  normalizedPath,
+		Files: files,
 	}, nil
 }
 

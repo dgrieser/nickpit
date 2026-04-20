@@ -6,32 +6,35 @@ import (
 	"testing"
 )
 
-func TestDefaultConfigUsesOpenRouterDefaults(t *testing.T) {
+func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	profile := cfg.Profiles[DefaultProfileName]
 
-	if profile.Model != "openai/gpt-oss-120b:free" {
+	if profile.Model != "gpt-oss-120b" {
 		t.Fatalf("model = %q", profile.Model)
 	}
-	if profile.BaseURL != "https://openrouter.ai/api/v1" {
+	if profile.BaseURL != "https://llm.aihosting.mittwald.de/v1" {
 		t.Fatalf("base url = %q", profile.BaseURL)
+	}
+	if profile.DefaultToolRounds != 0 {
+		t.Fatalf("default tool rounds = %d", profile.DefaultToolRounds)
 	}
 }
 
 func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("MITTWALD_LLM_API_KEY", "from-mittwald-env")
 
 	_, profile, err := Load("", Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.APIKey != "from-openrouter-env" {
+	if profile.APIKey != "from-mittwald-env" {
 		t.Fatalf("api key = %q", profile.APIKey)
 	}
 }
 
 func TestLoadConfigTracksEmptyConfiguredAPIKey(t *testing.T) {
-	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("MITTWALD_LLM_API_KEY", "")
 	t.Setenv("NICKPIT_API_KEY", "")
 
 	dir := t.TempDir()

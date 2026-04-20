@@ -35,6 +35,18 @@ var inspectFileToolParameters = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
+var inspectListFilesToolParameters = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Repo-relative folder path"
+    }
+  },
+  "required": ["path"],
+  "additionalProperties": false
+}`)
+
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {
 	return &Engine{
 		source:    source,
@@ -118,6 +130,11 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 				Description: "Retrieve the complete contents of one repo-relative file for code review.",
 				Parameters:  inspectFileToolParameters,
 			},
+			{
+				Name:        "inspect_list_files",
+				Description: "List files in one repo-relative folder to discover candidate files for review.",
+				Parameters:  inspectListFilesToolParameters,
+			},
 		},
 		Schema:          schema,
 		Model:           e.config.Model,
@@ -128,6 +145,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 
 	totalUsage := model.TokenUsage{}
 	toolRoundsUsed := 0
+	seenFiles := make(map[string]retrieval.FileContent)
 	var resp *llm.ReviewResponse
 
 	for {
@@ -143,14 +161,14 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		if len(resp.ToolCalls) == 0 {
 			break
 		}
-		if toolRoundsUsed >= req.ToolRounds {
+		if req.ToolRounds > 0 && toolRoundsUsed >= req.ToolRounds {
 			resp = toolRoundLimitResponse(req.ToolRounds, resp.ToolCalls)
 			break
 		}
 		e.logf("Executing tool round: round=%d tool_calls=%d", toolRoundsUsed+1, len(resp.ToolCalls))
 		assistantMessage := llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
 		messages = append(messages, assistantMessage)
-		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls)
+		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, seenFiles)
 		messages = append(messages, toolMessages...)
 		toolRoundsUsed++
 	}
@@ -222,30 +240,38 @@ func toolRoundLimitResponse(limit int, toolCalls []llm.ToolCall) *llm.ReviewResp
 	}
 }
 
-func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall) []llm.Message {
+func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, seenFiles map[string]retrieval.FileContent) []llm.Message {
 	results := make([]llm.Message, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
 		results = append(results, llm.Message{
 			Role:       "tool",
 			ToolCallID: toolCall.ID,
 			Name:       toolCall.Name,
-			Content:    e.executeToolCall(ctx, repoRoot, toolCall),
+			Content:    e.executeToolCall(ctx, repoRoot, toolCall, seenFiles),
 		})
 	}
 	return results
 }
 
-func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall) string {
+func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent) string {
 	if e.retrieval == nil {
 		return mustToolResultJSON(map[string]any{
 			"error": "retrieval is unavailable for this review",
 		})
 	}
-	if toolCall.Name != "inspect_file" {
+	switch toolCall.Name {
+	case "inspect_file":
+		return e.executeInspectFile(ctx, repoRoot, toolCall, seenFiles)
+	case "inspect_list_files":
+		return e.executeInspectListFiles(ctx, repoRoot, toolCall)
+	default:
 		return mustToolResultJSON(map[string]any{
 			"error": fmt.Sprintf("unsupported tool %q", toolCall.Name),
 		})
 	}
+}
+
+func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent) string {
 
 	var args struct {
 		Path string `json:"path"`
@@ -261,19 +287,59 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 			"error": "missing required argument: path",
 		})
 	}
+	normalizedPath := normalizeToolPath(args.Path)
+	if content, ok := seenFiles[normalizedPath]; ok {
+		e.logf("Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+		return mustToolResultJSON(map[string]any{
+			"path":   content.Path,
+			"status": "already_provided",
+		})
+	}
 
-	e.logf("Executing tool call: name=%s path=%s", toolCall.Name, args.Path)
-	content, err := e.retrieval.GetFile(ctx, repoRoot, args.Path)
+	e.logf("Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+	content, err := e.retrieval.GetFile(ctx, repoRoot, normalizedPath)
 	if err != nil {
 		return mustToolResultJSON(map[string]any{
-			"path":  args.Path,
+			"path":  normalizedPath,
+			"error": err.Error(),
+		})
+	}
+	payload := mustToolResultJSON(map[string]any{
+		"path":     content.Path,
+		"language": content.Language,
+		"content":  content.Content,
+	})
+	seenFiles[normalizedPath] = *content
+	return payload
+}
+
+func (e *Engine) executeInspectListFiles(ctx context.Context, repoRoot string, toolCall llm.ToolCall) string {
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		return mustToolResultJSON(map[string]any{
+			"error": fmt.Sprintf("invalid tool arguments: %v", err),
+		})
+	}
+	args.Path = strings.TrimSpace(args.Path)
+	if args.Path == "" {
+		return mustToolResultJSON(map[string]any{
+			"error": "missing required argument: path",
+		})
+	}
+	normalizedPath := normalizeToolPath(args.Path)
+	e.logf("Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+	listing, err := e.retrieval.ListFiles(ctx, repoRoot, normalizedPath)
+	if err != nil {
+		return mustToolResultJSON(map[string]any{
+			"path":  normalizedPath,
 			"error": err.Error(),
 		})
 	}
 	return mustToolResultJSON(map[string]any{
-		"path":     content.Path,
-		"language": content.Language,
-		"content":  content.Content,
+		"path":  listing.Path,
+		"files": listing.Files,
 	})
 }
 
@@ -283,6 +349,10 @@ func mustToolResultJSON(value any) string {
 		return `{"error":"failed to encode tool result"}`
 	}
 	return string(data)
+}
+
+func normalizeToolPath(path string) string {
+	return strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
 }
 
 func priorityPtr(v int) *int {

@@ -196,7 +196,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		len(payload.Messages),
 		len(payload.Tools),
 	)
-	c.logJSON("LLM request payload:", payload)
+	c.logHighlightedJSON("LLM request payload:", payload)
 
 	streamed, err := c.reviewStream(ctx, payload)
 	if err != nil {
@@ -211,7 +211,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		streamed.lastFinishReason,
 		len(streamed.content),
 	)
-	c.logBlock("LLM raw model response:", streamed.content)
+	c.logRawModelResponse(streamed)
 
 	var resp *ReviewResponse
 	if len(streamed.toolCalls) > 0 {
@@ -650,16 +650,25 @@ func (c *OpenAIClient) logf(format string, args ...any) {
 	}
 }
 
-func (c *OpenAIClient) logBlock(label, content string) {
-	if c.logger != nil {
-		c.logger.PrintBlock(label, content)
+func (c *OpenAIClient) logRawModelResponse(streamed *streamedResponse) {
+	if c.logger == nil || streamed == nil {
+		return
 	}
+	c.logHighlightedJSON("LLM raw model response:", rawModelResponseForLog(streamed))
 }
 
 func (c *OpenAIClient) logJSON(label string, value any) {
 	if c.logger != nil {
 		c.logger.PrintJSON(label, value)
 	}
+}
+
+func (c *OpenAIClient) logHighlightedJSON(label string, value any) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.Printf("%s", label)
+	c.logger.PrintJSON("", value)
 }
 
 func (c *OpenAIClient) logMaybeJSON(label string, data []byte) {
@@ -672,6 +681,31 @@ func (c *OpenAIClient) logMaybeJSON(label string, data []byte) {
 		return
 	}
 	c.logger.PrintBlock(label, string(data))
+}
+
+func rawModelResponseForLog(streamed *streamedResponse) any {
+	if streamed == nil {
+		return nil
+	}
+	return struct {
+		Content          string           `json:"content"`
+		ToolCalls        []ToolCall       `json:"tool_calls,omitempty"`
+		Usage            model.TokenUsage `json:"usage"`
+		Reasoned         bool             `json:"reasoned"`
+		SawContent       bool             `json:"saw_content"`
+		SawToolCalls     bool             `json:"saw_tool_calls"`
+		SawUsage         bool             `json:"saw_usage"`
+		LastFinishReason string           `json:"last_finish_reason,omitempty"`
+	}{
+		Content:          streamed.content,
+		ToolCalls:        streamed.toolCalls,
+		Usage:            streamed.usage,
+		Reasoned:         streamed.reasoned,
+		SawContent:       streamed.sawContent,
+		SawToolCalls:     streamed.sawToolCalls,
+		SawUsage:         streamed.sawUsage,
+		LastFinishReason: streamed.lastFinishReason,
+	}
 }
 
 func parseReviewResponse(content string) (*ReviewResponse, error) {

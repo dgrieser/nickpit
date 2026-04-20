@@ -80,6 +80,50 @@ func (stubRetrieval) GetFile(context.Context, string, string) (*retrieval.FileCo
 	}, nil
 }
 
+func (stubRetrieval) ListFiles(context.Context, string, string) (*retrieval.DirectoryListing, error) {
+	return &retrieval.DirectoryListing{
+		Path:  "pkg",
+		Files: []string{"pkg/a.go", "pkg/b.go"},
+	}, nil
+}
+
+type countingRetrieval struct {
+	paths []string
+}
+
+func (r *countingRetrieval) GetFile(_ context.Context, _ string, path string) (*retrieval.FileContent, error) {
+	r.paths = append(r.paths, path)
+	return &retrieval.FileContent{
+		Path:     path,
+		Content:  "package extra",
+		Language: "go",
+	}, nil
+}
+
+func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string) (*retrieval.DirectoryListing, error) {
+	r.paths = append(r.paths, "list:"+path)
+	return &retrieval.DirectoryListing{
+		Path:  path,
+		Files: []string{path + "/a.go", path + "/b.go"},
+	}, nil
+}
+
+func (countingRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
+	return nil, errors.New("unexpected GetFileSlice call")
+}
+
+func (countingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
+	return nil, errors.New("unexpected GetSymbol call")
+}
+
+func (countingRetrieval) FindCallers(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
+	return nil, errors.New("unexpected FindCallers call")
+}
+
+func (countingRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
+	return nil, errors.New("unexpected FindCallees call")
+}
+
 func (stubRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
 	return nil, errors.New("unexpected GetFileSlice call")
 }
@@ -142,6 +186,9 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "If you need more code context, call the `inspect_file` tool"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing tool instructions: %q", req.Messages[0].Content)
 	}
+	if want := "Do not request the same file more than once."; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing duplicate-request guard: %q", req.Messages[0].Content)
+	}
 	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing example JSON instructions: %q", req.Messages[0].Content)
 	}
@@ -173,11 +220,14 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])
 		}
 	}
-	if len(req.Tools) != 1 {
+	if len(req.Tools) != 2 {
 		t.Fatalf("tools = %d", len(req.Tools))
 	}
 	if req.Tools[0].Name != "inspect_file" {
 		t.Fatalf("tool name = %q", req.Tools[0].Name)
+	}
+	if req.Tools[1].Name != "inspect_list_files" {
+		t.Fatalf("tool name = %q", req.Tools[1].Name)
 	}
 }
 
@@ -349,6 +399,147 @@ func TestEngineStopsAtToolRoundLimit(t *testing.T) {
 	}
 	if len(result.Findings) != 1 {
 		t.Fatalf("findings = %d", len(result.Findings))
+	}
+}
+
+func TestEngineReturnsAlreadyProvidedForDuplicateFileRequests(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"./extra.go"}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 {
+		t.Fatalf("retrieval calls = %d", len(retrievalEngine.paths))
+	}
+	if retrievalEngine.paths[0] != "extra.go" {
+		t.Fatalf("retrieval path = %q", retrievalEngine.paths[0])
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[2].Messages[5].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["status"] != "already_provided" {
+		t.Fatalf("duplicate tool payload = %#v", payload)
+	}
+	if payload["path"] != "extra.go" {
+		t.Fatalf("duplicate tool path = %#v", payload["path"])
+	}
+	if _, ok := payload["content"]; ok {
+		t.Fatalf("duplicate tool payload should omit content: %#v", payload)
+	}
+	if _, ok := payload["language"]; ok {
+		t.Fatalf("duplicate tool payload should omit language: %#v", payload)
+	}
+}
+
+func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_list_files", Arguments: `{"path":"pkg"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list:pkg" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["path"] != "pkg" {
+		t.Fatalf("list payload path = %#v", payload["path"])
+	}
+	files, ok := payload["files"].([]any)
+	if !ok || len(files) != 2 {
+		t.Fatalf("list payload files = %#v", payload["files"])
+	}
+}
+
+func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "inspect_list_files", Arguments: `{"path":"pkg"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OverallCorrectness != "patch is correct" {
+		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
+	}
+	if result.ToolRounds != 2 {
+		t.Fatalf("tool rounds = %d", result.ToolRounds)
+	}
+	if len(retrievalEngine.paths) != 2 {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
 	}
 }
 

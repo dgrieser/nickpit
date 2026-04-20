@@ -12,10 +12,10 @@ import (
 
 const (
 	DefaultProfileName     = "default"
-	DefaultModel           = "openai/gpt-oss-120b:free"
-	DefaultBaseURL         = "https://openrouter.ai/api/v1"
+	DefaultModel           = "gpt-oss-120b"
+	DefaultBaseURL         = "https://llm.aihosting.mittwald.de/v1"
 	DefaultMaxContextToken = 120000
-	DefaultToolRounds      = 5
+	DefaultToolRounds      = 0
 	DefaultConfigPath      = ".nickpit.yaml"
 	DefaultReasoningEffort = "high"
 )
@@ -142,7 +142,7 @@ func applyEnv(cfg *Config, profileName string) {
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
 	}
-	if value := os.Getenv("OPENROUTER_API_KEY"); value != "" {
+	if value := os.Getenv("MITTWALD_LLM_API_KEY"); value != "" {
 		profile.APIKey = value
 	} else if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
 		profile.APIKey = value

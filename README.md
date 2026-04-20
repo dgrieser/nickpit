@@ -68,7 +68,7 @@ NickPit does not send `response_format` unless `--use-json-schema` is enabled.
 
 Use `--use-json-schema` to send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
 
-NickPit can also let the model request additional file context during review. Control the maximum number of tool-call iterations with `--tool-rounds` or `default_tool_rounds` in config.
+NickPit can also let the model request additional file context during review. Control the maximum number of tool-call iterations with `--tool-rounds` or `default_tool_rounds` in config. `0` means unlimited, which is the default.
 
 ### Temperature
 
@@ -86,6 +86,7 @@ The `inspect` command is a standalone retrieval command tree for using retrieval
 
 ```bash
 nickpit inspect file --path internal/review/engine.go
+nickpit inspect list --path internal/review
 nickpit inspect lines --path internal/review/engine.go --start 1 --end 80
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2
 nickpit inspect callees --path internal/review/engine.go --symbol Run --depth 3
@@ -96,10 +97,10 @@ nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 
 
 ## Notes
 
-- Currently the default LLM endpoint is OpenRouter
-  - `https://openrouter.ai/api/v1`
-  - `openai/gpt-oss-120b:free`
-  - API key env var `OPENROUTER_API_KEY`
+- Currently the default LLM endpoint is Mittwald AI Hosting
+  - `https://llm.aihosting.mittwald.de/v1`
+  - `gpt-oss-120b`
+  - API key env var `MITTWALD_LLM_API_KEY`
 - The CLI expects an OpenAI-compatible `/chat/completions` endpoint.
 - Remote reviews clone the requested PR/MR head into a temporary checkout when retrieval needs local files.
 - Use `--local-repo` to reuse an existing clone; NickPit creates a temporary worktree at the requested revision instead of cloning again.

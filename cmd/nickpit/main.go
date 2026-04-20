@@ -82,7 +82,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
-	root.PersistentFlags().IntVar(&cli.toolRounds, "tool-rounds", 0, "Maximum tool-call rounds (0 uses profile/default)")
+	root.PersistentFlags().IntVar(&cli.toolRounds, "tool-rounds", 0, "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -288,6 +288,24 @@ func (a *app) newInspectCmd() *cobra.Command {
 	fileCmd.Flags().StringVar(&path, "path", "", "Relative file path")
 	_ = fileCmd.MarkFlagRequired("path")
 
+	listFilesCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List files in a folder",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			repoRoot, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			listing, err := engine.ListFiles(context.Background(), repoRoot, path)
+			if err != nil {
+				return err
+			}
+			return a.writeInspectOutput(listing)
+		},
+	}
+	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path")
+	_ = listFilesCmd.MarkFlagRequired("path")
+
 	var start, end int
 	linesCmd := &cobra.Command{
 		Use:   "lines",
@@ -358,7 +376,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	_ = calleesCmd.MarkFlagRequired("symbol")
 	_ = calleesCmd.MarkFlagRequired("path")
 
-	cmd.AddCommand(fileCmd, linesCmd, callersCmd, calleesCmd)
+	cmd.AddCommand(fileCmd, listFilesCmd, linesCmd, callersCmd, calleesCmd)
 	return cmd
 }
 
@@ -368,9 +386,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 
 	if profile.APIKey == "" {
 		if profile.APIKeyConfigured {
-			return fmt.Errorf("profile %q has an empty api_key value; set OPENROUTER_API_KEY or provide a non-empty api_key in config", profileName)
+			return fmt.Errorf("profile %q has an empty api_key value; set MITTWALD_LLM_API_KEY or provide a non-empty api_key in config", profileName)
 		}
-		return fmt.Errorf("missing LLM API key for profile %q; set OPENROUTER_API_KEY or provide api_key in config", profileName)
+		return fmt.Errorf("missing LLM API key for profile %q; set MITTWALD_LLM_API_KEY or provide api_key in config", profileName)
 	}
 
 	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
@@ -421,7 +439,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if toolRounds == 0 {
 		toolRounds = profile.DefaultToolRounds
 	}
-	if !req.IncludeFullFiles && toolRounds <= 0 {
+	if !req.IncludeFullFiles && toolRounds < 0 {
 		a.logf("Skipping remote checkout: include_full_files=%t tool_rounds=%d", req.IncludeFullFiles, toolRounds)
 		return "", nil, nil
 	}
@@ -482,6 +500,16 @@ func (a *app) writeInspectOutput(value any) error {
 		}
 		_, err := fmt.Fprintln(os.Stdout, typed.Content)
 		return err
+	case *retrieval.DirectoryListing:
+		if _, err := fmt.Fprintf(os.Stdout, "%s\n", typed.Path); err != nil {
+			return err
+		}
+		for _, file := range typed.Files {
+			if _, err := fmt.Fprintln(os.Stdout, file); err != nil {
+				return err
+			}
+		}
+		return nil
 	case *retrieval.FileSlice:
 		if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", typed.Path, typed.StartLine, typed.EndLine, typed.Language); err != nil {
 			return err
