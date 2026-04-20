@@ -43,6 +43,8 @@ type app struct {
 	gitlabToken       string
 	gitlabBaseURL     string
 	verbose           bool
+	showReasoning     bool
+	showToolCalls     bool
 	logger            *debuglog.Logger
 }
 
@@ -92,6 +94,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.gitlabBaseURL, "gitlab-base-url", "", "GitLab API base URL")
 	root.PersistentFlags().BoolVar(&cli.verbose, "verbose", false, "Print debug execution details")
 	root.PersistentFlags().BoolVar(&cli.verbose, "debug", false, "Print debug execution details")
+	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
+	root.PersistentFlags().BoolVar(&cli.showToolCalls, "show-tool-calls", false, "Print tool calls with arguments and results to stderr")
 
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
@@ -392,6 +396,8 @@ func (a *app) newInspectCmd() *cobra.Command {
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
 	logger := debuglog.New(os.Stderr, a.verbose, true)
+	logger.SetShowReasoning(a.showReasoning)
+	logger.SetShowToolCalls(a.showToolCalls)
 	a.logger = logger
 
 	if profile.APIKey == "" {

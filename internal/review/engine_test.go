@@ -1,6 +1,7 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
@@ -417,7 +419,7 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	if req.Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", req.Messages[4].Role)
 	}
-	if want := "You called following tools:"; !strings.Contains(req.Messages[4].Content, want) {
+	if want := "You called the following tools:"; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
 	}
 	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; result=[lines=1]"; !strings.Contains(req.Messages[4].Content, want) {
@@ -901,6 +903,79 @@ func TestEngineAllowsEmptyPathForCalleesToolCalls(t *testing.T) {
 	}
 	if want := "1. find_callees: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", symbol=\"Run\", depth=10]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := debuglog.New(&buf, false, false)
+	logger.SetShowToolCalls(true)
+	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logger)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "Calling tool: list_files(path=\"pkg\", depth=1) → result=[files=2]") {
+		t.Fatalf("tool call banner missing: %q", got)
+	}
+	if strings.Contains(got, `"files": [`) || strings.Contains(got, "pkg/a.go") {
+		t.Fatalf("tool call output should omit content payloads: %q", got)
+	}
+}
+
+func TestEngineDoesNotPrintToolCallsByDefault(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := debuglog.New(&buf, false, false)
+	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logger)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := buf.String(); strings.Contains(got, "Tool call:") {
+		t.Fatalf("tool calls should be hidden by default: %q", got)
 	}
 }
 

@@ -444,7 +444,9 @@ func TestClientReviewStreamsReasoningToLogger(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(debuglog.New(&buf, true, false))
+	logger := debuglog.New(&buf, true, false)
+	logger.SetShowReasoning(true)
+	client.SetLogger(logger)
 
 	if _, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt: "system",
@@ -462,6 +464,72 @@ func TestClientReviewStreamsReasoningToLogger(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "\n") {
 		t.Fatalf("expected trailing newline, got %q", got)
+	}
+}
+
+func TestClientReviewDoesNotStreamReasoningWithoutFlag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"reasoning_content": "Thinking through the diff.",
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-3",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.SetLogger(debuglog.New(&buf, true, false))
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if strings.Contains(got, "Reasoning...\n") {
+		t.Fatalf("reasoning banner should be hidden: %q", got)
+	}
+	if strings.Contains(got, "Thinking through the diff.") {
+		t.Fatalf("reasoning delta should be hidden: %q", got)
 	}
 }
 

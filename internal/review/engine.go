@@ -343,12 +343,14 @@ func toolRoundLimitResponse(limit int, toolCalls []llm.ToolCall) *llm.ReviewResp
 func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange) []llm.Message {
 	results := make([]llm.Message, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
+		result := e.executeToolCall(ctx, repoRoot, toolCall, seenFiles, seenFileRanges)
 		results = append(results, llm.Message{
 			Role:       "tool",
 			ToolCallID: toolCall.ID,
 			Name:       toolCall.Name,
-			Content:    e.executeToolCall(ctx, repoRoot, toolCall, seenFiles, seenFileRanges),
+			Content:    result,
 		})
+		e.logToolCall(toolCall, result)
 	}
 	return results
 }
@@ -555,7 +557,7 @@ func toolError(path, code, message string) string {
 
 func syntheticToolFollowup(history []toolCallHistoryEntry) string {
 	lines := make([]string, 0, len(history)+5)
-	lines = append(lines, "You called following tools:")
+	lines = append(lines, "You called the following tools:")
 	for i, entry := range history {
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, syntheticToolCallSummary(entry.ToolCall, entry.Result)))
 	}
@@ -799,6 +801,33 @@ func (e *Engine) logJSON(label string, value any) {
 	if e.logger != nil {
 		e.logger.PrintJSON(label, value)
 	}
+}
+
+func (e *Engine) logToolCall(toolCall llm.ToolCall, result string) {
+	if e.logger == nil {
+		return
+	}
+	e.logger.PrintToolCall(
+		toolCall.Name,
+		syntheticToolArgumentsForCall(toolCall),
+		syntheticToolOutcome(parseToolResultSummary(result)),
+	)
+}
+
+func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
+	var args struct {
+		Path          string `json:"path"`
+		LineStart     int    `json:"line_start"`
+		LineEnd       int    `json:"line_end"`
+		Depth         int    `json:"depth"`
+		Symbol        string `json:"symbol"`
+		Query         string `json:"query"`
+		ContextLines  int    `json:"context_lines"`
+		MaxResults    int    `json:"max_results"`
+		CaseSensitive bool   `json:"case_sensitive"`
+	}
+	_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
+	return syntheticToolArguments(toolCall.Name, args)
 }
 
 func lineCount(text string) int {

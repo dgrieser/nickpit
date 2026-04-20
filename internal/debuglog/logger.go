@@ -9,12 +9,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 type Logger struct {
-	w       io.Writer
-	useANSI bool
-	enabled bool
+	w             io.Writer
+	useANSI       bool
+	enabled       bool
+	showReasoning bool
+	showToolCalls bool
 }
 
 func New(w io.Writer, enabled bool, useANSI bool) *Logger {
@@ -26,6 +29,20 @@ func New(w io.Writer, enabled bool, useANSI bool) *Logger {
 		useANSI: useANSI,
 		enabled: enabled,
 	}
+}
+
+func (l *Logger) SetShowReasoning(enabled bool) {
+	if l == nil {
+		return
+	}
+	l.showReasoning = enabled
+}
+
+func (l *Logger) SetShowToolCalls(enabled bool) {
+	if l == nil {
+		return
+	}
+	l.showToolCalls = enabled
 }
 
 func (l *Logger) Enabled() bool {
@@ -67,7 +84,28 @@ func (l *Logger) PrintBlockColor(label, content, color string) {
 }
 
 func (l *Logger) PrintJSON(label string, value any) {
-	if !l.Enabled() {
+	l.printJSON(label, value, false)
+}
+
+func (l *Logger) PrintToolCall(name, arguments, result string) {
+	if l == nil || !l.showToolCalls {
+		return
+	}
+	if l.useANSI {
+		_, _ = fmt.Fprintf(
+			l.w,
+			"\x1b[33mCalling tool\x1b[0m\x1b[90m: \x1b[0m\x1b[37m%s\x1b[0m\x1b[90m(\x1b[0m%s\x1b[90m)\x1b[0m \x1b[90m→\x1b[0m %s\n",
+			name,
+			colorizeToolCallArguments(arguments),
+			colorizeToolCallResult(result),
+		)
+		return
+	}
+	_, _ = fmt.Fprintf(l.w, "Calling tool: %s(%s) → %s\n", name, arguments, result)
+}
+
+func (l *Logger) printJSON(label string, value any, force bool) {
+	if !force && !l.Enabled() {
 		return
 	}
 	if label != "" {
@@ -90,14 +128,18 @@ func (l *Logger) PrintJSON(label string, value any) {
 }
 
 func (l *Logger) PrintReasoningBanner() {
-	if l == nil {
+	if l == nil || !l.showReasoning {
+		return
+	}
+	if l.useANSI {
+		_, _ = fmt.Fprint(l.w, "\x1b[33mReasoning\x1b[0m\x1b[90m...\x1b[0m\n")
 		return
 	}
 	_, _ = fmt.Fprintln(l.w, "Reasoning...")
 }
 
 func (l *Logger) PrintReasoningDelta(delta string) {
-	if l == nil || delta == "" {
+	if l == nil || !l.showReasoning || delta == "" {
 		return
 	}
 	if l.useANSI {
@@ -108,7 +150,7 @@ func (l *Logger) PrintReasoningDelta(delta string) {
 }
 
 func (l *Logger) PrintBlankLine() {
-	if l == nil {
+	if l == nil || !l.showReasoning {
 		return
 	}
 	_, _ = fmt.Fprintln(l.w)
@@ -266,6 +308,116 @@ func renderJSONStringLines(value, prefix string, trailingComma bool) []renderedJ
 		stringOnly: true,
 	})
 	return lines
+}
+
+func colorizeToolCallArguments(text string) string {
+	return colorizeToolCallSummary(text)
+}
+
+func colorizeToolCallResult(text string) string {
+	if strings.HasPrefix(text, "result") {
+		return "\x1b[37mresult\x1b[0m" + colorizeToolCallSummary(strings.TrimPrefix(text, "result"))
+	}
+	return colorizeToolCallSummary(text)
+}
+
+func colorizeToolCallSummary(text string) string {
+	var b strings.Builder
+	inString := false
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		if ch == '"' {
+			if inString {
+				b.WriteString(string(ch))
+				b.WriteString("\x1b[0m")
+				inString = false
+			} else {
+				b.WriteString("\x1b[32m")
+				b.WriteString(string(ch))
+				inString = true
+			}
+			continue
+		}
+		if inString {
+			b.WriteByte(ch)
+			continue
+		}
+		switch ch {
+		case '=':
+			b.WriteString("\x1b[90m=\x1b[0m")
+		case ',', '(', ')', '[', ']':
+			b.WriteString("\x1b[90m")
+			b.WriteByte(ch)
+			b.WriteString("\x1b[0m")
+		case ' ':
+			b.WriteByte(ch)
+		default:
+			if isToolCallKeyStart(text, i) {
+				j := i
+				for j < len(text) && isToolCallKeyChar(rune(text[j])) {
+					j++
+				}
+				if j < len(text) && text[j] == '=' {
+					b.WriteString("\x1b[34m")
+					b.WriteString(text[i:j])
+					b.WriteString("\x1b[0m")
+					i = j - 1
+					continue
+				}
+			}
+			if isNumberStart(text, i) {
+				j := i + 1
+				for j < len(text) && isNumberChar(rune(text[j])) {
+					j++
+				}
+				b.WriteString("\x1b[32m")
+				b.WriteString(text[i:j])
+				b.WriteString("\x1b[0m")
+				i = j - 1
+				continue
+			}
+			b.WriteByte(ch)
+		}
+	}
+	if inString {
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
+}
+
+func isToolCallKeyStart(text string, i int) bool {
+	if !isToolCallKeyChar(rune(text[i])) {
+		return false
+	}
+	if i > 0 {
+		prev := rune(text[i-1])
+		if isToolCallKeyChar(prev) {
+			return false
+		}
+	}
+	return true
+}
+
+func isToolCallKeyChar(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
+}
+
+func isNumberStart(text string, i int) bool {
+	ch := rune(text[i])
+	if !unicode.IsDigit(ch) {
+		return false
+	}
+	if i > 0 {
+		prev := rune(text[i-1])
+		if unicode.IsLetter(prev) || unicode.IsDigit(prev) || prev == '"' {
+			return false
+		}
+	}
+	return true
+}
+
+func isNumberChar(r rune) bool {
+	return unicode.IsDigit(r) || r == '.'
 }
 
 func marshalJSONString(value string) string {
