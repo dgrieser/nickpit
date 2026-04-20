@@ -94,6 +94,7 @@ func (stubRetrieval) Search(context.Context, string, string, string, int, int, b
 		Query:         "match",
 		ContextLines:  5,
 		CaseSensitive: false,
+		ResultCount:   1,
 		Results: []retrieval.SearchResult{
 			{Path: "pkg/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\nmatch\nafter"},
 		},
@@ -129,6 +130,7 @@ func (r *countingRetrieval) Search(_ context.Context, _ string, path, query stri
 		ContextLines:  contextLines,
 		MaxResults:    maxResults,
 		CaseSensitive: caseSensitive,
+		ResultCount:   1,
 		Results: []retrieval.SearchResult{
 			{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
 		},
@@ -363,7 +365,10 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	if req.Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", req.Messages[4].Role)
 	}
-	if want := "1. You requested to inspect file extra.go, see tool_call_id call_1"; !strings.Contains(req.Messages[4].Content, want) {
+	if want := "You called following tools:"; !strings.Contains(req.Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
+	}
+	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; result=[lines=1]"; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
 	}
 	if want := "If you need more context, continue calling tools."; !strings.Contains(req.Messages[4].Content, want) {
@@ -411,7 +416,7 @@ func TestEngineExecutesInspectFileToolCallsWithLineRange(t *testing.T) {
 	if payload["start_line"] != float64(1) || payload["end_line"] != float64(2) {
 		t.Fatalf("tool payload line range = %#v", payload)
 	}
-	if want := "1. You requested to inspect file extra.go with line_start 4 and line_end 8, see tool_call_id call_1"; !strings.Contains(req.Messages[4].Content, want) {
+	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\", line_start=4, line_end=8]; result=[lines=1]"; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
 	}
 }
@@ -485,7 +490,7 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 	if llmClient.reqs[1].Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
 	}
-	if want := "1. You requested to inspect file <path>, see tool_call_id call_1. This tool call failed: missing required argument: path"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"<path>\"]; error=\"missing required argument: path\""; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 	if want := "Please retry the last tool call."; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
@@ -596,10 +601,10 @@ func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
 	if llmClient.reqs[2].Messages[6].Role != "user" {
 		t.Fatalf("duplicate follow-up role = %q", llmClient.reqs[2].Messages[6].Role)
 	}
-	if want := "1. You requested to inspect file ./extra.go, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"./extra.go\"]; result=[lines=1]"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
 		t.Fatalf("duplicate follow-up missing first tool call = %q", llmClient.reqs[2].Messages[6].Content)
 	}
-	if want := "2. You requested to inspect file extra.go, see tool_call_id call_2. This tool call failed: file contents were already provided for this review"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+	if want := "2. inspect_file: tool_call_id=\"call_2\", arguments=[path=\"extra.go\"]; error=\"file contents were already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
 		t.Fatalf("duplicate follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
 	}
 	if want := "If you need more context, continue calling tools."; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
@@ -657,7 +662,7 @@ func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 	if llmClient.reqs[1].Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
 	}
-	if want := "1. You requested to list files for pkg with depth 1, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. list_files: tool_call_id=\"call_1\", arguments=[path=\"pkg\", depth=1]; result=[files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }
@@ -705,7 +710,7 @@ func TestEngineAllowsEmptyPathForListFilesToolCalls(t *testing.T) {
 	if llmClient.reqs[1].Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
 	}
-	if want := "1. You requested to list files for <repo root> with depth 1, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. list_files: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", depth=1]; result=[files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }
@@ -756,6 +761,9 @@ func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	if payload["case_sensitive"] != false {
 		t.Fatalf("search payload case_sensitive = %#v", payload["case_sensitive"])
 	}
+	if payload["result_count"] != float64(1) {
+		t.Fatalf("search payload result_count = %#v", payload["result_count"])
+	}
 	results, ok := payload["results"].([]any)
 	if !ok || len(results) != 1 {
 		t.Fatalf("search payload results = %#v", payload["results"])
@@ -770,7 +778,7 @@ func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	if firstResult["content"] != "before\nttlExtenders\nafter" {
 		t.Fatalf("search payload result content = %#v", firstResult["content"])
 	}
-	if want := "1. You requested to search for \"ttlExtenders\" under <repo root> with context_lines 5, max_results 20, and case_sensitive false, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. search: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", query=\"ttlExtenders\", context_lines=5, max_results=20, case_sensitive=false]; result=[files=1, result_count=1]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }

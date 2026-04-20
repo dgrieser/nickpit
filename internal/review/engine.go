@@ -139,7 +139,6 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 
 	trimmed := trimmer.Trim(reviewCtx)
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
-	e.logJSON("Rendered review context JSON:", trimmed)
 	systemTemplate, err := e.loadPrompt("review_system.tmpl")
 	if err != nil {
 		return nil, err
@@ -156,6 +155,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering review prompt json: %w", err)
 	}
+	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
 
 	var schema []byte
 	if req.UseJSONSchema {
@@ -233,7 +233,16 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	}
 
 	filtered := filterByPriority(resp.Findings, req.PriorityThreshold)
-	e.logf("Review complete: findings=%d filtered=%d threshold=%s", len(resp.Findings), len(filtered), req.PriorityThreshold)
+	e.logf(
+		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		len(resp.Findings),
+		len(filtered),
+		req.PriorityThreshold,
+		len(toolCallHistory),
+		totalUsage.PromptTokens,
+		totalUsage.CompletionTokens,
+		totalUsage.TotalTokens,
+	)
 	return &model.ReviewResult{
 		Findings:               filtered,
 		OverallCorrectness:     resp.OverallCorrectness,
@@ -433,6 +442,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		"context_lines":  results.ContextLines,
 		"max_results":    results.MaxResults,
 		"case_sensitive": results.CaseSensitive,
+		"result_count":   results.ResultCount,
 		"results":        results.Results,
 	})
 }
@@ -460,7 +470,8 @@ func toolError(path, code, message string) string {
 }
 
 func syntheticToolFollowup(history []toolCallHistoryEntry) string {
-	lines := make([]string, 0, len(history)+4)
+	lines := make([]string, 0, len(history)+5)
+	lines = append(lines, "You called following tools:")
 	for i, entry := range history {
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, syntheticToolCallSummary(entry.ToolCall, entry.Result)))
 	}
@@ -490,45 +501,16 @@ func syntheticToolCallSummary(toolCall llm.ToolCall, result toolResultSummary) s
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
 	_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
-	path := strings.TrimSpace(args.Path)
-
-	switch toolCall.Name {
-	case "list_files":
-		if path == "" {
-			path = "<repo root>"
-		}
-		if args.Depth <= 0 {
-			args.Depth = 1
-		}
-		return syntheticToolCallMessage(fmt.Sprintf("You requested to list files for %s with depth %d, see tool_call_id %s", path, args.Depth, toolCall.ID), result)
-	case "inspect_file":
-		if path == "" {
-			path = "<path>"
-		}
-		if args.LineStart > 0 || args.LineEnd > 0 {
-			return syntheticToolCallMessage(fmt.Sprintf("You requested to inspect file %s with line_start %d and line_end %d, see tool_call_id %s", path, args.LineStart, args.LineEnd, toolCall.ID), result)
-		}
-		return syntheticToolCallMessage(fmt.Sprintf("You requested to inspect file %s, see tool_call_id %s", path, toolCall.ID), result)
-	case "search":
-		if path == "" {
-			path = "<repo root>"
-		}
-		if args.ContextLines < 0 {
-			args.ContextLines = 5
-		}
-		return syntheticToolCallMessage(fmt.Sprintf("You requested to search for %q under %s with context_lines %d, max_results %d, and case_sensitive %t, see tool_call_id %s", args.Query, path, args.ContextLines, args.MaxResults, args.CaseSensitive, toolCall.ID), result)
-	default:
-		if path == "" {
-			path = "<path>"
-		}
-		return syntheticToolCallMessage(fmt.Sprintf("You requested to call tool %s for %s, see tool_call_id %s", toolCall.Name, path, toolCall.ID), result)
-	}
+	return fmt.Sprintf("%s: tool_call_id=%q, arguments=[%s]; %s", toolCall.Name, toolCall.ID, syntheticToolArguments(toolCall.Name, args), syntheticToolOutcome(result))
 }
 
 type toolResultSummary struct {
-	IsError bool
-	Code    string
-	Message string
+	IsError     bool
+	Code        string
+	Message     string
+	Lines       int
+	Files       int
+	ResultCount int
 }
 
 type toolCallHistoryEntry struct {
@@ -553,28 +535,115 @@ func collectToolCallHistory(toolCalls []llm.ToolCall, toolMessages []llm.Message
 }
 
 func parseToolResultSummary(content string) toolResultSummary {
-	var payload struct {
-		Status string `json:"status"`
-		Error  struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var payload map[string]any
 	if err := json.Unmarshal([]byte(content), &payload); err != nil {
 		return toolResultSummary{}
 	}
-	return toolResultSummary{
-		IsError: payload.Status == "error",
-		Code:    payload.Error.Code,
-		Message: payload.Error.Message,
+	summary := toolResultSummary{}
+	if status, _ := payload["status"].(string); status == "error" {
+		summary.IsError = true
+		if errPayload, ok := payload["error"].(map[string]any); ok {
+			summary.Code, _ = errPayload["code"].(string)
+			summary.Message, _ = errPayload["message"].(string)
+		}
+		return summary
 	}
+
+	if content, _ := payload["content"].(string); content != "" {
+		summary.Lines = lineCount(content)
+	}
+	if files, ok := payload["files"].([]any); ok {
+		summary.Files = len(files)
+	}
+	if results, ok := payload["results"].([]any); ok {
+		summary.ResultCount = len(results)
+		distinct := make(map[string]struct{}, len(results))
+		for _, item := range results {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			path, _ := entry["path"].(string)
+			if path == "" {
+				continue
+			}
+			distinct[path] = struct{}{}
+		}
+		summary.Files = len(distinct)
+	}
+	if resultCount, ok := payload["result_count"].(float64); ok {
+		summary.ResultCount = int(resultCount)
+	}
+	return summary
 }
 
-func syntheticToolCallMessage(base string, result toolResultSummary) string {
-	if !result.IsError || result.Message == "" {
-		return base
+func syntheticToolArguments(toolName string, args struct {
+	Path          string `json:"path"`
+	LineStart     int    `json:"line_start"`
+	LineEnd       int    `json:"line_end"`
+	Depth         int    `json:"depth"`
+	Query         string `json:"query"`
+	ContextLines  int    `json:"context_lines"`
+	MaxResults    int    `json:"max_results"`
+	CaseSensitive bool   `json:"case_sensitive"`
+}) string {
+	parts := make([]string, 0, 5)
+	switch toolName {
+	case "inspect_file":
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
+		if args.LineStart > 0 {
+			parts = append(parts, fmt.Sprintf("line_start=%d", args.LineStart))
+		}
+		if args.LineEnd > 0 {
+			parts = append(parts, fmt.Sprintf("line_end=%d", args.LineEnd))
+		}
+	case "list_files":
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<repo root>")))
+		if args.Depth <= 0 {
+			args.Depth = 1
+		}
+		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
+	case "search":
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<repo root>")))
+		parts = append(parts, fmt.Sprintf("query=%q", args.Query))
+		if args.ContextLines < 0 {
+			args.ContextLines = 5
+		}
+		parts = append(parts, fmt.Sprintf("context_lines=%d", args.ContextLines))
+		parts = append(parts, fmt.Sprintf("max_results=%d", args.MaxResults))
+		parts = append(parts, fmt.Sprintf("case_sensitive=%t", args.CaseSensitive))
+	default:
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
 	}
-	return fmt.Sprintf("%s. This tool call failed: %s", base, result.Message)
+	return strings.Join(parts, ", ")
+}
+
+func syntheticToolOutcome(result toolResultSummary) string {
+	if result.IsError {
+		return fmt.Sprintf("error=%q", result.Message)
+	}
+	parts := make([]string, 0, 2)
+	if result.Lines > 0 {
+		parts = append(parts, fmt.Sprintf("lines=%d", result.Lines))
+	}
+	if result.Files > 0 || result.ResultCount > 0 {
+		parts = append(parts, fmt.Sprintf("files=%d", result.Files))
+	}
+	if result.ResultCount > 0 {
+		parts = append(parts, fmt.Sprintf("result_count=%d", result.ResultCount))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "ok")
+	}
+	return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
+}
+
+func syntheticPathValue(path, empty string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return empty
+	}
+	return path
 }
 
 func normalizeToolPath(path string) string {
@@ -601,4 +670,11 @@ func (e *Engine) logJSON(label string, value any) {
 	if e.logger != nil {
 		e.logger.PrintJSON(label, value)
 	}
+}
+
+func lineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	return strings.Count(text, "\n") + 1
 }

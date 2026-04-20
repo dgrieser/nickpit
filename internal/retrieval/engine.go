@@ -37,6 +37,7 @@ type SearchResults struct {
 	ContextLines  int            `json:"context_lines"`
 	MaxResults    int            `json:"max_results,omitempty"`
 	CaseSensitive bool           `json:"case_sensitive,omitempty"`
+	ResultCount   int            `json:"result_count"`
 	Results       []SearchResult `json:"results"`
 }
 

@@ -190,6 +190,7 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 		ContextLines:  contextLines,
 		MaxResults:    maxResults,
 		CaseSensitive: caseSensitive,
+		ResultCount:   len(results),
 		Results:       results,
 	}, nil
 }

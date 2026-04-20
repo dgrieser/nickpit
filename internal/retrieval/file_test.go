@@ -116,6 +116,7 @@ func TestLocalEngineSearch(t *testing.T) {
 		ContextLines:  1,
 		MaxResults:    1,
 		CaseSensitive: false,
+		ResultCount:   1,
 		Results: []SearchResult{
 			{
 				Path:      "pkg/a.go",
@@ -154,6 +155,7 @@ func TestLocalEngineSearchSkipsBinaryFiles(t *testing.T) {
 		Query:         "ttlExtenders",
 		ContextLines:  0,
 		CaseSensitive: false,
+		ResultCount:   1,
 		Results: []SearchResult{
 			{
 				Path:      "pkg/a.go",
@@ -189,6 +191,7 @@ func TestLocalEngineSearchCaseSensitive(t *testing.T) {
 		Query:         "TTLEXTENDERS",
 		ContextLines:  0,
 		CaseSensitive: true,
+		ResultCount:   1,
 		Results: []SearchResult{
 			{
 				Path:      "pkg/a.go",
