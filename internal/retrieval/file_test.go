@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -204,5 +205,55 @@ func TestLocalEngineSearchCaseSensitive(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("search = %#v, want %#v", got, want)
+	}
+}
+
+func TestLocalEngineListFilesSkipsGitIgnoredAndDotGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+
+	repoRoot := t.TempDir()
+	runGit(t, repoRoot, "init")
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repoRoot, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".gitignore"), []byte("ignored/\n*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte("package pkg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "debug.log"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "ignored", "tmp.go"), []byte("package ignored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.ListFiles(context.Background(), repoRoot, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := &DirectoryListing{
+		Path:  "",
+		Files: []string{".gitignore", "pkg/", "pkg/a.go"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listing = %#v, want %#v", got, want)
+	}
+}
+
+func runGit(t *testing.T, workdir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workdir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 	}
 }

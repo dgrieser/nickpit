@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,7 +36,8 @@ func (e *LocalEngine) ListFiles(_ context.Context, repoRoot, path string, depth 
 		depth = 1
 	}
 	fullPath := filepath.Join(repoRoot, normalizedPath)
-	files, err := listFilesRecursive(fullPath, normalizedPath, depth)
+	ignores := newIgnoreMatcher(repoRoot)
+	files, err := listFilesRecursive(fullPath, normalizedPath, depth, ignores)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: listing %s: %w", normalizedPath, err)
 	}
@@ -46,7 +48,7 @@ func (e *LocalEngine) ListFiles(_ context.Context, repoRoot, path string, depth 
 	}, nil
 }
 
-func listFilesRecursive(fullPath, relativePath string, depth int) ([]string, error) {
+func listFilesRecursive(fullPath, relativePath string, depth int, ignores ignoreMatcher) ([]string, error) {
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
 		return nil, err
@@ -55,14 +57,20 @@ func listFilesRecursive(fullPath, relativePath string, depth int) ([]string, err
 	files := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
+		if name == ".git" {
+			continue
+		}
 		displayPath := name
 		if relativePath != "" {
 			displayPath = relativePath + "/" + name
 		}
+		if ignores.isIgnored(displayPath, entry.IsDir()) {
+			continue
+		}
 		if entry.IsDir() {
 			files = append(files, displayPath+"/")
 			if depth > 1 {
-				childFiles, err := listFilesRecursive(filepath.Join(fullPath, name), displayPath, depth-1)
+				childFiles, err := listFilesRecursive(filepath.Join(fullPath, name), displayPath, depth-1, ignores)
 				if err != nil {
 					return nil, err
 				}
@@ -196,6 +204,38 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 }
 
 var errSearchLimitReached = fmt.Errorf("search result limit reached")
+
+type ignoreMatcher struct {
+	repoRoot string
+	enabled  bool
+}
+
+func newIgnoreMatcher(repoRoot string) ignoreMatcher {
+	if repoRoot == "" {
+		return ignoreMatcher{}
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return ignoreMatcher{}
+	}
+	cmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--show-toplevel")
+	if err := cmd.Run(); err != nil {
+		return ignoreMatcher{}
+	}
+	return ignoreMatcher{repoRoot: repoRoot, enabled: true}
+}
+
+func (m ignoreMatcher) isIgnored(path string, isDir bool) bool {
+	if !m.enabled || path == "" {
+		return false
+	}
+	checkPath := filepath.ToSlash(path)
+	if isDir {
+		checkPath += "/"
+	}
+	cmd := exec.Command("git", "-C", m.repoRoot, "check-ignore", "-q", "--no-index", "--stdin")
+	cmd.Stdin = strings.NewReader(checkPath + "\n")
+	return cmd.Run() == nil
+}
 
 func normalizeText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
