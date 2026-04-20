@@ -86,10 +86,12 @@ The `inspect` command is a standalone retrieval command tree for using retrieval
 
 ```bash
 nickpit inspect file --path internal/review/engine.go
+nickpit inspect file --path internal/review/engine.go --line-start 1 --line-end 80
 nickpit inspect list --path internal/review
-nickpit inspect lines --path internal/review/engine.go --start 1 --end 80
+nickpit inspect search --path internal/review --query inspect_file
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2
 nickpit inspect callees --path internal/review/engine.go --symbol Run --depth 3
+nickpit inspect search --path internal/review --query inspect_file --context-lines 3 --max-results 5 --json
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 --json
 ```
 

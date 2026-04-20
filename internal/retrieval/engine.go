@@ -4,8 +4,9 @@ import "context"
 
 type Engine interface {
 	GetFile(ctx context.Context, repoRoot, path string) (*FileContent, error)
-	ListFiles(ctx context.Context, repoRoot, path string) (*DirectoryListing, error)
+	ListFiles(ctx context.Context, repoRoot, path string, depth int) (*DirectoryListing, error)
 	GetFileSlice(ctx context.Context, repoRoot, path string, start, end int) (*FileSlice, error)
+	Search(ctx context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error)
 	GetSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*SymbolInfo, error)
 	FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
 	FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
@@ -28,6 +29,23 @@ type FileSlice struct {
 type DirectoryListing struct {
 	Path  string   `json:"path"`
 	Files []string `json:"files"`
+}
+
+type SearchResults struct {
+	Path          string         `json:"path"`
+	Query         string         `json:"query"`
+	ContextLines  int            `json:"context_lines"`
+	MaxResults    int            `json:"max_results,omitempty"`
+	CaseSensitive bool           `json:"case_sensitive,omitempty"`
+	Results       []SearchResult `json:"results"`
+}
+
+type SearchResult struct {
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Language  string `json:"language"`
+	Content   string `json:"content"`
 }
 
 type SymbolInfo struct {

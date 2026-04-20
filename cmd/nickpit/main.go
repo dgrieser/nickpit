@@ -270,6 +270,11 @@ func (a *app) newInspectCmd() *cobra.Command {
 	engine := retrieval.NewLocalEngine()
 
 	var path string
+	var depth int
+	var lineStart, lineEnd int
+	var query string
+	var contextLines, maxResults int
+	var caseSensitive bool
 	fileCmd := &cobra.Command{
 		Use:   "file",
 		Short: "Retrieve a file",
@@ -277,6 +282,13 @@ func (a *app) newInspectCmd() *cobra.Command {
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
+			}
+			if lineStart > 0 || lineEnd > 0 {
+				content, err := engine.GetFileSlice(context.Background(), repoRoot, path, lineStart, lineEnd)
+				if err != nil {
+					return err
+				}
+				return a.writeInspectOutput(content)
 			}
 			content, err := engine.GetFile(context.Background(), repoRoot, path)
 			if err != nil {
@@ -286,6 +298,8 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	fileCmd.Flags().StringVar(&path, "path", "", "Relative file path")
+	fileCmd.Flags().IntVar(&lineStart, "line-start", 0, "Optional starting line number for partial file retrieval")
+	fileCmd.Flags().IntVar(&lineEnd, "line-end", 0, "Optional ending line number for partial file retrieval")
 	_ = fileCmd.MarkFlagRequired("path")
 
 	listFilesCmd := &cobra.Command{
@@ -296,39 +310,37 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			listing, err := engine.ListFiles(context.Background(), repoRoot, path)
+			listing, err := engine.ListFiles(context.Background(), repoRoot, path, depth)
 			if err != nil {
 				return err
 			}
 			return a.writeInspectOutput(listing)
 		},
 	}
-	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path")
-	_ = listFilesCmd.MarkFlagRequired("path")
+	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path; leave empty to list the repo root")
+	listFilesCmd.Flags().IntVar(&depth, "depth", 1, "Directory depth to traverse when listing files")
 
-	var start, end int
-	linesCmd := &cobra.Command{
-		Use:   "lines",
-		Short: "Retrieve file lines",
+	searchCmd := &cobra.Command{
+		Use:   "search",
+		Short: "Search recursively in a file or folder",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			if start <= 0 && end <= 0 {
-				return fmt.Errorf("inspect lines requires --start or --end")
-			}
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
 			}
-			content, err := engine.GetFileSlice(context.Background(), repoRoot, path, start, end)
+			results, err := engine.Search(context.Background(), repoRoot, path, query, contextLines, maxResults, caseSensitive)
 			if err != nil {
 				return err
 			}
-			return a.writeInspectOutput(content)
+			return a.writeInspectOutput(results)
 		},
 	}
-	linesCmd.Flags().StringVar(&path, "path", "", "Relative file path")
-	linesCmd.Flags().IntVar(&start, "start", 0, "Start line (optional if --end is set)")
-	linesCmd.Flags().IntVar(&end, "end", 0, "End line (optional if --start is set)")
-	_ = linesCmd.MarkFlagRequired("path")
+	searchCmd.Flags().StringVar(&path, "path", "", "Relative file or folder path; leave empty to search from the repo root")
+	searchCmd.Flags().StringVar(&query, "query", "", "Search string")
+	searchCmd.Flags().IntVar(&contextLines, "context-lines", 5, "Number of surrounding lines to include before and after each match")
+	searchCmd.Flags().IntVar(&maxResults, "max-results", 0, "Maximum number of matches to return; 0 means unlimited")
+	searchCmd.Flags().BoolVar(&caseSensitive, "case-sensitive", false, "Use case-sensitive matching")
+	_ = searchCmd.MarkFlagRequired("query")
 
 	var callersSymbol, callersPath string
 	var callersDepth int
@@ -376,7 +388,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	_ = calleesCmd.MarkFlagRequired("symbol")
 	_ = calleesCmd.MarkFlagRequired("path")
 
-	cmd.AddCommand(fileCmd, listFilesCmd, linesCmd, callersCmd, calleesCmd)
+	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd)
 	return cmd
 }
 
@@ -523,6 +535,27 @@ func (a *app) writeInspectOutput(value any) error {
 	case *retrieval.CallHierarchy:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err
+	case *retrieval.SearchResults:
+		for i, result := range typed.Results {
+			if i > 0 {
+				if _, err := fmt.Fprintln(os.Stdout); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", result.Path, result.StartLine, result.EndLine, result.Language); err != nil {
+				return err
+			}
+			if result.Content == "" {
+				if _, err := fmt.Fprintln(os.Stdout); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := fmt.Fprintln(os.Stdout, result.Content); err != nil {
+				return err
+			}
+		}
+		return nil
 	default:
 		return writeJSON(value)
 	}

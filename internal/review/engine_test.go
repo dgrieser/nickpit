@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -80,10 +81,22 @@ func (stubRetrieval) GetFile(context.Context, string, string) (*retrieval.FileCo
 	}, nil
 }
 
-func (stubRetrieval) ListFiles(context.Context, string, string) (*retrieval.DirectoryListing, error) {
+func (stubRetrieval) ListFiles(context.Context, string, string, int) (*retrieval.DirectoryListing, error) {
 	return &retrieval.DirectoryListing{
 		Path:  "pkg",
 		Files: []string{"pkg/a.go", "pkg/b.go"},
+	}, nil
+}
+
+func (stubRetrieval) Search(context.Context, string, string, string, int, int, bool) (*retrieval.SearchResults, error) {
+	return &retrieval.SearchResults{
+		Path:          "",
+		Query:         "match",
+		ContextLines:  5,
+		CaseSensitive: false,
+		Results: []retrieval.SearchResult{
+			{Path: "pkg/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\nmatch\nafter"},
+		},
 	}, nil
 }
 
@@ -100,16 +113,36 @@ func (r *countingRetrieval) GetFile(_ context.Context, _ string, path string) (*
 	}, nil
 }
 
-func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string) (*retrieval.DirectoryListing, error) {
-	r.paths = append(r.paths, "list:"+path)
+func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string, depth int) (*retrieval.DirectoryListing, error) {
+	r.paths = append(r.paths, fmt.Sprintf("list:%s:%d", path, depth))
 	return &retrieval.DirectoryListing{
 		Path:  path,
 		Files: []string{path + "/a.go", path + "/b.go"},
 	}, nil
 }
 
+func (r *countingRetrieval) Search(_ context.Context, _ string, path, query string, contextLines, maxResults int, caseSensitive bool) (*retrieval.SearchResults, error) {
+	r.paths = append(r.paths, fmt.Sprintf("search:%s:%s:%d:%d:%t", path, query, contextLines, maxResults, caseSensitive))
+	return &retrieval.SearchResults{
+		Path:          path,
+		Query:         query,
+		ContextLines:  contextLines,
+		MaxResults:    maxResults,
+		CaseSensitive: caseSensitive,
+		Results: []retrieval.SearchResult{
+			{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
+		},
+	}, nil
+}
+
 func (countingRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
-	return nil, errors.New("unexpected GetFileSlice call")
+	return &retrieval.FileSlice{
+		Path:      "extra.go",
+		StartLine: 1,
+		EndLine:   2,
+		Content:   "package extra",
+		Language:  "go",
+	}, nil
 }
 
 func (countingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
@@ -125,7 +158,13 @@ func (countingRetrieval) FindCallees(context.Context, string, retrieval.SymbolRe
 }
 
 func (stubRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
-	return nil, errors.New("unexpected GetFileSlice call")
+	return &retrieval.FileSlice{
+		Path:      "extra.go",
+		StartLine: 1,
+		EndLine:   2,
+		Content:   "package extra",
+		Language:  "go",
+	}, nil
 }
 
 func (stubRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
@@ -229,7 +268,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])
 		}
 	}
-	if len(req.Tools) != 2 {
+	if len(req.Tools) != 3 {
 		t.Fatalf("tools = %d", len(req.Tools))
 	}
 	if req.Tools[0].Name != "inspect_file" {
@@ -237,6 +276,9 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	}
 	if req.Tools[1].Name != "list_files" {
 		t.Fatalf("tool name = %q", req.Tools[1].Name)
+	}
+	if req.Tools[2].Name != "search" {
+		t.Fatalf("tool name = %q", req.Tools[2].Name)
 	}
 }
 
@@ -299,7 +341,7 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	}
 
 	req := llmClient.reqs[1]
-	if len(req.Messages) != 4 {
+	if len(req.Messages) != 5 {
 		t.Fatalf("messages = %d", len(req.Messages))
 	}
 	if req.Messages[2].Role != "assistant" {
@@ -317,6 +359,60 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	}
 	if payload["path"] != "extra.go" || payload["content"] != "package extra" || payload["language"] != "go" {
 		t.Fatalf("tool payload = %#v", payload)
+	}
+	if req.Messages[4].Role != "user" {
+		t.Fatalf("follow-up role = %q", req.Messages[4].Role)
+	}
+	if want := "1. You requested to inspect file extra.go, see tool_call_id call_1"; !strings.Contains(req.Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
+	}
+	if want := "If you need more context, continue calling tools."; !strings.Contains(req.Messages[4].Content, want) {
+		t.Fatalf("follow-up missing continue instruction: %q", req.Messages[4].Content)
+	}
+	if want := "Otherwise, if you have enough context to judge the patch, stop calling tools and return the final review as JSON."; !strings.Contains(req.Messages[4].Content, want) {
+		t.Fatalf("follow-up missing stop instruction: %q", req.Messages[4].Content)
+	}
+}
+
+func TestEngineExecutesInspectFileToolCallsWithLineRange(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go","line_start":4,"line_end":8}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := llmClient.reqs[1]
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(req.Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v\n%s", err, req.Messages[3].Content)
+	}
+	if payload["path"] != "extra.go" || payload["content"] != "package extra" || payload["language"] != "go" {
+		t.Fatalf("tool payload = %#v", payload)
+	}
+	if payload["start_line"] != float64(1) || payload["end_line"] != float64(2) {
+		t.Fatalf("tool payload line range = %#v", payload)
+	}
+	if want := "1. You requested to inspect file extra.go with line_start 4 and line_end 8, see tool_call_id call_1"; !strings.Contains(req.Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
 	}
 }
 
@@ -385,6 +481,18 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 	}
 	if errorPayload["message"] != "missing required argument: path" {
 		t.Fatalf("tool error payload = %#v", payload)
+	}
+	if llmClient.reqs[1].Messages[4].Role != "user" {
+		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
+	}
+	if want := "1. You requested to inspect file <path>, see tool_call_id call_1. This tool call failed: missing required argument: path"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+	if want := "Please retry the last tool call."; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up missing retry instruction: %q", llmClient.reqs[1].Messages[4].Content)
+	}
+	if strings.Contains(llmClient.reqs[1].Messages[4].Content, "If you need more context, continue calling tools.") {
+		t.Fatalf("follow-up should not include regular continuation instructions after retryable error: %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }
 
@@ -485,6 +593,21 @@ func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
 	if _, ok := payload["language"]; ok {
 		t.Fatalf("duplicate tool payload should omit language: %#v", payload)
 	}
+	if llmClient.reqs[2].Messages[6].Role != "user" {
+		t.Fatalf("duplicate follow-up role = %q", llmClient.reqs[2].Messages[6].Role)
+	}
+	if want := "1. You requested to inspect file ./extra.go, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("duplicate follow-up missing first tool call = %q", llmClient.reqs[2].Messages[6].Content)
+	}
+	if want := "2. You requested to inspect file extra.go, see tool_call_id call_2. This tool call failed: file contents were already provided for this review"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("duplicate follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
+	}
+	if want := "If you need more context, continue calling tools."; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("duplicate follow-up missing regular continuation instructions: %q", llmClient.reqs[2].Messages[6].Content)
+	}
+	if strings.Contains(llmClient.reqs[2].Messages[6].Content, "Please retry the last tool call.") {
+		t.Fatalf("duplicate follow-up should not request retry: %q", llmClient.reqs[2].Messages[6].Content)
+	}
 }
 
 func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
@@ -513,7 +636,7 @@ func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list:pkg" {
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list:pkg:1" {
 		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
 	}
 
@@ -524,9 +647,131 @@ func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 	if payload["path"] != "pkg" {
 		t.Fatalf("list payload path = %#v", payload["path"])
 	}
+	if payload["depth"] != float64(1) {
+		t.Fatalf("list payload depth = %#v", payload["depth"])
+	}
 	files, ok := payload["files"].([]any)
 	if !ok || len(files) != 2 {
 		t.Fatalf("list payload files = %#v", payload["files"])
+	}
+	if llmClient.reqs[1].Messages[4].Role != "user" {
+		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
+	}
+	if want := "1. You requested to list files for pkg with depth 1, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+func TestEngineAllowsEmptyPathForListFilesToolCalls(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list::1" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["path"] != "" {
+		t.Fatalf("list payload path = %#v", payload["path"])
+	}
+	if payload["depth"] != float64(1) {
+		t.Fatalf("list payload depth = %#v", payload["depth"])
+	}
+	if llmClient.reqs[1].Messages[4].Role != "user" {
+		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
+	}
+	if want := "1. You requested to list files for <repo root> with depth 1, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+func TestEngineExecutesSearchToolCalls(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"","query":"ttlExtenders","context_lines":5,"max_results":20,"case_sensitive":false}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "search::ttlExtenders:5:20:false" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["query"] != "ttlExtenders" {
+		t.Fatalf("search payload query = %#v", payload["query"])
+	}
+	if payload["context_lines"] != float64(5) {
+		t.Fatalf("search payload context_lines = %#v", payload["context_lines"])
+	}
+	if payload["max_results"] != float64(20) {
+		t.Fatalf("search payload max_results = %#v", payload["max_results"])
+	}
+	if payload["case_sensitive"] != false {
+		t.Fatalf("search payload case_sensitive = %#v", payload["case_sensitive"])
+	}
+	results, ok := payload["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("search payload results = %#v", payload["results"])
+	}
+	firstResult, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("search payload first result = %#v", results[0])
+	}
+	if firstResult["language"] != "go" {
+		t.Fatalf("search payload result language = %#v", firstResult["language"])
+	}
+	if firstResult["content"] != "before\nttlExtenders\nafter" {
+		t.Fatalf("search payload result content = %#v", firstResult["content"])
+	}
+	if want := "1. You requested to search for \"ttlExtenders\" under <repo root> with context_lines 5, max_results 20, and case_sensitive false, see tool_call_id call_1"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }
 
