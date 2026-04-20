@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -15,13 +16,16 @@ import (
 )
 
 type Engine struct {
-	source    model.ReviewSource
-	llm       llm.Client
-	retrieval retrieval.Engine
-	config    config.Profile
-	trimmer   *Trimmer
-	logger    *debuglog.Logger
+	source                 model.ReviewSource
+	llm                    llm.Client
+	retrieval              retrieval.Engine
+	config                 config.Profile
+	trimmer                *Trimmer
+	logger                 *debuglog.Logger
+	searchToolOptimization bool
 }
+
+var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\($`)
 
 var inspectFileToolParameters = json.RawMessage(`{
   "type": "object",
@@ -114,15 +118,20 @@ var callHierarchyToolParameters = json.RawMessage(`{
 
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {
 	return &Engine{
-		source:    source,
-		llm:       llmClient,
-		retrieval: retrievalEngine,
-		config:    profile,
+		source:                 source,
+		llm:                    llmClient,
+		retrieval:              retrievalEngine,
+		config:                 profile,
+		searchToolOptimization: true,
 	}
 }
 
 func (e *Engine) SetLogger(logger *debuglog.Logger) {
 	e.logger = logger
+}
+
+func (e *Engine) SetSearchToolOptimization(enabled bool) {
+	e.searchToolOptimization = enabled
 }
 
 func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, error) {
@@ -227,6 +236,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	toolRoundsUsed := 0
 	seenFiles := make(map[string]retrieval.FileContent)
 	seenFileRanges := make(map[string][]model.LineRange)
+	seenToolCalls := make(map[string]struct{})
 	var resp *llm.ReviewResponse
 	var syntheticFollowup *llm.Message
 	var toolCallHistory []toolCallHistoryEntry
@@ -254,7 +264,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		e.logf("Executing tool round: round=%d tool_calls=%d", toolRoundsUsed+1, len(resp.ToolCalls))
 		assistantMessage := llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
 		messages = append(messages, assistantMessage)
-		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, seenFiles, seenFileRanges)
+		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, seenFiles, seenFileRanges, seenToolCalls)
 		messages = append(messages, toolMessages...)
 		toolCallHistory = append(toolCallHistory, collectToolCallHistory(resp.ToolCalls, toolMessages)...)
 		syntheticFollowup = &llm.Message{
@@ -340,10 +350,10 @@ func toolRoundLimitResponse(limit int, toolCalls []llm.ToolCall) *llm.ReviewResp
 	}
 }
 
-func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange) []llm.Message {
+func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange, seenToolCalls map[string]struct{}) []llm.Message {
 	results := make([]llm.Message, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
-		result := e.executeToolCall(ctx, repoRoot, toolCall, seenFiles, seenFileRanges)
+		result := e.executeToolCall(ctx, repoRoot, toolCall, seenFiles, seenFileRanges, seenToolCalls)
 		results = append(results, llm.Message{
 			Role:       "tool",
 			ToolCallID: toolCall.ID,
@@ -355,7 +365,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCall
 	return results
 }
 
-func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange) string {
+func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange, seenToolCalls map[string]struct{}) string {
 	if e.retrieval == nil {
 		return toolError("", "retrieval_unavailable", "retrieval is unavailable for this review")
 	}
@@ -363,13 +373,13 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	case "inspect_file":
 		return e.executeInspectFile(ctx, repoRoot, toolCall, seenFiles, seenFileRanges)
 	case "list_files":
-		return e.executeListFiles(ctx, repoRoot, toolCall)
+		return e.executeListFiles(ctx, repoRoot, toolCall, seenToolCalls)
 	case "search":
-		return e.executeSearch(ctx, repoRoot, toolCall)
+		return e.executeSearch(ctx, repoRoot, toolCall, seenToolCalls)
 	case "find_callers":
-		return e.executeCallHierarchy(ctx, repoRoot, toolCall, true)
+		return e.executeCallHierarchy(ctx, repoRoot, toolCall, true, seenToolCalls)
 	case "find_callees":
-		return e.executeCallHierarchy(ctx, repoRoot, toolCall, false)
+		return e.executeCallHierarchy(ctx, repoRoot, toolCall, false, seenToolCalls)
 	default:
 		return toolError("", "unsupported_tool", fmt.Sprintf("unsupported tool %q", toolCall.Name))
 	}
@@ -430,7 +440,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	return payload
 }
 
-func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall llm.ToolCall) string {
+func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenToolCalls map[string]struct{}) string {
 	var args struct {
 		Path  string `json:"path"`
 		Depth int    `json:"depth"`
@@ -443,11 +453,17 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 		args.Depth = 1
 	}
 	normalizedPath := normalizeToolPath(args.Path)
+	key := fmt.Sprintf("list_files\x00%s\x00%d", normalizedPath, args.Depth)
+	if _, ok := seenToolCalls[key]; ok {
+		e.logf("Skipping duplicate tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
+		return toolError(normalizedPath, "already_requested", "tool result was already provided for this review")
+	}
 	e.logf("Executing tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
 	listing, err := e.retrieval.ListFiles(ctx, repoRoot, normalizedPath, args.Depth)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
+	seenToolCalls[key] = struct{}{}
 	return mustToolResultJSON(map[string]any{
 		"path":  listing.Path,
 		"depth": args.Depth,
@@ -455,7 +471,7 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	})
 }
 
-func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall llm.ToolCall) string {
+func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenToolCalls map[string]struct{}) string {
 	var args struct {
 		Path          string `json:"path"`
 		Query         string `json:"query"`
@@ -475,6 +491,26 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		args.ContextLines = 5
 	}
 	normalizedPath := normalizeToolPath(args.Path)
+	if e.searchToolOptimization {
+		if matches := searchFunctionQueryPattern.FindStringSubmatch(args.Query); len(matches) == 2 {
+			symbol := matches[1]
+			key := callHierarchyDedupKey("find_callers", normalizedPath, symbol, 10)
+			if _, ok := seenToolCalls[key]; ok {
+				e.logf("Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
+				return toolError(normalizedPath, "already_requested", "tool result was already provided for this review")
+			}
+			e.logf("Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
+			return e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
+				ID:   toolCall.ID,
+				Name: "find_callers",
+				Arguments: mustToolResultJSON(map[string]any{
+					"path":   normalizedPath,
+					"symbol": symbol,
+					"depth":  10,
+				}),
+			}, true, seenToolCalls)
+		}
+	}
 	e.logf("Executing tool call: name=%s path=%s query=%q context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	results, err := e.retrieval.Search(ctx, repoRoot, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	if err != nil {
@@ -491,7 +527,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	})
 }
 
-func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, toolCall llm.ToolCall, callers bool) string {
+func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, toolCall llm.ToolCall, callers bool, seenToolCalls map[string]struct{}) string {
 	var args struct {
 		Symbol string `json:"symbol"`
 		Path   string `json:"path"`
@@ -509,6 +545,11 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		args.Depth = 10
 	}
 	normalizedPath := normalizeToolPath(args.Path)
+	key := callHierarchyDedupKey(toolCall.Name, normalizedPath, args.Symbol, args.Depth)
+	if _, ok := seenToolCalls[key]; ok {
+		e.logf("Skipping duplicate tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
+		return toolError(normalizedPath, "already_requested", "tool result was already provided for this review")
+	}
 	e.logf("Executing tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
 
 	symbol := retrieval.SymbolRef{Name: args.Symbol, Path: normalizedPath}
@@ -524,6 +565,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
+	seenToolCalls[key] = struct{}{}
 	return mustToolResultJSON(map[string]any{
 		"symbol": args.Symbol,
 		"path":   normalizedPath,
@@ -531,6 +573,10 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		"depth":  hierarchy.Depth,
 		"root":   hierarchy.Root,
 	})
+}
+
+func callHierarchyDedupKey(name, path, symbol string, depth int) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", name, path, symbol, depth)
 }
 
 func mustToolResultJSON(value any) string {
@@ -588,7 +634,7 @@ func syntheticToolCallSummary(toolCall llm.ToolCall, result toolResultSummary) s
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
 	_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
-	return fmt.Sprintf("%s: tool_call_id=%q, arguments=[%s]; %s", toolCall.Name, toolCall.ID, syntheticToolArguments(toolCall.Name, args), syntheticToolOutcome(result))
+	return fmt.Sprintf("%s: tool_call_id=%q, arguments=[%s]; %s", toolCall.Name, toolCall.ID, syntheticToolArguments(toolCall.Name, args), syntheticToolOutcome(toolCall.Name, result))
 }
 
 type toolResultSummary struct {
@@ -749,7 +795,7 @@ func syntheticToolArguments(toolName string, args struct {
 	return strings.Join(parts, ", ")
 }
 
-func syntheticToolOutcome(result toolResultSummary) string {
+func syntheticToolOutcome(toolName string, result toolResultSummary) string {
 	if result.IsError {
 		return fmt.Sprintf("error=%q", result.Message)
 	}
@@ -764,6 +810,10 @@ func syntheticToolOutcome(result toolResultSummary) string {
 		parts = append(parts, fmt.Sprintf("result_count=%d", result.ResultCount))
 	}
 	if len(parts) == 0 {
+		if toolName == "search" {
+			parts = append(parts, "result_count=0")
+			return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
+		}
 		parts = append(parts, "ok")
 	}
 	return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
@@ -810,7 +860,7 @@ func (e *Engine) logToolCall(toolCall llm.ToolCall, result string) {
 	e.logger.PrintToolCall(
 		toolCall.Name,
 		syntheticToolArgumentsForCall(toolCall),
-		syntheticToolOutcome(parseToolResultSummary(result)),
+		syntheticToolOutcome(toolCall.Name, parseToolResultSummary(result)),
 	)
 }
 

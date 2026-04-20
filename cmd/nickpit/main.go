@@ -23,29 +23,30 @@ import (
 )
 
 type app struct {
-	model             string
-	baseURL           string
-	apiKey            string
-	workDir           string
-	profile           string
-	maxContextTokens  int
-	includeFullFiles  bool
-	includeComments   bool
-	includeCommits    bool
-	jsonOutput        bool
-	useJSONSchema     bool
-	toolRounds        int
-	offline           bool
-	priorityThreshold string
-	configPath        string
-	localRepo         string
-	githubToken       string
-	gitlabToken       string
-	gitlabBaseURL     string
-	verbose           bool
-	showReasoning     bool
-	showToolCalls     bool
-	logger            *debuglog.Logger
+	model                         string
+	baseURL                       string
+	apiKey                        string
+	workDir                       string
+	profile                       string
+	maxContextTokens              int
+	includeFullFiles              bool
+	includeComments               bool
+	includeCommits                bool
+	jsonOutput                    bool
+	useJSONSchema                 bool
+	toolRounds                    int
+	offline                       bool
+	priorityThreshold             string
+	configPath                    string
+	localRepo                     string
+	githubToken                   string
+	gitlabToken                   string
+	gitlabBaseURL                 string
+	verbose                       bool
+	showReasoning                 bool
+	showToolCalls                 bool
+	disableSearchToolOptimization bool
+	logger                        *debuglog.Logger
 }
 
 func main() {
@@ -96,6 +97,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.verbose, "debug", false, "Print debug execution details")
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showToolCalls, "show-tool-calls", false, "Print tool calls with arguments and results to stderr")
+	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting `search` tool calls like `FunctionName(` into `find_callers`")
 
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
@@ -426,6 +428,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client.SetLogger(logger)
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
+	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	result, err := engine.Run(ctx, req)
 	if err != nil {
 		return err

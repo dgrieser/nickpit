@@ -126,16 +126,22 @@ func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string, 
 
 func (r *countingRetrieval) Search(_ context.Context, _ string, path, query string, contextLines, maxResults int, caseSensitive bool) (*retrieval.SearchResults, error) {
 	r.paths = append(r.paths, fmt.Sprintf("search:%s:%s:%d:%d:%t", path, query, contextLines, maxResults, caseSensitive))
+	results := []retrieval.SearchResult{
+		{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
+	}
+	resultCount := 1
+	if query == "missing" {
+		results = nil
+		resultCount = 0
+	}
 	return &retrieval.SearchResults{
 		Path:          path,
 		Query:         query,
 		ContextLines:  contextLines,
 		MaxResults:    maxResults,
 		CaseSensitive: caseSensitive,
-		ResultCount:   1,
-		Results: []retrieval.SearchResult{
-			{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
-		},
+		ResultCount:   resultCount,
+		Results:       results,
 	}, nil
 }
 
@@ -774,6 +780,45 @@ func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 	}
 }
 
+func TestEngineReturnsErrorForDuplicateListFilesRequests(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "list_files", Arguments: `{"path":"./pkg","depth":1}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list:pkg:1" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+	if want := "2. list_files: tool_call_id=\"call_2\", arguments=[path=\"./pkg\", depth=1]; error=\"tool result was already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
+	}
+}
+
 func TestEngineAllowsEmptyPathForListFilesToolCalls(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -861,6 +906,45 @@ func TestEngineExecutesCallersToolCalls(t *testing.T) {
 	}
 	if want := "1. find_callers: tool_call_id=\"call_1\", arguments=[path=\"pkg\", symbol=\"Run\", depth=2]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+func TestEngineReturnsErrorForDuplicateFindCallersRequests(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "find_callers", Arguments: `{"symbol":"Run","path":"pkg","depth":2}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "find_callers", Arguments: `{"symbol":"Run","path":"./pkg","depth":2}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:2" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+	if want := "2. find_callers: tool_call_id=\"call_2\", arguments=[path=\"./pkg\", symbol=\"Run\", depth=2]; error=\"tool result was already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
 	}
 }
 
@@ -1044,6 +1128,148 @@ func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	}
 	if want := "1. search: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", query=\"ttlExtenders\", context_lines=5, max_results=20, case_sensitive=false]; result=[files=1, result_count=1]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+func TestEngineRewritesSearchFunctionQueryToFindCallers(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:10" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["mode"] != "callers" || payload["symbol"] != "Run" || payload["path"] != "pkg" {
+		t.Fatalf("tool payload = %#v", payload)
+	}
+}
+
+func TestEngineDedupesOptimizedSearchAgainstFindCallers(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "find_callers", Arguments: `{"path":"./pkg","symbol":"Run","depth":10}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:10" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+	if want := "2. find_callers: tool_call_id=\"call_2\", arguments=[path=\"./pkg\", symbol=\"Run\", depth=10]; error=\"tool result was already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
+	}
+}
+
+func TestEngineReportsZeroSearchResultsExplicitly(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"missing"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := "1. search: tool_call_id=\"call_1\", arguments=[path=\"pkg\", query=\"missing\", context_lines=0, max_results=0, case_sensitive=false]; result=[result_count=0]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+func TestEngineCanDisableSearchToolOptimization(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+	engine.SetSearchToolOptimization(false)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "search:pkg:Run(:0:0:false" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
 	}
 }
 
