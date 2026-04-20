@@ -132,6 +132,7 @@ type Finding struct {
 	ConfidenceScore float64      `json:"confidence_score"`
 	Priority        *int         `json:"priority,omitempty"`
 	CodeLocation    CodeLocation `json:"code_location"`
+	Suggestion      *Suggestion  `json:"suggestion,omitempty"`
 }
 
 type CodeLocation struct {
@@ -142,6 +143,11 @@ type CodeLocation struct {
 type LineRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
+}
+
+type Suggestion struct {
+	Body      string    `json:"body"`
+	LineRange LineRange `json:"line_range"`
 }
 
 type TokenUsage struct {

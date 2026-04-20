@@ -34,6 +34,21 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 						},
 						"required": []string{"file_path", "line_range"},
 					},
+					"suggestion": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"body": map[string]any{"type": "string"},
+							"line_range": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"start": map[string]any{"type": "integer"},
+									"end":   map[string]any{"type": "integer"},
+								},
+								"required": []string{"start", "end"},
+							},
+						},
+						"required": []string{"body", "line_range"},
+					},
 				},
 				"required": []string{"title", "body", "confidence_score", "code_location"},
 			},
@@ -130,6 +145,14 @@ func exampleValueForProperty(name string, schema map[string]any) any {
 		return "file.go"
 	case "overall_explanation":
 		return "The patch is incorrect because it introduces a correctness issue."
+	case "suggestion":
+		return map[string]any{
+			"body": "replacement code",
+			"line_range": map[string]any{
+				"start": 10,
+				"end":   12,
+			},
+		}
 	}
 
 	return exampleFromSchema(schema)

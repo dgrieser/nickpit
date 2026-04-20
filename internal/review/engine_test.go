@@ -183,11 +183,17 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "You are acting as a senior engineer performing a thorough code review for a proposed code change made by another engineer."; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt = %q", req.Messages[0].Content)
 	}
-	if want := "If you need more code context, call the `inspect_file` tool"; !strings.Contains(req.Messages[0].Content, want) {
+	if want := "`inspect_file` tool"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing tool instructions: %q", req.Messages[0].Content)
+	}
+	if want := "`list_files` tool"; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing list-files instructions: %q", req.Messages[0].Content)
 	}
 	if want := "Do not request the same file more than once."; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing duplicate-request guard: %q", req.Messages[0].Content)
+	}
+	if want := "`suggestion.body` should contain the replacement code"; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing suggestion instructions: %q", req.Messages[0].Content)
 	}
 	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing example JSON instructions: %q", req.Messages[0].Content)
@@ -197,6 +203,9 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	}
 	if want := "\"title\": \"[P1] Example title\""; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing example finding JSON: %q", req.Messages[0].Content)
+	}
+	if want := "\"suggestion\""; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing example suggestion JSON: %q", req.Messages[0].Content)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {

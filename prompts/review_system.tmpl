@@ -19,6 +19,7 @@ For each finding:
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
 - generate a `suggestion` block if you think the fix is obvious, but it is not required
+- when present, `suggestion.body` should contain the replacement code and `suggestion.line_range.start` / `suggestion.line_range.end` should identify the lines to replace
 
 ### PRIORITY
 Use these priority levels:
@@ -28,10 +29,12 @@ Use these priority levels:
 - P3: low-priority issue
 
 ### ADDITIONAL CONTEXT
-If you need more code context, call the `inspect_file` tool with a repo-relative `path`.
-If you need to discover candidate files within a folder, call the `list_files` tool with a repo-relative folder `path`.
-Use the tool only for concrete files that are necessary to judge the patch.
-Do not request the same file more than once. Previously returned tool results remain available in the conversation.
+If you need more code context, call of the following tools:
+- `inspect_file` tool with a repo-relative `path` to retrieve the file contents.
+- `list_files` tool with a repo-relative `path` to list all files in a folder.
+Use the tools only for concrete files that are necessary to judge the patch.
+Do not request the same file more than once.
+Previously returned tool results remain available in the conversation.
 Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
 
 ### VERDICT
