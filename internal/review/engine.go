@@ -255,9 +255,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCall
 
 func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent) string {
 	if e.retrieval == nil {
-		return mustToolResultJSON(map[string]any{
-			"error": "retrieval is unavailable for this review",
-		})
+		return toolError("", "retrieval_unavailable", "retrieval is unavailable for this review")
 	}
 	switch toolCall.Name {
 	case "inspect_file":
@@ -265,9 +263,7 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	case "list_files":
 		return e.executeListFiles(ctx, repoRoot, toolCall)
 	default:
-		return mustToolResultJSON(map[string]any{
-			"error": fmt.Sprintf("unsupported tool %q", toolCall.Name),
-		})
+		return toolError("", "unsupported_tool", fmt.Sprintf("unsupported tool %q", toolCall.Name))
 	}
 }
 
@@ -277,32 +273,22 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-		return mustToolResultJSON(map[string]any{
-			"error": fmt.Sprintf("invalid tool arguments: %v", err),
-		})
+		return toolError("", "invalid_arguments", fmt.Sprintf("invalid tool arguments: %v", err))
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Path == "" {
-		return mustToolResultJSON(map[string]any{
-			"error": "missing required argument: path",
-		})
+		return toolError("", "missing_argument", "missing required argument: path")
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	if content, ok := seenFiles[normalizedPath]; ok {
 		e.logf("Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
-		return mustToolResultJSON(map[string]any{
-			"path":   content.Path,
-			"status": "already_provided",
-		})
+		return toolError(content.Path, "already_requested", "file contents were already provided for this review")
 	}
 
 	e.logf("Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
 	content, err := e.retrieval.GetFile(ctx, repoRoot, normalizedPath)
 	if err != nil {
-		return mustToolResultJSON(map[string]any{
-			"path":  normalizedPath,
-			"error": err.Error(),
-		})
+		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
 	payload := mustToolResultJSON(map[string]any{
 		"path":     content.Path,
@@ -318,24 +304,17 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 		Path string `json:"path"`
 	}
 	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-		return mustToolResultJSON(map[string]any{
-			"error": fmt.Sprintf("invalid tool arguments: %v", err),
-		})
+		return toolError("", "invalid_arguments", fmt.Sprintf("invalid tool arguments: %v", err))
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Path == "" {
-		return mustToolResultJSON(map[string]any{
-			"error": "missing required argument: path",
-		})
+		return toolError("", "missing_argument", "missing required argument: path")
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	e.logf("Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
 	listing, err := e.retrieval.ListFiles(ctx, repoRoot, normalizedPath)
 	if err != nil {
-		return mustToolResultJSON(map[string]any{
-			"path":  normalizedPath,
-			"error": err.Error(),
-		})
+		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
 	return mustToolResultJSON(map[string]any{
 		"path":  listing.Path,
@@ -346,9 +325,23 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 func mustToolResultJSON(value any) string {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return `{"error":"failed to encode tool result"}`
+		return `{"status":"error","error":{"code":"encoding_failed","message":"failed to encode tool result"}}`
 	}
 	return string(data)
+}
+
+func toolError(path, code, message string) string {
+	payload := map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	}
+	if path != "" {
+		payload["path"] = path
+	}
+	return mustToolResultJSON(payload)
 }
 
 func normalizeToolPath(path string) string {

@@ -192,7 +192,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "Do not request the same file more than once."; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing duplicate-request guard: %q", req.Messages[0].Content)
 	}
-	if want := "`suggestion.body` should contain the replacement code"; !strings.Contains(req.Messages[0].Content, want) {
+	if want := "generate a `suggestion` block, including `body`, `line_range.start` and `line_range.end`"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing suggestion instructions: %q", req.Messages[0].Content)
 	}
 	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.Messages[0].Content, want) {
@@ -373,7 +373,17 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
 		t.Fatalf("tool payload should be valid json: %v", err)
 	}
-	if payload["error"] != "missing required argument: path" {
+	if payload["status"] != "error" {
+		t.Fatalf("tool error status = %#v", payload["status"])
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool error payload = %#v", payload)
+	}
+	if errorPayload["code"] != "missing_argument" {
+		t.Fatalf("tool error code = %#v", errorPayload["code"])
+	}
+	if errorPayload["message"] != "missing required argument: path" {
 		t.Fatalf("tool error payload = %#v", payload)
 	}
 }
@@ -411,7 +421,7 @@ func TestEngineStopsAtToolRoundLimit(t *testing.T) {
 	}
 }
 
-func TestEngineReturnsAlreadyProvidedForDuplicateFileRequests(t *testing.T) {
+func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
@@ -453,11 +463,21 @@ func TestEngineReturnsAlreadyProvidedForDuplicateFileRequests(t *testing.T) {
 	if err := json.Unmarshal([]byte(llmClient.reqs[2].Messages[5].Content), &payload); err != nil {
 		t.Fatalf("tool payload should be valid json: %v", err)
 	}
-	if payload["status"] != "already_provided" {
+	if payload["status"] != "error" {
 		t.Fatalf("duplicate tool payload = %#v", payload)
 	}
 	if payload["path"] != "extra.go" {
 		t.Fatalf("duplicate tool path = %#v", payload["path"])
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("duplicate tool error payload = %#v", payload)
+	}
+	if errorPayload["code"] != "already_requested" {
+		t.Fatalf("duplicate tool error code = %#v", errorPayload["code"])
+	}
+	if errorPayload["message"] != "file contents were already provided for this review" {
+		t.Fatalf("duplicate tool error message = %#v", errorPayload["message"])
 	}
 	if _, ok := payload["content"]; ok {
 		t.Fatalf("duplicate tool payload should omit content: %#v", payload)
