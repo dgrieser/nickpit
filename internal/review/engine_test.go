@@ -615,6 +615,59 @@ func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
 	}
 }
 
+func TestEngineReturnsErrorForAlreadyCoveredFileRangeRequests(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go","line_start":1,"line_end":10}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"extra.go","line_start":2,"line_end":3}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[2].Messages[5].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["status"] != "error" {
+		t.Fatalf("duplicate range tool payload = %#v", payload)
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("duplicate range error payload = %#v", payload)
+	}
+	if errorPayload["code"] != "already_requested" {
+		t.Fatalf("duplicate range error code = %#v", errorPayload["code"])
+	}
+	if errorPayload["message"] != "file contents were already provided for this review" {
+		t.Fatalf("duplicate range error message = %#v", errorPayload["message"])
+	}
+	if want := "2. inspect_file: tool_call_id=\"call_2\", arguments=[path=\"extra.go\", line_start=2, line_end=3]; error=\"file contents were already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("duplicate range follow-up = %q", llmClient.reqs[2].Messages[6].Content)
+	}
+}
+
 func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{

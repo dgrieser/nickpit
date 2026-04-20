@@ -195,6 +195,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	totalUsage := model.TokenUsage{}
 	toolRoundsUsed := 0
 	seenFiles := make(map[string]retrieval.FileContent)
+	seenFileRanges := make(map[string][]model.LineRange)
 	var resp *llm.ReviewResponse
 	var syntheticFollowup *llm.Message
 	var toolCallHistory []toolCallHistoryEntry
@@ -222,7 +223,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		e.logf("Executing tool round: round=%d tool_calls=%d", toolRoundsUsed+1, len(resp.ToolCalls))
 		assistantMessage := llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
 		messages = append(messages, assistantMessage)
-		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, seenFiles)
+		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, seenFiles, seenFileRanges)
 		messages = append(messages, toolMessages...)
 		toolCallHistory = append(toolCallHistory, collectToolCallHistory(resp.ToolCalls, toolMessages)...)
 		syntheticFollowup = &llm.Message{
@@ -308,26 +309,26 @@ func toolRoundLimitResponse(limit int, toolCalls []llm.ToolCall) *llm.ReviewResp
 	}
 }
 
-func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, seenFiles map[string]retrieval.FileContent) []llm.Message {
+func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange) []llm.Message {
 	results := make([]llm.Message, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
 		results = append(results, llm.Message{
 			Role:       "tool",
 			ToolCallID: toolCall.ID,
 			Name:       toolCall.Name,
-			Content:    e.executeToolCall(ctx, repoRoot, toolCall, seenFiles),
+			Content:    e.executeToolCall(ctx, repoRoot, toolCall, seenFiles, seenFileRanges),
 		})
 	}
 	return results
 }
 
-func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent) string {
+func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange) string {
 	if e.retrieval == nil {
 		return toolError("", "retrieval_unavailable", "retrieval is unavailable for this review")
 	}
 	switch toolCall.Name {
 	case "inspect_file":
-		return e.executeInspectFile(ctx, repoRoot, toolCall, seenFiles)
+		return e.executeInspectFile(ctx, repoRoot, toolCall, seenFiles, seenFileRanges)
 	case "list_files":
 		return e.executeListFiles(ctx, repoRoot, toolCall)
 	case "search":
@@ -337,7 +338,7 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	}
 }
 
-func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent) string {
+func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCall llm.ToolCall, seenFiles map[string]retrieval.FileContent, seenFileRanges map[string][]model.LineRange) string {
 
 	var args struct {
 		Path      string `json:"path"`
@@ -363,6 +364,12 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		if err != nil {
 			return toolError(normalizedPath, "retrieval_failed", err.Error())
 		}
+		requested := model.LineRange{Start: content.StartLine, End: content.EndLine}
+		if rangeAlreadyCovered(seenFileRanges[normalizedPath], requested) {
+			e.logf("Skipping duplicate tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, requested.Start, requested.End)
+			return toolError(content.Path, "already_requested", "file contents were already provided for this review")
+		}
+		seenFileRanges[normalizedPath] = append(seenFileRanges[normalizedPath], requested)
 		return mustToolResultJSON(map[string]any{
 			"path":       content.Path,
 			"start_line": content.StartLine,
@@ -677,4 +684,13 @@ func lineCount(text string) int {
 		return 0
 	}
 	return strings.Count(text, "\n") + 1
+}
+
+func rangeAlreadyCovered(seen []model.LineRange, requested model.LineRange) bool {
+	for _, existing := range seen {
+		if existing.Start <= requested.Start && existing.End >= requested.End {
+			return true
+		}
+	}
+	return false
 }
