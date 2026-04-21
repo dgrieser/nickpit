@@ -634,6 +634,50 @@ func TestEngineStopsAtToolRoundLimit(t *testing.T) {
 	if result.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
 	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d", result.ToolCalls)
+	}
+}
+
+func TestEngineCountsParallelToolCallsIndividuallyForLimit(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(llmClient.reqs))
+	}
+	if len(llmClient.reqs[1].Tools) != 0 {
+		t.Fatalf("final call should have no tools, got %d", len(llmClient.reqs[1].Tools))
+	}
+	if result.ToolCalls != 0 {
+		t.Fatalf("tool calls = %d", result.ToolCalls)
+	}
+	if len(retrievalEngine.paths) != 0 {
+		t.Fatalf("retrieval should not run when batch exceeds limit: %#v", retrievalEngine.paths)
+	}
 }
 
 func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {

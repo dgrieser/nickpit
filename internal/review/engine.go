@@ -295,8 +295,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		if len(resp.ToolCalls) == 0 {
 			break
 		}
-		if req.MaxToolCalls > 0 && toolCallsUsed >= req.MaxToolCalls {
-			e.logf("Tool round limit reached, making final call without tools: limit=%d", req.MaxToolCalls)
+		pendingToolCalls := len(resp.ToolCalls)
+		if req.MaxToolCalls > 0 && toolCallsUsed+pendingToolCalls > req.MaxToolCalls {
+			e.logf("Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, toolCallsUsed, pendingToolCalls)
 			e.logProgress("Tool", fmt.Sprintf("status=LimitReached, limit=%d, finalizing review", req.MaxToolCalls))
 			noToolsPrompt, renderErr := llm.RenderPrompt(systemTemplate, struct {
 				OutputSchemaSnippet      string
@@ -332,7 +333,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
 			break
 		}
-		e.logf("Executing tool round: round=%d tool_calls=%d", toolCallsUsed+1, len(resp.ToolCalls))
+		e.logf("Executing tool batch: used=%d requested=%d", toolCallsUsed, pendingToolCalls)
 		assistantMessage := llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
 		messages = append(messages, assistantMessage)
 		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
@@ -342,7 +343,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			Role:    "user",
 			Content: syntheticToolFollowup(toolCallHistory),
 		}
-		toolCallsUsed++
+		toolCallsUsed += pendingToolCalls
 	}
 
 	filtered := filterByPriority(resp.Findings, req.PriorityThreshold)

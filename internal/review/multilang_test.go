@@ -56,7 +56,7 @@ func TestEngineSerializesPythonAndNodeToolPayloadLanguages(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
+		MaxToolCalls:     2,
 	})
 	if err != nil {
 		t.Fatal(err)
