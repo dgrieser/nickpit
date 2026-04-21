@@ -36,7 +36,8 @@ If you need more code context, call of the following tools:
 - `search` tool with a repo-relative `path` and a `query` to search recursively for relevant matches.
 Use the tools only for concrete files that are necessary to judge the patch.
 Do not request the same file more than once.
-When inspecting function symbols, prefer `find_callers`, `find_callees` over `search`.
+{{if .ParallelToolCallGuidance}}When you need multiple independent pieces of context, call all required tools in the same turn rather than serializing them, and only use later rounds when the next call depends on an earlier result.
+{{end}}When inspecting function symbols, prefer `find_callers`, `find_callees` over `search`.
 Previously returned tool results remain available in the conversation.
 Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
 

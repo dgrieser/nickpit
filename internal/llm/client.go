@@ -35,15 +35,16 @@ type OpenAIClient struct {
 }
 
 type ReviewRequest struct {
-	SystemPrompt    string
-	UserContent     string
-	Messages        []Message
-	Tools           []ToolDefinition
-	Schema          json.RawMessage
-	Model           string
-	MaxTokens       *int
-	Temperature     *float64
-	ReasoningEffort string
+	SystemPrompt      string
+	UserContent       string
+	Messages          []Message
+	Tools             []ToolDefinition
+	Schema            json.RawMessage
+	Model             string
+	MaxTokens         *int
+	Temperature       *float64
+	ParallelToolCalls bool
+	ReasoningEffort   string
 }
 
 type Message struct {
@@ -149,7 +150,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		Model:             req.Model,
 		Messages:          buildMessages(req),
 		Tools:             buildTools(req.Tools),
-		ParallelToolCalls: false,
+		ParallelToolCalls: req.ParallelToolCalls,
 		StreamOptions: &openai.StreamOptions{
 			IncludeUsage: true,
 		},

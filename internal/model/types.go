@@ -24,22 +24,23 @@ const (
 )
 
 type ReviewRequest struct {
-	Mode              ReviewMode
-	RepoRoot          string
-	LocalRepo         string
-	Repo              string
-	Identifier        int
-	BaseRef           string
-	HeadRef           string
-	IncludeComments   bool
-	IncludeCommits    bool
-	IncludeFullFiles  bool
-	MaxContextTokens  int
-	ToolRounds        int
-	UseJSONSchema     bool
-	PriorityThreshold string
-	Offline           bool
-	Submode           string
+	Mode                     ReviewMode
+	RepoRoot                 string
+	LocalRepo                string
+	Repo                     string
+	Identifier               int
+	BaseRef                  string
+	HeadRef                  string
+	IncludeComments          bool
+	IncludeCommits           bool
+	IncludeFullFiles         bool
+	MaxContextTokens         int
+	ToolRounds               int
+	DisableParallelToolCalls bool
+	UseJSONSchema            bool
+	PriorityThreshold        string
+	Offline                  bool
+	Submode                  string
 }
 
 type ReviewResult struct {

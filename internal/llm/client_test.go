@@ -372,6 +372,7 @@ func TestClientReviewReassemblesStreamedToolCalls(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
+		ParallelToolCalls: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -390,6 +391,57 @@ func TestClientReviewReassemblesStreamedToolCalls(t *testing.T) {
 	tools, ok := payload["tools"].([]any)
 	if !ok || len(tools) != 1 {
 		t.Fatalf("tools = %#v", payload["tools"])
+	}
+	if payload["parallel_tool_calls"] != true {
+		t.Fatalf("parallel_tool_calls = %#v", payload["parallel_tool_calls"])
+	}
+}
+
+func TestClientReviewCanDisableParallelToolCalls(t *testing.T) {
+	var payload map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:      "system",
+		UserContent:       "user",
+		ParallelToolCalls: false,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if payload["parallel_tool_calls"] != false {
 		t.Fatalf("parallel_tool_calls = %#v", payload["parallel_tool_calls"])

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -104,11 +105,14 @@ func (stubRetrieval) Search(context.Context, string, string, string, int, int, b
 }
 
 type countingRetrieval struct {
+	mu    sync.Mutex
 	paths []string
 }
 
 func (r *countingRetrieval) GetFile(_ context.Context, _ string, path string) (*retrieval.FileContent, error) {
+	r.mu.Lock()
 	r.paths = append(r.paths, path)
+	r.mu.Unlock()
 	return &retrieval.FileContent{
 		Path:     path,
 		Content:  "package extra",
@@ -117,7 +121,9 @@ func (r *countingRetrieval) GetFile(_ context.Context, _ string, path string) (*
 }
 
 func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string, depth int) (*retrieval.DirectoryListing, error) {
+	r.mu.Lock()
 	r.paths = append(r.paths, fmt.Sprintf("list:%s:%d", path, depth))
+	r.mu.Unlock()
 	return &retrieval.DirectoryListing{
 		Path:  path,
 		Files: []string{path + "/a.go", path + "/b.go"},
@@ -125,7 +131,9 @@ func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string, 
 }
 
 func (r *countingRetrieval) Search(_ context.Context, _ string, path, query string, contextLines, maxResults int, caseSensitive bool) (*retrieval.SearchResults, error) {
+	r.mu.Lock()
 	r.paths = append(r.paths, fmt.Sprintf("search:%s:%s:%d:%d:%t", path, query, contextLines, maxResults, caseSensitive))
+	r.mu.Unlock()
 	results := []retrieval.SearchResult{
 		{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
 	}
@@ -160,7 +168,9 @@ func (countingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef)
 }
 
 func (r *countingRetrieval) FindCallers(_ context.Context, _ string, symbol retrieval.SymbolRef, depth int) (*retrieval.CallHierarchy, error) {
+	r.mu.Lock()
 	r.paths = append(r.paths, fmt.Sprintf("callers:%s:%s:%d", symbol.Path, symbol.Name, depth))
+	r.mu.Unlock()
 	return &retrieval.CallHierarchy{
 		Mode:  "callers",
 		Depth: depth,
@@ -184,7 +194,9 @@ func (r *countingRetrieval) FindCallers(_ context.Context, _ string, symbol retr
 }
 
 func (r *countingRetrieval) FindCallees(_ context.Context, _ string, symbol retrieval.SymbolRef, depth int) (*retrieval.CallHierarchy, error) {
+	r.mu.Lock()
 	r.paths = append(r.paths, fmt.Sprintf("callees:%s:%s:%d", symbol.Path, symbol.Name, depth))
+	r.mu.Unlock()
 	return &retrieval.CallHierarchy{
 		Mode:  "callees",
 		Depth: depth,
@@ -287,6 +299,9 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "Do not request the same file more than once."; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing duplicate-request guard: %q", req.Messages[0].Content)
 	}
+	if want := "call all required tools in the same turn rather than serializing them"; !strings.Contains(req.Messages[0].Content, want) {
+		t.Fatalf("system prompt missing parallel guidance: %q", req.Messages[0].Content)
+	}
 	if want := "generate a `suggestion` block, including `body`, `line_range.start` and `line_range.end`"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing suggestion instructions: %q", req.Messages[0].Content)
 	}
@@ -341,6 +356,30 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	}
 	if req.Tools[4].Name != "find_callees" {
 		t.Fatalf("tool name = %q", req.Tools[4].Name)
+	}
+	if !req.ParallelToolCalls {
+		t.Fatal("parallel tool calls should be enabled by default")
+	}
+}
+
+func TestEngineCanDisableParallelToolCallsAndGuidance(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:                     model.ModeLocal,
+		MaxContextTokens:         1000,
+		DisableParallelToolCalls: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := llmClient.reqs[0]
+	if req.ParallelToolCalls {
+		t.Fatal("parallel tool calls should be disabled")
+	}
+	if strings.Contains(req.Messages[0].Content, "call all required tools in the same turn rather than serializing them") {
+		t.Fatalf("system prompt should omit parallel guidance: %q", req.Messages[0].Content)
 	}
 }
 
@@ -777,6 +816,124 @@ func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 	}
 	if want := "1. list_files: tool_call_id=\"call_1\", arguments=[path=\"pkg\", depth=1]; result=[files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
+	}
+}
+
+type blockingRetrieval struct {
+	started chan string
+	release chan struct{}
+}
+
+func (r *blockingRetrieval) GetFile(_ context.Context, _ string, path string) (*retrieval.FileContent, error) {
+	r.started <- path
+	<-r.release
+	return &retrieval.FileContent{
+		Path:     path,
+		Content:  "package extra",
+		Language: "go",
+	}, nil
+}
+
+func (blockingRetrieval) ListFiles(context.Context, string, string, int) (*retrieval.DirectoryListing, error) {
+	return nil, errors.New("unexpected ListFiles call")
+}
+
+func (blockingRetrieval) Search(context.Context, string, string, string, int, int, bool) (*retrieval.SearchResults, error) {
+	return nil, errors.New("unexpected Search call")
+}
+
+func (blockingRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
+	return nil, errors.New("unexpected GetFileSlice call")
+}
+
+func (blockingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
+	return nil, errors.New("unexpected GetSymbol call")
+}
+
+func (blockingRetrieval) FindCallers(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
+	return nil, errors.New("unexpected FindCallers call")
+}
+
+func (blockingRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
+	return nil, errors.New("unexpected FindCallees call")
+}
+
+func TestEngineExecutesIndependentToolCallsConcurrently(t *testing.T) {
+	retrievalEngine := &blockingRetrieval{
+		started: make(chan string, 2),
+		release: make(chan struct{}),
+	}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	state := &toolRoundState{
+		seenFiles:      make(map[string]retrieval.FileContent),
+		seenFileRanges: make(map[string][]model.LineRange),
+		seenToolCalls:  make(map[string]struct{}),
+	}
+
+	done := make(chan []llm.Message, 1)
+	go func() {
+		done <- engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+			{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+			{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"b.go"}`},
+		}, state)
+	}()
+
+	started := map[string]struct{}{}
+	for len(started) < 2 {
+		path := <-retrievalEngine.started
+		started[path] = struct{}{}
+	}
+	close(retrievalEngine.release)
+
+	results := <-done
+	if len(results) != 2 {
+		t.Fatalf("tool messages = %d", len(results))
+	}
+	if results[0].ToolCallID != "call_1" || results[1].ToolCallID != "call_2" {
+		t.Fatalf("tool message order = %#v", results)
+	}
+}
+
+func TestEngineDedupesDuplicateToolCallsWithinParallelRound(t *testing.T) {
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	state := &toolRoundState{
+		seenFiles:      make(map[string]retrieval.FileContent),
+		seenFileRanges: make(map[string][]model.LineRange),
+		seenToolCalls:  make(map[string]struct{}),
+	}
+
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+		{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"./extra.go"}`},
+	}, state)
+
+	if len(results) != 2 {
+		t.Fatalf("tool messages = %d", len(results))
+	}
+	if len(retrievalEngine.paths) != 1 {
+		t.Fatalf("retrieval calls = %d", len(retrievalEngine.paths))
+	}
+	var firstPayload map[string]any
+	if err := json.Unmarshal([]byte(results[0].Content), &firstPayload); err != nil {
+		t.Fatalf("first tool payload should be valid json: %v", err)
+	}
+	if firstPayload["path"] != "extra.go" {
+		t.Fatalf("first tool payload = %#v", firstPayload)
+	}
+	var secondPayload map[string]any
+	if err := json.Unmarshal([]byte(results[1].Content), &secondPayload); err != nil {
+		t.Fatalf("second tool payload should be valid json: %v", err)
+	}
+	if secondPayload["status"] != "error" {
+		t.Fatalf("duplicate tool payload = %#v", secondPayload)
+	}
+	errorPayload, ok := secondPayload["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("duplicate error payload = %#v", secondPayload)
+	}
+	if errorPayload["code"] != "already_requested" {
+		t.Fatalf("duplicate error code = %#v", errorPayload["code"])
 	}
 }
 

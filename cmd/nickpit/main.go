@@ -46,6 +46,7 @@ type app struct {
 	showReasoning                 bool
 	showProgress                  bool
 	disableSearchToolOptimization bool
+	disableParallelToolCalls      bool
 	logger                        *debuglog.Logger
 }
 
@@ -98,6 +99,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting `search` tool calls like `FunctionName(` into `find_callers`")
+	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
@@ -417,6 +419,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		defer cleanup()
 	}
 	req.RepoRoot = repoRoot
+	req.DisableParallelToolCalls = a.disableParallelToolCalls
 	if req.MaxContextTokens == 0 {
 		req.MaxContextTokens = profile.MaxContextTokens
 	}
