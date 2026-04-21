@@ -6,12 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
 )
 
 type LocalEngine struct{}
+
+var escapedSearchQueryPattern = regexp.MustCompile(`\\([^\w\s])`)
 
 func NewLocalEngine() *LocalEngine {
 	return &LocalEngine{}
@@ -123,11 +126,7 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 	}
 
 	results := make([]SearchResult, 0)
-	searchQuery := query
-	if !caseSensitive {
-		searchQuery = strings.ToLower(query)
-	}
-	appendMatches := func(relPath string) error {
+	appendMatches := func(relPath, searchQuery string) error {
 		fullPath := filepath.Join(repoRoot, relPath)
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
@@ -168,11 +167,14 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 		return nil
 	}
 
-	if !info.IsDir() {
-		if err := appendMatches(normalizedPath); err != nil && err != errSearchLimitReached {
-			return nil, err
+	runSearch := func(searchQuery string) error {
+		if !info.IsDir() {
+			if err := appendMatches(normalizedPath, searchQuery); err != nil && err != errSearchLimitReached {
+				return err
+			}
+			return nil
 		}
-	} else {
+
 		err = filepath.WalkDir(fullPath, func(currentPath string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -185,22 +187,50 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 				return err
 			}
 			relPath = strings.ReplaceAll(relPath, "\\", "/")
-			return appendMatches(relPath)
+			return appendMatches(relPath, searchQuery)
 		})
 		if err != nil && err != errSearchLimitReached {
-			return nil, fmt.Errorf("retrieval: searching %s: %w", normalizedPath, err)
+			return fmt.Errorf("retrieval: searching %s: %w", normalizedPath, err)
+		}
+		return nil
+	}
+
+	searchQuery := query
+	if !caseSensitive {
+		searchQuery = strings.ToLower(query)
+	}
+	if err := runSearch(searchQuery); err != nil {
+		return nil, err
+	}
+
+	effectiveQuery := query
+	unescapedQuery := unescapeSearchQuery(query)
+	if len(results) == 0 && unescapedQuery != query {
+		searchQuery = unescapedQuery
+		if !caseSensitive {
+			searchQuery = strings.ToLower(unescapedQuery)
+		}
+		if err := runSearch(searchQuery); err != nil {
+			return nil, err
+		}
+		if len(results) > 0 {
+			effectiveQuery = unescapedQuery
 		}
 	}
 
 	return &SearchResults{
 		Path:          normalizedPath,
-		Query:         query,
+		Query:         effectiveQuery,
 		ContextLines:  contextLines,
 		MaxResults:    maxResults,
 		CaseSensitive: caseSensitive,
 		ResultCount:   len(results),
 		Results:       results,
 	}, nil
+}
+
+func unescapeSearchQuery(query string) string {
+	return escapedSearchQueryPattern.ReplaceAllString(query, `$1`)
 }
 
 var errSearchLimitReached = fmt.Errorf("search result limit reached")

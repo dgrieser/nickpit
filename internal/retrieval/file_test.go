@@ -208,6 +208,43 @@ func TestLocalEngineSearchCaseSensitive(t *testing.T) {
 	}
 }
 
+func TestLocalEngineSearchFallsBackToUnescapedQuery(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "func (cache *RedisSSHSessionCache) sessionPodKey() string {\n\treturn \"x\"\n}"
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.Search(context.Background(), repoRoot, "pkg", `func (cache \*RedisSSHSessionCache) sessionPodKey`, 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := &SearchResults{
+		Path:          "pkg",
+		Query:         "func (cache *RedisSSHSessionCache) sessionPodKey",
+		ContextLines:  0,
+		CaseSensitive: false,
+		ResultCount:   1,
+		Results: []SearchResult{
+			{
+				Path:      "pkg/a.go",
+				StartLine: 1,
+				EndLine:   1,
+				Language:  "go",
+				Content:   "func (cache *RedisSSHSessionCache) sessionPodKey() string {",
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("search = %#v, want %#v", got, want)
+	}
+}
+
 func TestLocalEngineListFilesSkipsGitIgnoredAndDotGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
