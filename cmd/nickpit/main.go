@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
-	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/output"
 	"github.com/dgrieser/nickpit/internal/retrieval"
@@ -34,7 +34,7 @@ type app struct {
 	includeCommits                bool
 	jsonOutput                    bool
 	useJSONSchema                 bool
-	toolRounds                    int
+	maxToolCalls                  int
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
@@ -46,7 +46,7 @@ type app struct {
 	showProgress                  bool
 	disableSearchToolOptimization bool
 	disableParallelToolCalls      bool
-	logger                        *debuglog.Logger
+	logger                        *logging.Logger
 }
 
 func main() {
@@ -85,7 +85,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
-	root.PersistentFlags().IntVar(&cli.toolRounds, "max-tool-calls", 0, "Maximum tool-call rounds (0 means unlimited by default)")
+	root.PersistentFlags().IntVar(&cli.maxToolCalls, "max-tool-calls", 0, "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -114,8 +114,8 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		APIKey:           a.apiKey,
 		UseJSONSchema:    a.useJSONSchema,
 		MaxContextTokens: a.maxContextTokens,
-		ToolRounds:       a.toolRounds,
-		Workdir:        a.workDir,
+		ToolCalls:        a.maxToolCalls,
+		Workdir:          a.workDir,
 		GitHubToken:      a.githubToken,
 		GitLabToken:      a.gitlabToken,
 		GitLabBaseURL:    a.gitlabBaseURL,
@@ -151,14 +151,14 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 			req := model.ReviewRequest{
 				Mode:              model.ModeLocal,
 				RepoRoot:          repoRoot,
-				Workdir:         profile.Workdir,
+				Workdir:           profile.Workdir,
 				BaseRef:           firstNonEmpty(base, from),
 				HeadRef:           firstNonEmpty(head, to),
 				IncludeComments:   a.includeComments,
 				IncludeCommits:    a.includeCommits,
 				IncludeFullFiles:  a.includeFullFiles,
 				MaxContextTokens:  profile.MaxContextTokens,
-				ToolRounds:        profile.MaxToolCalls,
+				MaxToolCalls:      profile.MaxToolCalls,
 				UseJSONSchema:     profile.UseJSONSchema,
 				PriorityThreshold: a.priorityThreshold,
 				Submode:           submode,
@@ -201,13 +201,13 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
 			req := model.ReviewRequest{
 				Mode:              model.ModeGitHub,
-				Workdir:         profile.Workdir,
+				Workdir:           profile.Workdir,
 				Repo:              repo,
 				Identifier:        pr,
 				IncludeComments:   a.includeComments,
 				IncludeCommits:    a.includeCommits,
 				MaxContextTokens:  profile.MaxContextTokens,
-				ToolRounds:        profile.MaxToolCalls,
+				MaxToolCalls:      profile.MaxToolCalls,
 				UseJSONSchema:     profile.UseJSONSchema,
 				PriorityThreshold: a.priorityThreshold,
 				Offline:           a.offline,
@@ -246,13 +246,13 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
 			req := model.ReviewRequest{
 				Mode:              model.ModeGitLab,
-				Workdir:         profile.Workdir,
+				Workdir:           profile.Workdir,
 				Repo:              project,
 				Identifier:        mr,
 				IncludeComments:   a.includeComments,
 				IncludeCommits:    a.includeCommits,
 				MaxContextTokens:  profile.MaxContextTokens,
-				ToolRounds:        profile.MaxToolCalls,
+				MaxToolCalls:      profile.MaxToolCalls,
 				UseJSONSchema:     profile.UseJSONSchema,
 				PriorityThreshold: a.priorityThreshold,
 				Offline:           a.offline,
@@ -397,7 +397,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 }
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
-	logger := debuglog.New(os.Stderr, a.verbose, true)
+	logger := logging.New(os.Stderr, a.verbose, true)
 	logger.SetShowReasoning(a.showReasoning)
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
@@ -422,8 +422,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if req.MaxContextTokens == 0 {
 		req.MaxContextTokens = profile.MaxContextTokens
 	}
-	if req.ToolRounds == 0 {
-		req.ToolRounds = profile.MaxToolCalls
+	if req.MaxToolCalls == 0 {
+		req.MaxToolCalls = profile.MaxToolCalls
 	}
 	a.logProgress("Model", modelSummary(profile, req))
 
@@ -459,12 +459,12 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 		}
 		return wd, nil, err
 	}
-	toolRounds := req.ToolRounds
-	if toolRounds == 0 {
-		toolRounds = profile.MaxToolCalls
+	maxToolCalls := req.MaxToolCalls
+	if maxToolCalls == 0 {
+		maxToolCalls = profile.MaxToolCalls
 	}
-	if !req.IncludeFullFiles && toolRounds < 0 {
-		a.logf("Skipping remote checkout: include_full_files=%t tool_rounds=%d", req.IncludeFullFiles, toolRounds)
+	if !req.IncludeFullFiles && maxToolCalls < 0 {
+		a.logf("Skipping remote checkout: include_full_files=%t max_tool_calls=%d", req.IncludeFullFiles, maxToolCalls)
 		return "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)
@@ -483,7 +483,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	manager := git.NewCheckoutManager()
 	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
 		Workdir: req.Workdir,
-		Token:     checkoutToken(req.Mode, profile),
+		Token:   checkoutToken(req.Mode, profile),
 	})
 	if err != nil {
 		return "", nil, err
@@ -626,8 +626,8 @@ func (a *app) logProgress(label, summary string) {
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	flags := []string{fmt.Sprintf("%dk context", req.MaxContextTokens/1000)}
-	if req.ToolRounds > 0 {
-		flags = append(flags, fmt.Sprintf("≤%d tool calls", req.ToolRounds))
+	if req.MaxToolCalls > 0 {
+		flags = append(flags, fmt.Sprintf("≤%d tool calls", req.MaxToolCalls))
 	}
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")
@@ -646,7 +646,7 @@ func reviewResultSummary(result *model.ReviewResult) string {
 	return strings.Join([]string{
 		"status=ok",
 		fmt.Sprintf("findings=%d", len(result.Findings)),
-		fmt.Sprintf("tool_rounds=%d", result.ToolRounds),
+		fmt.Sprintf("tool_calls=%d", result.ToolCalls),
 		fmt.Sprintf("prompt_tokens=%d", result.TokensUsed.PromptTokens),
 		fmt.Sprintf("completion_tokens=%d", result.TokensUsed.CompletionTokens),
 		fmt.Sprintf("total_tokens=%d", result.TokensUsed.TotalTokens),

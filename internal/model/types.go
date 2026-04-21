@@ -35,7 +35,7 @@ type ReviewRequest struct {
 	IncludeCommits           bool
 	IncludeFullFiles         bool
 	MaxContextTokens         int
-	ToolRounds               int
+	MaxToolCalls             int
 	DisableParallelToolCalls bool
 	UseJSONSchema            bool
 	PriorityThreshold        string
@@ -59,7 +59,7 @@ type ReviewResult struct {
 	Model                  string     `json:"model,omitempty"`
 	ReasoningEffort        string     `json:"reasoning_effort,omitempty"`
 	MaxToolCalls           int        `json:"max_tool_calls,omitempty"`
-	ToolRounds             int        `json:"tool_calls,omitempty"`
+	ToolCalls              int        `json:"tool_calls,omitempty"`
 }
 
 type ReviewContext struct {

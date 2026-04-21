@@ -17,7 +17,7 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 		t.Fatalf("base url = %q", profile.BaseURL)
 	}
 	if profile.MaxToolCalls != 0 {
-		t.Fatalf("default tool rounds = %d", profile.MaxToolCalls)
+		t.Fatalf("default max tool calls = %d", profile.MaxToolCalls)
 	}
 }
 
@@ -82,7 +82,7 @@ profiles:
 		Profile:          "work",
 		BaseURL:          "https://override.invalid/v1",
 		MaxContextTokens: 777,
-		Workdir:        "/override/repo",
+		Workdir:          "/override/repo",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ profiles:
 	}
 }
 
-func TestLoadConfigToolRoundsFromFileAndOverride(t *testing.T) {
+func TestLoadConfigMaxToolCallsFromFileAndOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -200,14 +200,14 @@ profiles:
 		t.Fatal(err)
 	}
 	if profile.MaxToolCalls != 2 {
-		t.Fatalf("default tool rounds = %d", profile.MaxToolCalls)
+		t.Fatalf("default max tool calls = %d", profile.MaxToolCalls)
 	}
 
-	_, profile, err = Load(path, Overrides{ToolRounds: 4})
+	_, profile, err = Load(path, Overrides{ToolCalls: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if profile.MaxToolCalls != 4 {
-		t.Fatalf("override default tool rounds = %d", profile.MaxToolCalls)
+		t.Fatalf("override default max tool calls = %d", profile.MaxToolCalls)
 	}
 }

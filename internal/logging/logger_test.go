@@ -1,4 +1,4 @@
-package debuglog
+package logging
 
 import (
 	"bytes"

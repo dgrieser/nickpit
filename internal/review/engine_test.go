@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
-	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 )
@@ -426,7 +426,7 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -434,8 +434,8 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("requests = %d", len(llmClient.reqs))
 	}
-	if result.ToolRounds != 1 {
-		t.Fatalf("tool rounds = %d", result.ToolRounds)
+	if result.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d", result.ToolCalls)
 	}
 	if got := result.TokensUsed.TotalTokens; got != 10 {
 		t.Fatalf("total tokens = %d", got)
@@ -498,7 +498,7 @@ func TestEngineExecutesInspectFileToolCallsWithLineRange(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -563,7 +563,7 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -620,7 +620,7 @@ func TestEngineStopsAtToolRoundLimit(t *testing.T) {
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -662,7 +662,7 @@ func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       2,
+		MaxToolCalls:     2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -742,7 +742,7 @@ func TestEngineReturnsErrorForAlreadyCoveredFileRangeRequests(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       2,
+		MaxToolCalls:     2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -791,7 +791,7 @@ func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -966,7 +966,7 @@ func TestEngineReturnsErrorForDuplicateListFilesRequests(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       2,
+		MaxToolCalls:     2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1000,7 +1000,7 @@ func TestEngineAllowsEmptyPathForListFilesToolCalls(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1048,7 +1048,7 @@ func TestEngineExecutesCallersToolCalls(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1095,7 +1095,7 @@ func TestEngineReturnsErrorForDuplicateFindCallersRequests(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       2,
+		MaxToolCalls:     2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1129,7 +1129,7 @@ func TestEngineAllowsEmptyPathForCalleesToolCalls(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1166,7 +1166,7 @@ func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := debuglog.New(&buf, false, false)
+	logger := logging.New(&buf, false, false)
 	logger.SetShowProgress(true)
 	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logger)
@@ -1174,7 +1174,7 @@ func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1205,7 +1205,7 @@ func TestEnginePrintsOptimizedSearchReplacementWhenEnabled(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := debuglog.New(&buf, false, false)
+	logger := logging.New(&buf, false, false)
 	logger.SetShowProgress(true)
 	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logger)
@@ -1213,7 +1213,7 @@ func TestEnginePrintsOptimizedSearchReplacementWhenEnabled(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1241,14 +1241,14 @@ func TestEngineDoesNotPrintToolCallsByDefault(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	logger := debuglog.New(&buf, false, false)
+	logger := logging.New(&buf, false, false)
 	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logger)
 
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1280,7 +1280,7 @@ func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1348,7 +1348,7 @@ func TestEngineRewritesSearchFunctionQueryToFindCallers(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1387,7 +1387,7 @@ func TestEngineRewritesSearchMethodQueryToFindCallers(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1431,7 +1431,7 @@ func TestEngineDedupesOptimizedSearchAgainstFindCallers(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       2,
+		MaxToolCalls:     2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1468,7 +1468,7 @@ func TestEngineReportsZeroSearchResultsExplicitly(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1501,7 +1501,7 @@ func TestEngineCanDisableSearchToolOptimization(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       1,
+		MaxToolCalls:     1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1537,7 +1537,7 @@ func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
-		ToolRounds:       0,
+		MaxToolCalls:     0,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1545,8 +1545,8 @@ func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
 	if result.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
 	}
-	if result.ToolRounds != 2 {
-		t.Fatalf("tool rounds = %d", result.ToolRounds)
+	if result.ToolCalls != 2 {
+		t.Fatalf("tool calls = %d", result.ToolCalls)
 	}
 	if len(retrievalEngine.paths) != 2 {
 		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)

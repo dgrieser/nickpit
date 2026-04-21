@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dgrieser/nickpit/internal/debuglog"
+	"github.com/dgrieser/nickpit/internal/logging"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -499,7 +499,7 @@ func TestClientReviewStreamsReasoningToLogger(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := NewOpenAIClient(server.URL, "token", "model")
-	logger := debuglog.New(&buf, true, false)
+	logger := logging.New(&buf, true, false)
 	logger.SetShowReasoning(true)
 	client.SetLogger(logger)
 
@@ -570,7 +570,7 @@ func TestClientReviewDoesNotStreamReasoningWithoutFlag(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(debuglog.New(&buf, true, false))
+	client.SetLogger(logging.New(&buf, true, false))
 
 	if _, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt: "system",
@@ -632,7 +632,7 @@ func TestClientReviewLogsToolCallOnlyRawResponse(t *testing.T) {
 
 	var buf bytes.Buffer
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(debuglog.New(&buf, true, false))
+	client.SetLogger(logging.New(&buf, true, false))
 
 	if _, err := client.Review(context.Background(), &ReviewRequest{
 		Messages: []Message{
@@ -836,7 +836,7 @@ func TestClientReviewRetriesNetworkErrorWhileReadingStream(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(debuglog.New(&logBuf, false, false))
+	client.SetLogger(logging.New(&logBuf, false, false))
 	client.retrier.InitialBackoff = 4 * time.Nanosecond
 	client.retrier.MaxBackoff = 4 * time.Nanosecond
 
@@ -905,7 +905,7 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(debuglog.New(&logBuf, false, false))
+	client.SetLogger(logging.New(&logBuf, false, false))
 	client.retrier.InitialBackoff = 4 * time.Nanosecond
 	client.retrier.MaxBackoff = 4 * time.Nanosecond
 

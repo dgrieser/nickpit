@@ -9,8 +9,8 @@ import (
 	"sync"
 
 	"github.com/dgrieser/nickpit/internal/config"
-	"github.com/dgrieser/nickpit/internal/debuglog"
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/prompts"
@@ -22,7 +22,7 @@ type Engine struct {
 	retrieval              retrieval.Engine
 	config                 config.Profile
 	trimmer                *Trimmer
-	logger                 *debuglog.Logger
+	logger                 *logging.Logger
 	searchToolOptimization bool
 }
 
@@ -156,7 +156,7 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 	}
 }
 
-func (e *Engine) SetLogger(logger *debuglog.Logger) {
+func (e *Engine) SetLogger(logger *logging.Logger) {
 	e.logger = logger
 }
 
@@ -269,7 +269,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	}
 
 	totalUsage := model.TokenUsage{}
-	toolRoundsUsed := 0
+	toolCallsUsed := 0
 	toolState := &toolRoundState{
 		seenFiles:      make(map[string]retrieval.FileContent),
 		seenFileRanges: make(map[string][]model.LineRange),
@@ -295,9 +295,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		if len(resp.ToolCalls) == 0 {
 			break
 		}
-		if req.ToolRounds > 0 && toolRoundsUsed >= req.ToolRounds {
-			e.logf("Tool round limit reached, making final call without tools: limit=%d", req.ToolRounds)
-			e.logProgress("Tool", fmt.Sprintf("status=LimitReached, limit=%d, finalizing review", req.ToolRounds))
+		if req.MaxToolCalls > 0 && toolCallsUsed >= req.MaxToolCalls {
+			e.logf("Tool round limit reached, making final call without tools: limit=%d", req.MaxToolCalls)
+			e.logProgress("Tool", fmt.Sprintf("status=LimitReached, limit=%d, finalizing review", req.MaxToolCalls))
 			noToolsPrompt, renderErr := llm.RenderPrompt(systemTemplate, struct {
 				OutputSchemaSnippet      string
 				ParallelToolCallGuidance bool
@@ -332,7 +332,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
 			break
 		}
-		e.logf("Executing tool round: round=%d tool_calls=%d", toolRoundsUsed+1, len(resp.ToolCalls))
+		e.logf("Executing tool round: round=%d tool_calls=%d", toolCallsUsed+1, len(resp.ToolCalls))
 		assistantMessage := llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
 		messages = append(messages, assistantMessage)
 		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
@@ -342,7 +342,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			Role:    "user",
 			Content: syntheticToolFollowup(toolCallHistory),
 		}
-		toolRoundsUsed++
+		toolCallsUsed++
 	}
 
 	filtered := filterByPriority(resp.Findings, req.PriorityThreshold)
@@ -370,8 +370,8 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		Mode:                   mode,
 		Repo:                   req.Repo,
 		Identifier:             req.Identifier,
-		ToolRounds:             toolRoundsUsed,
-		MaxToolCalls:           req.ToolRounds,
+		ToolCalls:              toolCallsUsed,
+		MaxToolCalls:           req.MaxToolCalls,
 		ReasoningEffort:        e.config.ReasoningEffort,
 		BaseURL:                e.config.BaseURL,
 		BaseRef:                reviewCtx.Repository.BaseRef,
@@ -401,7 +401,6 @@ func reviewOutputSchemaSnippetFor(useJSONSchema bool) string {
 	}
 	return llm.FindingsExamplePromptSnippet()
 }
-
 
 func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, state *toolRoundState) []llm.Message {
 	results := make([]llm.Message, 0, len(toolCalls))

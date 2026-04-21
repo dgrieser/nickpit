@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/dgrieser/nickpit/internal/debuglog"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -30,7 +30,7 @@ type OpenAIClient struct {
 	httpClient         *http.Client
 	sdkClient          *openai.Client
 	retrier            *Retrier
-	logger             *debuglog.Logger
+	logger             *logging.Logger
 	transport          *capturingTransport
 }
 
@@ -137,7 +137,7 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	}
 }
 
-func (c *OpenAIClient) SetLogger(logger *debuglog.Logger) {
+func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
 	c.logger = logger
 }
 
@@ -147,9 +147,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 
 	payload := openai.ChatCompletionRequest{
-		Model:             req.Model,
-		Messages:          buildMessages(req),
-		Tools: buildTools(req.Tools),
+		Model:    req.Model,
+		Messages: buildMessages(req),
+		Tools:    buildTools(req.Tools),
 		StreamOptions: &openai.StreamOptions{
 			IncludeUsage: true,
 		},
