@@ -207,9 +207,11 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
+		HasTools                 bool
 	}{
 		OutputSchemaSnippet:      reviewOutputSchemaSnippetFor(req.UseJSONSchema),
 		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
+		HasTools:                 true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering review system prompt: %w", err)
@@ -294,7 +296,30 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			break
 		}
 		if req.ToolRounds > 0 && toolRoundsUsed >= req.ToolRounds {
-			resp = toolRoundLimitResponse(req.ToolRounds, resp.ToolCalls)
+			e.logf("Tool round limit reached, making final call without tools: limit=%d", req.ToolRounds)
+			noToolsPrompt, renderErr := llm.RenderPrompt(systemTemplate, struct {
+				OutputSchemaSnippet      string
+				ParallelToolCallGuidance bool
+				HasTools                 bool
+			}{
+				OutputSchemaSnippet: reviewOutputSchemaSnippetFor(req.UseJSONSchema),
+				HasTools:            false,
+			})
+			if renderErr != nil {
+				return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", renderErr)
+			}
+			finalMessages := make([]llm.Message, len(messages))
+			copy(finalMessages, messages)
+			finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
+			llmReq.Messages = finalMessages
+			llmReq.Tools = nil
+			resp, err = e.llm.Review(ctx, llmReq)
+			if err != nil {
+				return nil, err
+			}
+			totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
+			totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
+			totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
 			break
 		}
 		e.logf("Executing tool round: round=%d tool_calls=%d", toolRoundsUsed+1, len(resp.ToolCalls))
@@ -358,33 +383,6 @@ func reviewOutputSchemaSnippetFor(useJSONSchema bool) string {
 	return llm.FindingsExamplePromptSnippet()
 }
 
-func toolRoundLimitResponse(limit int, toolCalls []llm.ToolCall) *llm.ReviewResponse {
-	names := make([]string, 0, len(toolCalls))
-	for _, call := range toolCalls {
-		names = append(names, call.Name)
-	}
-	return &llm.ReviewResponse{
-		Findings: []model.Finding{
-			{
-				Title:           "[P2] Return final review JSON instead of more tool calls",
-				Body:            fmt.Sprintf("The model requested additional tool calls after reaching the configured tool-call limit (%d), so the review could not be finalized as structured JSON.", limit),
-				ConfidenceScore: 0.2,
-				Priority:        priorityPtr(2),
-				CodeLocation: model.CodeLocation{
-					FilePath: "",
-					LineRange: model.LineRange{
-						Start: 1,
-						End:   1,
-					},
-				},
-			},
-		},
-		OverallCorrectness:     "patch is incorrect",
-		OverallExplanation:     fmt.Sprintf("tool round limit reached after tool calls: %s", strings.Join(names, ", ")),
-		OverallConfidenceScore: 0.2,
-		ToolCalls:              toolCalls,
-	}
-}
 
 func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, state *toolRoundState) []llm.Message {
 	results := make([]llm.Message, 0, len(toolCalls))
@@ -993,10 +991,6 @@ func syntheticPathValue(path, empty string) string {
 
 func normalizeToolPath(path string) string {
 	return strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
-}
-
-func priorityPtr(v int) *int {
-	return &v
 }
 
 func (e *Engine) logf(format string, args ...any) {

@@ -7,7 +7,7 @@ profiles:
     max_tokens: 4096
     temperature: 0.2
     max_context_tokens: 120000
-    default_tool_rounds: 0
+    max_tool_calls: 0
     local_repo: ~/src/repo
     github_token: ${GITHUB_TOKEN}
     gitlab_token: ${GITLAB_TOKEN}
@@ -16,4 +16,4 @@ profiles:
     model: llama3
     base_url: http://localhost:11434/v1
     max_context_tokens: 8000
-    default_tool_rounds: 0
+    max_tool_calls: 0

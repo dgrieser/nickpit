@@ -86,7 +86,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
-	root.PersistentFlags().IntVar(&cli.toolRounds, "tool-rounds", 0, "Maximum tool-call rounds (0 means unlimited by default)")
+	root.PersistentFlags().IntVar(&cli.toolRounds, "max-tool-calls", 0, "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -98,7 +98,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.verbose, "debug", false, "Print debug execution details")
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
-	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting `search` tool calls like `FunctionName(` into `find_callers`")
+	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 
 	root.AddCommand(cli.newLocalCmd())
@@ -160,7 +160,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				IncludeCommits:    a.includeCommits,
 				IncludeFullFiles:  a.includeFullFiles,
 				MaxContextTokens:  profile.MaxContextTokens,
-				ToolRounds:        profile.DefaultToolRounds,
+				ToolRounds:        profile.MaxToolCalls,
 				UseJSONSchema:     profile.UseJSONSchema,
 				PriorityThreshold: a.priorityThreshold,
 				Submode:           submode,
@@ -209,7 +209,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				IncludeComments:   a.includeComments,
 				IncludeCommits:    a.includeCommits,
 				MaxContextTokens:  profile.MaxContextTokens,
-				ToolRounds:        profile.DefaultToolRounds,
+				ToolRounds:        profile.MaxToolCalls,
 				UseJSONSchema:     profile.UseJSONSchema,
 				PriorityThreshold: a.priorityThreshold,
 				Offline:           a.offline,
@@ -254,7 +254,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				IncludeComments:   a.includeComments,
 				IncludeCommits:    a.includeCommits,
 				MaxContextTokens:  profile.MaxContextTokens,
-				ToolRounds:        profile.DefaultToolRounds,
+				ToolRounds:        profile.MaxToolCalls,
 				UseJSONSchema:     profile.UseJSONSchema,
 				PriorityThreshold: a.priorityThreshold,
 				Offline:           a.offline,
@@ -424,7 +424,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.MaxContextTokens = profile.MaxContextTokens
 	}
 	if req.ToolRounds == 0 {
-		req.ToolRounds = profile.DefaultToolRounds
+		req.ToolRounds = profile.MaxToolCalls
 	}
 	a.logProgress("Model", modelSummary(profile))
 
@@ -461,7 +461,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	}
 	toolRounds := req.ToolRounds
 	if toolRounds == 0 {
-		toolRounds = profile.DefaultToolRounds
+		toolRounds = profile.MaxToolCalls
 	}
 	if !req.IncludeFullFiles && toolRounds < 0 {
 		a.logf("Skipping remote checkout: include_full_files=%t tool_rounds=%d", req.IncludeFullFiles, toolRounds)

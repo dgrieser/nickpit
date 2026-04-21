@@ -26,7 +26,7 @@ Use these priority levels:
 - P1: urgent and should be fixed in the next cycle
 - P2: normal bug worth fixing
 - P3: low-priority issue
-
+{{if .HasTools}}
 ### ADDITIONAL CONTEXT
 If you need more code context, call of the following tools:
 - `inspect_file` tool with a repo-relative `path` to retrieve the contents of a file.
@@ -41,7 +41,7 @@ Important:
 {{if .ParallelToolCallGuidance}}- If possible, call multiple tools in parallel, e.g. in one turn.
 {{end}}- When inspecting function symbols, prefer `find_callers`, `find_callees` over `search`.
 - Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
-
+{{end}}
 ### VERDICT
 At the end, decide whether the patch is correct.
 "patch is correct" means the patch is free of blocking issues and should not break existing code or tests.

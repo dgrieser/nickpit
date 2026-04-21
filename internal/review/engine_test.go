@@ -625,11 +625,14 @@ func TestEngineStopsAtToolRoundLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OverallCorrectness != "patch is incorrect" {
-		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
+	if len(llmClient.reqs) != 3 {
+		t.Fatalf("expected 3 LLM calls, got %d", len(llmClient.reqs))
 	}
-	if len(result.Findings) != 1 {
-		t.Fatalf("findings = %d", len(result.Findings))
+	if len(llmClient.reqs[2].Tools) != 0 {
+		t.Fatalf("final call should have no tools, got %d", len(llmClient.reqs[2].Tools))
+	}
+	if result.OverallCorrectness != "patch is correct" {
+		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
 	}
 }
 

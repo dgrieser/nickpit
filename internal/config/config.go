@@ -15,7 +15,7 @@ const (
 	DefaultModel           = "gpt-oss-120b"
 	DefaultBaseURL         = "https://llm.aihosting.mittwald.de/v1"
 	DefaultMaxContextToken = 120000
-	DefaultToolRounds      = 0
+	MaxToolCalls      = 0
 	DefaultConfigPath      = ".nickpit.yaml"
 	DefaultReasoningEffort = "high"
 )
@@ -33,7 +33,7 @@ type Profile struct {
 	Temperature       *float64 `yaml:"temperature"`
 	UseJSONSchema     bool     `yaml:"use_json_schema"`
 	MaxContextTokens  int      `yaml:"max_context_tokens"`
-	DefaultToolRounds int      `yaml:"default_tool_rounds"`
+	MaxToolCalls int      `yaml:"max_tool_calls"`
 	ReasoningEffort   string   `yaml:"reasoning_effort"`
 	LocalRepo         string   `yaml:"local_repo"`
 	GitHubToken       string   `yaml:"github_token"`
@@ -67,7 +67,7 @@ func DefaultConfig() *Config {
 				Model:             DefaultModel,
 				BaseURL:           DefaultBaseURL,
 				MaxContextTokens:  DefaultMaxContextToken,
-				DefaultToolRounds: DefaultToolRounds,
+				MaxToolCalls: MaxToolCalls,
 				ReasoningEffort:   DefaultReasoningEffort,
 				GitHubToken:       os.Getenv("GITHUB_TOKEN"),
 				GitLabToken:       os.Getenv("GITLAB_TOKEN"),
@@ -185,7 +185,7 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 		profile.MaxContextTokens = overrides.MaxContextTokens
 	}
 	if overrides.ToolRounds > 0 {
-		profile.DefaultToolRounds = overrides.ToolRounds
+		profile.MaxToolCalls = overrides.ToolRounds
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
@@ -215,8 +215,8 @@ func normalizeProfile(profile Profile) Profile {
 	if profile.MaxContextTokens == 0 {
 		profile.MaxContextTokens = DefaultMaxContextToken
 	}
-	if profile.DefaultToolRounds == 0 {
-		profile.DefaultToolRounds = DefaultToolRounds
+	if profile.MaxToolCalls == 0 {
+		profile.MaxToolCalls = MaxToolCalls
 	}
 	if profile.LocalRepo != "" {
 		profile.LocalRepo = expandPath(profile.LocalRepo)

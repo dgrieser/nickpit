@@ -38,8 +38,8 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.MaxContextTokens != 0 {
 		base.MaxContextTokens = override.MaxContextTokens
 	}
-	if override.DefaultToolRounds != 0 {
-		base.DefaultToolRounds = override.DefaultToolRounds
+	if override.MaxToolCalls != 0 {
+		base.MaxToolCalls = override.MaxToolCalls
 	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort

@@ -16,8 +16,8 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	if profile.BaseURL != "https://llm.aihosting.mittwald.de/v1" {
 		t.Fatalf("base url = %q", profile.BaseURL)
 	}
-	if profile.DefaultToolRounds != 0 {
-		t.Fatalf("default tool rounds = %d", profile.DefaultToolRounds)
+	if profile.MaxToolCalls != 0 {
+		t.Fatalf("default tool rounds = %d", profile.MaxToolCalls)
 	}
 }
 
@@ -189,7 +189,7 @@ func TestLoadConfigToolRoundsFromFileAndOverride(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
-    default_tool_rounds: 2
+    max_tool_calls: 2
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -199,15 +199,15 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DefaultToolRounds != 2 {
-		t.Fatalf("default tool rounds = %d", profile.DefaultToolRounds)
+	if profile.MaxToolCalls != 2 {
+		t.Fatalf("default tool rounds = %d", profile.MaxToolCalls)
 	}
 
 	_, profile, err = Load(path, Overrides{ToolRounds: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DefaultToolRounds != 4 {
-		t.Fatalf("override default tool rounds = %d", profile.DefaultToolRounds)
+	if profile.MaxToolCalls != 4 {
+		t.Fatalf("override default tool rounds = %d", profile.MaxToolCalls)
 	}
 }
