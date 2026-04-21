@@ -381,26 +381,46 @@ func colorizeModelSummary(text string) string {
 		"\x1b[90m:\x1b[0m" +
 		"\x1b[32m" + effort + "\x1b[0m"
 	if hasFlags {
-		out += " \x1b[90m[\x1b[0m" + strings.TrimSuffix(flags, "]") + "\x1b[90m]\x1b[0m"
+		out += " \x1b[90m[\x1b[0m" + colorizeModelFlags(strings.TrimSuffix(flags, "]")) + "\x1b[90m]\x1b[0m"
 	}
 	return out + " \x1b[90m@\x1b[0m \x1b[35m" + urlPart + "\x1b[0m"
 }
 
+func colorizeModelFlags(flagsStr string) string {
+	parts := strings.Split(flagsStr, ", ")
+	var b strings.Builder
+	for i, part := range parts {
+		if i > 0 {
+			b.WriteString("\x1b[90m, \x1b[0m")
+		}
+		numPart, wordPart, hasWord := strings.Cut(part, " ")
+		if !hasWord {
+			b.WriteString("\x1b[32m" + part + "\x1b[0m")
+			continue
+		}
+		b.WriteString("\x1b[32m" + numPart + "\x1b[0m" + " " + "\x1b[34m" + wordPart + "\x1b[0m")
+	}
+	return b.String()
+}
+
 func colorizeReviewSummary(text string) string {
-	// format: mode:submode @ profile ≥threshold on repo @ head → base
+	// format: mode:submode [profile, ≥threshold] on repo @ head → base
 	mode, rest, ok := strings.Cut(text, ":")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	submode, rest, ok := strings.Cut(rest, " @ ")
+	submode, rest, ok := strings.Cut(rest, " [")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	profileThreshold, repoRefs, ok := strings.Cut(rest, " on ")
+	profileThreshold, repoRefs, ok := strings.Cut(rest, "] on ")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	profile, threshold, _ := strings.Cut(profileThreshold, " ")
+	profile, threshold, ok := strings.Cut(profileThreshold, ", ")
+	if !ok {
+		return colorizeProgressSummary(text)
+	}
 	repo, refs, ok := strings.Cut(repoRefs, " @ ")
 	if !ok {
 		return colorizeProgressSummary(text)
@@ -412,9 +432,11 @@ func colorizeReviewSummary(text string) string {
 	return "\x1b[34m" + mode + "\x1b[0m" +
 		"\x1b[90m:\x1b[0m" +
 		"\x1b[32m" + submode + "\x1b[0m" +
-		" \x1b[90m@\x1b[0m " +
-		profile +
-		" \x1b[33m" + threshold + "\x1b[0m" +
+		" \x1b[90m[\x1b[0m" +
+		"\x1b[32m" + profile + "\x1b[0m" +
+		"\x1b[90m, \x1b[0m" +
+		"\x1b[32m" + threshold + "\x1b[0m" +
+		"\x1b[90m]\x1b[0m" +
 		" \x1b[90mon\x1b[0m " +
 		"\x1b[34m" + repo + "\x1b[0m" +
 		" \x1b[90m@\x1b[0m " +

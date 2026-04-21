@@ -1069,7 +1069,7 @@ func reviewContextSummary(ctx *model.ReviewContext, req model.ReviewRequest) str
 	if ctx == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s:%s @ %s ≥%s on %s @ %s → %s",
+	return fmt.Sprintf("%s:%s [%s, ≥%s] on %s @ %s → %s",
 		ctx.Mode, req.Submode,
 		req.ProfileName, req.PriorityThreshold,
 		ctx.Repository.FullName,
