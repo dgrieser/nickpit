@@ -25,7 +25,7 @@ type Engine struct {
 	searchToolOptimization bool
 }
 
-var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\($`)
+var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
 
 var inspectFileToolParameters = json.RawMessage(`{
   "type": "object",
@@ -140,6 +140,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	if err != nil {
 		return nil, err
 	}
+	e.logProgress("Review", reviewContextSummary(reviewCtx, req))
 	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	reviewCtx.CheckoutRoot = req.RepoRoot
 	reviewCtx.Identifier = req.Identifier
@@ -768,13 +769,13 @@ func syntheticToolArguments(toolName string, args struct {
 			parts = append(parts, fmt.Sprintf("line_end=%d", args.LineEnd))
 		}
 	case "list_files":
-		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<repo root>")))
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {
 			args.Depth = 1
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	case "search":
-		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<repo root>")))
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("query=%q", args.Query))
 		if args.ContextLines < 0 {
 			args.ContextLines = 5
@@ -783,7 +784,7 @@ func syntheticToolArguments(toolName string, args struct {
 		parts = append(parts, fmt.Sprintf("max_results=%d", args.MaxResults))
 		parts = append(parts, fmt.Sprintf("case_sensitive=%t", args.CaseSensitive))
 	case "find_callers", "find_callees":
-		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<repo root>")))
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
 		if args.Depth <= 0 {
 			args.Depth = 10
@@ -853,15 +854,17 @@ func (e *Engine) logJSON(label string, value any) {
 	}
 }
 
+func (e *Engine) logProgress(label, summary string) {
+	if e.logger != nil {
+		e.logger.PrintProgress(label, summary)
+	}
+}
+
 func (e *Engine) logToolCall(toolCall llm.ToolCall, result string) {
 	if e.logger == nil {
 		return
 	}
-	e.logger.PrintToolCall(
-		toolCall.Name,
-		syntheticToolArgumentsForCall(toolCall),
-		syntheticToolOutcome(toolCall.Name, parseToolResultSummary(result)),
-	)
+	e.logger.PrintProgressToolCall(toolCallDisplay(toolCall), syntheticToolOutcome(toolCall.Name, parseToolResultSummary(result)))
 }
 
 func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
@@ -878,6 +881,58 @@ func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
 	}
 	_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
 	return syntheticToolArguments(toolCall.Name, args)
+}
+
+func toolCallDisplay(toolCall llm.ToolCall) string {
+	if optimized, ok := optimizedSearchToolCallDisplay(toolCall); ok {
+		return optimized
+	}
+	return fmt.Sprintf("%s(%s)", toolCall.Name, syntheticToolArgumentsForCall(toolCall))
+}
+
+func reviewContextSummary(ctx *model.ReviewContext, req model.ReviewRequest) string {
+	if ctx == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s:%s %s @ %s → %s", ctx.Mode, req.Submode, ctx.Repository.FullName, ctx.Repository.HeadRef, ctx.Repository.BaseRef)
+}
+
+func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {
+	if toolCall.Name != "search" {
+		return "", false
+	}
+	var args struct {
+		Path          string `json:"path"`
+		Query         string `json:"query"`
+		ContextLines  int    `json:"context_lines"`
+		MaxResults    int    `json:"max_results"`
+		CaseSensitive bool   `json:"case_sensitive"`
+	}
+	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		return "", false
+	}
+	normalizedPath := normalizeToolPath(strings.TrimSpace(args.Path))
+	query := strings.TrimSpace(args.Query)
+	matches := searchFunctionQueryPattern.FindStringSubmatch(query)
+	if len(matches) != 2 {
+		return "", false
+	}
+	findArgs := syntheticToolArguments("find_callers", struct {
+		Path          string `json:"path"`
+		LineStart     int    `json:"line_start"`
+		LineEnd       int    `json:"line_end"`
+		Depth         int    `json:"depth"`
+		Symbol        string `json:"symbol"`
+		Query         string `json:"query"`
+		ContextLines  int    `json:"context_lines"`
+		MaxResults    int    `json:"max_results"`
+		CaseSensitive bool   `json:"case_sensitive"`
+	}{
+		Path:   normalizedPath,
+		Symbol: matches[1],
+		Depth:  10,
+	})
+	return fmt.Sprintf(`find_callers(instead_of="search", %s)`, findArgs), true
 }
 
 func lineCount(text string) int {

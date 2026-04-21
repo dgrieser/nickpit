@@ -862,7 +862,7 @@ func TestEngineAllowsEmptyPathForListFilesToolCalls(t *testing.T) {
 	if llmClient.reqs[1].Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
 	}
-	if want := "1. list_files: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", depth=1]; result=[files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. list_files: tool_call_id=\"call_1\", arguments=[path=\".\", depth=1]; result=[files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }
@@ -985,7 +985,7 @@ func TestEngineAllowsEmptyPathForCalleesToolCalls(t *testing.T) {
 	if payload["symbol"] != "Run" || payload["path"] != "" || payload["mode"] != "callees" {
 		t.Fatalf("callees payload = %#v", payload)
 	}
-	if want := "1. find_callees: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", symbol=\"Run\", depth=10]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. find_callees: tool_call_id=\"call_1\", arguments=[path=\".\", symbol=\"Run\", depth=10]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }
@@ -1007,7 +1007,7 @@ func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	logger := debuglog.New(&buf, false, false)
-	logger.SetShowToolCalls(true)
+	logger.SetShowProgress(true)
 	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logger)
 
@@ -1026,6 +1026,42 @@ func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
 	}
 	if strings.Contains(got, `"files": [`) || strings.Contains(got, "pkg/a.go") {
 		t.Fatalf("tool call output should omit content payloads: %q", got)
+	}
+}
+
+func TestEnginePrintsOptimizedSearchReplacementWhenEnabled(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := debuglog.New(&buf, false, false)
+	logger.SetShowProgress(true)
+	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logger)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "Calling tool: find_callers(instead_of=\"search\", path=\"pkg\", symbol=\"Run\", depth=10) → result=[lines=2, files=2]") {
+		t.Fatalf("optimized tool call banner missing: %q", got)
 	}
 }
 
@@ -1126,7 +1162,7 @@ func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	if firstResult["content"] != "before\nttlExtenders\nafter" {
 		t.Fatalf("search payload result content = %#v", firstResult["content"])
 	}
-	if want := "1. search: tool_call_id=\"call_1\", arguments=[path=\"<repo root>\", query=\"ttlExtenders\", context_lines=5, max_results=20, case_sensitive=false]; result=[files=1, result_count=1]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. search: tool_call_id=\"call_1\", arguments=[path=\".\", query=\"ttlExtenders\", context_lines=5, max_results=20, case_sensitive=false]; result=[files=1, result_count=1]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 }
@@ -1166,6 +1202,45 @@ func TestEngineRewritesSearchFunctionQueryToFindCallers(t *testing.T) {
 		t.Fatalf("tool payload should be valid json: %v", err)
 	}
 	if payload["mode"] != "callers" || payload["symbol"] != "Run" || payload["path"] != "pkg" {
+		t.Fatalf("tool payload = %#v", payload)
+	}
+}
+
+func TestEngineRewritesSearchMethodQueryToFindCallers(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Close()"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		ToolRounds:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Close:10" {
+		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("tool payload should be valid json: %v", err)
+	}
+	if payload["mode"] != "callers" || payload["symbol"] != "Close" || payload["path"] != "pkg" {
 		t.Fatalf("tool payload = %#v", payload)
 	}
 }

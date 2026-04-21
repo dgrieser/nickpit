@@ -44,7 +44,7 @@ type app struct {
 	gitlabBaseURL                 string
 	verbose                       bool
 	showReasoning                 bool
-	showToolCalls                 bool
+	showProgress                  bool
 	disableSearchToolOptimization bool
 	logger                        *debuglog.Logger
 }
@@ -96,7 +96,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.verbose, "verbose", false, "Print debug execution details")
 	root.PersistentFlags().BoolVar(&cli.verbose, "debug", false, "Print debug execution details")
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
-	root.PersistentFlags().BoolVar(&cli.showToolCalls, "show-tool-calls", false, "Print tool calls with arguments and results to stderr")
+	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting `search` tool calls like `FunctionName(` into `find_callers`")
 
 	root.AddCommand(cli.newLocalCmd())
@@ -399,7 +399,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
 	logger := debuglog.New(os.Stderr, a.verbose, true)
 	logger.SetShowReasoning(a.showReasoning)
-	logger.SetShowToolCalls(a.showToolCalls)
+	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
 
 	if profile.APIKey == "" {
@@ -423,6 +423,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if req.ToolRounds == 0 {
 		req.ToolRounds = profile.DefaultToolRounds
 	}
+	a.logProgress("Model", modelSummary(profile))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
@@ -433,6 +434,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if err != nil {
 		return err
 	}
+	a.logProgress("Result", reviewResultSummary(result))
 	var formatter output.Formatter
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
@@ -610,4 +612,30 @@ func (a *app) logf(format string, args ...any) {
 		return
 	}
 	a.logger.Printf(format, args...)
+}
+
+func (a *app) logProgress(label, summary string) {
+	if a.logger == nil {
+		return
+	}
+	a.logger.PrintProgress(label, summary)
+}
+
+func modelSummary(profile config.Profile) string {
+	return fmt.Sprintf("%s:%s @ %s", profile.Model, profile.ReasoningEffort, profile.BaseURL)
+}
+
+func reviewResultSummary(result *model.ReviewResult) string {
+	status := "error"
+	if result.OverallCorrectness == "patch is correct" {
+		status = "ok"
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("status=%s", status),
+		fmt.Sprintf("findings=%d", len(result.Findings)),
+		fmt.Sprintf("tool_rounds=%d", result.ToolRounds),
+		fmt.Sprintf("prompt_tokens=%d", result.TokensUsed.PromptTokens),
+		fmt.Sprintf("completion_tokens=%d", result.TokensUsed.CompletionTokens),
+		fmt.Sprintf("total_tokens=%d", result.TokensUsed.TotalTokens),
+	}, ", ")
 }

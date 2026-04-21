@@ -57,15 +57,24 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 }
 
 func (s *LocalSource) resolveDefaults(ctx context.Context, req model.ReviewRequest) (model.ReviewRequest, error) {
-	if req.Submode != "branch" || req.BaseRef != "" {
+	if req.Submode != "branch" {
 		return req, nil
 	}
 
-	baseRef, err := s.defaultBranch(ctx)
-	if err != nil {
-		return req, err
+	if req.BaseRef == "" {
+		baseRef, err := s.defaultBranch(ctx)
+		if err != nil {
+			return req, err
+		}
+		req.BaseRef = baseRef
 	}
-	req.BaseRef = baseRef
+	if req.HeadRef == "HEAD" {
+		headRef, err := s.currentBranch(ctx)
+		if err != nil {
+			return req, err
+		}
+		req.HeadRef = headRef
+	}
 	return req, nil
 }
 
@@ -75,6 +84,14 @@ func (s *LocalSource) defaultBranch(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return strings.TrimPrefix(strings.TrimSpace(out), "origin/"), nil
+}
+
+func (s *LocalSource) currentBranch(ctx context.Context) (string, error) {
+	out, err := s.git.Run(ctx, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewRequest) (string, error) {

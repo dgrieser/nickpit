@@ -55,7 +55,8 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 	runner := &stubGitRunner{
 		outputs: map[string]string{
 			joinArgs([]string{"symbolic-ref", "--short", "refs/remotes/origin/HEAD"}): "origin/main\n",
-			joinArgs([]string{"diff", "main...HEAD"}):                                 string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
+			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}):                     "fix/memleak\n",
+			joinArgs([]string{"diff", "main...fix/memleak"}):                          string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
 		},
 	}
 	source := &LocalSource{
@@ -75,13 +76,19 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 	if ctx.Repository.BaseRef != "main" {
 		t.Fatalf("base ref = %q", ctx.Repository.BaseRef)
 	}
-	if len(runner.calls) < 2 {
+	if ctx.Repository.HeadRef != "fix/memleak" {
+		t.Fatalf("head ref = %q", ctx.Repository.HeadRef)
+	}
+	if len(runner.calls) < 3 {
 		t.Fatalf("calls = %d", len(runner.calls))
 	}
 	if got := runner.calls[0]; len(got) != 3 || got[0] != "symbolic-ref" {
 		t.Fatalf("symbolic-ref args = %#v", got)
 	}
-	if got := runner.calls[1]; len(got) != 2 || got[0] != "diff" || got[1] != "main...HEAD" {
+	if got := runner.calls[1]; len(got) != 3 || got[0] != "symbolic-ref" || got[2] != "HEAD" {
+		t.Fatalf("head symbolic-ref args = %#v", got)
+	}
+	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "main...fix/memleak" {
 		t.Fatalf("diff args = %#v", got)
 	}
 }
