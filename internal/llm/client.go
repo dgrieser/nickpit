@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -311,11 +312,14 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				if capture != nil && len(capture.body) > 0 {
 					c.logMaybeJSON("LLM raw response body:", capture.body)
 				}
-				if attempt >= c.retrier.MaxRetries || !c.retrier.ShouldRetry(status) {
+				if !c.shouldRetryHTTPStatus(status, attempt) {
 					return nil, fmt.Errorf("llm: api returned status %d: %w", status, err)
 				}
-				c.logf("Retrying request: status=%d", status)
-				if waitErr := c.retrier.Wait(ctx, attempt, responseFromCapture(capture)); waitErr != nil {
+				resp := responseFromCapture(capture)
+				waitFor := c.retrier.Backoff(attempt, resp)
+				c.logRetryHTTPStatus(status, attempt+1, waitFor)
+				c.logf("Retrying request: status=%d backoff=%s", status, waitFor)
+				if waitErr := c.retrier.Wait(ctx, attempt, resp); waitErr != nil {
 					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
 				}
 				continue
@@ -356,6 +360,27 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 		}
 		return resp, nil
 	}
+}
+
+func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
+	if !c.retrier.ShouldRetry(status) {
+		return false
+	}
+	if status == http.StatusTooManyRequests {
+		return true
+	}
+	return attempt < c.retrier.MaxRetries
+}
+
+func (c *OpenAIClient) logRetryHTTPStatus(status, currentAttempt int, waitFor time.Duration) {
+	if c.logger == nil {
+		return
+	}
+	if status == http.StatusTooManyRequests {
+		c.logger.PrintProgress("Model", fmt.Sprintf("rate limited (429), waiting %s before retry attempt %d", waitFor, currentAttempt+1))
+		return
+	}
+	c.logger.PrintStatusLine(fmt.Sprintf("LLM request failed with status %d, retrying in %s...", status, waitFor))
 }
 
 func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*streamedResponse, error) {

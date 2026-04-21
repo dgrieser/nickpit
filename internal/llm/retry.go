@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"time"
@@ -35,7 +34,7 @@ func (r *Retrier) ShouldRetry(status int) bool {
 	return ok
 }
 
-func (r *Retrier) Wait(ctx context.Context, attempt int, resp *http.Response) error {
+func (r *Retrier) Backoff(attempt int, resp *http.Response) time.Duration {
 	backoff := r.InitialBackoff * time.Duration(1<<attempt)
 	if backoff > r.MaxBackoff {
 		backoff = r.MaxBackoff
@@ -47,8 +46,17 @@ func (r *Retrier) Wait(ctx context.Context, attempt int, resp *http.Response) er
 			}
 		}
 	}
-	jitter := time.Duration(rand.Int63n(int64(backoff / 4)))
-	timer := time.NewTimer(backoff + jitter)
+	if backoff < r.InitialBackoff {
+		backoff = r.InitialBackoff
+	}
+	if backoff > r.MaxBackoff {
+		backoff = r.MaxBackoff
+	}
+	return backoff
+}
+
+func (r *Retrier) Wait(ctx context.Context, attempt int, resp *http.Response) error {
+	timer := time.NewTimer(r.Backoff(attempt, resp))
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():

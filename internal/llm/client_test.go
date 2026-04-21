@@ -225,6 +225,105 @@ func TestNewOpenAIClientRaisesEmptyMessageLimitForStreaming(t *testing.T) {
 	}
 }
 
+func TestClientReviewRetries429WithProgressLoggingUntilSuccess(t *testing.T) {
+	var attempts int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "Provider returned error", http.StatusTooManyRequests)
+			return
+		}
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = time.Millisecond
+	client.retrier.MaxBackoff = time.Millisecond
+
+	var logs bytes.Buffer
+	logger := logging.New(&logs, true, false)
+	logger.SetShowProgress(true)
+	client.SetLogger(logger)
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+	got := logs.String()
+	if want := "Model: rate limited (429), waiting 1ms before retry attempt 2"; !strings.Contains(got, want) {
+		t.Fatalf("missing first retry progress log %q in:\n%s", want, got)
+	}
+	if want := "Model: rate limited (429), waiting 1ms before retry attempt 3"; !strings.Contains(got, want) {
+		t.Fatalf("missing second retry progress log %q in:\n%s", want, got)
+	}
+}
+
+func TestRetrierBackoffCapsAtConfiguredBounds(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = 30 * time.Second
+
+	if got := retrier.Backoff(0, nil); got != time.Second {
+		t.Fatalf("attempt 0 backoff = %v", got)
+	}
+	if got := retrier.Backoff(4, nil); got != 16*time.Second {
+		t.Fatalf("attempt 4 backoff = %v", got)
+	}
+	if got := retrier.Backoff(5, nil); got != 30*time.Second {
+		t.Fatalf("attempt 5 backoff = %v", got)
+	}
+	if got := retrier.Backoff(6, nil); got != 30*time.Second {
+		t.Fatalf("attempt 6 backoff = %v", got)
+	}
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "120")
+	if got := retrier.Backoff(0, resp); got != 30*time.Second {
+		t.Fatalf("retry-after cap backoff = %v", got)
+	}
+	resp.Header.Set("Retry-After", "0")
+	if got := retrier.Backoff(0, resp); got != time.Second {
+		t.Fatalf("retry-after floor backoff = %v", got)
+	}
+}
+
 func TestClientReviewUsesJSONSchemaWhenProvided(t *testing.T) {
 	var payload map[string]any
 
