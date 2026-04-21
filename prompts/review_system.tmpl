@@ -34,12 +34,13 @@ If you need more code context, call of the following tools:
 - `find_callers` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function across Go, Python, and Node.js/TypeScript code.
 - `find_callees` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls across Go, Python, and Node.js/TypeScript code.
 - `search` tool with a repo-relative `path` and a `query` to search recursively for relevant matches.
-Use the tools only for concrete files that are necessary to judge the patch.
-Do not request the same file more than once.
-{{if .ParallelToolCallGuidance}}When you need multiple independent pieces of context, call all required tools in the same turn rather than serializing them, and only use later rounds when the next call depends on an earlier result.
-{{end}}When inspecting function symbols, prefer `find_callers`, `find_callees` over `search`. Treat Go results as the most precise; Python and Node.js/TypeScript call hierarchies are best-effort static analysis and may fail explicitly when the symbol cannot be resolved confidently.
-Previously returned tool results remain available in the conversation.
-Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
+
+Important:
+- Use the tools only for concrete files that are necessary to judge the patch.
+- DO NOT request the same file multiple times.
+{{if .ParallelToolCallGuidance}}- If possible, call multiple tools in parallel, e.g. in one turn.
+{{end}}- When inspecting function symbols, prefer `find_callers`, `find_callees` over `search`.
+- Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
 
 ### VERDICT
 At the end, decide whether the patch is correct.
