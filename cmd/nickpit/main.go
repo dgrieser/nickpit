@@ -404,9 +404,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 
 	if profile.APIKey == "" {
 		if profile.APIKeyConfigured {
-			return fmt.Errorf("profile %q has an empty api_key value; set MITTWALD_LLM_API_KEY or provide a non-empty api_key in config", profileName)
+			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
 		}
-		return fmt.Errorf("missing LLM API key for profile %q; set MITTWALD_LLM_API_KEY or provide api_key in config", profileName)
+		return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
 	}
 
 	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
@@ -445,6 +445,22 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		formatter = output.NewTerminalFormatter(os.Stdout, true)
 	}
 	return formatter.FormatFindings(result)
+}
+
+func missingAPIKeyHint(profileName string, configured bool) string {
+	var envVar string
+	switch profileName {
+	case config.DefaultProfileName:
+		envVar = "OPENROUTER_API_KEY"
+	case "mittwald":
+		envVar = "MITTWALD_LLM_API_KEY"
+	default:
+		envVar = "NICKPIT_API_KEY"
+	}
+	if configured {
+		return fmt.Sprintf("set %s or provide a non-empty api_key in config", envVar)
+	}
+	return fmt.Sprintf("set %s or provide api_key in config", envVar)
 }
 
 func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {

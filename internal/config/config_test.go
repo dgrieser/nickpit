@@ -10,31 +10,41 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	profile := cfg.Profiles[DefaultProfileName]
 
-	if profile.Model != "gpt-oss-120b" {
-		t.Fatalf("model = %q", profile.Model)
+	if profile.Model != "" {
+		t.Fatalf("default profile model should be empty, got %q", profile.Model)
 	}
-	if profile.BaseURL != "https://llm.aihosting.mittwald.de/v1" {
+	if profile.BaseURL != "https://openrouter.ai/api/v1" {
 		t.Fatalf("base url = %q", profile.BaseURL)
 	}
 	if profile.MaxToolCalls != 0 {
 		t.Fatalf("default max tool calls = %d", profile.MaxToolCalls)
 	}
+
+	mittwald := cfg.Profiles["mittwald"]
+	if mittwald.Model != "gpt-oss-120b" {
+		t.Fatalf("mittwald model = %q", mittwald.Model)
+	}
+	if mittwald.BaseURL != "https://llm.aihosting.mittwald.de/v1" {
+		t.Fatalf("mittwald base url = %q", mittwald.BaseURL)
+	}
 }
 
 func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
-	t.Setenv("MITTWALD_LLM_API_KEY", "from-mittwald-env")
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_API_KEY", "from-generic-env")
+	t.Setenv("NICKPIT_MODEL", "test-model")
 
 	_, profile, err := Load("", Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.APIKey != "from-mittwald-env" {
+	if profile.APIKey != "from-openrouter-env" {
 		t.Fatalf("api key = %q", profile.APIKey)
 	}
 }
 
 func TestLoadConfigTracksEmptyConfiguredAPIKey(t *testing.T) {
-	t.Setenv("MITTWALD_LLM_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("NICKPIT_API_KEY", "")
 
 	dir := t.TempDir()
@@ -42,6 +52,7 @@ func TestLoadConfigTracksEmptyConfiguredAPIKey(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
+    model: test-model
     api_key:
 `), 0o644)
 	if err != nil {
@@ -56,6 +67,20 @@ profiles:
 		t.Fatal("expected api_key to be marked as configured")
 	}
 	if profile.APIKey != "" {
+		t.Fatalf("api key = %q", profile.APIKey)
+	}
+}
+
+func TestLoadConfigDefaultProfileFallsBackToGenericAPIKeyEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("NICKPIT_API_KEY", "generic-key")
+	t.Setenv("NICKPIT_MODEL", "test-model")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.APIKey != "generic-key" {
 		t.Fatalf("api key = %q", profile.APIKey)
 	}
 }
@@ -110,6 +135,7 @@ func TestLoadConfigUseJSONSchemaOverride(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
+    model: test-model
     use_json_schema: true
 `), 0o644)
 	if err != nil {
@@ -126,7 +152,7 @@ profiles:
 }
 
 func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
-	_, profile, err := Load("", Overrides{UseJSONSchema: true})
+	_, profile, err := Load("", Overrides{UseJSONSchema: true, Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +167,7 @@ func TestLoadConfigTemperatureFromFile(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
+    model: test-model
     temperature: 0.35
 `), 0o644)
 	if err != nil {
@@ -165,6 +192,7 @@ func TestLoadConfigMaxTokensFromFile(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
+    model: test-model
     max_tokens: 2048
 `), 0o644)
 	if err != nil {
@@ -189,6 +217,7 @@ func TestLoadConfigMaxToolCallsFromFileAndOverride(t *testing.T) {
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
+    model: test-model
     max_tool_calls: 2
 `), 0o644)
 	if err != nil {

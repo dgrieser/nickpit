@@ -12,12 +12,15 @@ import (
 
 const (
 	DefaultProfileName     = "default"
-	DefaultModel           = "gpt-oss-120b"
-	DefaultBaseURL         = "https://llm.aihosting.mittwald.de/v1"
+	DefaultModel           = ""
+	DefaultBaseURL         = "https://openrouter.ai/api/v1"
 	DefaultMaxContextToken = 120000
 	MaxToolCalls           = 0
 	DefaultConfigPath      = ".nickpit.yaml"
 	DefaultReasoningEffort = "high"
+
+	MittwaldModel   = "gpt-oss-120b"
+	MittwaldBaseURL = "https://llm.aihosting.mittwald.de/v1"
 )
 
 type Config struct {
@@ -60,18 +63,33 @@ type Overrides struct {
 }
 
 func DefaultConfig() *Config {
+	tokens := func() (github, gitlab, gitlabURL string) {
+		return os.Getenv("GITHUB_TOKEN"),
+			os.Getenv("GITLAB_TOKEN"),
+			getEnvOrDefault("GITLAB_BASE_URL", "https://gitlab.com/api/v4")
+	}
+	gh, gl, glURL := tokens()
 	return &Config{
 		ActiveProfile: DefaultProfileName,
 		Profiles: map[string]Profile{
 			DefaultProfileName: {
-				Model:            DefaultModel,
 				BaseURL:          DefaultBaseURL,
 				MaxContextTokens: DefaultMaxContextToken,
 				MaxToolCalls:     MaxToolCalls,
 				ReasoningEffort:  DefaultReasoningEffort,
-				GitHubToken:      os.Getenv("GITHUB_TOKEN"),
-				GitLabToken:      os.Getenv("GITLAB_TOKEN"),
-				GitLabBaseURL:    getEnvOrDefault("GITLAB_BASE_URL", "https://gitlab.com/api/v4"),
+				GitHubToken:      gh,
+				GitLabToken:      gl,
+				GitLabBaseURL:    glURL,
+			},
+			"mittwald": {
+				Model:            MittwaldModel,
+				BaseURL:          MittwaldBaseURL,
+				MaxContextTokens: DefaultMaxContextToken,
+				MaxToolCalls:     MaxToolCalls,
+				ReasoningEffort:  DefaultReasoningEffort,
+				GitHubToken:      gh,
+				GitLabToken:      gl,
+				GitLabBaseURL:    glURL,
 			},
 		},
 	}
@@ -100,7 +118,10 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	if err != nil {
 		return nil, Profile{}, err
 	}
-	profile = applyOverrides(profile, overrides)
+	profile, err = applyOverrides(profile, overrides)
+	if err != nil {
+		return nil, Profile{}, err
+	}
 	cfg.ActiveProfile = activeProfile
 	cfg.Profiles[activeProfile] = profile
 	return cfg, profile, nil
@@ -142,9 +163,7 @@ func applyEnv(cfg *Config, profileName string) {
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
 	}
-	if value := os.Getenv("MITTWALD_LLM_API_KEY"); value != "" {
-		profile.APIKey = value
-	} else if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
+	if value := apiKeyFromEnv(profileName); value != "" {
 		profile.APIKey = value
 	}
 	if value := os.Getenv("NICKPIT_WORKDIR"); value != "" {
@@ -162,7 +181,28 @@ func applyEnv(cfg *Config, profileName string) {
 	cfg.Profiles[profileName] = profile
 }
 
-func applyOverrides(profile Profile, overrides Overrides) Profile {
+func apiKeyFromEnv(profileName string) string {
+	switch profileName {
+	case DefaultProfileName:
+		if value := os.Getenv("OPENROUTER_API_KEY"); value != "" {
+			return value
+		}
+		if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
+			return value
+		}
+	case "mittwald":
+		if value := os.Getenv("MITTWALD_LLM_API_KEY"); value != "" {
+			return value
+		}
+	default:
+		if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.Model != "" {
 		profile.Model = overrides.Model
 	}
@@ -205,9 +245,9 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	return normalizeProfile(profile)
 }
 
-func normalizeProfile(profile Profile) Profile {
+func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.Model == "" {
-		profile.Model = DefaultModel
+		return Profile{}, fmt.Errorf("config: no model specified; set model in profile or pass --model")
 	}
 	if profile.BaseURL == "" {
 		profile.BaseURL = DefaultBaseURL
@@ -224,7 +264,7 @@ func normalizeProfile(profile Profile) Profile {
 	if profile.GitLabBaseURL == "" {
 		profile.GitLabBaseURL = "https://gitlab.com/api/v4"
 	}
-	return profile
+	return profile, nil
 }
 
 func expandPath(path string) string {

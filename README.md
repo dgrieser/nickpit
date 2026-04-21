@@ -41,6 +41,8 @@ NickPit loads configuration in this order:
 
 See [.nickpit.yaml.example](.nickpit.yaml.example) for a complete example.
 
+The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`.
+
 ## Usage
 
 ```bash

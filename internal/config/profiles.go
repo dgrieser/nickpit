@@ -10,7 +10,7 @@ func ResolveProfile(cfg *Config, name string) (Profile, error) {
 	if !ok {
 		return Profile{}, fmt.Errorf("config: profile %q not found", name)
 	}
-	return normalizeProfile(profile), nil
+	return profile, nil
 }
 
 func mergeProfiles(base, override Profile) Profile {
@@ -53,5 +53,5 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.GitLabBaseURL != "" {
 		base.GitLabBaseURL = override.GitLabBaseURL
 	}
-	return normalizeProfile(base)
+	return base
 }
