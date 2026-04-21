@@ -11,7 +11,7 @@ import (
 )
 
 type CheckoutOptions struct {
-	LocalRepo string
+	Workdir string
 	Token     string
 }
 
@@ -40,7 +40,7 @@ func (m *CheckoutManager) Prepare(ctx context.Context, spec model.CheckoutSpec, 
 	if spec.HeadRef == "" && spec.HeadSHA == "" {
 		return "", nil, fmt.Errorf("git: missing head revision for %s", spec.Repo)
 	}
-	if opts.LocalRepo != "" {
+	if opts.Workdir != "" {
 		return m.prepareWorktree(ctx, spec, opts)
 	}
 	return m.prepareClone(ctx, spec, opts)
@@ -70,7 +70,7 @@ func (m *CheckoutManager) prepareClone(ctx context.Context, spec model.CheckoutS
 }
 
 func (m *CheckoutManager) prepareWorktree(ctx context.Context, spec model.CheckoutSpec, opts CheckoutOptions) (string, func(), error) {
-	localRepo, err := filepath.Abs(opts.LocalRepo)
+	localRepo, err := filepath.Abs(opts.Workdir)
 	if err != nil {
 		return "", nil, err
 	}

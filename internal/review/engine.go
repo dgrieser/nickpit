@@ -297,6 +297,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		}
 		if req.ToolRounds > 0 && toolRoundsUsed >= req.ToolRounds {
 			e.logf("Tool round limit reached, making final call without tools: limit=%d", req.ToolRounds)
+			e.logProgress("Tool", fmt.Sprintf("status=LimitReached, limit=%d, finalizing review", req.ToolRounds))
 			noToolsPrompt, renderErr := llm.RenderPrompt(systemTemplate, struct {
 				OutputSchemaSnippet      string
 				ParallelToolCallGuidance bool
@@ -308,8 +309,17 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			if renderErr != nil {
 				return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", renderErr)
 			}
-			finalMessages := make([]llm.Message, len(messages))
-			copy(finalMessages, messages)
+			finalMessages := make([]llm.Message, 0, len(messages))
+			for _, msg := range messages {
+				switch {
+				case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+					// drop tool request messages
+				case msg.Role == "tool":
+					finalMessages = append(finalMessages, llm.Message{Role: "user", Content: msg.Content})
+				default:
+					finalMessages = append(finalMessages, msg)
+				}
+			}
 			finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
 			llmReq.Messages = finalMessages
 			llmReq.Tools = nil
@@ -346,6 +356,10 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		totalUsage.CompletionTokens,
 		totalUsage.TotalTokens,
 	)
+	mode := string(req.Mode)
+	if req.Submode != "" {
+		mode = mode + ":" + req.Submode
+	}
 	return &model.ReviewResult{
 		Findings:               filtered,
 		OverallCorrectness:     resp.OverallCorrectness,
@@ -353,10 +367,15 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		OverallConfidenceScore: resp.OverallConfidenceScore,
 		TokensUsed:             totalUsage,
 		Model:                  e.config.Model,
-		Mode:                   string(req.Mode),
+		Mode:                   mode,
 		Repo:                   req.Repo,
 		Identifier:             req.Identifier,
 		ToolRounds:             toolRoundsUsed,
+		MaxToolCalls:           req.ToolRounds,
+		ReasoningEffort:        e.config.ReasoningEffort,
+		BaseURL:                e.config.BaseURL,
+		BaseRef:                reviewCtx.Repository.BaseRef,
+		HeadRef:                reviewCtx.Repository.HeadRef,
 	}, nil
 }
 
@@ -1051,7 +1070,12 @@ func reviewContextSummary(ctx *model.ReviewContext, req model.ReviewRequest) str
 	if ctx == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s:%s %s @ %s → %s", ctx.Mode, req.Submode, ctx.Repository.FullName, ctx.Repository.HeadRef, ctx.Repository.BaseRef)
+	return fmt.Sprintf("%s:%s @ %s ≥%s on %s @ %s → %s",
+		ctx.Mode, req.Submode,
+		req.ProfileName, req.PriorityThreshold,
+		ctx.Repository.FullName,
+		ctx.Repository.HeadRef, ctx.Repository.BaseRef,
+	)
 }
 
 func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {

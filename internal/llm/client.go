@@ -149,11 +149,13 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	payload := openai.ChatCompletionRequest{
 		Model:             req.Model,
 		Messages:          buildMessages(req),
-		Tools:             buildTools(req.Tools),
-		ParallelToolCalls: req.ParallelToolCalls,
+		Tools: buildTools(req.Tools),
 		StreamOptions: &openai.StreamOptions{
 			IncludeUsage: true,
 		},
+	}
+	if len(req.Tools) > 0 {
+		payload.ParallelToolCalls = req.ParallelToolCalls
 	}
 	if payload.Model == "" {
 		payload.Model = c.model

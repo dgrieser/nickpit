@@ -70,19 +70,19 @@ profiles:
     model: from-file
     base_url: https://example.invalid/v1
     max_context_tokens: 999
-    local_repo: ~/repo
+    workdir: ~/repo
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	t.Setenv("NICKPIT_MODEL", "from-env")
-	t.Setenv("NICKPIT_LOCAL_REPO", "/env/repo")
+	t.Setenv("NICKPIT_WORKDIR", "/env/repo")
 	cfg, profile, err := Load(path, Overrides{
 		Profile:          "work",
 		BaseURL:          "https://override.invalid/v1",
 		MaxContextTokens: 777,
-		LocalRepo:        "/override/repo",
+		Workdir:        "/override/repo",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,8 +99,8 @@ profiles:
 	if profile.MaxContextTokens != 777 {
 		t.Fatalf("max context tokens = %d", profile.MaxContextTokens)
 	}
-	if profile.LocalRepo != "/override/repo" {
-		t.Fatalf("local repo = %q", profile.LocalRepo)
+	if profile.Workdir != "/override/repo" {
+		t.Fatalf("local repo = %q", profile.Workdir)
 	}
 }
 

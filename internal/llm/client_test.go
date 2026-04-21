@@ -439,6 +439,9 @@ func TestClientReviewCanDisableParallelToolCalls(t *testing.T) {
 		SystemPrompt:      "system",
 		UserContent:       "user",
 		ParallelToolCalls: false,
+		Tools: []ToolDefinition{
+			{Name: "inspect_file", Description: "desc", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

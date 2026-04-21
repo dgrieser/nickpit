@@ -1181,7 +1181,7 @@ func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
 	}
 
 	got := buf.String()
-	if !strings.Contains(got, "Calling tool: list_files(path=\"pkg\", depth=1) → result=[files=2]") {
+	if !strings.Contains(got, "Tool: list_files(path=\"pkg\", depth=1) → result=[files=2]") {
 		t.Fatalf("tool call banner missing: %q", got)
 	}
 	if strings.Contains(got, `"files": [`) || strings.Contains(got, "pkg/a.go") {
@@ -1220,7 +1220,7 @@ func TestEnginePrintsOptimizedSearchReplacementWhenEnabled(t *testing.T) {
 	}
 
 	got := buf.String()
-	if !strings.Contains(got, "Calling tool: find_callers(instead_of=\"search\", path=\"pkg\", symbol=\"Run\", depth=10) → result=[lines=2, files=2]") {
+	if !strings.Contains(got, "Tool: find_callers(instead_of=\"search\", path=\"pkg\", symbol=\"Run\", depth=10) → result=[lines=2, files=2]") {
 		t.Fatalf("optimized tool call banner missing: %q", got)
 	}
 }

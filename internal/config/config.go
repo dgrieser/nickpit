@@ -35,7 +35,7 @@ type Profile struct {
 	MaxContextTokens  int      `yaml:"max_context_tokens"`
 	MaxToolCalls int      `yaml:"max_tool_calls"`
 	ReasoningEffort   string   `yaml:"reasoning_effort"`
-	LocalRepo         string   `yaml:"local_repo"`
+	Workdir         string   `yaml:"workdir"`
 	GitHubToken       string   `yaml:"github_token"`
 	GitLabToken       string   `yaml:"gitlab_token"`
 	GitLabBaseURL     string   `yaml:"gitlab_base_url"`
@@ -53,7 +53,7 @@ type Overrides struct {
 	MaxContextTokens int
 	ToolRounds       int
 	ReasoningEffort  string
-	LocalRepo        string
+	Workdir        string
 	GitHubToken      string
 	GitLabToken      string
 	GitLabBaseURL    string
@@ -147,8 +147,8 @@ func applyEnv(cfg *Config, profileName string) {
 	} else if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
 		profile.APIKey = value
 	}
-	if value := os.Getenv("NICKPIT_LOCAL_REPO"); value != "" {
-		profile.LocalRepo = value
+	if value := os.Getenv("NICKPIT_WORKDIR"); value != "" {
+		profile.Workdir = value
 	}
 	if value := os.Getenv("GITHUB_TOKEN"); value != "" {
 		profile.GitHubToken = value
@@ -190,8 +190,8 @@ func applyOverrides(profile Profile, overrides Overrides) Profile {
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
-	if overrides.LocalRepo != "" {
-		profile.LocalRepo = overrides.LocalRepo
+	if overrides.Workdir != "" {
+		profile.Workdir = overrides.Workdir
 	}
 	if overrides.GitHubToken != "" {
 		profile.GitHubToken = overrides.GitHubToken
@@ -218,8 +218,8 @@ func normalizeProfile(profile Profile) Profile {
 	if profile.MaxToolCalls == 0 {
 		profile.MaxToolCalls = MaxToolCalls
 	}
-	if profile.LocalRepo != "" {
-		profile.LocalRepo = expandPath(profile.LocalRepo)
+	if profile.Workdir != "" {
+		profile.Workdir = expandPath(profile.Workdir)
 	}
 	if profile.GitLabBaseURL == "" {
 		profile.GitLabBaseURL = "https://gitlab.com/api/v4"

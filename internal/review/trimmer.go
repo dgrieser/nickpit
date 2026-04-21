@@ -174,5 +174,10 @@ func isGeneratedFile(path string) bool {
 	return strings.HasSuffix(path, ".pb.go") ||
 		strings.HasSuffix(path, "go.sum") ||
 		strings.HasSuffix(path, "package-lock.json") ||
-		strings.HasSuffix(path, "yarn.lock")
+		strings.HasSuffix(path, "yarn.lock") ||
+		strings.HasSuffix(path, "_pb2.py") ||
+		strings.HasSuffix(path, "_pb2_grpc.py") ||
+		strings.HasSuffix(path, "poetry.lock") ||
+		strings.HasSuffix(path, "Pipfile.lock") ||
+		strings.HasSuffix(path, "uv.lock")
 }

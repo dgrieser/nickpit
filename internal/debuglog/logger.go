@@ -97,7 +97,7 @@ func (l *Logger) PrintProgress(label, summary string) {
 			coloredSummary = colorizeModelSummary(summary)
 		} else if label == "Review" {
 			coloredSummary = colorizeReviewSummary(summary)
-		} else if label == "Result" {
+		} else if label == "Result" || label == "Tool" {
 			coloredSummary = colorizeResultSummary(summary)
 		}
 		_, _ = fmt.Fprintf(l.w, "\x1b[33m%s\x1b[0m\x1b[90m: \x1b[0m%s\n", label, coloredSummary)
@@ -113,13 +113,13 @@ func (l *Logger) PrintProgressToolCall(call, result string) {
 	if l.useANSI {
 		_, _ = fmt.Fprintf(
 			l.w,
-			"\x1b[33mCalling tool\x1b[0m\x1b[90m: \x1b[0m%s \x1b[90m→\x1b[0m %s\n",
+			"\x1b[33mTool\x1b[0m\x1b[90m: \x1b[0m%s \x1b[90m→\x1b[0m %s\n",
 			colorizeToolCallCall(call),
 			colorizeToolCallResult(result),
 		)
 		return
 	}
-	_, _ = fmt.Fprintf(l.w, "Calling tool: %s → %s\n", call, result)
+	_, _ = fmt.Fprintf(l.w, "Tool: %s → %s\n", call, result)
 }
 
 func (l *Logger) printJSON(label string, value any, force bool) {
@@ -367,46 +367,60 @@ func colorizeProgressSummary(text string) string {
 }
 
 func colorizeModelSummary(text string) string {
-	model, rest, ok := strings.Cut(text, ":")
+	// format: model:effort [flags] @ url
+	modelName, rest, ok := strings.Cut(text, ":")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	effort, urlPart, ok := strings.Cut(rest, " @ ")
+	effortAndFlags, urlPart, ok := strings.Cut(rest, " @ ")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	return "\x1b[34m" + model + "\x1b[0m" +
+	effort, flags, hasFlags := strings.Cut(effortAndFlags, " [")
+	out := "\x1b[34m" + modelName + "\x1b[0m" +
 		"\x1b[90m:\x1b[0m" +
-		"\x1b[32m" + effort + "\x1b[0m" +
-		" \x1b[90m@\x1b[0m " +
-		"\x1b[35m" + urlPart + "\x1b[0m"
+		"\x1b[32m" + effort + "\x1b[0m"
+	if hasFlags {
+		out += " \x1b[90m[\x1b[0m" + strings.TrimSuffix(flags, "]") + "\x1b[90m]\x1b[0m"
+	}
+	return out + " \x1b[90m@\x1b[0m \x1b[35m" + urlPart + "\x1b[0m"
 }
 
 func colorizeReviewSummary(text string) string {
-	modePart, rest, ok := strings.Cut(text, ":")
+	// format: mode:submode @ profile ≥threshold on repo @ head → base
+	mode, rest, ok := strings.Cut(text, ":")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	submodePart, rest, ok := strings.Cut(rest, " ")
+	submode, rest, ok := strings.Cut(rest, " @ ")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	repoHeadPart, basePart, ok := strings.Cut(rest, " → ")
+	profileThreshold, repoRefs, ok := strings.Cut(rest, " on ")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	repoPart, headPart, ok := strings.Cut(repoHeadPart, " @ ")
+	profile, threshold, _ := strings.Cut(profileThreshold, " ")
+	repo, refs, ok := strings.Cut(repoRefs, " @ ")
 	if !ok {
 		return colorizeProgressSummary(text)
 	}
-	return "\x1b[34m" + modePart + "\x1b[0m" +
+	head, base, ok := strings.Cut(refs, " → ")
+	if !ok {
+		return colorizeProgressSummary(text)
+	}
+	return "\x1b[34m" + mode + "\x1b[0m" +
 		"\x1b[90m:\x1b[0m" +
-		"\x1b[32m" + submodePart + "\x1b[0m " +
-		"\x1b[34m" + repoPart + "\x1b[0m" +
+		"\x1b[32m" + submode + "\x1b[0m" +
 		" \x1b[90m@\x1b[0m " +
-		"\x1b[32m" + headPart + "\x1b[0m " +
-		"\x1b[90m→\x1b[0m " +
-		"\x1b[35m" + basePart + "\x1b[0m"
+		profile +
+		" \x1b[33m" + threshold + "\x1b[0m" +
+		" \x1b[90mon\x1b[0m " +
+		"\x1b[34m" + repo + "\x1b[0m" +
+		" \x1b[90m@\x1b[0m " +
+		"\x1b[32m" + head + "\x1b[0m" +
+		" \x1b[90m→\x1b[0m " +
+		"\x1b[35m" + base + "\x1b[0m"
 }
 
 func colorizeResultSummary(text string) string {
@@ -419,7 +433,10 @@ func colorizeResultSummary(text string) string {
 		return colorizeProgressSummary(text)
 	}
 	valueColor := "\x1b[34m"
-	if value == "error" {
+	switch value {
+	case "ok":
+		valueColor = "\x1b[32m"
+	case "error", "LimitReached":
 		valueColor = "\x1b[31m"
 	}
 	return "\x1b[34m" + key + "\x1b[0m" + "\x1b[90m=\x1b[0m" + valueColor + value + "\x1b[0m" + "\x1b[90m, \x1b[0m" + colorizeProgressSummary(rest)

@@ -38,7 +38,6 @@ type app struct {
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
-	localRepo                     string
 	githubToken                   string
 	gitlabToken                   string
 	gitlabBaseURL                 string
@@ -78,7 +77,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.model, "model", "", "Model identifier")
 	root.PersistentFlags().StringVar(&cli.baseURL, "base-url", "", "LLM API base URL")
 	root.PersistentFlags().StringVar(&cli.apiKey, "api-key", "", "LLM API key")
-	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Set the process working directory before running the command")
+	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Working directory")
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
 	root.PersistentFlags().IntVar(&cli.maxContextTokens, "max-context-tokens", 120000, "Context token budget")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
@@ -90,7 +89,6 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
-	root.PersistentFlags().StringVar(&cli.localRepo, "local-repo", "", "Use an existing local clone for remote retrieval instead of cloning")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
 	root.PersistentFlags().StringVar(&cli.gitlabToken, "gitlab-token", "", "GitLab token override")
 	root.PersistentFlags().StringVar(&cli.gitlabBaseURL, "gitlab-base-url", "", "GitLab API base URL")
@@ -117,7 +115,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		UseJSONSchema:    a.useJSONSchema,
 		MaxContextTokens: a.maxContextTokens,
 		ToolRounds:       a.toolRounds,
-		LocalRepo:        a.localRepo,
+		Workdir:        a.workDir,
 		GitHubToken:      a.githubToken,
 		GitLabToken:      a.gitlabToken,
 		GitLabBaseURL:    a.gitlabBaseURL,
@@ -153,7 +151,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 			req := model.ReviewRequest{
 				Mode:              model.ModeLocal,
 				RepoRoot:          repoRoot,
-				LocalRepo:         profile.LocalRepo,
+				Workdir:         profile.Workdir,
 				BaseRef:           firstNonEmpty(base, from),
 				HeadRef:           firstNonEmpty(head, to),
 				IncludeComments:   a.includeComments,
@@ -203,7 +201,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
 			req := model.ReviewRequest{
 				Mode:              model.ModeGitHub,
-				LocalRepo:         profile.LocalRepo,
+				Workdir:         profile.Workdir,
 				Repo:              repo,
 				Identifier:        pr,
 				IncludeComments:   a.includeComments,
@@ -248,7 +246,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
 			req := model.ReviewRequest{
 				Mode:              model.ModeGitLab,
-				LocalRepo:         profile.LocalRepo,
+				Workdir:         profile.Workdir,
 				Repo:              project,
 				Identifier:        mr,
 				IncludeComments:   a.includeComments,
@@ -420,13 +418,14 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	req.RepoRoot = repoRoot
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
+	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
 		req.MaxContextTokens = profile.MaxContextTokens
 	}
 	if req.ToolRounds == 0 {
 		req.ToolRounds = profile.MaxToolCalls
 	}
-	a.logProgress("Model", modelSummary(profile))
+	a.logProgress("Model", modelSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
@@ -435,6 +434,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	result, err := engine.Run(ctx, req)
 	if err != nil {
+		a.logProgress("Result", fmt.Sprintf("status=error, error=%v", err))
 		return err
 	}
 	a.logProgress("Result", reviewResultSummary(result))
@@ -482,7 +482,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	a.logf("Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
 	manager := git.NewCheckoutManager()
 	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
-		LocalRepo: req.LocalRepo,
+		Workdir: req.Workdir,
 		Token:     checkoutToken(req.Mode, profile),
 	})
 	if err != nil {
@@ -624,17 +624,27 @@ func (a *app) logProgress(label, summary string) {
 	a.logger.PrintProgress(label, summary)
 }
 
-func modelSummary(profile config.Profile) string {
-	return fmt.Sprintf("%s:%s @ %s", profile.Model, profile.ReasoningEffort, profile.BaseURL)
+func modelSummary(profile config.Profile, req model.ReviewRequest) string {
+	flags := []string{fmt.Sprintf("%dk context", req.MaxContextTokens/1000)}
+	if req.ToolRounds > 0 {
+		flags = append(flags, fmt.Sprintf("≤%d tool calls", req.ToolRounds))
+	}
+	if !req.DisableParallelToolCalls {
+		flags = append(flags, "parallel")
+	}
+	if req.UseJSONSchema {
+		flags = append(flags, "structured")
+	}
+	return fmt.Sprintf("%s:%s [%s] @ %s",
+		profile.Model, profile.ReasoningEffort,
+		strings.Join(flags, ", "),
+		profile.BaseURL,
+	)
 }
 
 func reviewResultSummary(result *model.ReviewResult) string {
-	status := "error"
-	if result.OverallCorrectness == "patch is correct" {
-		status = "ok"
-	}
 	return strings.Join([]string{
-		fmt.Sprintf("status=%s", status),
+		"status=ok",
 		fmt.Sprintf("findings=%d", len(result.Findings)),
 		fmt.Sprintf("tool_rounds=%d", result.ToolRounds),
 		fmt.Sprintf("prompt_tokens=%d", result.TokensUsed.PromptTokens),

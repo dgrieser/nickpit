@@ -8,7 +8,7 @@ profiles:
     temperature: 0.2
     max_context_tokens: 120000
     max_tool_calls: 0
-    local_repo: ~/src/repo
+    workdir: ~/src/repo
     github_token: ${GITHUB_TOKEN}
     gitlab_token: ${GITLAB_TOKEN}
     gitlab_base_url: ${GITLAB_BASE_URL}

@@ -97,7 +97,7 @@ func TestCheckoutManagerPrepareWorktree(t *testing.T) {
 		CloneURL: "https://gitlab.com/group/project.git",
 		HeadRef:  "feature",
 		HeadSHA:  "cafebabe",
-	}, CheckoutOptions{LocalRepo: localRepo, Token: "secret"})
+	}, CheckoutOptions{Workdir: localRepo, Token: "secret"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,14 +126,14 @@ func TestCheckoutManagerPrepareWorktree(t *testing.T) {
 	}
 }
 
-func TestCheckoutManagerPrepareRequiresExistingLocalRepo(t *testing.T) {
+func TestCheckoutManagerPrepareRequiresExistingWorkdir(t *testing.T) {
 	manager := NewCheckoutManager()
 	_, _, err := manager.Prepare(context.Background(), model.CheckoutSpec{
 		Provider: model.ModeGitHub,
 		Repo:     "owner/repo",
 		CloneURL: "https://github.com/owner/repo.git",
 		HeadRef:  "feature",
-	}, CheckoutOptions{LocalRepo: filepath.Join(t.TempDir(), "missing")})
+	}, CheckoutOptions{Workdir: filepath.Join(t.TempDir(), "missing")})
 	if err == nil {
 		t.Fatal("expected error")
 	}

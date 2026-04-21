@@ -26,7 +26,7 @@ const (
 type ReviewRequest struct {
 	Mode                     ReviewMode
 	RepoRoot                 string
-	LocalRepo                string
+	Workdir                  string
 	Repo                     string
 	Identifier               int
 	BaseRef                  string
@@ -41,6 +41,7 @@ type ReviewRequest struct {
 	PriorityThreshold        string
 	Offline                  bool
 	Submode                  string
+	ProfileName              string
 }
 
 type ReviewResult struct {
@@ -49,11 +50,16 @@ type ReviewResult struct {
 	OverallExplanation     string     `json:"overall_explanation"`
 	OverallConfidenceScore float64    `json:"overall_confidence_score"`
 	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
-	Model                  string     `json:"model,omitempty"`
 	Mode                   string     `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`
-	ToolRounds             int        `json:"tool_rounds,omitempty"`
+	BaseRef                string     `json:"base_ref,omitempty"`
+	HeadRef                string     `json:"head_ref,omitempty"`
+	BaseURL                string     `json:"base_url,omitempty"`
+	Model                  string     `json:"model,omitempty"`
+	ReasoningEffort        string     `json:"reasoning_effort,omitempty"`
+	MaxToolCalls           int        `json:"max_tool_calls,omitempty"`
+	ToolRounds             int        `json:"tool_calls,omitempty"`
 }
 
 type ReviewContext struct {
