@@ -10,27 +10,35 @@ import (
 )
 
 func (e *LocalEngine) FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error) {
-	graph, err := goparser.BuildGraph(ctx, repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("building Go call graph: %w", err)
-	}
-	hierarchy, err := graph.Find(symbol.Name, symbol.Path, depth, true)
+	resolved, err := resolveSymbol(ctx, repoRoot, symbol)
 	if err != nil {
 		return nil, fmt.Errorf("finding callers for %q in %q: %w", symbol.Name, symbol.Path, err)
 	}
-	return convertHierarchy(hierarchy), nil
+	scope, err := resolveLookupScope(repoRoot, symbol.Path)
+	if err != nil {
+		return nil, fmt.Errorf("finding callers for %q in %q: %w", symbol.Name, symbol.Path, err)
+	}
+	hierarchy, err := resolved.backend.findCallers(ctx, repoRoot, resolved.info, scope, depth)
+	if err != nil {
+		return nil, fmt.Errorf("finding callers for %q in %q: %w", symbol.Name, symbol.Path, err)
+	}
+	return hierarchy, nil
 }
 
 func (e *LocalEngine) FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error) {
-	graph, err := goparser.BuildGraph(ctx, repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("building Go call graph: %w", err)
-	}
-	hierarchy, err := graph.Find(symbol.Name, symbol.Path, depth, false)
+	resolved, err := resolveSymbol(ctx, repoRoot, symbol)
 	if err != nil {
 		return nil, fmt.Errorf("finding callees for %q in %q: %w", symbol.Name, symbol.Path, err)
 	}
-	return convertHierarchy(hierarchy), nil
+	scope, err := resolveLookupScope(repoRoot, symbol.Path)
+	if err != nil {
+		return nil, fmt.Errorf("finding callees for %q in %q: %w", symbol.Name, symbol.Path, err)
+	}
+	hierarchy, err := resolved.backend.findCallees(ctx, repoRoot, resolved.info, scope, depth)
+	if err != nil {
+		return nil, fmt.Errorf("finding callees for %q in %q: %w", symbol.Name, symbol.Path, err)
+	}
+	return hierarchy, nil
 }
 
 func convertHierarchy(src *goparser.Hierarchy) *CallHierarchy {

@@ -99,6 +99,8 @@ nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 
 
 `inspect callers` and `inspect callees` now include each mentioned function's full source in JSON output and print the source inline in terminal output.
 
+Retrieval supports `go`, `python`, and `nodejs` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis. Go remains the strongest backend for exact cross-package resolution; Python and Node.js/TypeScript are best-effort static analysis and return explicit errors when the call hierarchy cannot be resolved confidently.
+
 ## Notes
 
 - Currently the default LLM endpoint is Mittwald AI Hosting

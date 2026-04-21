@@ -249,12 +249,12 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			},
 			{
 				Name:        "find_callers",
-				Description: "Resolve one function by symbol name and optional path, then return its caller hierarchy.",
+				Description: "Resolve one function by symbol name and optional path, then return its caller hierarchy across Go, Python, and Node.js/TypeScript code. Go is strongest; Python and Node.js results are best-effort static analysis.",
 				Parameters:  callHierarchyToolParameters,
 			},
 			{
 				Name:        "find_callees",
-				Description: "Resolve one function by symbol name and optional path, then return its callee hierarchy.",
+				Description: "Resolve one function by symbol name and optional path, then return its callee hierarchy across Go, Python, and Node.js/TypeScript code. Go is strongest; Python and Node.js results are best-effort static analysis.",
 				Parameters:  callHierarchyToolParameters,
 			},
 		},
@@ -745,9 +745,9 @@ func toolError(path, code, message string) string {
 
 func syntheticToolFollowup(history []toolCallHistoryEntry) string {
 	lines := make([]string, 0, len(history)+5)
-	lines = append(lines, "You called the following tools:")
+	lines = append(lines, "You called the following tools already:")
 	for i, entry := range history {
-		lines = append(lines, fmt.Sprintf("%d. %s", i+1, syntheticToolCallSummary(entry.ToolCall, entry.Result)))
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, syntheticToolCallSummary(entry)))
 	}
 	lines = append(lines, "")
 	lastResult := toolResultSummary{}
@@ -763,7 +763,9 @@ func syntheticToolFollowup(history []toolCallHistoryEntry) string {
 	return strings.Join(lines, "\n")
 }
 
-func syntheticToolCallSummary(toolCall llm.ToolCall, result toolResultSummary) string {
+func syntheticToolCallSummary(entry toolCallHistoryEntry) string {
+	toolCall := entry.ToolCall
+	result := entry.Result
 	var args struct {
 		Path          string `json:"path"`
 		LineStart     int    `json:"line_start"`
@@ -776,7 +778,11 @@ func syntheticToolCallSummary(toolCall llm.ToolCall, result toolResultSummary) s
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
 	_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
-	return fmt.Sprintf("%s: tool_call_id=%q, arguments=[%s]; %s", toolCall.Name, toolCall.ID, syntheticToolArguments(toolCall.Name, args), syntheticToolOutcome(toolCall.Name, result))
+	name := toolCall.Name
+	if entry.OptimizedTo != "" {
+		name = fmt.Sprintf("%s (replaced by %s)", toolCall.Name, entry.OptimizedTo)
+	}
+	return fmt.Sprintf("%s: tool_call_id=%q, arguments=[%s]; %s", name, toolCall.ID, syntheticToolArguments(toolCall.Name, args), syntheticToolOutcome(toolCall.Name, result))
 }
 
 type toolResultSummary struct {
@@ -789,24 +795,40 @@ type toolResultSummary struct {
 }
 
 type toolCallHistoryEntry struct {
-	ToolCall llm.ToolCall
-	Result   toolResultSummary
+	ToolCall    llm.ToolCall
+	Result      toolResultSummary
+	OptimizedTo string // non-empty when the tool call was rewritten, e.g. "search" → "find_callers"
 }
 
 func collectToolCallHistory(toolCalls []llm.ToolCall, toolMessages []llm.Message) []toolCallHistoryEntry {
 	results := make(map[string]toolResultSummary, len(toolMessages))
+	rawContents := make(map[string]string, len(toolMessages))
 	for _, msg := range toolMessages {
 		results[msg.ToolCallID] = parseToolResultSummary(msg.Content)
+		rawContents[msg.ToolCallID] = msg.Content
 	}
 
 	history := make([]toolCallHistoryEntry, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
-		history = append(history, toolCallHistoryEntry{
+		entry := toolCallHistoryEntry{
 			ToolCall: toolCall,
 			Result:   results[toolCall.ID],
-		})
+		}
+		if toolCall.Name == "search" && isCallHierarchyResult(rawContents[toolCall.ID]) {
+			entry.OptimizedTo = "find_callers"
+		}
+		history = append(history, entry)
 	}
 	return history
+}
+
+func isCallHierarchyResult(content string) bool {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return false
+	}
+	_, hasRoot := payload["root"]
+	return hasRoot
 }
 
 func parseToolResultSummary(content string) toolResultSummary {

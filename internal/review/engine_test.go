@@ -464,7 +464,7 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	if req.Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", req.Messages[4].Role)
 	}
-	if want := "You called the following tools:"; !strings.Contains(req.Messages[4].Content, want) {
+	if want := "You called the following tools already:"; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
 	}
 	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; result=[lines=1]"; !strings.Contains(req.Messages[4].Content, want) {
@@ -1435,6 +1435,9 @@ func TestEngineDedupesOptimizedSearchAgainstFindCallers(t *testing.T) {
 	}
 	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:10" {
 		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	}
+	if want := "1. search (replaced by find_callers): tool_call_id=\"call_1\", arguments=[path=\"pkg\", query=\"Run(\", context_lines=0, max_results=0, case_sensitive=false]"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
 	}
 	if want := "2. find_callers: tool_call_id=\"call_2\", arguments=[path=\"./pkg\", symbol=\"Run\", depth=10]; error=\"tool result was already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)

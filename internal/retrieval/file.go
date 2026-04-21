@@ -256,10 +256,8 @@ func detectLanguage(path string) string {
 		return "go"
 	case ".py":
 		return "python"
-	case ".js":
-		return "javascript"
-	case ".ts":
-		return "typescript"
+	case ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts":
+		return "nodejs"
 	case ".rs":
 		return "rust"
 	case ".java":
