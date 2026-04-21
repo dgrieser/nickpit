@@ -4,7 +4,8 @@
 
 # NickPit
 
-NickPit is a CLI for LLM-assisted code review across local git changes, GitHub pull requests, and GitLab merge requests. It uses a normalized review context, a provider-compatible chat completions client, and optional tool-driven retrieval rounds for additional code context.
+NickPit is a CLI for LLM-assisted code review across local git changes, GitHub pull requests, and GitLab merge requests.  
+It uses a normalized review context, a provider-compatible chat completions client, and optional tool-driven retrieval rounds for additional code context.
 
 ## Features
 
@@ -43,17 +44,32 @@ See [.nickpit.yaml.example](.nickpit.yaml.example) for a complete example.
 ## Usage
 
 ```bash
-nickpit local uncommitted
-nickpit local commits --from HEAD~3 --to HEAD
-nickpit local branch --base main --head feature/my-branch
+# Review current branch in current directory against default branch
+nickpit local branch
 
+# Review current branch in specified directory against default branch
+nickpit local branch --workdir /path/to/dir
+
+# Review feature/my-branch against main in specified directory
+nickpit local branch --base main --head feature/my-branch --workdir /path/to/dir
+
+# Review specific commit range in current directory
+nickpit local commits --from HEAD~3 --to HEAD
+
+# Review uncommitted changes in current directory
+nickpit local uncommitted
+
+# Review PR in GitHub
 nickpit github pr --repo owner/repo --id 123
 nickpit github pr --repo owner/repo --id 123 --local-repo ~/src/repo
-nickpit gitlab mr --repo group/project --id 456
-nickpit local uncommitted --verbose
-nickpit github pr --repo owner/repo --pr 123 --debug
 
+# Review MR in GitLab
+nickpit gitlab mr --repo group/project --id 456
 ```
+
+### Progress
+
+Append `--show-progress` to print review details and tool calls on stderr.
 
 ### Debug
 
@@ -63,18 +79,9 @@ Append `--verbose` or `--debug` to print step-by-step execution details to stder
 ### Output Schema Mode
 
 By default, NickPit includes the expected JSON schema directly in the system prompt.
-
-NickPit does not send `response_format` unless `--use-json-schema` is enabled.
-
 Use `--use-json-schema` to send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
 
-NickPit can also let the model request additional file context during review. Control the maximum number of tool-call iterations with `--tool-rounds` or `default_tool_rounds` in config. `0` means unlimited, which is the default.
-
-### Temperature
-
-NickPit does not send a `temperature` parameter unless it is explicitly configured in the active profile, for example `temperature: 0.2`.
-
-NickPit also does not send `max_tokens` unless it is explicitly configured in the active profile, for example `max_tokens: 4096`.
+NickPit can lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--tool-rounds` or `default_tool_rounds` in config. `0` means unlimited, which is the default.
 
 ### Filtering by Priority
 
@@ -97,16 +104,10 @@ nickpit inspect search --path internal/review --query inspect_file --context-lin
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 --json
 ```
 
-`inspect callers` and `inspect callees` now include each mentioned function's full source in JSON output and print the source inline in terminal output.
-
-Retrieval supports `go`, `python`, and `nodejs` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis. Go remains the strongest backend for exact cross-package resolution; Python and Node.js/TypeScript are best-effort static analysis and return explicit errors when the call hierarchy cannot be resolved confidently.
+Retrieval supports `go`, `python`, and `nodejs` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis.
 
 ## Notes
 
-- Currently the default LLM endpoint is Mittwald AI Hosting
-  - `https://llm.aihosting.mittwald.de/v1`
-  - `gpt-oss-120b`
-  - API key env var `MITTWALD_LLM_API_KEY`
 - The CLI expects an OpenAI-compatible `/chat/completions` endpoint.
 - Remote reviews clone the requested PR/MR head into a temporary checkout when retrieval needs local files.
 - Use `--local-repo` to reuse an existing clone; NickPit creates a temporary worktree at the requested revision instead of cloning again.
