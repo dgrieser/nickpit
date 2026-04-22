@@ -153,7 +153,7 @@ func (r *countingRetrieval) Search(_ context.Context, _ string, path, query stri
 	}, nil
 }
 
-func (countingRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
+func (*countingRetrieval) GetFileSlice(context.Context, string, string, int, int) (*retrieval.FileSlice, error) {
 	return &retrieval.FileSlice{
 		Path:      "extra.go",
 		StartLine: 1,
@@ -163,7 +163,7 @@ func (countingRetrieval) GetFileSlice(context.Context, string, string, int, int)
 	}, nil
 }
 
-func (countingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
+func (*countingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
 	return nil, errors.New("unexpected GetSymbol call")
 }
 
