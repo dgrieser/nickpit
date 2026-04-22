@@ -458,7 +458,7 @@ func colorizeResultSummary(text string) string {
 	switch value {
 	case "ok":
 		valueColor = "\x1b[32m"
-	case "error", "LimitReached":
+	case "error", "LimitReached", "DuplicateLimitReached":
 		valueColor = "\x1b[31m"
 	}
 	return "\x1b[34m" + key + "\x1b[0m" + "\x1b[90m=\x1b[0m" + valueColor + value + "\x1b[0m" + "\x1b[90m, \x1b[0m" + colorizeProgressSummary(rest)

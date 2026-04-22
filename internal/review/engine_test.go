@@ -680,6 +680,58 @@ func TestEngineCountsParallelToolCallsIndividuallyForLimit(t *testing.T) {
 	}
 }
 
+func TestEngineStopsAtDuplicateToolCallLimit(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"./extra.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:                  model.ModeLocal,
+		MaxContextTokens:      1000,
+		MaxToolCalls:          3,
+		MaxDuplicateToolCalls: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 3 {
+		t.Fatalf("expected 3 LLM calls, got %d", len(llmClient.reqs))
+	}
+	if len(llmClient.reqs[2].Tools) != 0 {
+		t.Fatalf("final call should have no tools, got %d", len(llmClient.reqs[2].Tools))
+	}
+	if result.OverallCorrectness != "patch is correct" {
+		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
+	}
+	if result.ToolCalls != 2 {
+		t.Fatalf("tool calls = %d", result.ToolCalls)
+	}
+	if result.DuplicateToolCalls != 1 {
+		t.Fatalf("duplicate tool calls = %d", result.DuplicateToolCalls)
+	}
+	if len(retrievalEngine.paths) != 1 {
+		t.Fatalf("retrieval calls = %d", len(retrievalEngine.paths))
+	}
+}
+
 func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{

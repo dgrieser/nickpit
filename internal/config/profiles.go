@@ -41,6 +41,9 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.MaxToolCalls != 0 {
 		base.MaxToolCalls = override.MaxToolCalls
 	}
+	if override.MaxDuplicateToolCalls != 0 {
+		base.MaxDuplicateToolCalls = override.MaxDuplicateToolCalls
+	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}

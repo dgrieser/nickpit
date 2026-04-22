@@ -36,6 +36,7 @@ type ReviewRequest struct {
 	IncludeFullFiles         bool
 	MaxContextTokens         int
 	MaxToolCalls             int
+	MaxDuplicateToolCalls    int
 	DisableParallelToolCalls bool
 	UseJSONSchema            bool
 	PriorityThreshold        string
@@ -59,7 +60,9 @@ type ReviewResult struct {
 	Model                  string     `json:"model,omitempty"`
 	ReasoningEffort        string     `json:"reasoning_effort,omitempty"`
 	MaxToolCalls           int        `json:"max_tool_calls,omitempty"`
+	MaxDuplicateToolCalls  int        `json:"max_duplicate_tool_calls,omitempty"`
 	ToolCalls              int        `json:"tool_calls,omitempty"`
+	DuplicateToolCalls     int        `json:"duplicate_tool_calls,omitempty"`
 }
 
 type ReviewContext struct {

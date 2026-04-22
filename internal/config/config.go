@@ -11,13 +11,14 @@ import (
 )
 
 const (
-	DefaultProfileName     = "default"
-	DefaultModel           = ""
-	DefaultBaseURL         = "https://openrouter.ai/api/v1"
-	DefaultMaxContextToken = 120000
-	MaxToolCalls           = 0
-	DefaultConfigPath      = ".nickpit.yaml"
-	DefaultReasoningEffort = "high"
+	DefaultProfileName           = "default"
+	DefaultModel                 = ""
+	DefaultBaseURL               = "https://openrouter.ai/api/v1"
+	DefaultMaxContextToken       = 120000
+	MaxToolCalls                 = 0
+	DefaultMaxDuplicateToolCalls = 5
+	DefaultConfigPath            = ".nickpit.yaml"
+	DefaultReasoningEffort       = "high"
 
 	MittwaldModel   = "gpt-oss-120b"
 	MittwaldBaseURL = "https://llm.aihosting.mittwald.de/v1"
@@ -29,37 +30,39 @@ type Config struct {
 }
 
 type Profile struct {
-	Model            string   `yaml:"model"`
-	BaseURL          string   `yaml:"base_url"`
-	APIKey           string   `yaml:"api_key"`
-	MaxTokens        *int     `yaml:"max_tokens"`
-	Temperature      *float64 `yaml:"temperature"`
-	UseJSONSchema    bool     `yaml:"use_json_schema"`
-	MaxContextTokens int      `yaml:"max_context_tokens"`
-	MaxToolCalls     int      `yaml:"max_tool_calls"`
-	ReasoningEffort  string   `yaml:"reasoning_effort"`
-	Workdir          string   `yaml:"workdir"`
-	GitHubToken      string   `yaml:"github_token"`
-	GitLabToken      string   `yaml:"gitlab_token"`
-	GitLabBaseURL    string   `yaml:"gitlab_base_url"`
-	APIKeyConfigured bool     `yaml:"-"`
+	Model                 string   `yaml:"model"`
+	BaseURL               string   `yaml:"base_url"`
+	APIKey                string   `yaml:"api_key"`
+	MaxTokens             *int     `yaml:"max_tokens"`
+	Temperature           *float64 `yaml:"temperature"`
+	UseJSONSchema         bool     `yaml:"use_json_schema"`
+	MaxContextTokens      int      `yaml:"max_context_tokens"`
+	MaxToolCalls          int      `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls int      `yaml:"max_duplicate_tool_calls"`
+	ReasoningEffort       string   `yaml:"reasoning_effort"`
+	Workdir               string   `yaml:"workdir"`
+	GitHubToken           string   `yaml:"github_token"`
+	GitLabToken           string   `yaml:"gitlab_token"`
+	GitLabBaseURL         string   `yaml:"gitlab_base_url"`
+	APIKeyConfigured      bool     `yaml:"-"`
 }
 
 type Overrides struct {
-	Profile          string
-	Model            string
-	BaseURL          string
-	APIKey           string
-	MaxTokens        *int
-	Temperature      *float64
-	UseJSONSchema    bool
-	MaxContextTokens int
-	ToolCalls        int
-	ReasoningEffort  string
-	Workdir          string
-	GitHubToken      string
-	GitLabToken      string
-	GitLabBaseURL    string
+	Profile            string
+	Model              string
+	BaseURL            string
+	APIKey             string
+	MaxTokens          *int
+	Temperature        *float64
+	UseJSONSchema      bool
+	MaxContextTokens   int
+	ToolCalls          int
+	DuplicateToolCalls int
+	ReasoningEffort    string
+	Workdir            string
+	GitHubToken        string
+	GitLabToken        string
+	GitLabBaseURL      string
 }
 
 func DefaultConfig() *Config {
@@ -73,23 +76,25 @@ func DefaultConfig() *Config {
 		ActiveProfile: DefaultProfileName,
 		Profiles: map[string]Profile{
 			DefaultProfileName: {
-				BaseURL:          DefaultBaseURL,
-				MaxContextTokens: DefaultMaxContextToken,
-				MaxToolCalls:     MaxToolCalls,
-				ReasoningEffort:  DefaultReasoningEffort,
-				GitHubToken:      gh,
-				GitLabToken:      gl,
-				GitLabBaseURL:    glURL,
+				BaseURL:               DefaultBaseURL,
+				MaxContextTokens:      DefaultMaxContextToken,
+				MaxToolCalls:          MaxToolCalls,
+				MaxDuplicateToolCalls: DefaultMaxDuplicateToolCalls,
+				ReasoningEffort:       DefaultReasoningEffort,
+				GitHubToken:           gh,
+				GitLabToken:           gl,
+				GitLabBaseURL:         glURL,
 			},
 			"mittwald": {
-				Model:            MittwaldModel,
-				BaseURL:          MittwaldBaseURL,
-				MaxContextTokens: DefaultMaxContextToken,
-				MaxToolCalls:     MaxToolCalls,
-				ReasoningEffort:  DefaultReasoningEffort,
-				GitHubToken:      gh,
-				GitLabToken:      gl,
-				GitLabBaseURL:    glURL,
+				Model:                 MittwaldModel,
+				BaseURL:               MittwaldBaseURL,
+				MaxContextTokens:      DefaultMaxContextToken,
+				MaxToolCalls:          MaxToolCalls,
+				MaxDuplicateToolCalls: DefaultMaxDuplicateToolCalls,
+				ReasoningEffort:       DefaultReasoningEffort,
+				GitHubToken:           gh,
+				GitLabToken:           gl,
+				GitLabBaseURL:         glURL,
 			},
 		},
 	}
@@ -227,6 +232,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.ToolCalls > 0 {
 		profile.MaxToolCalls = overrides.ToolCalls
 	}
+	if overrides.DuplicateToolCalls > 0 {
+		profile.MaxDuplicateToolCalls = overrides.DuplicateToolCalls
+	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
@@ -257,6 +265,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.MaxToolCalls == 0 {
 		profile.MaxToolCalls = MaxToolCalls
+	}
+	if profile.MaxDuplicateToolCalls == 0 {
+		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
 	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)

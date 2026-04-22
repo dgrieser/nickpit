@@ -270,6 +270,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 
 	totalUsage := model.TokenUsage{}
 	toolCallsUsed := 0
+	duplicateToolCallsUsed := 0
 	toolState := &toolRoundState{
 		seenFiles:      make(map[string]retrieval.FileContent),
 		seenFileRanges: make(map[string][]model.LineRange),
@@ -299,32 +300,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		if req.MaxToolCalls > 0 && toolCallsUsed+pendingToolCalls > req.MaxToolCalls {
 			e.logf("Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, toolCallsUsed, pendingToolCalls)
 			e.logProgress("Tool", fmt.Sprintf("status=LimitReached, limit=%d, finalizing review", req.MaxToolCalls))
-			noToolsPrompt, renderErr := llm.RenderPrompt(systemTemplate, struct {
-				OutputSchemaSnippet      string
-				ParallelToolCallGuidance bool
-				HasTools                 bool
-			}{
-				OutputSchemaSnippet: reviewOutputSchemaSnippetFor(req.UseJSONSchema),
-				HasTools:            false,
-			})
-			if renderErr != nil {
-				return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", renderErr)
-			}
-			finalMessages := make([]llm.Message, 0, len(messages))
-			for _, msg := range messages {
-				switch {
-				case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
-					// drop tool request messages
-				case msg.Role == "tool":
-					finalMessages = append(finalMessages, llm.Message{Role: "user", Content: msg.Content})
-				default:
-					finalMessages = append(finalMessages, msg)
-				}
-			}
-			finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
-			llmReq.Messages = finalMessages
-			llmReq.Tools = nil
-			resp, err = e.llm.Review(ctx, llmReq)
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, req.UseJSONSchema)
 			if err != nil {
 				return nil, err
 			}
@@ -339,6 +315,20 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
 		messages = append(messages, toolMessages...)
 		toolCallHistory = append(toolCallHistory, collectToolCallHistory(resp.ToolCalls, toolMessages)...)
+		duplicateToolCallsUsed += countDuplicateToolCalls(toolMessages)
+		if req.MaxDuplicateToolCalls > 0 && duplicateToolCallsUsed >= req.MaxDuplicateToolCalls {
+			e.logf("Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, duplicateToolCallsUsed)
+			e.logProgress("Tool", fmt.Sprintf("status=DuplicateLimitReached, limit=%d, duplicates=%d, finalizing review", req.MaxDuplicateToolCalls, duplicateToolCallsUsed))
+			toolCallsUsed += pendingToolCalls
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, req.UseJSONSchema)
+			if err != nil {
+				return nil, err
+			}
+			totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
+			totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
+			totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
+			break
+		}
 		syntheticFollowup = &llm.Message{
 			Role:    "user",
 			Content: syntheticToolFollowup(toolCallHistory),
@@ -377,7 +367,38 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		BaseURL:                e.config.BaseURL,
 		BaseRef:                reviewCtx.Repository.BaseRef,
 		HeadRef:                reviewCtx.Repository.HeadRef,
+		MaxDuplicateToolCalls:  req.MaxDuplicateToolCalls,
+		DuplicateToolCalls:     duplicateToolCallsUsed,
 	}, nil
+}
+
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, useJSONSchema bool) (*llm.ReviewResponse, error) {
+	noToolsPrompt, err := llm.RenderPrompt(systemTemplate, struct {
+		OutputSchemaSnippet      string
+		ParallelToolCallGuidance bool
+		HasTools                 bool
+	}{
+		OutputSchemaSnippet: reviewOutputSchemaSnippetFor(useJSONSchema),
+		HasTools:            false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)
+	}
+	finalMessages := make([]llm.Message, 0, len(messages))
+	for _, msg := range messages {
+		switch {
+		case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+			// drop tool request messages
+		case msg.Role == "tool":
+			finalMessages = append(finalMessages, llm.Message{Role: "user", Content: msg.Content})
+		default:
+			finalMessages = append(finalMessages, msg)
+		}
+	}
+	finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
+	llmReq.Messages = finalMessages
+	llmReq.Tools = nil
+	return e.llm.Review(ctx, llmReq)
 }
 
 func (e *Engine) loadPrompt(name string) (string, error) {
@@ -893,6 +914,17 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.Lines = countCallHierarchyLines(root)
 	}
 	return summary
+}
+
+func countDuplicateToolCalls(toolMessages []llm.Message) int {
+	count := 0
+	for _, msg := range toolMessages {
+		summary := parseToolResultSummary(msg.Content)
+		if summary.IsError && summary.Code == "already_requested" {
+			count++
+		}
+	}
+	return count
 }
 
 func countCallHierarchyFiles(root map[string]any) int {

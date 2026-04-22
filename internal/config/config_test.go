@@ -19,6 +19,9 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	if profile.MaxToolCalls != 0 {
 		t.Fatalf("default max tool calls = %d", profile.MaxToolCalls)
 	}
+	if profile.MaxDuplicateToolCalls != DefaultMaxDuplicateToolCalls {
+		t.Fatalf("default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
+	}
 
 	mittwald := cfg.Profiles["mittwald"]
 	if mittwald.Model != "gpt-oss-120b" {
@@ -238,5 +241,35 @@ profiles:
 	}
 	if profile.MaxToolCalls != 4 {
 		t.Fatalf("override default max tool calls = %d", profile.MaxToolCalls)
+	}
+}
+
+func TestLoadConfigMaxDuplicateToolCallsFromFileAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_duplicate_tool_calls: 2
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxDuplicateToolCalls != 2 {
+		t.Fatalf("default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
+	}
+
+	_, profile, err = Load(path, Overrides{DuplicateToolCalls: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxDuplicateToolCalls != 4 {
+		t.Fatalf("override default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
 	}
 }

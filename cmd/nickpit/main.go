@@ -35,6 +35,7 @@ type app struct {
 	jsonOutput                    bool
 	useJSONSchema                 bool
 	maxToolCalls                  int
+	maxDuplicateToolCalls         int
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
@@ -86,6 +87,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
 	root.PersistentFlags().IntVar(&cli.maxToolCalls, "max-tool-calls", 0, "Maximum tool-call rounds (0 means unlimited by default)")
+	root.PersistentFlags().IntVar(&cli.maxDuplicateToolCalls, "max-duplicate-tool-calls", config.DefaultMaxDuplicateToolCalls, "Maximum duplicate tool calls before tools are disabled")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -108,17 +110,18 @@ func newRootCmd() *cobra.Command {
 
 func (a *app) loadProfile() (string, config.Profile, error) {
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile:          a.profile,
-		Model:            a.model,
-		BaseURL:          a.baseURL,
-		APIKey:           a.apiKey,
-		UseJSONSchema:    a.useJSONSchema,
-		MaxContextTokens: a.maxContextTokens,
-		ToolCalls:        a.maxToolCalls,
-		Workdir:          a.workDir,
-		GitHubToken:      a.githubToken,
-		GitLabToken:      a.gitlabToken,
-		GitLabBaseURL:    a.gitlabBaseURL,
+		Profile:            a.profile,
+		Model:              a.model,
+		BaseURL:            a.baseURL,
+		APIKey:             a.apiKey,
+		UseJSONSchema:      a.useJSONSchema,
+		MaxContextTokens:   a.maxContextTokens,
+		ToolCalls:          a.maxToolCalls,
+		DuplicateToolCalls: a.maxDuplicateToolCalls,
+		Workdir:            a.workDir,
+		GitHubToken:        a.githubToken,
+		GitLabToken:        a.gitlabToken,
+		GitLabBaseURL:      a.gitlabBaseURL,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -149,19 +152,20 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				return err
 			}
 			req := model.ReviewRequest{
-				Mode:              model.ModeLocal,
-				RepoRoot:          repoRoot,
-				Workdir:           profile.Workdir,
-				BaseRef:           firstNonEmpty(base, from),
-				HeadRef:           firstNonEmpty(head, to),
-				IncludeComments:   a.includeComments,
-				IncludeCommits:    a.includeCommits,
-				IncludeFullFiles:  a.includeFullFiles,
-				MaxContextTokens:  profile.MaxContextTokens,
-				MaxToolCalls:      profile.MaxToolCalls,
-				UseJSONSchema:     profile.UseJSONSchema,
-				PriorityThreshold: a.priorityThreshold,
-				Submode:           submode,
+				Mode:                  model.ModeLocal,
+				RepoRoot:              repoRoot,
+				Workdir:               profile.Workdir,
+				BaseRef:               firstNonEmpty(base, from),
+				HeadRef:               firstNonEmpty(head, to),
+				IncludeComments:       a.includeComments,
+				IncludeCommits:        a.includeCommits,
+				IncludeFullFiles:      a.includeFullFiles,
+				MaxContextTokens:      profile.MaxContextTokens,
+				MaxToolCalls:          profile.MaxToolCalls,
+				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
+				UseJSONSchema:         profile.UseJSONSchema,
+				PriorityThreshold:     a.priorityThreshold,
+				Submode:               submode,
 			}
 			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -200,17 +204,18 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			}
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
 			req := model.ReviewRequest{
-				Mode:              model.ModeGitHub,
-				Workdir:           profile.Workdir,
-				Repo:              repo,
-				Identifier:        pr,
-				IncludeComments:   a.includeComments,
-				IncludeCommits:    a.includeCommits,
-				MaxContextTokens:  profile.MaxContextTokens,
-				MaxToolCalls:      profile.MaxToolCalls,
-				UseJSONSchema:     profile.UseJSONSchema,
-				PriorityThreshold: a.priorityThreshold,
-				Offline:           a.offline,
+				Mode:                  model.ModeGitHub,
+				Workdir:               profile.Workdir,
+				Repo:                  repo,
+				Identifier:            pr,
+				IncludeComments:       a.includeComments,
+				IncludeCommits:        a.includeCommits,
+				MaxContextTokens:      profile.MaxContextTokens,
+				MaxToolCalls:          profile.MaxToolCalls,
+				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
+				UseJSONSchema:         profile.UseJSONSchema,
+				PriorityThreshold:     a.priorityThreshold,
+				Offline:               a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -245,17 +250,18 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			}
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
 			req := model.ReviewRequest{
-				Mode:              model.ModeGitLab,
-				Workdir:           profile.Workdir,
-				Repo:              project,
-				Identifier:        mr,
-				IncludeComments:   a.includeComments,
-				IncludeCommits:    a.includeCommits,
-				MaxContextTokens:  profile.MaxContextTokens,
-				MaxToolCalls:      profile.MaxToolCalls,
-				UseJSONSchema:     profile.UseJSONSchema,
-				PriorityThreshold: a.priorityThreshold,
-				Offline:           a.offline,
+				Mode:                  model.ModeGitLab,
+				Workdir:               profile.Workdir,
+				Repo:                  project,
+				Identifier:            mr,
+				IncludeComments:       a.includeComments,
+				IncludeCommits:        a.includeCommits,
+				MaxContextTokens:      profile.MaxContextTokens,
+				MaxToolCalls:          profile.MaxToolCalls,
+				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
+				UseJSONSchema:         profile.UseJSONSchema,
+				PriorityThreshold:     a.priorityThreshold,
+				Offline:               a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -424,6 +430,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	if req.MaxToolCalls == 0 {
 		req.MaxToolCalls = profile.MaxToolCalls
+	}
+	if req.MaxDuplicateToolCalls == 0 {
+		req.MaxDuplicateToolCalls = profile.MaxDuplicateToolCalls
 	}
 	a.logProgress("Model", modelSummary(profile, req))
 
@@ -645,6 +654,9 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	if req.MaxToolCalls > 0 {
 		flags = append(flags, fmt.Sprintf("≤%d tool calls", req.MaxToolCalls))
 	}
+	if req.MaxDuplicateToolCalls > 0 {
+		flags = append(flags, fmt.Sprintf("≤%d duplicate tool calls", req.MaxDuplicateToolCalls))
+	}
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")
 	}
@@ -663,6 +675,7 @@ func reviewResultSummary(result *model.ReviewResult) string {
 		"status=ok",
 		fmt.Sprintf("findings=%d", len(result.Findings)),
 		fmt.Sprintf("tool_calls=%d", result.ToolCalls),
+		fmt.Sprintf("duplicate_tool_calls=%d", result.DuplicateToolCalls),
 		fmt.Sprintf("prompt_tokens=%d", result.TokensUsed.PromptTokens),
 		fmt.Sprintf("completion_tokens=%d", result.TokensUsed.CompletionTokens),
 		fmt.Sprintf("total_tokens=%d", result.TokensUsed.TotalTokens),
