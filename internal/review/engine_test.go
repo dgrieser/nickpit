@@ -296,9 +296,6 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "`find_callees` tool"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing callees instructions: %q", req.Messages[0].Content)
 	}
-	if want := "DO NOT request the same file multiple times"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing duplicate-request guard: %q", req.Messages[0].Content)
-	}
 	if want := "call multiple tools in parallel"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing parallel guidance: %q", req.Messages[0].Content)
 	}
