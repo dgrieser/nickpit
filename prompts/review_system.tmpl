@@ -36,11 +36,10 @@ If you need more code context, call of the following tools:
 - `search` tool with a repo-relative `path` and a `query` to search recursively for relevant matches.
 
 Important:
-- Use the tools only for concrete files that are necessary to judge the patch.
-- DO NOT request the same file multiple times.
+- Make sure to use the `find_callers` tool to look at the call stack of the functions modified by the patch.
+- Make as many tool calls as necessary, to gather the required context.
 {{if .ParallelToolCallGuidance}}- If possible, call multiple tools in parallel, e.g. in one turn.
-{{end}}- When inspecting function symbols, prefer `find_callers`, `find_callees` over `search`.
-- Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
+{{end}}- Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.
 {{end}}
 ### VERDICT
 At the end, decide whether the patch is correct.
