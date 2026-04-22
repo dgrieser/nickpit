@@ -2,6 +2,7 @@ package output
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -29,6 +30,30 @@ func TestTerminalFormatter(t *testing.T) {
 		t.Fatal(err)
 	}
 	testutil.AssertGolden(t, buf.String(), filepath.Join("..", "..", "testdata", "golden", "TestTerminalFormatter.txt"))
+}
+
+func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewJSONFormatter(&buf)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings:           []model.Finding{},
+		MaxToolCalls:       0,
+		DuplicateToolCalls: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := payload["max_tool_calls"]; !ok || got != float64(0) {
+		t.Fatalf("max_tool_calls = %#v, present=%t", got, ok)
+	}
+	if got, ok := payload["duplicate_tool_calls"]; !ok || got != float64(0) {
+		t.Fatalf("duplicate_tool_calls = %#v, present=%t", got, ok)
+	}
 }
 
 func intPtr(v int) *int {
