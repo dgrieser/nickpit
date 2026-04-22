@@ -10,7 +10,7 @@ import (
 
 func TestBuildGraphResolvesExactCallersAndCallees(t *testing.T) {
 	dir := t.TempDir()
-	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.22.0\n")
+	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.25.0\n")
 	writeTestFile(t, dir, "a/a.go", `package a
 
 func Run() {}
@@ -97,7 +97,7 @@ func Start() {
 
 func TestBuildGraphResolvesRepoWideSymbolWhenPathEmpty(t *testing.T) {
 	dir := t.TempDir()
-	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.22.0\n")
+	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.25.0\n")
 	writeTestFile(t, dir, "a/a.go", `package a
 
 func Alpha() {}
@@ -130,7 +130,7 @@ func Beta() {
 
 func TestBuildGraphResolvesDirectoryScopedSymbol(t *testing.T) {
 	dir := t.TempDir()
-	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.22.0\n")
+	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.25.0\n")
 	writeTestFile(t, dir, "pkg/one.go", `package pkg
 
 func Shared() {}
