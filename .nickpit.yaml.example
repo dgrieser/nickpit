@@ -9,12 +9,3 @@ profiles:
     github_token: ${GITHUB_TOKEN}
     gitlab_token: ${GITLAB_TOKEN}
     gitlab_base_url: ${GITLAB_BASE_URL}
-  mittwald:
-    model: gpt-oss-120b
-    base_url: https://llm.aihosting.mittwald.de/v1
-    api_key: ${MITTWALD_LLM_API_KEY}
-    max_context_tokens: 120000
-    workdir: .
-    github_token: ${GITHUB_TOKEN}
-    gitlab_token: ${GITLAB_TOKEN}
-    gitlab_base_url: ${GITLAB_BASE_URL}

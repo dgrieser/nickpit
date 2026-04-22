@@ -19,8 +19,20 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	if profile.MaxToolCalls != 0 {
 		t.Fatalf("default max tool calls = %d", profile.MaxToolCalls)
 	}
-	if profile.MaxDuplicateToolCalls != DefaultMaxDuplicateToolCalls {
+	if profile.MaxDuplicateToolCalls != 0 {
 		t.Fatalf("default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
+	}
+	if profile.APIKey != "$OPENROUTER_API_KEY" {
+		t.Fatalf("default api key ref = %q", profile.APIKey)
+	}
+	if profile.GitHubToken != "" {
+		t.Fatalf("default github token ref = %q", profile.GitHubToken)
+	}
+	if profile.GitLabToken != "" {
+		t.Fatalf("default gitlab token ref = %q", profile.GitLabToken)
+	}
+	if profile.GitLabBaseURL != "" {
+		t.Fatalf("default gitlab base url ref = %q", profile.GitLabBaseURL)
 	}
 
 	mittwald := cfg.Profiles["mittwald"]
@@ -29,6 +41,13 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	}
 	if mittwald.BaseURL != "https://llm.aihosting.mittwald.de/v1" {
 		t.Fatalf("mittwald base url = %q", mittwald.BaseURL)
+	}
+	if mittwald.APIKey != "$MITTWALD_LLM_API_KEY" {
+		t.Fatalf("mittwald api key ref = %q", mittwald.APIKey)
+	}
+	mistral := cfg.Profiles["mistral"]
+	if mistral.APIKey != "$MISTRAL_API_KEY" {
+		t.Fatalf("mistral api key ref = %q", mistral.APIKey)
 	}
 }
 
@@ -83,7 +102,46 @@ func TestLoadConfigDefaultProfileFallsBackToGenericAPIKeyEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.APIKey != "generic-key" {
+	if profile.APIKey != "" {
+		t.Fatalf("api key = %q", profile.APIKey)
+	}
+}
+
+func TestLoadConfigExpandsAPIKeyEnvReferenceFromYAML(t *testing.T) {
+	t.Setenv("TEST_LLM_API_KEY", "yaml-key")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    api_key: $TEST_LLM_API_KEY
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.APIKey != "yaml-key" {
+		t.Fatalf("api key = %q", profile.APIKey)
+	}
+}
+
+func TestLoadConfigExpandsBracedAPIKeyEnvReferenceFromCLI(t *testing.T) {
+	t.Setenv("TEST_LLM_API_KEY", "cli-key")
+
+	_, profile, err := Load("", Overrides{
+		Model:  "test-model",
+		APIKey: "${TEST_LLM_API_KEY}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.APIKey != "cli-key" {
 		t.Fatalf("api key = %q", profile.APIKey)
 	}
 }

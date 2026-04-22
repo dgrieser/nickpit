@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -12,17 +13,17 @@ import (
 
 const (
 	DefaultProfileName           = "default"
-	DefaultModel                 = ""
-	DefaultBaseURL               = "https://openrouter.ai/api/v1"
 	DefaultMaxContextToken       = 120000
 	MaxToolCalls                 = 0
 	DefaultMaxDuplicateToolCalls = 5
 	DefaultConfigPath            = ".nickpit.yaml"
 	DefaultReasoningEffort       = "high"
-
-	MittwaldModel   = "gpt-oss-120b"
-	MittwaldBaseURL = "https://llm.aihosting.mittwald.de/v1"
+	DefaultGitHubTokenRef        = "${GITHUB_TOKEN}"
+	DefaultGitLabTokenRef        = "${GITLAB_TOKEN}"
+	DefaultGitLabBaseURLRef      = "${GITLAB_BASE_URL}"
 )
+
+var envReferencePattern = regexp.MustCompile(`^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$`)
 
 type Config struct {
 	ActiveProfile string             `yaml:"active_profile"`
@@ -66,35 +67,22 @@ type Overrides struct {
 }
 
 func DefaultConfig() *Config {
-	tokens := func() (github, gitlab, gitlabURL string) {
-		return os.Getenv("GITHUB_TOKEN"),
-			os.Getenv("GITLAB_TOKEN"),
-			getEnvOrDefault("GITLAB_BASE_URL", "https://gitlab.com/api/v4")
-	}
-	gh, gl, glURL := tokens()
 	return &Config{
 		ActiveProfile: DefaultProfileName,
 		Profiles: map[string]Profile{
 			DefaultProfileName: {
-				BaseURL:               DefaultBaseURL,
-				MaxContextTokens:      DefaultMaxContextToken,
-				MaxToolCalls:          MaxToolCalls,
-				MaxDuplicateToolCalls: DefaultMaxDuplicateToolCalls,
-				ReasoningEffort:       DefaultReasoningEffort,
-				GitHubToken:           gh,
-				GitLabToken:           gl,
-				GitLabBaseURL:         glURL,
+				BaseURL: "https://openrouter.ai/api/v1",
+				APIKey:  "$OPENROUTER_API_KEY",
 			},
 			"mittwald": {
-				Model:                 MittwaldModel,
-				BaseURL:               MittwaldBaseURL,
-				MaxContextTokens:      DefaultMaxContextToken,
-				MaxToolCalls:          MaxToolCalls,
-				MaxDuplicateToolCalls: DefaultMaxDuplicateToolCalls,
-				ReasoningEffort:       DefaultReasoningEffort,
-				GitHubToken:           gh,
-				GitLabToken:           gl,
-				GitLabBaseURL:         glURL,
+				BaseURL: "https://llm.aihosting.mittwald.de/v1",
+				Model:   "gpt-oss-120b",
+				APIKey:  "$MITTWALD_LLM_API_KEY",
+			},
+			"mistral": {
+				BaseURL: "https://api.mistral.ai/v1",
+				Model:   "mistral-large-latest",
+				APIKey:  "$MISTRAL_API_KEY",
 			},
 		},
 	}
@@ -168,9 +156,6 @@ func applyEnv(cfg *Config, profileName string) {
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
 	}
-	if value := apiKeyFromEnv(profileName); value != "" {
-		profile.APIKey = value
-	}
 	if value := os.Getenv("NICKPIT_WORKDIR"); value != "" {
 		profile.Workdir = value
 	}
@@ -184,27 +169,6 @@ func applyEnv(cfg *Config, profileName string) {
 		profile.GitLabBaseURL = value
 	}
 	cfg.Profiles[profileName] = profile
-}
-
-func apiKeyFromEnv(profileName string) string {
-	switch profileName {
-	case DefaultProfileName:
-		if value := os.Getenv("OPENROUTER_API_KEY"); value != "" {
-			return value
-		}
-		if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
-			return value
-		}
-	case "mittwald":
-		if value := os.Getenv("MITTWALD_LLM_API_KEY"); value != "" {
-			return value
-		}
-	default:
-		if value := os.Getenv("NICKPIT_API_KEY"); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
@@ -254,11 +218,15 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 }
 
 func normalizeProfile(profile Profile) (Profile, error) {
+	profile.APIKey = expandEnvReference(profile.APIKey)
+	profile.GitHubToken = expandEnvReference(profile.GitHubToken)
+	profile.GitLabToken = expandEnvReference(profile.GitLabToken)
+	profile.GitLabBaseURL = expandEnvReference(profile.GitLabBaseURL)
 	if profile.Model == "" {
 		return Profile{}, fmt.Errorf("config: no model specified; set model in profile or pass --model")
 	}
 	if profile.BaseURL == "" {
-		profile.BaseURL = DefaultBaseURL
+		return Profile{}, fmt.Errorf("config: no base URL specified; set base URL in profile or pass --base-url")
 	}
 	if profile.MaxContextTokens == 0 {
 		profile.MaxContextTokens = DefaultMaxContextToken
@@ -278,6 +246,18 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	return profile, nil
 }
 
+func expandEnvReference(value string) string {
+	matches := envReferencePattern.FindStringSubmatch(strings.TrimSpace(value))
+	if len(matches) == 0 {
+		return value
+	}
+	name := matches[1]
+	if name == "" {
+		name = matches[2]
+	}
+	return os.Getenv(name)
+}
+
 func expandPath(path string) string {
 	if path == "" {
 		return path
@@ -289,13 +269,6 @@ func expandPath(path string) string {
 		}
 	}
 	return path
-}
-
-func getEnvOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
 }
 
 func markConfiguredFields(data []byte, cfg *Config) error {
