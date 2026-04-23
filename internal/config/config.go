@@ -45,6 +45,7 @@ type Profile struct {
 	GitHubToken                     string   `yaml:"github_token"`
 	GitLabToken                     string   `yaml:"gitlab_token"`
 	GitLabBaseURL                   string   `yaml:"gitlab_base_url"`
+	MaxContextTokensConfigured      bool     `yaml:"-"`
 	APIKeyConfigured                bool     `yaml:"-"`
 	MaxToolCallsConfigured          bool     `yaml:"-"`
 	MaxDuplicateToolCallsConfigured bool     `yaml:"-"`
@@ -194,6 +195,7 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	if overrides.MaxContextTokens != nil {
 		profile.MaxContextTokens = *overrides.MaxContextTokens
+		profile.MaxContextTokensConfigured = true
 	}
 	if overrides.ToolCalls != nil {
 		profile.MaxToolCalls = *overrides.ToolCalls
@@ -232,7 +234,7 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.BaseURL == "" {
 		return Profile{}, fmt.Errorf("config: no base URL specified; set base URL in profile or pass --base-url")
 	}
-	if profile.MaxContextTokens == 0 {
+	if profile.MaxContextTokens == 0 && !profile.MaxContextTokensConfigured {
 		profile.MaxContextTokens = DefaultMaxContextToken
 	}
 	if profile.MaxToolCalls == 0 {
@@ -293,6 +295,7 @@ func markConfiguredFields(data []byte, cfg *Config) error {
 		name := profiles.Content[i].Value
 		profileNode := profiles.Content[i+1]
 		profile := cfg.Profiles[name]
+		profile.MaxContextTokensConfigured = mappingValue(profileNode, "max_context_tokens") != nil
 		profile.APIKeyConfigured = mappingValue(profileNode, "api_key") != nil
 		profile.MaxToolCallsConfigured = mappingValue(profileNode, "max_tool_calls") != nil
 		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil

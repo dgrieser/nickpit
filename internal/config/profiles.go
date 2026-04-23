@@ -35,19 +35,22 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.UseJSONSchema {
 		base.UseJSONSchema = true
 	}
-	if override.MaxContextTokens != 0 || base.MaxContextTokens == 0 {
+	if override.MaxContextTokensConfigured {
+		base.MaxContextTokensConfigured = true
+		base.MaxContextTokens = override.MaxContextTokens
+	} else if override.MaxContextTokens != 0 {
 		base.MaxContextTokens = override.MaxContextTokens
 	}
 	if override.MaxToolCallsConfigured {
 		base.MaxToolCallsConfigured = true
 		base.MaxToolCalls = override.MaxToolCalls
-	} else if override.MaxToolCalls != 0 || base.MaxToolCalls != 0 {
+	} else if override.MaxToolCalls != 0 {
 		base.MaxToolCalls = override.MaxToolCalls
 	}
 	if override.MaxDuplicateToolCallsConfigured {
 		base.MaxDuplicateToolCallsConfigured = true
 		base.MaxDuplicateToolCalls = override.MaxDuplicateToolCalls
-	} else if override.MaxDuplicateToolCalls != 0 || base.MaxDuplicateToolCalls != 0 {
+	} else if override.MaxDuplicateToolCalls != 0 {
 		base.MaxDuplicateToolCalls = override.MaxDuplicateToolCalls
 	}
 	if override.ReasoningEffort != "" {

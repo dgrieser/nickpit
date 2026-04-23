@@ -3,7 +3,6 @@ package retrieval
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,12 +234,7 @@ func TestLocalEngineSymbolAndCallHierarchyRejectPathsOutsideRepo(t *testing.T) {
 }
 
 func TestLocalEngineGetSymbolSkipsIgnoredDirectoriesDuringRepoWideSearch(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
-
 	repoRoot := t.TempDir()
-	runGit(t, repoRoot, "init")
 	writeRetrievalFile(t, repoRoot, ".gitignore", "ignored/\n")
 	writeRetrievalFile(t, repoRoot, "pkg/run.py", "def Run():\n    return 1\n")
 	writeRetrievalFile(t, repoRoot, "ignored/run.py", "def Run():\n    return 2\n")

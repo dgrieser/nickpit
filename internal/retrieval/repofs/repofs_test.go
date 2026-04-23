@@ -1,6 +1,8 @@
 package repofs
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -48,5 +50,66 @@ func TestSanitizeGitArgsRedactsSecrets(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %#v", got)
+	}
+}
+
+func TestIgnoreMatcherSupportsDirectoryGlobAndNegation(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeFile(t, repoRoot, ".gitignore", "ignored/\n*.log\n!important.log\n")
+	writeFile(t, repoRoot, "ignored/tmp.go", "package ignored")
+	writeFile(t, repoRoot, "debug.log", "x")
+	writeFile(t, repoRoot, "important.log", "x")
+	writeFile(t, repoRoot, "pkg/a.go", "package pkg")
+
+	matcher := NewIgnoreMatcher(repoRoot)
+	if !matcher.IsIgnored("ignored", true) {
+		t.Fatal("expected ignored dir to match")
+	}
+	if !matcher.IsIgnored("ignored/tmp.go", false) {
+		t.Fatal("expected file in ignored dir to match")
+	}
+	if !matcher.IsIgnored("debug.log", false) {
+		t.Fatal("expected glob match")
+	}
+	if matcher.IsIgnored("important.log", false) {
+		t.Fatal("expected negation to unignore")
+	}
+	if matcher.IsIgnored("pkg/a.go", false) {
+		t.Fatal("unexpected ignore match")
+	}
+}
+
+func TestIgnoreMatcherSupportsNestedGitignoreAndAnchoredRules(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeFile(t, repoRoot, ".gitignore", "/root-only.txt\n")
+	writeFile(t, repoRoot, "pkg/.gitignore", "tmp/\n/root.txt\n")
+	writeFile(t, repoRoot, "root-only.txt", "x")
+	writeFile(t, repoRoot, "pkg/root.txt", "x")
+	writeFile(t, repoRoot, "pkg/tmp/a.go", "package tmp")
+	writeFile(t, repoRoot, "pkg/nested/root.txt", "x")
+
+	matcher := NewIgnoreMatcher(repoRoot)
+	if !matcher.IsIgnored("root-only.txt", false) {
+		t.Fatal("expected anchored root rule to match")
+	}
+	if !matcher.IsIgnored("pkg/root.txt", false) {
+		t.Fatal("expected nested anchored rule to match")
+	}
+	if matcher.IsIgnored("pkg/nested/root.txt", false) {
+		t.Fatal("expected nested anchored rule not to match descendant")
+	}
+	if !matcher.IsIgnored("pkg/tmp/a.go", false) {
+		t.Fatal("expected nested dir rule to match descendant")
+	}
+}
+
+func writeFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	fullPath := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -39,3 +39,31 @@ profiles:
 		t.Fatalf("max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
 	}
 }
+
+func TestLoadProfileRespectsExplicitZeroMaxContextTokensOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_context_tokens: 1234
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:             "default",
+		configPath:          path,
+		maxContextTokens:    0,
+		maxContextTokensSet: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxContextTokens != 0 {
+		t.Fatalf("max context tokens = %d", profile.MaxContextTokens)
+	}
+}

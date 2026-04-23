@@ -3,7 +3,6 @@ package retrieval
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -246,12 +245,7 @@ func TestLocalEngineSearchFallsBackToUnescapedQuery(t *testing.T) {
 }
 
 func TestLocalEngineListFilesSkipsGitIgnoredAndDotGit(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
-
 	repoRoot := t.TempDir()
-	runGit(t, repoRoot, "init")
 	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -308,12 +302,7 @@ func TestLocalEngineRejectsPathsOutsideRepo(t *testing.T) {
 }
 
 func TestLocalEngineSearchSkipsGitIgnored(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
-
 	repoRoot := t.TempDir()
-	runGit(t, repoRoot, "init")
 	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -337,14 +326,5 @@ func TestLocalEngineSearchSkipsGitIgnored(t *testing.T) {
 	}
 	if got.ResultCount != 1 || len(got.Results) != 1 || got.Results[0].Path != "pkg/a.go" {
 		t.Fatalf("search = %#v", got)
-	}
-}
-
-func runGit(t *testing.T, workdir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = workdir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 	}
 }
