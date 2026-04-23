@@ -41,12 +41,14 @@ func TestSanitizeGitArgsRedactsSecrets(t *testing.T) {
 		"-c", "http.extraHeader=Authorization: Basic abc123",
 		"clone",
 		"https://user:secret@example.com/repo.git",
+		"https://token@example.com/repo.git",
 	}
 	got := SanitizeGitArgs(args)
 	want := []string{
 		"-c", "http.extraHeader=<redacted>",
 		"clone",
-		"https://user:%3Credacted%3E@example.com/repo.git",
+		"https://%3Credacted%3E:%3Credacted%3E@example.com/repo.git",
+		"https://%3Credacted%3E:%3Credacted%3E@example.com/repo.git",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %#v", got)
@@ -100,6 +102,28 @@ func TestIgnoreMatcherSupportsNestedGitignoreAndAnchoredRules(t *testing.T) {
 	}
 	if !matcher.IsIgnored("pkg/tmp/a.go", false) {
 		t.Fatal("expected nested dir rule to match descendant")
+	}
+}
+
+func TestIgnoreMatcherSupportsGlobstarPatterns(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeFile(t, repoRoot, ".gitignore", "**/node_modules\n")
+	writeFile(t, repoRoot, "node_modules/a.js", "x")
+	writeFile(t, repoRoot, "pkg/node_modules/b.js", "x")
+	writeFile(t, repoRoot, "pkg/src/app.js", "x")
+
+	matcher := NewIgnoreMatcher(repoRoot)
+	if !matcher.IsIgnored("node_modules", true) {
+		t.Fatal("expected root node_modules to match")
+	}
+	if !matcher.IsIgnored("pkg/node_modules", true) {
+		t.Fatal("expected nested node_modules to match")
+	}
+	if !matcher.IsIgnored("pkg/node_modules/b.js", false) {
+		t.Fatal("expected descendant of nested node_modules to match")
+	}
+	if matcher.IsIgnored("pkg/src/app.js", false) {
+		t.Fatal("unexpected ignore match")
 	}
 }
 

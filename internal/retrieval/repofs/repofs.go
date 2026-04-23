@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 )
 
 func NormalizePath(path string) string {
@@ -74,6 +75,8 @@ type IgnoreMatcher struct {
 	rules    []ignoreRule
 }
 
+var ignoreMatcherCache sync.Map
+
 func NewIgnoreMatcher(repoRoot string) IgnoreMatcher {
 	if repoRoot == "" {
 		return IgnoreMatcher{}
@@ -82,8 +85,13 @@ func NewIgnoreMatcher(repoRoot string) IgnoreMatcher {
 	if err != nil {
 		return IgnoreMatcher{}
 	}
+	if cached, ok := ignoreMatcherCache.Load(repoAbs); ok {
+		return cached.(IgnoreMatcher)
+	}
 	rules := loadIgnoreRules(repoAbs)
-	return IgnoreMatcher{repoRoot: repoAbs, rules: rules}
+	matcher := IgnoreMatcher{repoRoot: repoAbs, rules: rules}
+	actual, _ := ignoreMatcherCache.LoadOrStore(repoAbs, matcher)
+	return actual.(IgnoreMatcher)
 }
 
 func (m IgnoreMatcher) IsIgnored(path string, isDir bool) bool {
@@ -110,6 +118,7 @@ type ignoreRule struct {
 	directoryOnly bool
 	anchored      bool
 	matchBase     bool
+	patternParts  []string
 }
 
 func loadIgnoreRules(repoRoot string) []ignoreRule {
@@ -127,10 +136,11 @@ func loadIgnoreRules(repoRoot string) []ignoreRule {
 		if d.Name() != ".gitignore" {
 			return nil
 		}
-		baseDir, relErr := RelPath(repoRoot, filepath.Dir(currentPath))
+		baseDir, relErr := filepath.Rel(repoRoot, filepath.Dir(currentPath))
 		if relErr != nil {
 			return nil
 		}
+		baseDir = NormalizePath(filepath.ToSlash(baseDir))
 		loaded, loadErr := parseIgnoreFile(currentPath, baseDir)
 		if loadErr == nil {
 			rules = append(rules, loaded...)
@@ -190,6 +200,7 @@ func parseIgnoreRule(baseDir, raw string) (ignoreRule, bool) {
 	}
 	rule.pattern = raw
 	rule.matchBase = !strings.Contains(raw, "/")
+	rule.patternParts = strings.Split(raw, "/")
 	return rule, true
 }
 
@@ -206,7 +217,17 @@ func (r ignoreRule) matches(path string, isDir bool) bool {
 		}
 		return false
 	}
-	return r.matchesSingle(rel)
+	if r.matchesSingle(rel) {
+		return true
+	}
+	if !isDir {
+		for _, candidate := range candidateDirectories(rel, false) {
+			if r.matchesSingle(candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r ignoreRule) matchesSingle(rel string) bool {
@@ -215,19 +236,25 @@ func (r ignoreRule) matchesSingle(rel string) bool {
 	}
 	if r.matchBase {
 		if r.anchored {
-			name, _ := path.Match(r.pattern, path.Base(rel))
-			return name && path.Dir(rel) == "."
+			return matchComponent(r.pattern, pathBase(rel)) && pathDir(rel) == "."
 		}
 		for _, segment := range strings.Split(rel, "/") {
-			matched, err := path.Match(r.pattern, segment)
-			if err == nil && matched {
+			if matchComponent(r.pattern, segment) {
 				return true
 			}
 		}
 		return false
 	}
-	matched, err := path.Match(r.pattern, rel)
-	return err == nil && matched
+	pathParts := strings.Split(rel, "/")
+	if r.anchored {
+		return matchParts(r.patternParts, pathParts)
+	}
+	for start := 0; start < len(pathParts); start++ {
+		if matchParts(r.patternParts, pathParts[start:]) {
+			return true
+		}
+	}
+	return false
 }
 
 func relativeToBase(path, baseDir string) (string, bool) {
@@ -259,6 +286,63 @@ func candidateDirectories(path string, isDir bool) []string {
 	return candidates
 }
 
+func matchParts(patternParts, pathParts []string) bool {
+	if len(patternParts) == 0 {
+		return len(pathParts) == 0
+	}
+	if patternParts[0] == "**" {
+		if len(patternParts) == 1 {
+			return true
+		}
+		for i := 0; i <= len(pathParts); i++ {
+			if matchParts(patternParts[1:], pathParts[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(pathParts) == 0 || !matchComponent(patternParts[0], pathParts[0]) {
+		return false
+	}
+	return matchParts(patternParts[1:], pathParts[1:])
+}
+
+func matchComponent(pattern, value string) bool {
+	var regex strings.Builder
+	regex.WriteString("^")
+	for _, ch := range pattern {
+		switch ch {
+		case '*':
+			regex.WriteString(`[^/]*`)
+		case '?':
+			regex.WriteString(`[^/]`)
+		case '.', '+', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\':
+			regex.WriteByte('\\')
+			regex.WriteRune(ch)
+		default:
+			regex.WriteRune(ch)
+		}
+	}
+	regex.WriteString("$")
+	compiled, err := regexp.Compile(regex.String())
+	if err != nil {
+		return false
+	}
+	return compiled.MatchString(value)
+}
+
+func pathBase(value string) string {
+	parts := strings.Split(value, "/")
+	return parts[len(parts)-1]
+}
+
+func pathDir(value string) string {
+	if idx := strings.LastIndex(value, "/"); idx >= 0 {
+		return value[:idx]
+	}
+	return "."
+}
+
 func SanitizeGitArgs(args []string) []string {
 	sanitized := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -282,11 +366,7 @@ func sanitizeGitArg(arg string) string {
 	}
 	parsed, err := url.Parse(arg)
 	if err == nil && parsed.User != nil {
-		username := parsed.User.Username()
-		if username == "" {
-			username = "<redacted>"
-		}
-		parsed.User = url.UserPassword(username, "<redacted>")
+		parsed.User = url.UserPassword("<redacted>", "<redacted>")
 		return parsed.String()
 	}
 	return arg
