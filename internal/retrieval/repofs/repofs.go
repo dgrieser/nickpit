@@ -73,6 +73,7 @@ func RelPath(repoRoot, fullPath string) (string, error) {
 type IgnoreMatcher struct {
 	repoRoot       string
 	rulesByBaseDir map[string][]ignoreRule
+	statusCache    *sync.Map
 }
 
 var ignoreMatcherCache sync.Map
@@ -89,7 +90,7 @@ func NewIgnoreMatcher(repoRoot string) IgnoreMatcher {
 		return cached.(IgnoreMatcher)
 	}
 	rulesByBaseDir := loadIgnoreRules(repoAbs)
-	matcher := IgnoreMatcher{repoRoot: repoAbs, rulesByBaseDir: rulesByBaseDir}
+	matcher := IgnoreMatcher{repoRoot: repoAbs, rulesByBaseDir: rulesByBaseDir, statusCache: &sync.Map{}}
 	actual, _ := ignoreMatcherCache.LoadOrStore(repoAbs, matcher)
 	return actual.(IgnoreMatcher)
 }
@@ -102,19 +103,7 @@ func (m IgnoreMatcher) IsIgnored(path string, isDir bool) bool {
 	if normalizedPath == "" {
 		return false
 	}
-	ancestors := candidateDirectories(normalizedPath, isDir)
-	if len(ancestors) > 0 {
-		last := len(ancestors)
-		if isDir {
-			last--
-		}
-		for _, ancestor := range ancestors[:last] {
-			if m.matchStatus(ancestor, true) {
-				return true
-			}
-		}
-	}
-	return m.matchStatus(normalizedPath, isDir)
+	return m.isIgnoredCached(normalizedPath, isDir)
 }
 
 type ignoreRule struct {
@@ -144,33 +133,68 @@ func (m IgnoreMatcher) matchStatus(path string, isDir bool) bool {
 	return ignored
 }
 
+func (m IgnoreMatcher) isIgnoredCached(path string, isDir bool) bool {
+	cacheKey := fmt.Sprintf("%t:%s", isDir, path)
+	if m.statusCache != nil {
+		if cached, ok := m.statusCache.Load(cacheKey); ok {
+			return cached.(bool)
+		}
+	}
+	ignored := m.matchStatus(path, isDir)
+	if !isDir {
+		for _, ancestor := range candidateDirectories(path, false) {
+			if m.isIgnoredCached(ancestor, true) {
+				ignored = true
+				break
+			}
+		}
+	}
+	if m.statusCache != nil {
+		m.statusCache.Store(cacheKey, ignored)
+	}
+	return ignored
+}
+
 func loadIgnoreRules(repoRoot string) map[string][]ignoreRule {
 	rulesByBaseDir := make(map[string][]ignoreRule)
-	_ = filepath.WalkDir(repoRoot, func(currentPath string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if d.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() != ".gitignore" {
-			return nil
-		}
-		baseDir, relErr := filepath.Rel(repoRoot, filepath.Dir(currentPath))
-		if relErr != nil {
-			return nil
-		}
-		baseDir = NormalizePath(filepath.ToSlash(baseDir))
-		loaded, loadErr := parseIgnoreFile(currentPath, baseDir)
-		if loadErr == nil && len(loaded) > 0 {
-			rulesByBaseDir[baseDir] = append(rulesByBaseDir[baseDir], loaded...)
-		}
-		return nil
-	})
+	matcher := IgnoreMatcher{repoRoot: repoRoot, rulesByBaseDir: rulesByBaseDir, statusCache: &sync.Map{}}
+	walkIgnoreRules(repoRoot, "", matcher)
 	return rulesByBaseDir
+}
+
+func walkIgnoreRules(fullDir, relDir string, matcher IgnoreMatcher) {
+	entries, err := os.ReadDir(fullDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() != ".gitignore" {
+			continue
+		}
+		loaded, loadErr := parseIgnoreFile(filepath.Join(fullDir, entry.Name()), relDir)
+		if loadErr == nil && len(loaded) > 0 {
+			matcher.rulesByBaseDir[relDir] = append(matcher.rulesByBaseDir[relDir], loaded...)
+		}
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == ".git" {
+			continue
+		}
+		childRel := name
+		if relDir != "" {
+			childRel = relDir + "/" + name
+		}
+		if matcher.IsIgnored(childRel, true) {
+			continue
+		}
+		walkIgnoreRules(filepath.Join(fullDir, name), childRel, matcher)
+	}
 }
 
 func parseIgnoreFile(filePath, baseDir string) ([]ignoreRule, error) {

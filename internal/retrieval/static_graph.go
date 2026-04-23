@@ -151,7 +151,11 @@ func (g *staticGraph) resolveKey(name, path string) (string, error) {
 }
 
 func (g *staticGraph) resolveScopedCandidates(name, path string) ([]string, error) {
-	info, err := os.Stat(filepath.Join(g.repoRoot, filepath.FromSlash(path)))
+	_, fullPath, err := repofs.ResolvePath(g.repoRoot, path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, err
 	}

@@ -133,11 +133,19 @@ func loadFile(cfg *Config, path string) (bool, error) {
 	}
 
 	expanded := os.ExpandEnv(string(data))
-	var fileCfg Config
-	if err := yaml.Unmarshal([]byte(expanded), &fileCfg); err != nil {
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(expanded), &root); err != nil {
 		return false, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
-	if err := markConfiguredFields(data, &fileCfg); err != nil {
+	if len(root.Content) == 0 {
+		return true, nil
+	}
+
+	var fileCfg Config
+	if err := root.Content[0].Decode(&fileCfg); err != nil {
+		return false, fmt.Errorf("config: parsing %s: %w", path, err)
+	}
+	if err := markConfiguredFields(root.Content[0], &fileCfg); err != nil {
 		return false, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
 
@@ -277,16 +285,11 @@ func expandPath(path string) string {
 	return path
 }
 
-func markConfiguredFields(data []byte, cfg *Config) error {
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return err
-	}
-	if len(root.Content) == 0 {
+func markConfiguredFields(root *yaml.Node, cfg *Config) error {
+	if root == nil {
 		return nil
 	}
-
-	profiles := mappingValue(root.Content[0], "profiles")
+	profiles := mappingValue(root, "profiles")
 	if profiles == nil || profiles.Kind != yaml.MappingNode {
 		return nil
 	}

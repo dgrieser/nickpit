@@ -63,7 +63,7 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	cli := &app{
-		maxContextTokens:      120000,
+		maxContextTokens:      config.DefaultMaxContextToken,
 		maxDuplicateToolCalls: config.DefaultMaxDuplicateToolCalls,
 	}
 	root := &cobra.Command{
