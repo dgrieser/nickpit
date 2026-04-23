@@ -392,7 +392,21 @@ func compileComponentPattern(pattern string) (*regexp.Regexp, error) {
 			regex.WriteString(`[^/]`)
 		case '[':
 			end := i + 1
-			for end < len(pattern) && pattern[end] != ']' {
+			escaped := false
+			for end < len(pattern) {
+				if escaped {
+					escaped = false
+					end++
+					continue
+				}
+				if pattern[end] == '\\' {
+					escaped = true
+					end++
+					continue
+				}
+				if pattern[end] == ']' {
+					break
+				}
 				end++
 			}
 			if end >= len(pattern) {

@@ -142,6 +142,21 @@ func TestIgnoreMatcherSupportsCharacterClasses(t *testing.T) {
 	}
 }
 
+func TestIgnoreMatcherSupportsEscapedClosingBracketInCharacterClass(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeFile(t, repoRoot, ".gitignore", "file[\\]].txt\n")
+	writeFile(t, repoRoot, "file].txt", "x")
+	writeFile(t, repoRoot, "filea.txt", "x")
+
+	matcher := NewIgnoreMatcher(repoRoot)
+	if !matcher.IsIgnored("file].txt", false) {
+		t.Fatal("expected escaped bracket character class match")
+	}
+	if matcher.IsIgnored("filea.txt", false) {
+		t.Fatal("unexpected escaped bracket character class match")
+	}
+}
+
 func TestIgnoreMatcherDoesNotUnignoreChildrenOfIgnoredParentDir(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeFile(t, repoRoot, ".gitignore", "vendor/\n")
