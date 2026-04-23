@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 type Symbol struct {
@@ -36,7 +38,7 @@ func FindSymbol(_ context.Context, repoRoot, name, path string) (*Symbol, error)
 }
 
 func FindSymbols(_ context.Context, repoRoot, name, path string) ([]Symbol, error) {
-	normalizedPath := normalizeLookupPath(path)
+	normalizedPath := repofs.NormalizePath(path)
 	files, err := collectGoFiles(repoRoot, normalizedPath)
 	if err != nil {
 		return nil, err
@@ -92,7 +94,10 @@ func findSymbolsInFile(repoRoot, path, name string) []Symbol {
 
 func collectGoFiles(repoRoot, path string) ([]string, error) {
 	if path != "" {
-		fullPath := filepath.Join(repoRoot, filepath.FromSlash(path))
+		_, fullPath, err := repofs.ResolvePath(repoRoot, path)
+		if err != nil {
+			return nil, err
+		}
 		info, err := os.Stat(fullPath)
 		if err != nil {
 			return nil, err
@@ -107,12 +112,31 @@ func collectGoFiles(repoRoot, path string) ([]string, error) {
 
 	root := repoRoot
 	if path != "" {
-		root = filepath.Join(repoRoot, filepath.FromSlash(path))
+		_, resolvedRoot, err := repofs.ResolvePath(repoRoot, path)
+		if err != nil {
+			return nil, err
+		}
+		root = resolvedRoot
 	}
 	files := make([]string, 0)
+	ignores := repofs.NewIgnoreMatcher(repoRoot)
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".go" {
+		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			relPath, relErr := repofs.RelPath(repoRoot, path)
+			if relErr == nil && relPath != "" && ignores.IsIgnored(relPath, true) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		relPath, relErr := repofs.RelPath(repoRoot, path)
+		if relErr != nil {
+			return relErr
+		}
+		if ignores.IsIgnored(relPath, false) || filepath.Ext(path) != ".go" {
+			return nil
 		}
 		files = append(files, path)
 		return nil

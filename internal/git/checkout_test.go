@@ -171,3 +171,24 @@ func TestCheckoutManagerPrepareCleansUpCloneOnFailure(t *testing.T) {
 		t.Fatalf("repo root still exists: %v", statErr)
 	}
 }
+
+func TestExecRunnerRedactsAuthHeadersInErrors(t *testing.T) {
+	runner := ExecRunner{}
+	_, err := runner.Run(context.Background(),
+		"-c", "http.extraHeader=Authorization: Basic c2VjcmV0",
+		"definitely-not-a-git-subcommand",
+		"https://user:secret@example.com/repo.git",
+	)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	message := err.Error()
+	for _, forbidden := range []string{"c2VjcmV0", "secret@example.com", "Authorization: Basic"} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("error leaked secret: %q", message)
+		}
+	}
+	if !strings.Contains(message, "http.extraHeader=<redacted>") {
+		t.Fatalf("error did not redact header: %q", message)
+	}
+}

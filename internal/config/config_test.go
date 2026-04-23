@@ -6,6 +6,10 @@ import (
 	"testing"
 )
 
+func intPtr(v int) *int {
+	return &v
+}
+
 func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	profile := cfg.Profiles[DefaultProfileName]
@@ -167,7 +171,7 @@ profiles:
 	cfg, profile, err := Load(path, Overrides{
 		Profile:          "work",
 		BaseURL:          "https://override.invalid/v1",
-		MaxContextTokens: 777,
+		MaxContextTokens: intPtr(777),
 		Workdir:          "/override/repo",
 	})
 	if err != nil {
@@ -293,7 +297,7 @@ profiles:
 		t.Fatalf("default max tool calls = %d", profile.MaxToolCalls)
 	}
 
-	_, profile, err = Load(path, Overrides{ToolCalls: 4})
+	_, profile, err = Load(path, Overrides{ToolCalls: intPtr(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,11 +327,64 @@ profiles:
 		t.Fatalf("default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
 	}
 
-	_, profile, err = Load(path, Overrides{DuplicateToolCalls: 4})
+	_, profile, err = Load(path, Overrides{DuplicateToolCalls: intPtr(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if profile.MaxDuplicateToolCalls != 4 {
 		t.Fatalf("override default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
+	}
+}
+
+func TestLoadConfigExplicitZeroToolCallOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_tool_calls: 2
+    max_duplicate_tool_calls: 3
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{
+		ToolCalls:          intPtr(0),
+		DuplicateToolCalls: intPtr(0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxToolCalls != 0 {
+		t.Fatalf("max tool calls = %d", profile.MaxToolCalls)
+	}
+	if profile.MaxDuplicateToolCalls != 0 {
+		t.Fatalf("max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
+	}
+}
+
+func TestLoadConfigExplicitZeroMaxContextTokensOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_context_tokens: 1234
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{
+		MaxContextTokens: intPtr(0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxContextTokens != 0 {
+		t.Fatalf("max context tokens = %d", profile.MaxContextTokens)
 	}
 }

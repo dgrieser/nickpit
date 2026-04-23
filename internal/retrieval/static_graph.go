@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 type staticNode struct {
@@ -149,7 +151,11 @@ func (g *staticGraph) resolveKey(name, path string) (string, error) {
 }
 
 func (g *staticGraph) resolveScopedCandidates(name, path string) ([]string, error) {
-	info, err := os.Stat(filepath.Join(g.repoRoot, filepath.FromSlash(path)))
+	_, fullPath, err := repofs.ResolvePath(g.repoRoot, path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, err
 	}
@@ -202,13 +208,7 @@ func sortNodeIDs(ids []string, nodes map[string]staticNode) {
 }
 
 func normalizeLookupPath(path string) string {
-	normalized := filepath.ToSlash(path)
-	normalized = strings.TrimPrefix(normalized, "./")
-	normalized = strings.TrimSuffix(normalized, "/")
-	if normalized == "." {
-		return ""
-	}
-	return normalized
+	return repofs.NormalizePath(path)
 }
 
 func pathNameKey(name, path string) string {

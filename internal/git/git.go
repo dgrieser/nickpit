@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 type Runner interface {
@@ -22,7 +24,7 @@ func (r ExecRunner) Run(ctx context.Context, args ...string) (string, error) {
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git: %s: %w", strings.Join(args, " "), err)
+		return "", fmt.Errorf("git: %s: %w", strings.Join(repofs.SanitizeGitArgs(args), " "), err)
 	}
 	return string(out), nil
 }

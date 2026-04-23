@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -29,13 +30,16 @@ type app struct {
 	workDir                       string
 	profile                       string
 	maxContextTokens              int
+	maxContextTokensSet           bool
 	includeFullFiles              bool
 	includeComments               bool
 	includeCommits                bool
 	jsonOutput                    bool
 	useJSONSchema                 bool
 	maxToolCalls                  int
+	maxToolCallsSet               bool
 	maxDuplicateToolCalls         int
+	maxDuplicateToolCallsSet      bool
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
@@ -58,7 +62,10 @@ func main() {
 }
 
 func newRootCmd() *cobra.Command {
-	cli := &app{}
+	cli := &app{
+		maxContextTokens:      config.DefaultMaxContextToken,
+		maxDuplicateToolCalls: config.DefaultMaxDuplicateToolCalls,
+	}
 	root := &cobra.Command{
 		Use:           "nickpit",
 		Short:         "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
@@ -80,14 +87,14 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.apiKey, "api-key", "", "LLM API key")
 	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Working directory")
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
-	root.PersistentFlags().IntVar(&cli.maxContextTokens, "max-context-tokens", 120000, "Context token budget")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxContextTokens, &cli.maxContextTokensSet), "max-context-tokens", "Context token budget")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
-	root.PersistentFlags().IntVar(&cli.maxToolCalls, "max-tool-calls", 0, "Maximum tool-call rounds (0 means unlimited by default)")
-	root.PersistentFlags().IntVar(&cli.maxDuplicateToolCalls, "max-duplicate-tool-calls", config.DefaultMaxDuplicateToolCalls, "Maximum duplicate tool calls before tools are disabled")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -109,15 +116,27 @@ func newRootCmd() *cobra.Command {
 }
 
 func (a *app) loadProfile() (string, config.Profile, error) {
+	var maxContextTokens *int
+	if a.maxContextTokensSet {
+		maxContextTokens = &a.maxContextTokens
+	}
+	var toolCalls *int
+	if a.maxToolCallsSet {
+		toolCalls = &a.maxToolCalls
+	}
+	var duplicateToolCalls *int
+	if a.maxDuplicateToolCallsSet {
+		duplicateToolCalls = &a.maxDuplicateToolCalls
+	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
 		Profile:            a.profile,
 		Model:              a.model,
 		BaseURL:            a.baseURL,
 		APIKey:             a.apiKey,
 		UseJSONSchema:      a.useJSONSchema,
-		MaxContextTokens:   a.maxContextTokens,
-		ToolCalls:          a.maxToolCalls,
-		DuplicateToolCalls: a.maxDuplicateToolCalls,
+		MaxContextTokens:   maxContextTokens,
+		ToolCalls:          toolCalls,
+		DuplicateToolCalls: duplicateToolCalls,
 		Workdir:            a.workDir,
 		GitHubToken:        a.githubToken,
 		GitLabToken:        a.gitlabToken,
@@ -127,6 +146,38 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		return "", config.Profile{}, err
 	}
 	return cfg.ActiveProfile, profile, nil
+}
+
+type trackedIntValue struct {
+	target *int
+	set    *bool
+}
+
+func newTrackedIntValue(target *int, set *bool) *trackedIntValue {
+	return &trackedIntValue{target: target, set: set}
+}
+
+func (v *trackedIntValue) String() string {
+	if v == nil || v.target == nil {
+		return "0"
+	}
+	return fmt.Sprintf("%d", *v.target)
+}
+
+func (v *trackedIntValue) Set(value string) error {
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	*v.target = parsed
+	if v.set != nil {
+		*v.set = true
+	}
+	return nil
+}
+
+func (v *trackedIntValue) Type() string {
+	return "int"
 }
 
 func (a *app) newLocalCmd() *cobra.Command {

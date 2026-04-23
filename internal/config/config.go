@@ -31,21 +31,24 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                 string   `yaml:"model"`
-	BaseURL               string   `yaml:"base_url"`
-	APIKey                string   `yaml:"api_key"`
-	MaxTokens             *int     `yaml:"max_tokens"`
-	Temperature           *float64 `yaml:"temperature"`
-	UseJSONSchema         bool     `yaml:"use_json_schema"`
-	MaxContextTokens      int      `yaml:"max_context_tokens"`
-	MaxToolCalls          int      `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls int      `yaml:"max_duplicate_tool_calls"`
-	ReasoningEffort       string   `yaml:"reasoning_effort"`
-	Workdir               string   `yaml:"workdir"`
-	GitHubToken           string   `yaml:"github_token"`
-	GitLabToken           string   `yaml:"gitlab_token"`
-	GitLabBaseURL         string   `yaml:"gitlab_base_url"`
-	APIKeyConfigured      bool     `yaml:"-"`
+	Model                           string   `yaml:"model"`
+	BaseURL                         string   `yaml:"base_url"`
+	APIKey                          string   `yaml:"api_key"`
+	MaxTokens                       *int     `yaml:"max_tokens"`
+	Temperature                     *float64 `yaml:"temperature"`
+	UseJSONSchema                   bool     `yaml:"use_json_schema"`
+	MaxContextTokens                int      `yaml:"max_context_tokens"`
+	MaxToolCalls                    int      `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls           int      `yaml:"max_duplicate_tool_calls"`
+	ReasoningEffort                 string   `yaml:"reasoning_effort"`
+	Workdir                         string   `yaml:"workdir"`
+	GitHubToken                     string   `yaml:"github_token"`
+	GitLabToken                     string   `yaml:"gitlab_token"`
+	GitLabBaseURL                   string   `yaml:"gitlab_base_url"`
+	MaxContextTokensConfigured      bool     `yaml:"-"`
+	APIKeyConfigured                bool     `yaml:"-"`
+	MaxToolCallsConfigured          bool     `yaml:"-"`
+	MaxDuplicateToolCallsConfigured bool     `yaml:"-"`
 }
 
 type Overrides struct {
@@ -56,9 +59,9 @@ type Overrides struct {
 	MaxTokens          *int
 	Temperature        *float64
 	UseJSONSchema      bool
-	MaxContextTokens   int
-	ToolCalls          int
-	DuplicateToolCalls int
+	MaxContextTokens   *int
+	ToolCalls          *int
+	DuplicateToolCalls *int
 	ReasoningEffort    string
 	Workdir            string
 	GitHubToken        string
@@ -130,11 +133,19 @@ func loadFile(cfg *Config, path string) (bool, error) {
 	}
 
 	expanded := os.ExpandEnv(string(data))
-	var fileCfg Config
-	if err := yaml.Unmarshal([]byte(expanded), &fileCfg); err != nil {
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(expanded), &root); err != nil {
 		return false, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
-	if err := markConfiguredFields(data, &fileCfg); err != nil {
+	if len(root.Content) == 0 {
+		return true, nil
+	}
+
+	var fileCfg Config
+	if err := root.Content[0].Decode(&fileCfg); err != nil {
+		return false, fmt.Errorf("config: parsing %s: %w", path, err)
+	}
+	if err := markConfiguredFields(root.Content[0], &fileCfg); err != nil {
 		return false, fmt.Errorf("config: parsing %s: %w", path, err)
 	}
 
@@ -190,14 +201,17 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.UseJSONSchema {
 		profile.UseJSONSchema = true
 	}
-	if overrides.MaxContextTokens > 0 {
-		profile.MaxContextTokens = overrides.MaxContextTokens
+	if overrides.MaxContextTokens != nil {
+		profile.MaxContextTokens = *overrides.MaxContextTokens
+		profile.MaxContextTokensConfigured = true
 	}
-	if overrides.ToolCalls > 0 {
-		profile.MaxToolCalls = overrides.ToolCalls
+	if overrides.ToolCalls != nil {
+		profile.MaxToolCalls = *overrides.ToolCalls
+		profile.MaxToolCallsConfigured = true
 	}
-	if overrides.DuplicateToolCalls > 0 {
-		profile.MaxDuplicateToolCalls = overrides.DuplicateToolCalls
+	if overrides.DuplicateToolCalls != nil {
+		profile.MaxDuplicateToolCalls = *overrides.DuplicateToolCalls
+		profile.MaxDuplicateToolCallsConfigured = true
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
@@ -228,13 +242,13 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.BaseURL == "" {
 		return Profile{}, fmt.Errorf("config: no base URL specified; set base URL in profile or pass --base-url")
 	}
-	if profile.MaxContextTokens == 0 {
+	if profile.MaxContextTokens == 0 && !profile.MaxContextTokensConfigured {
 		profile.MaxContextTokens = DefaultMaxContextToken
 	}
-	if profile.MaxToolCalls == 0 {
+	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
 		profile.MaxToolCalls = MaxToolCalls
 	}
-	if profile.MaxDuplicateToolCalls == 0 {
+	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
 		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
 	}
 	if profile.Workdir != "" {
@@ -271,16 +285,11 @@ func expandPath(path string) string {
 	return path
 }
 
-func markConfiguredFields(data []byte, cfg *Config) error {
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return err
-	}
-	if len(root.Content) == 0 {
+func markConfiguredFields(root *yaml.Node, cfg *Config) error {
+	if root == nil {
 		return nil
 	}
-
-	profiles := mappingValue(root.Content[0], "profiles")
+	profiles := mappingValue(root, "profiles")
 	if profiles == nil || profiles.Kind != yaml.MappingNode {
 		return nil
 	}
@@ -289,7 +298,10 @@ func markConfiguredFields(data []byte, cfg *Config) error {
 		name := profiles.Content[i].Value
 		profileNode := profiles.Content[i+1]
 		profile := cfg.Profiles[name]
+		profile.MaxContextTokensConfigured = mappingValue(profileNode, "max_context_tokens") != nil
 		profile.APIKeyConfigured = mappingValue(profileNode, "api_key") != nil
+		profile.MaxToolCallsConfigured = mappingValue(profileNode, "max_tool_calls") != nil
+		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil

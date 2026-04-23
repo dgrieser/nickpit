@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 type LocalEngine struct{}
@@ -21,25 +22,30 @@ func NewLocalEngine() *LocalEngine {
 }
 
 func (e *LocalEngine) GetFile(_ context.Context, repoRoot, path string) (*FileContent, error) {
-	fullPath := filepath.Join(repoRoot, path)
-	data, err := os.ReadFile(fullPath)
+	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", path, err)
 	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("retrieval: reading %s: %w", normalizedPath, err)
+	}
 	return &FileContent{
-		Path:     path,
+		Path:     normalizedPath,
 		Content:  normalizeText(string(data)),
-		Language: detectLanguage(path),
+		Language: detectLanguage(normalizedPath),
 	}, nil
 }
 
 func (e *LocalEngine) ListFiles(_ context.Context, repoRoot, path string, depth int) (*DirectoryListing, error) {
-	normalizedPath := strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
+	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
+	if err != nil {
+		return nil, fmt.Errorf("retrieval: listing %s: %w", path, err)
+	}
 	if depth <= 0 {
 		depth = 1
 	}
-	fullPath := filepath.Join(repoRoot, normalizedPath)
-	ignores := newIgnoreMatcher(repoRoot)
+	ignores := repofs.NewIgnoreMatcher(repoRoot)
 	files, err := listFilesRecursive(fullPath, normalizedPath, depth, ignores)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: listing %s: %w", normalizedPath, err)
@@ -51,7 +57,7 @@ func (e *LocalEngine) ListFiles(_ context.Context, repoRoot, path string, depth 
 	}, nil
 }
 
-func listFilesRecursive(fullPath, relativePath string, depth int, ignores ignoreMatcher) ([]string, error) {
+func listFilesRecursive(fullPath, relativePath string, depth int, ignores repofs.IgnoreMatcher) ([]string, error) {
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
 		return nil, err
@@ -67,7 +73,7 @@ func listFilesRecursive(fullPath, relativePath string, depth int, ignores ignore
 		if relativePath != "" {
 			displayPath = relativePath + "/" + name
 		}
-		if ignores.isIgnored(displayPath, entry.IsDir()) {
+		if ignores.IsIgnored(displayPath, entry.IsDir()) {
 			continue
 		}
 		if entry.IsDir() {
@@ -111,7 +117,10 @@ func (e *LocalEngine) GetFileSlice(ctx context.Context, repoRoot, path string, s
 }
 
 func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error) {
-	normalizedPath := strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
+	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
+	if err != nil {
+		return nil, fmt.Errorf("retrieval: searching %s: %w", path, err)
+	}
 	if contextLines < 0 {
 		contextLines = 5
 	}
@@ -119,15 +128,21 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 		return nil, fmt.Errorf("retrieval: missing search query")
 	}
 
-	fullPath := filepath.Join(repoRoot, normalizedPath)
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: searching %s: %w", normalizedPath, err)
 	}
+	ignores := repofs.NewIgnoreMatcher(repoRoot)
 
 	results := make([]SearchResult, 0)
 	appendMatches := func(relPath, searchQuery string) error {
-		fullPath := filepath.Join(repoRoot, relPath)
+		if ignores.IsIgnored(relPath, false) {
+			return nil
+		}
+		_, fullPath, err := repofs.ResolvePath(repoRoot, relPath)
+		if err != nil {
+			return err
+		}
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			return nil
@@ -180,13 +195,16 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 				return walkErr
 			}
 			if d.IsDir() {
+				relDir, err := repofs.RelPath(repoRoot, currentPath)
+				if err == nil && relDir != "" && ignores.IsIgnored(relDir, true) {
+					return filepath.SkipDir
+				}
 				return nil
 			}
-			relPath, err := filepath.Rel(repoRoot, currentPath)
+			relPath, err := repofs.RelPath(repoRoot, currentPath)
 			if err != nil {
 				return err
 			}
-			relPath = strings.ReplaceAll(relPath, "\\", "/")
 			return appendMatches(relPath, searchQuery)
 		})
 		if err != nil && err != errSearchLimitReached {
@@ -234,38 +252,6 @@ func unescapeSearchQuery(query string) string {
 }
 
 var errSearchLimitReached = fmt.Errorf("search result limit reached")
-
-type ignoreMatcher struct {
-	repoRoot string
-	enabled  bool
-}
-
-func newIgnoreMatcher(repoRoot string) ignoreMatcher {
-	if repoRoot == "" {
-		return ignoreMatcher{}
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		return ignoreMatcher{}
-	}
-	cmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--show-toplevel")
-	if err := cmd.Run(); err != nil {
-		return ignoreMatcher{}
-	}
-	return ignoreMatcher{repoRoot: repoRoot, enabled: true}
-}
-
-func (m ignoreMatcher) isIgnored(path string, isDir bool) bool {
-	if !m.enabled || path == "" {
-		return false
-	}
-	checkPath := filepath.ToSlash(path)
-	if isDir {
-		checkPath += "/"
-	}
-	cmd := exec.Command("git", "-C", m.repoRoot, "check-ignore", "-q", "--no-index", "--stdin")
-	cmd.Stdin = strings.NewReader(checkPath + "\n")
-	return cmd.Run() == nil
-}
 
 func normalizeText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -237,7 +238,11 @@ func (g *Graph) resolveKey(name, path string) (string, error) {
 }
 
 func (g *Graph) resolveScopedCandidates(name, path string) ([]string, error) {
-	info, err := os.Stat(filepath.Join(g.repoRoot, filepath.FromSlash(path)))
+	_, fullPath, err := repofs.ResolvePath(g.repoRoot, path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, err
 	}
@@ -275,13 +280,7 @@ func sortNodeIDs(ids []string, nodes map[string]Node) {
 }
 
 func normalizeLookupPath(path string) string {
-	normalized := filepath.ToSlash(path)
-	normalized = strings.TrimPrefix(normalized, "./")
-	normalized = strings.TrimSuffix(normalized, "/")
-	if normalized == "." {
-		return ""
-	}
-	return normalized
+	return repofs.NormalizePath(path)
 }
 
 func buildNode(repoRoot string, fset *token.FileSet, fn *ast.FuncDecl, obj *types.Func) (Node, string, bool) {
