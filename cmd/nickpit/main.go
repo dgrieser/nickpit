@@ -56,7 +56,7 @@ type app struct {
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		logging.New(os.Stderr, false, true).PrintError(err)
 		os.Exit(1)
 	}
 }
@@ -494,7 +494,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	result, err := engine.Run(ctx, req)
 	if err != nil {
-		a.logProgress("Result", fmt.Sprintf("status=error, error=%v", err))
+		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
 		return err
 	}
 	a.logProgress("Result", reviewResultSummary(result))
@@ -723,7 +723,7 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 
 func reviewResultSummary(result *model.ReviewResult) string {
 	return strings.Join([]string{
-		"status=ok",
+		"status=OK",
 		fmt.Sprintf("findings=%d", len(result.Findings)),
 		fmt.Sprintf("tool_calls=%d", result.ToolCalls),
 		fmt.Sprintf("duplicate_tool_calls=%d", result.DuplicateToolCalls),

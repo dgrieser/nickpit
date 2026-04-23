@@ -93,11 +93,12 @@ func (l *Logger) PrintProgress(label, summary string) {
 	}
 	if l.useANSI {
 		coloredSummary := colorizeProgressSummary(summary)
-		if label == "Model" {
+		switch label {
+		case "Model":
 			coloredSummary = colorizeModelSummary(summary)
-		} else if label == "Review" {
+		case "Review":
 			coloredSummary = colorizeReviewSummary(summary)
-		} else if label == "Result" || label == "Tool" {
+		case "Result", "Tool":
 			coloredSummary = colorizeResultSummary(summary)
 		}
 		_, _ = fmt.Fprintf(l.w, "\x1b[33m%s\x1b[0m\x1b[90m: \x1b[0m%s\n", label, coloredSummary)
@@ -183,6 +184,17 @@ func (l *Logger) PrintStatusLine(text string) {
 		return
 	}
 	_, _ = fmt.Fprintln(l.w, text)
+}
+
+func (l *Logger) PrintError(err error) {
+	if l == nil || err == nil {
+		return
+	}
+	if l.useANSI {
+		_, _ = fmt.Fprintf(l.w, "\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37m%s\x1b[0m\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(l.w, "ERROR: %s\n", err)
 }
 
 func (l *Logger) writeLines(text, color string) {
@@ -456,9 +468,9 @@ func colorizeResultSummary(text string) string {
 	}
 	valueColor := "\x1b[34m"
 	switch value {
-	case "ok":
+	case "OK":
 		valueColor = "\x1b[32m"
-	case "error", "LimitReached", "DuplicateLimitReached":
+	case "ERROR", "LimitReached", "DuplicateLimitReached":
 		valueColor = "\x1b[31m"
 	}
 	return "\x1b[34m" + key + "\x1b[0m" + "\x1b[90m=\x1b[0m" + valueColor + value + "\x1b[0m" + "\x1b[90m, \x1b[0m" + colorizeProgressSummary(rest)

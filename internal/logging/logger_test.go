@@ -6,7 +6,32 @@ import (
 	"testing"
 )
 
+func TestPrintErrorPlain(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	var buf bytes.Buffer
+	logger := New(&buf, false, false)
+
+	logger.PrintError(assertErr("boom"))
+
+	if got := buf.String(); got != "ERROR: boom\n" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestPrintErrorANSI(t *testing.T) {
+	var buf bytes.Buffer
+	logger := &Logger{w: &buf, useANSI: true}
+
+	logger.PrintError(assertErr("boom"))
+
+	want := "\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37mboom\x1b[0m\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
 func TestPrintJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
@@ -30,6 +55,7 @@ func TestPrintJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
 }
 
 func TestPrintJSONRendersMultilineStringsConsistently(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
@@ -50,6 +76,7 @@ func TestPrintJSONRendersMultilineStringsConsistently(t *testing.T) {
 }
 
 func TestPrintJSONPreservesEscapesInMultilineStrings(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
@@ -69,4 +96,14 @@ func TestPrintJSONPreservesEscapesInMultilineStrings(t *testing.T) {
 			t.Fatalf("expected escape %q to be decoded in multiline output:\n%s", unwanted, got)
 		}
 	}
+}
+
+func assertErr(msg string) error {
+	return testError(msg)
+}
+
+type testError string
+
+func (e testError) Error() string {
+	return string(e)
 }
