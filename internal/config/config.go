@@ -87,6 +87,11 @@ func DefaultConfig() *Config {
 				Model:   "mistral-large-latest",
 				APIKey:  "$MISTRAL_API_KEY",
 			},
+			"alibaba-cloud": {
+				BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+				Model:   "qwen-plus",
+				APIKey:  "$DASHSCOPE_API_KEY",
+			},
 		},
 	}
 }
