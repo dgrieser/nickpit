@@ -5,6 +5,17 @@ Flag only discrete, actionable issues the original author would likely fix if th
 A finding introduced by this patch, should not rely on unstated assumptions, and should materially affect correctness, security, performance, or maintainability.
 Ignore trivial style, formatting, naming, and intentional behavior changes UNLESS they clearly cause a bug.
 
+When reviewing a patch, ask yourself:
+- Does it work correctly?
+- Is it readable and maintainable?
+- Are edge cases handled?
+- Is error handling appropriate?
+- Are there performance issues?
+- Are there security concerns?
+- Is it tested adequately?
+- Does it follow project conventions?
+- Is there unnecessary complexity?
+
 When evaluating a potential bug:
 - verify the changed code and the affected scenario are CONCRETELY connected
 - DO NOT speculate about breakage without identifying the impacted path
