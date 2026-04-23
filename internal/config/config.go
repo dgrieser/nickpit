@@ -237,7 +237,7 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.MaxContextTokens == 0 && !profile.MaxContextTokensConfigured {
 		profile.MaxContextTokens = DefaultMaxContextToken
 	}
-	if profile.MaxToolCalls == 0 {
+	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
 		profile.MaxToolCalls = MaxToolCalls
 	}
 	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {

@@ -127,6 +127,36 @@ func TestIgnoreMatcherSupportsGlobstarPatterns(t *testing.T) {
 	}
 }
 
+func TestIgnoreMatcherSupportsCharacterClasses(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeFile(t, repoRoot, ".gitignore", "file[0-9].txt\n")
+	writeFile(t, repoRoot, "file1.txt", "x")
+	writeFile(t, repoRoot, "filea.txt", "x")
+
+	matcher := NewIgnoreMatcher(repoRoot)
+	if !matcher.IsIgnored("file1.txt", false) {
+		t.Fatal("expected character class match")
+	}
+	if matcher.IsIgnored("filea.txt", false) {
+		t.Fatal("unexpected character class match")
+	}
+}
+
+func TestIgnoreMatcherDoesNotUnignoreChildrenOfIgnoredParentDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeFile(t, repoRoot, ".gitignore", "vendor/\n")
+	writeFile(t, repoRoot, "vendor/.gitignore", "!keep.txt\n")
+	writeFile(t, repoRoot, "vendor/keep.txt", "x")
+
+	matcher := NewIgnoreMatcher(repoRoot)
+	if !matcher.IsIgnored("vendor", true) {
+		t.Fatal("expected vendor dir to be ignored")
+	}
+	if !matcher.IsIgnored("vendor/keep.txt", false) {
+		t.Fatal("expected child of ignored dir to stay ignored")
+	}
+}
+
 func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	fullPath := filepath.Join(root, rel)

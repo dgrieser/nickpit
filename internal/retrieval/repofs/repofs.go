@@ -71,8 +71,8 @@ func RelPath(repoRoot, fullPath string) (string, error) {
 }
 
 type IgnoreMatcher struct {
-	repoRoot string
-	rules    []ignoreRule
+	repoRoot       string
+	rulesByBaseDir map[string][]ignoreRule
 }
 
 var ignoreMatcherCache sync.Map
@@ -88,8 +88,8 @@ func NewIgnoreMatcher(repoRoot string) IgnoreMatcher {
 	if cached, ok := ignoreMatcherCache.Load(repoAbs); ok {
 		return cached.(IgnoreMatcher)
 	}
-	rules := loadIgnoreRules(repoAbs)
-	matcher := IgnoreMatcher{repoRoot: repoAbs, rules: rules}
+	rulesByBaseDir := loadIgnoreRules(repoAbs)
+	matcher := IgnoreMatcher{repoRoot: repoAbs, rulesByBaseDir: rulesByBaseDir}
 	actual, _ := ignoreMatcherCache.LoadOrStore(repoAbs, matcher)
 	return actual.(IgnoreMatcher)
 }
@@ -102,13 +102,19 @@ func (m IgnoreMatcher) IsIgnored(path string, isDir bool) bool {
 	if normalizedPath == "" {
 		return false
 	}
-	ignored := false
-	for _, rule := range m.rules {
-		if rule.matches(normalizedPath, isDir) {
-			ignored = !rule.negated
+	ancestors := candidateDirectories(normalizedPath, isDir)
+	if len(ancestors) > 0 {
+		last := len(ancestors)
+		if isDir {
+			last--
+		}
+		for _, ancestor := range ancestors[:last] {
+			if m.matchStatus(ancestor, true) {
+				return true
+			}
 		}
 	}
-	return ignored
+	return m.matchStatus(normalizedPath, isDir)
 }
 
 type ignoreRule struct {
@@ -118,11 +124,28 @@ type ignoreRule struct {
 	directoryOnly bool
 	anchored      bool
 	matchBase     bool
-	patternParts  []string
+	patternParts  []ignorePatternPart
 }
 
-func loadIgnoreRules(repoRoot string) []ignoreRule {
-	rules := make([]ignoreRule, 0)
+type ignorePatternPart struct {
+	globstar bool
+	regex    *regexp.Regexp
+}
+
+func (m IgnoreMatcher) matchStatus(path string, isDir bool) bool {
+	ignored := false
+	for _, baseDir := range applicableBaseDirs(path, isDir) {
+		for _, rule := range m.rulesByBaseDir[baseDir] {
+			if rule.matches(path, isDir) {
+				ignored = !rule.negated
+			}
+		}
+	}
+	return ignored
+}
+
+func loadIgnoreRules(repoRoot string) map[string][]ignoreRule {
+	rulesByBaseDir := make(map[string][]ignoreRule)
 	_ = filepath.WalkDir(repoRoot, func(currentPath string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -142,12 +165,12 @@ func loadIgnoreRules(repoRoot string) []ignoreRule {
 		}
 		baseDir = NormalizePath(filepath.ToSlash(baseDir))
 		loaded, loadErr := parseIgnoreFile(currentPath, baseDir)
-		if loadErr == nil {
-			rules = append(rules, loaded...)
+		if loadErr == nil && len(loaded) > 0 {
+			rulesByBaseDir[baseDir] = append(rulesByBaseDir[baseDir], loaded...)
 		}
 		return nil
 	})
-	return rules
+	return rulesByBaseDir
 }
 
 func parseIgnoreFile(filePath, baseDir string) ([]ignoreRule, error) {
@@ -200,7 +223,11 @@ func parseIgnoreRule(baseDir, raw string) (ignoreRule, bool) {
 	}
 	rule.pattern = raw
 	rule.matchBase = !strings.Contains(raw, "/")
-	rule.patternParts = strings.Split(raw, "/")
+	parts, err := compilePatternParts(raw)
+	if err != nil {
+		return ignoreRule{}, false
+	}
+	rule.patternParts = parts
 	return rule, true
 }
 
@@ -217,17 +244,7 @@ func (r ignoreRule) matches(path string, isDir bool) bool {
 		}
 		return false
 	}
-	if r.matchesSingle(rel) {
-		return true
-	}
-	if !isDir {
-		for _, candidate := range candidateDirectories(rel, false) {
-			if r.matchesSingle(candidate) {
-				return true
-			}
-		}
-	}
-	return false
+	return r.matchesSingle(rel)
 }
 
 func (r ignoreRule) matchesSingle(rel string) bool {
@@ -236,25 +253,17 @@ func (r ignoreRule) matchesSingle(rel string) bool {
 	}
 	if r.matchBase {
 		if r.anchored {
-			return matchComponent(r.pattern, pathBase(rel)) && pathDir(rel) == "."
+			return matchCompiledComponent(r.patternParts[0], pathBase(rel)) && pathDir(rel) == "."
 		}
 		for _, segment := range strings.Split(rel, "/") {
-			if matchComponent(r.pattern, segment) {
+			if matchCompiledComponent(r.patternParts[0], segment) {
 				return true
 			}
 		}
 		return false
 	}
 	pathParts := strings.Split(rel, "/")
-	if r.anchored {
-		return matchParts(r.patternParts, pathParts)
-	}
-	for start := 0; start < len(pathParts); start++ {
-		if matchParts(r.patternParts, pathParts[start:]) {
-			return true
-		}
-	}
-	return false
+	return matchParts(r.patternParts, pathParts)
 }
 
 func relativeToBase(path, baseDir string) (string, bool) {
@@ -286,11 +295,25 @@ func candidateDirectories(path string, isDir bool) []string {
 	return candidates
 }
 
-func matchParts(patternParts, pathParts []string) bool {
+func applicableBaseDirs(path string, isDir bool) []string {
+	dir := pathDir(path)
+	if dir == "." || dir == "" {
+		return []string{""}
+	}
+	parts := strings.Split(dir, "/")
+	baseDirs := make([]string, 0, len(parts)+1)
+	baseDirs = append(baseDirs, "")
+	for i := 0; i < len(parts); i++ {
+		baseDirs = append(baseDirs, strings.Join(parts[:i+1], "/"))
+	}
+	return baseDirs
+}
+
+func matchParts(patternParts []ignorePatternPart, pathParts []string) bool {
 	if len(patternParts) == 0 {
 		return len(pathParts) == 0
 	}
-	if patternParts[0] == "**" {
+	if patternParts[0].globstar {
 		if len(patternParts) == 1 {
 			return true
 		}
@@ -301,34 +324,67 @@ func matchParts(patternParts, pathParts []string) bool {
 		}
 		return false
 	}
-	if len(pathParts) == 0 || !matchComponent(patternParts[0], pathParts[0]) {
+	if len(pathParts) == 0 || !matchCompiledComponent(patternParts[0], pathParts[0]) {
 		return false
 	}
 	return matchParts(patternParts[1:], pathParts[1:])
 }
 
-func matchComponent(pattern, value string) bool {
+func compilePatternParts(pattern string) ([]ignorePatternPart, error) {
+	rawParts := strings.Split(pattern, "/")
+	parts := make([]ignorePatternPart, 0, len(rawParts))
+	for _, part := range rawParts {
+		if part == "**" {
+			parts = append(parts, ignorePatternPart{globstar: true})
+			continue
+		}
+		compiled, err := compileComponentPattern(part)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, ignorePatternPart{regex: compiled})
+	}
+	return parts, nil
+}
+
+func compileComponentPattern(pattern string) (*regexp.Regexp, error) {
 	var regex strings.Builder
 	regex.WriteString("^")
-	for _, ch := range pattern {
+	for i := 0; i < len(pattern); i++ {
+		ch := pattern[i]
 		switch ch {
 		case '*':
 			regex.WriteString(`[^/]*`)
 		case '?':
 			regex.WriteString(`[^/]`)
-		case '.', '+', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\':
+		case '[':
+			end := i + 1
+			for end < len(pattern) && pattern[end] != ']' {
+				end++
+			}
+			if end >= len(pattern) {
+				regex.WriteString(`\[`)
+				continue
+			}
+			class := pattern[i : end+1]
+			regex.WriteString(class)
+			i = end
+		case '.', '+', '^', '$', '{', '}', '(', ')', '|', '\\':
 			regex.WriteByte('\\')
-			regex.WriteRune(ch)
+			regex.WriteByte(ch)
 		default:
-			regex.WriteRune(ch)
+			regex.WriteByte(ch)
 		}
 	}
 	regex.WriteString("$")
-	compiled, err := regexp.Compile(regex.String())
-	if err != nil {
+	return regexp.Compile(regex.String())
+}
+
+func matchCompiledComponent(part ignorePatternPart, value string) bool {
+	if part.globstar || part.regex == nil {
 		return false
 	}
-	return compiled.MatchString(value)
+	return part.regex.MatchString(value)
 }
 
 func pathBase(value string) string {
