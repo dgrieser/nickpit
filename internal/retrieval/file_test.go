@@ -286,6 +286,60 @@ func TestLocalEngineListFilesSkipsGitIgnoredAndDotGit(t *testing.T) {
 	}
 }
 
+func TestLocalEngineRejectsPathsOutsideRepo(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "file.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	if _, err := engine.GetFile(context.Background(), repoRoot, "../secret.txt"); err == nil {
+		t.Fatal("expected GetFile error")
+	}
+	if _, err := engine.GetFileSlice(context.Background(), repoRoot, "../secret.txt", 1, 1); err == nil {
+		t.Fatal("expected GetFileSlice error")
+	}
+	if _, err := engine.ListFiles(context.Background(), repoRoot, "../", 1); err == nil {
+		t.Fatal("expected ListFiles error")
+	}
+	if _, err := engine.Search(context.Background(), repoRoot, "../", "ok", 0, 0, false); err == nil {
+		t.Fatal("expected Search error")
+	}
+}
+
+func TestLocalEngineSearchSkipsGitIgnored(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+
+	repoRoot := t.TempDir()
+	runGit(t, repoRoot, "init")
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repoRoot, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte("needle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "ignored", "tmp.go"), []byte("needle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.Search(context.Background(), repoRoot, "", "needle", 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 1 || len(got.Results) != 1 || got.Results[0].Path != "pkg/a.go" {
+		t.Fatalf("search = %#v", got)
+	}
+}
+
 func runGit(t *testing.T, workdir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

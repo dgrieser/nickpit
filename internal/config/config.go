@@ -31,21 +31,23 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                 string   `yaml:"model"`
-	BaseURL               string   `yaml:"base_url"`
-	APIKey                string   `yaml:"api_key"`
-	MaxTokens             *int     `yaml:"max_tokens"`
-	Temperature           *float64 `yaml:"temperature"`
-	UseJSONSchema         bool     `yaml:"use_json_schema"`
-	MaxContextTokens      int      `yaml:"max_context_tokens"`
-	MaxToolCalls          int      `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls int      `yaml:"max_duplicate_tool_calls"`
-	ReasoningEffort       string   `yaml:"reasoning_effort"`
-	Workdir               string   `yaml:"workdir"`
-	GitHubToken           string   `yaml:"github_token"`
-	GitLabToken           string   `yaml:"gitlab_token"`
-	GitLabBaseURL         string   `yaml:"gitlab_base_url"`
-	APIKeyConfigured      bool     `yaml:"-"`
+	Model                           string   `yaml:"model"`
+	BaseURL                         string   `yaml:"base_url"`
+	APIKey                          string   `yaml:"api_key"`
+	MaxTokens                       *int     `yaml:"max_tokens"`
+	Temperature                     *float64 `yaml:"temperature"`
+	UseJSONSchema                   bool     `yaml:"use_json_schema"`
+	MaxContextTokens                int      `yaml:"max_context_tokens"`
+	MaxToolCalls                    int      `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls           int      `yaml:"max_duplicate_tool_calls"`
+	ReasoningEffort                 string   `yaml:"reasoning_effort"`
+	Workdir                         string   `yaml:"workdir"`
+	GitHubToken                     string   `yaml:"github_token"`
+	GitLabToken                     string   `yaml:"gitlab_token"`
+	GitLabBaseURL                   string   `yaml:"gitlab_base_url"`
+	APIKeyConfigured                bool     `yaml:"-"`
+	MaxToolCallsConfigured          bool     `yaml:"-"`
+	MaxDuplicateToolCallsConfigured bool     `yaml:"-"`
 }
 
 type Overrides struct {
@@ -56,9 +58,9 @@ type Overrides struct {
 	MaxTokens          *int
 	Temperature        *float64
 	UseJSONSchema      bool
-	MaxContextTokens   int
-	ToolCalls          int
-	DuplicateToolCalls int
+	MaxContextTokens   *int
+	ToolCalls          *int
+	DuplicateToolCalls *int
 	ReasoningEffort    string
 	Workdir            string
 	GitHubToken        string
@@ -190,14 +192,16 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.UseJSONSchema {
 		profile.UseJSONSchema = true
 	}
-	if overrides.MaxContextTokens > 0 {
-		profile.MaxContextTokens = overrides.MaxContextTokens
+	if overrides.MaxContextTokens != nil {
+		profile.MaxContextTokens = *overrides.MaxContextTokens
 	}
-	if overrides.ToolCalls > 0 {
-		profile.MaxToolCalls = overrides.ToolCalls
+	if overrides.ToolCalls != nil {
+		profile.MaxToolCalls = *overrides.ToolCalls
+		profile.MaxToolCallsConfigured = true
 	}
-	if overrides.DuplicateToolCalls > 0 {
-		profile.MaxDuplicateToolCalls = overrides.DuplicateToolCalls
+	if overrides.DuplicateToolCalls != nil {
+		profile.MaxDuplicateToolCalls = *overrides.DuplicateToolCalls
+		profile.MaxDuplicateToolCallsConfigured = true
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
@@ -234,7 +238,7 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.MaxToolCalls == 0 {
 		profile.MaxToolCalls = MaxToolCalls
 	}
-	if profile.MaxDuplicateToolCalls == 0 {
+	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
 		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
 	}
 	if profile.Workdir != "" {
@@ -290,6 +294,8 @@ func markConfiguredFields(data []byte, cfg *Config) error {
 		profileNode := profiles.Content[i+1]
 		profile := cfg.Profiles[name]
 		profile.APIKeyConfigured = mappingValue(profileNode, "api_key") != nil
+		profile.MaxToolCallsConfigured = mappingValue(profileNode, "max_tool_calls") != nil
+		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil

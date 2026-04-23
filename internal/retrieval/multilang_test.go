@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -214,6 +215,43 @@ func TestLocalEnginePathScopeSelectsIntendedBackend(t *testing.T) {
 	}
 	if nodeSymbol.Language != "nodejs" {
 		t.Fatalf("node symbol = %#v", nodeSymbol)
+	}
+}
+
+func TestLocalEngineSymbolAndCallHierarchyRejectPathsOutsideRepo(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "pkg/run.py", "def Run():\n    return 1\n")
+
+	engine := NewLocalEngine()
+	if _, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "Run", Path: "../pkg/run.py"}); err == nil {
+		t.Fatal("expected GetSymbol error")
+	}
+	if _, err := engine.FindCallers(context.Background(), repoRoot, SymbolRef{Name: "Run", Path: "../pkg/run.py"}, 1); err == nil {
+		t.Fatal("expected FindCallers error")
+	}
+	if _, err := engine.FindCallees(context.Background(), repoRoot, SymbolRef{Name: "Run", Path: "../pkg/run.py"}, 1); err == nil {
+		t.Fatal("expected FindCallees error")
+	}
+}
+
+func TestLocalEngineGetSymbolSkipsIgnoredDirectoriesDuringRepoWideSearch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+
+	repoRoot := t.TempDir()
+	runGit(t, repoRoot, "init")
+	writeRetrievalFile(t, repoRoot, ".gitignore", "ignored/\n")
+	writeRetrievalFile(t, repoRoot, "pkg/run.py", "def Run():\n    return 1\n")
+	writeRetrievalFile(t, repoRoot, "ignored/run.py", "def Run():\n    return 2\n")
+
+	engine := NewLocalEngine()
+	symbol, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "Run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if symbol.Path != "pkg/run.py" {
+		t.Fatalf("symbol = %#v", symbol)
 	}
 }
 

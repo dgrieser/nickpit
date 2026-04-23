@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 type languageBackend interface {
@@ -47,11 +48,14 @@ func languageBackends() []languageBackend {
 }
 
 func resolveLookupScope(repoRoot, path string) (lookupScope, error) {
-	normalized := normalizeLookupPath(path)
+	normalized, fullPath, err := repofs.ResolvePath(repoRoot, path)
+	if err != nil {
+		return lookupScope{}, err
+	}
 	if normalized == "" {
 		return lookupScope{}, nil
 	}
-	info, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(normalized)))
+	info, err := os.Stat(fullPath)
 	if err != nil {
 		return lookupScope{}, fmt.Errorf("stat %q: %w", normalized, err)
 	}
