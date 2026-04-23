@@ -76,6 +76,11 @@ type IgnoreMatcher struct {
 	statusCache    *sync.Map
 }
 
+type ignoreMatcherEntry struct {
+	once    sync.Once
+	matcher IgnoreMatcher
+}
+
 var ignoreMatcherCache sync.Map
 
 func NewIgnoreMatcher(repoRoot string) IgnoreMatcher {
@@ -86,13 +91,17 @@ func NewIgnoreMatcher(repoRoot string) IgnoreMatcher {
 	if err != nil {
 		return IgnoreMatcher{}
 	}
-	if cached, ok := ignoreMatcherCache.Load(repoAbs); ok {
-		return cached.(IgnoreMatcher)
-	}
-	rulesByBaseDir := loadIgnoreRules(repoAbs)
-	matcher := IgnoreMatcher{repoRoot: repoAbs, rulesByBaseDir: rulesByBaseDir, statusCache: &sync.Map{}}
-	actual, _ := ignoreMatcherCache.LoadOrStore(repoAbs, matcher)
-	return actual.(IgnoreMatcher)
+	actual, _ := ignoreMatcherCache.LoadOrStore(repoAbs, &ignoreMatcherEntry{})
+	entry := actual.(*ignoreMatcherEntry)
+	entry.once.Do(func() {
+		rulesByBaseDir := loadIgnoreRules(repoAbs)
+		entry.matcher = IgnoreMatcher{
+			repoRoot:       repoAbs,
+			rulesByBaseDir: rulesByBaseDir,
+			statusCache:    &sync.Map{},
+		}
+	})
+	return entry.matcher
 }
 
 func (m IgnoreMatcher) IsIgnored(path string, isDir bool) bool {
