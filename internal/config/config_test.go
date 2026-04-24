@@ -150,6 +150,69 @@ func TestLoadConfigExpandsBracedAPIKeyEnvReferenceFromCLI(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOpenRouterProfileFallsBackToDefault(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+	cfg, profile, err := Load("", Overrides{
+		Profile: OpenRouterProfileName,
+		Model:   "test-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != OpenRouterProfileName {
+		t.Fatalf("active profile = %q", cfg.ActiveProfile)
+	}
+	if profile.Model != "test-model" {
+		t.Fatalf("model = %q", profile.Model)
+	}
+	if profile.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Fatalf("base url = %q", profile.BaseURL)
+	}
+	if profile.APIKey != "openrouter-key" {
+		t.Fatalf("api key = %q", profile.APIKey)
+	}
+}
+
+func TestLoadConfigExplicitOpenRouterProfileWins(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "default-key")
+	t.Setenv("CUSTOM_OPENROUTER_API_KEY", "custom-key")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: default-model
+    base_url: https://default.invalid/v1
+    api_key: $OPENROUTER_API_KEY
+  openrouter:
+    model: custom-model
+    base_url: https://custom.invalid/v1
+    api_key: $CUSTOM_OPENROUTER_API_KEY
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, profile, err := Load(path, Overrides{Profile: OpenRouterProfileName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != OpenRouterProfileName {
+		t.Fatalf("active profile = %q", cfg.ActiveProfile)
+	}
+	if profile.Model != "custom-model" {
+		t.Fatalf("model = %q", profile.Model)
+	}
+	if profile.BaseURL != "https://custom.invalid/v1" {
+		t.Fatalf("base url = %q", profile.BaseURL)
+	}
+	if profile.APIKey != "custom-key" {
+		t.Fatalf("api key = %q", profile.APIKey)
+	}
+}
+
 func TestLoadConfigWithOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

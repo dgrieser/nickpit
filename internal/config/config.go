@@ -13,6 +13,7 @@ import (
 
 const (
 	DefaultProfileName           = "default"
+	OpenRouterProfileName        = "openrouter"
 	DefaultMaxContextToken       = 120000
 	MaxToolCalls                 = 0
 	DefaultMaxDuplicateToolCalls = 5
@@ -87,6 +88,11 @@ func DefaultConfig() *Config {
 				Model:   "mistral-small-latest",
 				APIKey:  "$MISTRAL_API_KEY",
 			},
+			"deepseek": {
+				BaseURL: "https://api.deepseek.com",
+				Model:   "deepseek-v4-flash",
+				APIKey:  "$DEEPSEEK_API_KEY",
+			},
 			"alibaba-cloud": {
 				BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 				Model:   "qwen-plus",
@@ -113,9 +119,10 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	if activeProfile == "" {
 		activeProfile = DefaultProfileName
 	}
-	applyEnv(cfg, activeProfile)
+	resolvedProfile := resolveProfileName(cfg, activeProfile)
+	applyEnv(cfg, resolvedProfile)
 
-	profile, err := ResolveProfile(cfg, activeProfile)
+	profile, err := ResolveProfile(cfg, resolvedProfile)
 	if err != nil {
 		return nil, Profile{}, err
 	}
@@ -126,6 +133,15 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	cfg.ActiveProfile = activeProfile
 	cfg.Profiles[activeProfile] = profile
 	return cfg, profile, nil
+}
+
+func resolveProfileName(cfg *Config, name string) string {
+	if name == OpenRouterProfileName {
+		if _, ok := cfg.Profiles[name]; !ok {
+			return DefaultProfileName
+		}
+	}
+	return name
 }
 
 func loadFile(cfg *Config, path string) (bool, error) {

@@ -67,3 +67,11 @@ profiles:
 		t.Fatalf("max context tokens = %d", profile.MaxContextTokens)
 	}
 }
+
+func TestMissingAPIKeyHintUsesOpenRouterEnvForAlias(t *testing.T) {
+	got := missingAPIKeyHint("openrouter", false)
+	want := "set OPENROUTER_API_KEY or provide api_key in config"
+	if got != want {
+		t.Fatalf("hint = %q", got)
+	}
+}
