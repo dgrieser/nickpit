@@ -84,7 +84,7 @@ func DefaultConfig() *Config {
 			},
 			"mistral": {
 				BaseURL: "https://api.mistral.ai/v1",
-				Model:   "mistral-large-latest",
+				Model:   "mistral-small-latest",
 				APIKey:  "$MISTRAL_API_KEY",
 			},
 			"alibaba-cloud": {
