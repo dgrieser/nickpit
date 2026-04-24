@@ -510,7 +510,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 func missingAPIKeyHint(profileName string, configured bool) string {
 	var envVar string
 	switch profileName {
-	case config.DefaultProfileName, config.OpenRouterProfileName:
+	case config.DefaultProfileName, config.DefaultFallbackProfileName:
 		envVar = "OPENROUTER_API_KEY"
 	case "mittwald":
 		envVar = "MITTWALD_LLM_API_KEY"

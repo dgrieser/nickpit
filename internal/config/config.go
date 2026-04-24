@@ -13,7 +13,7 @@ import (
 
 const (
 	DefaultProfileName           = "default"
-	OpenRouterProfileName        = "openrouter"
+	DefaultFallbackProfileName   = "openrouter"
 	DefaultMaxContextToken       = 120000
 	MaxToolCalls                 = 0
 	DefaultMaxDuplicateToolCalls = 5
@@ -136,7 +136,7 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 }
 
 func resolveProfileName(cfg *Config, name string) string {
-	if name == OpenRouterProfileName {
+	if name == DefaultFallbackProfileName {
 		if _, ok := cfg.Profiles[name]; !ok {
 			return DefaultProfileName
 		}

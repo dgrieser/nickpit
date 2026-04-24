@@ -154,13 +154,13 @@ func TestLoadConfigOpenRouterProfileFallsBackToDefault(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "openrouter-key")
 
 	cfg, profile, err := Load("", Overrides{
-		Profile: OpenRouterProfileName,
+		Profile: "openrouter",
 		Model:   "test-model",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ActiveProfile != OpenRouterProfileName {
+	if cfg.ActiveProfile != "openrouter" {
 		t.Fatalf("active profile = %q", cfg.ActiveProfile)
 	}
 	if profile.Model != "test-model" {
@@ -195,11 +195,11 @@ profiles:
 		t.Fatal(err)
 	}
 
-	cfg, profile, err := Load(path, Overrides{Profile: OpenRouterProfileName})
+	cfg, profile, err := Load(path, Overrides{Profile: "openrouter"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ActiveProfile != OpenRouterProfileName {
+	if cfg.ActiveProfile != "openrouter" {
 		t.Fatalf("active profile = %q", cfg.ActiveProfile)
 	}
 	if profile.Model != "custom-model" {
