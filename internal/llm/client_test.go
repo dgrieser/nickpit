@@ -822,6 +822,42 @@ func TestClientReviewReturnsSyntheticFindingForInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestClientReviewReportsPlainTextHTTPErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		if _, err := w.Write([]byte("404 page not found\n")); err != nil {
+			t.Fatalf("write error body: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	client := NewOpenAIClient(server.URL, "token", "missing-model")
+	client.SetLogger(logging.New(&logs, true, false))
+
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	if got, want := err.Error(), "llm: api returned 404 Not Found: 404 page not found"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+	if strings.Contains(err.Error(), "invalid character") {
+		t.Fatalf("error should not expose SDK JSON parse failure: %q", err)
+	}
+	gotLogs := logs.String()
+	if strings.Contains(gotLogs, "invalid character") {
+		t.Fatalf("logs should not expose SDK JSON parse failure:\n%s", gotLogs)
+	}
+	if !strings.Contains(gotLogs, "LLM raw response body:") || !strings.Contains(gotLogs, "404 page not found") {
+		t.Fatalf("logs should include provider response body:\n%s", gotLogs)
+	}
+}
+
 func TestClientReviewRetriesRetryableStatus(t *testing.T) {
 	attempts := 0
 

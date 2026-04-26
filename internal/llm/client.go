@@ -107,12 +107,31 @@ type streamReadError struct {
 	retryable bool
 }
 
+type llmHTTPStatusError struct {
+	statusCode int
+	status     string
+	message    string
+	cause      error
+}
+
 func (e *streamReadError) Error() string {
 	return e.err.Error()
 }
 
 func (e *streamReadError) Unwrap() error {
 	return e.err
+}
+
+func (e *llmHTTPStatusError) Error() string {
+	status := formatHTTPStatus(e.statusCode, e.status)
+	if e.message == "" {
+		return fmt.Sprintf("llm: api returned %s", status)
+	}
+	return fmt.Sprintf("llm: api returned %s: %s", status, e.message)
+}
+
+func (e *llmHTTPStatusError) Unwrap() error {
+	return e.cause
 }
 
 func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
@@ -307,13 +326,14 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			c.logf("LLM stream opened: status=%s", capture.status)
 		}
 		if err != nil {
-			c.logf("LLM request failed: attempt=%d error=%v", attempt+1, err)
-			if status := statusCodeFromError(err); status > 0 {
-				if capture != nil && len(capture.body) > 0 {
-					c.logMaybeJSON("LLM raw response body:", capture.body)
+			if status := statusCodeFromError(err, capture); status > 0 {
+				statusErr := newLLMHTTPStatusError(err, capture)
+				c.logf("LLM request failed: attempt=%d error=%v", attempt+1, statusErr)
+				if body := httpErrorBody(err, capture); len(body) > 0 {
+					c.logMaybeJSON("LLM raw response body:", body)
 				}
 				if !c.shouldRetryHTTPStatus(status, attempt) {
-					return nil, fmt.Errorf("llm: api returned status %d: %w", status, err)
+					return nil, statusErr
 				}
 				resp := responseFromCapture(capture)
 				waitFor := c.retrier.Backoff(attempt, resp)
@@ -324,6 +344,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				}
 				continue
 			}
+			c.logf("LLM request failed: attempt=%d error=%v", attempt+1, err)
 			if !isRetryableNetworkError(err) || attempt >= c.retrier.MaxRetries {
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
@@ -562,7 +583,9 @@ func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error
 		header: resp.Header.Clone(),
 	}
 
-	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
+	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") &&
+		resp.StatusCode >= http.StatusOK &&
+		resp.StatusCode < http.StatusBadRequest {
 		t.last = captured
 		return resp, nil
 	}
@@ -625,18 +648,155 @@ func responseFromCapture(c *capture) *http.Response {
 	}
 }
 
-func statusCodeFromError(err error) int {
+func statusCodeFromError(err error, c *capture) int {
+	var statusErr *llmHTTPStatusError
+	if errors.As(err, &statusErr) {
+		if statusErr.statusCode > 0 {
+			return statusErr.statusCode
+		}
+	}
+
 	var apiErr *openai.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.HTTPStatusCode
+		if apiErr.HTTPStatusCode > 0 {
+			return apiErr.HTTPStatusCode
+		}
 	}
 
 	var reqErr *openai.RequestError
 	if errors.As(err, &reqErr) {
-		return reqErr.HTTPStatusCode
+		if reqErr.HTTPStatusCode > 0 {
+			return reqErr.HTTPStatusCode
+		}
+	}
+
+	if c != nil {
+		return c.code
 	}
 
 	return 0
+}
+
+func newLLMHTTPStatusError(err error, c *capture) *llmHTTPStatusError {
+	statusCode := statusCodeFromError(err, c)
+	status := ""
+	if c != nil {
+		status = c.status
+	}
+	message := ""
+
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.HTTPStatus != "" {
+			status = apiErr.HTTPStatus
+		}
+		if apiErr.HTTPStatusCode > 0 {
+			statusCode = apiErr.HTTPStatusCode
+		}
+		message = apiErr.Message
+	}
+
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) {
+		if reqErr.HTTPStatus != "" {
+			status = reqErr.HTTPStatus
+		}
+		if reqErr.HTTPStatusCode > 0 {
+			statusCode = reqErr.HTTPStatusCode
+		}
+		if message == "" {
+			message = providerErrorMessage(reqErr.Body)
+		}
+		if message == "" {
+			message = cleanHTTPErrorText(string(reqErr.Body))
+		}
+		if message == "" && reqErr.Err != nil {
+			message = cleanHTTPErrorText(reqErr.Err.Error())
+		}
+	}
+
+	if message == "" && c != nil {
+		message = providerErrorMessage(c.body)
+		if message == "" {
+			message = cleanHTTPErrorText(string(c.body))
+		}
+	}
+	message = cleanHTTPErrorText(message)
+
+	return &llmHTTPStatusError{
+		statusCode: statusCode,
+		status:     status,
+		message:    message,
+		cause:      err,
+	}
+}
+
+func httpErrorBody(err error, c *capture) []byte {
+	var reqErr *openai.RequestError
+	if errors.As(err, &reqErr) && len(reqErr.Body) > 0 {
+		return reqErr.Body
+	}
+	if c != nil && len(c.body) > 0 {
+		return c.body
+	}
+	return nil
+}
+
+func formatHTTPStatus(code int, status string) string {
+	status = strings.TrimSpace(status)
+	if status != "" {
+		return status
+	}
+	if code <= 0 {
+		return "unknown status"
+	}
+	if text := http.StatusText(code); text != "" {
+		return fmt.Sprintf("%d %s", code, text)
+	}
+	return fmt.Sprintf("%d", code)
+}
+
+func providerErrorMessage(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var value any
+	if err := json.Unmarshal(body, &value); err != nil {
+		return ""
+	}
+	return cleanHTTPErrorText(providerErrorMessageValue(value))
+}
+
+func providerErrorMessageValue(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"message", "detail", "error_description", "error"} {
+			if message := providerErrorMessageValue(typed[key]); message != "" {
+				return message
+			}
+		}
+	case []any:
+		var parts []string
+		for _, item := range typed {
+			if message := providerErrorMessageValue(item); message != "" {
+				parts = append(parts, message)
+			}
+		}
+		return strings.Join(parts, ", ")
+	case string:
+		return typed
+	}
+	return ""
+}
+
+func cleanHTTPErrorText(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	const maxErrorTextRunes = 1024
+	runes := []rune(text)
+	if len(runes) > maxErrorTextRunes {
+		return string(runes[:maxErrorTextRunes]) + "..."
+	}
+	return text
 }
 
 func isRetryableNetworkError(err error) bool {
