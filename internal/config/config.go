@@ -98,6 +98,11 @@ func DefaultConfig() *Config {
 				Model:   "qwen-plus",
 				APIKey:  "$DASHSCOPE_API_KEY",
 			},
+			"nvidia": {
+				BaseURL: "https://integrate.api.nvidia.com/v1",
+				Model:   "",
+				APIKey:  "$NVIDIA_API_KEY",
+			},
 		},
 	}
 }
