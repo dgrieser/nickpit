@@ -68,10 +68,45 @@ profiles:
 	}
 }
 
-func TestMissingAPIKeyHintUsesOpenRouterEnvForAlias(t *testing.T) {
-	got := missingAPIKeyHint("openrouter", false)
-	want := "set OPENROUTER_API_KEY or provide api_key in config"
-	if got != want {
-		t.Fatalf("hint = %q", got)
+func TestMissingAPIKeyHintUsesDefaultProfileEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		profile string
+		want    string
+	}{
+		{
+			name:    "default",
+			profile: "default",
+			want:    "set OPENROUTER_API_KEY or provide api_key in config",
+		},
+		{
+			name:    "openrouter alias",
+			profile: "openrouter",
+			want:    "set OPENROUTER_API_KEY or provide api_key in config",
+		},
+		{
+			name:    "mittwald",
+			profile: "mittwald",
+			want:    "set MITTWALD_LLM_API_KEY or provide api_key in config",
+		},
+		{
+			name:    "mistral",
+			profile: "mistral",
+			want:    "set MISTRAL_API_KEY or provide api_key in config",
+		},
+		{
+			name:    "unknown",
+			profile: "custom",
+			want:    "set NICKPIT_API_KEY or provide api_key in config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := missingAPIKeyHint(tt.profile, false)
+			if got != tt.want {
+				t.Fatalf("hint = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

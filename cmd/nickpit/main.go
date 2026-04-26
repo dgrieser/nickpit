@@ -508,19 +508,37 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 }
 
 func missingAPIKeyHint(profileName string, configured bool) string {
-	var envVar string
-	switch profileName {
-	case config.DefaultProfileName, config.DefaultFallbackProfileName:
-		envVar = "OPENROUTER_API_KEY"
-	case "mittwald":
-		envVar = "MITTWALD_LLM_API_KEY"
-	default:
-		envVar = "NICKPIT_API_KEY"
-	}
+	envVar := defaultAPIKeyEnvVar(profileName)
 	if configured {
 		return fmt.Sprintf("set %s or provide a non-empty api_key in config", envVar)
 	}
 	return fmt.Sprintf("set %s or provide api_key in config", envVar)
+}
+
+func defaultAPIKeyEnvVar(profileName string) string {
+	defaults := config.DefaultConfig()
+	profile, ok := defaults.Profiles[profileName]
+	if !ok && profileName == config.DefaultFallbackProfileName {
+		profile = defaults.Profiles[config.DefaultProfileName]
+		ok = true
+	}
+	if ok {
+		if envVar := envVarName(profile.APIKey); envVar != "" {
+			return envVar
+		}
+	}
+	return "NICKPIT_API_KEY"
+}
+
+func envVarName(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+		return strings.TrimSuffix(strings.TrimPrefix(value, "${"), "}")
+	}
+	if !strings.HasPrefix(value, "$") {
+		return ""
+	}
+	return strings.TrimPrefix(value, "$")
 }
 
 func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
