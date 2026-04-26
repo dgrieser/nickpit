@@ -4,7 +4,7 @@ BINDIR ?= $(PREFIX)/bin
 
 .DEFAULT_GOAL := build
 
-.PHONY: help build install test lint fmt
+.PHONY: help generate build debug install test lint fmt
 
 .DEFAULT:
 	@echo "Error: unknown target '$@'"
@@ -12,11 +12,14 @@ BINDIR ?= $(PREFIX)/bin
 	@$(MAKE) --no-print-directory help
 	@exit 1
 
-build: ## Build the nickpit binary into ./bin
+generate: ## Generate checked-in files
+	go generate ./internal/config
+
+build: generate ## Build the nickpit binary into ./bin
 	mkdir -p ./bin
 	go build -o ./bin/$(APP) ./cmd/$(APP)
 
-debug: ## Build debug version of nickpit binary into ./bin
+debug: generate ## Build debug version of nickpit binary into ./bin
 	mkdir -p ./bin
 	go build -o ./bin/$(APP) -gcflags "-N -l" ./cmd/$(APP)
 

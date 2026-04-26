@@ -70,41 +70,82 @@ type Overrides struct {
 	GitLabBaseURL      string
 }
 
+type defaultProfile struct {
+	name    string
+	profile Profile
+}
+
+var defaultProfiles = []defaultProfile{
+	{
+		name: DefaultProfileName,
+		profile: Profile{
+			BaseURL: "https://openrouter.ai/api/v1",
+			APIKey:  "$OPENROUTER_API_KEY",
+		},
+	},
+	{
+		name: "mittwald",
+		profile: Profile{
+			BaseURL: "https://llm.aihosting.mittwald.de/v1",
+			Model:   "gpt-oss-120b",
+			APIKey:  "$MITTWALD_LLM_API_KEY",
+		},
+	},
+	{
+		name: "mistral",
+		profile: Profile{
+			BaseURL: "https://api.mistral.ai/v1",
+			Model:   "mistral-small-latest",
+			APIKey:  "$MISTRAL_API_KEY",
+		},
+	},
+	{
+		name: "deepseek",
+		profile: Profile{
+			BaseURL: "https://api.deepseek.com",
+			Model:   "deepseek-v4-flash",
+			APIKey:  "$DEEPSEEK_API_KEY",
+		},
+	},
+	{
+		name: "alibaba-cloud",
+		profile: Profile{
+			BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+			Model:   "qwen-plus",
+			APIKey:  "$DASHSCOPE_API_KEY",
+		},
+	},
+	{
+		name: "nvidia",
+		profile: Profile{
+			BaseURL: "https://integrate.api.nvidia.com/v1",
+			Model:   "",
+			APIKey:  "$NVIDIA_API_KEY",
+		},
+	},
+}
+
 func DefaultConfig() *Config {
+	profiles := make(map[string]Profile, len(defaultProfiles))
+	for _, entry := range defaultProfiles {
+		profiles[entry.name] = cloneProfile(entry.profile)
+	}
 	return &Config{
 		ActiveProfile: DefaultProfileName,
-		Profiles: map[string]Profile{
-			DefaultProfileName: {
-				BaseURL: "https://openrouter.ai/api/v1",
-				APIKey:  "$OPENROUTER_API_KEY",
-			},
-			"mittwald": {
-				BaseURL: "https://llm.aihosting.mittwald.de/v1",
-				Model:   "gpt-oss-120b",
-				APIKey:  "$MITTWALD_LLM_API_KEY",
-			},
-			"mistral": {
-				BaseURL: "https://api.mistral.ai/v1",
-				Model:   "mistral-small-latest",
-				APIKey:  "$MISTRAL_API_KEY",
-			},
-			"deepseek": {
-				BaseURL: "https://api.deepseek.com",
-				Model:   "deepseek-v4-flash",
-				APIKey:  "$DEEPSEEK_API_KEY",
-			},
-			"alibaba-cloud": {
-				BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-				Model:   "qwen-plus",
-				APIKey:  "$DASHSCOPE_API_KEY",
-			},
-			"nvidia": {
-				BaseURL: "https://integrate.api.nvidia.com/v1",
-				Model:   "",
-				APIKey:  "$NVIDIA_API_KEY",
-			},
-		},
+		Profiles:      profiles,
 	}
+}
+
+func cloneProfile(profile Profile) Profile {
+	if profile.MaxTokens != nil {
+		value := *profile.MaxTokens
+		profile.MaxTokens = &value
+	}
+	if profile.Temperature != nil {
+		value := *profile.Temperature
+		profile.Temperature = &value
+	}
+	return profile
 }
 
 func Load(path string, overrides Overrides) (*Config, Profile, error) {

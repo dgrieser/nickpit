@@ -39,7 +39,7 @@ NickPit loads configuration in this order:
 3. Environment variables
 4. CLI flags
 
-See [.nickpit.yaml.example](.nickpit.yaml.example) for a complete example.
+Run `make generate` or `make build` to generate `.nickpit.yaml.example` from the built-in defaults.
 
 The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`.
 
