@@ -75,6 +75,8 @@ type defaultProfile struct {
 	profile Profile
 }
 
+func ptrTo[T any](v T) *T { return &v }
+
 var defaultProfiles = []defaultProfile{
 	{
 		name: DefaultProfileName,
@@ -118,10 +120,10 @@ var defaultProfiles = []defaultProfile{
 	{
 		name: "nvidia",
 		profile: Profile{
-			BaseURL: "https://integrate.api.nvidia.com/v1",
-			Model:   "",
-			APIKey:  "$NVIDIA_API_KEY",
-            MaxTokens: 16384,
+			BaseURL:   "https://integrate.api.nvidia.com/v1",
+			Model:     "",
+			APIKey:    "$NVIDIA_API_KEY",
+			MaxTokens: ptrTo(16384),
 		},
 	},
 }
