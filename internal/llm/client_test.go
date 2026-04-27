@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -770,7 +771,7 @@ func TestClientReviewLogsToolCallOnlyRawResponse(t *testing.T) {
 	}
 }
 
-func TestClientReviewReturnsSyntheticFindingForInvalidJSON(t *testing.T) {
+func TestClientReviewReturnsErrInvalidJSONOnParseFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeSSEChunk(t, w, map[string]any{
 			"id":      "chunk-1",
@@ -807,18 +808,11 @@ func TestClientReviewReturnsSyntheticFindingForInvalidJSON(t *testing.T) {
 		SystemPrompt: "system",
 		UserContent:  "user",
 	})
-	if err != nil {
-		t.Fatal(err)
+	if resp != nil {
+		t.Fatalf("expected nil response, got %+v", resp)
 	}
-
-	if len(resp.Findings) != 1 {
-		t.Fatalf("findings = %d", len(resp.Findings))
-	}
-	if resp.Findings[0].Title != "[P2] Return valid review JSON" {
-		t.Fatalf("title = %q", resp.Findings[0].Title)
-	}
-	if resp.RawResponse != "not valid review json" {
-		t.Fatalf("raw_response = %q", resp.RawResponse)
+	if !errors.Is(err, ErrInvalidJSON) {
+		t.Fatalf("expected ErrInvalidJSON, got %v", err)
 	}
 }
 

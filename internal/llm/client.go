@@ -19,6 +19,8 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+var ErrInvalidJSON = errors.New("model returned invalid JSON")
+
 type Client interface {
 	Review(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error)
 }
@@ -243,7 +245,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var err error
 		resp, err = parseReviewResponse(streamed.content)
 		if err != nil {
-			resp = invalidJSONFallback(streamed.content)
+			return nil, fmt.Errorf("%w: %w", ErrInvalidJSON, err)
 		}
 	}
 	resp.RawResponse = streamed.content
@@ -541,29 +543,6 @@ func finalizeToolCalls(builders []*toolCallBuilder) []ToolCall {
 	return toolCalls
 }
 
-func invalidJSONFallback(content string) *ReviewResponse {
-	return &ReviewResponse{
-		Findings: []model.Finding{
-			{
-				Title:           "[P2] Return valid review JSON",
-				Body:            "The model response could not be parsed as the configured review schema, so the review output is unusable until the prompt or schema alignment is fixed.",
-				ConfidenceScore: 0.2,
-				Priority:        intPtr(2),
-				CodeLocation: model.CodeLocation{
-					FilePath: "",
-					LineRange: model.LineRange{
-						Start: 1,
-						End:   1,
-					},
-				},
-			},
-		},
-		OverallCorrectness:     "patch is incorrect",
-		OverallExplanation:     strings.TrimSpace(content),
-		OverallConfidenceScore: 0.2,
-		RawResponse:            content,
-	}
-}
 
 type capturingTransport struct {
 	base http.RoundTripper
@@ -826,10 +805,6 @@ func isRetryableNetworkError(err error) bool {
 	}
 
 	return false
-}
-
-func intPtr(v int) *int {
-	return &v
 }
 
 func (c *OpenAIClient) logf(format string, args ...any) {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -493,6 +494,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	result, err := engine.Run(ctx, req)
+	if errors.Is(err, llm.ErrInvalidJSON) {
+		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
+		return err
+	}
 	if err != nil {
 		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
 		return err
