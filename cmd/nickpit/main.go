@@ -48,6 +48,7 @@ type app struct {
 	gitlabToken                   string
 	gitlabBaseURL                 string
 	verbose                       bool
+	reasoningEffort               string
 	showReasoning                 bool
 	showProgress                  bool
 	disableSearchToolOptimization bool
@@ -104,6 +105,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.gitlabBaseURL, "gitlab-base-url", "", "GitLab API base URL")
 	root.PersistentFlags().BoolVar(&cli.verbose, "verbose", false, "Print debug execution details")
 	root.PersistentFlags().BoolVar(&cli.verbose, "debug", false, "Print debug execution details")
+	root.PersistentFlags().StringVar(&cli.reasoningEffort, "reasoning-effort", "", "Reasoning effort level (low, medium, high)")
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
@@ -134,6 +136,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		Model:              a.model,
 		BaseURL:            a.baseURL,
 		APIKey:             a.apiKey,
+		ReasoningEffort:    a.reasoningEffort,
 		UseJSONSchema:      a.useJSONSchema,
 		MaxContextTokens:   maxContextTokens,
 		ToolCalls:          toolCalls,
