@@ -300,7 +300,11 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		if req.MaxToolCalls > 0 && toolCallsUsed+pendingToolCalls > req.MaxToolCalls {
 			e.logf("Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, toolCallsUsed, pendingToolCalls)
 			e.logProgress("Tool", fmt.Sprintf("status=LimitReached, limit=%d, finalizing review", req.MaxToolCalls))
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, req.UseJSONSchema)
+			finalMessages := append([]llm.Message(nil), messages...)
+			if strings.TrimSpace(resp.RawResponse) != "" {
+				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
+			}
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, req.UseJSONSchema)
 			if err != nil {
 				return nil, err
 			}
@@ -310,7 +314,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			break
 		}
 		e.logf("Executing tool batch: used=%d requested=%d", toolCallsUsed, pendingToolCalls)
-		assistantMessage := llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls}
+		assistantMessage := llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls}
 		messages = append(messages, assistantMessage)
 		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
 		messages = append(messages, toolMessages...)
@@ -388,7 +392,9 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	for _, msg := range messages {
 		switch {
 		case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
-			// drop tool request messages
+			if strings.TrimSpace(msg.Content) != "" {
+				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: msg.Content})
+			}
 		case msg.Role == "tool":
 			finalMessages = append(finalMessages, llm.Message{Role: "user", Content: msg.Content})
 		default:

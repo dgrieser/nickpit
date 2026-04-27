@@ -475,6 +475,106 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	}
 }
 
+func TestEnginePreservesAssistantContentWithToolCalls(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				RawResponse: "I'll inspect the extra file before deciding.",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	assistantMessage := llmClient.reqs[1].Messages[2]
+	if assistantMessage.Role != "assistant" {
+		t.Fatalf("assistant role = %q", assistantMessage.Role)
+	}
+	if assistantMessage.Content != "I'll inspect the extra file before deciding." {
+		t.Fatalf("assistant content = %q", assistantMessage.Content)
+	}
+	if len(assistantMessage.ToolCalls) != 1 || assistantMessage.ToolCalls[0].Name != "inspect_file" {
+		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
+	}
+}
+
+func TestEnginePreservesAssistantContentWhenToolLimitFinalizes(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				RawResponse: "I'll inspect extra.go first.",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				RawResponse: "I still want to inspect main.go before finalizing.",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(llmClient.reqs) != 3 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	finalReq := llmClient.reqs[2]
+	if len(finalReq.Tools) != 0 {
+		t.Fatalf("final call should have no tools, got %d", len(finalReq.Tools))
+	}
+	if len(finalReq.Messages) < 5 {
+		t.Fatalf("final messages = %d", len(finalReq.Messages))
+	}
+	if finalReq.Messages[2].Role != "assistant" || finalReq.Messages[2].Content != "I'll inspect extra.go first." {
+		t.Fatalf("first assistant message = %#v", finalReq.Messages[2])
+	}
+	lastMessage := finalReq.Messages[len(finalReq.Messages)-1]
+	if lastMessage.Role != "assistant" {
+		t.Fatalf("last message role = %q", lastMessage.Role)
+	}
+	if lastMessage.Content != "I still want to inspect main.go before finalizing." {
+		t.Fatalf("last assistant content = %q", lastMessage.Content)
+	}
+	if len(lastMessage.ToolCalls) != 0 {
+		t.Fatalf("last assistant message should not include tool calls, got %#v", lastMessage.ToolCalls)
+	}
+}
+
 func TestEngineExecutesInspectFileToolCallsWithLineRange(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
