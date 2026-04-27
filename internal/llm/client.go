@@ -238,6 +238,10 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	)
 	c.logRawModelResponse(streamed)
 
+	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
+		return nil, fmt.Errorf("llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model")
+	}
+
 	var resp *ReviewResponse
 	if len(streamed.toolCalls) > 0 {
 		resp = &ReviewResponse{ToolCalls: streamed.toolCalls}

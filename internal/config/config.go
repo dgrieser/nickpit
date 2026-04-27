@@ -121,6 +121,7 @@ var defaultProfiles = []defaultProfile{
 			BaseURL: "https://integrate.api.nvidia.com/v1",
 			Model:   "",
 			APIKey:  "$NVIDIA_API_KEY",
+            MaxTokens: 16384,
 		},
 	},
 }
