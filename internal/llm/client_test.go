@@ -497,6 +497,163 @@ func TestClientReviewReassemblesStreamedToolCalls(t *testing.T) {
 	}
 }
 
+func TestClientReviewRecoversXMLToolCallsFromContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `I'll inspect both files.<tool_call>inspect_file<arg_key>path</arg_key><arg_value>pkg/server/handler/multichannelhandler.go</arg_value></tool_call>`,
+						"tool_calls": []map[string]any{
+							{
+								"index": 0,
+								"id":    "call_1",
+								"type":  "function",
+								"function": map[string]any{
+									"name":      "inspect_file",
+									"arguments": `{"path":"pkg/projects/session_cache_redis.go"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "user"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resp.ToolCalls) != 2 {
+		t.Fatalf("tool calls = %#v", resp.ToolCalls)
+	}
+	if resp.ToolCalls[0].ID != "call_1" || resp.ToolCalls[0].Name != "inspect_file" || resp.ToolCalls[0].Arguments != `{"path":"pkg/projects/session_cache_redis.go"}` {
+		t.Fatalf("structured tool call = %#v", resp.ToolCalls[0])
+	}
+	if resp.ToolCalls[1].ID != "xml_tool_call_1" || resp.ToolCalls[1].Name != "inspect_file" || resp.ToolCalls[1].Arguments != `{"path":"pkg/server/handler/multichannelhandler.go"}` {
+		t.Fatalf("xml tool call = %#v", resp.ToolCalls[1])
+	}
+	if strings.Contains(resp.RawResponse, "<tool_call>") {
+		t.Fatalf("raw response should remove XML tool call markup: %q", resp.RawResponse)
+	}
+	if resp.RawResponse != "I'll inspect both files." {
+		t.Fatalf("raw response = %q", resp.RawResponse)
+	}
+}
+
+func TestClientReviewDeduplicatesXMLToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `I'll inspect the file.<tool_call>inspect_file<arg_key>path</arg_key><arg_value>extra.go</arg_value></tool_call>`,
+						"tool_calls": []map[string]any{
+							{
+								"index": 0,
+								"id":    "call_1",
+								"type":  "function",
+								"function": map[string]any{
+									"name":      "inspect_file",
+									"arguments": `{"path":"extra.go"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "user"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", resp.ToolCalls)
+	}
+	if resp.ToolCalls[0].ID != "call_1" {
+		t.Fatalf("dedup should preserve structured tool call, got %#v", resp.ToolCalls[0])
+	}
+	if resp.ToolCalls[0].Arguments != `{"path":"extra.go"}` {
+		t.Fatalf("arguments = %q", resp.ToolCalls[0].Arguments)
+	}
+	if strings.Contains(resp.RawResponse, "<tool_call>") {
+		t.Fatalf("raw response should remove XML tool call markup: %q", resp.RawResponse)
+	}
+}
+
 func TestClientReviewCanDisableParallelToolCalls(t *testing.T) {
 	var payload map[string]any
 

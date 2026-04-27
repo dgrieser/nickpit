@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -242,17 +244,22 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		return nil, fmt.Errorf("llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model")
 	}
 
+	toolCalls, content, recoveredXMLToolCalls := mergeContentToolCalls(streamed.toolCalls, streamed.content)
+	if recoveredXMLToolCalls > 0 {
+		c.logf("Recovered XML-style tool calls: recovered=%d total_tool_calls=%d", recoveredXMLToolCalls, len(toolCalls))
+	}
+
 	var resp *ReviewResponse
-	if len(streamed.toolCalls) > 0 {
-		resp = &ReviewResponse{ToolCalls: streamed.toolCalls}
+	if len(toolCalls) > 0 {
+		resp = &ReviewResponse{ToolCalls: toolCalls}
 	} else {
 		var err error
-		resp, err = parseReviewResponse(streamed.content)
+		resp, err = parseReviewResponse(content)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrInvalidJSON, err)
 		}
 	}
-	resp.RawResponse = streamed.content
+	resp.RawResponse = content
 	resp.TokensUsed = streamed.usage
 	c.logf(
 		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
@@ -546,7 +553,6 @@ func finalizeToolCalls(builders []*toolCallBuilder) []ToolCall {
 	}
 	return toolCalls
 }
-
 
 type capturingTransport struct {
 	base http.RoundTripper
@@ -873,6 +879,101 @@ func rawModelResponseForLog(streamed *streamedResponse) any {
 		SawUsage:         streamed.sawUsage,
 		LastFinishReason: streamed.lastFinishReason,
 	}
+}
+
+func mergeContentToolCalls(structured []ToolCall, content string) ([]ToolCall, string, int) {
+	xmlCalls, cleanedContent := parseXMLToolCalls(content)
+	if len(structured) == 0 && len(xmlCalls) == 0 {
+		return nil, content, 0
+	}
+
+	merged := make([]ToolCall, 0, len(structured)+len(xmlCalls))
+	seen := make(map[string]struct{}, len(structured)+len(xmlCalls))
+	for _, call := range structured {
+		key := canonicalToolCallKey(call)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, call)
+	}
+
+	recoveredXMLToolCalls := 0
+	for _, call := range xmlCalls {
+		key := canonicalToolCallKey(call)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, call)
+		recoveredXMLToolCalls++
+	}
+	return merged, cleanedContent, recoveredXMLToolCalls
+}
+
+func parseXMLToolCalls(content string) ([]ToolCall, string) {
+	re := regexp.MustCompile(`(?s)<tool_call>\s*([A-Za-z_][A-Za-z0-9_]*)\s*(.*?)</tool_call>`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return nil, content
+	}
+
+	calls := make([]ToolCall, 0, len(matches))
+	for _, match := range matches {
+		args := parseXMLToolCallArguments(match[2])
+		arguments, err := json.Marshal(args)
+		if err != nil {
+			continue
+		}
+		calls = append(calls, ToolCall{
+			ID:        fmt.Sprintf("xml_tool_call_%d", len(calls)+1),
+			Name:      match[1],
+			Arguments: string(arguments),
+		})
+	}
+
+	cleaned := strings.TrimSpace(re.ReplaceAllString(content, ""))
+	return calls, cleaned
+}
+
+func parseXMLToolCallArguments(content string) map[string]any {
+	re := regexp.MustCompile(`(?s)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*</arg_value>`)
+	matches := re.FindAllStringSubmatch(content, -1)
+	args := make(map[string]any, len(matches))
+	for _, match := range matches {
+		key := strings.TrimSpace(html.UnescapeString(match[1]))
+		if key == "" {
+			continue
+		}
+		args[key] = parseXMLToolCallArgumentValue(match[2])
+	}
+	return args
+}
+
+func parseXMLToolCallArgumentValue(value string) any {
+	value = strings.TrimSpace(html.UnescapeString(value))
+	if parsed, err := strconv.ParseBool(value); err == nil {
+		return parsed
+	}
+	if parsed, err := strconv.Atoi(value); err == nil {
+		return parsed
+	}
+	if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+		return parsed
+	}
+	return value
+}
+
+func canonicalToolCallKey(call ToolCall) string {
+	var args any
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		return call.Name + "\x00" + call.Arguments
+	}
+	normalized, err := json.Marshal(args)
+	if err != nil {
+		return call.Name + "\x00" + call.Arguments
+	}
+	return call.Name + "\x00" + string(normalized)
 }
 
 func parseReviewResponse(content string) (*ReviewResponse, error) {

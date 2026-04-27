@@ -236,27 +236,27 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		Tools: []llm.ToolDefinition{
 			{
 				Name:        "inspect_file",
-				Description: "Retrieve the complete contents of one repo-relative file for code review.",
+				Description: "Retrieve content of repo-relative file",
 				Parameters:  inspectFileToolParameters,
 			},
 			{
 				Name:        "list_files",
-				Description: "List files in one repo-relative folder to discover candidate files for review.",
+				Description: "List files of repo-relative folder",
 				Parameters:  listFilesToolParameters,
 			},
 			{
 				Name:        "search",
-				Description: "Search recursively for a string in one repo-relative file or folder and return matching snippets.",
+				Description: "Search recursively inside repo-relative file or folder",
 				Parameters:  searchToolParameters,
 			},
 			{
 				Name:        "find_callers",
-				Description: "Resolve one function by symbol name and optional path, then return its caller hierarchy across Go, Python, and Node.js/TypeScript code. Go is strongest; Python and Node.js results are best-effort static analysis.",
+				Description: "Resolve function by symbol name and return caller hierarchy and method bodies",
 				Parameters:  callHierarchyToolParameters,
 			},
 			{
 				Name:        "find_callees",
-				Description: "Resolve one function by symbol name and optional path, then return its callee hierarchy across Go, Python, and Node.js/TypeScript code. Go is strongest; Python and Node.js results are best-effort static analysis.",
+				Description: "Resolve function by symbol name and return its callee hierarchy and method bodies",
 				Parameters:  callHierarchyToolParameters,
 			},
 		},
