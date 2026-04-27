@@ -264,6 +264,8 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		Model:             e.config.Model,
 		MaxTokens:         e.config.MaxTokens,
 		Temperature:       e.config.Temperature,
+		TopP:              e.config.TopP,
+		ExtraBody:         e.config.ExtraBody,
 		ParallelToolCalls: !req.DisableParallelToolCalls,
 		ReasoningEffort:   e.config.ReasoningEffort,
 	}

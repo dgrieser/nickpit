@@ -48,6 +48,8 @@ type ReviewRequest struct {
 	Model             string
 	MaxTokens         *int
 	Temperature       *float64
+	TopP              *float64
+	ExtraBody         map[string]any
 	ParallelToolCalls bool
 	ReasoningEffort   string
 }
@@ -88,6 +90,8 @@ type capture struct {
 	header http.Header
 	body   []byte
 }
+
+type extraBodyContextKey struct{}
 
 type streamedResponse struct {
 	content          string
@@ -165,6 +169,107 @@ func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
 	c.logger = logger
 }
 
+func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (map[string]any, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	for key, value := range extraBody {
+		body[key] = value
+	}
+	if _, err := json.Marshal(body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func contextWithExtraBody(ctx context.Context, extraBody map[string]any) context.Context {
+	if len(extraBody) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, extraBodyContextKey{}, cloneRequestExtraBody(extraBody))
+}
+
+func extraBodyFromContext(ctx context.Context) map[string]any {
+	extraBody, _ := ctx.Value(extraBodyContextKey{}).(map[string]any)
+	return extraBody
+}
+
+func cloneRequestExtraBody(extraBody map[string]any) map[string]any {
+	if extraBody == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(extraBody))
+	for key, value := range extraBody {
+		cloned[key] = cloneRequestValue(value)
+	}
+	return cloned
+}
+
+func cloneRequestValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneRequestExtraBody(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneRequestValue(item)
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
+
+func setRequestExtraBodyField(extraBody map[string]any, key string, value any) map[string]any {
+	if extraBody == nil {
+		extraBody = make(map[string]any)
+	}
+	extraBody[key] = value
+	return extraBody
+}
+
+func injectExtraBody(req *http.Request) error {
+	extraBody := extraBodyFromContext(req.Context())
+	if len(extraBody) == 0 || req.Body == nil {
+		return nil
+	}
+
+	data, err := io.ReadAll(req.Body)
+	if err != nil {
+		return fmt.Errorf("llm: reading request body for extra_body: %w", err)
+	}
+	if err := req.Body.Close(); err != nil {
+		return fmt.Errorf("llm: closing request body for extra_body: %w", err)
+	}
+
+	body := map[string]any{}
+	if strings.TrimSpace(string(data)) != "" {
+		if err := json.Unmarshal(data, &body); err != nil {
+			return fmt.Errorf("llm: decoding request body for extra_body: %w", err)
+		}
+	}
+	for key, value := range extraBody {
+		body[key] = value
+	}
+
+	merged, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("llm: encoding request body with extra_body: %w", err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(merged))
+	req.ContentLength = int64(len(merged))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(merged)), nil
+	}
+	return nil
+}
+
 func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("llm: nil review request")
@@ -189,10 +294,23 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		payload.MaxTokens = *req.MaxTokens
 		maxTokensLog = fmt.Sprintf("%d", *req.MaxTokens)
 	}
+	requestExtraBody := cloneRequestExtraBody(req.ExtraBody)
+
 	temperatureLog := "unset"
 	if req.Temperature != nil {
 		payload.Temperature = float32(*req.Temperature)
+		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "temperature", *req.Temperature)
 		temperatureLog = fmt.Sprintf("%.2f", *req.Temperature)
+	}
+	topPLog := "unset"
+	if req.TopP != nil {
+		payload.TopP = float32(*req.TopP)
+		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "top_p", *req.TopP)
+		topPLog = fmt.Sprintf("%.2f", *req.TopP)
+	}
+	extraBodyLog := "unset"
+	if len(requestExtraBody) > 0 {
+		extraBodyLog = fmt.Sprintf("%d", len(requestExtraBody))
 	}
 	if req.ReasoningEffort != "" {
 		payload.ReasoningEffort = req.ReasoningEffort
@@ -208,24 +326,27 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		}
 	}
 
-	if _, err := json.Marshal(payload); err != nil {
+	payloadForLog, err := requestPayloadForLog(payload, requestExtraBody)
+	if err != nil {
 		return nil, fmt.Errorf("llm: encoding request: %w", err)
 	}
 
 	c.logf(
-		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
+		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s top_p=%s extra_body_fields=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
 		payload.Model,
 		c.baseURL+"/chat/completions",
 		maxTokensLog,
 		temperatureLog,
+		topPLog,
+		extraBodyLog,
 		payload.ReasoningEffort,
 		true,
 		len(payload.Messages),
 		len(payload.Tools),
 	)
-	c.logHighlightedJSON("LLM request payload:", payload)
+	c.logHighlightedJSON("LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +449,8 @@ func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
 	return converted
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any) (*streamedResponse, error) {
+	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
 		c.transport.reset()
@@ -560,6 +682,11 @@ type capturingTransport struct {
 }
 
 func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := injectExtraBody(req); err != nil {
+		t.last = nil
+		return nil, err
+	}
+
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
 		t.last = nil

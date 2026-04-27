@@ -208,6 +208,74 @@ func TestClientReviewOmitsTemperatureWhenUnset(t *testing.T) {
 	}
 }
 
+func TestClientReviewIncludesTopPAndExtraBody(t *testing.T) {
+	var payload map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	topP := 0.9
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+		TopP:         &topP,
+		ExtraBody: map[string]any{
+			"chat_template_kwargs": map[string]any{
+				"enable_thinking": true,
+				"clear_thinking":  false,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := payload["top_p"]; got != 0.9 {
+		t.Fatalf("top_p = %v", got)
+	}
+	chatTemplateKwargs, ok := payload["chat_template_kwargs"].(map[string]any)
+	if !ok {
+		t.Fatalf("chat_template_kwargs = %#v", payload["chat_template_kwargs"])
+	}
+	if chatTemplateKwargs["enable_thinking"] != true {
+		t.Fatalf("enable_thinking = %v", chatTemplateKwargs["enable_thinking"])
+	}
+	if chatTemplateKwargs["clear_thinking"] != false {
+		t.Fatalf("clear_thinking = %v", chatTemplateKwargs["clear_thinking"])
+	}
+}
+
 func TestNewOpenAIClientDisablesHTTPClientTimeoutForStreaming(t *testing.T) {
 	client := NewOpenAIClient("https://example.com", "token", "model")
 	if client.httpClient.Timeout != 0 {

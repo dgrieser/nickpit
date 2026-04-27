@@ -32,24 +32,26 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                           string   `yaml:"model"`
-	BaseURL                         string   `yaml:"base_url"`
-	APIKey                          string   `yaml:"api_key"`
-	MaxTokens                       *int     `yaml:"max_tokens"`
-	Temperature                     *float64 `yaml:"temperature"`
-	UseJSONSchema                   bool     `yaml:"use_json_schema"`
-	MaxContextTokens                int      `yaml:"max_context_tokens"`
-	MaxToolCalls                    int      `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls           int      `yaml:"max_duplicate_tool_calls"`
-	ReasoningEffort                 string   `yaml:"reasoning_effort"`
-	Workdir                         string   `yaml:"workdir"`
-	GitHubToken                     string   `yaml:"github_token"`
-	GitLabToken                     string   `yaml:"gitlab_token"`
-	GitLabBaseURL                   string   `yaml:"gitlab_base_url"`
-	MaxContextTokensConfigured      bool     `yaml:"-"`
-	APIKeyConfigured                bool     `yaml:"-"`
-	MaxToolCallsConfigured          bool     `yaml:"-"`
-	MaxDuplicateToolCallsConfigured bool     `yaml:"-"`
+	Model                           string         `yaml:"model"`
+	BaseURL                         string         `yaml:"base_url"`
+	APIKey                          string         `yaml:"api_key"`
+	MaxTokens                       *int           `yaml:"max_tokens"`
+	Temperature                     *float64       `yaml:"temperature"`
+	TopP                            *float64       `yaml:"top_p"`
+	ExtraBody                       map[string]any `yaml:"extra_body"`
+	UseJSONSchema                   bool           `yaml:"use_json_schema"`
+	MaxContextTokens                int            `yaml:"max_context_tokens"`
+	MaxToolCalls                    int            `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls           int            `yaml:"max_duplicate_tool_calls"`
+	ReasoningEffort                 string         `yaml:"reasoning_effort"`
+	Workdir                         string         `yaml:"workdir"`
+	GitHubToken                     string         `yaml:"github_token"`
+	GitLabToken                     string         `yaml:"gitlab_token"`
+	GitLabBaseURL                   string         `yaml:"gitlab_base_url"`
+	MaxContextTokensConfigured      bool           `yaml:"-"`
+	APIKeyConfigured                bool           `yaml:"-"`
+	MaxToolCallsConfigured          bool           `yaml:"-"`
+	MaxDuplicateToolCallsConfigured bool           `yaml:"-"`
 }
 
 type Overrides struct {
@@ -59,6 +61,8 @@ type Overrides struct {
 	APIKey             string
 	MaxTokens          *int
 	Temperature        *float64
+	TopP               *float64
+	ExtraBody          map[string]any
 	UseJSONSchema      bool
 	MaxContextTokens   *int
 	ToolCalls          *int
@@ -148,7 +152,38 @@ func cloneProfile(profile Profile) Profile {
 		value := *profile.Temperature
 		profile.Temperature = &value
 	}
+	if profile.TopP != nil {
+		value := *profile.TopP
+		profile.TopP = &value
+	}
+	profile.ExtraBody = cloneMap(profile.ExtraBody)
 	return profile
+}
+
+func cloneMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(value))
+	for key, item := range value {
+		cloned[key] = cloneValue(item)
+	}
+	return cloned
+}
+
+func cloneValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneValue(item)
+		}
+		return cloned
+	default:
+		return typed
+	}
 }
 
 func Load(path string, overrides Overrides) (*Config, Profile, error) {
@@ -267,6 +302,12 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	if overrides.Temperature != nil {
 		profile.Temperature = overrides.Temperature
+	}
+	if overrides.TopP != nil {
+		profile.TopP = overrides.TopP
+	}
+	if overrides.ExtraBody != nil {
+		profile.ExtraBody = overrides.ExtraBody
 	}
 	if overrides.UseJSONSchema {
 		profile.UseJSONSchema = true

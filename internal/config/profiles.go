@@ -32,6 +32,12 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.Temperature != nil {
 		base.Temperature = override.Temperature
 	}
+	if override.TopP != nil {
+		base.TopP = override.TopP
+	}
+	if override.ExtraBody != nil {
+		base.ExtraBody = override.ExtraBody
+	}
 	if override.UseJSONSchema {
 		base.UseJSONSchema = true
 	}

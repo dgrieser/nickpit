@@ -30,6 +30,11 @@ type app struct {
 	apiKey                        string
 	workDir                       string
 	profile                       string
+	temperature                   float64
+	temperatureSet                bool
+	topP                          float64
+	topPSet                       bool
+	extraBody                     string
 	maxContextTokens              int
 	maxContextTokensSet           bool
 	includeFullFiles              bool
@@ -89,6 +94,9 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.apiKey, "api-key", "", "LLM API key")
 	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Working directory")
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.temperature, &cli.temperatureSet), "temperature", "Sampling temperature")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.topP, &cli.topPSet), "top-p", "Nucleus sampling probability")
+	root.PersistentFlags().StringVar(&cli.extraBody, "extra-body", "", "Additional JSON object fields to merge into the LLM request body")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxContextTokens, &cli.maxContextTokensSet), "max-context-tokens", "Context token budget")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
@@ -131,12 +139,32 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.maxDuplicateToolCallsSet {
 		duplicateToolCalls = &a.maxDuplicateToolCalls
 	}
+	var temperature *float64
+	if a.temperatureSet {
+		temperature = &a.temperature
+	}
+	var topP *float64
+	if a.topPSet {
+		topP = &a.topP
+	}
+	var extraBody map[string]any
+	if strings.TrimSpace(a.extraBody) != "" {
+		if err := json.Unmarshal([]byte(a.extraBody), &extraBody); err != nil {
+			return "", config.Profile{}, fmt.Errorf("parsing --extra-body JSON object: %w", err)
+		}
+		if extraBody == nil {
+			return "", config.Profile{}, fmt.Errorf("--extra-body must be a JSON object")
+		}
+	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
 		Profile:            a.profile,
 		Model:              a.model,
 		BaseURL:            a.baseURL,
 		APIKey:             a.apiKey,
 		ReasoningEffort:    a.reasoningEffort,
+		Temperature:        temperature,
+		TopP:               topP,
+		ExtraBody:          extraBody,
 		UseJSONSchema:      a.useJSONSchema,
 		MaxContextTokens:   maxContextTokens,
 		ToolCalls:          toolCalls,
@@ -182,6 +210,38 @@ func (v *trackedIntValue) Set(value string) error {
 
 func (v *trackedIntValue) Type() string {
 	return "int"
+}
+
+type trackedFloatValue struct {
+	target *float64
+	set    *bool
+}
+
+func newTrackedFloatValue(target *float64, set *bool) *trackedFloatValue {
+	return &trackedFloatValue{target: target, set: set}
+}
+
+func (v *trackedFloatValue) String() string {
+	if v == nil || v.target == nil {
+		return "0"
+	}
+	return fmt.Sprintf("%g", *v.target)
+}
+
+func (v *trackedFloatValue) Set(value string) error {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return err
+	}
+	*v.target = parsed
+	if v.set != nil {
+		*v.set = true
+	}
+	return nil
+}
+
+func (v *trackedFloatValue) Type() string {
+	return "float"
 }
 
 func (a *app) newLocalCmd() *cobra.Command {

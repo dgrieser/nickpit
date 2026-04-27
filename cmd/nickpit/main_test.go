@@ -68,6 +68,83 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesSamplingCLIOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    temperature: 0.25
+    top_p: 0.75
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:        "default",
+		configPath:     path,
+		temperature:    1,
+		temperatureSet: true,
+		topP:           1,
+		topPSet:        true,
+		extraBody:      `{"chat_template_kwargs":{"enable_thinking":true,"clear_thinking":false}}`,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Temperature == nil {
+		t.Fatal("expected temperature override")
+	}
+	if *profile.Temperature != 1 {
+		t.Fatalf("temperature = %v", *profile.Temperature)
+	}
+	if profile.TopP == nil {
+		t.Fatal("expected top_p override")
+	}
+	if *profile.TopP != 1 {
+		t.Fatalf("top_p = %v", *profile.TopP)
+	}
+	chatTemplateKwargs, ok := profile.ExtraBody["chat_template_kwargs"].(map[string]any)
+	if !ok {
+		t.Fatalf("chat_template_kwargs = %#v", profile.ExtraBody["chat_template_kwargs"])
+	}
+	if chatTemplateKwargs["enable_thinking"] != true {
+		t.Fatalf("enable_thinking = %v", chatTemplateKwargs["enable_thinking"])
+	}
+	if chatTemplateKwargs["clear_thinking"] != false {
+		t.Fatalf("clear_thinking = %v", chatTemplateKwargs["clear_thinking"])
+	}
+}
+
+func TestLoadProfileRejectsInvalidExtraBodyOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:    "default",
+		configPath: path,
+		extraBody:  `[`,
+	}
+	_, _, err = app.loadProfile()
+	if err == nil {
+		t.Fatal("expected invalid --extra-body error")
+	}
+}
+
 func TestMissingAPIKeyHintUsesDefaultProfileEnv(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -314,6 +314,66 @@ profiles:
 	}
 }
 
+func TestLoadConfigTopPFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    top_p: 0.85
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TopP == nil {
+		t.Fatal("expected top_p from config")
+	}
+	if *profile.TopP != 0.85 {
+		t.Fatalf("top_p = %v", *profile.TopP)
+	}
+}
+
+func TestLoadConfigExtraBodyFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: true
+        clear_thinking: false
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.ExtraBody == nil {
+		t.Fatal("expected extra_body from config")
+	}
+	chatTemplateKwargs, ok := profile.ExtraBody["chat_template_kwargs"].(map[string]any)
+	if !ok {
+		t.Fatalf("chat_template_kwargs = %#v", profile.ExtraBody["chat_template_kwargs"])
+	}
+	if chatTemplateKwargs["enable_thinking"] != true {
+		t.Fatalf("enable_thinking = %v", chatTemplateKwargs["enable_thinking"])
+	}
+	if chatTemplateKwargs["clear_thinking"] != false {
+		t.Fatalf("clear_thinking = %v", chatTemplateKwargs["clear_thinking"])
+	}
+}
+
 func TestLoadConfigMaxTokensFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
