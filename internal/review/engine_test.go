@@ -691,13 +691,14 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 	if errorPayload["code"] != "missing_argument" {
 		t.Fatalf("tool error code = %#v", errorPayload["code"])
 	}
-	if errorPayload["message"] != "missing required argument: path" {
+	message, _ := errorPayload["message"].(string)
+	if !strings.HasPrefix(message, "missing required argument: path") {
 		t.Fatalf("tool error payload = %#v", payload)
 	}
 	if llmClient.reqs[1].Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
 	}
-	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"<path>\"]; error=\"missing required argument: path\""; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"<path>\"]; error=\"missing required argument: path"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 	if want := "Please retry the last tool call."; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
@@ -1766,4 +1767,148 @@ func pathOrDefault(path, fallback string) string {
 		return fallback
 	}
 	return path + "/root.go"
+}
+
+type scriptedLLM struct {
+	reqs    []*llm.ReviewRequest
+	results []scriptedLLMResult
+}
+
+type scriptedLLMResult struct {
+	resp *llm.ReviewResponse
+	err  error
+}
+
+func (s *scriptedLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	cloned := *req
+	if len(req.Messages) > 0 {
+		cloned.Messages = append([]llm.Message(nil), req.Messages...)
+	}
+	s.reqs = append(s.reqs, &cloned)
+	if len(s.results) == 0 {
+		return &llm.ReviewResponse{
+			OverallCorrectness:     "patch is correct",
+			OverallExplanation:     "ok",
+			OverallConfidenceScore: 0.5,
+		}, nil
+	}
+	next := s.results[0]
+	s.results = s.results[1:]
+	return next.resp, next.err
+}
+
+func TestEngineRetriesOnInvalidJSONResponse(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{
+				err: &llm.InvalidResponseError{
+					RawContent: "Sure! Here it is:\n\n{not valid json}",
+					Reason:     "could not parse JSON: unexpected token",
+				},
+			},
+			{
+				resp: &llm.ReviewResponse{
+					OverallCorrectness:     "patch is incorrect",
+					OverallExplanation:     "fixed",
+					OverallConfidenceScore: 0.7,
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.OverallCorrectness != "patch is incorrect" {
+		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	retryMessages := llmClient.reqs[1].Messages
+	if len(retryMessages) < 4 {
+		t.Fatalf("retry messages = %d, want at least 4", len(retryMessages))
+	}
+	assistantMsg := retryMessages[len(retryMessages)-2]
+	if assistantMsg.Role != "assistant" {
+		t.Fatalf("retry assistant role = %q", assistantMsg.Role)
+	}
+	if !strings.Contains(assistantMsg.Content, "{not valid json}") {
+		t.Fatalf("retry assistant content = %q", assistantMsg.Content)
+	}
+	userMsg := retryMessages[len(retryMessages)-1]
+	if userMsg.Role != "user" {
+		t.Fatalf("retry user role = %q", userMsg.Role)
+	}
+	if !strings.Contains(userMsg.Content, "could not be parsed") {
+		t.Fatalf("retry user content missing reason: %q", userMsg.Content)
+	}
+	if !strings.Contains(userMsg.Content, "ONLY a JSON object") {
+		t.Fatalf("retry user content missing instruction: %q", userMsg.Content)
+	}
+}
+
+func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
+	results := make([]scriptedLLMResult, 0, defaultMaxJSONRetries+1)
+	for i := 0; i <= defaultMaxJSONRetries; i++ {
+		results = append(results, scriptedLLMResult{
+			err: &llm.InvalidResponseError{
+				RawContent: "still bad",
+				Reason:     "could not parse JSON",
+			},
+		})
+	}
+	llmClient := &scriptedLLM{results: results}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if !errors.Is(err, llm.ErrInvalidJSON) {
+		t.Fatalf("expected ErrInvalidJSON, got %v", err)
+	}
+	if len(llmClient.reqs) != defaultMaxJSONRetries+1 {
+		t.Fatalf("requests = %d, want %d", len(llmClient.reqs), defaultMaxJSONRetries+1)
+	}
+}
+
+func TestEngineToleratesLenientToolArguments(t *testing.T) {
+	retrievalEngine := &countingRetrieval{}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{
+						ID:   "call_1",
+						Name: "inspect_file",
+						// Trailing comma + single quotes + prose wrapper.
+						Arguments: "Sure: {'path': 'main.go',}",
+					},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "ok",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "main.go" {
+		t.Fatalf("expected lenient parsing to dispatch inspect_file for main.go, got %#v", retrievalEngine.paths)
+	}
 }

@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -29,6 +30,8 @@ type Engine struct {
 }
 
 var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
+
+const defaultMaxJSONRetries = 3
 
 var inspectFileToolParameters = json.RawMessage(`{
   "type": "object",
@@ -288,6 +291,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	var resp *llm.ReviewResponse
 	var syntheticFollowup *llm.Message
 	var toolCallHistory []toolCallHistoryEntry
+	jsonRetries := 0
 
 	for {
 		llmReq.Messages = messages
@@ -296,6 +300,18 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		}
 		resp, err = e.llm.Review(ctx, llmReq)
 		if err != nil {
+			var invalidResp *llm.InvalidResponseError
+			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
+				jsonRetries++
+				e.logf("Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", jsonRetries, invalidResp.Reason, invalidResp.MissingFields)
+				e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", jsonRetries))
+				if strings.TrimSpace(invalidResp.RawContent) != "" {
+					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+				}
+				messages = append(messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp)})
+				syntheticFollowup = nil
+				continue
+			}
 			return nil, err
 		}
 		totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
@@ -413,7 +429,37 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
 	llmReq.Messages = finalMessages
 	llmReq.Tools = nil
-	return e.llm.Review(ctx, llmReq)
+	for attempt := 0; ; attempt++ {
+		resp, err := e.llm.Review(ctx, llmReq)
+		if err == nil {
+			return resp, nil
+		}
+		var invalidResp *llm.InvalidResponseError
+		if !errors.As(err, &invalidResp) || attempt >= defaultMaxJSONRetries {
+			return nil, err
+		}
+		e.logf("Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
+		e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
+		if strings.TrimSpace(invalidResp.RawContent) != "" {
+			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+		}
+		llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp)})
+	}
+}
+
+func buildJSONRetryFeedback(err *llm.InvalidResponseError) string {
+	var b strings.Builder
+	b.WriteString("Your previous response could not be parsed as the expected JSON output: ")
+	b.WriteString(err.Reason)
+	b.WriteString(".")
+	if len(err.MissingFields) > 0 {
+		b.WriteString(" Missing or invalid fields: ")
+		b.WriteString(strings.Join(err.MissingFields, ", "))
+		b.WriteString(".")
+	}
+	b.WriteString("\n\nRespond again with ONLY a JSON object (no prose, no markdown fences) matching this shape:\n\n")
+	b.WriteString(llm.FindingsExamplePromptSnippet())
+	return b.String()
 }
 
 func (e *Engine) loadPrompt(name string) (string, error) {
@@ -571,7 +617,7 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 		var args struct {
 			Path string `json:"path"`
 		}
-		if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
 		return fmt.Sprintf("inspect_file\x00%s", normalizeToolPath(args.Path))
@@ -580,7 +626,7 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 			Path  string `json:"path"`
 			Depth int    `json:"depth"`
 		}
-		if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
 		if args.Depth <= 0 {
@@ -593,7 +639,7 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 			Symbol string `json:"symbol"`
 			Depth  int    `json:"depth"`
 		}
-		if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
 		if args.Depth <= 0 {
@@ -605,7 +651,7 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 			Path  string `json:"path"`
 			Query string `json:"query"`
 		}
-		if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
 		query := strings.TrimSpace(args.Query)
@@ -645,12 +691,12 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		LineStart int    `json:"line_start"`
 		LineEnd   int    `json:"line_end"`
 	}
-	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-		return toolError("", "invalid_arguments", fmt.Sprintf("invalid tool arguments: %v", err))
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Path == "" {
-		return toolError("", "missing_argument", "missing required argument: path")
+		return toolError("", "missing_argument", fmt.Sprintf("missing required argument: path; expected %s", toolArgumentSchemas["inspect_file"]))
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	unlock := state.fileLocks.lock(normalizedPath)
@@ -710,8 +756,8 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 		Path  string `json:"path"`
 		Depth int    `json:"depth"`
 	}
-	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-		return toolError("", "invalid_arguments", fmt.Sprintf("invalid tool arguments: %v", err))
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Depth <= 0 {
@@ -751,13 +797,13 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		MaxResults    int    `json:"max_results"`
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
-	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-		return toolError("", "invalid_arguments", fmt.Sprintf("invalid tool arguments: %v", err))
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	args.Query = strings.TrimSpace(args.Query)
 	if args.Query == "" {
-		return toolError(normalizeToolPath(args.Path), "missing_argument", "missing required argument: query")
+		return toolError(normalizeToolPath(args.Path), "missing_argument", fmt.Sprintf("missing required argument: query; expected %s", toolArgumentSchemas["search"]))
 	}
 	if args.ContextLines < 0 {
 		args.ContextLines = 5
@@ -808,13 +854,13 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		Path   string `json:"path"`
 		Depth  int    `json:"depth"`
 	}
-	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
-		return toolError("", "invalid_arguments", fmt.Sprintf("invalid tool arguments: %v", err))
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
 	}
 	args.Symbol = strings.TrimSpace(args.Symbol)
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Symbol == "" {
-		return toolError(normalizeToolPath(args.Path), "missing_argument", "missing required argument: symbol")
+		return toolError(normalizeToolPath(args.Path), "missing_argument", fmt.Sprintf("missing required argument: symbol; expected %s", toolArgumentSchemas[toolCall.Name]))
 	}
 	if args.Depth <= 0 {
 		args.Depth = 10
@@ -869,6 +915,25 @@ func mustToolResultJSON(value any) string {
 	return string(data)
 }
 
+var toolArgumentSchemas = map[string]string{
+	"inspect_file": `{"path": "<repo-relative path>", "line_start"?: int, "line_end"?: int}`,
+	"list_files":   `{"path"?: "<repo-relative folder>", "depth"?: int}`,
+	"search":       `{"path"?: "<repo-relative path>", "query": "<text>", "context_lines"?: int, "max_results"?: int, "case_sensitive"?: bool}`,
+	"find_callers": `{"symbol": "<function name>", "path"?: "<repo-relative path>", "depth"?: int}`,
+	"find_callees": `{"symbol": "<function name>", "path"?: "<repo-relative path>", "depth"?: int}`,
+}
+
+func parseToolArguments(toolName string, raw string, dst any) error {
+	if err := llm.LenientUnmarshal(raw, dst); err != nil {
+		schema := toolArgumentSchemas[toolName]
+		if schema == "" {
+			return fmt.Errorf("invalid tool arguments for %s: %v; received: %s", toolName, err, raw)
+		}
+		return fmt.Errorf("invalid tool arguments for %s: %v; expected %s; received: %s", toolName, err, schema, raw)
+	}
+	return nil
+}
+
 func toolError(path, code, message string) string {
 	payload := map[string]any{
 		"status": "error",
@@ -917,7 +982,7 @@ func syntheticToolCallSummary(entry toolCallHistoryEntry) string {
 		MaxResults    int    `json:"max_results"`
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
-	_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
+	_ = llm.LenientUnmarshal(toolCall.Arguments, &args)
 	name := toolCall.Name
 	if entry.OptimizedTo != "" {
 		name = fmt.Sprintf("%s (replaced by %s)", toolCall.Name, entry.OptimizedTo)
@@ -1189,7 +1254,7 @@ func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
 		MaxResults    int    `json:"max_results"`
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
-	_ = json.Unmarshal([]byte(toolCall.Arguments), &args)
+	_ = llm.LenientUnmarshal(toolCall.Arguments, &args)
 	return syntheticToolArguments(toolCall.Name, args)
 }
 
@@ -1223,7 +1288,7 @@ func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {
 		MaxResults    int    `json:"max_results"`
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
-	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+	if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 		return "", false
 	}
 	normalizedPath := normalizeToolPath(strings.TrimSpace(args.Path))
