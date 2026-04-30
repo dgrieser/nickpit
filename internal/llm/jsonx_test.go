@@ -39,6 +39,8 @@ func TestExtractJSONObject(t *testing.T) {
 		{"array", `Result:\n[1,2,3]\nDone`, `[1,2,3]`, true},
 		{"braces in string", `{"a":"}{"} `, `{"a":"}{"}`, true},
 		{"escaped quote", `{"a":"\"}"}`, `{"a":"\"}"}`, true},
+		{"brace in prose before json", `Here is the configuration { as requested: {"key": "value"}`, `{"key": "value"}`, true},
+		{"unbalanced first then balanced", `prefix { unbalanced [1,2,3]`, `[1,2,3]`, true},
 		{"none", "no json here", "", false},
 	}
 	for _, tt := range tests {
@@ -67,6 +69,8 @@ func TestRepairJSON(t *testing.T) {
 		{"block comment", "{\"a\": /* skip */ 1}", `{"a":  1}`},
 		{"python literals", `{"a":True,"b":False,"c":None}`, `{"a":true,"b":false,"c":null}`},
 		{"preserves string contents", `{"a":"True, 'x', // comment, /* */"}`, `{"a":"True, 'x', // comment, /* */"}`},
+		{"escapes embedded double quotes in single-quoted string", `{'text': 'He said "hello"'}`, `{"text": "He said \"hello\""}`},
+		{"keeps already escaped double quotes in single-quoted string", `{'text': 'He said \"hi\"'}`, `{"text": "He said \"hi\""}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -117,6 +121,16 @@ func TestLenientUnmarshal(t *testing.T) {
 		{
 			"line comments",
 			"{\n  \"a\": 1, // primary key\n  \"b\": \"hi\",\n  \"c\": {\"k\":\"v\"}\n}",
+			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
+		},
+		{
+			"single quotes around embedded double quotes",
+			`{'a': 1, 'b': 'He said "hi"', 'c': {'k': 'v'}}`,
+			payload{A: 1, B: `He said "hi"`, C: map[string]any{"k": "v"}},
+		},
+		{
+			"prose with stray opening brace before valid json",
+			`Sure! Here is the configuration { as requested: {"a":1,"b":"hi","c":{"k":"v"}}`,
 			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
 		},
 	}

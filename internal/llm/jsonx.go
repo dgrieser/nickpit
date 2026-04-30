@@ -85,28 +85,30 @@ func isLanguageTag(s string) bool {
 
 // ExtractJSONObject locates the first balanced JSON object or array in content
 // and returns it as a substring. Braces inside string literals are ignored,
-// honoring the standard JSON escape sequences. Returns false if no balanced
-// object or array is found.
+// honoring the standard JSON escape sequences. If the first opening bracket
+// does not yield a balanced structure (e.g. it appears in surrounding prose),
+// subsequent candidates are tried. Returns false if no balanced object or
+// array is found.
 func ExtractJSONObject(content string) (string, bool) {
-	start := -1
-	var open, close byte
-	for i := 0; i < len(content); i++ {
-		c := content[i]
-		if c == '{' || c == '[' {
-			start = i
-			open = c
-			if c == '{' {
-				close = '}'
-			} else {
-				close = ']'
-			}
-			break
+	for pos := 0; pos < len(content); pos++ {
+		c := content[pos]
+		if c != '{' && c != '[' {
+			continue
+		}
+		var close byte
+		if c == '{' {
+			close = '}'
+		} else {
+			close = ']'
+		}
+		if extracted, ok := scanBalanced(content, pos, c, close); ok {
+			return extracted, true
 		}
 	}
-	if start < 0 {
-		return "", false
-	}
+	return "", false
+}
 
+func scanBalanced(content string, start int, open, close byte) (string, bool) {
 	depth := 0
 	inString := false
 	escape := false
@@ -169,6 +171,14 @@ func RepairJSON(data []byte) []byte {
 					out = append(out, '"')
 					continue
 				}
+				out = append(out, c)
+				continue
+			}
+			// Inside a single-quoted string, unescaped double quotes must be
+			// escaped to keep the rewritten JSON valid.
+			if stringQuote == '\'' && c == '"' {
+				out = append(out, '\\', '"')
+				continue
 			}
 			out = append(out, c)
 			continue
