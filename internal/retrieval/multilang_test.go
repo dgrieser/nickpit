@@ -18,7 +18,7 @@ func TestDetectLanguageNormalizesNodeFamily(t *testing.T) {
 		"main.mts":  "nodejs",
 		"main.cts":  "nodejs",
 		"main.go":   "go",
-		"README.md": "text",
+		"README.md": "markdown",
 	}
 	for path, want := range tests {
 		if got := detectLanguage(path); got != want {

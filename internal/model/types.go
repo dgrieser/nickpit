@@ -111,6 +111,7 @@ type ChangedFile struct {
 
 type DiffHunk struct {
 	FilePath string `json:"file_path"`
+	Language string `json:"language,omitempty"`
 	OldStart int    `json:"old_start"`
 	OldLines int    `json:"old_lines"`
 	NewStart int    `json:"new_start"`

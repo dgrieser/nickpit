@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -96,6 +97,7 @@ func parseHunkHeader(path, line string) (*model.DiffHunk, error) {
 	newLines := toCount(matches[4])
 	return &model.DiffHunk{
 		FilePath: path,
+		Language: filetype.DetectLanguage(path),
 		OldStart: oldStart,
 		OldLines: oldLines,
 		NewStart: newStart,

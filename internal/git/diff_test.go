@@ -21,6 +21,9 @@ func TestParseUnifiedDiff(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
+	if hunks[0].Language != "go" {
+		t.Fatalf("hunk language = %q", hunks[0].Language)
+	}
 	if files[0].Additions != 3 {
 		t.Fatalf("additions = %d", files[0].Additions)
 	}

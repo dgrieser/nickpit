@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
@@ -267,20 +268,7 @@ func splitLines(text string) []string {
 }
 
 func detectLanguage(path string) string {
-	switch filepath.Ext(path) {
-	case ".go":
-		return "go"
-	case ".py":
-		return "python"
-	case ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts":
-		return "nodejs"
-	case ".rs":
-		return "rust"
-	case ".java":
-		return "java"
-	default:
-		return "text"
-	}
+	return filetype.DetectLanguage(path)
 }
 
 func isTextContent(data []byte) bool {
