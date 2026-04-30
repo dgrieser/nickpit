@@ -138,3 +138,63 @@ func TestEngineAddsPythonStyleGuideForPythonDiffs(t *testing.T) {
 		t.Fatalf("style guide content = %.80q", content)
 	}
 }
+
+type styleGuideDiffSource struct{}
+
+func (styleGuideDiffSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{
+		Mode: model.ModeLocal,
+		Repository: model.RepositoryInfo{
+			FullName: "repo",
+		},
+		Title:       "title",
+		Description: "description",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "web/app.js", Status: model.FileModified, Additions: 1},
+			{Path: "web/app.ts", Status: model.FileModified, Additions: 1},
+			{Path: "web/index.html", Status: model.FileModified, Additions: 1},
+			{Path: "web/styles.css", Status: model.FileModified, Additions: 1},
+			{Path: "src/Program.cs", Status: model.FileModified, Additions: 1},
+		},
+	}, nil
+}
+
+func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(styleGuideDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+		t.Fatal(err)
+	}
+	styleGuides := payload["style_guides"].([]any)
+	if len(styleGuides) != 4 {
+		t.Fatalf("style guides = %#v", payload["style_guides"])
+	}
+	contentsByLanguage := make(map[string]string)
+	for _, item := range styleGuides {
+		styleGuide := item.(map[string]any)
+		contentsByLanguage[styleGuide["language"].(string)] = styleGuide["content"].(string)
+	}
+	for language, want := range map[string]string{
+		"javascript": "# JavaScript Style Guide",
+		"typescript": "# TypeScript Style Guide",
+		"html":       "# HTML & CSS Style Guide",
+		"csharp":     "# C# Style Guide",
+	} {
+		if !strings.Contains(contentsByLanguage[language], want) {
+			t.Fatalf("%s style guide content = %.80q", language, contentsByLanguage[language])
+		}
+	}
+	if _, ok := contentsByLanguage["css"]; ok {
+		t.Fatalf("HTML/CSS guide should be included once: %#v", contentsByLanguage)
+	}
+}

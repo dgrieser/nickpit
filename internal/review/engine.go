@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -423,11 +424,16 @@ func (e *Engine) loadPrompt(name string) (string, error) {
 func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
 	languages := changedLanguages(ctx)
 	guides := make([]model.StyleGuide, 0, len(languages))
+	seenFiles := make(map[string]struct{})
 	for _, language := range languages {
 		name, ok := builtInStyleGuideFiles[language]
 		if !ok {
 			continue
 		}
+		if _, ok := seenFiles[name]; ok {
+			continue
+		}
+		seenFiles[name] = struct{}{}
 		content, err := prompts.Load(name)
 		if err != nil {
 			return nil, fmt.Errorf("review: loading style guide for %s: %w", language, err)
@@ -441,8 +447,14 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 }
 
 var builtInStyleGuideFiles = map[string]string{
-	"go":     "styleguides/go.md",
-	"python": "styleguides/python.md",
+	"go":         "styleguides/go.md",
+	"python":     "styleguides/python.md",
+	"javascript": "styleguides/javascript.md",
+	"typescript": "styleguides/typescript.md",
+	"html":       "styleguides/html-css.md",
+	"css":        "styleguides/html-css.md",
+	"scss":       "styleguides/html-css.md",
+	"csharp":     "styleguides/csharp.md",
 }
 
 func changedLanguages(ctx *model.ReviewContext) []string {
@@ -451,21 +463,18 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 	}
 	seen := make(map[string]struct{})
 	for _, hunk := range ctx.DiffHunks {
-		if hunk.Language == "" {
-			continue
+		language := styleGuideLanguageForPath(hunk.FilePath)
+		if language == "" {
+			language = hunk.Language
 		}
-		seen[hunk.Language] = struct{}{}
+		addLanguage(seen, language)
 	}
 	for _, file := range ctx.ChangedFiles {
-		language := filetype.DetectLanguage(file.Path)
-		if language == "" {
-			continue
-		}
-		seen[language] = struct{}{}
+		addLanguage(seen, styleGuideLanguageForPath(file.Path))
 	}
 
 	languages := make([]string, 0, len(seen))
-	for _, language := range []string{"go", "python"} {
+	for _, language := range []string{"go", "python", "javascript", "typescript", "html", "css", "scss", "csharp"} {
 		if _, ok := seen[language]; ok {
 			languages = append(languages, language)
 			delete(seen, language)
@@ -475,6 +484,28 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 		languages = append(languages, language)
 	}
 	return languages
+}
+
+func addLanguage(seen map[string]struct{}, language string) {
+	if language == "" {
+		return
+	}
+	if _, ok := builtInStyleGuideFiles[language]; !ok {
+		return
+	}
+	seen[language] = struct{}{}
+}
+
+func styleGuideLanguageForPath(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".js", ".mjs", ".cjs", ".jsx":
+		return "javascript"
+	case ".ts", ".mts", ".cts", ".tsx":
+		return "typescript"
+	default:
+		return filetype.DetectLanguage(path)
+	}
 }
 
 func filterByPriority(findings []model.Finding, threshold string) []model.Finding {

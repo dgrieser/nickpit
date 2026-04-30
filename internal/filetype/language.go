@@ -58,7 +58,7 @@ func DetectLanguage(path string) string {
 		return "scala"
 	case ".sql":
 		return "sql"
-	case ".html", ".htm":
+	case ".html", ".htm", ".cshtml":
 		return "html"
 	case ".css":
 		return "css"
