@@ -23,6 +23,27 @@ import (
 
 var ErrInvalidJSON = errors.New("model returned invalid JSON")
 
+// InvalidResponseError describes a model response that could not be parsed
+// or that parsed but is missing required fields. RawContent holds the original
+// model output so callers can append it to the conversation when asking the
+// model to retry.
+type InvalidResponseError struct {
+	RawContent    string
+	Reason        string
+	MissingFields []string
+}
+
+func (e *InvalidResponseError) Error() string {
+	if len(e.MissingFields) > 0 {
+		return fmt.Sprintf("model returned invalid JSON: %s (missing or invalid fields: %s)", e.Reason, strings.Join(e.MissingFields, ", "))
+	}
+	return fmt.Sprintf("model returned invalid JSON: %s", e.Reason)
+}
+
+func (e *InvalidResponseError) Is(target error) bool {
+	return target == ErrInvalidJSON
+}
+
 type Client interface {
 	Review(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error)
 }
@@ -377,7 +398,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var err error
 		resp, err = parseReviewResponse(content)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrInvalidJSON, err)
+			return nil, err
 		}
 	}
 	resp.RawResponse = content
@@ -1105,16 +1126,43 @@ func canonicalToolCallKey(call ToolCall) string {
 
 func parseReviewResponse(content string) (*ReviewResponse, error) {
 	var parsed ReviewResponse
-	if err := json.Unmarshal([]byte(content), &parsed); err == nil {
-		return &parsed, nil
+	if err := LenientUnmarshal(content, &parsed); err != nil {
+		return nil, &InvalidResponseError{
+			RawContent: content,
+			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
+		}
 	}
-	re := regexp.MustCompile("(?s)```json\\s*(\\{.*\\})\\s*```")
-	matches := re.FindStringSubmatch(content)
-	if len(matches) < 2 {
-		return nil, fmt.Errorf("invalid JSON response")
-	}
-	if err := json.Unmarshal([]byte(matches[1]), &parsed); err != nil {
-		return nil, err
+	if missing := missingResponseFields(&parsed, content); len(missing) > 0 {
+		return &parsed, &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: missing,
+		}
 	}
 	return &parsed, nil
+}
+
+func missingResponseFields(parsed *ReviewResponse, content string) []string {
+	var raw map[string]json.RawMessage
+	_ = LenientUnmarshal(content, &raw)
+	var missing []string
+	if _, ok := raw["findings"]; !ok && parsed.Findings == nil {
+		missing = append(missing, "findings")
+	}
+	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
+		missing = append(missing, "overall_correctness")
+	} else {
+		switch parsed.OverallCorrectness {
+		case "patch is correct", "patch is incorrect":
+		default:
+			missing = append(missing, `overall_correctness (must be "patch is correct" or "patch is incorrect")`)
+		}
+	}
+	if strings.TrimSpace(parsed.OverallExplanation) == "" {
+		missing = append(missing, "overall_explanation")
+	}
+	if _, ok := raw["overall_confidence_score"]; !ok {
+		missing = append(missing, "overall_confidence_score")
+	}
+	return missing
 }

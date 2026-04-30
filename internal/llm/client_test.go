@@ -1041,6 +1041,125 @@ func TestClientReviewReturnsErrInvalidJSONOnParseFailure(t *testing.T) {
 	}
 }
 
+func TestClientReviewParsesJSONWrappedInProse(t *testing.T) {
+	wrapped := "Sure! Here's my review:\n\n" +
+		`{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"looks fine","overall_confidence_score":0.42}` +
+		"\n\nLet me know if you need anything else."
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": wrapped,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     7,
+				"completion_tokens": 3,
+				"total_tokens":      10,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err != nil {
+		t.Fatalf("expected lenient parse to succeed, got %v", err)
+	}
+	if resp.OverallCorrectness != "patch is correct" {
+		t.Fatalf("overall_correctness = %q", resp.OverallCorrectness)
+	}
+	if resp.OverallExplanation != "looks fine" {
+		t.Fatalf("overall_explanation = %q", resp.OverallExplanation)
+	}
+	if resp.OverallConfidenceScore != 0.42 {
+		t.Fatalf("overall_confidence_score = %v", resp.OverallConfidenceScore)
+	}
+}
+
+func TestClientReviewReportsMissingFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[]}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     7,
+				"completion_tokens": 3,
+				"total_tokens":      10,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing required fields")
+	}
+	if !errors.Is(err, ErrInvalidJSON) {
+		t.Fatalf("expected ErrInvalidJSON, got %v", err)
+	}
+	var invalidResp *InvalidResponseError
+	if !errors.As(err, &invalidResp) {
+		t.Fatalf("expected *InvalidResponseError, got %T", err)
+	}
+	if invalidResp.RawContent != `{"findings":[]}` {
+		t.Fatalf("raw content = %q", invalidResp.RawContent)
+	}
+	hasField := func(name string) bool {
+		for _, f := range invalidResp.MissingFields {
+			if strings.HasPrefix(f, name) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"overall_correctness", "overall_explanation", "overall_confidence_score"} {
+		if !hasField(want) {
+			t.Fatalf("missing field %q not reported, got %v", want, invalidResp.MissingFields)
+		}
+	}
+}
+
 func TestClientReviewReportsPlainTextHTTPErrorBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
