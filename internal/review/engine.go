@@ -501,6 +501,7 @@ var builtInStyleGuideFiles = map[string]string{
 	"css":        "styleguides/html-css.md",
 	"scss":       "styleguides/html-css.md",
 	"csharp":     "styleguides/csharp.md",
+	"sql":        "styleguides/sql.md",
 }
 
 func changedLanguages(ctx *model.ReviewContext) []string {
@@ -520,7 +521,7 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 	}
 
 	languages := make([]string, 0, len(seen))
-	for _, language := range []string{"go", "python", "javascript", "typescript", "html", "css", "scss", "csharp"} {
+	for _, language := range []string{"go", "python", "javascript", "typescript", "html", "css", "scss", "csharp", "sql"} {
 		if _, ok := seen[language]; ok {
 			languages = append(languages, language)
 			delete(seen, language)
