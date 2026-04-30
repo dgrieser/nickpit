@@ -89,6 +89,7 @@ type ReviewPromptPayload struct {
 	Commits             []CommitSummary    `json:"commits,omitempty"`
 	ChangedFiles        []ChangedFile      `json:"changed_files"`
 	DiffHunks           []DiffHunk         `json:"diff_hunks,omitempty"`
+	StyleGuides         []StyleGuide       `json:"style_guides,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	OmittedSections     []string           `json:"omitted_sections,omitempty"`
@@ -116,6 +117,11 @@ type DiffHunk struct {
 	OldLines int    `json:"old_lines"`
 	NewStart int    `json:"new_start"`
 	NewLines int    `json:"new_lines"`
+	Content  string `json:"content"`
+}
+
+type StyleGuide struct {
+	Language string `json:"language"`
 	Content  string `json:"content"`
 }
 

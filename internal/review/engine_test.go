@@ -331,6 +331,17 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if _, ok := payload["changed_files"]; !ok {
 		t.Fatalf("user prompt missing changed_files: %#v", payload)
 	}
+	styleGuides, ok := payload["style_guides"].([]any)
+	if !ok || len(styleGuides) != 1 {
+		t.Fatalf("user prompt missing Go style guide: %#v", payload["style_guides"])
+	}
+	goStyleGuide := styleGuides[0].(map[string]any)
+	if goStyleGuide["language"] != "go" {
+		t.Fatalf("style guide language = %#v", goStyleGuide["language"])
+	}
+	if content, _ := goStyleGuide["content"].(string); !strings.Contains(content, "# Go Style Guide") {
+		t.Fatalf("style guide content = %.80q", content)
+	}
 	for _, unwanted := range []string{"mode", "checkout_root", "diff"} {
 		if _, exists := payload[unwanted]; exists {
 			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])

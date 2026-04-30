@@ -7,7 +7,7 @@ import (
 
 // FS stores the built-in prompt templates shipped inside the binary.
 //
-//go:embed *.tmpl
+//go:embed *.tmpl styleguides/*.md
 var FS embed.FS
 
 func Load(name string) (string, error) {

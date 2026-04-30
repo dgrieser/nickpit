@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -216,7 +217,12 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering review system prompt: %w", err)
 	}
-	userPrompt, err := llm.RenderJSON(model.PromptPayloadFromContext(trimmed))
+	payload := model.PromptPayloadFromContext(trimmed)
+	payload.StyleGuides, err = e.styleGuidesFor(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	userPrompt, err := llm.RenderJSON(payload)
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering review prompt json: %w", err)
 	}
@@ -412,6 +418,63 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 func (e *Engine) loadPrompt(name string) (string, error) {
 	e.logf("Loading prompt: source=embedded name=%s", name)
 	return prompts.Load(name)
+}
+
+func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
+	languages := changedLanguages(ctx)
+	guides := make([]model.StyleGuide, 0, len(languages))
+	for _, language := range languages {
+		name, ok := builtInStyleGuideFiles[language]
+		if !ok {
+			continue
+		}
+		content, err := prompts.Load(name)
+		if err != nil {
+			return nil, fmt.Errorf("review: loading style guide for %s: %w", language, err)
+		}
+		guides = append(guides, model.StyleGuide{
+			Language: language,
+			Content:  content,
+		})
+	}
+	return guides, nil
+}
+
+var builtInStyleGuideFiles = map[string]string{
+	"go":     "styleguides/go.md",
+	"python": "styleguides/python.md",
+}
+
+func changedLanguages(ctx *model.ReviewContext) []string {
+	if ctx == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for _, hunk := range ctx.DiffHunks {
+		if hunk.Language == "" {
+			continue
+		}
+		seen[hunk.Language] = struct{}{}
+	}
+	for _, file := range ctx.ChangedFiles {
+		language := filetype.DetectLanguage(file.Path)
+		if language == "" {
+			continue
+		}
+		seen[language] = struct{}{}
+	}
+
+	languages := make([]string, 0, len(seen))
+	for _, language := range []string{"go", "python"} {
+		if _, ok := seen[language]; ok {
+			languages = append(languages, language)
+			delete(seen, language)
+		}
+	}
+	for language := range seen {
+		languages = append(languages, language)
+	}
+	return languages
 }
 
 func filterByPriority(findings []model.Finding, threshold string) []model.Finding {

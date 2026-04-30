@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -78,5 +79,62 @@ func TestEngineSerializesPythonAndNodeToolPayloadLanguages(t *testing.T) {
 	first := results[0].(map[string]any)
 	if first["language"] != "nodejs" {
 		t.Fatalf("search payload = %#v", searchPayload)
+	}
+}
+
+type pythonDiffSource struct{}
+
+func (pythonDiffSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{
+		Mode: model.ModeLocal,
+		Repository: model.RepositoryInfo{
+			FullName: "repo",
+		},
+		Title:       "title",
+		Description: "description",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "module.py", Status: model.FileModified, Additions: 1},
+			{Path: "README.md", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "module.py",
+				Language: "python",
+				OldStart: 1,
+				OldLines: 1,
+				NewStart: 1,
+				NewLines: 1,
+				Content:  "-old\n+new\n",
+			},
+		},
+	}, nil
+}
+
+func TestEngineAddsPythonStyleGuideForPythonDiffs(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+		t.Fatal(err)
+	}
+	styleGuides := payload["style_guides"].([]any)
+	if len(styleGuides) != 1 {
+		t.Fatalf("style guides = %#v", payload["style_guides"])
+	}
+	pythonStyleGuide := styleGuides[0].(map[string]any)
+	if pythonStyleGuide["language"] != "python" {
+		t.Fatalf("style guide language = %#v", pythonStyleGuide["language"])
+	}
+	if content, _ := pythonStyleGuide["content"].(string); !strings.Contains(content, "# Python Style Guide") {
+		t.Fatalf("style guide content = %.80q", content)
 	}
 }
