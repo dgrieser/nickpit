@@ -12,13 +12,14 @@ When reviewing a patch, ask yourself:
 - Is error handling appropriate?
 - Are there performance issues?
 - Are there security concerns?
-- Is it tested adequately?
+- Are behavior, edge cases, and failure modes tested adequately?
 - Does it follow project conventions?
 - Is there unnecessary complexity?
 
 When evaluating a potential bug:
 - verify the changed code and the affected scenario are CONCRETELY connected
 - DO NOT speculate about breakage without identifying the impacted path
+- DO NOT request unrelated cleanup unless the patch worsens or depends on it
 - prefer no finding over a weak or uncertain one
 - return ALL qualifying findings, not just the first
 
