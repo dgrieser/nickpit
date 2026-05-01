@@ -24,7 +24,7 @@ import (
 var ErrInvalidJSON = errors.New("model returned invalid JSON")
 
 const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model"
-const reasoningBudgetRetryHint = "Keep your reasoning concise and return the requested answer as soon as possible."
+const reasoningBudgetRetryHint = "IMPORTANT: Keep your reasoning concise and return the requested answer as soon as possible."
 
 var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 
