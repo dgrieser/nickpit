@@ -292,6 +292,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	var syntheticFollowup *llm.Message
 	var toolCallHistory []toolCallHistoryEntry
 	jsonRetries := 0
+	effectiveReasoningEffort := e.config.ReasoningEffort
 
 	for {
 		llmReq.Messages = messages
@@ -302,6 +303,10 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
 			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
+				if invalidResp.ReasoningEffort != "" {
+					effectiveReasoningEffort = invalidResp.ReasoningEffort
+					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+				}
 				jsonRetries++
 				e.logf("Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", jsonRetries, invalidResp.Reason, invalidResp.MissingFields)
 				e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", jsonRetries))
@@ -313,6 +318,10 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 				continue
 			}
 			return nil, err
+		}
+		if resp.ReasoningEffort != "" {
+			effectiveReasoningEffort = resp.ReasoningEffort
+			llmReq.ReasoningEffort = resp.ReasoningEffort
 		}
 		totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
 		totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
@@ -333,6 +342,10 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			if err != nil {
 				return nil, err
 			}
+			if resp.ReasoningEffort != "" {
+				effectiveReasoningEffort = resp.ReasoningEffort
+				llmReq.ReasoningEffort = resp.ReasoningEffort
+			}
 			totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
 			totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
 			totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
@@ -352,6 +365,10 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, req.UseJSONSchema)
 			if err != nil {
 				return nil, err
+			}
+			if resp.ReasoningEffort != "" {
+				effectiveReasoningEffort = resp.ReasoningEffort
+				llmReq.ReasoningEffort = resp.ReasoningEffort
 			}
 			totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
 			totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
@@ -392,7 +409,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		Identifier:             req.Identifier,
 		ToolCalls:              toolCallsUsed,
 		MaxToolCalls:           req.MaxToolCalls,
-		ReasoningEffort:        e.config.ReasoningEffort,
+		ReasoningEffort:        effectiveReasoningEffort,
 		BaseURL:                e.config.BaseURL,
 		BaseRef:                reviewCtx.Repository.BaseRef,
 		HeadRef:                reviewCtx.Repository.HeadRef,
@@ -432,11 +449,17 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	for attempt := 0; ; attempt++ {
 		resp, err := e.llm.Review(ctx, llmReq)
 		if err == nil {
+			if resp.ReasoningEffort != "" {
+				llmReq.ReasoningEffort = resp.ReasoningEffort
+			}
 			return resp, nil
 		}
 		var invalidResp *llm.InvalidResponseError
 		if !errors.As(err, &invalidResp) || attempt >= defaultMaxJSONRetries {
 			return nil, err
+		}
+		if invalidResp.ReasoningEffort != "" {
+			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
 		e.logf("Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
 		e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))

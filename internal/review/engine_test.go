@@ -241,6 +241,57 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 	return nil, errors.New("unexpected FindCallees call")
 }
 
+func TestEngineReusesEffectiveReasoningEffort(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call-1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+				RawResponse:     "inspecting",
+				ReasoningEffort: "low",
+				TokensUsed:      model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.8,
+				ReasoningEffort:        "low",
+				TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{
+		Model:           "model",
+		ReasoningEffort: "high",
+	})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		RepoRoot:          ".",
+		MaxContextTokens:  10000,
+		PriorityThreshold: "p3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want 2", len(llmClient.reqs))
+	}
+	if llmClient.reqs[0].ReasoningEffort != "high" {
+		t.Fatalf("first reasoning effort = %q", llmClient.reqs[0].ReasoningEffort)
+	}
+	if llmClient.reqs[1].ReasoningEffort != "low" {
+		t.Fatalf("second reasoning effort = %q", llmClient.reqs[1].ReasoningEffort)
+	}
+	if result.ReasoningEffort != "low" {
+		t.Fatalf("result reasoning effort = %q", result.ReasoningEffort)
+	}
+	if result.TokensUsed.TotalTokens != 7 {
+		t.Fatalf("total tokens = %d", result.TokensUsed.TotalTokens)
+	}
+}
+
 func TestEnginePriorityFilter(t *testing.T) {
 	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	result, err := engine.Run(context.Background(), model.ReviewRequest{

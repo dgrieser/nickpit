@@ -23,14 +23,19 @@ import (
 
 var ErrInvalidJSON = errors.New("model returned invalid JSON")
 
+const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model"
+
+var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
+
 // InvalidResponseError describes a model response that could not be parsed
 // or that parsed but is missing required fields. RawContent holds the original
 // model output so callers can append it to the conversation when asking the
 // model to retry.
 type InvalidResponseError struct {
-	RawContent    string
-	Reason        string
-	MissingFields []string
+	RawContent      string
+	Reason          string
+	MissingFields   []string
+	ReasoningEffort string
 }
 
 func (e *InvalidResponseError) Error() string {
@@ -103,6 +108,7 @@ type ReviewResponse struct {
 	ToolCalls              []ToolCall       `json:"tool_calls,omitempty"`
 	RawResponse            string           `json:"raw_response,omitempty"`
 	TokensUsed             model.TokenUsage `json:"tokens_used"`
+	ReasoningEffort        string           `json:"reasoning_effort,omitempty"`
 }
 
 type capture struct {
@@ -143,6 +149,10 @@ type llmHTTPStatusError struct {
 	cause      error
 }
 
+type ReasoningBudgetExhaustedError struct {
+	ReasoningEffort string
+}
+
 func (e *streamReadError) Error() string {
 	return e.err.Error()
 }
@@ -161,6 +171,10 @@ func (e *llmHTTPStatusError) Error() string {
 
 func (e *llmHTTPStatusError) Unwrap() error {
 	return e.cause
+}
+
+func (e *ReasoningBudgetExhaustedError) Error() string {
+	return reasoningBudgetExhaustedMessage
 }
 
 func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
@@ -296,6 +310,75 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		return nil, fmt.Errorf("llm: nil review request")
 	}
 
+	originalEffort := req.ReasoningEffort
+	efforts := []string{originalEffort}
+	for _, effort := range fallbackReasoningEfforts(originalEffort) {
+		efforts = append(efforts, effort)
+	}
+
+	var lastBudgetErr *ReasoningBudgetExhaustedError
+	for attemptIndex, effort := range efforts {
+		attemptReq := *req
+		attemptReq.ReasoningEffort = effort
+		resp, err := c.reviewOnce(ctx, &attemptReq)
+		if err == nil {
+			return resp, nil
+		}
+		var budgetErr *ReasoningBudgetExhaustedError
+		if errors.As(err, &budgetErr) {
+			lastBudgetErr = budgetErr
+			if attemptIndex+1 < len(efforts) {
+				c.logf("Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
+				continue
+			}
+			return nil, err
+		}
+		if attemptIndex > 0 && isReasoningEffortRejection(err) {
+			c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+			continue
+		}
+		return nil, err
+	}
+	if lastBudgetErr != nil {
+		return nil, lastBudgetErr
+	}
+	return nil, fmt.Errorf(reasoningBudgetExhaustedMessage)
+}
+
+func fallbackReasoningEfforts(effort string) []string {
+	normalized := strings.ToLower(strings.TrimSpace(effort))
+	for i, candidate := range reasoningEffortFallbackOrder {
+		if normalized == candidate {
+			return append([]string(nil), reasoningEffortFallbackOrder[i+1:]...)
+		}
+	}
+	return []string{"low", "minimal", "none", "off"}
+}
+
+func isReasoningEffortRejection(err error) bool {
+	var statusErr *llmHTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	switch statusErr.statusCode {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+	default:
+		return false
+	}
+	message := strings.ToLower(statusErr.message)
+	if message == "" {
+		message = strings.ToLower(statusErr.Error())
+	}
+	return strings.Contains(message, "reasoning_effort") ||
+		strings.Contains(message, "reasoning effort") ||
+		(strings.Contains(message, "reasoning") && (strings.Contains(message, "support") || strings.Contains(message, "supported") || strings.Contains(message, "invalid") || strings.Contains(message, "value")))
+}
+
+func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("llm: nil review request")
+	}
+
 	payload := openai.ChatCompletionRequest{
 		Model:    req.Model,
 		Messages: buildMessages(req),
@@ -383,7 +466,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	c.logRawModelResponse(streamed)
 
 	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
-		return nil, fmt.Errorf("llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model")
+		return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 	}
 
 	toolCalls, content, recoveredXMLToolCalls := mergeContentToolCalls(streamed.toolCalls, streamed.content)
@@ -398,11 +481,16 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var err error
 		resp, err = parseReviewResponse(content)
 		if err != nil {
+			var invalidResp *InvalidResponseError
+			if errors.As(err, &invalidResp) {
+				invalidResp.ReasoningEffort = payload.ReasoningEffort
+			}
 			return nil, err
 		}
 	}
 	resp.RawResponse = content
 	resp.TokensUsed = streamed.usage
+	resp.ReasoningEffort = payload.ReasoningEffort
 	c.logf(
 		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(resp.Findings),
