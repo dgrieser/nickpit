@@ -56,7 +56,10 @@ type capturingLLM struct {
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	cloned := *req
 	if len(req.Messages) > 0 {
-		cloned.Messages = append([]llm.Message(nil), req.Messages...)
+		cloned.Messages = cloneTestMessages(req.Messages)
+	}
+	if len(req.NoToolsMessages) > 0 {
+		cloned.NoToolsMessages = cloneTestMessages(req.NoToolsMessages)
 	}
 	if len(req.Tools) > 0 {
 		cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)
@@ -72,6 +75,19 @@ func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.R
 		OverallExplanation:     "summary",
 		OverallConfidenceScore: 0.5,
 	}, nil
+}
+
+func cloneTestMessages(messages []llm.Message) []llm.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	cloned := append([]llm.Message(nil), messages...)
+	for i := range cloned {
+		if len(messages[i].ToolCalls) > 0 {
+			cloned[i].ToolCalls = append([]llm.ToolCall(nil), messages[i].ToolCalls...)
+		}
+	}
+	return cloned
 }
 
 type stubRetrieval struct{}
@@ -534,6 +550,78 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	}
 	if want := "Otherwise, if you have enough context to judge the patch, stop calling tools and return the final review as JSON."; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up missing stop instruction: %q", req.Messages[4].Content)
+	}
+}
+
+func TestEngineProvidesNoToolsMessagesWithoutSyntheticFollowup(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				RawResponse: "I'll inspect extra.go first.",
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+
+	req := llmClient.reqs[1]
+	if len(req.Messages) < 5 || !strings.Contains(req.Messages[4].Content, "You called the following tools already") {
+		t.Fatalf("normal messages should include synthetic follow-up: %#v", req.Messages)
+	}
+	noTools := req.NoToolsMessages
+	if len(noTools) == 0 {
+		t.Fatal("expected no-tools messages")
+	}
+	if strings.Contains(noTools[0].Content, "`inspect_file` tool") {
+		t.Fatalf("no-tools system prompt should omit tool instructions: %q", noTools[0].Content)
+	}
+	if !strings.Contains(noTools[0].Content, "OUTPUT FORMAT") {
+		t.Fatalf("no-tools system prompt missing review instructions: %q", noTools[0].Content)
+	}
+
+	foundAssistantContent := false
+	foundConvertedToolResult := false
+	for _, msg := range noTools {
+		if strings.Contains(msg.Content, "You called the following tools already") {
+			t.Fatalf("no-tools messages should omit synthetic follow-up: %#v", noTools)
+		}
+		if msg.Role == "tool" {
+			t.Fatalf("no-tools messages should convert tool roles: %#v", msg)
+		}
+		if len(msg.ToolCalls) > 0 {
+			t.Fatalf("no-tools messages should strip assistant tool calls: %#v", msg)
+		}
+		if msg.Role == "assistant" && msg.Content == "I'll inspect extra.go first." {
+			foundAssistantContent = true
+		}
+		if msg.Role == "user" && strings.Contains(msg.Content, `"path":"extra.go"`) {
+			foundConvertedToolResult = true
+		}
+	}
+	if !foundAssistantContent {
+		t.Fatalf("no-tools messages missing assistant content: %#v", noTools)
+	}
+	if !foundConvertedToolResult {
+		t.Fatalf("no-tools messages missing converted tool result: %#v", noTools)
 	}
 }
 
@@ -1833,12 +1921,10 @@ type scriptedLLMResult struct {
 func (s *scriptedLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	cloned := *req
 	if len(req.Messages) > 0 {
-		cloned.Messages = append([]llm.Message(nil), req.Messages...)
-		for i := range cloned.Messages {
-			if len(req.Messages[i].ToolCalls) > 0 {
-				cloned.Messages[i].ToolCalls = append([]llm.ToolCall(nil), req.Messages[i].ToolCalls...)
-			}
-		}
+		cloned.Messages = cloneTestMessages(req.Messages)
+	}
+	if len(req.NoToolsMessages) > 0 {
+		cloned.NoToolsMessages = cloneTestMessages(req.NoToolsMessages)
 	}
 	if len(req.Tools) > 0 {
 		cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)

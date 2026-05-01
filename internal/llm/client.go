@@ -71,6 +71,7 @@ type ReviewRequest struct {
 	SystemPrompt      string
 	UserContent       string
 	Messages          []Message
+	NoToolsMessages   []Message
 	Tools             []ToolDefinition
 	Schema            json.RawMessage
 	Model             string
@@ -277,6 +278,7 @@ func cloneRequestValue(value any) any {
 func cloneReviewRequest(req *ReviewRequest) ReviewRequest {
 	cloned := *req
 	cloned.Messages = cloneMessages(req.Messages)
+	cloned.NoToolsMessages = cloneMessages(req.NoToolsMessages)
 	cloned.Tools = cloneToolDefinitions(req.Tools)
 	cloned.Schema = cloneRawMessage(req.Schema)
 	cloned.ExtraBody = cloneRequestExtraBody(req.ExtraBody)
@@ -391,7 +393,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 
 	var lastBudgetErr *ReasoningBudgetExhaustedError
-	var lastUnderstoodReq *ReviewRequest
+	var lastBudgetReq *ReviewRequest
 	budgetExhausted := false
 	for attemptIndex, effort := range efforts {
 		attemptReq := cloneReviewRequest(req)
@@ -406,51 +408,82 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var budgetErr *ReasoningBudgetExhaustedError
 		if errors.As(err, &budgetErr) {
 			lastBudgetErr = budgetErr
-			lastUnderstoodReq = &attemptReq
+			lastBudgetReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
 				budgetExhausted = true
 				c.logf("Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
 				continue
 			}
-			return nil, err
+			break
 		}
 		if attemptIndex > 0 {
 			if !isReasoningEffortRejection(err, effort) {
 				return nil, err
 			}
 			c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
-			if lastUnderstoodReq != nil && len(lastUnderstoodReq.Tools) > 0 {
-				noToolsReq := cloneReviewRequest(lastUnderstoodReq)
-				noToolsReq.Tools = nil
-				noToolsReq.ParallelToolCalls = false
-				if budgetExhausted {
-					addReasoningBudgetRetryHint(&noToolsReq)
-				}
-				c.logf("Retrying last understood reasoning effort once without tools: effort=%q rejected_effort=%q", noToolsReq.ReasoningEffort, effort)
-				noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
-				if noToolsErr == nil {
-					noToolsResp.ToolsOmitted = true
-					return noToolsResp, nil
-				}
-				if errors.As(noToolsErr, &budgetErr) {
-					lastBudgetErr = budgetErr
-				} else {
-					var invalidResp *InvalidResponseError
-					if errors.As(noToolsErr, &invalidResp) {
-						invalidResp.ToolsOmitted = true
-					}
-					return nil, noToolsErr
-				}
-				c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
-			}
 			continue
 		}
 		return nil, err
+	}
+	if lastBudgetReq != nil && len(lastBudgetReq.Tools) > 0 {
+		noToolsReq := cloneReviewRequest(lastBudgetReq)
+		noToolsReq.Messages = noToolsFallbackMessages(lastBudgetReq)
+		noToolsReq.Tools = nil
+		noToolsReq.ParallelToolCalls = false
+		addReasoningBudgetRetryHint(&noToolsReq)
+		c.logf("Retrying last budget-exhausted reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
+		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		if noToolsErr == nil {
+			noToolsResp.ToolsOmitted = true
+			return noToolsResp, nil
+		}
+		var budgetErr *ReasoningBudgetExhaustedError
+		if errors.As(noToolsErr, &budgetErr) {
+			lastBudgetErr = budgetErr
+		} else {
+			var invalidResp *InvalidResponseError
+			if errors.As(noToolsErr, &invalidResp) {
+				invalidResp.ToolsOmitted = true
+			}
+			return nil, noToolsErr
+		}
+		c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
 	if lastBudgetErr != nil {
 		return nil, lastBudgetErr
 	}
 	return nil, fmt.Errorf("llm: internal error: reasoning fallback loop completed without returning")
+}
+
+func noToolsFallbackMessages(req *ReviewRequest) []Message {
+	if req == nil {
+		return nil
+	}
+	if len(req.NoToolsMessages) > 0 {
+		return cloneMessages(req.NoToolsMessages)
+	}
+	return sanitizeMessagesForNoTools(req.Messages)
+}
+
+func sanitizeMessagesForNoTools(messages []Message) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	sanitized := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) > 0 && strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		next := msg
+		next.ToolCalls = nil
+		if next.Role == openai.ChatMessageRoleTool {
+			next.Role = openai.ChatMessageRoleUser
+			next.Name = ""
+			next.ToolCallID = ""
+		}
+		sanitized = append(sanitized, next)
+	}
+	return sanitized
 }
 
 func addReasoningBudgetRetryHint(req *ReviewRequest) {
@@ -472,6 +505,13 @@ func addReasoningBudgetRetryHint(req *ReviewRequest) {
 
 func appendUserHint(content, hint string) string {
 	content = strings.TrimSpace(content)
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return content
+	}
+	if strings.Contains(content, hint) {
+		return content
+	}
 	if content == "" {
 		return hint
 	}

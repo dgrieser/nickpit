@@ -296,6 +296,11 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	jsonRepairWithoutTools := false
 
 	for {
+		noToolsHistory, err := noToolsMessages(systemTemplate, messages, req.UseJSONSchema)
+		if err != nil {
+			return nil, err
+		}
+		llmReq.NoToolsMessages = noToolsHistory
 		llmReq.Messages = messages
 		if syntheticFollowup != nil {
 			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)

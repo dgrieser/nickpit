@@ -1233,6 +1233,15 @@ func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 				},
 			},
 		},
+		NoToolsMessages: []Message{
+			{
+				Role:    "assistant",
+				Content: "original no-tools content",
+				ToolCalls: []ToolCall{
+					{ID: "call-nt", Name: "inspect_file", Arguments: `{"path":"nt.go"}`},
+				},
+			},
+		},
 		Tools: []ToolDefinition{
 			{
 				Name:       "inspect_file",
@@ -1254,6 +1263,8 @@ func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 	cloned := cloneReviewRequest(req)
 	cloned.Messages[0].Content = "changed content"
 	cloned.Messages[0].ToolCalls[0].Arguments = `{"path":"b.go"}`
+	cloned.NoToolsMessages[0].Content = "changed no-tools content"
+	cloned.NoToolsMessages[0].ToolCalls[0].Arguments = `{"path":"changed-nt.go"}`
 	cloned.Tools[0].Parameters[0] = '['
 	cloned.Schema[0] = '['
 	*cloned.MaxTokens = 20
@@ -1269,6 +1280,12 @@ func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 	}
 	if req.Messages[0].ToolCalls[0].Arguments != `{"path":"a.go"}` {
 		t.Fatalf("tool call arguments were mutated: %q", req.Messages[0].ToolCalls[0].Arguments)
+	}
+	if req.NoToolsMessages[0].Content != "original no-tools content" {
+		t.Fatalf("no-tools message content was mutated: %q", req.NoToolsMessages[0].Content)
+	}
+	if req.NoToolsMessages[0].ToolCalls[0].Arguments != `{"path":"nt.go"}` {
+		t.Fatalf("no-tools tool call arguments were mutated: %q", req.NoToolsMessages[0].ToolCalls[0].Arguments)
 	}
 	if got, want := string(req.Tools[0].Parameters), `{"type":"object"}`; got != want {
 		t.Fatalf("tool parameters = %q, want %q", got, want)
@@ -1520,7 +1537,7 @@ func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 			hasTools = true
 		}
 		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
-		if effort == "medium" && !hasTools {
+		if effort == "off" && !hasTools {
 			writeSSEChunk(t, w, map[string]any{
 				"id":      "chunk-1",
 				"object":  "chat.completion.chunk",
@@ -1572,10 +1589,10 @@ func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 	if !errors.As(err, &invalidResp) {
 		t.Fatalf("expected InvalidResponseError, got %T: %v", err, err)
 	}
-	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,medium:false"; got != want {
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,minimal:true,none:true,off:true,off:false"; got != want {
 		t.Fatalf("attempts = %s, want %s", got, want)
 	}
-	if invalidResp.ReasoningEffort != "medium" {
+	if invalidResp.ReasoningEffort != "off" {
 		t.Fatalf("invalid response reasoning effort = %q", invalidResp.ReasoningEffort)
 	}
 	if !invalidResp.ToolsOmitted {
@@ -1583,7 +1600,7 @@ func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 	}
 }
 
-func TestClientReviewRetriesLastUnderstoodEffortWithoutToolsAfterRejection(t *testing.T) {
+func TestClientReviewRetriesLastBudgetExhaustedEffortWithoutToolsAfterFallbacks(t *testing.T) {
 	var attempts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
@@ -1596,7 +1613,7 @@ func TestClientReviewRetriesLastUnderstoodEffortWithoutToolsAfterRejection(t *te
 			hasTools = true
 		}
 		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
-		if effort == "medium" && !hasTools {
+		if effort == "off" && !hasTools {
 			writeValidReviewSSE(t, w)
 			return
 		}
@@ -1628,10 +1645,10 @@ func TestClientReviewRetriesLastUnderstoodEffortWithoutToolsAfterRejection(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,medium:false"; got != want {
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,minimal:true,none:true,off:true,off:false"; got != want {
 		t.Fatalf("attempts = %s, want %s", got, want)
 	}
-	if resp.ReasoningEffort != "medium" {
+	if resp.ReasoningEffort != "off" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
 	}
 	if !resp.ToolsOmitted {
@@ -1669,11 +1686,11 @@ func TestClientReviewNoToolsRetryIncludesHintWhenBudgetPreviouslyExhausted(t *te
 			hasTools bool
 			user     string
 		}{effort, hasTools, user})
-		if effort == "high" && hasTools {
+		if hasTools && effort == "high" {
 			writeReasoningLengthSSE(t, w)
 			return
 		}
-		if effort == "medium" && hasTools {
+		if hasTools {
 			w.WriteHeader(http.StatusBadRequest)
 			if _, err := w.Write([]byte(`{"error":{"message":"reasoning_effort value is invalid"}}`)); err != nil {
 				t.Fatalf("write error: %v", err)
@@ -1700,15 +1717,14 @@ func TestClientReviewNoToolsRetryIncludesHintWhenBudgetPreviouslyExhausted(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(attempts), 3; got != want {
+	if got, want := len(attempts), 7; got != want {
 		t.Fatalf("attempt count = %d, want %d", got, want)
 	}
-	// high:true → budget exhausted; medium:true → rejected; high:false → no-tools retry with last understood effort
-	if got, want := fmt.Sprintf("%s:%t,%s:%t,%s:%t", attempts[0].effort, attempts[0].hasTools, attempts[1].effort, attempts[1].hasTools, attempts[2].effort, attempts[2].hasTools), "high:true,medium:true,high:false"; got != want {
+	if got, want := attemptSummary(attempts), "high:true,medium:true,low:true,minimal:true,none:true,off:true,high:false"; got != want {
 		t.Fatalf("attempts = %s, want %s", got, want)
 	}
-	if !strings.Contains(attempts[2].user, reasoningBudgetRetryHint) {
-		t.Fatalf("no-tools retry user message missing hint: %q", attempts[2].user)
+	if got := strings.Count(attempts[len(attempts)-1].user, reasoningBudgetRetryHint); got != 1 {
+		t.Fatalf("no-tools retry hint count = %d in %q", got, attempts[len(attempts)-1].user)
 	}
 	if resp.ReasoningEffort != "high" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
@@ -1716,6 +1732,181 @@ func TestClientReviewNoToolsRetryIncludesHintWhenBudgetPreviouslyExhausted(t *te
 	if !resp.ToolsOmitted {
 		t.Fatal("expected response to record omitted tools")
 	}
+}
+
+func TestClientReviewNoToolsRetryUsesProvidedNoToolsMessages(t *testing.T) {
+	var attempts []string
+	var noToolsMessages []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
+		if hasTools && effort == "high" {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		if hasTools {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error":{"message":"reasoning_effort value is invalid"}}`)); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		rawMessages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("messages missing or wrong type: %#v", payload["messages"])
+		}
+		noToolsMessages = make([]map[string]any, 0, len(rawMessages))
+		for _, raw := range rawMessages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("message has wrong type: %#v", raw)
+			}
+			noToolsMessages = append(noToolsMessages, msg)
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "tool system"},
+			{Role: "user", Content: "review request"},
+			{
+				Role:    "assistant",
+				Content: "I'll inspect a.go.",
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_1", Content: `{"path":"a.go","content":"package a"}`},
+			{Role: "user", Content: "synthetic tool followup"},
+		},
+		NoToolsMessages: []Message{
+			{Role: "system", Content: "no-tools system"},
+			{Role: "user", Content: "review request"},
+			{Role: "assistant", Content: "I'll inspect a.go."},
+			{Role: "user", Content: `{"path":"a.go","content":"package a"}`},
+		},
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,minimal:true,none:true,off:true,high:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if !resp.ToolsOmitted {
+		t.Fatal("expected response to record omitted tools")
+	}
+	if len(noToolsMessages) != 4 {
+		t.Fatalf("no-tools messages = %d, want 4: %#v", len(noToolsMessages), noToolsMessages)
+	}
+	if content, _ := noToolsMessages[0]["content"].(string); content != "no-tools system" {
+		t.Fatalf("system content = %q", content)
+	}
+	if content, _ := noToolsMessages[3]["content"].(string); strings.Contains(content, "synthetic tool followup") {
+		t.Fatalf("no-tools messages should use provided converted history, got %q", content)
+	}
+	if content, _ := noToolsMessages[3]["content"].(string); strings.Count(content, reasoningBudgetRetryHint) != 1 {
+		t.Fatalf("no-tools retry hint count wrong in %q", content)
+	}
+	for _, msg := range noToolsMessages {
+		if msg["role"] == "tool" {
+			t.Fatalf("no-tools request sent tool role: %#v", noToolsMessages)
+		}
+		if _, ok := msg["tool_calls"]; ok {
+			t.Fatalf("no-tools request sent tool_calls: %#v", noToolsMessages)
+		}
+		if _, ok := msg["tool_call_id"]; ok {
+			t.Fatalf("no-tools request sent tool_call_id: %#v", noToolsMessages)
+		}
+	}
+}
+
+func TestNoToolsFallbackMessagesSanitizesToolTranscript(t *testing.T) {
+	got := noToolsFallbackMessages(&ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "review"},
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{
+					{ID: "call_empty", Name: "inspect_file", Arguments: `{"path":"empty.go"}`},
+				},
+			},
+			{
+				Role:    "assistant",
+				Content: "I inspected a.go.",
+				ToolCalls: []ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+				},
+			},
+			{Role: "tool", Name: "inspect_file", ToolCallID: "call_1", Content: `{"path":"a.go"}`},
+		},
+	})
+
+	if len(got) != 4 {
+		t.Fatalf("sanitized messages = %d, want 4: %#v", len(got), got)
+	}
+	if got[2].Role != "assistant" || got[2].Content != "I inspected a.go." {
+		t.Fatalf("assistant content was not preserved without tool calls: %#v", got[2])
+	}
+	if got[3].Role != "user" || got[3].ToolCallID != "" || got[3].Name != "" {
+		t.Fatalf("tool result was not converted to plain user message: %#v", got[3])
+	}
+	for _, msg := range got {
+		if msg.Role == "tool" {
+			t.Fatalf("sanitized messages contain tool role: %#v", got)
+		}
+		if len(msg.ToolCalls) > 0 {
+			t.Fatalf("sanitized messages contain tool calls: %#v", got)
+		}
+	}
+}
+
+func TestAddReasoningBudgetRetryHintIsIdempotent(t *testing.T) {
+	req := &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "review request\n\n" + reasoningBudgetRetryHint},
+		},
+	}
+
+	addReasoningBudgetRetryHint(req)
+	addReasoningBudgetRetryHint(req)
+
+	if got := strings.Count(req.Messages[1].Content, reasoningBudgetRetryHint); got != 1 {
+		t.Fatalf("retry hint count = %d in %q", got, req.Messages[1].Content)
+	}
+}
+
+func attemptSummary(attempts []struct {
+	effort   string
+	hasTools bool
+	user     string
+}) string {
+	parts := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		parts = append(parts, fmt.Sprintf("%s:%t", attempt.effort, attempt.hasTools))
+	}
+	return strings.Join(parts, ",")
 }
 
 func TestClientReviewFallbackStartsAtLowForEmptyAndUnknownEffort(t *testing.T) {
@@ -1857,9 +2048,9 @@ func TestClientReviewRetriesMinimalWithoutToolsWhenNoneIsUnknownVariant(t *testi
 			hasTools = true
 		}
 		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
-		if effort == "none" {
+		if effort == "none" || effort == "off" {
 			w.WriteHeader(http.StatusBadRequest)
-			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `none`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 46461")); err != nil {
+			if _, err := w.Write([]byte(fmt.Sprintf("Failed to deserialize the JSON body into the target type: unknown variant `%s`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 46461", effort))); err != nil {
 				t.Fatalf("write error: %v", err)
 			}
 			return
@@ -1889,7 +2080,7 @@ func TestClientReviewRetriesMinimalWithoutToolsWhenNoneIsUnknownVariant(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(attempts, ","), "medium:true,low:true,minimal:true,none:true,minimal:false"; got != want {
+	if got, want := strings.Join(attempts, ","), "medium:true,low:true,minimal:true,none:true,off:true,minimal:false"; got != want {
 		t.Fatalf("attempts = %s, want %s", got, want)
 	}
 	if resp.ReasoningEffort != "minimal" {
