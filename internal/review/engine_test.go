@@ -241,6 +241,57 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 	return nil, errors.New("unexpected FindCallees call")
 }
 
+func TestEngineReusesEffectiveReasoningEffort(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call-1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+				RawResponse:     "inspecting",
+				ReasoningEffort: "low",
+				TokensUsed:      model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.8,
+				ReasoningEffort:        "low",
+				TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{
+		Model:           "model",
+		ReasoningEffort: "high",
+	})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		RepoRoot:          ".",
+		MaxContextTokens:  10000,
+		PriorityThreshold: "p3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want 2", len(llmClient.reqs))
+	}
+	if llmClient.reqs[0].ReasoningEffort != "high" {
+		t.Fatalf("first reasoning effort = %q", llmClient.reqs[0].ReasoningEffort)
+	}
+	if llmClient.reqs[1].ReasoningEffort != "low" {
+		t.Fatalf("second reasoning effort = %q", llmClient.reqs[1].ReasoningEffort)
+	}
+	if result.ReasoningEffort != "low" {
+		t.Fatalf("result reasoning effort = %q", result.ReasoningEffort)
+	}
+	if result.TokensUsed.TotalTokens != 7 {
+		t.Fatalf("total tokens = %d", result.TokensUsed.TotalTokens)
+	}
+}
+
 func TestEnginePriorityFilter(t *testing.T) {
 	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
@@ -1783,6 +1834,14 @@ func (s *scriptedLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.Re
 	cloned := *req
 	if len(req.Messages) > 0 {
 		cloned.Messages = append([]llm.Message(nil), req.Messages...)
+		for i := range cloned.Messages {
+			if len(req.Messages[i].ToolCalls) > 0 {
+				cloned.Messages[i].ToolCalls = append([]llm.ToolCall(nil), req.Messages[i].ToolCalls...)
+			}
+		}
+	}
+	if len(req.Tools) > 0 {
+		cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)
 	}
 	s.reqs = append(s.reqs, &cloned)
 	if len(s.results) == 0 {
@@ -1829,6 +1888,12 @@ func TestEngineRetriesOnInvalidJSONResponse(t *testing.T) {
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("requests = %d", len(llmClient.reqs))
 	}
+	if len(llmClient.reqs[1].Tools) == 0 {
+		t.Fatal("normal JSON retry should keep tools")
+	}
+	if !llmClient.reqs[1].ParallelToolCalls {
+		t.Fatal("normal JSON retry should keep parallel tool calls enabled")
+	}
 	retryMessages := llmClient.reqs[1].Messages
 	if len(retryMessages) < 4 {
 		t.Fatalf("retry messages = %d, want at least 4", len(retryMessages))
@@ -1849,6 +1914,94 @@ func TestEngineRetriesOnInvalidJSONResponse(t *testing.T) {
 	}
 	if !strings.Contains(userMsg.Content, "ONLY a JSON object") {
 		t.Fatalf("retry user content missing instruction: %q", userMsg.Content)
+	}
+}
+
+func TestEngineRetriesToolsOmittedInvalidJSONWithoutTools(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{
+				resp: &llm.ReviewResponse{
+					RawResponse: "I'll inspect extra.go first.",
+					ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+					},
+					ReasoningEffort: "medium",
+				},
+			},
+			{
+				err: &llm.InvalidResponseError{
+					RawContent:      "not json",
+					Reason:          "could not parse JSON: unexpected token",
+					ReasoningEffort: "low",
+					ToolsOmitted:    true,
+				},
+			},
+			{
+				resp: &llm.ReviewResponse{
+					OverallCorrectness:     "patch is correct",
+					OverallExplanation:     "fixed",
+					OverallConfidenceScore: 0.7,
+					ReasoningEffort:        "low",
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test", ReasoningEffort: "high"})
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ReasoningEffort != "low" {
+		t.Fatalf("result reasoning effort = %q", result.ReasoningEffort)
+	}
+	if len(llmClient.reqs) != 3 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	retryReq := llmClient.reqs[2]
+	if len(retryReq.Tools) != 0 {
+		t.Fatalf("JSON repair request should have no tools, got %d", len(retryReq.Tools))
+	}
+	if retryReq.ParallelToolCalls {
+		t.Fatal("JSON repair request should disable parallel tool calls")
+	}
+	if retryReq.ReasoningEffort != "low" {
+		t.Fatalf("JSON repair reasoning effort = %q", retryReq.ReasoningEffort)
+	}
+	if strings.Contains(retryReq.Messages[0].Content, "`inspect_file` tool") {
+		t.Fatalf("system prompt should omit tool instructions: %q", retryReq.Messages[0].Content)
+	}
+	if !strings.Contains(retryReq.Messages[0].Content, "OUTPUT FORMAT") {
+		t.Fatalf("system prompt missing review instructions: %q", retryReq.Messages[0].Content)
+	}
+
+	foundToolResult := false
+	for _, msg := range retryReq.Messages {
+		if msg.Role == "tool" {
+			t.Fatalf("JSON repair request should convert tool messages to user messages: %#v", msg)
+		}
+		if len(msg.ToolCalls) > 0 {
+			t.Fatalf("JSON repair request should strip assistant tool calls: %#v", msg)
+		}
+		if msg.Role == "user" && strings.Contains(msg.Content, `"path":"extra.go"`) {
+			foundToolResult = true
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("JSON repair request missing converted tool result: %#v", retryReq.Messages)
+	}
+	if got := retryReq.Messages[len(retryReq.Messages)-2]; got.Role != "assistant" || got.Content != "not json" {
+		t.Fatalf("repair raw response message = %#v", got)
+	}
+	feedback := retryReq.Messages[len(retryReq.Messages)-1]
+	if feedback.Role != "user" {
+		t.Fatalf("repair feedback role = %q", feedback.Role)
+	}
+	if !strings.Contains(feedback.Content, "could not be parsed") || !strings.Contains(feedback.Content, "ONLY a JSON object") {
+		t.Fatalf("repair feedback content = %q", feedback.Content)
 	}
 }
 

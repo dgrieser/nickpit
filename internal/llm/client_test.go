@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1196,6 +1198,677 @@ func TestClientReviewReportsPlainTextHTTPErrorBody(t *testing.T) {
 	}
 }
 
+func TestFallbackReasoningEfforts(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   []string
+	}{
+		{name: "known", effort: "high", want: []string{"medium", "low", "minimal", "none", "off"}},
+		{name: "empty", effort: "", want: []string{"low", "minimal", "none", "off"}},
+		{name: "unknown", effort: "provider-max", want: []string{"low", "minimal", "none", "off"}},
+		{name: "case insensitive", effort: "XHIGH", want: []string{"high", "medium", "low", "minimal", "none", "off"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fallbackReasoningEfforts(tt.effort)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("fallbackReasoningEfforts(%q) = %v, want %v", tt.effort, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
+	maxTokens := 10
+	temperature := 0.25
+	topP := 0.9
+	req := &ReviewRequest{
+		Messages: []Message{
+			{
+				Role:    "assistant",
+				Content: "original content",
+				ToolCalls: []ToolCall{
+					{ID: "call-1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+				},
+			},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:       "inspect_file",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		Schema:      json.RawMessage(`{"type":"object"}`),
+		MaxTokens:   &maxTokens,
+		Temperature: &temperature,
+		TopP:        &topP,
+		ExtraBody: map[string]any{
+			"nested": map[string]any{"value": "original"},
+			"list":   []any{"original"},
+			"raw":    json.RawMessage(`{"value":"original"}`),
+			"bytes":  []byte("original"),
+		},
+	}
+
+	cloned := cloneReviewRequest(req)
+	cloned.Messages[0].Content = "changed content"
+	cloned.Messages[0].ToolCalls[0].Arguments = `{"path":"b.go"}`
+	cloned.Tools[0].Parameters[0] = '['
+	cloned.Schema[0] = '['
+	*cloned.MaxTokens = 20
+	*cloned.Temperature = 0.5
+	*cloned.TopP = 0.7
+	cloned.ExtraBody["nested"].(map[string]any)["value"] = "changed"
+	cloned.ExtraBody["list"].([]any)[0] = "changed"
+	cloned.ExtraBody["raw"].(json.RawMessage)[0] = '['
+	cloned.ExtraBody["bytes"].([]byte)[0] = 'X'
+
+	if req.Messages[0].Content != "original content" {
+		t.Fatalf("message content was mutated: %q", req.Messages[0].Content)
+	}
+	if req.Messages[0].ToolCalls[0].Arguments != `{"path":"a.go"}` {
+		t.Fatalf("tool call arguments were mutated: %q", req.Messages[0].ToolCalls[0].Arguments)
+	}
+	if got, want := string(req.Tools[0].Parameters), `{"type":"object"}`; got != want {
+		t.Fatalf("tool parameters = %q, want %q", got, want)
+	}
+	if got, want := string(req.Schema), `{"type":"object"}`; got != want {
+		t.Fatalf("schema = %q, want %q", got, want)
+	}
+	if *req.MaxTokens != 10 {
+		t.Fatalf("max tokens = %d", *req.MaxTokens)
+	}
+	if *req.Temperature != 0.25 {
+		t.Fatalf("temperature = %f", *req.Temperature)
+	}
+	if *req.TopP != 0.9 {
+		t.Fatalf("top_p = %f", *req.TopP)
+	}
+	if got := req.ExtraBody["nested"].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("nested extra body = %v", got)
+	}
+	if got := req.ExtraBody["list"].([]any)[0]; got != "original" {
+		t.Fatalf("extra body list = %v", got)
+	}
+	if got, want := string(req.ExtraBody["raw"].(json.RawMessage)), `{"value":"original"}`; got != want {
+		t.Fatalf("extra body raw = %q, want %q", got, want)
+	}
+	if got, want := string(req.ExtraBody["bytes"].([]byte)), "original"; got != want {
+		t.Fatalf("extra body bytes = %q, want %q", got, want)
+	}
+}
+
+func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		if len(efforts) == 1 {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewAddsConciseReasoningHintAfterBudgetExhaustion(t *testing.T) {
+	var userMessages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("messages missing or wrong type: %#v", payload["messages"])
+		}
+		lastUser := ""
+		for _, raw := range messages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("message has wrong type: %#v", raw)
+			}
+			if msg["role"] == "user" {
+				lastUser, _ = msg["content"].(string)
+			}
+		}
+		userMessages = append(userMessages, lastUser)
+
+		effort, _ := payload["reasoning_effort"].(string)
+		if effort == "high" {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		if effort != "medium" {
+			t.Fatalf("unexpected effort %q", effort)
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(userMessages) != 2 {
+		t.Fatalf("user messages = %d, want 2", len(userMessages))
+	}
+	if strings.Contains(userMessages[0], reasoningBudgetRetryHint) {
+		t.Fatalf("first request should not include retry hint: %q", userMessages[0])
+	}
+	if !strings.Contains(userMessages[1], reasoningBudgetRetryHint) {
+		t.Fatalf("retry request missing retry hint: %q", userMessages[1])
+	}
+}
+
+func TestClientReviewAppendsConciseReasoningHintToSyntheticUserMessage(t *testing.T) {
+	var retryMessages []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		if effort == "high" {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		if effort != "medium" {
+			t.Fatalf("unexpected effort %q", effort)
+		}
+		rawMessages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("messages missing or wrong type: %#v", payload["messages"])
+		}
+		retryMessages = make([]map[string]any, 0, len(rawMessages))
+		for _, raw := range rawMessages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("message has wrong type: %#v", raw)
+			}
+			retryMessages = append(retryMessages, msg)
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "original review request"},
+			{Role: "assistant", Content: "tool call"},
+			{Role: "user", Content: "synthetic tool followup"},
+		},
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retryMessages) != 4 {
+		t.Fatalf("retry messages = %d, want 4", len(retryMessages))
+	}
+	originalUser, _ := retryMessages[1]["content"].(string)
+	if strings.Contains(originalUser, reasoningBudgetRetryHint) {
+		t.Fatalf("original user message should not include retry hint: %q", originalUser)
+	}
+	syntheticUser, _ := retryMessages[3]["content"].(string)
+	if !strings.Contains(syntheticUser, "synthetic tool followup\n\n"+reasoningBudgetRetryHint) {
+		t.Fatalf("synthetic user message missing retry hint: %q", syntheticUser)
+	}
+}
+
+func TestClientReviewTreatsReasoningOnlyPeerInternalStreamErrorAsBudgetExhausted(t *testing.T) {
+	var efforts []string
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+
+		var body io.ReadCloser
+		if len(efforts) == 1 {
+			body = &errorAfterReader{
+				reader: bytes.NewReader([]byte(sseChunk(t, map[string]any{
+					"id":      "chunk-1",
+					"object":  "chat.completion.chunk",
+					"created": 1,
+					"model":   "model",
+					"choices": []map[string]any{
+						{
+							"index": 0,
+							"delta": map[string]any{
+								"reasoning_content": "thinking",
+							},
+						},
+					},
+				}))),
+				err: errors.New("stream error: stream ID 5; INTERNAL_ERROR; received from peer"),
+			}
+		} else {
+			body = io.NopCloser(strings.NewReader(validReviewStream(t)))
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
+		if effort == "medium" && !hasTools {
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-1",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": "not json"}}},
+			})
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-2",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{},
+				"usage": map[string]any{
+					"prompt_tokens":     1,
+					"completion_tokens": 1,
+					"total_tokens":      2,
+				},
+			})
+			writeSSEDone(t, w)
+			return
+		}
+		if effort == "low" {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `low`, expected one of `medium`, `high`")); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	var invalidResp *InvalidResponseError
+	if !errors.As(err, &invalidResp) {
+		t.Fatalf("expected InvalidResponseError, got %T: %v", err, err)
+	}
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,medium:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if invalidResp.ReasoningEffort != "medium" {
+		t.Fatalf("invalid response reasoning effort = %q", invalidResp.ReasoningEffort)
+	}
+	if !invalidResp.ToolsOmitted {
+		t.Fatal("expected invalid response to record omitted tools")
+	}
+}
+
+func TestClientReviewRetriesLastUnderstoodEffortWithoutToolsAfterRejection(t *testing.T) {
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
+		if effort == "medium" && !hasTools {
+			writeValidReviewSSE(t, w)
+			return
+		}
+		if effort == "low" {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `low`, expected one of `medium`, `high`")); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,medium:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+	if !resp.ToolsOmitted {
+		t.Fatal("expected response to record omitted tools")
+	}
+}
+
+func TestClientReviewFallbackStartsAtLowForEmptyAndUnknownEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{name: "empty", effort: "", want: ",low"},
+		{name: "unknown", effort: "provider-high", want: "provider-high,low"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var efforts []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				effort, _ := payload["reasoning_effort"].(string)
+				efforts = append(efforts, effort)
+				if len(efforts) == 1 {
+					writeReasoningLengthSSE(t, w)
+					return
+				}
+				writeValidReviewSSE(t, w)
+			}))
+			defer server.Close()
+
+			client := NewOpenAIClient(server.URL, "token", "model")
+			resp, err := client.Review(context.Background(), &ReviewRequest{
+				SystemPrompt:    "system",
+				UserContent:     "user",
+				ReasoningEffort: tt.effort,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(efforts, ","); got != tt.want {
+				t.Fatalf("reasoning efforts = %s, want %s", got, tt.want)
+			}
+			if resp.ReasoningEffort != "low" {
+				t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+			}
+		})
+	}
+}
+
+func TestClientReviewContinuesAfterRejectedLowerReasoningEffort(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		switch effort {
+		case "high":
+			writeReasoningLengthSSE(t, w)
+		case "medium":
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error":{"message":"reasoning_effort value is invalid"}}`)); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+		case "low":
+			writeValidReviewSSE(t, w)
+		default:
+			t.Fatalf("unexpected effort %q", effort)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium,low"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "low" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewAttemptsAllLowerEffortsBeforeExhausting(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		if effort == "minimal" {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			if _, err := w.Write([]byte(`{"detail":"reasoning effort is not supported"}`)); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "medium",
+	})
+	if err == nil {
+		t.Fatal("expected reasoning budget error")
+	}
+	var budgetErr *ReasoningBudgetExhaustedError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("expected ReasoningBudgetExhaustedError, got %T: %v", err, err)
+	}
+	if got, want := strings.Join(efforts, ","), "medium,low,minimal,none,off"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+}
+
+func TestClientReviewRetriesMinimalWithoutToolsWhenNoneIsUnknownVariant(t *testing.T) {
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
+		if effort == "none" {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `none`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 46461")); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		if effort == "minimal" && !hasTools {
+			writeValidReviewSSE(t, w)
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "medium",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(attempts, ","), "medium:true,low:true,minimal:true,none:true,minimal:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "minimal" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewInvalidJSONIncludesEffectiveReasoningEffort(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		if len(efforts) == 1 {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": "not json"}}},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     1,
+				"completion_tokens": 1,
+				"total_tokens":      2,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	var invalidResp *InvalidResponseError
+	if !errors.As(err, &invalidResp) {
+		t.Fatalf("expected InvalidResponseError, got %T: %v", err, err)
+	}
+	if invalidResp.ReasoningEffort != "medium" {
+		t.Fatalf("invalid response reasoning effort = %q", invalidResp.ReasoningEffort)
+	}
+}
+
 func TestClientReviewRetriesRetryableStatus(t *testing.T) {
 	attempts := 0
 
@@ -1397,19 +2070,138 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	}
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type errorAfterReader struct {
+	reader *bytes.Reader
+	err    error
+}
+
+func (r *errorAfterReader) Read(p []byte) (int, error) {
+	if r.reader.Len() > 0 {
+		return r.reader.Read(p)
+	}
+	return 0, r.err
+}
+
+func (r *errorAfterReader) Close() error {
+	return nil
+}
+
+func validReviewStream(t *testing.T) string {
+	t.Helper()
+	return sseChunk(t, map[string]any{
+		"id":      "chunk-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+				},
+			},
+		},
+	}) + sseChunk(t, map[string]any{
+		"id":      "chunk-2",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{},
+		"usage": map[string]any{
+			"prompt_tokens":     4,
+			"completion_tokens": 2,
+			"total_tokens":      6,
+		},
+	}) + "data: [DONE]\n\n"
+}
+
 func writeSSEChunk(t *testing.T, w http.ResponseWriter, payload any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "text/event-stream")
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal chunk: %v", err)
-	}
-	if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+	if _, err := w.Write([]byte(sseChunk(t, payload))); err != nil {
 		t.Fatalf("write chunk: %v", err)
 	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+func sseChunk(t *testing.T, payload any) string {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+	return "data: " + string(data) + "\n\n"
+}
+
+func writeReasoningLengthSSE(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"reasoning_content": "thinking",
+				},
+				"finish_reason": "length",
+			},
+		},
+	})
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-2",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{},
+		"usage": map[string]any{
+			"prompt_tokens":     4,
+			"completion_tokens": 2,
+			"total_tokens":      6,
+		},
+	})
+	writeSSEDone(t, w)
+}
+
+func writeValidReviewSSE(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+				},
+			},
+		},
+	})
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-2",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{},
+		"usage": map[string]any{
+			"prompt_tokens":     4,
+			"completion_tokens": 2,
+			"total_tokens":      6,
+		},
+	})
+	writeSSEDone(t, w)
 }
 
 func writeSSEDone(t *testing.T, w http.ResponseWriter) {
