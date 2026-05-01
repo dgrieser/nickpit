@@ -132,11 +132,6 @@ SELECT u.name, o.total
 FROM users u
 JOIN orders o ON u.id = o.user_id
 WHERE u.created_at > '2024-01-01';
-
--- Better: Filter both tables
-SELECT u.name, o.total
-FROM (SELECT * FROM users WHERE created_at > '2024-01-01') u
-JOIN orders o ON u.id = o.user_id;
 ```
 
 ## Optimization Patterns
@@ -230,10 +225,13 @@ CREATE INDEX idx_users_cursor ON users(created_at DESC, id DESC);
 -- Bad: Counts all rows
 SELECT COUNT(*) FROM orders;  -- Slow on large tables
 
--- Good: Use estimates for approximate counts
+-- Good: Use estimates for approximate counts (PostgreSQL)
 SELECT reltuples::bigint AS estimate
 FROM pg_class
 WHERE relname = 'orders';
+
+-- MySQL equivalent:
+-- SHOW TABLE STATUS LIKE 'orders';  -- Check "Rows" column
 
 -- Good: Filter before counting
 SELECT COUNT(*) FROM orders
@@ -248,16 +246,17 @@ WHERE created_at > NOW() - INTERVAL '7 days';
 **Optimize GROUP BY:**
 
 ```sql
--- Bad: Group by then filter
-SELECT user_id, COUNT(*) as order_count
-FROM orders
-GROUP BY user_id
-HAVING COUNT(*) > 10;
-
--- Better: Filter first, then group (if possible)
+-- Bad: Filter after grouping (HAVING on non-aggregate condition)
 SELECT user_id, COUNT(*) as order_count
 FROM orders
 WHERE status = 'completed'
+GROUP BY user_id
+HAVING COUNT(*) > 10 AND user_id > 1000;
+
+-- Better: Move non-aggregate filter to WHERE (reduces rows before grouping)
+SELECT user_id, COUNT(*) as order_count
+FROM orders
+WHERE status = 'completed' AND user_id > 1000
 GROUP BY user_id
 HAVING COUNT(*) > 10;
 
@@ -280,13 +279,6 @@ SELECT u.name, u.email, COUNT(o.id) as order_count
 FROM users u
 LEFT JOIN orders o ON o.user_id = u.id
 GROUP BY u.id, u.name, u.email;
-
--- Better: Use window functions
-SELECT DISTINCT ON (u.id)
-    u.name, u.email,
-    COUNT(o.id) OVER (PARTITION BY u.id) as order_count
-FROM users u
-LEFT JOIN orders o ON o.user_id = u.id;
 ```
 
 **Use CTEs for Clarity:**
@@ -346,10 +338,14 @@ WHERE id IN (1, 2, 3, 4, 5, ...);
 CREATE TEMP TABLE temp_user_updates (id INT, new_status VARCHAR);
 INSERT INTO temp_user_updates VALUES (1, 'active'), (2, 'active'), ...;
 
+-- PostgreSQL syntax:
 UPDATE users u
 SET status = t.new_status
 FROM temp_user_updates t
 WHERE u.id = t.id;
+
+-- MySQL equivalent:
+-- UPDATE users u JOIN temp_user_updates t ON u.id = t.id SET u.status = t.new_status;
 ```
 
 ## Advanced Techniques
@@ -425,7 +421,9 @@ SET max_parallel_workers_per_gather = 4;
 SELECT * FROM large_table WHERE condition;
 
 -- Join hints (PostgreSQL)
-SET enable_nestloop = OFF;  -- Force hash or merge join
+-- WARNING: Session-level setting — affects ALL queries until reset.
+-- For per-query hints, use the pg_hint_plan extension instead.
+-- SET enable_nestloop = OFF;
 ```
 
 ## Best Practices
