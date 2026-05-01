@@ -1405,7 +1405,7 @@ func TestClientReviewAddsConciseReasoningHintAfterBudgetExhaustion(t *testing.T)
 	}
 }
 
-func TestClientReviewAppendsConciseReasoningHintToSyntheticUserMessage(t *testing.T) {
+func TestClientReviewAddsConciseReasoningHintAfterSyntheticUserMessage(t *testing.T) {
 	var retryMessages []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
@@ -1449,16 +1449,20 @@ func TestClientReviewAppendsConciseReasoningHintToSyntheticUserMessage(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retryMessages) != 4 {
-		t.Fatalf("retry messages = %d, want 4", len(retryMessages))
+	if len(retryMessages) != 5 {
+		t.Fatalf("retry messages = %d, want 5", len(retryMessages))
 	}
 	originalUser, _ := retryMessages[1]["content"].(string)
 	if strings.Contains(originalUser, reasoningBudgetRetryHint) {
 		t.Fatalf("original user message should not include retry hint: %q", originalUser)
 	}
 	syntheticUser, _ := retryMessages[3]["content"].(string)
-	if !strings.Contains(syntheticUser, "synthetic tool followup\n\n"+reasoningBudgetRetryHint) {
-		t.Fatalf("synthetic user message missing retry hint: %q", syntheticUser)
+	if syntheticUser != "synthetic tool followup" {
+		t.Fatalf("synthetic user message should not include retry hint: %q", syntheticUser)
+	}
+	hintUser, _ := retryMessages[4]["content"].(string)
+	if hintUser != reasoningBudgetRetryHint {
+		t.Fatalf("retry hint message = %q, want %q", hintUser, reasoningBudgetRetryHint)
 	}
 }
 
@@ -1815,8 +1819,8 @@ func TestClientReviewNoToolsRetryUsesProvidedNoToolsMessages(t *testing.T) {
 	if !resp.ToolsOmitted {
 		t.Fatal("expected response to record omitted tools")
 	}
-	if len(noToolsMessages) != 4 {
-		t.Fatalf("no-tools messages = %d, want 4: %#v", len(noToolsMessages), noToolsMessages)
+	if len(noToolsMessages) != 5 {
+		t.Fatalf("no-tools messages = %d, want 5: %#v", len(noToolsMessages), noToolsMessages)
 	}
 	if content, _ := noToolsMessages[0]["content"].(string); content != "no-tools system" {
 		t.Fatalf("system content = %q", content)
@@ -1824,8 +1828,14 @@ func TestClientReviewNoToolsRetryUsesProvidedNoToolsMessages(t *testing.T) {
 	if content, _ := noToolsMessages[3]["content"].(string); strings.Contains(content, "synthetic tool followup") {
 		t.Fatalf("no-tools messages should use provided converted history, got %q", content)
 	}
-	if content, _ := noToolsMessages[3]["content"].(string); strings.Count(content, reasoningBudgetRetryHint) != 1 {
-		t.Fatalf("no-tools retry hint count wrong in %q", content)
+	if content, _ := noToolsMessages[3]["content"].(string); strings.Contains(content, reasoningBudgetRetryHint) {
+		t.Fatalf("converted tool-result message should not include retry hint: %q", content)
+	}
+	if role, _ := noToolsMessages[4]["role"].(string); role != "user" {
+		t.Fatalf("retry hint role = %q, want user", role)
+	}
+	if content, _ := noToolsMessages[4]["content"].(string); content != reasoningBudgetRetryHint {
+		t.Fatalf("retry hint message = %q, want %q", content, reasoningBudgetRetryHint)
 	}
 	for _, msg := range noToolsMessages {
 		if msg["role"] == "tool" {
@@ -1878,6 +1888,31 @@ func TestNoToolsFallbackMessagesSanitizesToolTranscript(t *testing.T) {
 		if len(msg.ToolCalls) > 0 {
 			t.Fatalf("sanitized messages contain tool calls: %#v", got)
 		}
+	}
+}
+
+func TestAddReasoningBudgetRetryHintAddsStandaloneUserMessage(t *testing.T) {
+	req := &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "review request"},
+			{Role: "assistant", Content: "I inspected a.go."},
+		},
+	}
+
+	addReasoningBudgetRetryHint(req)
+
+	if len(req.Messages) != 4 {
+		t.Fatalf("messages = %d, want 4: %#v", len(req.Messages), req.Messages)
+	}
+	if req.Messages[1].Content != "review request" {
+		t.Fatalf("original user content was mutated: %q", req.Messages[1].Content)
+	}
+	if req.Messages[2].Role != "user" || req.Messages[2].Content != reasoningBudgetRetryHint {
+		t.Fatalf("retry hint message = %#v", req.Messages[2])
+	}
+	if req.Messages[3].Role != "assistant" || req.Messages[3].Content != "I inspected a.go." {
+		t.Fatalf("message after inserted hint = %#v", req.Messages[3])
 	}
 }
 

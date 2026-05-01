@@ -494,13 +494,24 @@ func addReasoningBudgetRetryHint(req *ReviewRequest) {
 		req.UserContent = appendUserHint(req.UserContent, reasoningBudgetRetryHint)
 		return
 	}
+	hint := strings.TrimSpace(reasoningBudgetRetryHint)
+	if hint == "" {
+		return
+	}
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == openai.ChatMessageRoleUser {
-			req.Messages[i].Content = appendUserHint(req.Messages[i].Content, reasoningBudgetRetryHint)
+			if strings.Contains(req.Messages[i].Content, hint) {
+				return
+			}
+		}
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == openai.ChatMessageRoleUser && strings.TrimSpace(req.Messages[i].Content) != "" {
+			req.Messages = append(req.Messages[:i+1], append([]Message{{Role: openai.ChatMessageRoleUser, Content: hint}}, req.Messages[i+1:]...)...)
 			return
 		}
 	}
-	req.Messages = append(req.Messages, Message{Role: openai.ChatMessageRoleUser, Content: reasoningBudgetRetryHint})
+	req.Messages = append(req.Messages, Message{Role: openai.ChatMessageRoleUser, Content: hint})
 }
 
 func appendUserHint(content, hint string) string {
