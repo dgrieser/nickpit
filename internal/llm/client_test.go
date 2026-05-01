@@ -1639,6 +1639,85 @@ func TestClientReviewRetriesLastUnderstoodEffortWithoutToolsAfterRejection(t *te
 	}
 }
 
+func TestClientReviewNoToolsRetryIncludesHintWhenBudgetPreviouslyExhausted(t *testing.T) {
+	var attempts []struct {
+		effort   string
+		hasTools bool
+		user     string
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		user := ""
+		if msgs, ok := payload["messages"].([]any); ok {
+			for _, raw := range msgs {
+				msg, _ := raw.(map[string]any)
+				if msg["role"] == "user" {
+					user, _ = msg["content"].(string)
+				}
+			}
+		}
+		attempts = append(attempts, struct {
+			effort   string
+			hasTools bool
+			user     string
+		}{effort, hasTools, user})
+		if effort == "high" && hasTools {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		if effort == "medium" && hasTools {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error":{"message":"reasoning_effort value is invalid"}}`)); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user content",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(attempts), 3; got != want {
+		t.Fatalf("attempt count = %d, want %d", got, want)
+	}
+	// high:true → budget exhausted; medium:true → rejected; high:false → no-tools retry with last understood effort
+	if got, want := fmt.Sprintf("%s:%t,%s:%t,%s:%t", attempts[0].effort, attempts[0].hasTools, attempts[1].effort, attempts[1].hasTools, attempts[2].effort, attempts[2].hasTools), "high:true,medium:true,high:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if !strings.Contains(attempts[2].user, reasoningBudgetRetryHint) {
+		t.Fatalf("no-tools retry user message missing hint: %q", attempts[2].user)
+	}
+	if resp.ReasoningEffort != "high" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+	if !resp.ToolsOmitted {
+		t.Fatal("expected response to record omitted tools")
+	}
+}
+
 func TestClientReviewFallbackStartsAtLowForEmptyAndUnknownEffort(t *testing.T) {
 	tests := []struct {
 		name   string

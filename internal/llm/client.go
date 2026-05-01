@@ -423,6 +423,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 				noToolsReq := cloneReviewRequest(lastUnderstoodReq)
 				noToolsReq.Tools = nil
 				noToolsReq.ParallelToolCalls = false
+				if budgetExhausted {
+					addReasoningBudgetRetryHint(&noToolsReq)
+				}
 				c.logf("Retrying last understood reasoning effort once without tools: effort=%q rejected_effort=%q", noToolsReq.ReasoningEffort, effort)
 				noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
 				if noToolsErr == nil {
