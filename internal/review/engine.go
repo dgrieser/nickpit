@@ -293,6 +293,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	var toolCallHistory []toolCallHistoryEntry
 	jsonRetries := 0
 	effectiveReasoningEffort := e.config.ReasoningEffort
+	jsonRepairWithoutTools := false
 
 	for {
 		llmReq.Messages = messages
@@ -306,6 +307,15 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 				if invalidResp.ReasoningEffort != "" {
 					effectiveReasoningEffort = invalidResp.ReasoningEffort
 					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+				}
+				if invalidResp.ToolsOmitted || jsonRepairWithoutTools {
+					jsonRepairWithoutTools = true
+					messages, err = noToolsMessages(systemTemplate, messages, req.UseJSONSchema)
+					if err != nil {
+						return nil, err
+					}
+					llmReq.Tools = nil
+					llmReq.ParallelToolCalls = false
 				}
 				jsonRetries++
 				e.logf("Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", jsonRetries, invalidResp.Reason, invalidResp.MissingFields)
@@ -419,6 +429,38 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 }
 
 func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, useJSONSchema bool) (*llm.ReviewResponse, error) {
+	finalMessages, err := noToolsMessages(systemTemplate, messages, useJSONSchema)
+	if err != nil {
+		return nil, err
+	}
+	llmReq.Messages = finalMessages
+	llmReq.Tools = nil
+	llmReq.ParallelToolCalls = false
+	for attempt := 0; ; attempt++ {
+		resp, err := e.llm.Review(ctx, llmReq)
+		if err == nil {
+			if resp.ReasoningEffort != "" {
+				llmReq.ReasoningEffort = resp.ReasoningEffort
+			}
+			return resp, nil
+		}
+		var invalidResp *llm.InvalidResponseError
+		if !errors.As(err, &invalidResp) || attempt >= defaultMaxJSONRetries {
+			return nil, err
+		}
+		if invalidResp.ReasoningEffort != "" {
+			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+		}
+		e.logf("Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
+		e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
+		if strings.TrimSpace(invalidResp.RawContent) != "" {
+			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+		}
+		llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp)})
+	}
+}
+
+func noToolsMessages(systemTemplate string, messages []llm.Message, useJSONSchema bool) ([]llm.Message, error) {
 	noToolsPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
@@ -443,31 +485,12 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			finalMessages = append(finalMessages, msg)
 		}
 	}
-	finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
-	llmReq.Messages = finalMessages
-	llmReq.Tools = nil
-	for attempt := 0; ; attempt++ {
-		resp, err := e.llm.Review(ctx, llmReq)
-		if err == nil {
-			if resp.ReasoningEffort != "" {
-				llmReq.ReasoningEffort = resp.ReasoningEffort
-			}
-			return resp, nil
-		}
-		var invalidResp *llm.InvalidResponseError
-		if !errors.As(err, &invalidResp) || attempt >= defaultMaxJSONRetries {
-			return nil, err
-		}
-		if invalidResp.ReasoningEffort != "" {
-			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
-		}
-		e.logf("Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
-		if strings.TrimSpace(invalidResp.RawContent) != "" {
-			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
-		}
-		llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp)})
+	if len(finalMessages) == 0 {
+		finalMessages = append(finalMessages, llm.Message{Role: "system", Content: noToolsPrompt})
+	} else {
+		finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
 	}
+	return finalMessages, nil
 }
 
 func buildJSONRetryFeedback(err *llm.InvalidResponseError) string {

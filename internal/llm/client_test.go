@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1251,6 +1252,138 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
+		if effort == "medium" && !hasTools {
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-1",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": "not json"}}},
+			})
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-2",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{},
+				"usage": map[string]any{
+					"prompt_tokens":     1,
+					"completion_tokens": 1,
+					"total_tokens":      2,
+				},
+			})
+			writeSSEDone(t, w)
+			return
+		}
+		if effort == "low" {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `low`, expected one of `medium`, `high`")); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	var invalidResp *InvalidResponseError
+	if !errors.As(err, &invalidResp) {
+		t.Fatalf("expected InvalidResponseError, got %T: %v", err, err)
+	}
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,medium:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if invalidResp.ReasoningEffort != "medium" {
+		t.Fatalf("invalid response reasoning effort = %q", invalidResp.ReasoningEffort)
+	}
+	if !invalidResp.ToolsOmitted {
+		t.Fatal("expected invalid response to record omitted tools")
+	}
+}
+
+func TestClientReviewRetriesLastUnderstoodEffortWithoutToolsAfterRejection(t *testing.T) {
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
+		if effort == "medium" && !hasTools {
+			writeValidReviewSSE(t, w)
+			return
+		}
+		if effort == "low" {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `low`, expected one of `medium`, `high`")); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,medium:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+	if !resp.ToolsOmitted {
+		t.Fatal("expected response to record omitted tools")
+	}
+}
+
 func TestClientReviewFallbackStartsAtLowForEmptyAndUnknownEffort(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1297,7 +1430,7 @@ func TestClientReviewFallbackStartsAtLowForEmptyAndUnknownEffort(t *testing.T) {
 	}
 }
 
-func TestClientReviewSkipsRejectedLowerReasoningEffort(t *testing.T) {
+func TestClientReviewStopsAtRejectedLowerReasoningEffort(t *testing.T) {
 	var efforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
@@ -1314,8 +1447,6 @@ func TestClientReviewSkipsRejectedLowerReasoningEffort(t *testing.T) {
 			if _, err := w.Write([]byte(`{"error":{"message":"reasoning_effort value is invalid"}}`)); err != nil {
 				t.Fatalf("write error: %v", err)
 			}
-		case "low":
-			writeValidReviewSSE(t, w)
 		default:
 			t.Fatalf("unexpected effort %q", effort)
 		}
@@ -1323,19 +1454,20 @@ func TestClientReviewSkipsRejectedLowerReasoningEffort(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
-	resp, err := client.Review(context.Background(), &ReviewRequest{
+	_, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt:    "system",
 		UserContent:     "user",
 		ReasoningEffort: "high",
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected reasoning budget error")
 	}
-	if got, want := strings.Join(efforts, ","), "high,medium,low"; got != want {
+	var budgetErr *ReasoningBudgetExhaustedError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("expected ReasoningBudgetExhaustedError, got %T: %v", err, err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
-	}
-	if resp.ReasoningEffort != "low" {
-		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
 	}
 }
 
@@ -1372,20 +1504,24 @@ func TestClientReviewAttemptsAllLowerEffortsBeforeExhausting(t *testing.T) {
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("expected ReasoningBudgetExhaustedError, got %T: %v", err, err)
 	}
-	if got, want := strings.Join(efforts, ","), "medium,low,minimal,none,off"; got != want {
+	if got, want := strings.Join(efforts, ","), "medium,low,minimal"; got != want {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
 	}
 }
 
-func TestClientReviewTriesOffWhenNoneIsUnknownVariant(t *testing.T) {
-	var efforts []string
+func TestClientReviewRetriesMinimalWithoutToolsWhenNoneIsUnknownVariant(t *testing.T) {
+	var attempts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
 		effort, _ := payload["reasoning_effort"].(string)
-		efforts = append(efforts, effort)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
 		if effort == "none" {
 			w.WriteHeader(http.StatusBadRequest)
 			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `none`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 46461")); err != nil {
@@ -1393,7 +1529,7 @@ func TestClientReviewTriesOffWhenNoneIsUnknownVariant(t *testing.T) {
 			}
 			return
 		}
-		if effort == "off" {
+		if effort == "minimal" && !hasTools {
 			writeValidReviewSSE(t, w)
 			return
 		}
@@ -1406,14 +1542,22 @@ func TestClientReviewTriesOffWhenNoneIsUnknownVariant(t *testing.T) {
 		SystemPrompt:    "system",
 		UserContent:     "user",
 		ReasoningEffort: "medium",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(efforts, ","), "medium,low,minimal,none,off"; got != want {
-		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	if got, want := strings.Join(attempts, ","), "medium:true,low:true,minimal:true,none:true,minimal:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
 	}
-	if resp.ReasoningEffort != "off" {
+	if resp.ReasoningEffort != "minimal" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
 	}
 }

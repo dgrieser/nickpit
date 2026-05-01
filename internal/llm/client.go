@@ -36,6 +36,7 @@ type InvalidResponseError struct {
 	Reason          string
 	MissingFields   []string
 	ReasoningEffort string
+	ToolsOmitted    bool
 }
 
 func (e *InvalidResponseError) Error() string {
@@ -109,6 +110,7 @@ type ReviewResponse struct {
 	RawResponse            string           `json:"raw_response,omitempty"`
 	TokensUsed             model.TokenUsage `json:"tokens_used"`
 	ReasoningEffort        string           `json:"reasoning_effort,omitempty"`
+	ToolsOmitted           bool             `json:"-"`
 }
 
 type capture struct {
@@ -317,6 +319,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 
 	var lastBudgetErr *ReasoningBudgetExhaustedError
+	var lastUnderstoodReq *ReviewRequest
 	for attemptIndex, effort := range efforts {
 		attemptReq := *req
 		attemptReq.ReasoningEffort = effort
@@ -327,6 +330,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var budgetErr *ReasoningBudgetExhaustedError
 		if errors.As(err, &budgetErr) {
 			lastBudgetErr = budgetErr
+			lastUnderstoodReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
 				c.logf("Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
 				continue
@@ -338,6 +342,30 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 				return nil, err
 			}
 			c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+			if lastUnderstoodReq != nil && len(lastUnderstoodReq.Tools) > 0 {
+				noToolsReq := *lastUnderstoodReq
+				noToolsReq.Tools = nil
+				noToolsReq.ParallelToolCalls = false
+				c.logf("Retrying last understood reasoning effort once without tools: effort=%q rejected_effort=%q", noToolsReq.ReasoningEffort, effort)
+				noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+				if noToolsErr == nil {
+					noToolsResp.ToolsOmitted = true
+					return noToolsResp, nil
+				}
+				if errors.As(noToolsErr, &budgetErr) {
+					lastBudgetErr = budgetErr
+				} else {
+					var invalidResp *InvalidResponseError
+					if errors.As(noToolsErr, &invalidResp) {
+						invalidResp.ToolsOmitted = true
+					}
+					return nil, noToolsErr
+				}
+				c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
+			}
+			if lastBudgetErr != nil {
+				return nil, lastBudgetErr
+			}
 			continue
 		}
 		return nil, err
