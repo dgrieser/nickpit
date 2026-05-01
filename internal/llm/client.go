@@ -440,9 +440,6 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 				}
 				c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 			}
-			if lastBudgetErr != nil {
-				return nil, lastBudgetErr
-			}
 			continue
 		}
 		return nil, err

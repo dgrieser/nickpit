@@ -1685,7 +1685,7 @@ func TestClientReviewFallbackStartsAtLowForEmptyAndUnknownEffort(t *testing.T) {
 	}
 }
 
-func TestClientReviewStopsAtRejectedLowerReasoningEffort(t *testing.T) {
+func TestClientReviewContinuesAfterRejectedLowerReasoningEffort(t *testing.T) {
 	var efforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
@@ -1702,6 +1702,8 @@ func TestClientReviewStopsAtRejectedLowerReasoningEffort(t *testing.T) {
 			if _, err := w.Write([]byte(`{"error":{"message":"reasoning_effort value is invalid"}}`)); err != nil {
 				t.Fatalf("write error: %v", err)
 			}
+		case "low":
+			writeValidReviewSSE(t, w)
 		default:
 			t.Fatalf("unexpected effort %q", effort)
 		}
@@ -1709,20 +1711,19 @@ func TestClientReviewStopsAtRejectedLowerReasoningEffort(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
-	_, err := client.Review(context.Background(), &ReviewRequest{
+	resp, err := client.Review(context.Background(), &ReviewRequest{
 		SystemPrompt:    "system",
 		UserContent:     "user",
 		ReasoningEffort: "high",
 	})
-	if err == nil {
-		t.Fatal("expected reasoning budget error")
+	if err != nil {
+		t.Fatal(err)
 	}
-	var budgetErr *ReasoningBudgetExhaustedError
-	if !errors.As(err, &budgetErr) {
-		t.Fatalf("expected ReasoningBudgetExhaustedError, got %T: %v", err, err)
-	}
-	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+	if got, want := strings.Join(efforts, ","), "high,medium,low"; got != want {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "low" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
 	}
 }
 
@@ -1759,7 +1760,7 @@ func TestClientReviewAttemptsAllLowerEffortsBeforeExhausting(t *testing.T) {
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("expected ReasoningBudgetExhaustedError, got %T: %v", err, err)
 	}
-	if got, want := strings.Join(efforts, ","), "medium,low,minimal"; got != want {
+	if got, want := strings.Join(efforts, ","), "medium,low,minimal,none,off"; got != want {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
 	}
 }
