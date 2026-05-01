@@ -13,9 +13,6 @@ func DetectLanguage(path string) string {
 	if isHelmTemplate(normalized, base) {
 		return "helm"
 	}
-	if base == "chart.lock" {
-		return "yaml"
-	}
 
 	switch filepath.Ext(base) {
 	case ".go":
@@ -88,5 +85,9 @@ func isHelmTemplate(path, base string) bool {
 	if strings.HasSuffix(base, ".tpl") {
 		return true
 	}
-	return strings.Contains(path, "/templates/")
+	if base == "chart.yaml" || base == "values.yaml" {
+		return true
+	}
+	return strings.Contains(path, "/charts/") || strings.HasPrefix(path, "charts/") ||
+		strings.Contains(path, "/templates/")
 }
