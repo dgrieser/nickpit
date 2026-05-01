@@ -1,4 +1,4 @@
-p:ackage llm
+package llm
 
 import (
 	"bytes"
