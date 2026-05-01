@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1332,6 +1333,68 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestClientReviewTreatsReasoningOnlyPeerInternalStreamErrorAsBudgetExhausted(t *testing.T) {
+	var efforts []string
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+
+		var body io.ReadCloser
+		if len(efforts) == 1 {
+			body = &errorAfterReader{
+				reader: bytes.NewReader([]byte(sseChunk(t, map[string]any{
+					"id":      "chunk-1",
+					"object":  "chat.completion.chunk",
+					"created": 1,
+					"model":   "model",
+					"choices": []map[string]any{
+						{
+							"index": 0,
+							"delta": map[string]any{
+								"reasoning_content": "thinking",
+							},
+						},
+					},
+				}))),
+				err: errors.New("stream error: stream ID 5; INTERNAL_ERROR; received from peer"),
+			}
+		} else {
+			body = io.NopCloser(strings.NewReader(validReviewStream(t)))
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
 func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 	var attempts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1894,19 +1957,75 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	}
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type errorAfterReader struct {
+	reader *bytes.Reader
+	err    error
+}
+
+func (r *errorAfterReader) Read(p []byte) (int, error) {
+	if r.reader.Len() > 0 {
+		return r.reader.Read(p)
+	}
+	return 0, r.err
+}
+
+func (r *errorAfterReader) Close() error {
+	return nil
+}
+
+func validReviewStream(t *testing.T) string {
+	t.Helper()
+	return sseChunk(t, map[string]any{
+		"id":      "chunk-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+				},
+			},
+		},
+	}) + sseChunk(t, map[string]any{
+		"id":      "chunk-2",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{},
+		"usage": map[string]any{
+			"prompt_tokens":     4,
+			"completion_tokens": 2,
+			"total_tokens":      6,
+		},
+	}) + "data: [DONE]\n\n"
+}
+
 func writeSSEChunk(t *testing.T, w http.ResponseWriter, payload any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "text/event-stream")
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal chunk: %v", err)
-	}
-	if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+	if _, err := w.Write([]byte(sseChunk(t, payload))); err != nil {
 		t.Fatalf("write chunk: %v", err)
 	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+func sseChunk(t *testing.T, payload any) string {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal chunk: %v", err)
+	}
+	return "data: " + string(data) + "\n\n"
 }
 
 func writeReasoningLengthSSE(t *testing.T, w http.ResponseWriter) {

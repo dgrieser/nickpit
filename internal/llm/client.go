@@ -142,6 +142,7 @@ type toolCallBuilder struct {
 type streamReadError struct {
 	err       error
 	retryable bool
+	partial   *streamedResponse
 }
 
 type llmHTTPStatusError struct {
@@ -719,15 +720,20 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				c.logf("LLM stream close failed after error: %v", closeErr)
 			}
 			var readErr *streamReadError
-			if errors.As(streamErr, &readErr) && readErr.retryable && attempt < c.retrier.MaxRetries {
-				if c.logger != nil {
-					c.logger.PrintStatusLine("LLM stream hit a network error, retrying...")
+			if errors.As(streamErr, &readErr) {
+				if isReasoningOnlyPeerInternalStreamError(readErr) {
+					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 				}
-				c.logf("Retrying request: stream network error")
-				if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
-					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
+				if readErr.retryable && attempt < c.retrier.MaxRetries {
+					if c.logger != nil {
+						c.logger.PrintStatusLine("LLM stream hit a network error, retrying...")
+					}
+					c.logf("Retrying request: stream network error")
+					if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
+						return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
+					}
+					continue
 				}
-				continue
 			}
 			return nil, streamErr
 		}
@@ -771,6 +777,18 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 		lastFinishReason string
 		receivedChunk    bool
 	)
+	partialResponse := func() *streamedResponse {
+		return &streamedResponse{
+			content:          contentBuilder.String(),
+			toolCalls:        finalizeToolCalls(toolCalls),
+			usage:            usage,
+			reasoned:         reasoningStarted,
+			sawContent:       sawContent,
+			sawToolCalls:     sawToolCalls,
+			sawUsage:         sawUsage,
+			lastFinishReason: lastFinishReason,
+		}
+	}
 	c.logf("LLM waiting for first stream chunk")
 
 	for {
@@ -784,21 +802,13 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 					return nil, &streamReadError{
 						err:       fmt.Errorf("llm: reading stream: interrupted before final usage chunk"),
 						retryable: true,
+						partial:   partialResponse(),
 					}
 				}
 				if reasoningStarted {
 					c.logger.PrintBlankLine()
 				}
-				return &streamedResponse{
-					content:          contentBuilder.String(),
-					toolCalls:        finalizeToolCalls(toolCalls),
-					usage:            usage,
-					reasoned:         reasoningStarted,
-					sawContent:       sawContent,
-					sawToolCalls:     sawToolCalls,
-					sawUsage:         sawUsage,
-					lastFinishReason: lastFinishReason,
-				}, nil
+				return partialResponse(), nil
 			}
 			if reasoningStarted {
 				c.logger.PrintBlankLine()
@@ -806,6 +816,7 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 			return nil, &streamReadError{
 				err:       fmt.Errorf("llm: reading stream: %w", err),
 				retryable: isRetryableNetworkError(err),
+				partial:   partialResponse(),
 			}
 		}
 
@@ -1162,6 +1173,19 @@ func isRetryableNetworkError(err error) bool {
 	}
 
 	return false
+}
+
+func isReasoningOnlyPeerInternalStreamError(err *streamReadError) bool {
+	if err == nil || err.partial == nil {
+		return false
+	}
+	if !err.partial.reasoned || err.partial.sawContent || err.partial.sawToolCalls {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "stream error:") &&
+		strings.Contains(message, "INTERNAL_ERROR") &&
+		strings.Contains(message, "received from peer")
 }
 
 func (c *OpenAIClient) logf(format string, args ...any) {
