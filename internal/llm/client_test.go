@@ -1333,6 +1333,118 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestClientReviewAddsConciseReasoningHintAfterBudgetExhaustion(t *testing.T) {
+	var userMessages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("messages missing or wrong type: %#v", payload["messages"])
+		}
+		lastUser := ""
+		for _, raw := range messages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("message has wrong type: %#v", raw)
+			}
+			if msg["role"] == "user" {
+				lastUser, _ = msg["content"].(string)
+			}
+		}
+		userMessages = append(userMessages, lastUser)
+
+		effort, _ := payload["reasoning_effort"].(string)
+		if effort == "high" {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		if effort != "medium" {
+			t.Fatalf("unexpected effort %q", effort)
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(userMessages) != 2 {
+		t.Fatalf("user messages = %d, want 2", len(userMessages))
+	}
+	if strings.Contains(userMessages[0], reasoningBudgetRetryHint) {
+		t.Fatalf("first request should not include retry hint: %q", userMessages[0])
+	}
+	if !strings.Contains(userMessages[1], reasoningBudgetRetryHint) {
+		t.Fatalf("retry request missing retry hint: %q", userMessages[1])
+	}
+}
+
+func TestClientReviewAppendsConciseReasoningHintToSyntheticUserMessage(t *testing.T) {
+	var retryMessages []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		if effort == "high" {
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		if effort != "medium" {
+			t.Fatalf("unexpected effort %q", effort)
+		}
+		rawMessages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("messages missing or wrong type: %#v", payload["messages"])
+		}
+		retryMessages = make([]map[string]any, 0, len(rawMessages))
+		for _, raw := range rawMessages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("message has wrong type: %#v", raw)
+			}
+			retryMessages = append(retryMessages, msg)
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "original review request"},
+			{Role: "assistant", Content: "tool call"},
+			{Role: "user", Content: "synthetic tool followup"},
+		},
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retryMessages) != 4 {
+		t.Fatalf("retry messages = %d, want 4", len(retryMessages))
+	}
+	originalUser, _ := retryMessages[1]["content"].(string)
+	if strings.Contains(originalUser, reasoningBudgetRetryHint) {
+		t.Fatalf("original user message should not include retry hint: %q", originalUser)
+	}
+	syntheticUser, _ := retryMessages[3]["content"].(string)
+	if !strings.Contains(syntheticUser, "synthetic tool followup\n\n"+reasoningBudgetRetryHint) {
+		t.Fatalf("synthetic user message missing retry hint: %q", syntheticUser)
+	}
+}
+
 func TestClientReviewTreatsReasoningOnlyPeerInternalStreamErrorAsBudgetExhausted(t *testing.T) {
 	var efforts []string
 	client := NewOpenAIClient("http://example.test", "token", "model")

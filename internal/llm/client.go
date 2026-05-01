@@ -1,4 +1,4 @@
-package llm
+p:ackage llm
 
 import (
 	"bytes"
@@ -24,6 +24,7 @@ import (
 var ErrInvalidJSON = errors.New("model returned invalid JSON")
 
 const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model"
+const reasoningBudgetRetryHint = "Keep your reasoning concise and return the requested answer as soon as possible."
 
 var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 
@@ -391,9 +392,13 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 
 	var lastBudgetErr *ReasoningBudgetExhaustedError
 	var lastUnderstoodReq *ReviewRequest
+	budgetExhausted := false
 	for attemptIndex, effort := range efforts {
 		attemptReq := cloneReviewRequest(req)
 		attemptReq.ReasoningEffort = effort
+		if budgetExhausted {
+			addReasoningBudgetRetryHint(&attemptReq)
+		}
 		resp, err := c.reviewOnce(ctx, &attemptReq)
 		if err == nil {
 			return resp, nil
@@ -403,6 +408,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			lastBudgetErr = budgetErr
 			lastUnderstoodReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
+				budgetExhausted = true
 				c.logf("Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
 				continue
 			}
@@ -445,6 +451,31 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		return nil, lastBudgetErr
 	}
 	return nil, fmt.Errorf("llm: internal error: reasoning fallback loop completed without returning")
+}
+
+func addReasoningBudgetRetryHint(req *ReviewRequest) {
+	if req == nil {
+		return
+	}
+	if len(req.Messages) == 0 {
+		req.UserContent = appendUserHint(req.UserContent, reasoningBudgetRetryHint)
+		return
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == openai.ChatMessageRoleUser {
+			req.Messages[i].Content = appendUserHint(req.Messages[i].Content, reasoningBudgetRetryHint)
+			return
+		}
+	}
+	req.Messages = append(req.Messages, Message{Role: openai.ChatMessageRoleUser, Content: reasoningBudgetRetryHint})
+}
+
+func appendUserHint(content, hint string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return hint
+	}
+	return content + "\n\n" + hint
 }
 
 func fallbackReasoningEfforts(effort string) []string {
