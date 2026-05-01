@@ -333,7 +333,10 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			}
 			return nil, err
 		}
-		if attemptIndex > 0 && isReasoningEffortRejection(err) {
+		if attemptIndex > 0 {
+			if !isReasoningEffortRejection(err, effort) {
+				return nil, err
+			}
 			c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
 			continue
 		}
@@ -355,7 +358,7 @@ func fallbackReasoningEfforts(effort string) []string {
 	return []string{"low", "minimal", "none", "off"}
 }
 
-func isReasoningEffortRejection(err error) bool {
+func isReasoningEffortRejection(err error, effort string) bool {
 	var statusErr *llmHTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return false
@@ -371,7 +374,17 @@ func isReasoningEffortRejection(err error) bool {
 	}
 	return strings.Contains(message, "reasoning_effort") ||
 		strings.Contains(message, "reasoning effort") ||
-		(strings.Contains(message, "reasoning") && (strings.Contains(message, "support") || strings.Contains(message, "supported") || strings.Contains(message, "invalid") || strings.Contains(message, "value")))
+		(strings.Contains(message, "reasoning") && (strings.Contains(message, "support") || strings.Contains(message, "supported") || strings.Contains(message, "invalid") || strings.Contains(message, "value"))) ||
+		isUnknownVariantRejection(message, effort)
+}
+
+func isUnknownVariantRejection(message, effort string) bool {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" {
+		return false
+	}
+	return strings.Contains(message, "unknown variant `"+effort+"`") ||
+		strings.Contains(message, "unknown variant \""+effort+"\"")
 }
 
 func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error) {

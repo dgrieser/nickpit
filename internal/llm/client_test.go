@@ -1377,6 +1377,47 @@ func TestClientReviewAttemptsAllLowerEffortsBeforeExhausting(t *testing.T) {
 	}
 }
 
+func TestClientReviewTriesOffWhenNoneIsUnknownVariant(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		if effort == "none" {
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte("Failed to deserialize the JSON body into the target type: unknown variant `none`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 46461")); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+			return
+		}
+		if effort == "off" {
+			writeValidReviewSSE(t, w)
+			return
+		}
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "medium,low,minimal,none,off"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "off" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
 func TestClientReviewInvalidJSONIncludesEffectiveReasoningEffort(t *testing.T) {
 	var efforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
