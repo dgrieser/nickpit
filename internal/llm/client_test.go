@@ -1218,6 +1218,86 @@ func TestFallbackReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
+	maxTokens := 10
+	temperature := 0.25
+	topP := 0.9
+	req := &ReviewRequest{
+		Messages: []Message{
+			{
+				Role:    "assistant",
+				Content: "original content",
+				ToolCalls: []ToolCall{
+					{ID: "call-1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+				},
+			},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:       "inspect_file",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		Schema:      json.RawMessage(`{"type":"object"}`),
+		MaxTokens:   &maxTokens,
+		Temperature: &temperature,
+		TopP:        &topP,
+		ExtraBody: map[string]any{
+			"nested": map[string]any{"value": "original"},
+			"list":   []any{"original"},
+			"raw":    json.RawMessage(`{"value":"original"}`),
+			"bytes":  []byte("original"),
+		},
+	}
+
+	cloned := cloneReviewRequest(req)
+	cloned.Messages[0].Content = "changed content"
+	cloned.Messages[0].ToolCalls[0].Arguments = `{"path":"b.go"}`
+	cloned.Tools[0].Parameters[0] = '['
+	cloned.Schema[0] = '['
+	*cloned.MaxTokens = 20
+	*cloned.Temperature = 0.5
+	*cloned.TopP = 0.7
+	cloned.ExtraBody["nested"].(map[string]any)["value"] = "changed"
+	cloned.ExtraBody["list"].([]any)[0] = "changed"
+	cloned.ExtraBody["raw"].(json.RawMessage)[0] = '['
+	cloned.ExtraBody["bytes"].([]byte)[0] = 'X'
+
+	if req.Messages[0].Content != "original content" {
+		t.Fatalf("message content was mutated: %q", req.Messages[0].Content)
+	}
+	if req.Messages[0].ToolCalls[0].Arguments != `{"path":"a.go"}` {
+		t.Fatalf("tool call arguments were mutated: %q", req.Messages[0].ToolCalls[0].Arguments)
+	}
+	if got, want := string(req.Tools[0].Parameters), `{"type":"object"}`; got != want {
+		t.Fatalf("tool parameters = %q, want %q", got, want)
+	}
+	if got, want := string(req.Schema), `{"type":"object"}`; got != want {
+		t.Fatalf("schema = %q, want %q", got, want)
+	}
+	if *req.MaxTokens != 10 {
+		t.Fatalf("max tokens = %d", *req.MaxTokens)
+	}
+	if *req.Temperature != 0.25 {
+		t.Fatalf("temperature = %f", *req.Temperature)
+	}
+	if *req.TopP != 0.9 {
+		t.Fatalf("top_p = %f", *req.TopP)
+	}
+	if got := req.ExtraBody["nested"].(map[string]any)["value"]; got != "original" {
+		t.Fatalf("nested extra body = %v", got)
+	}
+	if got := req.ExtraBody["list"].([]any)[0]; got != "original" {
+		t.Fatalf("extra body list = %v", got)
+	}
+	if got, want := string(req.ExtraBody["raw"].(json.RawMessage)), `{"value":"original"}`; got != want {
+		t.Fatalf("extra body raw = %q, want %q", got, want)
+	}
+	if got, want := string(req.ExtraBody["bytes"].([]byte)), "original"; got != want {
+		t.Fatalf("extra body bytes = %q, want %q", got, want)
+	}
+}
+
 func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 	var efforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

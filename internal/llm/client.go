@@ -258,9 +258,79 @@ func cloneRequestValue(value any) any {
 			cloned[i] = cloneRequestValue(item)
 		}
 		return cloned
+	case json.RawMessage:
+		return cloneRawMessage(typed)
+	case []byte:
+		if typed == nil {
+			return []byte(nil)
+		}
+		cloned := make([]byte, len(typed))
+		copy(cloned, typed)
+		return cloned
 	default:
 		return typed
 	}
+}
+
+func cloneReviewRequest(req *ReviewRequest) ReviewRequest {
+	cloned := *req
+	cloned.Messages = cloneMessages(req.Messages)
+	cloned.Tools = cloneToolDefinitions(req.Tools)
+	cloned.Schema = cloneRawMessage(req.Schema)
+	cloned.ExtraBody = cloneRequestExtraBody(req.ExtraBody)
+	if req.MaxTokens != nil {
+		maxTokens := *req.MaxTokens
+		cloned.MaxTokens = &maxTokens
+	}
+	if req.Temperature != nil {
+		temperature := *req.Temperature
+		cloned.Temperature = &temperature
+	}
+	if req.TopP != nil {
+		topP := *req.TopP
+		cloned.TopP = &topP
+	}
+	return cloned
+}
+
+func cloneMessages(messages []Message) []Message {
+	if messages == nil {
+		return nil
+	}
+	cloned := make([]Message, len(messages))
+	copy(cloned, messages)
+	for i := range cloned {
+		cloned[i].ToolCalls = cloneToolCalls(messages[i].ToolCalls)
+	}
+	return cloned
+}
+
+func cloneToolCalls(toolCalls []ToolCall) []ToolCall {
+	if toolCalls == nil {
+		return nil
+	}
+	cloned := make([]ToolCall, len(toolCalls))
+	copy(cloned, toolCalls)
+	return cloned
+}
+
+func cloneToolDefinitions(tools []ToolDefinition) []ToolDefinition {
+	if tools == nil {
+		return nil
+	}
+	cloned := make([]ToolDefinition, len(tools))
+	copy(cloned, tools)
+	for i := range cloned {
+		cloned[i].Parameters = cloneRawMessage(tools[i].Parameters)
+	}
+	return cloned
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
 }
 
 func setRequestExtraBodyField(extraBody map[string]any, key string, value any) map[string]any {
@@ -321,7 +391,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	var lastBudgetErr *ReasoningBudgetExhaustedError
 	var lastUnderstoodReq *ReviewRequest
 	for attemptIndex, effort := range efforts {
-		attemptReq := *req
+		attemptReq := cloneReviewRequest(req)
 		attemptReq.ReasoningEffort = effort
 		resp, err := c.reviewOnce(ctx, &attemptReq)
 		if err == nil {
@@ -343,7 +413,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			}
 			c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
 			if lastUnderstoodReq != nil && len(lastUnderstoodReq.Tools) > 0 {
-				noToolsReq := *lastUnderstoodReq
+				noToolsReq := cloneReviewRequest(lastUnderstoodReq)
 				noToolsReq.Tools = nil
 				noToolsReq.ParallelToolCalls = false
 				c.logf("Retrying last understood reasoning effort once without tools: effort=%q rejected_effort=%q", noToolsReq.ReasoningEffort, effort)
@@ -373,7 +443,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if lastBudgetErr != nil {
 		return nil, lastBudgetErr
 	}
-	return nil, fmt.Errorf(reasoningBudgetExhaustedMessage)
+	return nil, fmt.Errorf("llm: internal error: reasoning fallback loop completed without returning")
 }
 
 func fallbackReasoningEfforts(effort string) []string {
