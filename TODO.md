@@ -1,6 +1,5 @@
 # TODO
 
-- Fix no tools retry (duplicate hint and not reformatted)
 - Run verifier agent for each finding after review (should also reevaluate severity)
 - Add simplifier agent to shorten text on findings
 - Add suggestion agent to format suggestions for gitlab/github
