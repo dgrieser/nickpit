@@ -549,6 +549,7 @@ var builtInStyleGuideFiles = map[string]string{
 	"csharp":     "styleguides/csharp.md",
 	"sql":        "styleguides/sql.md",
 	"shell":      "styleguides/bash.md",
+	"helm":       "styleguides/helm.md",
 }
 
 func changedLanguages(ctx *model.ReviewContext) []string {
