@@ -51,6 +51,7 @@ type ReviewResult struct {
 	OverallExplanation     string     `json:"overall_explanation"`
 	OverallConfidenceScore float64    `json:"overall_confidence_score"`
 	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
+	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used,omitempty"`
 	Mode                   string     `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`
@@ -144,12 +145,20 @@ type CommitSummary struct {
 }
 
 type Finding struct {
-	Title           string       `json:"title"`
-	Body            string       `json:"body"`
-	ConfidenceScore float64      `json:"confidence_score"`
-	Priority        *int         `json:"priority,omitempty"`
-	CodeLocation    CodeLocation `json:"code_location"`
-	Suggestion      *Suggestion  `json:"suggestion,omitempty"`
+	Title           string               `json:"title"`
+	Body            string               `json:"body"`
+	ConfidenceScore float64              `json:"confidence_score"`
+	Priority        *int                 `json:"priority,omitempty"`
+	CodeLocation    CodeLocation         `json:"code_location"`
+	Suggestion      *Suggestion          `json:"suggestion,omitempty"`
+	Verification    *FindingVerification `json:"verification,omitempty"`
+}
+
+type FindingVerification struct {
+	Valid           bool    `json:"valid"`
+	Priority        int     `json:"priority"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	Remarks         string  `json:"remarks"`
 }
 
 type CodeLocation struct {
