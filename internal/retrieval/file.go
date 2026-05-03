@@ -118,25 +118,87 @@ func (e *LocalEngine) GetFileSlice(ctx context.Context, repoRoot, path string, s
 }
 
 func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error) {
-	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
-	if err != nil {
-		return nil, fmt.Errorf("retrieval: searching %s: %w", path, err)
-	}
-	if contextLines < 0 {
-		contextLines = 5
-	}
 	if query == "" {
 		return nil, fmt.Errorf("retrieval: missing search query")
 	}
 
+	literalMatcher := func(rawQuery string) func(string) bool {
+		needle := rawQuery
+		if !caseSensitive {
+			needle = strings.ToLower(rawQuery)
+		}
+		return func(line string) bool {
+			haystack := line
+			if !caseSensitive {
+				haystack = strings.ToLower(line)
+			}
+			return strings.Contains(haystack, needle)
+		}
+	}
+
+	results, normalizedPath, contextLines, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalMatcher(query))
+	if err != nil {
+		return nil, err
+	}
+
+	effectiveQuery := query
+	unescapedQuery := unescapeSearchQuery(query)
+	if len(results) == 0 && unescapedQuery != query {
+		fallback, _, _, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalMatcher(unescapedQuery))
+		if err != nil {
+			return nil, err
+		}
+		if len(fallback) > 0 {
+			results = fallback
+			effectiveQuery = unescapedQuery
+		}
+	}
+
+	return &SearchResults{
+		Path:          normalizedPath,
+		Query:         effectiveQuery,
+		ContextLines:  contextLines,
+		MaxResults:    maxResults,
+		CaseSensitive: caseSensitive,
+		ResultCount:   len(results),
+		Results:       results,
+	}, nil
+}
+
+func (e *LocalEngine) SearchRegex(_ context.Context, repoRoot, path string, pattern *regexp.Regexp, contextLines, maxResults int) (*SearchResults, error) {
+	if pattern == nil {
+		return nil, fmt.Errorf("retrieval: missing search pattern")
+	}
+	results, normalizedPath, contextLines, err := runFileSearch(repoRoot, path, contextLines, maxResults, pattern.MatchString)
+	if err != nil {
+		return nil, err
+	}
+	return &SearchResults{
+		Path:         normalizedPath,
+		Query:        pattern.String(),
+		ContextLines: contextLines,
+		MaxResults:   maxResults,
+		ResultCount:  len(results),
+		Results:      results,
+	}, nil
+}
+
+func runFileSearch(repoRoot, path string, contextLines, maxResults int, match func(string) bool) ([]SearchResult, string, int, error) {
+	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
+	if err != nil {
+		return nil, "", contextLines, fmt.Errorf("retrieval: searching %s: %w", path, err)
+	}
+	if contextLines < 0 {
+		contextLines = 5
+	}
 	info, err := os.Stat(fullPath)
 	if err != nil {
-		return nil, fmt.Errorf("retrieval: searching %s: %w", normalizedPath, err)
+		return nil, normalizedPath, contextLines, fmt.Errorf("retrieval: searching %s: %w", normalizedPath, err)
 	}
 	ignores := repofs.NewIgnoreMatcher(repoRoot)
 
 	results := make([]SearchResult, 0)
-	appendMatches := func(relPath, searchQuery string) error {
+	appendMatches := func(relPath string) error {
 		if ignores.IsIgnored(relPath, false) {
 			return nil
 		}
@@ -154,11 +216,7 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 		content := normalizeText(string(data))
 		lines := splitLines(content)
 		for i, line := range lines {
-			matchLine := line
-			if !caseSensitive {
-				matchLine = strings.ToLower(line)
-			}
-			if !strings.Contains(matchLine, searchQuery) {
+			if !match(line) {
 				continue
 			}
 			start := i + 1 - contextLines
@@ -183,69 +241,34 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 		return nil
 	}
 
-	runSearch := func(searchQuery string) error {
-		if !info.IsDir() {
-			if err := appendMatches(normalizedPath, searchQuery); err != nil && err != errSearchLimitReached {
-				return err
+	if !info.IsDir() {
+		if err := appendMatches(normalizedPath); err != nil && err != errSearchLimitReached {
+			return nil, normalizedPath, contextLines, err
+		}
+		return results, normalizedPath, contextLines, nil
+	}
+
+	walkErr := filepath.WalkDir(fullPath, func(currentPath string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			relDir, err := repofs.RelPath(repoRoot, currentPath)
+			if err == nil && relDir != "" && ignores.IsIgnored(relDir, true) {
+				return filepath.SkipDir
 			}
 			return nil
 		}
-
-		err = filepath.WalkDir(fullPath, func(currentPath string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if d.IsDir() {
-				relDir, err := repofs.RelPath(repoRoot, currentPath)
-				if err == nil && relDir != "" && ignores.IsIgnored(relDir, true) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			relPath, err := repofs.RelPath(repoRoot, currentPath)
-			if err != nil {
-				return err
-			}
-			return appendMatches(relPath, searchQuery)
-		})
-		if err != nil && err != errSearchLimitReached {
-			return fmt.Errorf("retrieval: searching %s: %w", normalizedPath, err)
+		relPath, err := repofs.RelPath(repoRoot, currentPath)
+		if err != nil {
+			return err
 		}
-		return nil
+		return appendMatches(relPath)
+	})
+	if walkErr != nil && walkErr != errSearchLimitReached {
+		return nil, normalizedPath, contextLines, fmt.Errorf("retrieval: searching %s: %w", normalizedPath, walkErr)
 	}
-
-	searchQuery := query
-	if !caseSensitive {
-		searchQuery = strings.ToLower(query)
-	}
-	if err := runSearch(searchQuery); err != nil {
-		return nil, err
-	}
-
-	effectiveQuery := query
-	unescapedQuery := unescapeSearchQuery(query)
-	if len(results) == 0 && unescapedQuery != query {
-		searchQuery = unescapedQuery
-		if !caseSensitive {
-			searchQuery = strings.ToLower(unescapedQuery)
-		}
-		if err := runSearch(searchQuery); err != nil {
-			return nil, err
-		}
-		if len(results) > 0 {
-			effectiveQuery = unescapedQuery
-		}
-	}
-
-	return &SearchResults{
-		Path:          normalizedPath,
-		Query:         effectiveQuery,
-		ContextLines:  contextLines,
-		MaxResults:    maxResults,
-		CaseSensitive: caseSensitive,
-		ResultCount:   len(results),
-		Results:       results,
-	}, nil
+	return results, normalizedPath, contextLines, nil
 }
 
 func unescapeSearchQuery(query string) string {

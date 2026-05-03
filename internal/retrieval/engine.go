@@ -1,12 +1,16 @@
 package retrieval
 
-import "context"
+import (
+	"context"
+	"regexp"
+)
 
 type Engine interface {
 	GetFile(ctx context.Context, repoRoot, path string) (*FileContent, error)
 	ListFiles(ctx context.Context, repoRoot, path string, depth int) (*DirectoryListing, error)
 	GetFileSlice(ctx context.Context, repoRoot, path string, start, end int) (*FileSlice, error)
 	Search(ctx context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error)
+	SearchRegex(ctx context.Context, repoRoot, path string, pattern *regexp.Regexp, contextLines, maxResults int) (*SearchResults, error)
 	GetSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*SymbolInfo, error)
 	FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
 	FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)

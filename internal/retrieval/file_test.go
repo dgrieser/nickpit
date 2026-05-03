@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"testing"
 )
 
@@ -325,6 +326,108 @@ func TestLocalEngineSearchSkipsGitIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.ResultCount != 1 || len(got.Results) != 1 || got.Results[0].Path != "pkg/a.go" {
+		t.Fatalf("search = %#v", got)
+	}
+}
+
+func TestLocalEngineSearchRegex(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "package pkg\n\nfunc NewClient() {}\nfunc oldClient() {}\n"
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	pattern := regexp.MustCompile(`^func\s+New\w+\(`)
+	got, err := engine.SearchRegex(context.Background(), repoRoot, "pkg", pattern, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 1 {
+		t.Fatalf("result_count = %d, want 1", got.ResultCount)
+	}
+	if got.Results[0].Path != "pkg/a.go" || got.Results[0].StartLine != 3 {
+		t.Fatalf("results = %#v", got.Results)
+	}
+	if got.Query != pattern.String() {
+		t.Fatalf("query = %q, want %q", got.Query, pattern.String())
+	}
+}
+
+func TestLocalEngineSearchRegexCaseInsensitive(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte("HelloWorld\nGoodbye\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	pattern := regexp.MustCompile(`(?i)hello\w+`)
+	got, err := engine.SearchRegex(context.Background(), repoRoot, "pkg", pattern, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 1 {
+		t.Fatalf("result_count = %d, want 1", got.ResultCount)
+	}
+	if got.Results[0].Content != "HelloWorld" {
+		t.Fatalf("content = %q", got.Results[0].Content)
+	}
+}
+
+func TestLocalEngineSearchRegexRespectsMaxResults(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte("foo\nfoo\nfoo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	pattern := regexp.MustCompile(`^foo$`)
+	got, err := engine.SearchRegex(context.Background(), repoRoot, "pkg", pattern, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 2 {
+		t.Fatalf("result_count = %d, want 2", got.ResultCount)
+	}
+}
+
+func TestLocalEngineSearchRegexSkipsBinaryAndIgnored(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repoRoot, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte("needle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "ignored", "tmp.go"), []byte("needle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "blob.bin"), []byte{0x00, 'n', 'e', 'e', 'd', 'l', 'e'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	pattern := regexp.MustCompile(`needle`)
+	got, err := engine.SearchRegex(context.Background(), repoRoot, "", pattern, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 1 || got.Results[0].Path != "pkg/a.go" {
 		t.Fatalf("search = %#v", got)
 	}
 }

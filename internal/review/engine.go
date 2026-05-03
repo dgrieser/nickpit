@@ -913,6 +913,24 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
+
+	regexPattern := args.Query
+	if !args.CaseSensitive {
+		regexPattern = "(?i)" + regexPattern
+	}
+	if compiled, compileErr := regexp.Compile(regexPattern); compileErr == nil {
+		e.logf("Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
+		regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, args.ContextLines, args.MaxResults)
+		if err != nil {
+			return toolError(normalizedPath, "retrieval_failed", err.Error())
+		}
+		merged := mergeSearchResults(results.Results, regexResults.Results, args.MaxResults)
+		results.Results = merged
+		results.ResultCount = len(merged)
+	} else {
+		e.logf("Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
+	}
+
 	return mustToolResultJSON(map[string]any{
 		"path":           results.Path,
 		"query":          results.Query,
@@ -922,6 +940,34 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		"result_count":   results.ResultCount,
 		"results":        results.Results,
 	})
+}
+
+func mergeSearchResults(literal, regex []retrieval.SearchResult, maxResults int) []retrieval.SearchResult {
+	merged := make([]retrieval.SearchResult, 0, len(literal)+len(regex))
+	seen := make(map[string]struct{}, len(literal)+len(regex))
+	key := func(r retrieval.SearchResult) string {
+		return fmt.Sprintf("%s:%d:%d", r.Path, r.StartLine, r.EndLine)
+	}
+	for _, r := range literal {
+		k := key(r)
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		merged = append(merged, r)
+	}
+	for _, r := range regex {
+		k := key(r)
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		merged = append(merged, r)
+	}
+	if maxResults > 0 && len(merged) > maxResults {
+		merged = merged[:maxResults]
+	}
+	return merged
 }
 
 func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, toolCall llm.ToolCall, callers bool, state *toolRoundState) string {
