@@ -2,13 +2,11 @@
 
 ## Context
 
-Today `review.Engine.Run` (`internal/review/engine.go:172`) drives an LLM agent that emits a list of `model.Finding` objects. The reviewer model is the only judge — there is no second pass. TODO.md line 3 captures the gap:
-
-> Run verifier agent for each finding after review (should also reevaluate severity)
+Today `review.Engine.Run` (`internal/review/engine.go:172`) drives an LLM agent that emits a list of `model.Finding` objects. The reviewer model is the only judge — there is no second pass.
 
 The user wants a *fresh* second-pass agent that, per finding, decides:
 - Is this finding actually true?
-- Is the severity correct?
+- Is the priority correct?
 - How confident is the verifier in its judgement?
 - Free-text remarks.
 
@@ -18,7 +16,7 @@ User decisions captured up-front:
 - Always-on, opt-out via `--no-verify`.
 - Parallel-bounded across findings (worker pool, default 4).
 - Keep all findings; attach a `verification` block. Do not mutate original priority/confidence.
-- Reuse reviewer's tool budgets (`max_tool_calls`, `max_duplicate_tool_calls`) per verifier call.
+- Reuse the same limits (`max_tool_calls`, `max_duplicate_tool_calls`) per verifier call, starting from 0.
 
 ## Verifier I/O contract
 
@@ -53,7 +51,7 @@ New JSON schema in `internal/llm/verify_schema.go`:
 ```json
 {
   "valid": true,
-  "severity": 1,
+  "priority": 1,
   "confidence_score": 0.9,
   "remarks": "..."
 }
@@ -61,11 +59,11 @@ New JSON schema in `internal/llm/verify_schema.go`:
 
 Semantics:
 - `valid` (bool, required): finding is a real issue caused by the patch.
-- `severity` (int 0–3, required): verifier's chosen priority. Equal to original `finding.priority` if unchanged; different if the verifier disagrees with severity.
-- `confidence_score` (float 0–1, required): verifier's confidence that its `valid`/`severity` judgement is correct.
+- `priority` (int 0–3, required): verifier's chosen priority. Equal to original `finding.priority` if unchanged; different if the verifier disagrees with priority.
+- `confidence_score` (float 0–1, required): verifier's confidence that its `valid`/`priority` judgement is correct.
 - `remarks` (string, required): one short paragraph explaining the verdict.
 
-The system prompt explicitly says: "Set `severity` to the same value as the original finding's `priority` unless you believe the severity should change."
+The system prompt explicitly says: "Set `priority` to the same value as the original finding's `priority` unless you believe the priority should change."
 
 ## Files to add / modify
 
@@ -73,7 +71,7 @@ The system prompt explicitly says: "Set `severity` to the same value as the orig
 
 1. **`prompts/verify_system.tmpl`** — Senior-engineer system prompt for verification. Mirrors `review_system.tmpl` structure (guidelines, `{{if .HasTools}}` tools block, `OUTPUT FORMAT` with optional `{{.OutputSchemaSnippet}}`). Tells the model: input contains one finding; verify by re-reading the diff and using tools; output ONLY the verification JSON.
 
-2. **`internal/llm/verify_schema.go`** — `VerifySchema` (JSON schema bytes) + `VerifyExamplePromptSnippet()`, mirroring `internal/llm/schema.go:10`. Required fields: `valid`, `severity`, `confidence_score`, `remarks`.
+2. **`internal/llm/verify_schema.go`** — `VerifySchema` (JSON schema bytes) + `VerifyExamplePromptSnippet()`, mirroring `internal/llm/schema.go:10`. Required fields: `valid`, `priority`, `confidence_score`, `remarks`.
 
 3. **`internal/review/verifier.go`** — Verifier engine. Reuses tool definitions from `engine.go:36-123` and tool execution path `executeToolCalls` (`engine.go:629`). New types and entry point:
    - `type VerifyRequest struct { ReviewCtx *model.ReviewContext; Finding model.Finding; UseJSONSchema bool; MaxToolCalls int; MaxDuplicateToolCalls int; DisableParallelToolCalls bool }`
@@ -91,7 +89,7 @@ The system prompt explicitly says: "Set `severity` to the same value as the orig
      ```go
      type FindingVerification struct {
          Valid           bool    `json:"valid"`
-         Severity        int     `json:"severity"`
+         Severity        int     `json:"priority"`
          ConfidenceScore float64 `json:"confidence_score"`
          Remarks         string  `json:"remarks"`
      }
@@ -113,8 +111,8 @@ The system prompt explicitly says: "Set `severity` to the same value as the orig
 
 9. **`internal/output/terminal.go`** — Render verification next to each finding when present:
    ```
-   P1 file.go:10-12
-   [verifier: VALID, severity P1, conf 0.92] short remark line
+   1 file.go:10-12
+   [verifier: VALID, priority 1, conf 0.92] short remark line
    <existing title/body/confidence>
    ```
    Only print the verifier line when `finding.Verification != nil`. Use color (red for invalid, dim for valid).
@@ -168,7 +166,7 @@ These are the load-bearing pieces from the existing review path that the verifie
 ## Open / minor questions deferred to implementation
 
 - Whether to surface verifier token usage as a separate field on `ReviewResult` (`VerifyTokensUsed`) vs. fold into `TokensUsed`. Lean: separate field, so existing dashboards aren't surprised by inflated numbers. Will choose during implementation.
-- Whether the verifier prompt should suppress its own `priority` rewrite when `valid: false` (severity becomes meaningless). Lean: still required by schema; verifier should set it equal to the original to avoid forcing a non-decision.
+- Whether the verifier prompt should suppress its own `priority` rewrite when `valid: false` (priority becomes meaningless). Lean: still required by schema; verifier should set it equal to the original to avoid forcing a non-decision.
 
 ## Critical paths to touch
 
