@@ -15,7 +15,7 @@ func TestTerminalFormatter(t *testing.T) {
 	formatter := NewTerminalFormatter(&buf, false)
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
-			{Title: "[P2] Problem", Body: "Description", ConfidenceScore: 0.82, Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 10, End: 12}}},
+			{Title: "Problem", Body: "Description", ConfidenceScore: 0.82, Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 10, End: 12}}},
 		},
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "Summary text",

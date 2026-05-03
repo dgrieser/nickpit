@@ -25,8 +25,8 @@ When evaluating a potential bug:
 
 For each finding:
 - use ONE distinct issue per finding
-- make the title imperative, less than 80 characters, and start it with `[P0]`, `[P1]`, `[P2]`, or `[P3]`
-- set `priority` to 0 for P0, 1 for P1, 2 for P2, or 3 for P3
+- make the title imperative and less than 80 characters
+- set `priority` to 0, 1, 2 or 3 (always required)
 - keep the body to ONE paragraph, matter-of-fact, and EXPLICIT about the scenario where it fails
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
@@ -34,10 +34,10 @@ For each finding:
 
 ### PRIORITY
 Use these priority levels:
-- P0: blocking release or major universal failure
-- P1: urgent and should be fixed in the next cycle
-- P2: normal bug worth fixing
-- P3: low-priority issue
+- 0: blocking release or major universal failure
+- 1: urgent and should be fixed in the next cycle
+- 2: normal bug worth fixing
+- 3: low-priority issue
 {{if .HasTools}}
 ### ADDITIONAL CONTEXT
 If you need more code context, call of the following tools:

@@ -23,6 +23,13 @@ import (
 
 var ErrInvalidJSON = errors.New("model returned invalid JSON")
 
+var priorityPrefixPattern = regexp.MustCompile(`(?i)^\s*(?:\[\s*P[0-3]\s*\]\s*)+`)
+
+func stripPriorityPrefix(title string) string {
+	cleaned := priorityPrefixPattern.ReplaceAllString(title, "")
+	return strings.TrimSpace(cleaned)
+}
+
 const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model"
 const reasoningBudgetRetryHint = "IMPORTANT: Keep your reasoning concise and return the requested answer as soon as possible."
 
@@ -1437,6 +1444,9 @@ func parseReviewResponse(content string) (*ReviewResponse, error) {
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
 	}
+	for i := range parsed.Findings {
+		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
+	}
 	if missing := missingResponseFields(&parsed, content); len(missing) > 0 {
 		return &parsed, &InvalidResponseError{
 			RawContent:    content,
@@ -1454,6 +1464,7 @@ func missingResponseFields(parsed *ReviewResponse, content string) []string {
 	if _, ok := raw["findings"]; !ok && parsed.Findings == nil {
 		missing = append(missing, "findings")
 	}
+	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"])...)
 	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
 		missing = append(missing, "overall_correctness")
 	} else {
@@ -1468,6 +1479,32 @@ func missingResponseFields(parsed *ReviewResponse, content string) []string {
 	}
 	if _, ok := raw["overall_confidence_score"]; !ok {
 		missing = append(missing, "overall_confidence_score")
+	}
+	return missing
+}
+
+func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage) []string {
+	if len(findings) == 0 {
+		return nil
+	}
+	var rawItems []map[string]json.RawMessage
+	if len(rawFindings) > 0 {
+		_ = json.Unmarshal(rawFindings, &rawItems)
+	}
+	var missing []string
+	for i, finding := range findings {
+		var rawItem map[string]json.RawMessage
+		if i < len(rawItems) {
+			rawItem = rawItems[i]
+		}
+		_, hasPriorityKey := rawItem["priority"]
+		if !hasPriorityKey || finding.Priority == nil {
+			missing = append(missing, fmt.Sprintf("findings[%d].priority", i))
+			continue
+		}
+		if *finding.Priority < 0 || *finding.Priority > 3 {
+			missing = append(missing, fmt.Sprintf("findings[%d].priority (must be 0-3)", i))
+		}
 	}
 	return missing
 }

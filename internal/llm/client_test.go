@@ -89,6 +89,12 @@ func TestClientReview(t *testing.T) {
 	if len(resp.Findings) != 1 {
 		t.Fatalf("findings = %d", len(resp.Findings))
 	}
+	if resp.Findings[0].Title != "Flag issue" {
+		t.Fatalf("title = %q, want priority prefix stripped", resp.Findings[0].Title)
+	}
+	if resp.Findings[0].Priority == nil || *resp.Findings[0].Priority != 2 {
+		t.Fatalf("priority = %v, want 2", resp.Findings[0].Priority)
+	}
 	if resp.TokensUsed.TotalTokens != 15 {
 		t.Fatalf("total tokens = %d", resp.TokensUsed.TotalTokens)
 	}
@@ -2516,5 +2522,83 @@ func writeSSEDone(t *testing.T, w http.ResponseWriter) {
 	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
+	}
+}
+
+func TestStripPriorityPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no prefix", "Fix nil pointer", "Fix nil pointer"},
+		{"single uppercase", "[P0] Fix nil pointer", "Fix nil pointer"},
+		{"single lowercase", "[p2] do thing", "do thing"},
+		{"leading whitespace", "   [P1]   trim me", "trim me"},
+		{"multiple prefixes", "[P1][P2] doubled", "doubled"},
+		{"with spaces inside brackets", "[ P3 ] padded", "padded"},
+		{"mixed case", "[Pp]?", "[Pp]?"},
+		{"prefix-only", "[P0] ", ""},
+		{"prefix elsewhere kept", "Update [P2] note", "Update [P2] note"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripPriorityPrefix(tc.in); got != tc.want {
+				t.Fatalf("stripPriorityPrefix(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
+	content := `{"findings":[{"title":"[P1] Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content)
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if got := resp.Findings[0].Title; got != "Fix nil pointer" {
+		t.Fatalf("title = %q, want stripped", got)
+	}
+	if resp.Findings[0].Priority == nil || *resp.Findings[0].Priority != 1 {
+		t.Fatalf("priority = %v, want 1", resp.Findings[0].Priority)
+	}
+}
+
+func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
+	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content)
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	wantField := "findings[0].priority"
+	found := false
+	for _, m := range invalid.MissingFields {
+		if m == wantField {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing fields = %v, want %q", invalid.MissingFields, wantField)
+	}
+}
+
+func TestParseReviewResponseFlagsOutOfRangePriority(t *testing.T) {
+	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":7,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content)
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	found := false
+	for _, m := range invalid.MissingFields {
+		if strings.HasPrefix(m, "findings[0].priority") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing fields = %v, want findings[0].priority entry", invalid.MissingFields)
 	}
 }

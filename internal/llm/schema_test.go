@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -65,5 +66,40 @@ func TestFindingsExamplePromptSnippetIncludesSuggestionBlock(t *testing.T) {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}
+	}
+}
+
+func TestFindingsSchemaRequiresPriority(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(FindingsSchema, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	properties := schema["properties"].(map[string]any)
+	findings := properties["findings"].(map[string]any)
+	items := findings["items"].(map[string]any)
+	requiredAny, ok := items["required"].([]any)
+	if !ok {
+		t.Fatalf("required is not an array: %#v", items["required"])
+	}
+	required := make([]string, 0, len(requiredAny))
+	for _, r := range requiredAny {
+		if s, ok := r.(string); ok {
+			required = append(required, s)
+		}
+	}
+	if !slices.Contains(required, "priority") {
+		t.Fatalf("required does not include priority: %v", required)
+	}
+}
+
+func TestFindingsExamplePromptSnippetHasUnprefixedTitle(t *testing.T) {
+	snippet := FindingsExamplePromptSnippet()
+	for _, unwanted := range []string{`[P0]`, `[P1]`, `[P2]`, `[P3]`} {
+		if strings.Contains(snippet, unwanted) {
+			t.Fatalf("snippet unexpectedly contains priority prefix %q: %s", unwanted, snippet)
+		}
+	}
+	if !strings.Contains(snippet, `"title": "Example title"`) {
+		t.Fatalf("snippet missing unprefixed title: %s", snippet)
 	}
 }

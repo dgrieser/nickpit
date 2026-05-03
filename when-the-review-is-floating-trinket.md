@@ -35,7 +35,7 @@ User prompt JSON: same `model.ReviewPromptPayload` already produced by `model.Pr
   "changed_files": [...],
   "style_guides": [...],
   "finding": {
-    "title": "[P1] ...",
+    "title": "...",
     "body": "...",
     "priority": 1,
     "code_location": {"file_path": "x.go", "line_range": {"start": 10, "end": 12}},

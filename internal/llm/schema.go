@@ -15,7 +15,7 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 			"items": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"title":            map[string]any{"type": "string"},
+					"title":            map[string]any{"type": "string", "description": "Imperative title under 80 characters."},
 					"body":             map[string]any{"type": "string"},
 					"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 					"priority":         map[string]any{"type": "integer", "minimum": 0, "maximum": 3},
@@ -50,7 +50,7 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 						"required": []string{"body", "line_range"},
 					},
 				},
-				"required": []string{"title", "body", "confidence_score", "code_location"},
+				"required": []string{"title", "body", "confidence_score", "priority", "code_location"},
 			},
 		},
 		"overall_correctness":      map[string]any{"type": "string", "enum": []string{"patch is correct", "patch is incorrect"}},
@@ -134,7 +134,7 @@ func exampleValueForProperty(name string, schema map[string]any) any {
 
 	switch name {
 	case "title":
-		return "[P1] Example title"
+		return "Example title"
 	case "body":
 		return "Example explanation of why this is a problem."
 	case "confidence_score", "overall_confidence_score":

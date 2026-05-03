@@ -39,8 +39,8 @@ type stubLLM struct{}
 func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	return &llm.ReviewResponse{
 		Findings: []model.Finding{
-			{Title: "[P3] info", Body: "low", ConfidenceScore: 0.5, Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-			{Title: "[P1] error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+			{Title: "info", Body: "low", ConfidenceScore: 0.5, Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{Title: "error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 		},
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "summary",
@@ -375,8 +375,11 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "\"overall_correctness\": \"patch is correct\""; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing rendered example JSON: %q", req.Messages[0].Content)
 	}
-	if want := "\"title\": \"[P1] Example title\""; !strings.Contains(req.Messages[0].Content, want) {
+	if want := "\"title\": \"Example title\""; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing example finding JSON: %q", req.Messages[0].Content)
+	}
+	if strings.Contains(req.Messages[0].Content, "[P1] Example title") {
+		t.Fatalf("system prompt should not include priority prefix in example title: %q", req.Messages[0].Content)
 	}
 	if want := "\"suggestion\""; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing example suggestion JSON: %q", req.Messages[0].Content)
@@ -487,7 +490,7 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 			},
 			{
 				Findings: []model.Finding{
-					{Title: "[P1] error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+					{Title: "error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 				},
 				OverallCorrectness:     "patch is correct",
 				OverallExplanation:     "summary",
