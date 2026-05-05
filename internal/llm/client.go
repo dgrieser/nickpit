@@ -136,6 +136,7 @@ type ReviewResponse struct {
 	RawResponse            string                     `json:"raw_response,omitempty"`
 	TokensUsed             model.TokenUsage           `json:"tokens_used"`
 	ReasoningEffort        string                     `json:"reasoning_effort,omitempty"`
+	Reasoned               bool                       `json:"-"`
 	ToolsOmitted           bool                       `json:"-"`
 }
 
@@ -709,6 +710,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	resp.RawResponse = content
 	resp.TokensUsed = streamed.usage
 	resp.ReasoningEffort = payload.ReasoningEffort
+	resp.Reasoned = streamed.reasoned
 	c.logf(
 		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(resp.Findings),
@@ -884,14 +886,16 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink R
 		receivedChunk    bool
 	)
 	// Lazy fallback: open an unlabeled section when no sink was provided by the caller.
+	ownsSink := false
 	ensureSink := func() ReasoningSink {
 		if sink == nil && c.logger != nil {
 			sink = c.logger.OpenReasoningSection("")
+			ownsSink = sink != nil
 		}
 		return sink
 	}
 	endSink := func() {
-		if reasoningStarted {
+		if ownsSink && reasoningStarted {
 			if s := ensureSink(); s != nil {
 				s.End()
 			}

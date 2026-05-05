@@ -58,6 +58,8 @@ func (r *ReasoningRenderer) Begin(label string) SectionID {
 	sec := &reasoningSection{label: label}
 	if label != "" {
 		fmt.Fprintf(&sec.buf, "Reasoning for %s...\n", label)
+	} else {
+		fmt.Fprintln(&sec.buf, "Reasoning...")
 	}
 	r.sections = append(r.sections, sec)
 	if r.isTTY {
@@ -226,7 +228,6 @@ func capToRows(content string, maxRows, width int) string {
 	}
 	return result
 }
-
 
 // WriteProgress writes a pre-formatted progress line. When a live area is
 // active on TTY it erases the live area, writes the line, then redraws so the

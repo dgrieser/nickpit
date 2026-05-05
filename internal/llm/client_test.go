@@ -855,6 +855,84 @@ func TestClientReviewStreamsReasoningToLogger(t *testing.T) {
 	}
 }
 
+func TestClientReviewDoesNotEndExternalReasoningSink(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		reasoning := fmt.Sprintf("reasoning %d\n", requests)
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"reasoning_content": reasoning,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-3",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	client := NewOpenAIClient(server.URL, "token", "model")
+	logger := logging.New(&buf, true, false)
+	logger.SetShowReasoning(true)
+	client.SetLogger(logger)
+	sec := logger.OpenReasoningSection("review")
+
+	for range 2 {
+		if _, err := client.Review(context.Background(), &ReviewRequest{
+			SystemPrompt:  "system",
+			UserContent:   "user",
+			ReasoningSink: sec,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sec.End()
+
+	got := buf.String()
+	for _, want := range []string{"reasoning 1\n", "reasoning 2\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reasoning delta %q missing: %q", want, got)
+		}
+	}
+	if strings.Count(got, "Reasoning for review...") != 1 {
+		t.Fatalf("external sink should be ended only once by its owner: %q", got)
+	}
+}
+
 func TestClientReviewDoesNotStreamReasoningWithoutFlag(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeSSEChunk(t, w, map[string]any{

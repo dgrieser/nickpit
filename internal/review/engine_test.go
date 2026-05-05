@@ -132,11 +132,11 @@ func (stubRetrieval) SearchRegex(context.Context, string, string, *regexp.Regexp
 }
 
 type countingRetrieval struct {
-	mu                sync.Mutex
-	paths             []string
-	literalResults    []retrieval.SearchResult
-	regexResults      []retrieval.SearchResult
-	hasCustomResults  bool
+	mu               sync.Mutex
+	paths            []string
+	literalResults   []retrieval.SearchResult
+	regexResults     []retrieval.SearchResult
+	hasCustomResults bool
 }
 
 func (r *countingRetrieval) GetFile(_ context.Context, _ string, path string) (*retrieval.FileContent, error) {
@@ -1574,6 +1574,51 @@ func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
 	}
 	if strings.Contains(got, `"files": [`) || strings.Contains(got, "pkg/a.go") {
 		t.Fatalf("tool call output should omit content payloads: %q", got)
+	}
+}
+
+func TestEngineLogsReasoningProgressForEachLLMCall(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
+				},
+				Reasoned: true,
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+				Reasoned:               true,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := logging.New(&buf, false, false)
+	logger.SetShowProgress(true)
+	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logger)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	for _, want := range []string{
+		"Reasoning: [reviewer #1: repo@] #1\n",
+		"Reasoning: [reviewer #1: repo@] #1 Done ",
+		"Reasoning: [reviewer #1: repo@] #2\n",
+		"Reasoning: [reviewer #1: repo@] #2 Done ",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reasoning progress %q missing: %q", want, got)
+		}
 	}
 }
 

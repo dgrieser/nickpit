@@ -1341,14 +1341,15 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 	callNum := sec.IncrCallNum()
 	if label := sec.Label(); label != "" {
 		e.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
-		if callNum == 1 {
-			e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d", label, callNum))
-		}
+		e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d", label, callNum))
 	}
 	start := time.Now()
 	resp, err := e.llm.Review(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
 	if label := sec.Label(); label != "" {
+		if resp != nil && resp.Reasoned {
+			e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", label, callNum, elapsed))
+		}
 		e.logProgress("Response", fmt.Sprintf("[%s] #%d After %s", label, callNum, elapsed))
 	}
 	return resp, err
