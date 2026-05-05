@@ -23,6 +23,7 @@ type VerifyRequest struct {
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
 	DisableParallelToolCalls bool
+	ReasoningSink            llm.ReasoningSink
 }
 
 type VerifyOptions struct {
@@ -85,6 +86,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		ExtraBody:         e.config.ExtraBody,
 		ParallelToolCalls: !req.DisableParallelToolCalls,
 		ReasoningEffort:   e.config.ReasoningEffort,
+		ReasoningSink:     req.ReasoningSink,
 	}
 
 	toolState := &toolRoundState{
@@ -212,6 +214,8 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		go func(idx int, f model.Finding) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
+			sec := e.logger.OpenReasoningSection(labelForFinding(idx, f))
+			defer sec.End()
 			req := VerifyRequest{
 				ReviewCtx:                reviewCtx,
 				Finding:                  f,
@@ -220,6 +224,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxToolCalls:             opts.MaxToolCalls,
 				MaxDuplicateToolCalls:    opts.MaxDuplicateToolCalls,
 				DisableParallelToolCalls: opts.DisableParallelToolCalls,
+				ReasoningSink:            sec,
 			}
 			verification, usage, err := e.Verify(ctx, req)
 			mu.Lock()
@@ -243,6 +248,17 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 	wg.Wait()
 	e.logProgress("Verify", fmt.Sprintf("done findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens))
 	return verifications, usageSum, nil
+}
+
+func labelForFinding(idx int, f model.Finding) string {
+	title := strings.TrimSpace(f.Title)
+	if title == "" {
+		return fmt.Sprintf("verifier #%d", idx+1)
+	}
+	if len([]rune(title)) > 60 {
+		title = string([]rune(title)[:57]) + "..."
+	}
+	return fmt.Sprintf("verifier #%d: %s", idx+1, title)
 }
 
 func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {

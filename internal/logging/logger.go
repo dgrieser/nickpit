@@ -9,15 +9,51 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 )
 
 type Logger struct {
-	w             io.Writer
-	useANSI       bool
-	enabled       bool
-	showReasoning bool
-	showProgress  bool
+	w              io.Writer
+	useANSI        bool
+	enabled        bool
+	showReasoning  bool
+	showProgress   bool
+	reasoning      *ReasoningRenderer
+	reasoningOnce  sync.Once
+}
+
+// ReasoningSection is a handle to one labeled block in the ReasoningRenderer.
+// All methods are nil-safe so callers can defer End() without nil checks.
+type ReasoningSection struct {
+	r         *ReasoningRenderer
+	id        SectionID
+	logger    *Logger
+	label     string
+	startTime time.Time
+	ended     bool
+}
+
+func (s *ReasoningSection) Append(delta string) {
+	if s == nil || s.r == nil {
+		return
+	}
+	s.r.Append(s.id, delta)
+}
+
+func (s *ReasoningSection) End() {
+	if s == nil || s.ended {
+		return
+	}
+	s.ended = true
+	if s.r != nil {
+		s.r.End(s.id)
+	}
+	if s.label != "" {
+		elapsed := time.Since(s.startTime).Truncate(time.Second)
+		s.logger.PrintProgress("Reasoning", fmt.Sprintf("[%s] Done %s", s.label, elapsed))
+	}
 }
 
 func New(w io.Writer, enabled bool, useANSI bool) *Logger {
@@ -47,6 +83,35 @@ func (l *Logger) SetShowProgress(enabled bool) {
 
 func (l *Logger) Enabled() bool {
 	return l != nil && l.enabled
+}
+
+func (l *Logger) ShowReasoning() bool {
+	return l != nil && l.showReasoning
+}
+
+// OpenReasoningSection opens a new labeled reasoning section. Returns nil when
+// neither --show-reasoning nor --show-progress is enabled.
+// All ReasoningSection methods are nil-safe.
+func (l *Logger) OpenReasoningSection(label string) *ReasoningSection {
+	if l == nil || (!l.showReasoning && !l.showProgress) {
+		return nil
+	}
+	sec := &ReasoningSection{
+		logger:    l,
+		label:     label,
+		startTime: time.Now(),
+	}
+	if l.showReasoning {
+		l.reasoningOnce.Do(func() {
+			l.reasoning = newReasoningRenderer(l.w, l.useANSI)
+		})
+		sec.id = l.reasoning.Begin(label)
+		sec.r = l.reasoning
+	}
+	if label != "" {
+		l.PrintProgress("Reasoning", "["+label+"]")
+	}
+	return sec
 }
 
 func (l *Logger) Printf(format string, args ...any) {
@@ -91,9 +156,12 @@ func (l *Logger) PrintProgress(label, summary string) {
 	if l == nil || !l.showProgress {
 		return
 	}
+	var line string
 	if l.useANSI {
 		coloredSummary := colorizeProgressSummary(summary)
 		switch label {
+		case "Reasoning":
+			coloredSummary = colorizeReasoningSummary(summary)
 		case "Model":
 			coloredSummary = colorizeModelSummary(summary)
 		case "Review":
@@ -101,26 +169,36 @@ func (l *Logger) PrintProgress(label, summary string) {
 		case "Result", "Tool":
 			coloredSummary = colorizeResultSummary(summary)
 		}
-		_, _ = fmt.Fprintf(l.w, "\x1b[33m%s\x1b[0m\x1b[90m: \x1b[0m%s\n", label, coloredSummary)
-		return
+		line = fmt.Sprintf("\x1b[33m%s\x1b[0m\x1b[90m: \x1b[0m%s\n", label, coloredSummary)
+	} else {
+		line = fmt.Sprintf("%s: %s\n", label, summary)
 	}
-	_, _ = fmt.Fprintf(l.w, "%s: %s\n", label, summary)
+	if l.reasoning != nil {
+		l.reasoning.WriteProgress(line)
+	} else {
+		_, _ = io.WriteString(l.w, line)
+	}
 }
 
 func (l *Logger) PrintProgressToolCall(call, result string) {
 	if l == nil || !l.showProgress {
 		return
 	}
+	var line string
 	if l.useANSI {
-		_, _ = fmt.Fprintf(
-			l.w,
+		line = fmt.Sprintf(
 			"\x1b[33mTool\x1b[0m\x1b[90m: \x1b[0m%s \x1b[90m→\x1b[0m %s\n",
 			colorizeToolCallCall(call),
 			colorizeToolCallResult(result),
 		)
-		return
+	} else {
+		line = fmt.Sprintf("Tool: %s → %s\n", call, result)
 	}
-	_, _ = fmt.Fprintf(l.w, "Tool: %s → %s\n", call, result)
+	if l.reasoning != nil {
+		l.reasoning.WriteProgress(line)
+	} else {
+		_, _ = io.WriteString(l.w, line)
+	}
 }
 
 func (l *Logger) printJSON(label string, value any, force bool) {
@@ -144,35 +222,6 @@ func (l *Logger) printJSON(label string, value any, force bool) {
 	for _, line := range renderJSONLines(normalized, 0, "", false) {
 		l.writeRenderedJSONLine(line)
 	}
-}
-
-func (l *Logger) PrintReasoningBanner() {
-	if l == nil || !l.showReasoning {
-		return
-	}
-	if l.useANSI {
-		_, _ = fmt.Fprint(l.w, "\x1b[33mReasoning\x1b[0m\x1b[90m...\x1b[0m\n")
-		return
-	}
-	_, _ = fmt.Fprintln(l.w, "Reasoning...")
-}
-
-func (l *Logger) PrintReasoningDelta(delta string) {
-	if l == nil || !l.showReasoning || delta == "" {
-		return
-	}
-	if l.useANSI {
-		_, _ = fmt.Fprintf(l.w, "\x1b[3;90m%s\x1b[0m", delta)
-		return
-	}
-	_, _ = fmt.Fprint(l.w, delta)
-}
-
-func (l *Logger) PrintBlankLine() {
-	if l == nil || !l.showReasoning {
-		return
-	}
-	_, _ = fmt.Fprintln(l.w)
 }
 
 func (l *Logger) PrintStatusLine(text string) {
@@ -376,6 +425,44 @@ func colorizeToolCallResult(text string) string {
 
 func colorizeProgressSummary(text string) string {
 	return colorizeKeyValueSummary(text)
+}
+
+func colorizeReasoningSummary(text string) string {
+	// format: [label] or [label] Done <duration>
+	open := strings.IndexByte(text, '[')
+	close := strings.IndexByte(text, ']')
+	if open < 0 || close < open {
+		return colorizeProgressSummary(text)
+	}
+	label := text[open+1 : close]
+	rest := strings.TrimSpace(text[close+1:])
+	out := "\x1b[90m[\x1b[0m" + colorizeReasoningLabel(label) + "\x1b[90m]\x1b[0m"
+	if rest != "" {
+		word, dur, _ := strings.Cut(rest, " ")
+		out += " \x1b[34m" + word + "\x1b[0m"
+		if dur != "" {
+			out += " \x1b[32m" + dur + "\x1b[0m"
+		}
+	}
+	return out
+}
+
+// colorizeReasoningLabel colorizes a label of the form "<type> #<n>: <description>",
+// e.g. "verifier #2: Missing error handling" or "reviewer #1: repo@branch".
+func colorizeReasoningLabel(label string) string {
+	// split on first space: "verifier" vs "#2: description"
+	kind, rest, ok := strings.Cut(label, " ")
+	if !ok {
+		return "\x1b[34m" + label + "\x1b[0m"
+	}
+	// split "#2" from ": description"
+	num, desc, hasDesc := strings.Cut(rest, ": ")
+	if !hasDesc {
+		return "\x1b[34m" + kind + "\x1b[0m \x1b[32m" + rest + "\x1b[0m"
+	}
+	return "\x1b[34m" + kind + "\x1b[0m" +
+		" \x1b[32m" + num + "\x1b[0m" +
+		"\x1b[90m: " + desc + "\x1b[0m"
 }
 
 func colorizeModelSummary(text string) string {

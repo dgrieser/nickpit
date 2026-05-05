@@ -276,6 +276,8 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
+	reviewSec := e.logger.OpenReasoningSection(fmt.Sprintf("reviewer #1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef))
+	defer reviewSec.End()
 	llmReq := &llm.ReviewRequest{
 		Messages:          messages,
 		Tools:             reviewerToolDefinitions(),
@@ -288,6 +290,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		ExtraBody:         e.config.ExtraBody,
 		ParallelToolCalls: !req.DisableParallelToolCalls,
 		ReasoningEffort:   e.config.ReasoningEffort,
+		ReasoningSink:     reviewSec,
 	}
 
 	totalUsage := model.TokenUsage{}

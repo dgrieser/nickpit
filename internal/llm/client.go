@@ -81,6 +81,13 @@ const (
 	SchemaKindVerify SchemaKind = "verify"
 )
 
+// ReasoningSink receives streaming reasoning content from collectStream.
+// All methods must be nil-safe.
+type ReasoningSink interface {
+	Append(delta string)
+	End()
+}
+
 type ReviewRequest struct {
 	SystemPrompt      string
 	UserContent       string
@@ -96,6 +103,7 @@ type ReviewRequest struct {
 	ExtraBody         map[string]any
 	ParallelToolCalls bool
 	ReasoningEffort   string
+	ReasoningSink     ReasoningSink
 }
 
 type Message struct {
@@ -660,7 +668,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logHighlightedJSON("LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink)
 	if err != nil {
 		return nil, err
 	}
@@ -768,7 +776,7 @@ func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
 	return converted
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
@@ -811,7 +819,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			continue
 		}
 
-		resp, streamErr := c.collectStream(stream)
+		resp, streamErr := c.collectStream(stream, sink)
 		closeErr := stream.Close()
 		if streamErr != nil {
 			if closeErr != nil {
@@ -863,7 +871,7 @@ func (c *OpenAIClient) logRetryHTTPStatus(status, currentAttempt int, waitFor ti
 	c.logger.PrintStatusLine(fmt.Sprintf("LLM request failed with status %d, retrying in %s...", status, waitFor))
 }
 
-func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*streamedResponse, error) {
+func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink ReasoningSink) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
 		toolCalls        []*toolCallBuilder
@@ -875,6 +883,20 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 		lastFinishReason string
 		receivedChunk    bool
 	)
+	// Lazy fallback: open an unlabeled section when no sink was provided by the caller.
+	ensureSink := func() ReasoningSink {
+		if sink == nil && c.logger != nil {
+			sink = c.logger.OpenReasoningSection("")
+		}
+		return sink
+	}
+	endSink := func() {
+		if reasoningStarted {
+			if s := ensureSink(); s != nil {
+				s.End()
+			}
+		}
+	}
 	partialResponse := func() *streamedResponse {
 		return &streamedResponse{
 			content:          contentBuilder.String(),
@@ -894,23 +916,17 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if !sawUsage {
-					if reasoningStarted {
-						c.logger.PrintBlankLine()
-					}
+					endSink()
 					return nil, &streamReadError{
 						err:       fmt.Errorf("llm: reading stream: interrupted before final usage chunk"),
 						retryable: true,
 						partial:   partialResponse(),
 					}
 				}
-				if reasoningStarted {
-					c.logger.PrintBlankLine()
-				}
+				endSink()
 				return partialResponse(), nil
 			}
-			if reasoningStarted {
-				c.logger.PrintBlankLine()
-			}
+			endSink()
 			return nil, &streamReadError{
 				err:       fmt.Errorf("llm: reading stream: %w", err),
 				retryable: isRetryableNetworkError(err),
@@ -939,15 +955,11 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 				lastFinishReason = string(choice.FinishReason)
 			}
 			if choice.Delta.ReasoningContent != "" {
-
 				if !reasoningStarted {
 					reasoningStarted = true
-					if c.logger != nil {
-						c.logger.PrintReasoningBanner()
-					}
 				}
-				if c.logger != nil {
-					c.logger.PrintReasoningDelta(choice.Delta.ReasoningContent)
+				if s := ensureSink(); s != nil {
+					s.Append(choice.Delta.ReasoningContent)
 				}
 			}
 			if choice.Delta.Content != "" {
