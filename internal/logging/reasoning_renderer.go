@@ -162,21 +162,69 @@ func (r *ReasoningRenderer) flushSectionLocked(sec *reasoningSection) {
 }
 
 func (r *ReasoningRenderer) buildLiveAreaLocked() string {
+	width := r.termWidth()
+	// Reserve one row for the line below the live area so the cursor never
+	// pushes content into the scrollback buffer.
+	budget := r.termHeight() - 1
+	if budget < 2 {
+		budget = 2
+	}
+
 	var out strings.Builder
 	for _, sec := range r.sections {
-		body := sec.buf.String()
-		if body != "" {
-			if r.useANSI {
-				fmt.Fprintf(&out, "\x1b[3;90m%s\x1b[0m", body)
-			} else {
-				out.WriteString(body)
-			}
-			if !strings.HasSuffix(body, "\n") {
-				out.WriteString("\n")
-			}
+		if budget <= 0 {
+			break
 		}
+		body := sec.buf.String()
+		if body == "" {
+			continue
+		}
+		if rows := visibleLineCount(body, width); rows > budget {
+			body = capToRows(body, budget, width)
+		}
+		if r.useANSI {
+			fmt.Fprintf(&out, "\x1b[3;90m%s\x1b[0m", body)
+		} else {
+			out.WriteString(body)
+		}
+		if !strings.HasSuffix(body, "\n") {
+			out.WriteString("\n")
+		}
+		budget -= visibleLineCount(body, width)
 	}
 	return out.String()
+}
+
+// capToRows truncates plain-text content to at most maxRows visual rows,
+// keeping the most-recent lines and prepending "…\n" as the first row.
+func capToRows(content string, maxRows, width int) string {
+	lines := strings.Split(content, "\n")
+	hasTrailing := len(lines) > 0 && lines[len(lines)-1] == ""
+	if hasTrailing {
+		lines = lines[:len(lines)-1]
+	}
+	// Walk from the end, accumulating rows until budget (maxRows-1) is full.
+	budget := maxRows - 1 // one row reserved for "…"
+	kept := 0
+	used := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		lr := len([]rune(lines[i]))
+		lineRows := (lr + width - 1) / width
+		if lineRows == 0 {
+			lineRows = 1
+		}
+		if used+lineRows > budget {
+			break
+		}
+		used += lineRows
+		kept++
+	}
+	start := len(lines) - kept
+	result := "…\n" + strings.Join(lines[start:], "\n")
+	if hasTrailing {
+		result += "\n"
+	}
+	return result
 }
 
 
@@ -213,6 +261,17 @@ func (r *ReasoningRenderer) termWidth() int {
 		return 80
 	}
 	return w
+}
+
+func (r *ReasoningRenderer) termHeight() int {
+	if r.fd < 0 {
+		return 24
+	}
+	_, h, err := term.GetSize(r.fd)
+	if err != nil || h <= 0 {
+		return 24
+	}
+	return h
 }
 
 // visibleLineCount counts the number of terminal rows the string occupies,

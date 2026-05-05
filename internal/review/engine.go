@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/filetype"
@@ -319,7 +320,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		if syntheticFollowup != nil {
 			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
 		}
-		resp, err = e.llm.Review(ctx, llmReq)
+		resp, err = e.loggedReview(ctx, llmReq, reviewSec)
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
 			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
@@ -367,7 +368,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 			}
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, reviewSnippet)
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, reviewSnippet, reviewSec)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -391,7 +392,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 			e.logf("Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, duplicateToolCallsUsed)
 			e.logProgress("Tool", fmt.Sprintf("status=DuplicateLimitReached, limit=%d, duplicates=%d, finalizing review", req.MaxDuplicateToolCalls, duplicateToolCallsUsed))
 			toolCallsUsed += pendingToolCalls
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, reviewSnippet)
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, reviewSnippet, reviewSec)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -447,7 +448,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	}, trimmed, nil
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string) (*llm.ReviewResponse, error) {
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
 	finalMessages, err := noToolsMessages(systemTemplate, messages, systemSnippet)
 	if err != nil {
 		return nil, err
@@ -457,7 +458,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	llmReq.ParallelToolCalls = false
 	exampleSnippet := exampleSnippetFor(llmReq.SchemaKind)
 	for attempt := 0; ; attempt++ {
-		resp, err := e.llm.Review(ctx, llmReq)
+		resp, err := e.loggedReview(ctx, llmReq, sec)
 		if err == nil {
 			if resp.ReasoningEffort != "" {
 				llmReq.ReasoningEffort = resp.ReasoningEffort
@@ -1334,6 +1335,23 @@ func syntheticPathValue(path, empty string) string {
 
 func normalizeToolPath(path string) string {
 	return strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
+}
+
+func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+	callNum := sec.IncrCallNum()
+	if label := sec.Label(); label != "" {
+		e.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
+		if callNum == 1 {
+			e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d", label, callNum))
+		}
+	}
+	start := time.Now()
+	resp, err := e.llm.Review(ctx, req)
+	elapsed := time.Since(start).Truncate(time.Second)
+	if label := sec.Label(); label != "" {
+		e.logProgress("Response", fmt.Sprintf("[%s] #%d After %s", label, callNum, elapsed))
+	}
+	return resp, err
 }
 
 func (e *Engine) logf(format string, args ...any) {

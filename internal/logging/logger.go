@@ -33,6 +33,7 @@ type ReasoningSection struct {
 	label     string
 	startTime time.Time
 	ended     bool
+	callNum   int // incremented by IncrCallNum on each LLM request
 }
 
 func (s *ReasoningSection) Append(delta string) {
@@ -40,6 +41,23 @@ func (s *ReasoningSection) Append(delta string) {
 		return
 	}
 	s.r.Append(s.id, delta)
+}
+
+// Label returns the section label, or "" for nil sections.
+func (s *ReasoningSection) Label() string {
+	if s == nil {
+		return ""
+	}
+	return s.label
+}
+
+// IncrCallNum increments the per-section LLM call counter and returns the new value.
+func (s *ReasoningSection) IncrCallNum() int {
+	if s == nil {
+		return 0
+	}
+	s.callNum++
+	return s.callNum
 }
 
 func (s *ReasoningSection) End() {
@@ -52,7 +70,7 @@ func (s *ReasoningSection) End() {
 	}
 	if s.label != "" {
 		elapsed := time.Since(s.startTime).Truncate(time.Second)
-		s.logger.PrintProgress("Reasoning", fmt.Sprintf("[%s] Done %s", s.label, elapsed))
+		s.logger.PrintProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", s.label, s.callNum, elapsed))
 	}
 }
 
@@ -108,9 +126,6 @@ func (l *Logger) OpenReasoningSection(label string) *ReasoningSection {
 		sec.id = l.reasoning.Begin(label)
 		sec.r = l.reasoning
 	}
-	if label != "" {
-		l.PrintProgress("Reasoning", "["+label+"]")
-	}
 	return sec
 }
 
@@ -160,7 +175,7 @@ func (l *Logger) PrintProgress(label, summary string) {
 	if l.useANSI {
 		coloredSummary := colorizeProgressSummary(summary)
 		switch label {
-		case "Reasoning":
+		case "Reasoning", "Request", "Response":
 			coloredSummary = colorizeReasoningSummary(summary)
 		case "Model":
 			coloredSummary = colorizeModelSummary(summary)
@@ -428,7 +443,7 @@ func colorizeProgressSummary(text string) string {
 }
 
 func colorizeReasoningSummary(text string) string {
-	// format: [label] or [label] Done <duration>
+	// format: [label] [#N] [Word] [duration] in any combination
 	open := strings.IndexByte(text, '[')
 	close := strings.IndexByte(text, ']')
 	if open < 0 || close < open {
@@ -437,14 +452,26 @@ func colorizeReasoningSummary(text string) string {
 	label := text[open+1 : close]
 	rest := strings.TrimSpace(text[close+1:])
 	out := "\x1b[90m[\x1b[0m" + colorizeReasoningLabel(label) + "\x1b[90m]\x1b[0m"
-	if rest != "" {
-		word, dur, _ := strings.Cut(rest, " ")
-		out += " \x1b[34m" + word + "\x1b[0m"
-		if dur != "" {
-			out += " \x1b[32m" + dur + "\x1b[0m"
+	for _, tok := range strings.Fields(rest) {
+		switch {
+		case strings.HasPrefix(tok, "#"):
+			out += " \x1b[32m" + tok + "\x1b[0m" // counter: green
+		case isAllLetters(tok):
+			out += " \x1b[34m" + tok + "\x1b[0m" // action word (Done/After): blue
+		default:
+			out += " \x1b[32m" + tok + "\x1b[0m" // duration / other: green
 		}
 	}
 	return out
+}
+
+func isAllLetters(s string) bool {
+	for _, r := range s {
+		if !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // colorizeReasoningLabel colorizes a label of the form "<type> #<n>: <description>",

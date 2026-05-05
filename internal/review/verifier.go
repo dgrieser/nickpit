@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 )
@@ -19,11 +20,11 @@ type VerifyRequest struct {
 	ReviewCtx                *model.ReviewContext
 	Finding                  model.Finding
 	RepoRoot                 string
+	Section                  *logging.ReasoningSection
 	UseJSONSchema            bool
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
 	DisableParallelToolCalls bool
-	ReasoningSink            llm.ReasoningSink
 }
 
 type VerifyOptions struct {
@@ -86,7 +87,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		ExtraBody:         e.config.ExtraBody,
 		ParallelToolCalls: !req.DisableParallelToolCalls,
 		ReasoningEffort:   e.config.ReasoningEffort,
-		ReasoningSink:     req.ReasoningSink,
+		ReasoningSink:     req.Section,
 	}
 
 	toolState := &toolRoundState{
@@ -112,7 +113,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		if syntheticFollowup != nil {
 			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
 		}
-		resp, err = e.llm.Review(ctx, llmReq)
+		resp, err = e.loggedReview(ctx, llmReq, req.Section)
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
 			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
@@ -149,7 +150,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 			}
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, systemSnippet)
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, systemSnippet, req.Section)
 			if err != nil {
 				return nil, usage, err
 			}
@@ -166,7 +167,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		duplicateToolCallsUsed += countDuplicateToolCalls(toolMessages)
 		if req.MaxDuplicateToolCalls > 0 && duplicateToolCallsUsed >= req.MaxDuplicateToolCalls {
 			toolCallsUsed += pendingToolCalls
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, systemSnippet)
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, systemSnippet, req.Section)
 			if err != nil {
 				return nil, usage, err
 			}
@@ -220,11 +221,11 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				ReviewCtx:                reviewCtx,
 				Finding:                  f,
 				RepoRoot:                 opts.RepoRoot,
+				Section:                  sec,
 				UseJSONSchema:            opts.UseJSONSchema,
 				MaxToolCalls:             opts.MaxToolCalls,
 				MaxDuplicateToolCalls:    opts.MaxDuplicateToolCalls,
 				DisableParallelToolCalls: opts.DisableParallelToolCalls,
-				ReasoningSink:            sec,
 			}
 			verification, usage, err := e.Verify(ctx, req)
 			mu.Lock()
