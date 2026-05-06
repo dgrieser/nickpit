@@ -15,13 +15,13 @@ import (
 )
 
 type Logger struct {
-	w              io.Writer
-	useANSI        bool
-	enabled        bool
-	showReasoning  bool
-	showProgress   bool
-	reasoning      *ReasoningRenderer
-	reasoningOnce  sync.Once
+	w             io.Writer
+	useANSI       bool
+	enabled       bool
+	showReasoning bool
+	showProgress  bool
+	reasoning     *ReasoningRenderer
+	reasoningOnce sync.Once
 }
 
 // ReasoningSection is a handle to one labeled block in the ReasoningRenderer.
@@ -114,17 +114,27 @@ func (l *Logger) OpenReasoningSection(label string) *ReasoningSection {
 	if l == nil || (!l.showReasoning && !l.showProgress) {
 		return nil
 	}
-	sec := &ReasoningSection{
-		logger:    l,
-		label:     label,
-		startTime: time.Now(),
-	}
+	sec := l.NewReasoningTracker(label)
 	if l.showReasoning {
 		l.reasoningOnce.Do(func() {
 			l.reasoning = newReasoningRenderer(l.w, l.useANSI)
 		})
 		sec.id = l.reasoning.Begin(label)
 		sec.r = l.reasoning
+	}
+	return sec
+}
+
+// NewReasoningTracker returns a progress-only reasoning section. It tracks
+// labels, elapsed time, and call numbers without opening a renderer section.
+func (l *Logger) NewReasoningTracker(label string) *ReasoningSection {
+	if l == nil || (!l.showReasoning && !l.showProgress) {
+		return nil
+	}
+	sec := &ReasoningSection{
+		logger:    l,
+		label:     label,
+		startTime: time.Now(),
 	}
 	return sec
 }
@@ -136,13 +146,13 @@ func (l *Logger) Printf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if l.useANSI {
 		if idx := strings.IndexByte(msg, ':'); idx >= 0 {
-			_, _ = fmt.Fprintf(l.w, "\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:])
+			l.writeRaw(fmt.Sprintf("\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:]))
 			return
 		}
-		_, _ = fmt.Fprintf(l.w, "\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\n", msg)
+		l.writeRaw(fmt.Sprintf("\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\n", msg))
 		return
 	}
-	_, _ = fmt.Fprintf(l.w, "+ %s\n", msg)
+	l.writeRaw(fmt.Sprintf("+ %s\n", msg))
 }
 
 func (l *Logger) PrintBlock(label, content string) {
@@ -191,7 +201,7 @@ func (l *Logger) PrintProgress(label, summary string) {
 	if l.reasoning != nil {
 		l.reasoning.WriteProgress(line)
 	} else {
-		_, _ = io.WriteString(l.w, line)
+		l.writeRaw(line)
 	}
 }
 
@@ -212,7 +222,7 @@ func (l *Logger) PrintProgressToolCall(call, result string) {
 	if l.reasoning != nil {
 		l.reasoning.WriteProgress(line)
 	} else {
-		_, _ = io.WriteString(l.w, line)
+		l.writeRaw(line)
 	}
 }
 
@@ -244,10 +254,10 @@ func (l *Logger) PrintStatusLine(text string) {
 		return
 	}
 	if l.useANSI {
-		_, _ = fmt.Fprintf(l.w, "\x1b[90m%s\x1b[0m\n", text)
+		l.writeRaw(fmt.Sprintf("\x1b[90m%s\x1b[0m\n", text))
 		return
 	}
-	_, _ = fmt.Fprintln(l.w, text)
+	l.writeRaw(fmt.Sprintf("%s\n", text))
 }
 
 func (l *Logger) PrintError(err error) {
@@ -255,10 +265,21 @@ func (l *Logger) PrintError(err error) {
 		return
 	}
 	if l.useANSI {
-		_, _ = fmt.Fprintf(l.w, "\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37m%s\x1b[0m\n", err)
+		l.writeRaw(fmt.Sprintf("\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37m%s\x1b[0m\n", err))
 		return
 	}
-	_, _ = fmt.Fprintf(l.w, "ERROR: %s\n", err)
+	l.writeRaw(fmt.Sprintf("ERROR: %s\n", err))
+}
+
+func (l *Logger) writeRaw(text string) {
+	if l == nil {
+		return
+	}
+	if l.reasoning != nil {
+		l.reasoning.WriteOutside(text)
+		return
+	}
+	_, _ = io.WriteString(l.w, text)
 }
 
 func (l *Logger) writeLines(text, color string) {
@@ -268,10 +289,10 @@ func (l *Logger) writeLines(text, color string) {
 			continue
 		}
 		if l.useANSI {
-			_, _ = fmt.Fprintf(l.w, "\x1b[%sm+ %s\x1b[0m\n", color, line)
+			l.writeRaw(fmt.Sprintf("\x1b[%sm+ %s\x1b[0m\n", color, line))
 			continue
 		}
-		_, _ = fmt.Fprintf(l.w, "+ %s\n", line)
+		l.writeRaw(fmt.Sprintf("+ %s\n", line))
 	}
 }
 
@@ -283,13 +304,13 @@ type renderedJSONLine struct {
 func (l *Logger) writeRenderedJSONLine(line renderedJSONLine) {
 	if l.useANSI {
 		if line.stringOnly {
-			_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m\x1b[32m%s\x1b[0m\n", line.text)
+			l.writeRaw(fmt.Sprintf("\x1b[90m+ \x1b[0m\x1b[32m%s\x1b[0m\n", line.text))
 			return
 		}
-		_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\n", colorizeJSON(line.text))
+		l.writeRaw(fmt.Sprintf("\x1b[90m+ \x1b[0m%s\n", colorizeJSON(line.text)))
 		return
 	}
-	_, _ = fmt.Fprintf(l.w, "+ %s\n", line.text)
+	l.writeRaw(fmt.Sprintf("+ %s\n", line.text))
 }
 
 func normalizeEmbeddedJSON(value any) any {

@@ -1622,6 +1622,57 @@ func TestEngineLogsReasoningProgressForEachLLMCall(t *testing.T) {
 	}
 }
 
+func TestEngineUsesFreshReasoningSectionForEachLLMCall(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
+				},
+				Reasoned: true,
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+				Reasoned:               true,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := logging.New(&buf, false, false)
+	logger.SetShowReasoning(true)
+	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logger)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(llmClient.reqs))
+	}
+	if llmClient.reqs[0].ReasoningSink == nil || llmClient.reqs[1].ReasoningSink == nil {
+		t.Fatalf("reasoning sinks should be set for each request: %#v %#v", llmClient.reqs[0].ReasoningSink, llmClient.reqs[1].ReasoningSink)
+	}
+	if llmClient.reqs[0].ReasoningSink == llmClient.reqs[1].ReasoningSink {
+		t.Fatal("reasoning sink should not be reused across LLM calls")
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"Reasoning for reviewer #1: repo@ #1...\n",
+		"Reasoning for reviewer #1: repo@ #2...\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("per-call reasoning banner %q missing: %q", want, got)
+		}
+	}
+}
+
 func TestEnginePrintsOptimizedSearchReplacementWhenEnabled(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{

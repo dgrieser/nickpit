@@ -277,7 +277,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
-	reviewSec := e.logger.OpenReasoningSection(fmt.Sprintf("reviewer #1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef))
+	reviewSec := e.logger.NewReasoningTracker(fmt.Sprintf("reviewer #1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef))
 	defer reviewSec.End()
 	llmReq := &llm.ReviewRequest{
 		Messages:          messages,
@@ -291,7 +291,6 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		ExtraBody:         e.config.ExtraBody,
 		ParallelToolCalls: !req.DisableParallelToolCalls,
 		ReasoningEffort:   e.config.ReasoningEffort,
-		ReasoningSink:     reviewSec,
 	}
 
 	totalUsage := model.TokenUsage{}
@@ -1339,20 +1338,38 @@ func normalizeToolPath(path string) string {
 
 func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
 	callNum := sec.IncrCallNum()
-	if label := sec.Label(); label != "" {
+	label := sec.Label()
+	if label != "" {
 		e.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
 		e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d", label, callNum))
 	}
+	previousSink := req.ReasoningSink
+	callSec := e.openReviewRequestReasoningSection(label, callNum)
+	req.ReasoningSink = callSec
+	defer func() {
+		req.ReasoningSink = previousSink
+		callSec.End()
+	}()
 	start := time.Now()
 	resp, err := e.llm.Review(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
-	if label := sec.Label(); label != "" {
+	if label != "" {
 		if resp != nil && resp.Reasoned {
 			e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", label, callNum, elapsed))
 		}
 		e.logProgress("Response", fmt.Sprintf("[%s] #%d After %s", label, callNum, elapsed))
 	}
 	return resp, err
+}
+
+func (e *Engine) openReviewRequestReasoningSection(label string, callNum int) *logging.ReasoningSection {
+	if e.logger == nil || !e.logger.ShowReasoning() {
+		return nil
+	}
+	if label == "" || callNum <= 0 {
+		return e.logger.OpenReasoningSection("")
+	}
+	return e.logger.OpenReasoningSection(fmt.Sprintf("%s #%d", label, callNum))
 }
 
 func (e *Engine) logf(format string, args ...any) {

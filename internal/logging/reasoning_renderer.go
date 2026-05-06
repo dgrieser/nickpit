@@ -11,21 +11,23 @@ import (
 )
 
 // ReasoningRenderer owns all reasoning output when --show-reasoning is enabled.
-// Each active stream gets a labeled section. On TTY stderr the live area is
-// redrawn in place; on non-TTY each section is flushed atomically when it ends.
+// Each active stream gets a bounded live preview on TTY and is replayed in full
+// when it ends. On non-TTY each section is flushed atomically when it ends.
 type ReasoningRenderer struct {
-	mu        sync.Mutex
-	w         io.Writer
-	fd        int // for term.GetSize; -1 when not a TTY
-	useANSI   bool
-	isTTY     bool
-	sections  []*reasoningSection
-	lastLines int // wrapped rows drawn in the last TTY redraw
+	mu           sync.Mutex
+	w            io.Writer
+	fd           int
+	useANSI      bool
+	isTTY        bool
+	sections     []*reasoningSection
+	lastLiveRows int
+	width        int // test override
+	height       int // test override
 }
 
 type reasoningSection struct {
 	label string
-	buf   strings.Builder
+	body  strings.Builder
 	ended bool
 }
 
@@ -49,26 +51,21 @@ func newReasoningRenderer(w io.Writer, useANSI bool) *ReasoningRenderer {
 	}
 }
 
-// Begin opens a new reasoning section and returns its ID. Banner is shown
-// immediately on TTY; on non-TTY Begin is a no-op visually.
+// Begin opens a new reasoning section and returns its ID. TTY shows a live
+// preview; non-TTY buffers until End.
 func (r *ReasoningRenderer) Begin(label string) SectionID {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := SectionID(len(r.sections))
 	sec := &reasoningSection{label: label}
-	if label != "" {
-		fmt.Fprintf(&sec.buf, "Reasoning for %s...\n", label)
-	} else {
-		fmt.Fprintln(&sec.buf, "Reasoning...")
-	}
 	r.sections = append(r.sections, sec)
 	if r.isTTY {
-		r.redrawLocked()
+		r.redrawLiveLocked()
 	}
 	return id
 }
 
-// Append adds a delta to the section's content buffer and triggers a redraw on TTY.
+// Append adds a delta to the section's content buffer and updates the live preview.
 func (r *ReasoningRenderer) Append(id SectionID, delta string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -79,14 +76,14 @@ func (r *ReasoningRenderer) Append(id SectionID, delta string) {
 	if sec.ended {
 		return
 	}
-	sec.buf.WriteString(delta)
+	sec.body.WriteString(delta)
 	if r.isTTY {
-		r.redrawLocked()
+		r.redrawLiveLocked()
 	}
 }
 
-// End marks the section done. When all open sections are ended the live area
-// is committed (TTY) or the section is flushed (non-TTY).
+// End marks the section done. TTY clears the live preview, prints the full
+// section, then redraws remaining previews. Non-TTY flushes atomically.
 func (r *ReasoningRenderer) End(id SectionID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -100,20 +97,20 @@ func (r *ReasoningRenderer) End(id SectionID) {
 	sec.ended = true
 
 	if !r.isTTY {
-		r.flushSectionLocked(sec)
+		r.writeFinalSectionLocked(sec)
 		if r.allEndedLocked() {
 			r.sections = nil
-			r.lastLines = 0
 		}
 		return
 	}
 
+	r.clearLiveLocked()
+	r.writeFinalSectionLocked(sec)
 	if r.allEndedLocked() {
-		r.redrawLocked()
-		r.commitLocked()
-	} else {
-		r.redrawLocked()
+		r.sections = nil
+		return
 	}
+	r.redrawLiveLocked()
 }
 
 func (r *ReasoningRenderer) allEndedLocked() bool {
@@ -125,191 +122,176 @@ func (r *ReasoningRenderer) allEndedLocked() bool {
 	return true
 }
 
-// redrawLocked erases the previous live area and redraws all sections.
+// writeFinalSectionLocked writes a complete section into scrollback.
 // Must be called with r.mu held.
-func (r *ReasoningRenderer) redrawLocked() {
-	content := r.buildLiveAreaLocked()
-	var out strings.Builder
-	if r.lastLines > 0 {
-		fmt.Fprintf(&out, "\x1b[%dA\x1b[0J", r.lastLines)
+func (r *ReasoningRenderer) writeFinalSectionLocked(sec *reasoningSection) {
+	_, _ = io.WriteString(r.w, r.formatBanner(sec.label))
+	body := sec.body.String()
+	if r.useANSI && body != "" {
+		_, _ = fmt.Fprintf(r.w, "\x1b[3;90m%s\x1b[0m", body)
+	} else if body != "" {
+		_, _ = io.WriteString(r.w, body)
 	}
-	out.WriteString(content)
-	r.lastLines = visibleLineCount(content, r.termWidth())
-	_, _ = io.WriteString(r.w, out.String())
-}
-
-// commitLocked emits a trailing blank line and resets state after all sections ended.
-// Must be called with r.mu held, after a final redrawLocked.
-func (r *ReasoningRenderer) commitLocked() {
-	_, _ = io.WriteString(r.w, "\n")
-	r.sections = nil
-	r.lastLines = 0
-}
-
-// flushSectionLocked writes a section atomically on non-TTY when it ends.
-// Must be called with r.mu held.
-func (r *ReasoningRenderer) flushSectionLocked(sec *reasoningSection) {
-	body := sec.buf.String()
-	if body != "" {
-		if r.useANSI {
-			_, _ = fmt.Fprintf(r.w, "\x1b[3;90m%s\x1b[0m", body)
-		} else {
-			_, _ = io.WriteString(r.w, body)
-		}
-		if !strings.HasSuffix(body, "\n") {
-			_, _ = io.WriteString(r.w, "\n")
-		}
+	if body == "" || !strings.HasSuffix(body, "\n") {
+		_, _ = io.WriteString(r.w, "\n")
 	}
 	_, _ = io.WriteString(r.w, "\n")
 }
 
-func (r *ReasoningRenderer) buildLiveAreaLocked() string {
-	width := r.termWidth()
-	// Reserve one row for the line below the live area so the cursor never
-	// pushes content into the scrollback buffer.
-	budget := r.termHeight() - 1
-	if budget < 2 {
-		budget = 2
+func (r *ReasoningRenderer) formatBanner(label string) string {
+	if r.useANSI {
+		if label != "" {
+			return fmt.Sprintf("\x1b[3;90mReasoning for %s...\x1b[0m\n", label)
+		}
+		return "\x1b[3;90mReasoning...\x1b[0m\n"
 	}
+	if label != "" {
+		return fmt.Sprintf("Reasoning for %s...\n", label)
+	}
+	return "Reasoning...\n"
+}
 
-	var out strings.Builder
+func (r *ReasoningRenderer) redrawLiveLocked() {
+	r.clearLiveLocked()
+	live := r.buildLiveLocked()
+	if live == "" {
+		return
+	}
+	_, _ = io.WriteString(r.w, live)
+	r.lastLiveRows = visibleLineCount(live, r.termWidth())
+}
+
+func (r *ReasoningRenderer) clearLiveLocked() {
+	if r.lastLiveRows <= 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(r.w, "\x1b[%dA\x1b[0J", r.lastLiveRows)
+	r.lastLiveRows = 0
+}
+
+func (r *ReasoningRenderer) buildLiveLocked() string {
+	active := make([]*reasoningSection, 0, len(r.sections))
 	for _, sec := range r.sections {
-		if budget <= 0 {
-			break
+		if !sec.ended {
+			active = append(active, sec)
 		}
-		body := sec.buf.String()
-		if body == "" {
-			continue
-		}
-		if rows := visibleLineCount(body, width); rows > budget {
-			body = capToRows(body, budget, width)
-		}
+	}
+	if len(active) == 0 {
+		return ""
+	}
+
+	availableRows := r.termHeight() - 1
+	if availableRows < len(active)*3 {
+		return ""
+	}
+	rowsPerSection := 10
+	if maxRows := availableRows/len(active) - 1; maxRows < rowsPerSection {
+		rowsPerSection = maxRows
+	}
+	if rowsPerSection < 2 {
+		return ""
+	}
+
+	bodyRows := rowsPerSection - 1
+	width := r.termWidth()
+	var out strings.Builder
+	for _, sec := range active {
+		out.WriteByte('\n')
+		out.WriteString(r.formatBanner(sec.label))
+		body := latestRows(sec.body.String(), bodyRows, width)
 		if r.useANSI {
 			fmt.Fprintf(&out, "\x1b[3;90m%s\x1b[0m", body)
 		} else {
 			out.WriteString(body)
 		}
-		if !strings.HasSuffix(body, "\n") {
-			out.WriteString("\n")
+		if body == "" || !strings.HasSuffix(body, "\n") {
+			out.WriteByte('\n')
 		}
-		budget -= visibleLineCount(body, width)
 	}
 	return out.String()
 }
 
-// capToRows truncates plain-text content to at most maxRows visual rows,
-// keeping the most-recent lines and prepending "…\n" as the first row.
-func capToRows(content string, maxRows, width int) string {
+func latestRows(content string, maxRows, width int) string {
+	if maxRows <= 0 || content == "" {
+		return ""
+	}
+	if width <= 0 {
+		width = 80
+	}
 	lines := strings.Split(content, "\n")
-	hasTrailing := len(lines) > 0 && lines[len(lines)-1] == ""
-	if hasTrailing {
+	trailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
+	if trailingNewline {
 		lines = lines[:len(lines)-1]
 	}
-	// Walk from the end, accumulating rows until budget (maxRows-1) is full.
-	budget := maxRows - 1 // one row reserved for "…"
-	kept := 0
+
 	used := 0
+	start := len(lines)
 	for i := len(lines) - 1; i >= 0; i-- {
-		lr := len([]rune(lines[i]))
-		lineRows := (lr + width - 1) / width
-		if lineRows == 0 {
-			lineRows = 1
-		}
-		if used+lineRows > budget {
+		rows := wrappedRows(lines[i], width)
+		if used+rows > maxRows {
 			break
 		}
-		used += lineRows
-		kept++
+		used += rows
+		start = i
 	}
-	start := len(lines) - kept
-	result := "…\n" + strings.Join(lines[start:], "\n")
-	if hasTrailing {
+	if start == len(lines) {
+		return tailRunes(lines[len(lines)-1], maxRows*width)
+	}
+	result := strings.Join(lines[start:], "\n")
+	if trailingNewline {
 		result += "\n"
 	}
 	return result
 }
 
-// WriteProgress writes a pre-formatted progress line. When a live area is
-// active on TTY it erases the live area, writes the line, then redraws so the
-// cursor accounting stays correct. Safe to call concurrently.
-func (r *ReasoningRenderer) WriteProgress(line string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.isTTY && r.lastLines > 0 {
-		var out strings.Builder
-		fmt.Fprintf(&out, "\x1b[%dA\x1b[0J", r.lastLines)
-		r.lastLines = 0
-		out.WriteString(line)
-		if !strings.HasSuffix(line, "\n") {
-			out.WriteString("\n")
-		}
-		_, _ = io.WriteString(r.w, out.String())
-		r.redrawLocked()
-	} else {
-		_, _ = io.WriteString(r.w, line)
-		if !strings.HasSuffix(line, "\n") {
-			_, _ = io.WriteString(r.w, "\n")
-		}
+func tailRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
 	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[len(runes)-max:])
 }
 
-func (r *ReasoningRenderer) termWidth() int {
-	if r.fd < 0 {
-		return 80
+func wrappedRows(line string, width int) int {
+	if width <= 0 {
+		width = 80
 	}
-	w, _, err := term.GetSize(r.fd)
-	if err != nil || w <= 0 {
-		return 80
+	n := len([]rune(line))
+	if n == 0 {
+		return 1
 	}
-	return w
+	return (n + width - 1) / width
 }
 
-func (r *ReasoningRenderer) termHeight() int {
-	if r.fd < 0 {
-		return 24
-	}
-	_, h, err := term.GetSize(r.fd)
-	if err != nil || h <= 0 {
-		return 24
-	}
-	return h
-}
-
-// visibleLineCount counts the number of terminal rows the string occupies,
-// stripping ANSI escape sequences and accounting for line wrapping.
 func visibleLineCount(s string, width int) int {
 	if width <= 0 {
 		width = 80
 	}
 	stripped := stripANSI(s)
 	lines := strings.Split(stripped, "\n")
-	// Trailing newline produces an empty last element; don't count it.
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
 	total := 0
 	for _, line := range lines {
-		runes := []rune(line)
-		if len(runes) == 0 {
-			total++
-			continue
-		}
-		total += (len(runes) + width - 1) / width
+		total += wrappedRows(line, width)
 	}
 	return total
 }
 
 func stripANSI(s string) string {
 	var b strings.Builder
-	i := 0
-	for i < len(s) {
+	for i := 0; i < len(s); {
 		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
 			i += 2
 			for i < len(s) && !isANSIFinalByte(s[i]) {
 				i++
 			}
 			if i < len(s) {
-				i++ // consume the final byte
+				i++
 			}
 			continue
 		}
@@ -321,4 +303,53 @@ func stripANSI(s string) string {
 
 func isANSIFinalByte(b byte) bool {
 	return b >= 0x40 && b <= 0x7E
+}
+
+func (r *ReasoningRenderer) termWidth() int {
+	if r.width > 0 {
+		return r.width
+	}
+	if r.fd < 0 {
+		return 80
+	}
+	w, _, err := term.GetSize(r.fd)
+	if err != nil || w <= 0 {
+		return 80
+	}
+	return w
+}
+
+func (r *ReasoningRenderer) termHeight() int {
+	if r.height > 0 {
+		return r.height
+	}
+	if r.fd < 0 {
+		return 24
+	}
+	_, h, err := term.GetSize(r.fd)
+	if err != nil || h <= 0 {
+		return 24
+	}
+	return h
+}
+
+// WriteProgress writes a pre-formatted progress line outside the live preview.
+func (r *ReasoningRenderer) WriteProgress(line string) {
+	r.WriteOutside(line)
+}
+
+// WriteOutside writes normal logger output without corrupting the live preview.
+func (r *ReasoningRenderer) WriteOutside(text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.isTTY {
+		r.clearLiveLocked()
+	}
+	_, _ = io.WriteString(r.w, text)
+	if !strings.HasSuffix(text, "\n") {
+		_, _ = io.WriteString(r.w, "\n")
+	}
+	if r.isTTY {
+		r.redrawLiveLocked()
+	}
 }

@@ -87,7 +87,6 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		ExtraBody:         e.config.ExtraBody,
 		ParallelToolCalls: !req.DisableParallelToolCalls,
 		ReasoningEffort:   e.config.ReasoningEffort,
-		ReasoningSink:     req.Section,
 	}
 
 	toolState := &toolRoundState{
@@ -215,7 +214,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		go func(idx int, f model.Finding) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			sec := e.logger.OpenReasoningSection(labelForFinding(idx, f))
+			sec := e.logger.NewReasoningTracker(labelForFinding(idx, f))
 			defer sec.End()
 			req := VerifyRequest{
 				ReviewCtx:                reviewCtx,
@@ -281,11 +280,11 @@ func buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding
 	}
 
 	findingForVerify := struct {
-		Title        string              `json:"title"`
-		Body         string              `json:"body"`
-		Priority     int                 `json:"priority"`
-		CodeLocation model.CodeLocation  `json:"code_location"`
-		Suggestion   *model.Suggestion   `json:"suggestion,omitempty"`
+		Title        string             `json:"title"`
+		Body         string             `json:"body"`
+		Priority     int                `json:"priority"`
+		CodeLocation model.CodeLocation `json:"code_location"`
+		Suggestion   *model.Suggestion  `json:"suggestion,omitempty"`
 	}{
 		Title:        finding.Title,
 		Body:         finding.Body,
