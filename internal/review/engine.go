@@ -639,156 +639,60 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	}
 	sec := e.logger.NewReasoningTracker(label)
 	defer sec.End()
-	llmReq := &llm.ReviewRequest{
-		Messages:          messages,
-		Schema:            agent.schema,
-		SchemaKind:        agent.schemaKind,
-		Model:             e.config.Model,
-		MaxTokens:         e.config.MaxTokens,
-		Temperature:       e.config.Temperature,
-		TopP:              e.config.TopP,
-		ExtraBody:         e.config.ExtraBody,
-		ParallelToolCalls: !req.DisableParallelToolCalls,
-		ReasoningEffort:   e.config.ReasoningEffort,
-	}
-	if agent.hasTools {
-		llmReq.Tools = reviewerToolDefinitions()
-	}
 
-	totalUsage := model.TokenUsage{}
-	toolCallsUsed := 0
-	duplicateToolCallsUsed := 0
-	toolState := &toolRoundState{
-		seenFiles:      make(map[string]retrieval.FileContent),
-		seenFileRanges: make(map[string][]model.LineRange),
-		seenToolCalls:  make(map[string]struct{}),
+	tools := []llm.ToolDefinition(nil)
+	if agent.hasTools {
+		tools = reviewerToolDefinitions()
 	}
-	var resp *llm.ReviewResponse
-	var syntheticFollowup *llm.Message
-	var toolCallHistory []toolCallHistoryEntry
-	var toolMessages []llm.Message
-	var contentMessages []string
-	jsonRetries := 0
-	effectiveReasoningEffort := e.config.ReasoningEffort
-	jsonRepairWithoutTools := false
 	reviewSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
 	if agent.schemaKind == llm.SchemaKindText {
 		reviewSnippet = ""
 	}
-
-	for {
-		noToolsHistory := append([]llm.Message(nil), messages...)
-		var err error
-		if agent.hasTools {
-			noToolsHistory, err = noToolsMessagesFromRendered(noToolsSystem, messages)
-			if err != nil {
-				return reviewAgentResult{}, err
+	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
+		AgentName:                  agent.name,
+		Messages:                   messages,
+		Tools:                      tools,
+		Schema:                     agent.schema,
+		SchemaKind:                 agent.schemaKind,
+		Model:                      e.config.Model,
+		MaxTokens:                  e.config.MaxTokens,
+		Temperature:                e.config.Temperature,
+		TopP:                       e.config.TopP,
+		ExtraBody:                  e.config.ExtraBody,
+		ParallelToolCalls:          !req.DisableParallelToolCalls,
+		ReasoningEffort:            e.config.ReasoningEffort,
+		RepoRoot:                   req.RepoRoot,
+		MaxToolCalls:               req.MaxToolCalls,
+		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
+		Section:                    sec,
+		NoToolsSystem:              noToolsSystem,
+		NoToolsSchemaSnippet:       reviewSnippet,
+		JSONRetryExampleSnippet:    llm.FindingsExamplePromptSnippet(),
+		JSONRetryProgressAgentName: agent.name,
+		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
+			if !agent.hasTools {
+				return append([]llm.Message(nil), messages...), nil
 			}
-		}
-		llmReq.NoToolsMessages = noToolsHistory
-		llmReq.Messages = messages
-		if syntheticFollowup != nil {
-			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
-		}
-		resp, err = e.loggedReview(ctx, llmReq, sec)
-		if err != nil {
-			var invalidResp *llm.InvalidResponseError
-			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
-				if invalidResp.ReasoningEffort != "" {
-					effectiveReasoningEffort = invalidResp.ReasoningEffort
-					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
-				}
-				if invalidResp.ToolsOmitted || jsonRepairWithoutTools {
-					jsonRepairWithoutTools = true
-					messages = noToolsHistory
-					llmReq.Tools = nil
-					llmReq.ParallelToolCalls = false
-				}
-				jsonRetries++
-				e.logf("Invalid JSON response, retrying with feedback: agent=%s attempt=%d reason=%q missing=%v", agent.name, jsonRetries, invalidResp.Reason, invalidResp.MissingFields)
-				e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", agent.name, jsonRetries))
-				if strings.TrimSpace(invalidResp.RawContent) != "" {
-					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
-				}
-				messages = append(messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp, llm.FindingsExamplePromptSnippet())})
-				syntheticFollowup = nil
-				continue
-			}
-			return reviewAgentResult{}, err
-		}
-		if resp.ReasoningEffort != "" {
-			effectiveReasoningEffort = resp.ReasoningEffort
-			llmReq.ReasoningEffort = resp.ReasoningEffort
-		}
-		totalUsage = addTokenUsage(totalUsage, resp.TokensUsed)
-		contentMessages = appendResponseContent(contentMessages, resp)
-
-		if len(resp.ToolCalls) == 0 {
-			break
-		}
-		pendingToolCalls := len(resp.ToolCalls)
-		if req.MaxToolCalls > 0 && toolCallsUsed+pendingToolCalls > req.MaxToolCalls {
-			e.logf("Tool call limit reached, making final call without tools: agent=%s limit=%d used=%d requested=%d", agent.name, req.MaxToolCalls, toolCallsUsed, pendingToolCalls)
-			finalMessages := append([]llm.Message(nil), messages...)
-			if strings.TrimSpace(resp.RawResponse) != "" {
-				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
-			}
-			noToolsReq := *llmReq
-			noToolsReq.Tools = nil
-			noToolsReq.ParallelToolCalls = false
-			noToolsReq.Messages, err = noToolsMessagesFromRendered(noToolsSystem, finalMessages)
-			if err != nil {
-				return reviewAgentResult{}, err
-			}
-			resp, err = e.reviewWithoutTools(ctx, &noToolsReq, noToolsSystem, finalMessages, reviewSnippet, sec)
-			if err != nil {
-				return reviewAgentResult{}, err
-			}
-			totalUsage = addTokenUsage(totalUsage, resp.TokensUsed)
-			contentMessages = appendResponseContent(contentMessages, resp)
-			break
-		}
-		e.logf("Executing tool batch: agent=%s used=%d requested=%d", agent.name, toolCallsUsed, pendingToolCalls)
-		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
-		batch := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
-		messages = append(messages, batch...)
-		toolMessages = append(toolMessages, batch...)
-		toolCallHistory = append(toolCallHistory, collectToolCallHistory(resp.ToolCalls, batch)...)
-		duplicateToolCallsUsed += countDuplicateToolCalls(batch)
-		toolCallsUsed += pendingToolCalls
-		if req.MaxDuplicateToolCalls > 0 && duplicateToolCallsUsed >= req.MaxDuplicateToolCalls {
-			e.logf("Duplicate tool call limit reached, making final call without tools: agent=%s limit=%d duplicates=%d", agent.name, req.MaxDuplicateToolCalls, duplicateToolCallsUsed)
-			noToolsReq := *llmReq
-			noToolsReq.Tools = nil
-			noToolsReq.ParallelToolCalls = false
-			resp, err = e.reviewWithoutTools(ctx, &noToolsReq, noToolsSystem, messages, reviewSnippet, sec)
-			if err != nil {
-				return reviewAgentResult{}, err
-			}
-			totalUsage = addTokenUsage(totalUsage, resp.TokensUsed)
-			contentMessages = appendResponseContent(contentMessages, resp)
-			break
-		}
-		syntheticFollowup = &llm.Message{Role: "user", Content: syntheticToolFollowup(toolCallHistory)}
-	}
-
-	if resp == nil {
-		return reviewAgentResult{}, fmt.Errorf("agent %s returned no response", agent.name)
+			return noToolsMessagesFromRendered(noToolsSystem, messages)
+		},
+	})
+	if err != nil {
+		return reviewAgentResult{}, err
 	}
 	return reviewAgentResult{
-		resp:               resp,
-		reasoningEffort:    effectiveReasoningEffort,
-		contentMessages:    contentMessages,
-		toolMessages:       toolMessages,
-		toolCallHistory:    toolCallHistory,
-		duplicateToolCalls: duplicateToolCallsUsed,
+		resp:               loopResult.resp,
+		reasoningEffort:    loopResult.reasoningEffort,
+		contentMessages:    loopResult.contentMessages,
+		toolMessages:       loopResult.toolMessages,
+		toolCallHistory:    loopResult.toolCallHistory,
+		duplicateToolCalls: loopResult.duplicateToolCalls,
 		run: model.AgentRun{
 			Name:               agent.name,
 			Role:               agent.role,
-			Findings:           len(resp.Findings),
-			ToolCalls:          toolCallsUsed,
-			DuplicateToolCalls: duplicateToolCallsUsed,
-			TokensUsed:         totalUsage,
+			Findings:           len(loopResult.resp.Findings),
+			ToolCalls:          loopResult.toolCalls,
+			DuplicateToolCalls: loopResult.duplicateToolCalls,
+			TokensUsed:         loopResult.tokensUsed,
 		},
 	}, nil
 }

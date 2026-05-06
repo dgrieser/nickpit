@@ -3,7 +3,6 @@ package review
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,7 +10,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/internal/retrieval"
 )
 
 const defaultVerifyConcurrency = 4
@@ -75,113 +73,36 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
-	llmReq := &llm.ReviewRequest{
-		Messages:          messages,
-		Tools:             reviewerToolDefinitions(),
-		Schema:            schema,
-		SchemaKind:        llm.SchemaKindVerify,
-		Model:             e.config.Model,
-		MaxTokens:         e.config.MaxTokens,
-		Temperature:       e.config.Temperature,
-		TopP:              e.config.TopP,
-		ExtraBody:         e.config.ExtraBody,
-		ParallelToolCalls: !req.DisableParallelToolCalls,
-		ReasoningEffort:   e.config.ReasoningEffort,
+
+	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
+		AgentName:               "verify",
+		Messages:                messages,
+		Tools:                   reviewerToolDefinitions(),
+		Schema:                  schema,
+		SchemaKind:              llm.SchemaKindVerify,
+		Model:                   e.config.Model,
+		MaxTokens:               e.config.MaxTokens,
+		Temperature:             e.config.Temperature,
+		TopP:                    e.config.TopP,
+		ExtraBody:               e.config.ExtraBody,
+		ParallelToolCalls:       !req.DisableParallelToolCalls,
+		ReasoningEffort:         e.config.ReasoningEffort,
+		RepoRoot:                req.RepoRoot,
+		MaxToolCalls:            req.MaxToolCalls,
+		MaxDuplicateToolCalls:   req.MaxDuplicateToolCalls,
+		Section:                 req.Section,
+		NoToolsSystem:           systemTemplate,
+		NoToolsSchemaSnippet:    systemSnippet,
+		JSONRetryExampleSnippet: exampleSnippet,
+		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
+			return noToolsMessages(systemTemplate, messages, systemSnippet)
+		},
+	})
+	if err != nil {
+		return nil, usage, err
 	}
-
-	toolState := &toolRoundState{
-		seenFiles:      make(map[string]retrieval.FileContent),
-		seenFileRanges: make(map[string][]model.LineRange),
-		seenToolCalls:  make(map[string]struct{}),
-	}
-	toolCallsUsed := 0
-	duplicateToolCallsUsed := 0
-	var resp *llm.ReviewResponse
-	var syntheticFollowup *llm.Message
-	var toolCallHistory []toolCallHistoryEntry
-	jsonRetries := 0
-	jsonRepairWithoutTools := false
-
-	for {
-		noToolsHistory, err := noToolsMessages(systemTemplate, messages, systemSnippet)
-		if err != nil {
-			return nil, usage, err
-		}
-		llmReq.NoToolsMessages = noToolsHistory
-		llmReq.Messages = messages
-		if syntheticFollowup != nil {
-			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
-		}
-		resp, err = e.loggedReview(ctx, llmReq, req.Section)
-		if err != nil {
-			var invalidResp *llm.InvalidResponseError
-			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
-				if invalidResp.ToolsOmitted || jsonRepairWithoutTools {
-					jsonRepairWithoutTools = true
-					messages, err = noToolsMessages(systemTemplate, messages, systemSnippet)
-					if err != nil {
-						return nil, usage, err
-					}
-					llmReq.Tools = nil
-					llmReq.ParallelToolCalls = false
-				}
-				jsonRetries++
-				e.logf("Verify: invalid JSON, retrying: attempt=%d reason=%q missing=%v", jsonRetries, invalidResp.Reason, invalidResp.MissingFields)
-				if strings.TrimSpace(invalidResp.RawContent) != "" {
-					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
-				}
-				messages = append(messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp, exampleSnippet)})
-				syntheticFollowup = nil
-				continue
-			}
-			return nil, usage, err
-		}
-		usage.PromptTokens += resp.TokensUsed.PromptTokens
-		usage.CompletionTokens += resp.TokensUsed.CompletionTokens
-		usage.TotalTokens += resp.TokensUsed.TotalTokens
-
-		if len(resp.ToolCalls) == 0 {
-			break
-		}
-		pendingToolCalls := len(resp.ToolCalls)
-		if req.MaxToolCalls > 0 && toolCallsUsed+pendingToolCalls > req.MaxToolCalls {
-			finalMessages := append([]llm.Message(nil), messages...)
-			if strings.TrimSpace(resp.RawResponse) != "" {
-				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
-			}
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, systemSnippet, req.Section)
-			if err != nil {
-				return nil, usage, err
-			}
-			usage.PromptTokens += resp.TokensUsed.PromptTokens
-			usage.CompletionTokens += resp.TokensUsed.CompletionTokens
-			usage.TotalTokens += resp.TokensUsed.TotalTokens
-			break
-		}
-		assistantMessage := llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls}
-		messages = append(messages, assistantMessage)
-		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
-		messages = append(messages, toolMessages...)
-		toolCallHistory = append(toolCallHistory, collectToolCallHistory(resp.ToolCalls, toolMessages)...)
-		duplicateToolCallsUsed += countDuplicateToolCalls(toolMessages)
-		if req.MaxDuplicateToolCalls > 0 && duplicateToolCallsUsed >= req.MaxDuplicateToolCalls {
-			toolCallsUsed += pendingToolCalls
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, systemSnippet, req.Section)
-			if err != nil {
-				return nil, usage, err
-			}
-			usage.PromptTokens += resp.TokensUsed.PromptTokens
-			usage.CompletionTokens += resp.TokensUsed.CompletionTokens
-			usage.TotalTokens += resp.TokensUsed.TotalTokens
-			break
-		}
-		syntheticFollowup = &llm.Message{
-			Role:    "user",
-			Content: syntheticToolFollowup(toolCallHistory),
-		}
-		toolCallsUsed += pendingToolCalls
-	}
-
+	usage = loopResult.tokensUsed
+	resp := loopResult.resp
 	if resp == nil || resp.Verification == nil {
 		return nil, usage, fmt.Errorf("verify: missing verification in response")
 	}

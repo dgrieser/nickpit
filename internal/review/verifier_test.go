@@ -25,7 +25,17 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
-	s.requests = append(s.requests, req)
+	cloned := *req
+	if len(req.Messages) > 0 {
+		cloned.Messages = cloneTestMessages(req.Messages)
+	}
+	if len(req.NoToolsMessages) > 0 {
+		cloned.NoToolsMessages = cloneTestMessages(req.NoToolsMessages)
+	}
+	if len(req.Tools) > 0 {
+		cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)
+	}
+	s.requests = append(s.requests, &cloned)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -108,6 +118,72 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	}
 	if verifications[0] != nil {
 		t.Fatalf("verification = %#v, want nil", verifications[0])
+	}
+}
+
+func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{
+		responses: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
+				TokensUsed: model.TokenUsage{
+					PromptTokens:     1,
+					CompletionTokens: 1,
+					TotalTokens:      2,
+				},
+			},
+			{
+				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "confirmed"},
+				TokensUsed: model.TokenUsage{
+					PromptTokens:     3,
+					CompletionTokens: 2,
+					TotalTokens:      5,
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	finding := model.Finding{
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+	}
+
+	verification, usage, err := engine.Verify(context.Background(), VerifyRequest{
+		ReviewCtx:     sampleReviewCtx(),
+		Finding:       finding,
+		MaxToolCalls:  2,
+		RepoRoot:      "/repo",
+		UseJSONSchema: true,
+	})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	if verification == nil || verification.Remarks != "confirmed" {
+		t.Fatalf("verification = %#v", verification)
+	}
+	if usage.TotalTokens != 7 {
+		t.Fatalf("usage total = %d, want 7", usage.TotalTokens)
+	}
+	if len(llmClient.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(llmClient.requests))
+	}
+	if llmClient.requests[0].SchemaKind != llm.SchemaKindVerify {
+		t.Fatalf("first schema kind = %v", llmClient.requests[0].SchemaKind)
+	}
+	secondMessages := llmClient.requests[1].Messages
+	if len(secondMessages) < 4 {
+		t.Fatalf("second request messages = %d, want tool loop history", len(secondMessages))
+	}
+	if secondMessages[2].Role != "assistant" || len(secondMessages[2].ToolCalls) != 1 {
+		t.Fatalf("assistant tool call message = %#v", secondMessages[2])
+	}
+	if secondMessages[3].Role != "tool" || !strings.Contains(secondMessages[3].Content, `"content":"package extra"`) {
+		t.Fatalf("tool response message = %#v", secondMessages[3])
+	}
+	if last := secondMessages[len(secondMessages)-1]; last.Role != "user" || !strings.Contains(last.Content, "You called the following tools already") {
+		t.Fatalf("synthetic followup = %#v", last)
 	}
 }
 
