@@ -74,6 +74,20 @@ type OpenAIClient struct {
 	transport          *capturingTransport
 }
 
+type SchemaKind string
+
+const (
+	SchemaKindReview SchemaKind = "review"
+	SchemaKindVerify SchemaKind = "verify"
+)
+
+// ReasoningSink receives streaming reasoning content from collectStream.
+// All methods must be nil-safe.
+type ReasoningSink interface {
+	Append(delta string)
+	End()
+}
+
 type ReviewRequest struct {
 	SystemPrompt      string
 	UserContent       string
@@ -81,6 +95,7 @@ type ReviewRequest struct {
 	NoToolsMessages   []Message
 	Tools             []ToolDefinition
 	Schema            json.RawMessage
+	SchemaKind        SchemaKind
 	Model             string
 	MaxTokens         *int
 	Temperature       *float64
@@ -88,6 +103,7 @@ type ReviewRequest struct {
 	ExtraBody         map[string]any
 	ParallelToolCalls bool
 	ReasoningEffort   string
+	ReasoningSink     ReasoningSink
 }
 
 type Message struct {
@@ -111,15 +127,17 @@ type ToolCall struct {
 }
 
 type ReviewResponse struct {
-	Findings               []model.Finding  `json:"findings"`
-	OverallCorrectness     string           `json:"overall_correctness"`
-	OverallExplanation     string           `json:"overall_explanation"`
-	OverallConfidenceScore float64          `json:"overall_confidence_score"`
-	ToolCalls              []ToolCall       `json:"tool_calls,omitempty"`
-	RawResponse            string           `json:"raw_response,omitempty"`
-	TokensUsed             model.TokenUsage `json:"tokens_used"`
-	ReasoningEffort        string           `json:"reasoning_effort,omitempty"`
-	ToolsOmitted           bool             `json:"-"`
+	Findings               []model.Finding            `json:"findings"`
+	OverallCorrectness     string                     `json:"overall_correctness"`
+	OverallExplanation     string                     `json:"overall_explanation"`
+	OverallConfidenceScore float64                    `json:"overall_confidence_score"`
+	Verification           *model.FindingVerification `json:"verification,omitempty"`
+	ToolCalls              []ToolCall                 `json:"tool_calls,omitempty"`
+	RawResponse            string                     `json:"raw_response,omitempty"`
+	TokensUsed             model.TokenUsage           `json:"tokens_used"`
+	ReasoningEffort        string                     `json:"reasoning_effort,omitempty"`
+	Reasoned               bool                       `json:"-"`
+	ToolsOmitted           bool                       `json:"-"`
 }
 
 type capture struct {
@@ -651,7 +669,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logHighlightedJSON("LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink)
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +698,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		resp = &ReviewResponse{ToolCalls: toolCalls}
 	} else {
 		var err error
-		resp, err = parseReviewResponse(content)
+		resp, err = parseReviewResponse(content, req.SchemaKind)
 		if err != nil {
 			var invalidResp *InvalidResponseError
 			if errors.As(err, &invalidResp) {
@@ -692,6 +710,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	resp.RawResponse = content
 	resp.TokensUsed = streamed.usage
 	resp.ReasoningEffort = payload.ReasoningEffort
+	resp.Reasoned = streamed.reasoned
 	c.logf(
 		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(resp.Findings),
@@ -759,7 +778,7 @@ func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
 	return converted
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
@@ -802,7 +821,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			continue
 		}
 
-		resp, streamErr := c.collectStream(stream)
+		resp, streamErr := c.collectStream(stream, sink)
 		closeErr := stream.Close()
 		if streamErr != nil {
 			if closeErr != nil {
@@ -854,7 +873,7 @@ func (c *OpenAIClient) logRetryHTTPStatus(status, currentAttempt int, waitFor ti
 	c.logger.PrintStatusLine(fmt.Sprintf("LLM request failed with status %d, retrying in %s...", status, waitFor))
 }
 
-func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*streamedResponse, error) {
+func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink ReasoningSink) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
 		toolCalls        []*toolCallBuilder
@@ -866,6 +885,22 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 		lastFinishReason string
 		receivedChunk    bool
 	)
+	// Lazy fallback: open an unlabeled section when no sink was provided by the caller.
+	ownsSink := false
+	ensureSink := func() ReasoningSink {
+		if sink == nil && c.logger != nil {
+			sink = c.logger.OpenReasoningSection("")
+			ownsSink = sink != nil
+		}
+		return sink
+	}
+	endSink := func() {
+		if ownsSink && reasoningStarted {
+			if s := ensureSink(); s != nil {
+				s.End()
+			}
+		}
+	}
 	partialResponse := func() *streamedResponse {
 		return &streamedResponse{
 			content:          contentBuilder.String(),
@@ -885,23 +920,17 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if !sawUsage {
-					if reasoningStarted {
-						c.logger.PrintBlankLine()
-					}
+					endSink()
 					return nil, &streamReadError{
 						err:       fmt.Errorf("llm: reading stream: interrupted before final usage chunk"),
 						retryable: true,
 						partial:   partialResponse(),
 					}
 				}
-				if reasoningStarted {
-					c.logger.PrintBlankLine()
-				}
+				endSink()
 				return partialResponse(), nil
 			}
-			if reasoningStarted {
-				c.logger.PrintBlankLine()
-			}
+			endSink()
 			return nil, &streamReadError{
 				err:       fmt.Errorf("llm: reading stream: %w", err),
 				retryable: isRetryableNetworkError(err),
@@ -930,15 +959,11 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream) (*stre
 				lastFinishReason = string(choice.FinishReason)
 			}
 			if choice.Delta.ReasoningContent != "" {
-
 				if !reasoningStarted {
 					reasoningStarted = true
-					if c.logger != nil {
-						c.logger.PrintReasoningBanner()
-					}
 				}
-				if c.logger != nil {
-					c.logger.PrintReasoningDelta(choice.Delta.ReasoningContent)
+				if s := ensureSink(); s != nil {
+					s.Append(choice.Delta.ReasoningContent)
 				}
 			}
 			if choice.Delta.Content != "" {
@@ -1436,7 +1461,10 @@ func canonicalToolCallKey(call ToolCall) string {
 	return call.Name + "\x00" + string(normalized)
 }
 
-func parseReviewResponse(content string) (*ReviewResponse, error) {
+func parseReviewResponse(content string, kind SchemaKind) (*ReviewResponse, error) {
+	if kind == SchemaKindVerify {
+		return parseVerifyResponse(content)
+	}
 	var parsed ReviewResponse
 	if err := LenientUnmarshal(content, &parsed); err != nil {
 		return nil, &InvalidResponseError{
@@ -1455,6 +1483,43 @@ func parseReviewResponse(content string) (*ReviewResponse, error) {
 		}
 	}
 	return &parsed, nil
+}
+
+func parseVerifyResponse(content string) (*ReviewResponse, error) {
+	var verification model.FindingVerification
+	if err := LenientUnmarshal(content, &verification); err != nil {
+		return nil, &InvalidResponseError{
+			RawContent: content,
+			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
+		}
+	}
+	if missing := missingVerifyFields(content); len(missing) > 0 {
+		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: missing,
+		}
+	}
+	if verification.Priority < 0 || verification.Priority > 3 {
+		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: []string{"priority (must be 0-3)"},
+		}
+	}
+	return &ReviewResponse{Verification: &verification}, nil
+}
+
+func missingVerifyFields(content string) []string {
+	var raw map[string]json.RawMessage
+	_ = LenientUnmarshal(content, &raw)
+	var missing []string
+	for _, field := range []string{"valid", "priority", "confidence_score", "remarks"} {
+		if _, ok := raw[field]; !ok {
+			missing = append(missing, field)
+		}
+	}
+	return missing
 }
 
 func missingResponseFields(parsed *ReviewResponse, content string) []string {

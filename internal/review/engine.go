@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/filetype"
@@ -169,11 +170,46 @@ func (e *Engine) SetSearchToolOptimization(enabled bool) {
 	e.searchToolOptimization = enabled
 }
 
+func reviewerToolDefinitions() []llm.ToolDefinition {
+	return []llm.ToolDefinition{
+		{
+			Name:        "inspect_file",
+			Description: "Retrieve content of repo-relative file",
+			Parameters:  inspectFileToolParameters,
+		},
+		{
+			Name:        "list_files",
+			Description: "List files of repo-relative folder",
+			Parameters:  listFilesToolParameters,
+		},
+		{
+			Name:        "search",
+			Description: "Search recursively inside repo-relative file or folder",
+			Parameters:  searchToolParameters,
+		},
+		{
+			Name:        "find_callers",
+			Description: "Resolve function by symbol name and return caller hierarchy and method bodies",
+			Parameters:  callHierarchyToolParameters,
+		},
+		{
+			Name:        "find_callees",
+			Description: "Resolve function by symbol name and return its callee hierarchy and method bodies",
+			Parameters:  callHierarchyToolParameters,
+		},
+	}
+}
+
 func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, error) {
+	result, _, err := e.RunWithContext(ctx, req)
+	return result, err
+}
+
+func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	e.logf("Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
 	reviewCtx, err := e.source.ResolveContext(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	e.logProgress("Review", reviewContextSummary(reviewCtx, req))
 	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
@@ -207,7 +243,7 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	systemTemplate, err := e.loadPrompt("review_system.tmpl")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet      string
@@ -219,16 +255,16 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		HasTools:                 true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("review: rendering review system prompt: %w", err)
+		return nil, nil, fmt.Errorf("review: rendering review system prompt: %w", err)
 	}
 	payload := model.PromptPayloadFromContext(trimmed)
 	payload.StyleGuides, err = e.styleGuidesFor(trimmed)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	userPrompt, err := llm.RenderJSON(payload)
 	if err != nil {
-		return nil, fmt.Errorf("review: rendering review prompt json: %w", err)
+		return nil, nil, fmt.Errorf("review: rendering review prompt json: %w", err)
 	}
 	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
 
@@ -241,36 +277,13 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
+	reviewSec := e.logger.NewReasoningTracker(fmt.Sprintf("reviewer #1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef))
+	defer reviewSec.End()
 	llmReq := &llm.ReviewRequest{
-		Messages: messages,
-		Tools: []llm.ToolDefinition{
-			{
-				Name:        "inspect_file",
-				Description: "Retrieve content of repo-relative file",
-				Parameters:  inspectFileToolParameters,
-			},
-			{
-				Name:        "list_files",
-				Description: "List files of repo-relative folder",
-				Parameters:  listFilesToolParameters,
-			},
-			{
-				Name:        "search",
-				Description: "Search recursively inside repo-relative file or folder",
-				Parameters:  searchToolParameters,
-			},
-			{
-				Name:        "find_callers",
-				Description: "Resolve function by symbol name and return caller hierarchy and method bodies",
-				Parameters:  callHierarchyToolParameters,
-			},
-			{
-				Name:        "find_callees",
-				Description: "Resolve function by symbol name and return its callee hierarchy and method bodies",
-				Parameters:  callHierarchyToolParameters,
-			},
-		},
+		Messages:          messages,
+		Tools:             reviewerToolDefinitions(),
 		Schema:            schema,
+		SchemaKind:        llm.SchemaKindReview,
 		Model:             e.config.Model,
 		MaxTokens:         e.config.MaxTokens,
 		Temperature:       e.config.Temperature,
@@ -295,17 +308,18 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 	effectiveReasoningEffort := e.config.ReasoningEffort
 	jsonRepairWithoutTools := false
 
+	reviewSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
 	for {
-		noToolsHistory, err := noToolsMessages(systemTemplate, messages, req.UseJSONSchema)
+		noToolsHistory, err := noToolsMessages(systemTemplate, messages, reviewSnippet)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		llmReq.NoToolsMessages = noToolsHistory
 		llmReq.Messages = messages
 		if syntheticFollowup != nil {
 			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
 		}
-		resp, err = e.llm.Review(ctx, llmReq)
+		resp, err = e.loggedReview(ctx, llmReq, reviewSec)
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
 			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
@@ -315,9 +329,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 				}
 				if invalidResp.ToolsOmitted || jsonRepairWithoutTools {
 					jsonRepairWithoutTools = true
-					messages, err = noToolsMessages(systemTemplate, messages, req.UseJSONSchema)
+					messages, err = noToolsMessages(systemTemplate, messages, reviewSnippet)
 					if err != nil {
-						return nil, err
+						return nil, nil, err
 					}
 					llmReq.Tools = nil
 					llmReq.ParallelToolCalls = false
@@ -328,11 +342,11 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 				if strings.TrimSpace(invalidResp.RawContent) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 				}
-				messages = append(messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp)})
+				messages = append(messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp, llm.FindingsExamplePromptSnippet())})
 				syntheticFollowup = nil
 				continue
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		if resp.ReasoningEffort != "" {
 			effectiveReasoningEffort = resp.ReasoningEffort
@@ -353,9 +367,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 			}
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, req.UseJSONSchema)
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, reviewSnippet, reviewSec)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if resp.ReasoningEffort != "" {
 				effectiveReasoningEffort = resp.ReasoningEffort
@@ -377,9 +391,9 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 			e.logf("Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, duplicateToolCallsUsed)
 			e.logProgress("Tool", fmt.Sprintf("status=DuplicateLimitReached, limit=%d, duplicates=%d, finalizing review", req.MaxDuplicateToolCalls, duplicateToolCallsUsed))
 			toolCallsUsed += pendingToolCalls
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, req.UseJSONSchema)
+			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, reviewSnippet, reviewSec)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if resp.ReasoningEffort != "" {
 				effectiveReasoningEffort = resp.ReasoningEffort
@@ -430,19 +444,20 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 		HeadRef:                reviewCtx.Repository.HeadRef,
 		MaxDuplicateToolCalls:  req.MaxDuplicateToolCalls,
 		DuplicateToolCalls:     duplicateToolCallsUsed,
-	}, nil
+	}, trimmed, nil
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, useJSONSchema bool) (*llm.ReviewResponse, error) {
-	finalMessages, err := noToolsMessages(systemTemplate, messages, useJSONSchema)
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+	finalMessages, err := noToolsMessages(systemTemplate, messages, systemSnippet)
 	if err != nil {
 		return nil, err
 	}
 	llmReq.Messages = finalMessages
 	llmReq.Tools = nil
 	llmReq.ParallelToolCalls = false
+	exampleSnippet := exampleSnippetFor(llmReq.SchemaKind)
 	for attempt := 0; ; attempt++ {
-		resp, err := e.llm.Review(ctx, llmReq)
+		resp, err := e.loggedReview(ctx, llmReq, sec)
 		if err == nil {
 			if resp.ReasoningEffort != "" {
 				llmReq.ReasoningEffort = resp.ReasoningEffort
@@ -461,17 +476,24 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		}
-		llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp)})
+		llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp, exampleSnippet)})
 	}
 }
 
-func noToolsMessages(systemTemplate string, messages []llm.Message, useJSONSchema bool) ([]llm.Message, error) {
+func exampleSnippetFor(kind llm.SchemaKind) string {
+	if kind == llm.SchemaKindVerify {
+		return llm.VerifyExamplePromptSnippet()
+	}
+	return llm.FindingsExamplePromptSnippet()
+}
+
+func noToolsMessages(systemTemplate string, messages []llm.Message, snippet string) ([]llm.Message, error) {
 	noToolsPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
 		HasTools                 bool
 	}{
-		OutputSchemaSnippet: reviewOutputSchemaSnippetFor(useJSONSchema),
+		OutputSchemaSnippet: snippet,
 		HasTools:            false,
 	})
 	if err != nil {
@@ -498,7 +520,7 @@ func noToolsMessages(systemTemplate string, messages []llm.Message, useJSONSchem
 	return finalMessages, nil
 }
 
-func buildJSONRetryFeedback(err *llm.InvalidResponseError) string {
+func buildJSONRetryFeedback(err *llm.InvalidResponseError, exampleSnippet string) string {
 	var b strings.Builder
 	b.WriteString("Your previous response could not be parsed as the expected JSON output: ")
 	b.WriteString(err.Reason)
@@ -509,7 +531,10 @@ func buildJSONRetryFeedback(err *llm.InvalidResponseError) string {
 		b.WriteString(".")
 	}
 	b.WriteString("\n\nRespond again with ONLY a JSON object (no prose, no markdown fences) matching this shape:\n\n")
-	b.WriteString(llm.FindingsExamplePromptSnippet())
+	if exampleSnippet == "" {
+		exampleSnippet = llm.FindingsExamplePromptSnippet()
+	}
+	b.WriteString(exampleSnippet)
 	return b.String()
 }
 
@@ -891,6 +916,26 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
+
+	if hasRegexMetachar(args.Query) {
+		regexPattern := args.Query
+		if !args.CaseSensitive {
+			regexPattern = "(?i)" + regexPattern
+		}
+		if compiled, compileErr := regexp.Compile(regexPattern); compileErr == nil {
+			e.logf("Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
+			regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, args.ContextLines, args.MaxResults)
+			if err != nil {
+				return toolError(normalizedPath, "retrieval_failed", err.Error())
+			}
+			merged := mergeSearchResults(results.Results, regexResults.Results, args.MaxResults)
+			results.Results = merged
+			results.ResultCount = len(merged)
+		} else {
+			e.logf("Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
+		}
+	}
+
 	return mustToolResultJSON(map[string]any{
 		"path":           results.Path,
 		"query":          results.Query,
@@ -900,6 +945,38 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		"result_count":   results.ResultCount,
 		"results":        results.Results,
 	})
+}
+
+func hasRegexMetachar(query string) bool {
+	return strings.ContainsAny(query, `\.+*?()|[]{}^$`)
+}
+
+func mergeSearchResults(literal, regex []retrieval.SearchResult, maxResults int) []retrieval.SearchResult {
+	merged := make([]retrieval.SearchResult, 0, len(literal)+len(regex))
+	seen := make(map[string]struct{}, len(literal)+len(regex))
+	key := func(r retrieval.SearchResult) string {
+		return fmt.Sprintf("%s:%d:%d", r.Path, r.StartLine, r.EndLine)
+	}
+	for _, r := range literal {
+		k := key(r)
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		merged = append(merged, r)
+	}
+	for _, r := range regex {
+		k := key(r)
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		merged = append(merged, r)
+	}
+	if maxResults > 0 && len(merged) > maxResults {
+		merged = merged[:maxResults]
+	}
+	return merged
 }
 
 func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, toolCall llm.ToolCall, callers bool, state *toolRoundState) string {
@@ -1263,6 +1340,42 @@ func syntheticPathValue(path, empty string) string {
 
 func normalizeToolPath(path string) string {
 	return strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
+}
+
+func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+	callNum := sec.IncrCallNum()
+	label := sec.Label()
+	if label != "" {
+		e.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
+		e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d", label, callNum))
+	}
+	previousSink := req.ReasoningSink
+	callSec := e.openReviewRequestReasoningSection(label, callNum)
+	req.ReasoningSink = callSec
+	defer func() {
+		req.ReasoningSink = previousSink
+		callSec.End()
+	}()
+	start := time.Now()
+	resp, err := e.llm.Review(ctx, req)
+	elapsed := time.Since(start).Truncate(time.Second)
+	if label != "" {
+		if resp != nil && resp.Reasoned {
+			e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", label, callNum, elapsed))
+		}
+		e.logProgress("Response", fmt.Sprintf("[%s] #%d After %s", label, callNum, elapsed))
+	}
+	return resp, err
+}
+
+func (e *Engine) openReviewRequestReasoningSection(label string, callNum int) *logging.ReasoningSection {
+	if e.logger == nil || !e.logger.ShowReasoning() {
+		return nil
+	}
+	if label == "" || callNum <= 0 {
+		return e.logger.OpenReasoningSection("")
+	}
+	return e.logger.OpenReasoningSection(fmt.Sprintf("%s #%d", label, callNum))
 }
 
 func (e *Engine) logf(format string, args ...any) {

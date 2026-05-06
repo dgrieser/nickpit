@@ -58,6 +58,9 @@ type app struct {
 	showProgress                  bool
 	disableSearchToolOptimization bool
 	disableParallelToolCalls      bool
+	noVerify                      bool
+	verifyConcurrency             int
+	hideInvalid                   bool
 	logger                        *logging.Logger
 }
 
@@ -118,6 +121,9 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
+	root.PersistentFlags().BoolVar(&cli.noVerify, "no-verify", false, "Skip the second-pass verifier")
+	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
+	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
 
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
@@ -556,7 +562,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
-	result, err := engine.Run(ctx, req)
+	result, trimmedCtx, err := engine.RunWithContext(ctx, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
 		return err
@@ -566,11 +572,32 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return err
 	}
 	a.logProgress("Result", reviewResultSummary(result))
+
+	if !a.noVerify && len(result.Findings) > 0 && trimmedCtx != nil {
+		verifyOpts := review.VerifyOptions{
+			Concurrency:              a.verifyConcurrency,
+			UseJSONSchema:            req.UseJSONSchema,
+			MaxToolCalls:             req.MaxToolCalls,
+			MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
+			DisableParallelToolCalls: req.DisableParallelToolCalls,
+			RepoRoot:                 req.RepoRoot,
+		}
+		verifications, verifyUsage, verifyErr := engine.VerifyAll(ctx, trimmedCtx, result.Findings, verifyOpts)
+		if verifyErr != nil {
+			a.logProgress("Verify", fmt.Sprintf("status=ERROR, error=%v", verifyErr))
+			return verifyErr
+		}
+		for i := range result.Findings {
+			result.Findings[i].Verification = verifications[i]
+		}
+		result.VerifyTokensUsed = verifyUsage
+	}
+
 	var formatter output.Formatter
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
 	} else {
-		formatter = output.NewTerminalFormatter(os.Stdout, true)
+		formatter = output.NewTerminalFormatter(os.Stdout, true).WithHideInvalid(a.hideInvalid)
 	}
 	return formatter.FormatFindings(result)
 }

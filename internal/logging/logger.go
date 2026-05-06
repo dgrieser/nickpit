@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 )
 
@@ -18,6 +20,58 @@ type Logger struct {
 	enabled       bool
 	showReasoning bool
 	showProgress  bool
+	reasoning     *ReasoningRenderer
+	reasoningOnce sync.Once
+}
+
+// ReasoningSection is a handle to one labeled block in the ReasoningRenderer.
+// All methods are nil-safe so callers can defer End() without nil checks.
+type ReasoningSection struct {
+	r         *ReasoningRenderer
+	id        SectionID
+	logger    *Logger
+	label     string
+	startTime time.Time
+	ended     bool
+	callNum   int // incremented by IncrCallNum on each LLM request
+}
+
+func (s *ReasoningSection) Append(delta string) {
+	if s == nil || s.r == nil {
+		return
+	}
+	s.r.Append(s.id, delta)
+}
+
+// Label returns the section label, or "" for nil sections.
+func (s *ReasoningSection) Label() string {
+	if s == nil {
+		return ""
+	}
+	return s.label
+}
+
+// IncrCallNum increments the per-section LLM call counter and returns the new value.
+func (s *ReasoningSection) IncrCallNum() int {
+	if s == nil {
+		return 0
+	}
+	s.callNum++
+	return s.callNum
+}
+
+func (s *ReasoningSection) End() {
+	if s == nil || s.ended {
+		return
+	}
+	s.ended = true
+	if s.r != nil {
+		s.r.End(s.id)
+	}
+	if s.label != "" {
+		elapsed := time.Since(s.startTime).Truncate(time.Second)
+		s.logger.PrintProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", s.label, s.callNum, elapsed))
+	}
 }
 
 func New(w io.Writer, enabled bool, useANSI bool) *Logger {
@@ -49,6 +103,42 @@ func (l *Logger) Enabled() bool {
 	return l != nil && l.enabled
 }
 
+func (l *Logger) ShowReasoning() bool {
+	return l != nil && l.showReasoning
+}
+
+// OpenReasoningSection opens a new labeled reasoning section. Returns nil when
+// neither --show-reasoning nor --show-progress is enabled.
+// All ReasoningSection methods are nil-safe.
+func (l *Logger) OpenReasoningSection(label string) *ReasoningSection {
+	if l == nil || (!l.showReasoning && !l.showProgress) {
+		return nil
+	}
+	sec := l.NewReasoningTracker(label)
+	if l.showReasoning {
+		l.reasoningOnce.Do(func() {
+			l.reasoning = newReasoningRenderer(l.w, l.useANSI)
+		})
+		sec.id = l.reasoning.Begin(label)
+		sec.r = l.reasoning
+	}
+	return sec
+}
+
+// NewReasoningTracker returns a progress-only reasoning section. It tracks
+// labels, elapsed time, and call numbers without opening a renderer section.
+func (l *Logger) NewReasoningTracker(label string) *ReasoningSection {
+	if l == nil || (!l.showReasoning && !l.showProgress) {
+		return nil
+	}
+	sec := &ReasoningSection{
+		logger:    l,
+		label:     label,
+		startTime: time.Now(),
+	}
+	return sec
+}
+
 func (l *Logger) Printf(format string, args ...any) {
 	if !l.Enabled() {
 		return
@@ -56,13 +146,13 @@ func (l *Logger) Printf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if l.useANSI {
 		if idx := strings.IndexByte(msg, ':'); idx >= 0 {
-			_, _ = fmt.Fprintf(l.w, "\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:])
+			l.writeRaw(fmt.Sprintf("\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:]))
 			return
 		}
-		_, _ = fmt.Fprintf(l.w, "\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\n", msg)
+		l.writeRaw(fmt.Sprintf("\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\n", msg))
 		return
 	}
-	_, _ = fmt.Fprintf(l.w, "+ %s\n", msg)
+	l.writeRaw(fmt.Sprintf("+ %s\n", msg))
 }
 
 func (l *Logger) PrintBlock(label, content string) {
@@ -91,9 +181,12 @@ func (l *Logger) PrintProgress(label, summary string) {
 	if l == nil || !l.showProgress {
 		return
 	}
+	var line string
 	if l.useANSI {
 		coloredSummary := colorizeProgressSummary(summary)
 		switch label {
+		case "Reasoning", "Request", "Response":
+			coloredSummary = colorizeReasoningSummary(summary)
 		case "Model":
 			coloredSummary = colorizeModelSummary(summary)
 		case "Review":
@@ -101,26 +194,36 @@ func (l *Logger) PrintProgress(label, summary string) {
 		case "Result", "Tool":
 			coloredSummary = colorizeResultSummary(summary)
 		}
-		_, _ = fmt.Fprintf(l.w, "\x1b[33m%s\x1b[0m\x1b[90m: \x1b[0m%s\n", label, coloredSummary)
-		return
+		line = fmt.Sprintf("\x1b[33m%s\x1b[0m\x1b[90m: \x1b[0m%s\n", label, coloredSummary)
+	} else {
+		line = fmt.Sprintf("%s: %s\n", label, summary)
 	}
-	_, _ = fmt.Fprintf(l.w, "%s: %s\n", label, summary)
+	if l.reasoning != nil {
+		l.reasoning.WriteProgress(line)
+	} else {
+		l.writeRaw(line)
+	}
 }
 
 func (l *Logger) PrintProgressToolCall(call, result string) {
 	if l == nil || !l.showProgress {
 		return
 	}
+	var line string
 	if l.useANSI {
-		_, _ = fmt.Fprintf(
-			l.w,
+		line = fmt.Sprintf(
 			"\x1b[33mTool\x1b[0m\x1b[90m: \x1b[0m%s \x1b[90m→\x1b[0m %s\n",
 			colorizeToolCallCall(call),
 			colorizeToolCallResult(result),
 		)
-		return
+	} else {
+		line = fmt.Sprintf("Tool: %s → %s\n", call, result)
 	}
-	_, _ = fmt.Fprintf(l.w, "Tool: %s → %s\n", call, result)
+	if l.reasoning != nil {
+		l.reasoning.WriteProgress(line)
+	} else {
+		l.writeRaw(line)
+	}
 }
 
 func (l *Logger) printJSON(label string, value any, force bool) {
@@ -146,44 +249,15 @@ func (l *Logger) printJSON(label string, value any, force bool) {
 	}
 }
 
-func (l *Logger) PrintReasoningBanner() {
-	if l == nil || !l.showReasoning {
-		return
-	}
-	if l.useANSI {
-		_, _ = fmt.Fprint(l.w, "\x1b[33mReasoning\x1b[0m\x1b[90m...\x1b[0m\n")
-		return
-	}
-	_, _ = fmt.Fprintln(l.w, "Reasoning...")
-}
-
-func (l *Logger) PrintReasoningDelta(delta string) {
-	if l == nil || !l.showReasoning || delta == "" {
-		return
-	}
-	if l.useANSI {
-		_, _ = fmt.Fprintf(l.w, "\x1b[3;90m%s\x1b[0m", delta)
-		return
-	}
-	_, _ = fmt.Fprint(l.w, delta)
-}
-
-func (l *Logger) PrintBlankLine() {
-	if l == nil || !l.showReasoning {
-		return
-	}
-	_, _ = fmt.Fprintln(l.w)
-}
-
 func (l *Logger) PrintStatusLine(text string) {
 	if l == nil || text == "" {
 		return
 	}
 	if l.useANSI {
-		_, _ = fmt.Fprintf(l.w, "\x1b[90m%s\x1b[0m\n", text)
+		l.writeRaw(fmt.Sprintf("\x1b[90m%s\x1b[0m\n", text))
 		return
 	}
-	_, _ = fmt.Fprintln(l.w, text)
+	l.writeRaw(fmt.Sprintf("%s\n", text))
 }
 
 func (l *Logger) PrintError(err error) {
@@ -191,10 +265,21 @@ func (l *Logger) PrintError(err error) {
 		return
 	}
 	if l.useANSI {
-		_, _ = fmt.Fprintf(l.w, "\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37m%s\x1b[0m\n", err)
+		l.writeRaw(fmt.Sprintf("\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37m%s\x1b[0m\n", err))
 		return
 	}
-	_, _ = fmt.Fprintf(l.w, "ERROR: %s\n", err)
+	l.writeRaw(fmt.Sprintf("ERROR: %s\n", err))
+}
+
+func (l *Logger) writeRaw(text string) {
+	if l == nil {
+		return
+	}
+	if l.reasoning != nil {
+		l.reasoning.WriteOutside(text)
+		return
+	}
+	_, _ = io.WriteString(l.w, text)
 }
 
 func (l *Logger) writeLines(text, color string) {
@@ -204,10 +289,10 @@ func (l *Logger) writeLines(text, color string) {
 			continue
 		}
 		if l.useANSI {
-			_, _ = fmt.Fprintf(l.w, "\x1b[%sm+ %s\x1b[0m\n", color, line)
+			l.writeRaw(fmt.Sprintf("\x1b[%sm+ %s\x1b[0m\n", color, line))
 			continue
 		}
-		_, _ = fmt.Fprintf(l.w, "+ %s\n", line)
+		l.writeRaw(fmt.Sprintf("+ %s\n", line))
 	}
 }
 
@@ -219,13 +304,13 @@ type renderedJSONLine struct {
 func (l *Logger) writeRenderedJSONLine(line renderedJSONLine) {
 	if l.useANSI {
 		if line.stringOnly {
-			_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m\x1b[32m%s\x1b[0m\n", line.text)
+			l.writeRaw(fmt.Sprintf("\x1b[90m+ \x1b[0m\x1b[32m%s\x1b[0m\n", line.text))
 			return
 		}
-		_, _ = fmt.Fprintf(l.w, "\x1b[90m+ \x1b[0m%s\n", colorizeJSON(line.text))
+		l.writeRaw(fmt.Sprintf("\x1b[90m+ \x1b[0m%s\n", colorizeJSON(line.text)))
 		return
 	}
-	_, _ = fmt.Fprintf(l.w, "+ %s\n", line.text)
+	l.writeRaw(fmt.Sprintf("+ %s\n", line.text))
 }
 
 func normalizeEmbeddedJSON(value any) any {
@@ -376,6 +461,56 @@ func colorizeToolCallResult(text string) string {
 
 func colorizeProgressSummary(text string) string {
 	return colorizeKeyValueSummary(text)
+}
+
+func colorizeReasoningSummary(text string) string {
+	// format: [label] [#N] [Word] [duration] in any combination
+	open := strings.IndexByte(text, '[')
+	close := strings.IndexByte(text, ']')
+	if open < 0 || close < open {
+		return colorizeProgressSummary(text)
+	}
+	label := text[open+1 : close]
+	rest := strings.TrimSpace(text[close+1:])
+	out := "\x1b[90m[\x1b[0m" + colorizeReasoningLabel(label) + "\x1b[90m]\x1b[0m"
+	for _, tok := range strings.Fields(rest) {
+		switch {
+		case strings.HasPrefix(tok, "#"):
+			out += " \x1b[32m" + tok + "\x1b[0m" // counter: green
+		case isAllLetters(tok):
+			out += " \x1b[34m" + tok + "\x1b[0m" // action word (Done/After): blue
+		default:
+			out += " \x1b[32m" + tok + "\x1b[0m" // duration / other: green
+		}
+	}
+	return out
+}
+
+func isAllLetters(s string) bool {
+	for _, r := range s {
+		if !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// colorizeReasoningLabel colorizes a label of the form "<type> #<n>: <description>",
+// e.g. "verifier #2: Missing error handling" or "reviewer #1: repo@branch".
+func colorizeReasoningLabel(label string) string {
+	// split on first space: "verifier" vs "#2: description"
+	kind, rest, ok := strings.Cut(label, " ")
+	if !ok {
+		return "\x1b[34m" + label + "\x1b[0m"
+	}
+	// split "#2" from ": description"
+	num, desc, hasDesc := strings.Cut(rest, ": ")
+	if !hasDesc {
+		return "\x1b[34m" + kind + "\x1b[0m \x1b[32m" + rest + "\x1b[0m"
+	}
+	return "\x1b[34m" + kind + "\x1b[0m" +
+		" \x1b[32m" + num + "\x1b[0m" +
+		"\x1b[90m: " + desc + "\x1b[0m"
 }
 
 func colorizeModelSummary(text string) string {

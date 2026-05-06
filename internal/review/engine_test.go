@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -120,9 +122,21 @@ func (stubRetrieval) Search(context.Context, string, string, string, int, int, b
 	}, nil
 }
 
+func (stubRetrieval) SearchRegex(context.Context, string, string, *regexp.Regexp, int, int) (*retrieval.SearchResults, error) {
+	return &retrieval.SearchResults{
+		Path:         "",
+		ContextLines: 5,
+		ResultCount:  0,
+		Results:      []retrieval.SearchResult{},
+	}, nil
+}
+
 type countingRetrieval struct {
-	mu    sync.Mutex
-	paths []string
+	mu               sync.Mutex
+	paths            []string
+	literalResults   []retrieval.SearchResult
+	regexResults     []retrieval.SearchResult
+	hasCustomResults bool
 }
 
 func (r *countingRetrieval) GetFile(_ context.Context, _ string, path string) (*retrieval.FileContent, error) {
@@ -149,14 +163,19 @@ func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string, 
 func (r *countingRetrieval) Search(_ context.Context, _ string, path, query string, contextLines, maxResults int, caseSensitive bool) (*retrieval.SearchResults, error) {
 	r.mu.Lock()
 	r.paths = append(r.paths, fmt.Sprintf("search:%s:%s:%d:%d:%t", path, query, contextLines, maxResults, caseSensitive))
+	custom := r.hasCustomResults
+	customResults := r.literalResults
 	r.mu.Unlock()
-	results := []retrieval.SearchResult{
-		{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
-	}
-	resultCount := 1
-	if query == "missing" {
-		results = nil
-		resultCount = 0
+	var results []retrieval.SearchResult
+	if custom {
+		results = customResults
+	} else {
+		results = []retrieval.SearchResult{
+			{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
+		}
+		if query == "missing" {
+			results = nil
+		}
 	}
 	return &retrieval.SearchResults{
 		Path:          path,
@@ -164,8 +183,26 @@ func (r *countingRetrieval) Search(_ context.Context, _ string, path, query stri
 		ContextLines:  contextLines,
 		MaxResults:    maxResults,
 		CaseSensitive: caseSensitive,
-		ResultCount:   resultCount,
+		ResultCount:   len(results),
 		Results:       results,
+	}, nil
+}
+
+func (r *countingRetrieval) SearchRegex(_ context.Context, _ string, path string, pattern *regexp.Regexp, contextLines, maxResults int) (*retrieval.SearchResults, error) {
+	r.mu.Lock()
+	r.paths = append(r.paths, fmt.Sprintf("search_regex:%s:%s:%d:%d", path, pattern.String(), contextLines, maxResults))
+	results := r.regexResults
+	r.mu.Unlock()
+	if results == nil {
+		results = []retrieval.SearchResult{}
+	}
+	return &retrieval.SearchResults{
+		Path:         path,
+		Query:        pattern.String(),
+		ContextLines: contextLines,
+		MaxResults:   maxResults,
+		ResultCount:  len(results),
+		Results:      results,
 	}, nil
 }
 
@@ -1188,6 +1225,10 @@ func (blockingRetrieval) ListFiles(context.Context, string, string, int) (*retri
 	return nil, errors.New("unexpected ListFiles call")
 }
 
+func (blockingRetrieval) SearchRegex(context.Context, string, string, *regexp.Regexp, int, int) (*retrieval.SearchResults, error) {
+	return &retrieval.SearchResults{Results: []retrieval.SearchResult{}}, nil
+}
+
 func (blockingRetrieval) Search(context.Context, string, string, string, int, int, bool) (*retrieval.SearchResults, error) {
 	return nil, errors.New("unexpected Search call")
 }
@@ -1536,6 +1577,102 @@ func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestEngineLogsReasoningProgressForEachLLMCall(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
+				},
+				Reasoned: true,
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+				Reasoned:               true,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := logging.New(&buf, false, false)
+	logger.SetShowProgress(true)
+	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logger)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	for _, want := range []string{
+		"Reasoning: [reviewer #1: repo@] #1\n",
+		"Reasoning: [reviewer #1: repo@] #1 Done ",
+		"Reasoning: [reviewer #1: repo@] #2\n",
+		"Reasoning: [reviewer #1: repo@] #2 Done ",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reasoning progress %q missing: %q", want, got)
+		}
+	}
+}
+
+func TestEngineUsesFreshReasoningSectionForEachLLMCall(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
+				},
+				Reasoned: true,
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+				Reasoned:               true,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	logger := logging.New(&buf, false, false)
+	logger.SetShowReasoning(true)
+	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logger)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(llmClient.reqs))
+	}
+	if llmClient.reqs[0].ReasoningSink == nil || llmClient.reqs[1].ReasoningSink == nil {
+		t.Fatalf("reasoning sinks should be set for each request: %#v %#v", llmClient.reqs[0].ReasoningSink, llmClient.reqs[1].ReasoningSink)
+	}
+	if llmClient.reqs[0].ReasoningSink == llmClient.reqs[1].ReasoningSink {
+		t.Fatal("reasoning sink should not be reused across LLM calls")
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"Reasoning for reviewer #1: repo@ #1...\n",
+		"Reasoning for reviewer #1: repo@ #2...\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("per-call reasoning banner %q missing: %q", want, got)
+		}
+	}
+}
+
 func TestEnginePrintsOptimizedSearchReplacementWhenEnabled(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -1632,8 +1769,9 @@ func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "search::ttlExtenders:5:20:false" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
+	wantPaths := []string{"search::ttlExtenders:5:20:false"}
+	if !reflect.DeepEqual(retrievalEngine.paths, wantPaths) {
+		t.Fatalf("retrieval paths = %#v, want %#v", retrievalEngine.paths, wantPaths)
 	}
 
 	var payload map[string]any
@@ -2152,5 +2290,176 @@ func TestEngineToleratesLenientToolArguments(t *testing.T) {
 	}
 	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "main.go" {
 		t.Fatalf("expected lenient parsing to dispatch inspect_file for main.go, got %#v", retrievalEngine.paths)
+	}
+}
+
+func TestEngineMergesRegexAndLiteralSearchResults(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"foo.*bar"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{
+		hasCustomResults: true,
+		literalResults: []retrieval.SearchResult{
+			{Path: "pkg/a.go", StartLine: 1, EndLine: 1, Language: "go", Content: "foo.*bar literal hit"},
+		},
+		regexResults: []retrieval.SearchResult{
+			{Path: "pkg/a.go", StartLine: 5, EndLine: 5, Language: "go", Content: "fooXbar regex hit"},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	if _, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	if payload["result_count"] != float64(2) {
+		t.Fatalf("result_count = %#v", payload["result_count"])
+	}
+	results := payload["results"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("results len = %d", len(results))
+	}
+	if got := results[0].(map[string]any)["start_line"]; got != float64(1) {
+		t.Fatalf("first result start_line = %#v", got)
+	}
+	if got := results[1].(map[string]any)["start_line"]; got != float64(5) {
+		t.Fatalf("second result start_line = %#v", got)
+	}
+}
+
+func TestEngineDedupesOverlappingRegexAndLiteralHits(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"user(Name)?"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	hit := retrieval.SearchResult{Path: "pkg/a.go", StartLine: 7, EndLine: 9, Language: "go", Content: "userName"}
+	retrievalEngine := &countingRetrieval{
+		hasCustomResults: true,
+		literalResults:   []retrieval.SearchResult{hit},
+		regexResults:     []retrieval.SearchResult{hit},
+	}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	if _, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	if payload["result_count"] != float64(1) {
+		t.Fatalf("result_count = %#v (regex+literal hits should dedup)", payload["result_count"])
+	}
+}
+
+func TestEngineFallsBackToLiteralWhenRegexInvalid(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"foo[bar"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	if _, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(retrievalEngine.paths) != 1 {
+		t.Fatalf("regex compile must fail and skip SearchRegex; paths = %#v", retrievalEngine.paths)
+	}
+	if !strings.HasPrefix(retrievalEngine.paths[0], "search:") {
+		t.Fatalf("expected literal search path, got %q", retrievalEngine.paths[0])
+	}
+}
+
+func TestEngineMergeTruncatesToMaxResults(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"x.*","max_results":2}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	retrievalEngine := &countingRetrieval{
+		hasCustomResults: true,
+		literalResults: []retrieval.SearchResult{
+			{Path: "pkg/a.go", StartLine: 1, EndLine: 1, Language: "go", Content: "a"},
+			{Path: "pkg/a.go", StartLine: 2, EndLine: 2, Language: "go", Content: "b"},
+		},
+		regexResults: []retrieval.SearchResult{
+			{Path: "pkg/a.go", StartLine: 3, EndLine: 3, Language: "go", Content: "c"},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
+
+	if _, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
+		t.Fatalf("payload json: %v", err)
+	}
+	if payload["result_count"] != float64(2) {
+		t.Fatalf("result_count = %#v, want 2 (merged set capped at max_results)", payload["result_count"])
 	}
 }
