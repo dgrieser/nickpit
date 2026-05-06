@@ -57,12 +57,13 @@ type capturingLLM struct {
 }
 
 type multiAgentLLM struct {
-	mu           sync.Mutex
-	collector    int
-	vectorCalls  map[string]int
-	mergeTools   int
-	mergePayload map[string]any
-	vectorSystem map[string]string
+	mu            sync.Mutex
+	collector     int
+	vectorCalls   map[string]int
+	mergeTools    int
+	mergePayload  map[string]any
+	contextSystem string
+	vectorSystem  map[string]string
 }
 
 func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -78,7 +79,8 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	if len(req.Messages) > 0 {
 		system = req.Messages[0].Content
 	}
-	if strings.Contains(system, "COLLECTOR MODE") {
+	if strings.Contains(system, "CONTEXT MODE") {
+		s.contextSystem = system
 		s.collector++
 		if s.collector == 1 {
 			return &llm.ReviewResponse{
@@ -622,6 +624,12 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 	}
 	if len(trimmed.SupplementalContext) == 0 {
 		t.Fatal("collector context was not attached")
+	}
+	if !strings.Contains(llmClient.contextSystem, "Return a concise inventory") {
+		t.Fatalf("context prompt missing standalone instructions: %q", llmClient.contextSystem)
+	}
+	if strings.Contains(llmClient.contextSystem, "Make sure to output the findings") {
+		t.Fatalf("context prompt should not include review output instructions: %q", llmClient.contextSystem)
 	}
 	if llmClient.mergeTools != 0 {
 		t.Fatalf("merge tools = %d, want 0", llmClient.mergeTools)

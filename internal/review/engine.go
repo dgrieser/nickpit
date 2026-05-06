@@ -404,15 +404,15 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if err != nil {
 		return nil, nil, err
 	}
-	collectorFocus, err := e.loadPrompt("focus_collector.tmpl")
+	contextTemplate, err := e.loadPrompt("context_system.tmpl")
 	if err != nil {
 		return nil, nil, err
 	}
-	baseSystemWithTools, err := e.renderReviewSystemWithFocus(baseTemplate, collectorFocus, req, true)
+	contextSystemWithTools, err := e.renderContextSystem(contextTemplate, req, true)
 	if err != nil {
 		return nil, nil, err
 	}
-	baseSystemNoTools, err := e.renderReviewSystemWithFocus(baseTemplate, collectorFocus, req, false)
+	contextSystemNoTools, err := e.renderContextSystem(contextTemplate, req, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -430,8 +430,8 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	collector, err := e.runReviewAgent(ctx, reviewAgent{
 		name:          "collector",
 		role:          "collector",
-		system:        baseSystemWithTools,
-		noToolsSystem: baseSystemNoTools,
+		system:        contextSystemWithTools,
+		noToolsSystem: contextSystemNoTools,
 		user:          userPrompt,
 		schemaKind:    llm.SchemaKindText,
 		hasTools:      true,
@@ -585,6 +585,20 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, collector
 		schemaKind:    llm.SchemaKindReview,
 		hasTools:      false,
 	}, req)
+}
+
+func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, hasTools bool) (string, error) {
+	systemPrompt, err := llm.RenderPrompt(template, struct {
+		ParallelToolCallGuidance bool
+		HasTools                 bool
+	}{
+		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
+		HasTools:                 hasTools,
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering context system prompt: %w", err)
+	}
+	return systemPrompt, nil
 }
 
 func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req model.ReviewRequest) (reviewAgentResult, error) {
