@@ -329,11 +329,11 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 	if err != nil {
 		return nil, nil, err
 	}
-	systemPrompt, err := e.renderReviewSystem(systemTemplate, "focus_general.tmpl", req, true)
+	systemPrompt, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, true)
 	if err != nil {
 		return nil, nil, err
 	}
-	noToolsSystem, err := e.renderReviewSystem(systemTemplate, "focus_general.tmpl", req, false)
+	noToolsSystem, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, false)
 	if err != nil {
 		return nil, nil, err
 	}
