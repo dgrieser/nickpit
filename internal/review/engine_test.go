@@ -79,7 +79,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	if len(req.Messages) > 0 {
 		system = req.Messages[0].Content
 	}
-	if strings.Contains(system, "CONTEXT MODE") {
+	if strings.Contains(system, "DO NOT produce review findings yourself") {
 		s.contextSystem = system
 		s.collector++
 		if s.collector == 1 {
@@ -625,7 +625,7 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 	if len(trimmed.SupplementalContext) == 0 {
 		t.Fatal("collector context was not attached")
 	}
-	if !strings.Contains(llmClient.contextSystem, "Return a concise inventory") {
+	if !strings.Contains(llmClient.contextSystem, "DO NOT produce review findings yourself") {
 		t.Fatalf("context prompt missing standalone instructions: %q", llmClient.contextSystem)
 	}
 	if strings.Contains(llmClient.contextSystem, "Make sure to output the findings") {
