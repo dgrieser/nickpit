@@ -310,6 +310,7 @@ type reviewAgent struct {
 	system        string
 	noToolsSystem string
 	user          string
+	extraMessages []llm.Message
 	schema        []byte
 	schemaKind    llm.SchemaKind
 	hasTools      bool
@@ -319,6 +320,16 @@ type reviewAgentResult struct {
 	resp               *llm.ReviewResponse
 	run                model.AgentRun
 	reasoningEffort    string
+	contentMessages    []string
+	toolMessages       []llm.Message
+	toolCallHistory    []toolCallHistoryEntry
+	duplicateToolCalls int
+}
+
+type contextAgentResult struct {
+	run                model.AgentRun
+	reasoningEffort    string
+	contentMessages    []string
 	toolMessages       []llm.Message
 	toolCallHistory    []toolCallHistoryEntry
 	duplicateToolCalls int
@@ -423,7 +434,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}
 	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
 
-	collector, err := e.runReviewAgent(ctx, reviewAgent{
+	contextResult, err := e.runContextAgent(ctx, reviewAgent{
 		name:          "collector",
 		role:          "collector",
 		system:        contextSystem,
@@ -437,7 +448,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}
 
 	enriched := model.CloneContext(reviewCtx)
-	enriched.SupplementalContext = append(enriched.SupplementalContext, supplementalFromCollector(collector.resp.RawResponse, collector.toolMessages)...)
+	enriched.SupplementalContext = append(enriched.SupplementalContext, supplementalFromContextAgent(contextResult.toolMessages)...)
 	payload = model.PromptPayloadFromContext(enriched)
 	payload.StyleGuides, err = e.styleGuidesFor(enriched)
 	if err != nil {
@@ -452,21 +463,22 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if req.UseJSONSchema {
 		schema = llm.FindingsSchema
 	}
-	vectorResults, err := e.runVectorAgents(ctx, baseTemplate, enrichedPrompt, schema, req)
+	contextMessages := contextAgentMarkdownMessages(contextResult.contentMessages)
+	vectorResults, err := e.runVectorAgents(ctx, baseTemplate, enrichedPrompt, contextMessages, schema, req)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	mergeResult, err := e.runMergeAgent(ctx, enrichedPrompt, collector, vectorResults, schema, req)
+	mergeResult, err := e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, schema, req)
 	if err != nil {
 		return nil, nil, err
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
-	allRuns = append(allRuns, collector.run)
-	totalUsage := collector.run.TokensUsed
-	toolCalls := collector.run.ToolCalls
-	duplicateToolCalls := collector.run.DuplicateToolCalls
-	effectiveReasoningEffort := collector.reasoningEffort
+	allRuns = append(allRuns, contextResult.run)
+	totalUsage := contextResult.run.TokensUsed
+	toolCalls := contextResult.run.ToolCalls
+	duplicateToolCalls := contextResult.run.DuplicateToolCalls
+	effectiveReasoningEffort := contextResult.reasoningEffort
 	for _, result := range vectorResults {
 		allRuns = append(allRuns, result.run)
 		totalUsage = addTokenUsage(totalUsage, result.run.TokensUsed)
@@ -506,7 +518,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}, enriched, nil
 }
 
-func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, schema []byte, req model.ReviewRequest) ([]reviewAgentResult, error) {
+func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, contextMessages []llm.Message, schema []byte, req model.ReviewRequest) ([]reviewAgentResult, error) {
 	results := make([]reviewAgentResult, len(reviewVectors))
 	errs := make([]error, len(reviewVectors))
 	var wg sync.WaitGroup
@@ -533,6 +545,7 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				system:        system,
 				noToolsSystem: noToolsSystem,
 				user:          userPrompt,
+				extraMessages: contextMessages,
 				schema:        schema,
 				schemaKind:    llm.SchemaKindReview,
 				hasTools:      true,
@@ -550,7 +563,7 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 	return results, nil
 }
 
-func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, collector reviewAgentResult, vectorResults []reviewAgentResult, schema []byte, req model.ReviewRequest) (reviewAgentResult, error) {
+func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, vectorResults []reviewAgentResult, schema []byte, req model.ReviewRequest) (reviewAgentResult, error) {
 	systemTemplate, err := e.loadPrompt("merge_system.tmpl")
 	if err != nil {
 		return reviewAgentResult{}, err
@@ -564,9 +577,9 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, collector
 		return reviewAgentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
 	}
 	mergeUser, err := llm.RenderJSON(map[string]any{
-		"review_context":     json.RawMessage(userPrompt),
-		"collector_response": collector.resp.RawResponse,
-		"vector_reviews":     vectorReviewPayloads(vectorResults),
+		"review_context":      json.RawMessage(userPrompt),
+		"context_agent_notes": contextNotes,
+		"vector_reviews":      vectorReviewPayloads(vectorResults),
 	})
 	if err != nil {
 		return reviewAgentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
@@ -581,6 +594,21 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, collector
 		schemaKind:    llm.SchemaKindReview,
 		hasTools:      false,
 	}, req)
+}
+
+func (e *Engine) runContextAgent(ctx context.Context, agent reviewAgent, req model.ReviewRequest) (contextAgentResult, error) {
+	result, err := e.runReviewAgent(ctx, agent, req)
+	if err != nil {
+		return contextAgentResult{}, err
+	}
+	return contextAgentResult{
+		run:                result.run,
+		reasoningEffort:    result.reasoningEffort,
+		contentMessages:    result.contentMessages,
+		toolMessages:       result.toolMessages,
+		toolCallHistory:    result.toolCallHistory,
+		duplicateToolCalls: result.duplicateToolCalls,
+	}, nil
 }
 
 func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (string, error) {
@@ -604,6 +632,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		{Role: "system", Content: agent.system},
 		{Role: "user", Content: agent.user},
 	}
+	messages = append(messages, agent.extraMessages...)
 	label := fmt.Sprintf("%s: %s", agent.role, agent.name)
 	if agent.role == "reviewer" && strings.HasPrefix(agent.name, "#") {
 		label = "reviewer " + agent.name
@@ -638,6 +667,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	var syntheticFollowup *llm.Message
 	var toolCallHistory []toolCallHistoryEntry
 	var toolMessages []llm.Message
+	var contentMessages []string
 	jsonRetries := 0
 	effectiveReasoningEffort := e.config.ReasoningEffort
 	jsonRepairWithoutTools := false
@@ -691,6 +721,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			llmReq.ReasoningEffort = resp.ReasoningEffort
 		}
 		totalUsage = addTokenUsage(totalUsage, resp.TokensUsed)
+		contentMessages = appendResponseContent(contentMessages, resp)
 
 		if len(resp.ToolCalls) == 0 {
 			break
@@ -714,6 +745,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 				return reviewAgentResult{}, err
 			}
 			totalUsage = addTokenUsage(totalUsage, resp.TokensUsed)
+			contentMessages = appendResponseContent(contentMessages, resp)
 			break
 		}
 		e.logf("Executing tool batch: agent=%s used=%d requested=%d", agent.name, toolCallsUsed, pendingToolCalls)
@@ -734,6 +766,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 				return reviewAgentResult{}, err
 			}
 			totalUsage = addTokenUsage(totalUsage, resp.TokensUsed)
+			contentMessages = appendResponseContent(contentMessages, resp)
 			break
 		}
 		syntheticFollowup = &llm.Message{Role: "user", Content: syntheticToolFollowup(toolCallHistory)}
@@ -745,6 +778,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	return reviewAgentResult{
 		resp:               resp,
 		reasoningEffort:    effectiveReasoningEffort,
+		contentMessages:    contentMessages,
 		toolMessages:       toolMessages,
 		toolCallHistory:    toolCallHistory,
 		duplicateToolCalls: duplicateToolCallsUsed,
@@ -821,32 +855,58 @@ func vectorReviewPayloads(results []reviewAgentResult) []map[string]any {
 	return out
 }
 
-func supplementalFromCollector(raw string, messages []llm.Message) []model.SupplementalFile {
-	out := make([]model.SupplementalFile, 0, len(messages)+1)
-	if strings.TrimSpace(raw) != "" {
-		out = append(out, model.SupplementalFile{
-			Path:    "collector/notes",
-			Content: raw,
-			Kind:    "collector_notes",
-			Reason:  "context gathered by collector agent",
-		})
-	}
+func supplementalFromContextAgent(messages []llm.Message) []model.SupplementalFile {
+	out := make([]model.SupplementalFile, 0, len(messages))
 	for i, msg := range messages {
-		path := collectorToolPath(msg.Content)
+		path := contextToolPath(msg.Content)
 		if path == "" {
-			path = fmt.Sprintf("collector/tool-%d", i+1)
+			path = fmt.Sprintf("context/tool-%d", i+1)
 		}
 		out = append(out, model.SupplementalFile{
 			Path:    path,
 			Content: msg.Content,
-			Kind:    "collector_tool_result",
-			Reason:  "tool result gathered by collector agent",
+			Kind:    "context_tool_result",
+			Reason:  "tool result gathered by context agent",
 		})
 	}
 	return out
 }
 
-func collectorToolPath(content string) string {
+func appendResponseContent(contentMessages []string, resp *llm.ReviewResponse) []string {
+	if resp == nil {
+		return contentMessages
+	}
+	if content := strings.TrimSpace(resp.RawResponse); content != "" {
+		contentMessages = append(contentMessages, content)
+	}
+	return contentMessages
+}
+
+func contextAgentMarkdownMessages(contentMessages []string) []llm.Message {
+	content := contextAgentMarkdownContent(contentMessages)
+	if content == "" {
+		return nil
+	}
+	return []llm.Message{{
+		Role:    "user",
+		Content: content,
+	}}
+}
+
+func contextAgentMarkdownContent(contentMessages []string) string {
+	var merged []string
+	for _, content := range contentMessages {
+		if content = strings.TrimSpace(content); content != "" {
+			merged = append(merged, content)
+		}
+	}
+	if len(merged) == 0 {
+		return ""
+	}
+	return "## Context Agent Notes\n\n" + strings.Join(merged, "\n\n---\n\n")
+}
+
+func contextToolPath(content string) string {
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(content), &payload); err != nil {
 		return ""

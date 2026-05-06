@@ -63,6 +63,7 @@ type multiAgentLLM struct {
 	mergeTools    int
 	mergePayload  map[string]any
 	contextSystem string
+	vectorContext map[string]string
 	vectorSystem  map[string]string
 }
 
@@ -74,6 +75,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if s.vectorSystem == nil {
 		s.vectorSystem = make(map[string]string)
+	}
+	if s.vectorContext == nil {
+		s.vectorContext = make(map[string]string)
 	}
 	system := ""
 	if len(req.Messages) > 0 {
@@ -88,7 +92,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 			}, nil
 		}
 		return &llm.ReviewResponse{
-			RawResponse: "collector inspected internal listing",
+			RawResponse: "collector inspected internal listing\n\n## Assumed Patch Purpose\nThis is an assumption: the patch appears intended to update review context collection.",
 			TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 		}, nil
 	}
@@ -96,6 +100,11 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		name := vectorNameFromSystem(system)
 		s.vectorCalls[name]++
 		s.vectorSystem[name] = system
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(msg.Content, "## Context Agent Notes") {
+				s.vectorContext[name] = msg.Content
+			}
+		}
 		if s.vectorCalls[name] == 1 {
 			return &llm.ReviewResponse{
 				ToolCalls: []llm.ToolCall{{ID: "tool_" + name, Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
@@ -625,6 +634,9 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 	if len(trimmed.SupplementalContext) == 0 {
 		t.Fatal("collector context was not attached")
 	}
+	if trimmed.SupplementalContext[0].Kind != "context_tool_result" {
+		t.Fatalf("first supplemental context = %#v, want context tool result", trimmed.SupplementalContext[0])
+	}
 	if !strings.Contains(llmClient.contextSystem, "DO NOT produce review findings yourself") {
 		t.Fatalf("context prompt missing standalone instructions: %q", llmClient.contextSystem)
 	}
@@ -633,6 +645,12 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 	}
 	if llmClient.mergeTools != 0 {
 		t.Fatalf("merge tools = %d, want 0", llmClient.mergeTools)
+	}
+	if _, ok := llmClient.mergePayload["collector_response"]; ok {
+		t.Fatalf("merge payload should not include collector_response: %#v", llmClient.mergePayload)
+	}
+	if notes, _ := llmClient.mergePayload["context_agent_notes"].(string); !strings.Contains(notes, "## Context Agent Notes") {
+		t.Fatalf("merge payload context_agent_notes = %#v", llmClient.mergePayload["context_agent_notes"])
 	}
 	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
 	if !ok || len(vectorReviews) != 6 {
@@ -648,6 +666,10 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 		}
 		if !strings.Contains(system, "## FOCUS ON ") {
 			t.Fatalf("%s prompt missing focus snippet", vector.name)
+		}
+		contextNote := llmClient.vectorContext[vector.name]
+		if !strings.Contains(contextNote, "## Context Agent Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
+			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
 		}
 	}
 }
