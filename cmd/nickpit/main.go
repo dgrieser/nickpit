@@ -562,6 +562,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
+	engine.SetMultiAgentReview(true)
 	result, trimmedCtx, err := engine.RunWithContext(ctx, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))

@@ -13,6 +13,7 @@ It uses a normalized review context, a provider-compatible chat completions clie
 - GitHub PR and GitLab MR review via direct REST clients
 - OpenAI-compatible chat completions client
 - Structured JSON findings with priority filtering and overall verdicts
+- Default multi-agent review with collector, specialist reviewers, merge, and verification stages
 - Prompt-embedded JSON output schema by default, with optional API-enforced JSON schema mode
 - Retrieval commands for files, slices, symbols, callers, and callees
 - Terminal and JSON output modes
@@ -84,6 +85,8 @@ By default, NickPit includes the expected JSON schema directly in the system pro
 Use `--use-json-schema` to send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
 
 NickPit can lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`.
+
+Normal reviews run a collector agent first, then six specialist reviewers in parallel: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Their findings are merged by a final no-tools agent before the verifier runs. Tool-call limits apply independently to each collector, reviewer, and verifier agent. JSON output includes an `agent_runs` summary with per-agent token and tool usage.
 
 ### Filtering by Priority
 

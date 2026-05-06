@@ -50,6 +50,7 @@ type ReviewResult struct {
 	OverallCorrectness     string     `json:"overall_correctness"`
 	OverallExplanation     string     `json:"overall_explanation"`
 	OverallConfidenceScore float64    `json:"overall_confidence_score"`
+	AgentRuns              []AgentRun `json:"agent_runs,omitempty"`
 	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
 	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used,omitempty"`
 	Mode                   string     `json:"mode,omitempty"`
@@ -64,6 +65,15 @@ type ReviewResult struct {
 	MaxDuplicateToolCalls  int        `json:"max_duplicate_tool_calls,omitempty"`
 	ToolCalls              int        `json:"tool_calls,omitempty"`
 	DuplicateToolCalls     int        `json:"duplicate_tool_calls"`
+}
+
+type AgentRun struct {
+	Name               string     `json:"name"`
+	Role               string     `json:"role"`
+	Findings           int        `json:"findings,omitempty"`
+	ToolCalls          int        `json:"tool_calls,omitempty"`
+	DuplicateToolCalls int        `json:"duplicate_tool_calls,omitempty"`
+	TokensUsed         TokenUsage `json:"tokens_used,omitempty"`
 }
 
 type ReviewContext struct {
@@ -150,7 +160,7 @@ type Finding struct {
 	ConfidenceScore float64              `json:"confidence_score"`
 	Priority        *int                 `json:"priority,omitempty"`
 	CodeLocation    CodeLocation         `json:"code_location"`
-	Suggestion      *Suggestion          `json:"suggestion,omitempty"`
+	Suggestions     []Suggestion         `json:"suggestions,omitempty"`
 	Verification    *FindingVerification `json:"verification,omitempty"`
 }
 

@@ -1,0 +1,13 @@
+## FOCUS ON PERFORMANCE
+Focus only on performance issues, including algorithmic cost, allocation, I/O, concurrency, caching, batching, and avoidable remote or LLM calls.
+Return only findings for this focus area. Do not include findings whose main issue belongs to another focus area.
+
+When reviewing a patch, ask yourself:
+- Are there avoidable algorithmic slowdowns on realistic inputs?
+- Does the change add unnecessary allocations or large copies?
+- Are I/O, network, database, filesystem, or LLM calls batched and bounded appropriately?
+- Are caches, indexes, or memoization used correctly where existing patterns require them?
+- Are concurrent paths safe and efficient under load?
+- Are expensive operations avoided in hot paths?
+- Are performance related edge cases handled for large repositories, large diffs, or high finding counts?
+- Are performance improvements implemented without harming correctness, readability, or maintainability?
