@@ -144,3 +144,36 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 		t.Fatalf("style guide content = %.80q", content)
 	}
 }
+
+func TestVerifyIncludesSuggestions(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	finding := model.Finding{
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Suggestions: []model.Suggestion{
+			{Body: "replacement one", LineRange: model.LineRange{Start: 1, End: 1}},
+			{Body: "replacement two", LineRange: model.LineRange{Start: 2, End: 3}},
+		},
+	}
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal user prompt: %v", err)
+	}
+	verifyFinding := payload["finding"].(map[string]any)
+	suggestions, ok := verifyFinding["suggestions"].([]any)
+	if !ok || len(suggestions) != 2 {
+		t.Fatalf("suggestions = %#v", verifyFinding["suggestions"])
+	}
+	if first := suggestions[0].(map[string]any); first["body"] != "replacement one" {
+		t.Fatalf("first suggestion = %#v", first)
+	}
+}

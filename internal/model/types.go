@@ -160,7 +160,7 @@ type Finding struct {
 	ConfidenceScore float64              `json:"confidence_score"`
 	Priority        *int                 `json:"priority,omitempty"`
 	CodeLocation    CodeLocation         `json:"code_location"`
-	Suggestion      *Suggestion          `json:"suggestion,omitempty"`
+	Suggestions     []Suggestion         `json:"suggestions,omitempty"`
 	Verification    *FindingVerification `json:"verification,omitempty"`
 }
 

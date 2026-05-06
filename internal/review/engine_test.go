@@ -502,7 +502,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "call multiple tools in parallel"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing parallel guidance: %q", req.Messages[0].Content)
 	}
-	if want := "generate a `suggestion` block, including `body`, `line_range.start` and `line_range.end`"; !strings.Contains(req.Messages[0].Content, want) {
+	if want := "generate one or more `suggestions` entries"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing suggestion instructions: %q", req.Messages[0].Content)
 	}
 	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.Messages[0].Content, want) {
@@ -517,7 +517,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if strings.Contains(req.Messages[0].Content, "[P1] Example title") {
 		t.Fatalf("system prompt should not include priority prefix in example title: %q", req.Messages[0].Content)
 	}
-	if want := "\"suggestion\""; !strings.Contains(req.Messages[0].Content, want) {
+	if want := "\"suggestions\""; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing example suggestion JSON: %q", req.Messages[0].Content)
 	}
 	var payload map[string]any

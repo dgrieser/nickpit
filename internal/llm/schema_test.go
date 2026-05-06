@@ -28,7 +28,7 @@ func TestFindingsExamplePromptSnippetOmitsFollowUpRequests(t *testing.T) {
 	}
 }
 
-func TestFindingsSchemaIncludesSuggestionBlock(t *testing.T) {
+func TestFindingsSchemaIncludesSuggestions(t *testing.T) {
 	var schema map[string]any
 	if err := json.Unmarshal(FindingsSchema, &schema); err != nil {
 		t.Fatalf("unmarshal schema: %v", err)
@@ -38,9 +38,16 @@ func TestFindingsSchemaIncludesSuggestionBlock(t *testing.T) {
 	findings := properties["findings"].(map[string]any)
 	items := findings["items"].(map[string]any)
 	findingProps := items["properties"].(map[string]any)
-	suggestion, ok := findingProps["suggestion"].(map[string]any)
+	suggestions, ok := findingProps["suggestions"].(map[string]any)
 	if !ok {
-		t.Fatalf("suggestion schema missing: %#v", findingProps["suggestion"])
+		t.Fatalf("suggestions schema missing: %#v", findingProps["suggestions"])
+	}
+	if suggestions["type"] != "array" {
+		t.Fatalf("suggestions schema type = %#v", suggestions["type"])
+	}
+	suggestion, ok := suggestions["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("suggestions.items schema missing: %#v", suggestions["items"])
 	}
 
 	suggestionProps := suggestion["properties"].(map[string]any)
@@ -60,12 +67,15 @@ func TestFindingsSchemaIncludesSuggestionBlock(t *testing.T) {
 	}
 }
 
-func TestFindingsExamplePromptSnippetIncludesSuggestionBlock(t *testing.T) {
+func TestFindingsExamplePromptSnippetIncludesSuggestions(t *testing.T) {
 	snippet := FindingsExamplePromptSnippet()
-	for _, required := range []string{`"suggestion"`, `"body": "replacement code"`, `"line_range"`, `"start": 10`, `"end": 12`} {
+	for _, required := range []string{`"suggestions"`, `"body": "replacement code"`, `"line_range"`, `"start": 10`, `"end": 12`} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}
+	}
+	if strings.Contains(snippet, `"suggestion"`) {
+		t.Fatalf("snippet unexpectedly contains singular suggestion: %s", snippet)
 	}
 }
 

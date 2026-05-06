@@ -283,13 +283,13 @@ func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding m
 		Body         string             `json:"body"`
 		Priority     int                `json:"priority"`
 		CodeLocation model.CodeLocation `json:"code_location"`
-		Suggestion   *model.Suggestion  `json:"suggestion,omitempty"`
+		Suggestions  []model.Suggestion `json:"suggestions,omitempty"`
 	}{
 		Title:        finding.Title,
 		Body:         finding.Body,
 		Priority:     model.PriorityRank(finding.Priority),
 		CodeLocation: finding.CodeLocation,
-		Suggestion:   finding.Suggestion,
+		Suggestions:  finding.Suggestions,
 	}
 	encoded, err := json.Marshal(findingForVerify)
 	if err != nil {
