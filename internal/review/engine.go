@@ -917,21 +917,23 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
 
-	regexPattern := args.Query
-	if !args.CaseSensitive {
-		regexPattern = "(?i)" + regexPattern
-	}
-	if compiled, compileErr := regexp.Compile(regexPattern); compileErr == nil {
-		e.logf("Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
-		regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, args.ContextLines, args.MaxResults)
-		if err != nil {
-			return toolError(normalizedPath, "retrieval_failed", err.Error())
+	if hasRegexMetachar(args.Query) {
+		regexPattern := args.Query
+		if !args.CaseSensitive {
+			regexPattern = "(?i)" + regexPattern
 		}
-		merged := mergeSearchResults(results.Results, regexResults.Results, args.MaxResults)
-		results.Results = merged
-		results.ResultCount = len(merged)
-	} else {
-		e.logf("Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
+		if compiled, compileErr := regexp.Compile(regexPattern); compileErr == nil {
+			e.logf("Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
+			regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, args.ContextLines, args.MaxResults)
+			if err != nil {
+				return toolError(normalizedPath, "retrieval_failed", err.Error())
+			}
+			merged := mergeSearchResults(results.Results, regexResults.Results, args.MaxResults)
+			results.Results = merged
+			results.ResultCount = len(merged)
+		} else {
+			e.logf("Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
+		}
 	}
 
 	return mustToolResultJSON(map[string]any{
@@ -943,6 +945,10 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		"result_count":   results.ResultCount,
 		"results":        results.Results,
 	})
+}
+
+func hasRegexMetachar(query string) bool {
+	return strings.ContainsAny(query, `\.+*?()|[]{}^$`)
 }
 
 func mergeSearchResults(literal, regex []retrieval.SearchResult, maxResults int) []retrieval.SearchResult {

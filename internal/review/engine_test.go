@@ -1769,7 +1769,7 @@ func TestEngineExecutesSearchToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPaths := []string{"search::ttlExtenders:5:20:false", "search_regex::(?i)ttlExtenders:5:20"}
+	wantPaths := []string{"search::ttlExtenders:5:20:false"}
 	if !reflect.DeepEqual(retrievalEngine.paths, wantPaths) {
 		t.Fatalf("retrieval paths = %#v, want %#v", retrievalEngine.paths, wantPaths)
 	}
@@ -2351,7 +2351,7 @@ func TestEngineDedupesOverlappingRegexAndLiteralHits(t *testing.T) {
 		resps: []*llm.ReviewResponse{
 			{
 				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"userName"}`},
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"user(Name)?"}`},
 				},
 			},
 			{
@@ -2425,7 +2425,7 @@ func TestEngineMergeTruncatesToMaxResults(t *testing.T) {
 		resps: []*llm.ReviewResponse{
 			{
 				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"x","max_results":2}`},
+					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"x.*","max_results":2}`},
 				},
 			},
 			{
