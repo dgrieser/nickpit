@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 type scriptedVerifyLLM struct {
 	mu        sync.Mutex
 	calls     int
+	requests  []*llm.ReviewRequest
 	responses []*llm.ReviewResponse
 	err       error
 }
@@ -23,6 +25,7 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls++
+	s.requests = append(s.requests, req)
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -103,10 +106,41 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	if len(verifications) != 1 {
 		t.Fatalf("verifications len = %d", len(verifications))
 	}
-	if !strings.Contains(verifications[0].Remarks, "verification failed") {
-		t.Fatalf("remarks = %q", verifications[0].Remarks)
+	if verifications[0] != nil {
+		t.Fatalf("verification = %#v, want nil", verifications[0])
 	}
-	if verifications[0].ConfidenceScore != 0 {
-		t.Fatalf("confidence = %f, want 0", verifications[0].ConfidenceScore)
+}
+
+func TestVerifyIncludesStyleGuides(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	finding := model.Finding{
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+	}
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	if len(llmClient.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(llmClient.requests))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal user prompt: %v", err)
+	}
+	styleGuides, ok := payload["style_guides"].([]any)
+	if !ok || len(styleGuides) != 1 {
+		t.Fatalf("style guides = %#v", payload["style_guides"])
+	}
+	goStyleGuide := styleGuides[0].(map[string]any)
+	if goStyleGuide["language"] != "go" {
+		t.Fatalf("style guide language = %#v", goStyleGuide["language"])
+	}
+	if content, _ := goStyleGuide["content"].(string); !strings.Contains(content, "# Go Style Guide") {
+		t.Fatalf("style guide content = %.80q", content)
 	}
 }

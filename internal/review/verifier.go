@@ -61,7 +61,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := buildVerifyUserPrompt(req.ReviewCtx, req.Finding)
+	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -188,8 +188,8 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	return resp.Verification, usage, nil
 }
 
-func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]model.FindingVerification, model.TokenUsage, error) {
-	verifications := make([]model.FindingVerification, len(findings))
+func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, error) {
+	verifications := make([]*model.FindingVerification, len(findings))
 	if len(findings) == 0 {
 		return verifications, model.TokenUsage{}, nil
 	}
@@ -234,15 +234,9 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 			mu.Unlock()
 			if err != nil {
 				e.logf("Verify failed: index=%d title=%q error=%v", idx, f.Title, err)
-				verifications[idx] = model.FindingVerification{
-					Valid:           true,
-					Priority:        model.PriorityRank(f.Priority),
-					ConfidenceScore: 0,
-					Remarks:         fmt.Sprintf("verification failed: %v", err),
-				}
 				return
 			}
-			verifications[idx] = *verification
+			verifications[idx] = verification
 		}(i, finding)
 	}
 	wg.Wait()
@@ -268,8 +262,13 @@ func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {
 	return llm.VerifyExamplePromptSnippet()
 }
 
-func buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding) (string, error) {
+func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
+	var err error
+	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
+	if err != nil {
+		return "", err
+	}
 	base, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("verify: marshalling review payload: %w", err)

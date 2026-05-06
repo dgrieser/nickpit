@@ -588,8 +588,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			return verifyErr
 		}
 		for i := range result.Findings {
-			v := verifications[i]
-			result.Findings[i].Verification = &v
+			result.Findings[i].Verification = verifications[i]
 		}
 		result.VerifyTokensUsed = verifyUsage
 	}
