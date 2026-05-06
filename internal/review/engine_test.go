@@ -51,11 +51,103 @@ func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse,
 }
 
 type capturingLLM struct {
+	mu    sync.Mutex
 	reqs  []*llm.ReviewRequest
 	resps []*llm.ReviewResponse
 }
 
+type multiAgentLLM struct {
+	mu           sync.Mutex
+	collector    int
+	vectorCalls  map[string]int
+	mergeTools   int
+	mergePayload map[string]any
+	vectorSystem map[string]string
+}
+
+func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vectorCalls == nil {
+		s.vectorCalls = make(map[string]int)
+	}
+	if s.vectorSystem == nil {
+		s.vectorSystem = make(map[string]string)
+	}
+	system := ""
+	if len(req.Messages) > 0 {
+		system = req.Messages[0].Content
+	}
+	if strings.Contains(system, "COLLECTOR MODE") {
+		s.collector++
+		if s.collector == 1 {
+			return &llm.ReviewResponse{
+				ToolCalls: []llm.ToolCall{{ID: "collector_call", Name: "list_files", Arguments: `{"path":"internal","depth":1}`}},
+			}, nil
+		}
+		return &llm.ReviewResponse{
+			RawResponse: "collector inspected internal listing",
+			TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		}, nil
+	}
+	if strings.Contains(system, "SPECIALIST REVIEW VECTOR:") {
+		name := vectorNameFromSystem(system)
+		s.vectorCalls[name]++
+		s.vectorSystem[name] = system
+		if s.vectorCalls[name] == 1 {
+			return &llm.ReviewResponse{
+				ToolCalls: []llm.ToolCall{{ID: "tool_" + name, Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
+			}, nil
+		}
+		return &llm.ReviewResponse{
+			Findings: []model.Finding{{
+				Title:           "Fix " + name,
+				Body:            "body",
+				ConfidenceScore: 0.9,
+				Priority:        intPtr(2),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+			}},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     name,
+			OverallConfidenceScore: 0.9,
+			TokensUsed:             model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
+		}, nil
+	}
+	s.mergeTools = len(req.Tools)
+	if len(req.Messages) > 1 {
+		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
+	}
+	return &llm.ReviewResponse{
+		Findings: []model.Finding{{
+			Title:           "Fix merged issue",
+			Body:            "body",
+			ConfidenceScore: 0.95,
+			Priority:        intPtr(1),
+			CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		}},
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     "merged",
+		OverallConfidenceScore: 0.95,
+		TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
+	}, nil
+}
+
+func vectorNameFromSystem(system string) string {
+	marker := "SPECIALIST REVIEW VECTOR:"
+	idx := strings.Index(system, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(system[idx+len(marker):])
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	return strings.TrimSpace(rest)
+}
+
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cloned := *req
 	if len(req.Messages) > 0 {
 		cloned.Messages = cloneTestMessages(req.Messages)
@@ -495,6 +587,53 @@ func TestEngineCanDisableParallelToolCallsAndGuidance(t *testing.T) {
 	}
 	if strings.Contains(req.Messages[0].Content, "call all required tools in the same turn rather than serializing them") {
 		t.Fatalf("system prompt should omit parallel guidance: %q", req.Messages[0].Content)
+	}
+}
+
+func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T) {
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	result, trimmed, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Title != "Fix merged issue" {
+		t.Fatalf("merged findings = %#v", result.Findings)
+	}
+	if len(result.AgentRuns) != 8 {
+		t.Fatalf("agent runs = %d, want collector + 6 reviewers + merge", len(result.AgentRuns))
+	}
+	if result.ToolCalls != 7 {
+		t.Fatalf("tool calls = %d, want collector + one per vector", result.ToolCalls)
+	}
+	if len(trimmed.SupplementalContext) == 0 {
+		t.Fatal("collector context was not attached")
+	}
+	if llmClient.mergeTools != 0 {
+		t.Fatalf("merge tools = %d, want 0", llmClient.mergeTools)
+	}
+	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
+	if !ok || len(vectorReviews) != 6 {
+		t.Fatalf("merge payload vector_reviews = %#v", llmClient.mergePayload["vector_reviews"])
+	}
+	for _, vector := range reviewVectors {
+		if llmClient.vectorCalls[vector.name] != 2 {
+			t.Fatalf("%s calls = %d, want tool + final", vector.name, llmClient.vectorCalls[vector.name])
+		}
+		system := llmClient.vectorSystem[vector.name]
+		if !strings.Contains(system, "You are acting as a senior engineer performing a thorough code review") {
+			t.Fatalf("%s prompt lost base review prompt", vector.name)
+		}
+		if !strings.Contains(system, "SPECIALIST REVIEW VECTOR: "+vector.name) {
+			t.Fatalf("%s prompt missing vector suffix", vector.name)
+		}
 	}
 }
 
