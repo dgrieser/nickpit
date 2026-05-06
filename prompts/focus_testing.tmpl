@@ -1,0 +1,13 @@
+## FOCUS ON TESTING
+Focus only on testing issues that materially affect confidence in changed behavior, failure modes, regressions, and user-visible workflows.
+Return only findings for this focus area. Do not include findings whose main issue belongs to another focus area.
+
+When reviewing a patch, ask yourself:
+- Are changed behaviors covered by focused tests?
+- Are important edge cases and failure modes tested?
+- Are regressions likely because existing tests no longer cover the affected path?
+- Do tests verify user-visible output, API contracts, or persisted formats when those change?
+- Are concurrency, error, retry, and fallback paths tested when the patch changes them?
+- Are fixtures and assertions specific enough to catch the bug being guarded?
+- Are tests aligned with existing project conventions?
+- Are testing additions useful without being brittle or unnecessarily broad?

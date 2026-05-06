@@ -329,11 +329,11 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 	if err != nil {
 		return nil, nil, err
 	}
-	systemPrompt, err := e.renderReviewSystem(systemTemplate, req, true)
+	systemPrompt, err := e.renderReviewSystem(systemTemplate, "focus_general.tmpl", req, true)
 	if err != nil {
 		return nil, nil, err
 	}
-	noToolsSystem, err := e.renderReviewSystem(systemTemplate, req, false)
+	noToolsSystem, err := e.renderReviewSystem(systemTemplate, "focus_general.tmpl", req, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -388,15 +388,15 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 }
 
 var reviewVectors = []struct {
-	name        string
-	description string
+	name      string
+	focusFile string
 }{
-	{"Code Quality", "Focus only on code quality and correctness, including logic errors, broken behavior, maintainability risks, and concrete edge cases."},
-	{"Security", "Focus only on security issues, including trust boundaries, injection, secrets, authentication, authorization, unsafe parsing, and data exposure."},
-	{"Architecture", "Focus only on architecture, boundaries, API shape, data flow, coupling, compatibility, and whether the design fits this codebase."},
-	{"Performance", "Focus only on performance issues, including algorithmic cost, allocation, I/O, concurrency, caching, and avoidable remote or LLM calls."},
-	{"Testing", "Focus only on test coverage gaps that materially affect confidence in changed behavior, failure modes, and regressions."},
-	{"Best Practices", "Focus only on project conventions, language best practices, idioms, error handling, and avoidable complexity that is actionable."},
+	{"Code Quality", "focus_code_quality.tmpl"},
+	{"Security", "focus_security.tmpl"},
+	{"Architecture", "focus_architecture.tmpl"},
+	{"Performance", "focus_performance.tmpl"},
+	{"Testing", "focus_testing.tmpl"},
+	{"Best Practices", "focus_best_practices.tmpl"},
 }
 
 func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
@@ -404,11 +404,15 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if err != nil {
 		return nil, nil, err
 	}
-	baseSystemWithTools, err := e.renderReviewSystem(baseTemplate, req, true)
+	collectorFocus, err := e.loadPrompt("focus_collector.tmpl")
 	if err != nil {
 		return nil, nil, err
 	}
-	baseSystemNoTools, err := e.renderReviewSystem(baseTemplate, req, false)
+	baseSystemWithTools, err := e.renderReviewSystemWithFocus(baseTemplate, collectorFocus, req, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	baseSystemNoTools, err := e.renderReviewSystemWithFocus(baseTemplate, collectorFocus, req, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -423,13 +427,11 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}
 	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
 
-	collectorSystem := baseSystemWithTools + "\n\n" + collectorPromptSuffix()
-	collectorNoToolsSystem := baseSystemNoTools + "\n\n" + collectorPromptSuffix()
 	collector, err := e.runReviewAgent(ctx, reviewAgent{
 		name:          "collector",
 		role:          "collector",
-		system:        collectorSystem,
-		noToolsSystem: collectorNoToolsSystem,
+		system:        baseSystemWithTools,
+		noToolsSystem: baseSystemNoTools,
 		user:          userPrompt,
 		schemaKind:    llm.SchemaKindText,
 		hasTools:      true,
@@ -454,7 +456,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if req.UseJSONSchema {
 		schema = llm.FindingsSchema
 	}
-	vectorResults, err := e.runVectorAgents(ctx, baseSystemWithTools, baseSystemNoTools, enrichedPrompt, schema, req)
+	vectorResults, err := e.runVectorAgents(ctx, baseTemplate, enrichedPrompt, schema, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -508,19 +510,27 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}, enriched, nil
 }
 
-func (e *Engine) runVectorAgents(ctx context.Context, baseSystem, baseNoToolsSystem, userPrompt string, schema []byte, req model.ReviewRequest) ([]reviewAgentResult, error) {
+func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, schema []byte, req model.ReviewRequest) ([]reviewAgentResult, error) {
 	results := make([]reviewAgentResult, len(reviewVectors))
 	errs := make([]error, len(reviewVectors))
 	var wg sync.WaitGroup
 	for i, vector := range reviewVectors {
 		wg.Add(1)
 		go func(idx int, vector struct {
-			name        string
-			description string
+			name      string
+			focusFile string
 		}) {
 			defer wg.Done()
-			system := baseSystem + "\n\n" + vectorPromptSuffix(vector.name, vector.description)
-			noToolsSystem := baseNoToolsSystem + "\n\n" + vectorPromptSuffix(vector.name, vector.description)
+			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, true)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
+			noToolsSystem, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, false)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
 			result, err := e.runReviewAgent(ctx, reviewAgent{
 				name:          vector.name,
 				role:          "reviewer",
@@ -741,15 +751,25 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	}, nil
 }
 
-func (e *Engine) renderReviewSystem(template string, req model.ReviewRequest, hasTools bool) (string, error) {
+func (e *Engine) renderReviewSystem(template, focusName string, req model.ReviewRequest, hasTools bool) (string, error) {
+	focusSnippet, err := e.loadPrompt(focusName)
+	if err != nil {
+		return "", err
+	}
+	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools)
+}
+
+func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
 	systemPrompt, err := llm.RenderPrompt(template, struct {
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
 		HasTools                 bool
+		FocusSnippet             string
 	}{
 		OutputSchemaSnippet:      reviewOutputSchemaSnippetFor(req.UseJSONSchema),
 		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
 		HasTools:                 hasTools,
+		FocusSnippet:             strings.TrimSpace(focusSnippet),
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering review system prompt: %w", err)
@@ -776,25 +796,6 @@ func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([
 	}
 	finalMessages[0] = llm.Message{Role: "system", Content: systemPrompt}
 	return finalMessages, nil
-}
-
-func collectorPromptSuffix() string {
-	var b strings.Builder
-	b.WriteString("## COLLECTOR MODE\n")
-	b.WriteString("Do not produce review findings. Gather context for later specialist reviewers.\n")
-	b.WriteString("The following vectors will be reviewed: ")
-	for i, vector := range reviewVectors {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(vector.name)
-	}
-	b.WriteString(".\nUse tools to collect all relevant files, snippets, listings, callers, callees, and searches needed for comprehensive review across all vectors. Return a concise inventory of what you inspected and why it matters.")
-	return b.String()
-}
-
-func vectorPromptSuffix(name, description string) string {
-	return fmt.Sprintf("## SPECIALIST REVIEW VECTOR: %s\n%s\nReturn only findings for this vector. Do not include findings whose main issue belongs to another vector.", name, description)
 }
 
 func vectorReviewPayloads(results []reviewAgentResult) []map[string]any {

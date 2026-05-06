@@ -1,0 +1,13 @@
+## FOCUS ON CODE QUALITY AND CORRECTNESS
+Focus only on code quality and correctness issues, including logic errors, broken behavior, maintainability risks, concrete edge cases, and regressions introduced by the patch.
+Return only findings for this focus area. Do not include findings whose main issue belongs to another focus area.
+
+When reviewing a patch, ask yourself:
+- Does the changed code work correctly in the concrete affected paths?
+- Are edge cases and failure modes handled?
+- Is error handling appropriate for callers and users?
+- Does the implementation preserve existing behavior outside the intended change?
+- Is the code readable and maintainable?
+- Are abstractions and control flow simple enough for the problem?
+- Are data conversions, nil handling, and boundary conditions correct?
+- Are correctness controls implemented without harming readability or introducing unnecessary complexity?

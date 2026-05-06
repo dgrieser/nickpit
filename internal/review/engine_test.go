@@ -90,7 +90,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 			TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 		}, nil
 	}
-	if strings.Contains(system, "SPECIALIST REVIEW VECTOR:") {
+	if strings.Contains(system, "## FOCUS ON ") {
 		name := vectorNameFromSystem(system)
 		s.vectorCalls[name]++
 		s.vectorSystem[name] = system
@@ -133,7 +133,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 }
 
 func vectorNameFromSystem(system string) string {
-	marker := "SPECIALIST REVIEW VECTOR:"
+	marker := "## FOCUS ON "
 	idx := strings.Index(system, marker)
 	if idx < 0 {
 		return ""
@@ -142,7 +142,14 @@ func vectorNameFromSystem(system string) string {
 	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
 		rest = rest[:nl]
 	}
-	return strings.TrimSpace(rest)
+	switch strings.TrimSpace(rest) {
+	case "CODE QUALITY AND CORRECTNESS":
+		return "Code Quality"
+	case "BEST PRACTICES":
+		return "Best Practices"
+	default:
+		return strings.Title(strings.ToLower(strings.TrimSpace(rest)))
+	}
 }
 
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -631,8 +638,8 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 		if !strings.Contains(system, "You are acting as a senior engineer performing a thorough code review") {
 			t.Fatalf("%s prompt lost base review prompt", vector.name)
 		}
-		if !strings.Contains(system, "SPECIALIST REVIEW VECTOR: "+vector.name) {
-			t.Fatalf("%s prompt missing vector suffix", vector.name)
+		if !strings.Contains(system, "## FOCUS ON ") {
+			t.Fatalf("%s prompt missing focus snippet", vector.name)
 		}
 	}
 }

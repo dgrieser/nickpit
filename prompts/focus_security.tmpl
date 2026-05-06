@@ -1,0 +1,14 @@
+## FOCUS ON SECURITY
+Focus only on security issues, including trust boundaries, injection, secrets, authentication, authorization, unsafe parsing, and data exposure.
+Return only findings for this focus area. Do not include findings whose main issue belongs to another focus area.
+
+When reviewing a patch, ask yourself:
+- Are there security concerns?
+- Are trust boundaries violated?
+- Are there injection vulnerabilities when parsing untrusted inputs?
+- Are secrets and other sensitive data properly stored, tightly access-controlled and protected in transit?
+- Is error handling hardened to prevent leakage of sensitive information?
+- Is authentication using secure credentials, strong session management and brute force protection?
+- Is authorization enforced at every endpoint and object, making sure users can only access explicitly granted resources and actions?
+- Are security related edge cases handled?
+- Are security controls implemented without harming code readability or maintainability or introducing unnecessary complexity?

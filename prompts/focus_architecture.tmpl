@@ -1,0 +1,13 @@
+## FOCUS ON ARCHITECTURE
+Focus only on architecture issues, including module boundaries, API shape, data flow, coupling, compatibility, ownership, and whether the design fits this codebase.
+Return only findings for this focus area. Do not include findings whose main issue belongs to another focus area.
+
+When reviewing a patch, ask yourself:
+- Does the design fit existing project architecture and ownership boundaries?
+- Are public APIs, types, and interfaces shaped for the actual caller needs?
+- Does data flow remain clear and consistent across layers?
+- Does the change introduce avoidable coupling between unrelated subsystems?
+- Are compatibility expectations preserved for existing callers and integrations?
+- Are responsibilities placed in the right package, module, or abstraction?
+- Are architecture related edge cases and failure modes handled at the right layer?
+- Are architectural controls implemented without harming readability or introducing unnecessary complexity?
