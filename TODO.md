@@ -1,5 +1,6 @@
 # TODO
 
+- patch is incorrect on any review agent with confidence > 0.75 should programmatically add "patch is incorrect"
 - Extract a tool template to reuse in all prompts
 - Instruct review agents about the previous context agent run
 - Cleanup: Reasoning flickering, Reasoning block should be 10 lines even if less lines of content
