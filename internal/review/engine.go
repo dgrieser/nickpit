@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 )
 
@@ -947,7 +947,7 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 	guides := make([]model.StyleGuide, 0, len(languages))
 	seenFiles := make(map[string]struct{})
 	for _, language := range languages {
-		name, ok := builtInStyleGuideFiles[language]
+		name, ok := mappings.StyleGuideFile(language)
 		if !ok {
 			continue
 		}
@@ -967,20 +967,6 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 	return guides, nil
 }
 
-var builtInStyleGuideFiles = map[string]string{
-	"go":         "styleguides/go.md",
-	"python":     "styleguides/python.md",
-	"javascript": "styleguides/javascript.md",
-	"typescript": "styleguides/typescript.md",
-	"html":       "styleguides/html-css.md",
-	"css":        "styleguides/html-css.md",
-	"scss":       "styleguides/html-css.md",
-	"csharp":     "styleguides/csharp.md",
-	"sql":        "styleguides/sql.md",
-	"shell":      "styleguides/bash.md",
-	"helm":       "styleguides/helm.md",
-}
-
 func changedLanguages(ctx *model.ReviewContext) []string {
 	if ctx == nil {
 		return nil
@@ -998,7 +984,7 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 	}
 
 	languages := make([]string, 0, len(seen))
-	for _, language := range []string{"go", "python", "javascript", "typescript", "html", "css", "scss", "csharp", "sql", "shell"} {
+	for _, language := range mappings.StyleGuideOrder() {
 		if _, ok := seen[language]; ok {
 			languages = append(languages, language)
 			delete(seen, language)
@@ -1014,22 +1000,14 @@ func addLanguage(seen map[string]struct{}, language string) {
 	if language == "" {
 		return
 	}
-	if _, ok := builtInStyleGuideFiles[language]; !ok {
+	if _, ok := mappings.StyleGuideFile(language); !ok {
 		return
 	}
 	seen[language] = struct{}{}
 }
 
 func styleGuideLanguageForPath(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".js", ".mjs", ".cjs", ".jsx":
-		return "javascript"
-	case ".ts", ".mts", ".cts", ".tsx":
-		return "typescript"
-	default:
-		return filetype.DetectLanguage(path)
-	}
+	return mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
 }
 
 func filterByPriority(findings []model.Finding, threshold string) []model.Finding {

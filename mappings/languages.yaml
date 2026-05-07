@@ -1,0 +1,107 @@
+default: text
+
+extensions:
+  go:
+    - .go
+  python:
+    - .py
+  nodejs:
+    - .js
+    - .mjs
+    - .cjs
+    - .ts
+    - .mts
+    - .cts
+    - .jsx
+    - .tsx
+    - .vue
+    - .svelte
+  rust:
+    - .rs
+  zig:
+    - .zig
+  java:
+    - .java
+  c:
+    - .c
+    - .h
+  cpp:
+    - .cc
+    - .cpp
+    - .cxx
+    - .c++
+    - .hh
+    - .hpp
+    - .hxx
+    - .h++
+  yaml:
+    - .yaml
+    - .yml
+  json:
+    - .json
+    - .jsonc
+    - .json5
+  markdown:
+    - .md
+    - .markdown
+    - .mdown
+    - .mkdn
+  shell:
+    - .sh
+    - .bash
+    - .zsh
+    - .ksh
+  ruby:
+    - .rb
+  php:
+    - .php
+  csharp:
+    - .cs
+  kotlin:
+    - .kt
+    - .kts
+  swift:
+    - .swift
+  scala:
+    - .scala
+  sql:
+    - .sql
+  html:
+    - .html
+    - .htm
+    - .cshtml
+  css:
+    - .css
+  scss:
+    - .scss
+    - .sass
+  xml:
+    - .xml
+  toml:
+    - .toml
+  ini:
+    - .ini
+    - .cfg
+    - .conf
+  dockerfile:
+    - .dockerfile
+    - .containerfile
+
+basenames:
+  dockerfile:
+    - dockerfile
+    - containerfile
+  makefile:
+    - makefile
+    - gnumakefile
+
+helm:
+  language: helm
+  basename_matches:
+    - chart.yaml
+    - values.yaml
+  basename_suffixes:
+    - .tpl
+  path_segments:
+    - charts
+    - templates
