@@ -769,6 +769,66 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	}
 }
 
+func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_empty_name", Name: "", Arguments: `{"path":"extra.go"}`},
+					{ID: "call_bad_json", Name: "inspect_file", Arguments: `{"path":"extra.go"}}`},
+					{ID: "call_unknown", Name: "unknown_tool", Arguments: `{"path":"extra.go"}`},
+					{ID: "call_missing_required", Name: "search", Arguments: `{"path":"."}`},
+					{ID: "call_valid", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d", result.ToolCalls)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	req := llmClient.reqs[1]
+	if len(req.Messages) != 5 {
+		t.Fatalf("messages = %d", len(req.Messages))
+	}
+	assistantMessage := req.Messages[2]
+	if len(assistantMessage.ToolCalls) != 1 {
+		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
+	}
+	if assistantMessage.ToolCalls[0].ID != "call_valid" {
+		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
+	}
+	if req.Messages[3].Role != "tool" || req.Messages[3].ToolCallID != "call_valid" {
+		t.Fatalf("tool message = %#v", req.Messages[3])
+	}
+	synthetic := req.Messages[4].Content
+	for _, forbidden := range []string{"call_empty_name", "call_bad_json", "call_unknown", "call_missing_required", "unsupported tool", "unknown_tool"} {
+		if strings.Contains(synthetic, forbidden) {
+			t.Fatalf("synthetic follow-up mentions dropped call %q: %s", forbidden, synthetic)
+		}
+	}
+	if !strings.Contains(synthetic, "call_valid") {
+		t.Fatalf("synthetic follow-up missing valid call: %s", synthetic)
+	}
+}
+
 func TestEngineProvidesNoToolsMessagesWithoutSyntheticFollowup(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -1011,7 +1071,7 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 		resps: []*llm.ReviewResponse{
 			{
 				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":""}`},
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
 				},
 			},
 			{
@@ -1021,7 +1081,7 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 			},
 		},
 	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine := NewEngine(stubSource{}, llmClient, nil, config.Profile{Model: "test"})
 
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1043,17 +1103,17 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 	if !ok {
 		t.Fatalf("tool error payload = %#v", payload)
 	}
-	if errorPayload["code"] != "missing_argument" {
+	if errorPayload["code"] != "retrieval_unavailable" {
 		t.Fatalf("tool error code = %#v", errorPayload["code"])
 	}
 	message, _ := errorPayload["message"].(string)
-	if !strings.HasPrefix(message, "missing required argument: path") {
+	if !strings.HasPrefix(message, "retrieval is unavailable") {
 		t.Fatalf("tool error payload = %#v", payload)
 	}
 	if llmClient.reqs[1].Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
 	}
-	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"<path>\"]; error=\"missing required argument: path"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; error=\"retrieval is unavailable"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 	if want := "Please retry the last tool call."; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
@@ -2435,7 +2495,7 @@ func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
 	}
 }
 
-func TestEngineToleratesLenientToolArguments(t *testing.T) {
+func TestEngineDropsLenientButInvalidToolArguments(t *testing.T) {
 	retrievalEngine := &countingRetrieval{}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -2464,8 +2524,8 @@ func TestEngineToleratesLenientToolArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "main.go" {
-		t.Fatalf("expected lenient parsing to dispatch inspect_file for main.go, got %#v", retrievalEngine.paths)
+	if len(retrievalEngine.paths) != 0 {
+		t.Fatalf("expected invalid tool arguments to be dropped, got %#v", retrievalEngine.paths)
 	}
 }
 

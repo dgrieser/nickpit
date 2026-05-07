@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -118,6 +119,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		result.contentMessages = appendResponseContent(result.contentMessages, resp)
 		result.resp = resp
 
+		resp.ToolCalls = validAgentToolCalls(resp.ToolCalls, req.Tools)
 		if len(resp.ToolCalls) == 0 {
 			break
 		}
@@ -194,4 +196,51 @@ func (e *Engine) logJSONRetry(req agentLoopRequest, attempt int, invalidResp *ll
 	}
 	e.logf("Invalid JSON response, retrying with feedback: agent=%s attempt=%d reason=%q missing=%v", req.JSONRetryProgressAgentName, attempt, invalidResp.Reason, invalidResp.MissingFields)
 	e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", req.JSONRetryProgressAgentName, attempt))
+}
+
+func validAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) []llm.ToolCall {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	knownTools := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if tool.Name != "" {
+			knownTools[tool.Name] = struct{}{}
+		}
+	}
+	valid := make([]llm.ToolCall, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		if validAgentToolCall(toolCall, knownTools) {
+			valid = append(valid, toolCall)
+		}
+	}
+	return valid
+}
+
+func validAgentToolCall(toolCall llm.ToolCall, knownTools map[string]struct{}) bool {
+	if strings.TrimSpace(toolCall.ID) == "" || strings.TrimSpace(toolCall.Name) == "" {
+		return false
+	}
+	if _, ok := knownTools[toolCall.Name]; !ok {
+		return false
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+		return false
+	}
+	switch toolCall.Name {
+	case "inspect_file":
+		return nonEmptyStringArg(args, "path")
+	case "search":
+		return nonEmptyStringArg(args, "query")
+	case "find_callers", "find_callees":
+		return nonEmptyStringArg(args, "symbol")
+	default:
+		return true
+	}
+}
+
+func nonEmptyStringArg(args map[string]any, key string) bool {
+	value, ok := args[key].(string)
+	return ok && strings.TrimSpace(value) != ""
 }
