@@ -2,7 +2,6 @@ package review
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -225,7 +224,7 @@ func validAgentToolCall(toolCall llm.ToolCall, knownTools map[string]struct{}) b
 		return false
 	}
 	var args map[string]any
-	if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+	if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 		return false
 	}
 	switch toolCall.Name {
