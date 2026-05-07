@@ -32,6 +32,7 @@ func stripPriorityPrefix(title string) string {
 
 const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model"
 const reasoningBudgetRetryHint = "IMPORTANT: Keep your reasoning concise and return the requested answer as soon as possible."
+const reasoningLoopRetryHint = "IMPORTANT: Keep your reasoning concise, avoid repeating yourself, and return the requested answer as soon as possible."
 
 var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 
@@ -421,14 +422,22 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	var lastBudgetErr *ReasoningBudgetExhaustedError
 	var lastBudgetReq *ReviewRequest
 	budgetExhausted := false
+	var lastLoopErr *ReasoningLoopDetectedError
+	loopDetected := false
 	for attemptIndex, effort := range efforts {
 		attemptReq := cloneReviewRequest(req)
 		attemptReq.ReasoningEffort = effort
 		if budgetExhausted {
 			addReasoningBudgetRetryHint(&attemptReq)
 		}
+		if loopDetected {
+			addReasoningLoopRetryHint(&attemptReq)
+		}
 		resp, err := c.reviewOnce(ctx, &attemptReq)
 		if err == nil {
+			if loopDetected {
+				resp.ReasoningEffort = originalEffort
+			}
 			return resp, nil
 		}
 		var budgetErr *ReasoningBudgetExhaustedError
@@ -438,6 +447,16 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			if attemptIndex+1 < len(efforts) {
 				budgetExhausted = true
 				c.logf("Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
+				continue
+			}
+			break
+		}
+		var loopErr *ReasoningLoopDetectedError
+		if errors.As(err, &loopErr) {
+			lastLoopErr = loopErr
+			if attemptIndex+1 < len(efforts) {
+				loopDetected = true
+				c.logf("Reasoning loop detected, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
 				continue
 			}
 			break
@@ -474,6 +493,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			return nil, noToolsErr
 		}
 		c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
+	}
+	if lastLoopErr != nil && lastBudgetErr == nil {
+		return nil, lastLoopErr
 	}
 	if lastBudgetErr != nil {
 		return nil, lastBudgetErr
@@ -521,6 +543,34 @@ func addReasoningBudgetRetryHint(req *ReviewRequest) {
 		return
 	}
 	hint := strings.TrimSpace(reasoningBudgetRetryHint)
+	if hint == "" {
+		return
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == openai.ChatMessageRoleUser {
+			if strings.Contains(req.Messages[i].Content, hint) {
+				return
+			}
+		}
+	}
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == openai.ChatMessageRoleUser && strings.TrimSpace(req.Messages[i].Content) != "" {
+			req.Messages = append(req.Messages[:i+1], append([]Message{{Role: openai.ChatMessageRoleUser, Content: hint}}, req.Messages[i+1:]...)...)
+			return
+		}
+	}
+	req.Messages = append(req.Messages, Message{Role: openai.ChatMessageRoleUser, Content: hint})
+}
+
+func addReasoningLoopRetryHint(req *ReviewRequest) {
+	if req == nil {
+		return
+	}
+	if len(req.Messages) == 0 {
+		req.UserContent = appendUserHint(req.UserContent, reasoningLoopRetryHint)
+		return
+	}
+	hint := strings.TrimSpace(reasoningLoopRetryHint)
 	if hint == "" {
 		return
 	}
@@ -782,10 +832,12 @@ func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
 func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
+		streamCtx, streamCancel := context.WithCancel(ctx)
+		detector := newReasoningLoopDetector(streamCancel)
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
 		c.transport.reset()
 
-		stream, err := c.sdkClient.CreateChatCompletionStream(ctx, payload)
+		stream, err := c.sdkClient.CreateChatCompletionStream(streamCtx, payload)
 		capture := c.transport.snapshot()
 		if capture != nil && capture.code != 0 {
 			c.logf("LLM stream opened: status=%s", capture.status)
@@ -822,11 +874,24 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			continue
 		}
 
-		resp, streamErr := c.collectStream(stream, sink)
+		resp, streamErr := c.collectStream(stream, sink, detector)
 		closeErr := stream.Close()
+		streamCancel()
 		if streamErr != nil {
 			if closeErr != nil {
 				c.logf("LLM stream close failed after error: %v", closeErr)
+			}
+			var loopErr *ReasoningLoopDetectedError
+			if errors.As(streamErr, &loopErr) {
+				loopErr.ReasoningEffort = payload.ReasoningEffort
+				c.logf("Reasoning loop detected: effort=%q", payload.ReasoningEffort)
+				if c.logger != nil {
+					if loopErr.LoopStartContent != "" {
+						c.logger.PrintBlock("Reasoning loop - content before repeat:", loopErr.LoopStartContent)
+					}
+					c.logger.PrintBlock("Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
+				}
+				return nil, loopErr
 			}
 			var readErr *streamReadError
 			if errors.As(streamErr, &readErr) {
@@ -874,7 +939,7 @@ func (c *OpenAIClient) logRetryHTTPStatus(status, currentAttempt int, waitFor ti
 	c.logger.PrintStatusLine(fmt.Sprintf("LLM request failed with status %d, retrying in %s...", status, waitFor))
 }
 
-func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink ReasoningSink) (*streamedResponse, error) {
+func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
 		toolCalls        []*toolCallBuilder
@@ -932,6 +997,9 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink R
 				return partialResponse(), nil
 			}
 			endSink()
+			if detector != nil && detector.Detected() {
+				return nil, detector.MakeError()
+			}
 			return nil, &streamReadError{
 				err:       fmt.Errorf("llm: reading stream: %w", err),
 				retryable: isRetryableNetworkError(err),
@@ -965,6 +1033,9 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink R
 				}
 				if s := ensureSink(); s != nil {
 					s.Append(choice.Delta.ReasoningContent)
+				}
+				if detector != nil {
+					detector.onDelta(choice.Delta.ReasoningContent)
 				}
 			}
 			if choice.Delta.Content != "" {
