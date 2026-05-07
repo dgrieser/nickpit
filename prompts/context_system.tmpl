@@ -22,14 +22,4 @@ Your final message should be a markdown formatted summary of what you believe th
 Make clear in that section that the purpose is an assumption based on the patch and collected context.
 
 ### TOOLS
-Call one of the following tools:
-- `inspect_file` tool with a repo-relative `path` to retrieve the contents of a file.
-- `list_files` tool with a repo-relative `path` to list all files in a folder (recursively).
-- `find_callers` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function across Go, Python, and Node.js/TypeScript code.
-- `find_callees` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls across Go, Python, and Node.js/TypeScript code.
-- `search` tool with a repo-relative `path` and a `query` to search recursively for relevant matches.
-
-Important:
-- Make as many tool calls as necessary, to gather additional context.
-{{if .ParallelToolCallGuidance}}- If possible, call multiple tools in parallel, e.g. in one turn.
-{{end}}- Once you have enough context, stop calling tools and return the summary of what you believe the patch is intended to do.
+{{.ToolInstructions}}

@@ -46,14 +46,23 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	}
 	systemSnippet := verifyOutputSchemaSnippetFor(req.UseJSONSchema)
 	exampleSnippet := llm.VerifyExamplePromptSnippet()
+	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
+		kind:                     "verify",
+		parallelToolCallGuidance: !req.DisableParallelToolCalls,
+	})
+	if err != nil {
+		return nil, usage, err
+	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
 		HasTools                 bool
+		ToolInstructions         string
 	}{
 		OutputSchemaSnippet:      systemSnippet,
 		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
 		HasTools:                 true,
+		ToolInstructions:         toolInstructions,
 	})
 	if err != nil {
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)

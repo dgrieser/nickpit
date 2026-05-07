@@ -612,10 +612,17 @@ func (e *Engine) runContextAgent(ctx context.Context, agent reviewAgent, req mod
 }
 
 func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (string, error) {
+	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
+		kind:                     "context",
+		parallelToolCallGuidance: !req.DisableParallelToolCalls,
+	})
+	if err != nil {
+		return "", err
+	}
 	systemPrompt, err := llm.RenderPrompt(template, struct {
-		ParallelToolCallGuidance bool
+		ToolInstructions string
 	}{
-		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
+		ToolInstructions: toolInstructions,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering context system prompt: %w", err)
@@ -706,21 +713,57 @@ func (e *Engine) renderReviewSystem(template, focusName string, req model.Review
 }
 
 func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
+	toolInstructions := ""
+	if hasTools {
+		var err error
+		toolInstructions, err = e.renderToolInstructions(toolInstructionsConfig{
+			kind:                     "review",
+			parallelToolCallGuidance: !req.DisableParallelToolCalls,
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 	systemPrompt, err := llm.RenderPrompt(template, struct {
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
 		HasTools                 bool
 		FocusSnippet             string
+		ToolInstructions         string
 	}{
 		OutputSchemaSnippet:      reviewOutputSchemaSnippetFor(req.UseJSONSchema),
 		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
 		HasTools:                 hasTools,
 		FocusSnippet:             strings.TrimSpace(focusSnippet),
+		ToolInstructions:         toolInstructions,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering review system prompt: %w", err)
 	}
 	return systemPrompt, nil
+}
+
+type toolInstructionsConfig struct {
+	kind                     string
+	parallelToolCallGuidance bool
+}
+
+func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, error) {
+	template, err := e.loadPrompt("tool_instructions.tmpl")
+	if err != nil {
+		return "", err
+	}
+	rendered, err := llm.RenderPrompt(template, struct {
+		Kind                     string
+		ParallelToolCallGuidance bool
+	}{
+		Kind:                     config.kind,
+		ParallelToolCallGuidance: config.parallelToolCallGuidance,
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering tool instructions prompt: %w", err)
+	}
+	return rendered, nil
 }
 
 func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([]llm.Message, error) {
@@ -847,6 +890,7 @@ func noToolsMessages(systemTemplate string, messages []llm.Message, snippet stri
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
 		HasTools                 bool
+		ToolInstructions         string
 	}{
 		OutputSchemaSnippet: snippet,
 		HasTools:            false,

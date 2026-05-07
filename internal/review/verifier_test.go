@@ -169,6 +169,13 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	if len(llmClient.requests) != 2 {
 		t.Fatalf("requests = %d, want 2", len(llmClient.requests))
 	}
+	systemPrompt := llmClient.requests[0].Messages[0].Content
+	if want := "`inspect_file` tool"; !strings.Contains(systemPrompt, want) {
+		t.Fatalf("system prompt missing tool instructions: %q", systemPrompt)
+	}
+	if want := "gather evidence for the verdict"; !strings.Contains(systemPrompt, want) {
+		t.Fatalf("system prompt missing verifier tool guidance: %q", systemPrompt)
+	}
 	if llmClient.requests[0].SchemaKind != llm.SchemaKindVerify {
 		t.Fatalf("first schema kind = %v", llmClient.requests[0].SchemaKind)
 	}
