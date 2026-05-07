@@ -435,8 +435,8 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
 
 	contextResult, err := e.runContextAgent(ctx, reviewAgent{
-		name:          "collector",
-		role:          "collector",
+		name:          "context",
+		role:          "context",
 		system:        contextSystem,
 		noToolsSystem: contextSystem,
 		user:          userPrompt,

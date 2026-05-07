@@ -58,7 +58,7 @@ type capturingLLM struct {
 
 type multiAgentLLM struct {
 	mu            sync.Mutex
-	collector     int
+	context       int
 	vectorCalls   map[string]int
 	mergeTools    int
 	mergePayload  map[string]any
@@ -85,14 +85,14 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if strings.Contains(system, "DO NOT produce review findings yourself") {
 		s.contextSystem = system
-		s.collector++
-		if s.collector == 1 {
+		s.context++
+		if s.context == 1 {
 			return &llm.ReviewResponse{
-				ToolCalls: []llm.ToolCall{{ID: "collector_call", Name: "list_files", Arguments: `{"path":"internal","depth":1}`}},
+				ToolCalls: []llm.ToolCall{{ID: "context_call", Name: "list_files", Arguments: `{"path":"internal","depth":1}`}},
 			}, nil
 		}
 		return &llm.ReviewResponse{
-			RawResponse: "collector inspected internal listing\n\n## Assumed Patch Purpose\nThis is an assumption: the patch appears intended to update review context collection.",
+			RawResponse: "context inspected internal listing\n\n## Assumed Patch Purpose\nThis is an assumption: the patch appears intended to update review context collection.",
 			TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 		}, nil
 	}
@@ -608,7 +608,7 @@ func TestEngineCanDisableParallelToolCallsAndGuidance(t *testing.T) {
 	}
 }
 
-func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T) {
+func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetMultiAgentReview(true)
@@ -626,13 +626,13 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 		t.Fatalf("merged findings = %#v", result.Findings)
 	}
 	if len(result.AgentRuns) != 8 {
-		t.Fatalf("agent runs = %d, want collector + 6 reviewers + merge", len(result.AgentRuns))
+		t.Fatalf("agent runs = %d, want context + 6 reviewers + merge", len(result.AgentRuns))
 	}
 	if result.ToolCalls != 7 {
-		t.Fatalf("tool calls = %d, want collector + one per vector", result.ToolCalls)
+		t.Fatalf("tool calls = %d, want context + one per vector", result.ToolCalls)
 	}
 	if len(trimmed.SupplementalContext) == 0 {
-		t.Fatal("collector context was not attached")
+		t.Fatal("context was not attached")
 	}
 	if trimmed.SupplementalContext[0].Kind != "context_tool_result" {
 		t.Fatalf("first supplemental context = %#v, want context tool result", trimmed.SupplementalContext[0])
@@ -646,8 +646,8 @@ func TestEngineRunsCollectorVectorsMergeWithIndependentToolBudgets(t *testing.T)
 	if llmClient.mergeTools != 0 {
 		t.Fatalf("merge tools = %d, want 0", llmClient.mergeTools)
 	}
-	if _, ok := llmClient.mergePayload["collector_response"]; ok {
-		t.Fatalf("merge payload should not include collector_response: %#v", llmClient.mergePayload)
+	if _, ok := llmClient.mergePayload["context_response"]; ok {
+		t.Fatalf("merge payload should not include context_response: %#v", llmClient.mergePayload)
 	}
 	if notes, _ := llmClient.mergePayload["context_agent_notes"].(string); !strings.Contains(notes, "## Context Agent Notes") {
 		t.Fatalf("merge payload context_agent_notes = %#v", llmClient.mergePayload["context_agent_notes"])
