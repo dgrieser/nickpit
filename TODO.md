@@ -8,7 +8,6 @@
 - Logging: Fix wrong Reasoning Done progress message.
 - Verbose: Fix json formatted printing for verbose on <wrongcolor>"content": "</wrongcolor>
 
-- Extract language detection, file mappings and context mappings into separate yaml files in ./mappings folder and embed at build (easier to edit)
 - Add reasoning loop detection, e.g. exact same line, repeated N amounts. Abort request if loop is detected, temporarily retry with lower reasoning effort until OK. Next request continues with configured reasoning effort
 - Add max turns for agents
 - Add reasoning summary agent to use for progress printing (e.g. "Reasoned about A, B and C", short)
