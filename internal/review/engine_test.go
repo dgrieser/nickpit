@@ -775,7 +775,7 @@ func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
 			{
 				ToolCalls: []llm.ToolCall{
 					{ID: "call_empty_name", Name: "", Arguments: `{"path":"extra.go"}`},
-					{ID: "call_bad_json", Name: "inspect_file", Arguments: `{"path":"extra.go"}}`},
+					{ID: "call_bad_json", Name: "inspect_file", Arguments: `no json here`},
 					{ID: "call_unknown", Name: "unknown_tool", Arguments: `{"path":"extra.go"}`},
 					{ID: "call_missing_required", Name: "search", Arguments: `{"path":"."}`},
 					{ID: "call_valid", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
@@ -2495,7 +2495,7 @@ func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
 	}
 }
 
-func TestEngineDropsLenientButInvalidToolArguments(t *testing.T) {
+func TestEngineParsesLenientToolArguments(t *testing.T) {
 	retrievalEngine := &countingRetrieval{}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -2504,7 +2504,7 @@ func TestEngineDropsLenientButInvalidToolArguments(t *testing.T) {
 					{
 						ID:   "call_1",
 						Name: "inspect_file",
-						// Trailing comma + single quotes + prose wrapper.
+						// Trailing comma + single quotes + prose wrapper — LenientUnmarshal should recover this.
 						Arguments: "Sure: {'path': 'main.go',}",
 					},
 				},
@@ -2524,8 +2524,8 @@ func TestEngineDropsLenientButInvalidToolArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(retrievalEngine.paths) != 0 {
-		t.Fatalf("expected invalid tool arguments to be dropped, got %#v", retrievalEngine.paths)
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "main.go" {
+		t.Fatalf("expected lenient tool arguments to be parsed, got %#v", retrievalEngine.paths)
 	}
 }
 
