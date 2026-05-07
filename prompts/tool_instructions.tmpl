@@ -1,4 +1,4 @@
-{{if eq .Kind "context"}}Call one of the following tools:{{else if eq .Kind "review"}}If you need more code context, call of the following tools:{{else if eq .Kind "verify"}}If you need more code context, call any of the following tools:{{end}}
+{{if eq .Kind "context"}}Call one of the following tools:{{else if eq .Kind "review"}}Another senior engineer already collected the code context needed for your code review, see the following messages. In some cases, you might still need more code context, use the following tools, if necessary:{{else if eq .Kind "verify"}}Multiple senior engineers already collected the code context needed, see the following messages. In the rare case that you need more code context for your verification, call any of the following tools:{{end}}
 - `inspect_file` tool with a repo-relative `path` to retrieve the contents of a file.
 - `list_files` tool with a repo-relative `path` to list all files in a folder (recursively).
 - `find_callers` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function across Go, Python, and Node.js/TypeScript code.

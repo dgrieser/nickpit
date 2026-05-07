@@ -1,7 +1,6 @@
 # TODO
 
 - patch is incorrect on any review agent with confidence > 0.75 should programmatically add "patch is incorrect"
-- Instruct review agents about the previous context agent run
 - Cleanup: Reasoning flickering, Reasoning block should be 10 lines even if less lines of content
 - Logging: Change to "[agent: <agent_name>]"
 - Logging: Put turns into bracket, e.g. "[agent: <agent_name>, turn: <round>]"
