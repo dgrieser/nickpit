@@ -51,11 +51,121 @@ func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse,
 }
 
 type capturingLLM struct {
+	mu    sync.Mutex
 	reqs  []*llm.ReviewRequest
 	resps []*llm.ReviewResponse
 }
 
+type multiAgentLLM struct {
+	mu            sync.Mutex
+	context       int
+	vectorCalls   map[string]int
+	mergeTools    int
+	mergePayload  map[string]any
+	contextSystem string
+	vectorContext map[string]string
+	vectorSystem  map[string]string
+}
+
+func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.vectorCalls == nil {
+		s.vectorCalls = make(map[string]int)
+	}
+	if s.vectorSystem == nil {
+		s.vectorSystem = make(map[string]string)
+	}
+	if s.vectorContext == nil {
+		s.vectorContext = make(map[string]string)
+	}
+	system := ""
+	if len(req.Messages) > 0 {
+		system = req.Messages[0].Content
+	}
+	if strings.Contains(system, "DO NOT produce review findings yourself") {
+		s.contextSystem = system
+		s.context++
+		if s.context == 1 {
+			return &llm.ReviewResponse{
+				ToolCalls: []llm.ToolCall{{ID: "context_call", Name: "list_files", Arguments: `{"path":"internal","depth":1}`}},
+			}, nil
+		}
+		return &llm.ReviewResponse{
+			RawResponse: "context inspected internal listing\n\n## Assumed Patch Purpose\nThis is an assumption: the patch appears intended to update review context collection.",
+			TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		}, nil
+	}
+	if strings.Contains(system, "## FOCUS ON ") {
+		name := vectorNameFromSystem(system)
+		s.vectorCalls[name]++
+		s.vectorSystem[name] = system
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(msg.Content, "## Context Agent Notes") {
+				s.vectorContext[name] = msg.Content
+			}
+		}
+		if s.vectorCalls[name] == 1 {
+			return &llm.ReviewResponse{
+				ToolCalls: []llm.ToolCall{{ID: "tool_" + name, Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
+			}, nil
+		}
+		return &llm.ReviewResponse{
+			Findings: []model.Finding{{
+				Title:           "Fix " + name,
+				Body:            "body",
+				ConfidenceScore: 0.9,
+				Priority:        intPtr(2),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+			}},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     name,
+			OverallConfidenceScore: 0.9,
+			TokensUsed:             model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
+		}, nil
+	}
+	s.mergeTools = len(req.Tools)
+	if len(req.Messages) > 1 {
+		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
+	}
+	return &llm.ReviewResponse{
+		Findings: []model.Finding{{
+			Title:           "Fix merged issue",
+			Body:            "body",
+			ConfidenceScore: 0.95,
+			Priority:        intPtr(1),
+			CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		}},
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     "merged",
+		OverallConfidenceScore: 0.95,
+		TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
+	}, nil
+}
+
+func vectorNameFromSystem(system string) string {
+	marker := "## FOCUS ON "
+	idx := strings.Index(system, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(system[idx+len(marker):])
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	switch strings.TrimSpace(rest) {
+	case "CODE QUALITY AND CORRECTNESS":
+		return "Code Quality"
+	case "BEST PRACTICES":
+		return "Best Practices"
+	default:
+		return strings.Title(strings.ToLower(strings.TrimSpace(rest)))
+	}
+}
+
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cloned := *req
 	if len(req.Messages) > 0 {
 		cloned.Messages = cloneTestMessages(req.Messages)
@@ -403,7 +513,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if want := "call multiple tools in parallel"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing parallel guidance: %q", req.Messages[0].Content)
 	}
-	if want := "generate a `suggestion` block, including `body`, `line_range.start` and `line_range.end`"; !strings.Contains(req.Messages[0].Content, want) {
+	if want := "generate one or more `suggestions` entries"; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing suggestion instructions: %q", req.Messages[0].Content)
 	}
 	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.Messages[0].Content, want) {
@@ -418,7 +528,7 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if strings.Contains(req.Messages[0].Content, "[P1] Example title") {
 		t.Fatalf("system prompt should not include priority prefix in example title: %q", req.Messages[0].Content)
 	}
-	if want := "\"suggestion\""; !strings.Contains(req.Messages[0].Content, want) {
+	if want := "\"suggestions\""; !strings.Contains(req.Messages[0].Content, want) {
 		t.Fatalf("system prompt missing example suggestion JSON: %q", req.Messages[0].Content)
 	}
 	var payload map[string]any
@@ -495,6 +605,72 @@ func TestEngineCanDisableParallelToolCallsAndGuidance(t *testing.T) {
 	}
 	if strings.Contains(req.Messages[0].Content, "call all required tools in the same turn rather than serializing them") {
 		t.Fatalf("system prompt should omit parallel guidance: %q", req.Messages[0].Content)
+	}
+}
+
+func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	result, trimmed, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Title != "Fix merged issue" {
+		t.Fatalf("merged findings = %#v", result.Findings)
+	}
+	if len(result.AgentRuns) != 8 {
+		t.Fatalf("agent runs = %d, want context + 6 reviewers + merge", len(result.AgentRuns))
+	}
+	if result.ToolCalls != 7 {
+		t.Fatalf("tool calls = %d, want context + one per vector", result.ToolCalls)
+	}
+	if len(trimmed.SupplementalContext) == 0 {
+		t.Fatal("context was not attached")
+	}
+	if trimmed.SupplementalContext[0].Kind != "context_tool_result" {
+		t.Fatalf("first supplemental context = %#v, want context tool result", trimmed.SupplementalContext[0])
+	}
+	if !strings.Contains(llmClient.contextSystem, "DO NOT produce review findings yourself") {
+		t.Fatalf("context prompt missing standalone instructions: %q", llmClient.contextSystem)
+	}
+	if strings.Contains(llmClient.contextSystem, "Make sure to output the findings") {
+		t.Fatalf("context prompt should not include review output instructions: %q", llmClient.contextSystem)
+	}
+	if llmClient.mergeTools != 0 {
+		t.Fatalf("merge tools = %d, want 0", llmClient.mergeTools)
+	}
+	if _, ok := llmClient.mergePayload["context_response"]; ok {
+		t.Fatalf("merge payload should not include context_response: %#v", llmClient.mergePayload)
+	}
+	if notes, _ := llmClient.mergePayload["context_agent_notes"].(string); !strings.Contains(notes, "## Context Agent Notes") {
+		t.Fatalf("merge payload context_agent_notes = %#v", llmClient.mergePayload["context_agent_notes"])
+	}
+	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
+	if !ok || len(vectorReviews) != 6 {
+		t.Fatalf("merge payload vector_reviews = %#v", llmClient.mergePayload["vector_reviews"])
+	}
+	for _, vector := range reviewVectors {
+		if llmClient.vectorCalls[vector.name] != 2 {
+			t.Fatalf("%s calls = %d, want tool + final", vector.name, llmClient.vectorCalls[vector.name])
+		}
+		system := llmClient.vectorSystem[vector.name]
+		if !strings.Contains(system, "You are acting as a senior engineer performing a thorough code review") {
+			t.Fatalf("%s prompt lost base review prompt", vector.name)
+		}
+		if !strings.Contains(system, "## FOCUS ON ") {
+			t.Fatalf("%s prompt missing focus snippet", vector.name)
+		}
+		contextNote := llmClient.vectorContext[vector.name]
+		if !strings.Contains(contextNote, "## Context Agent Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
+			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
+		}
 	}
 }
 
@@ -590,6 +766,66 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	}
 	if want := "Otherwise, if you have enough context to judge the patch, stop calling tools and return the final review as JSON."; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up missing stop instruction: %q", req.Messages[4].Content)
+	}
+}
+
+func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_empty_name", Name: "", Arguments: `{"path":"extra.go"}`},
+					{ID: "call_bad_json", Name: "inspect_file", Arguments: `{"path":"extra.go"}}`},
+					{ID: "call_unknown", Name: "unknown_tool", Arguments: `{"path":"extra.go"}`},
+					{ID: "call_missing_required", Name: "search", Arguments: `{"path":"."}`},
+					{ID: "call_valid", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d", result.ToolCalls)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	req := llmClient.reqs[1]
+	if len(req.Messages) != 5 {
+		t.Fatalf("messages = %d", len(req.Messages))
+	}
+	assistantMessage := req.Messages[2]
+	if len(assistantMessage.ToolCalls) != 1 {
+		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
+	}
+	if assistantMessage.ToolCalls[0].ID != "call_valid" {
+		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
+	}
+	if req.Messages[3].Role != "tool" || req.Messages[3].ToolCallID != "call_valid" {
+		t.Fatalf("tool message = %#v", req.Messages[3])
+	}
+	synthetic := req.Messages[4].Content
+	for _, forbidden := range []string{"call_empty_name", "call_bad_json", "call_unknown", "call_missing_required", "unsupported tool", "unknown_tool"} {
+		if strings.Contains(synthetic, forbidden) {
+			t.Fatalf("synthetic follow-up mentions dropped call %q: %s", forbidden, synthetic)
+		}
+	}
+	if !strings.Contains(synthetic, "call_valid") {
+		t.Fatalf("synthetic follow-up missing valid call: %s", synthetic)
 	}
 }
 
@@ -835,7 +1071,7 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 		resps: []*llm.ReviewResponse{
 			{
 				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":""}`},
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
 				},
 			},
 			{
@@ -845,7 +1081,7 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 			},
 		},
 	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine := NewEngine(stubSource{}, llmClient, nil, config.Profile{Model: "test"})
 
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -867,17 +1103,17 @@ func TestEngineReturnsToolErrorsToModel(t *testing.T) {
 	if !ok {
 		t.Fatalf("tool error payload = %#v", payload)
 	}
-	if errorPayload["code"] != "missing_argument" {
+	if errorPayload["code"] != "retrieval_unavailable" {
 		t.Fatalf("tool error code = %#v", errorPayload["code"])
 	}
 	message, _ := errorPayload["message"].(string)
-	if !strings.HasPrefix(message, "missing required argument: path") {
+	if !strings.HasPrefix(message, "retrieval is unavailable") {
 		t.Fatalf("tool error payload = %#v", payload)
 	}
 	if llmClient.reqs[1].Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
 	}
-	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"<path>\"]; error=\"missing required argument: path"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
+	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; error=\"retrieval is unavailable"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
 	}
 	if want := "Please retry the last tool call."; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
@@ -2259,7 +2495,7 @@ func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
 	}
 }
 
-func TestEngineToleratesLenientToolArguments(t *testing.T) {
+func TestEngineDropsLenientButInvalidToolArguments(t *testing.T) {
 	retrievalEngine := &countingRetrieval{}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -2288,8 +2524,8 @@ func TestEngineToleratesLenientToolArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "main.go" {
-		t.Fatalf("expected lenient parsing to dispatch inspect_file for main.go, got %#v", retrievalEngine.paths)
+	if len(retrievalEngine.paths) != 0 {
+		t.Fatalf("expected invalid tool arguments to be dropped, got %#v", retrievalEngine.paths)
 	}
 }
 

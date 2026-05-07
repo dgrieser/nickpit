@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 )
 
@@ -28,6 +28,7 @@ type Engine struct {
 	trimmer                *Trimmer
 	logger                 *logging.Logger
 	searchToolOptimization bool
+	multiAgentReview       bool
 }
 
 var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
@@ -170,6 +171,10 @@ func (e *Engine) SetSearchToolOptimization(enabled bool) {
 	e.searchToolOptimization = enabled
 }
 
+func (e *Engine) SetMultiAgentReview(enabled bool) {
+	e.multiAgentReview = enabled
+}
+
 func reviewerToolDefinitions() []llm.ToolDefinition {
 	return []llm.ToolDefinition{
 		{
@@ -241,210 +246,29 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 
 	trimmed := trimmer.Trim(reviewCtx)
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
-	systemTemplate, err := e.loadPrompt("review_system.tmpl")
+	var result *model.ReviewResult
+	var enrichedCtx *model.ReviewContext
+	if e.multiAgentReview {
+		result, enrichedCtx, err = e.runMultiAgentReview(ctx, trimmed, req)
+	} else {
+		result, enrichedCtx, err = e.runSingleAgentReview(ctx, trimmed, req)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
-	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
-		OutputSchemaSnippet      string
-		ParallelToolCallGuidance bool
-		HasTools                 bool
-	}{
-		OutputSchemaSnippet:      reviewOutputSchemaSnippetFor(req.UseJSONSchema),
-		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
-		HasTools:                 true,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("review: rendering review system prompt: %w", err)
-	}
-	payload := model.PromptPayloadFromContext(trimmed)
-	payload.StyleGuides, err = e.styleGuidesFor(trimmed)
-	if err != nil {
-		return nil, nil, err
-	}
-	userPrompt, err := llm.RenderJSON(payload)
-	if err != nil {
-		return nil, nil, fmt.Errorf("review: rendering review prompt json: %w", err)
-	}
-	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
-
-	var schema []byte
-	if req.UseJSONSchema {
-		schema = llm.FindingsSchema
-	}
-
-	messages := []llm.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userPrompt},
-	}
-	reviewSec := e.logger.NewReasoningTracker(fmt.Sprintf("reviewer #1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef))
-	defer reviewSec.End()
-	llmReq := &llm.ReviewRequest{
-		Messages:          messages,
-		Tools:             reviewerToolDefinitions(),
-		Schema:            schema,
-		SchemaKind:        llm.SchemaKindReview,
-		Model:             e.config.Model,
-		MaxTokens:         e.config.MaxTokens,
-		Temperature:       e.config.Temperature,
-		TopP:              e.config.TopP,
-		ExtraBody:         e.config.ExtraBody,
-		ParallelToolCalls: !req.DisableParallelToolCalls,
-		ReasoningEffort:   e.config.ReasoningEffort,
-	}
-
-	totalUsage := model.TokenUsage{}
-	toolCallsUsed := 0
-	duplicateToolCallsUsed := 0
-	toolState := &toolRoundState{
-		seenFiles:      make(map[string]retrieval.FileContent),
-		seenFileRanges: make(map[string][]model.LineRange),
-		seenToolCalls:  make(map[string]struct{}),
-	}
-	var resp *llm.ReviewResponse
-	var syntheticFollowup *llm.Message
-	var toolCallHistory []toolCallHistoryEntry
-	jsonRetries := 0
-	effectiveReasoningEffort := e.config.ReasoningEffort
-	jsonRepairWithoutTools := false
-
-	reviewSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
-	for {
-		noToolsHistory, err := noToolsMessages(systemTemplate, messages, reviewSnippet)
-		if err != nil {
-			return nil, nil, err
-		}
-		llmReq.NoToolsMessages = noToolsHistory
-		llmReq.Messages = messages
-		if syntheticFollowup != nil {
-			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
-		}
-		resp, err = e.loggedReview(ctx, llmReq, reviewSec)
-		if err != nil {
-			var invalidResp *llm.InvalidResponseError
-			if errors.As(err, &invalidResp) && jsonRetries < defaultMaxJSONRetries {
-				if invalidResp.ReasoningEffort != "" {
-					effectiveReasoningEffort = invalidResp.ReasoningEffort
-					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
-				}
-				if invalidResp.ToolsOmitted || jsonRepairWithoutTools {
-					jsonRepairWithoutTools = true
-					messages, err = noToolsMessages(systemTemplate, messages, reviewSnippet)
-					if err != nil {
-						return nil, nil, err
-					}
-					llmReq.Tools = nil
-					llmReq.ParallelToolCalls = false
-				}
-				jsonRetries++
-				e.logf("Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", jsonRetries, invalidResp.Reason, invalidResp.MissingFields)
-				e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", jsonRetries))
-				if strings.TrimSpace(invalidResp.RawContent) != "" {
-					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
-				}
-				messages = append(messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp, llm.FindingsExamplePromptSnippet())})
-				syntheticFollowup = nil
-				continue
-			}
-			return nil, nil, err
-		}
-		if resp.ReasoningEffort != "" {
-			effectiveReasoningEffort = resp.ReasoningEffort
-			llmReq.ReasoningEffort = resp.ReasoningEffort
-		}
-		totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
-		totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
-		totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
-
-		if len(resp.ToolCalls) == 0 {
-			break
-		}
-		pendingToolCalls := len(resp.ToolCalls)
-		if req.MaxToolCalls > 0 && toolCallsUsed+pendingToolCalls > req.MaxToolCalls {
-			e.logf("Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, toolCallsUsed, pendingToolCalls)
-			e.logProgress("Tool", fmt.Sprintf("status=LimitReached, limit=%d, finalizing review", req.MaxToolCalls))
-			finalMessages := append([]llm.Message(nil), messages...)
-			if strings.TrimSpace(resp.RawResponse) != "" {
-				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
-			}
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, finalMessages, reviewSnippet, reviewSec)
-			if err != nil {
-				return nil, nil, err
-			}
-			if resp.ReasoningEffort != "" {
-				effectiveReasoningEffort = resp.ReasoningEffort
-				llmReq.ReasoningEffort = resp.ReasoningEffort
-			}
-			totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
-			totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
-			totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
-			break
-		}
-		e.logf("Executing tool batch: used=%d requested=%d", toolCallsUsed, pendingToolCalls)
-		assistantMessage := llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls}
-		messages = append(messages, assistantMessage)
-		toolMessages := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
-		messages = append(messages, toolMessages...)
-		toolCallHistory = append(toolCallHistory, collectToolCallHistory(resp.ToolCalls, toolMessages)...)
-		duplicateToolCallsUsed += countDuplicateToolCalls(toolMessages)
-		if req.MaxDuplicateToolCalls > 0 && duplicateToolCallsUsed >= req.MaxDuplicateToolCalls {
-			e.logf("Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, duplicateToolCallsUsed)
-			e.logProgress("Tool", fmt.Sprintf("status=DuplicateLimitReached, limit=%d, duplicates=%d, finalizing review", req.MaxDuplicateToolCalls, duplicateToolCallsUsed))
-			toolCallsUsed += pendingToolCalls
-			resp, err = e.reviewWithoutTools(ctx, llmReq, systemTemplate, messages, reviewSnippet, reviewSec)
-			if err != nil {
-				return nil, nil, err
-			}
-			if resp.ReasoningEffort != "" {
-				effectiveReasoningEffort = resp.ReasoningEffort
-				llmReq.ReasoningEffort = resp.ReasoningEffort
-			}
-			totalUsage.PromptTokens += resp.TokensUsed.PromptTokens
-			totalUsage.CompletionTokens += resp.TokensUsed.CompletionTokens
-			totalUsage.TotalTokens += resp.TokensUsed.TotalTokens
-			break
-		}
-		syntheticFollowup = &llm.Message{
-			Role:    "user",
-			Content: syntheticToolFollowup(toolCallHistory),
-		}
-		toolCallsUsed += pendingToolCalls
-	}
-
-	filtered := filterByPriority(resp.Findings, req.PriorityThreshold)
-	e.logf(
-		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-		len(resp.Findings),
-		len(filtered),
-		req.PriorityThreshold,
-		len(toolCallHistory),
-		totalUsage.PromptTokens,
-		totalUsage.CompletionTokens,
-		totalUsage.TotalTokens,
-	)
-	mode := string(req.Mode)
+	result.Mode = string(req.Mode)
 	if req.Submode != "" {
-		mode = mode + ":" + req.Submode
+		result.Mode = result.Mode + ":" + req.Submode
 	}
-	return &model.ReviewResult{
-		Findings:               filtered,
-		OverallCorrectness:     resp.OverallCorrectness,
-		OverallExplanation:     resp.OverallExplanation,
-		OverallConfidenceScore: resp.OverallConfidenceScore,
-		TokensUsed:             totalUsage,
-		Model:                  e.config.Model,
-		Mode:                   mode,
-		Repo:                   req.Repo,
-		Identifier:             req.Identifier,
-		ToolCalls:              toolCallsUsed,
-		MaxToolCalls:           req.MaxToolCalls,
-		ReasoningEffort:        effectiveReasoningEffort,
-		BaseURL:                e.config.BaseURL,
-		BaseRef:                reviewCtx.Repository.BaseRef,
-		HeadRef:                reviewCtx.Repository.HeadRef,
-		MaxDuplicateToolCalls:  req.MaxDuplicateToolCalls,
-		DuplicateToolCalls:     duplicateToolCallsUsed,
-	}, trimmed, nil
+	result.Model = e.config.Model
+	result.Repo = req.Repo
+	result.Identifier = req.Identifier
+	result.MaxToolCalls = req.MaxToolCalls
+	result.MaxDuplicateToolCalls = req.MaxDuplicateToolCalls
+	result.BaseURL = e.config.BaseURL
+	result.BaseRef = reviewCtx.Repository.BaseRef
+	result.HeadRef = reviewCtx.Repository.HeadRef
+	return result, enrichedCtx, nil
 }
 
 func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
@@ -480,6 +304,580 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	}
 }
 
+type reviewAgent struct {
+	name          string
+	role          string
+	system        string
+	noToolsSystem string
+	user          string
+	extraMessages []llm.Message
+	schema        []byte
+	schemaKind    llm.SchemaKind
+	hasTools      bool
+}
+
+type reviewAgentResult struct {
+	resp               *llm.ReviewResponse
+	run                model.AgentRun
+	reasoningEffort    string
+	contentMessages    []string
+	toolMessages       []llm.Message
+	toolCallHistory    []toolCallHistoryEntry
+	duplicateToolCalls int
+}
+
+type contextAgentResult struct {
+	run                model.AgentRun
+	reasoningEffort    string
+	contentMessages    []string
+	toolMessages       []llm.Message
+	toolCallHistory    []toolCallHistoryEntry
+	duplicateToolCalls int
+}
+
+func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
+	systemTemplate, err := e.loadPrompt("review_system.tmpl")
+	if err != nil {
+		return nil, nil, err
+	}
+	systemPrompt, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	noToolsSystem, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	payload := model.PromptPayloadFromContext(reviewCtx)
+	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	userPrompt, err := llm.RenderJSON(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("review: rendering review prompt json: %w", err)
+	}
+	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
+	var schema []byte
+	if req.UseJSONSchema {
+		schema = llm.FindingsSchema
+	}
+	run, err := e.runReviewAgent(ctx, reviewAgent{
+		name:          fmt.Sprintf("#1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef),
+		role:          "reviewer",
+		system:        systemPrompt,
+		noToolsSystem: noToolsSystem,
+		user:          userPrompt,
+		schema:        schema,
+		schemaKind:    llm.SchemaKindReview,
+		hasTools:      true,
+	}, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	filtered := filterByPriority(run.resp.Findings, req.PriorityThreshold)
+	e.logf(
+		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		len(run.resp.Findings),
+		len(filtered),
+		req.PriorityThreshold,
+		run.run.ToolCalls,
+		run.run.TokensUsed.PromptTokens,
+		run.run.TokensUsed.CompletionTokens,
+		run.run.TokensUsed.TotalTokens,
+	)
+	return &model.ReviewResult{
+		Findings:               filtered,
+		OverallCorrectness:     run.resp.OverallCorrectness,
+		OverallExplanation:     run.resp.OverallExplanation,
+		OverallConfidenceScore: run.resp.OverallConfidenceScore,
+		TokensUsed:             run.run.TokensUsed,
+		ToolCalls:              run.run.ToolCalls,
+		DuplicateToolCalls:     run.run.DuplicateToolCalls,
+		ReasoningEffort:        run.reasoningEffort,
+	}, reviewCtx, nil
+}
+
+var reviewVectors = []struct {
+	name      string
+	focusFile string
+}{
+	{"Code Quality", "focus_code_quality.tmpl"},
+	{"Security", "focus_security.tmpl"},
+	{"Architecture", "focus_architecture.tmpl"},
+	{"Performance", "focus_performance.tmpl"},
+	{"Testing", "focus_testing.tmpl"},
+	{"Best Practices", "focus_best_practices.tmpl"},
+}
+
+func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
+	baseTemplate, err := e.loadPrompt("review_system.tmpl")
+	if err != nil {
+		return nil, nil, err
+	}
+	contextTemplate, err := e.loadPrompt("context_system.tmpl")
+	if err != nil {
+		return nil, nil, err
+	}
+	contextSystem, err := e.renderContextSystem(contextTemplate, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	payload := model.PromptPayloadFromContext(reviewCtx)
+	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	userPrompt, err := llm.RenderJSON(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("review: rendering review prompt json: %w", err)
+	}
+	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
+
+	contextResult, err := e.runContextAgent(ctx, reviewAgent{
+		name:          "context",
+		role:          "context",
+		system:        contextSystem,
+		noToolsSystem: contextSystem,
+		user:          userPrompt,
+		schemaKind:    llm.SchemaKindText,
+		hasTools:      true,
+	}, req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	enriched := model.CloneContext(reviewCtx)
+	enriched.SupplementalContext = append(enriched.SupplementalContext, supplementalFromContextAgent(contextResult.toolMessages)...)
+	payload = model.PromptPayloadFromContext(enriched)
+	payload.StyleGuides, err = e.styleGuidesFor(enriched)
+	if err != nil {
+		return nil, nil, err
+	}
+	enrichedPrompt, err := llm.RenderJSON(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("review: rendering enriched review prompt json: %w", err)
+	}
+
+	var schema []byte
+	if req.UseJSONSchema {
+		schema = llm.FindingsSchema
+	}
+	contextMessages := contextAgentMarkdownMessages(contextResult.contentMessages)
+	vectorResults, err := e.runVectorAgents(ctx, baseTemplate, enrichedPrompt, contextMessages, schema, req)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	mergeResult, err := e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, schema, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
+	allRuns = append(allRuns, contextResult.run)
+	totalUsage := contextResult.run.TokensUsed
+	toolCalls := contextResult.run.ToolCalls
+	duplicateToolCalls := contextResult.run.DuplicateToolCalls
+	effectiveReasoningEffort := contextResult.reasoningEffort
+	for _, result := range vectorResults {
+		allRuns = append(allRuns, result.run)
+		totalUsage = addTokenUsage(totalUsage, result.run.TokensUsed)
+		toolCalls += result.run.ToolCalls
+		duplicateToolCalls += result.run.DuplicateToolCalls
+		if result.reasoningEffort != "" {
+			effectiveReasoningEffort = result.reasoningEffort
+		}
+	}
+	allRuns = append(allRuns, mergeResult.run)
+	totalUsage = addTokenUsage(totalUsage, mergeResult.run.TokensUsed)
+	if mergeResult.reasoningEffort != "" {
+		effectiveReasoningEffort = mergeResult.reasoningEffort
+	}
+
+	filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
+	e.logf(
+		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		len(mergeResult.resp.Findings),
+		len(filtered),
+		req.PriorityThreshold,
+		toolCalls,
+		totalUsage.PromptTokens,
+		totalUsage.CompletionTokens,
+		totalUsage.TotalTokens,
+	)
+	return &model.ReviewResult{
+		Findings:               filtered,
+		OverallCorrectness:     mergeResult.resp.OverallCorrectness,
+		OverallExplanation:     mergeResult.resp.OverallExplanation,
+		OverallConfidenceScore: mergeResult.resp.OverallConfidenceScore,
+		AgentRuns:              allRuns,
+		TokensUsed:             totalUsage,
+		ToolCalls:              toolCalls,
+		DuplicateToolCalls:     duplicateToolCalls,
+		ReasoningEffort:        effectiveReasoningEffort,
+	}, enriched, nil
+}
+
+func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, contextMessages []llm.Message, schema []byte, req model.ReviewRequest) ([]reviewAgentResult, error) {
+	results := make([]reviewAgentResult, len(reviewVectors))
+	errs := make([]error, len(reviewVectors))
+	var wg sync.WaitGroup
+	for i, vector := range reviewVectors {
+		wg.Add(1)
+		go func(idx int, vector struct {
+			name      string
+			focusFile string
+		}) {
+			defer wg.Done()
+			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, true)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
+			noToolsSystem, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, false)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
+			result, err := e.runReviewAgent(ctx, reviewAgent{
+				name:          vector.name,
+				role:          "reviewer",
+				system:        system,
+				noToolsSystem: noToolsSystem,
+				user:          userPrompt,
+				extraMessages: contextMessages,
+				schema:        schema,
+				schemaKind:    llm.SchemaKindReview,
+				hasTools:      true,
+			}, req)
+			results[idx] = result
+			errs[idx] = err
+		}(i, vector)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			return nil, fmt.Errorf("%s reviewer failed: %w", reviewVectors[i].name, err)
+		}
+	}
+	return results, nil
+}
+
+func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, vectorResults []reviewAgentResult, schema []byte, req model.ReviewRequest) (reviewAgentResult, error) {
+	systemTemplate, err := e.loadPrompt("merge_system.tmpl")
+	if err != nil {
+		return reviewAgentResult{}, err
+	}
+	system, err := llm.RenderPrompt(systemTemplate, struct {
+		OutputSchemaSnippet string
+	}{
+		OutputSchemaSnippet: reviewOutputSchemaSnippetFor(req.UseJSONSchema),
+	})
+	if err != nil {
+		return reviewAgentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
+	}
+	mergeUser, err := llm.RenderJSON(map[string]any{
+		"review_context":      json.RawMessage(userPrompt),
+		"context_agent_notes": contextNotes,
+		"vector_reviews":      vectorReviewPayloads(vectorResults),
+	})
+	if err != nil {
+		return reviewAgentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
+	}
+	return e.runReviewAgent(ctx, reviewAgent{
+		name:          "merge",
+		role:          "merge",
+		system:        system,
+		noToolsSystem: system,
+		user:          mergeUser,
+		schema:        schema,
+		schemaKind:    llm.SchemaKindReview,
+		hasTools:      false,
+	}, req)
+}
+
+func (e *Engine) runContextAgent(ctx context.Context, agent reviewAgent, req model.ReviewRequest) (contextAgentResult, error) {
+	result, err := e.runReviewAgent(ctx, agent, req)
+	if err != nil {
+		return contextAgentResult{}, err
+	}
+	return contextAgentResult{
+		run:                result.run,
+		reasoningEffort:    result.reasoningEffort,
+		contentMessages:    result.contentMessages,
+		toolMessages:       result.toolMessages,
+		toolCallHistory:    result.toolCallHistory,
+		duplicateToolCalls: result.duplicateToolCalls,
+	}, nil
+}
+
+func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (string, error) {
+	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
+		kind:                     "context",
+		parallelToolCallGuidance: !req.DisableParallelToolCalls,
+	})
+	if err != nil {
+		return "", err
+	}
+	systemPrompt, err := llm.RenderPrompt(template, struct {
+		ToolInstructions string
+	}{
+		ToolInstructions: toolInstructions,
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering context system prompt: %w", err)
+	}
+	return systemPrompt, nil
+}
+
+func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req model.ReviewRequest) (reviewAgentResult, error) {
+	noToolsSystem := agent.noToolsSystem
+	if noToolsSystem == "" {
+		noToolsSystem = agent.system
+	}
+	messages := []llm.Message{
+		{Role: "system", Content: agent.system},
+		{Role: "user", Content: agent.user},
+	}
+	messages = append(messages, agent.extraMessages...)
+	label := fmt.Sprintf("%s: %s", agent.role, agent.name)
+	if agent.role == "reviewer" && strings.HasPrefix(agent.name, "#") {
+		label = "reviewer " + agent.name
+	}
+	sec := e.logger.NewReasoningTracker(label)
+	defer sec.End()
+
+	tools := []llm.ToolDefinition(nil)
+	if agent.hasTools {
+		tools = reviewerToolDefinitions()
+	}
+	reviewSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
+	if agent.schemaKind == llm.SchemaKindText {
+		reviewSnippet = ""
+	}
+	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
+		AgentName:                  agent.name,
+		Messages:                   messages,
+		Tools:                      tools,
+		Schema:                     agent.schema,
+		SchemaKind:                 agent.schemaKind,
+		Model:                      e.config.Model,
+		MaxTokens:                  e.config.MaxTokens,
+		Temperature:                e.config.Temperature,
+		TopP:                       e.config.TopP,
+		ExtraBody:                  e.config.ExtraBody,
+		ParallelToolCalls:          !req.DisableParallelToolCalls,
+		ReasoningEffort:            e.config.ReasoningEffort,
+		RepoRoot:                   req.RepoRoot,
+		MaxToolCalls:               req.MaxToolCalls,
+		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
+		Section:                    sec,
+		NoToolsSystem:              noToolsSystem,
+		NoToolsSchemaSnippet:       reviewSnippet,
+		JSONRetryExampleSnippet:    llm.FindingsExamplePromptSnippet(),
+		JSONRetryProgressAgentName: agent.name,
+		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
+			if !agent.hasTools {
+				return append([]llm.Message(nil), messages...), nil
+			}
+			return noToolsMessagesFromRendered(noToolsSystem, messages)
+		},
+	})
+	if err != nil {
+		return reviewAgentResult{}, err
+	}
+	return reviewAgentResult{
+		resp:               loopResult.resp,
+		reasoningEffort:    loopResult.reasoningEffort,
+		contentMessages:    loopResult.contentMessages,
+		toolMessages:       loopResult.toolMessages,
+		toolCallHistory:    loopResult.toolCallHistory,
+		duplicateToolCalls: loopResult.duplicateToolCalls,
+		run: model.AgentRun{
+			Name:               agent.name,
+			Role:               agent.role,
+			Findings:           len(loopResult.resp.Findings),
+			ToolCalls:          loopResult.toolCalls,
+			DuplicateToolCalls: loopResult.duplicateToolCalls,
+			TokensUsed:         loopResult.tokensUsed,
+		},
+	}, nil
+}
+
+func (e *Engine) renderReviewSystem(template, focusName string, req model.ReviewRequest, hasTools bool) (string, error) {
+	focusSnippet, err := e.loadPrompt(focusName)
+	if err != nil {
+		return "", err
+	}
+	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools)
+}
+
+func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
+	toolInstructions := ""
+	if hasTools {
+		var err error
+		toolInstructions, err = e.renderToolInstructions(toolInstructionsConfig{
+			kind:                     "review",
+			parallelToolCallGuidance: !req.DisableParallelToolCalls,
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	systemPrompt, err := llm.RenderPrompt(template, struct {
+		OutputSchemaSnippet      string
+		ParallelToolCallGuidance bool
+		HasTools                 bool
+		FocusSnippet             string
+		ToolInstructions         string
+	}{
+		OutputSchemaSnippet:      reviewOutputSchemaSnippetFor(req.UseJSONSchema),
+		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
+		HasTools:                 hasTools,
+		FocusSnippet:             strings.TrimSpace(focusSnippet),
+		ToolInstructions:         toolInstructions,
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering review system prompt: %w", err)
+	}
+	return systemPrompt, nil
+}
+
+type toolInstructionsConfig struct {
+	kind                     string
+	parallelToolCallGuidance bool
+}
+
+func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, error) {
+	template, err := e.loadPrompt("tool_instructions.tmpl")
+	if err != nil {
+		return "", err
+	}
+	rendered, err := llm.RenderPrompt(template, struct {
+		Kind                     string
+		ParallelToolCallGuidance bool
+	}{
+		Kind:                     config.kind,
+		ParallelToolCallGuidance: config.parallelToolCallGuidance,
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering tool instructions prompt: %w", err)
+	}
+	return rendered, nil
+}
+
+func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([]llm.Message, error) {
+	finalMessages := make([]llm.Message, 0, len(messages))
+	for _, msg := range messages {
+		switch {
+		case msg.Role == "assistant" && len(msg.ToolCalls) > 0:
+			if strings.TrimSpace(msg.Content) != "" {
+				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: msg.Content})
+			}
+		case msg.Role == "tool":
+			finalMessages = append(finalMessages, llm.Message{Role: "user", Content: msg.Content})
+		default:
+			finalMessages = append(finalMessages, msg)
+		}
+	}
+	if len(finalMessages) == 0 {
+		return []llm.Message{{Role: "system", Content: systemPrompt}}, nil
+	}
+	finalMessages[0] = llm.Message{Role: "system", Content: systemPrompt}
+	return finalMessages, nil
+}
+
+func vectorReviewPayloads(results []reviewAgentResult) []map[string]any {
+	out := make([]map[string]any, 0, len(results))
+	for _, result := range results {
+		out = append(out, map[string]any{
+			"name":                     result.run.Name,
+			"role":                     result.run.Role,
+			"findings":                 result.resp.Findings,
+			"overall_correctness":      result.resp.OverallCorrectness,
+			"overall_explanation":      result.resp.OverallExplanation,
+			"overall_confidence_score": result.resp.OverallConfidenceScore,
+		})
+	}
+	return out
+}
+
+func supplementalFromContextAgent(messages []llm.Message) []model.SupplementalFile {
+	out := make([]model.SupplementalFile, 0, len(messages))
+	for i, msg := range messages {
+		path := contextToolPath(msg.Content)
+		if path == "" {
+			path = fmt.Sprintf("context/tool-%d", i+1)
+		}
+		out = append(out, model.SupplementalFile{
+			Path:    path,
+			Content: msg.Content,
+			Kind:    "context_tool_result",
+			Reason:  "tool result gathered by context agent",
+		})
+	}
+	return out
+}
+
+func appendResponseContent(contentMessages []string, resp *llm.ReviewResponse) []string {
+	if resp == nil {
+		return contentMessages
+	}
+	if content := strings.TrimSpace(resp.RawResponse); content != "" {
+		contentMessages = append(contentMessages, content)
+	}
+	return contentMessages
+}
+
+func contextAgentMarkdownMessages(contentMessages []string) []llm.Message {
+	content := contextAgentMarkdownContent(contentMessages)
+	if content == "" {
+		return nil
+	}
+	return []llm.Message{{
+		Role:    "user",
+		Content: content,
+	}}
+}
+
+func contextAgentMarkdownContent(contentMessages []string) string {
+	var merged []string
+	for _, content := range contentMessages {
+		if content = strings.TrimSpace(content); content != "" {
+			merged = append(merged, content)
+		}
+	}
+	if len(merged) == 0 {
+		return ""
+	}
+	return "## Context Agent Notes\n\n" + strings.Join(merged, "\n\n---\n\n")
+}
+
+func contextToolPath(content string) string {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return ""
+	}
+	if path, _ := payload["path"].(string); path != "" {
+		return path
+	}
+	if results, ok := payload["results"].([]any); ok && len(results) > 0 {
+		if first, ok := results[0].(map[string]any); ok {
+			path, _ := first["path"].(string)
+			return path
+		}
+	}
+	return ""
+}
+
+func addTokenUsage(left, right model.TokenUsage) model.TokenUsage {
+	return model.TokenUsage{
+		PromptTokens:     left.PromptTokens + right.PromptTokens,
+		CompletionTokens: left.CompletionTokens + right.CompletionTokens,
+		TotalTokens:      left.TotalTokens + right.TotalTokens,
+	}
+}
+
 func exampleSnippetFor(kind llm.SchemaKind) string {
 	if kind == llm.SchemaKindVerify {
 		return llm.VerifyExamplePromptSnippet()
@@ -492,6 +890,7 @@ func noToolsMessages(systemTemplate string, messages []llm.Message, snippet stri
 		OutputSchemaSnippet      string
 		ParallelToolCallGuidance bool
 		HasTools                 bool
+		ToolInstructions         string
 	}{
 		OutputSchemaSnippet: snippet,
 		HasTools:            false,
@@ -548,7 +947,7 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 	guides := make([]model.StyleGuide, 0, len(languages))
 	seenFiles := make(map[string]struct{})
 	for _, language := range languages {
-		name, ok := builtInStyleGuideFiles[language]
+		name, ok := mappings.StyleGuideFile(language)
 		if !ok {
 			continue
 		}
@@ -568,20 +967,6 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 	return guides, nil
 }
 
-var builtInStyleGuideFiles = map[string]string{
-	"go":         "styleguides/go.md",
-	"python":     "styleguides/python.md",
-	"javascript": "styleguides/javascript.md",
-	"typescript": "styleguides/typescript.md",
-	"html":       "styleguides/html-css.md",
-	"css":        "styleguides/html-css.md",
-	"scss":       "styleguides/html-css.md",
-	"csharp":     "styleguides/csharp.md",
-	"sql":        "styleguides/sql.md",
-	"shell":      "styleguides/bash.md",
-	"helm":       "styleguides/helm.md",
-}
-
 func changedLanguages(ctx *model.ReviewContext) []string {
 	if ctx == nil {
 		return nil
@@ -599,7 +984,7 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 	}
 
 	languages := make([]string, 0, len(seen))
-	for _, language := range []string{"go", "python", "javascript", "typescript", "html", "css", "scss", "csharp", "sql", "shell"} {
+	for _, language := range mappings.StyleGuideOrder() {
 		if _, ok := seen[language]; ok {
 			languages = append(languages, language)
 			delete(seen, language)
@@ -615,22 +1000,14 @@ func addLanguage(seen map[string]struct{}, language string) {
 	if language == "" {
 		return
 	}
-	if _, ok := builtInStyleGuideFiles[language]; !ok {
+	if _, ok := mappings.StyleGuideFile(language); !ok {
 		return
 	}
 	seen[language] = struct{}{}
 }
 
 func styleGuideLanguageForPath(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".js", ".mjs", ".cjs", ".jsx":
-		return "javascript"
-	case ".ts", ".mts", ".cts", ".tsx":
-		return "typescript"
-	default:
-		return filetype.DetectLanguage(path)
-	}
+	return mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
 }
 
 func filterByPriority(findings []model.Finding, threshold string) []model.Finding {

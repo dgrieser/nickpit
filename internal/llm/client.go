@@ -79,6 +79,7 @@ type SchemaKind string
 const (
 	SchemaKindReview SchemaKind = "review"
 	SchemaKindVerify SchemaKind = "verify"
+	SchemaKindText   SchemaKind = "text"
 )
 
 // ReasoningSink receives streaming reasoning content from collectStream.
@@ -1462,6 +1463,9 @@ func canonicalToolCallKey(call ToolCall) string {
 }
 
 func parseReviewResponse(content string, kind SchemaKind) (*ReviewResponse, error) {
+	if kind == SchemaKindText {
+		return &ReviewResponse{}, nil
+	}
 	if kind == SchemaKindVerify {
 		return parseVerifyResponse(content)
 	}
