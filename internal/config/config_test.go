@@ -73,6 +73,9 @@ func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
 	if profile.APIKey != "from-openrouter-env" {
 		t.Fatalf("api key = %q", profile.APIKey)
 	}
+	if profile.ReasoningEffort != DefaultReasoningEffort {
+		t.Fatalf("reasoning effort = %q", profile.ReasoningEffort)
+	}
 }
 
 func TestLoadConfigTracksEmptyConfiguredAPIKey(t *testing.T) {

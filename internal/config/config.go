@@ -390,6 +390,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.MaxReasoningSeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
 	}
+	if profile.ReasoningEffort == "" {
+		profile.ReasoningEffort = DefaultReasoningEffort
+	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)
 	}
