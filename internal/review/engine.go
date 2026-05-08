@@ -667,6 +667,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	}
 	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
 		AgentName:                  agent.name,
+		AgentKind:                  agentLoopKind(agent.role),
 		Messages:                   messages,
 		Tools:                      tools,
 		Schema:                     agent.schema,
@@ -1515,7 +1516,20 @@ func toolError(path, code, message string) string {
 	return mustToolResultJSON(payload)
 }
 
-func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry) (string, error) {
+func agentLoopKind(role string) string {
+	switch role {
+	case "context":
+		return "context"
+	case "reviewer":
+		return "review"
+	case "verify":
+		return "verify"
+	default:
+		return role
+	}
+}
+
+func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, kind string) (string, error) {
 	items := make([]struct {
 		Index   int
 		Summary string
@@ -1539,9 +1553,11 @@ func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry) (st
 			Summary string
 		}
 		RetryLastTool bool
+		Kind          string
 	}{
 		History:       items,
 		RetryLastTool: lastResult.IsError && lastResult.Code != "already_requested",
+		Kind:          kind,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering tool follow-up prompt: %w", err)

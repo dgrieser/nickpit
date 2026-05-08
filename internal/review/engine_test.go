@@ -101,7 +101,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		s.vectorCalls[name]++
 		s.vectorSystem[name] = system
 		for _, msg := range req.Messages {
-			if msg.Role == "user" && strings.Contains(msg.Content, "## Context Agent Notes") {
+			if msg.Role == "user" && strings.Contains(msg.Content, "## Notes") {
 				s.vectorContext[name] = msg.Content
 			}
 		}
@@ -649,7 +649,7 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if _, ok := llmClient.mergePayload["context_response"]; ok {
 		t.Fatalf("merge payload should not include context_response: %#v", llmClient.mergePayload)
 	}
-	if notes, _ := llmClient.mergePayload["context_agent_notes"].(string); !strings.Contains(notes, "## Context Agent Notes") {
+	if notes, _ := llmClient.mergePayload["context_agent_notes"].(string); !strings.Contains(notes, "## Notes") {
 		t.Fatalf("merge payload context_agent_notes = %#v", llmClient.mergePayload["context_agent_notes"])
 	}
 	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
@@ -668,7 +668,7 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 			t.Fatalf("%s prompt missing focus snippet", vector.name)
 		}
 		contextNote := llmClient.vectorContext[vector.name]
-		if !strings.Contains(contextNote, "## Context Agent Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
+		if !strings.Contains(contextNote, "## Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
 			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
 		}
 	}
@@ -755,16 +755,16 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	if req.Messages[4].Role != "user" {
 		t.Fatalf("follow-up role = %q", req.Messages[4].Role)
 	}
-	if want := "You called the following tools already:"; !strings.Contains(req.Messages[4].Content, want) {
+	if want := "You used the following tools up to now:"; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
 	}
 	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; result=[lines=1]"; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
 	}
-	if want := "If you need more context, continue calling tools."; !strings.Contains(req.Messages[4].Content, want) {
+	if want := "Continue calling tools, if the provided context is insufficient."; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up missing continue instruction: %q", req.Messages[4].Content)
 	}
-	if want := "Otherwise, if you have enough context to judge the patch, stop calling tools and return the final review as JSON."; !strings.Contains(req.Messages[4].Content, want) {
+	if want := "If you have enough context for the code review, stop calling tools and return the requested JSON format."; !strings.Contains(req.Messages[4].Content, want) {
 		t.Fatalf("follow-up missing stop instruction: %q", req.Messages[4].Content)
 	}
 }
@@ -860,7 +860,7 @@ func TestEngineProvidesNoToolsMessagesWithoutSyntheticFollowup(t *testing.T) {
 	}
 
 	req := llmClient.reqs[1]
-	if len(req.Messages) < 5 || !strings.Contains(req.Messages[4].Content, "You called the following tools already") {
+	if len(req.Messages) < 5 || !strings.Contains(req.Messages[4].Content, "You used the following tools up to now") {
 		t.Fatalf("normal messages should include synthetic follow-up: %#v", req.Messages)
 	}
 	noTools := req.NoToolsMessages
@@ -1329,7 +1329,7 @@ func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
 	if want := "2. inspect_file: tool_call_id=\"call_2\", arguments=[path=\"extra.go\"]; error=\"file contents were already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
 		t.Fatalf("duplicate follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
 	}
-	if want := "If you need more context, continue calling tools."; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
+	if want := "Continue calling tools, if the provided context is insufficient."; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
 		t.Fatalf("duplicate follow-up missing regular continuation instructions: %q", llmClient.reqs[2].Messages[6].Content)
 	}
 	if strings.Contains(llmClient.reqs[2].Messages[6].Content, "Please retry the last tool call.") {

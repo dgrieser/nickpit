@@ -85,6 +85,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 
 	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
 		AgentName:               "verify",
+		AgentKind:               "verify",
 		Messages:                messages,
 		Tools:                   reviewerToolDefinitions(),
 		Schema:                  schema,

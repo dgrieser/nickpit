@@ -173,7 +173,7 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	if want := "`inspect_file` tool"; !strings.Contains(systemPrompt, want) {
 		t.Fatalf("system prompt missing tool instructions: %q", systemPrompt)
 	}
-	if want := "gather evidence for the verdict"; !strings.Contains(systemPrompt, want) {
+	if want := "Only make additional tool calls, if the provided context is really insufficient."; !strings.Contains(systemPrompt, want) {
 		t.Fatalf("system prompt missing verifier tool guidance: %q", systemPrompt)
 	}
 	if llmClient.requests[0].SchemaKind != llm.SchemaKindVerify {
@@ -189,7 +189,7 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	if secondMessages[3].Role != "tool" || !strings.Contains(secondMessages[3].Content, `"content":"package extra"`) {
 		t.Fatalf("tool response message = %#v", secondMessages[3])
 	}
-	if last := secondMessages[len(secondMessages)-1]; last.Role != "user" || !strings.Contains(last.Content, "You called the following tools already") {
+	if last := secondMessages[len(secondMessages)-1]; last.Role != "user" || !strings.Contains(last.Content, "You used the following tools up to now") {
 		t.Fatalf("synthetic followup = %#v", last)
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 type agentLoopRequest struct {
 	AgentName                  string
+	AgentKind                  string
 	Messages                   []llm.Message
 	Tools                      []llm.ToolDefinition
 	Schema                     []byte
@@ -162,7 +163,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			result.resp = resp
 			break
 		}
-		content, err := e.renderSyntheticToolFollowup(result.toolCallHistory)
+		content, err := e.renderSyntheticToolFollowup(result.toolCallHistory, req.AgentKind)
 		if err != nil {
 			return agentLoopResult{}, err
 		}
