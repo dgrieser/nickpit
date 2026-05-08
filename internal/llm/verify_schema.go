@@ -12,5 +12,5 @@ var VerifySchema = mustMarshalJSON(map[string]any{
 })
 
 func VerifyExamplePromptSnippet() string {
-	return mustIndentJSON(mustMarshalJSON(exampleFromSchemaJSON(VerifySchema)))
+	return mustLoadPrompt("verify_example.tmpl")
 }

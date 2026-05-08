@@ -1,10 +1,10 @@
 package llm
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"sort"
+
+	"github.com/dgrieser/nickpit/prompts"
 )
 
 var FindingsSchema = mustMarshalJSON(map[string]any{
@@ -15,7 +15,7 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 			"items": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"title":            map[string]any{"type": "string", "description": "Imperative title under 80 characters."},
+					"title":            map[string]any{"type": "string"},
 					"body":             map[string]any{"type": "string"},
 					"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1},
 					"priority":         map[string]any{"type": "integer", "minimum": 0, "maximum": 3},
@@ -64,7 +64,7 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 })
 
 func FindingsExamplePromptSnippet() string {
-	return mustIndentJSON(mustMarshalJSON(exampleFromSchemaJSON(FindingsSchema)))
+	return mustLoadPrompt("findings_example.tmpl")
 }
 
 func mustMarshalJSON(v any) json.RawMessage {
@@ -75,88 +75,10 @@ func mustMarshalJSON(v any) json.RawMessage {
 	return json.RawMessage(data)
 }
 
-func mustIndentJSON(data []byte) string {
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, data, "", "  "); err != nil {
-		panic(fmt.Sprintf("llm: indent schema: %v", err))
+func mustLoadPrompt(name string) string {
+	content, err := prompts.Load(name)
+	if err != nil {
+		panic(fmt.Sprintf("llm: load prompt %s: %v", name, err))
 	}
-	return buf.String()
-}
-
-func exampleFromSchemaJSON(data []byte) any {
-	var schema map[string]any
-	if err := json.Unmarshal(data, &schema); err != nil {
-		panic(fmt.Sprintf("llm: unmarshal schema: %v", err))
-	}
-	return exampleFromSchema(schema)
-}
-
-func exampleFromSchema(schema map[string]any) any {
-	if enumValues, ok := schema["enum"].([]any); ok && len(enumValues) > 0 {
-		return enumValues[0]
-	}
-
-	switch schema["type"] {
-	case "object":
-		properties, _ := schema["properties"].(map[string]any)
-		keys := make([]string, 0, len(properties))
-		for key := range properties {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-
-		example := make(map[string]any, len(properties))
-		for _, key := range keys {
-			propertySchema, ok := properties[key].(map[string]any)
-			if !ok {
-				continue
-			}
-			example[key] = exampleValueForProperty(key, propertySchema)
-		}
-		return example
-	case "array":
-		itemSchema, _ := schema["items"].(map[string]any)
-		return []any{exampleFromSchema(itemSchema)}
-	case "string":
-		return "<string>"
-	case "integer":
-		return 0
-	case "number":
-		return 0.0
-	case "boolean":
-		return false
-	default:
-		return nil
-	}
-}
-
-func exampleValueForProperty(name string, schema map[string]any) any {
-	if enumValues, ok := schema["enum"].([]any); ok && len(enumValues) > 0 {
-		return enumValues[0]
-	}
-
-	switch name {
-	case "title":
-		return "Example title"
-	case "body":
-		return "Example explanation of why this is a problem."
-	case "confidence_score", "overall_confidence_score":
-		return 0.85
-	case "priority":
-		return 1
-	case "file_path":
-		return "file.go"
-	case "overall_explanation":
-		return "The patch is incorrect because it introduces a correctness issue."
-	case "suggestions":
-		return []any{map[string]any{
-			"body": "replacement code",
-			"line_range": map[string]any{
-				"start": 10,
-				"end":   12,
-			},
-		}}
-	}
-
-	return exampleFromSchema(schema)
+	return content
 }

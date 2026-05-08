@@ -103,7 +103,11 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				if strings.TrimSpace(invalidResp.RawContent) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 				}
-				messages = append(messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)})
+				feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
+				if err != nil {
+					return agentLoopResult{}, err
+				}
+				messages = append(messages, llm.Message{Role: "user", Content: feedback})
 				syntheticFollowup = nil
 				continue
 			}
@@ -158,7 +162,11 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			result.resp = resp
 			break
 		}
-		syntheticFollowup = &llm.Message{Role: "user", Content: syntheticToolFollowup(result.toolCallHistory)}
+		content, err := e.renderSyntheticToolFollowup(result.toolCallHistory)
+		if err != nil {
+			return agentLoopResult{}, err
+		}
+		syntheticFollowup = &llm.Message{Role: "user", Content: content}
 	}
 
 	if result.resp == nil {

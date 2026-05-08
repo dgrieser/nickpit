@@ -300,7 +300,11 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		}
-		llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "user", Content: buildJSONRetryFeedback(invalidResp, exampleSnippet)})
+		feedback, err := e.renderJSONRetryFeedback(invalidResp, exampleSnippet)
+		if err != nil {
+			return nil, err
+		}
+		llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "user", Content: feedback})
 	}
 }
 
@@ -850,7 +854,15 @@ func contextAgentMarkdownContent(contentMessages []string) string {
 	if len(merged) == 0 {
 		return ""
 	}
-	return "## Context Agent Notes\n\n" + strings.Join(merged, "\n\n---\n\n")
+	rendered, err := renderPromptFile("context_agent_notes.tmpl", struct {
+		Content string
+	}{
+		Content: strings.Join(merged, "\n\n---\n\n"),
+	})
+	if err != nil {
+		panic(fmt.Sprintf("review: rendering context agent notes prompt: %v", err))
+	}
+	return rendered
 }
 
 func contextToolPath(content string) string {
@@ -919,27 +931,36 @@ func noToolsMessages(systemTemplate string, messages []llm.Message, snippet stri
 	return finalMessages, nil
 }
 
-func buildJSONRetryFeedback(err *llm.InvalidResponseError, exampleSnippet string) string {
-	var b strings.Builder
-	b.WriteString("Your previous response could not be parsed as the expected JSON output: ")
-	b.WriteString(err.Reason)
-	b.WriteString(".")
-	if len(err.MissingFields) > 0 {
-		b.WriteString(" Missing or invalid fields: ")
-		b.WriteString(strings.Join(err.MissingFields, ", "))
-		b.WriteString(".")
-	}
-	b.WriteString("\n\nRespond again with ONLY a JSON object (no prose, no markdown fences) matching this shape:\n\n")
+func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exampleSnippet string) (string, error) {
 	if exampleSnippet == "" {
 		exampleSnippet = llm.FindingsExamplePromptSnippet()
 	}
-	b.WriteString(exampleSnippet)
-	return b.String()
+	rendered, err := renderPromptFile("json_retry_feedback.tmpl", struct {
+		Reason         string
+		MissingFields  string
+		ExampleSnippet string
+	}{
+		Reason:         invalid.Reason,
+		MissingFields:  strings.Join(invalid.MissingFields, ", "),
+		ExampleSnippet: strings.TrimSpace(exampleSnippet),
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering JSON retry feedback prompt: %w", err)
+	}
+	return rendered, nil
 }
 
 func (e *Engine) loadPrompt(name string) (string, error) {
 	e.logf("Loading prompt: source=embedded name=%s", name)
 	return prompts.Load(name)
+}
+
+func renderPromptFile(name string, data any) (string, error) {
+	tmpl, err := prompts.Load(name)
+	if err != nil {
+		return "", err
+	}
+	return llm.RenderPrompt(tmpl, data)
 }
 
 func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
@@ -1456,24 +1477,38 @@ func toolError(path, code, message string) string {
 	return mustToolResultJSON(payload)
 }
 
-func syntheticToolFollowup(history []toolCallHistoryEntry) string {
-	lines := make([]string, 0, len(history)+5)
-	lines = append(lines, "You called the following tools already:")
+func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry) (string, error) {
+	items := make([]struct {
+		Index   int
+		Summary string
+	}, 0, len(history))
 	for i, entry := range history {
-		lines = append(lines, fmt.Sprintf("%d. %s", i+1, syntheticToolCallSummary(entry)))
+		items = append(items, struct {
+			Index   int
+			Summary string
+		}{
+			Index:   i + 1,
+			Summary: syntheticToolCallSummary(entry),
+		})
 	}
-	lines = append(lines, "")
 	lastResult := toolResultSummary{}
 	if len(history) > 0 {
 		lastResult = history[len(history)-1].Result
 	}
-	if lastResult.IsError && lastResult.Code != "already_requested" {
-		lines = append(lines, "Please retry the last tool call.")
-	} else {
-		lines = append(lines, "If you need more context, continue calling tools.")
-		lines = append(lines, "Otherwise, if you have enough context to judge the patch, stop calling tools and return the final review as JSON.")
+	rendered, err := renderPromptFile("tool_followup.tmpl", struct {
+		History []struct {
+			Index   int
+			Summary string
+		}
+		RetryLastTool bool
+	}{
+		History:       items,
+		RetryLastTool: lastResult.IsError && lastResult.Code != "already_requested",
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering tool follow-up prompt: %w", err)
 	}
-	return strings.Join(lines, "\n")
+	return rendered, nil
 }
 
 func syntheticToolCallSummary(entry toolCallHistoryEntry) string {

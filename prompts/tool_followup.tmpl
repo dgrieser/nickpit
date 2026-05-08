@@ -1,0 +1,6 @@
+You called the following tools already:
+{{range .History}}
+{{.Index}}. {{.Summary}}{{end}}
+
+{{if .RetryLastTool}}Please retry the last tool call.{{else}}If you need more context, continue calling tools.
+Otherwise, if you have enough context to judge the patch, stop calling tools and return the final review as JSON.{{end}}
