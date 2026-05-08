@@ -19,12 +19,25 @@ func TestFindingsSchemaOmitsFollowUpRequests(t *testing.T) {
 	}
 }
 
+func TestFindingsSchemaStripsExamples(t *testing.T) {
+	if schemaContainsKey(FindingsSchema, "examples") {
+		t.Fatalf("schema unexpectedly contains examples: %s", FindingsSchema)
+	}
+}
+
 func TestFindingsExamplePromptSnippetOmitsFollowUpRequests(t *testing.T) {
 	snippet := FindingsExamplePromptSnippet()
 	for _, unwanted := range []string{`"follow_up_requests"`, `"type": "file"`, `"path": "file.go"`} {
 		if strings.Contains(snippet, unwanted) {
 			t.Fatalf("snippet unexpectedly contains %q: %s", unwanted, snippet)
 		}
+	}
+}
+
+func TestFindingsExamplePromptSnippetIsJSON(t *testing.T) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(FindingsExamplePromptSnippet()), &payload); err != nil {
+		t.Fatalf("snippet is not valid json: %v", err)
 	}
 }
 

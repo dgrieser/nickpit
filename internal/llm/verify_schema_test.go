@@ -29,12 +29,25 @@ func TestVerifySchemaRequiresAllFields(t *testing.T) {
 	}
 }
 
+func TestVerifySchemaStripsExamples(t *testing.T) {
+	if schemaContainsKey(VerifySchema, "examples") {
+		t.Fatalf("schema unexpectedly contains examples: %s", VerifySchema)
+	}
+}
+
 func TestVerifyExamplePromptSnippetIncludesAllFields(t *testing.T) {
 	snippet := VerifyExamplePromptSnippet()
 	for _, required := range []string{`"valid"`, `"priority"`, `"confidence_score"`, `"remarks"`} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}
+	}
+}
+
+func TestVerifyExamplePromptSnippetIsJSON(t *testing.T) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(VerifyExamplePromptSnippet()), &payload); err != nil {
+		t.Fatalf("snippet is not valid json: %v", err)
 	}
 }
 
