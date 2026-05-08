@@ -26,6 +26,9 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	if profile.MaxDuplicateToolCalls != 0 {
 		t.Fatalf("default max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
 	}
+	if profile.MaxOutputRetries != 0 {
+		t.Fatalf("default max output retries = %d", profile.MaxOutputRetries)
+	}
 	if profile.APIKey != "$OPENROUTER_API_KEY" {
 		t.Fatalf("default api key ref = %q", profile.APIKey)
 	}
@@ -459,6 +462,36 @@ profiles:
 	}
 }
 
+func TestLoadConfigMaxOutputRetriesFromFileAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_output_retries: 2
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxOutputRetries != 2 {
+		t.Fatalf("default max output retries = %d", profile.MaxOutputRetries)
+	}
+
+	_, profile, err = Load(path, Overrides{OutputRetries: intPtr(4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxOutputRetries != 4 {
+		t.Fatalf("override default max output retries = %d", profile.MaxOutputRetries)
+	}
+}
+
 func TestLoadConfigExplicitZeroToolCallOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -468,6 +501,7 @@ profiles:
     model: test-model
     max_tool_calls: 2
     max_duplicate_tool_calls: 3
+    max_output_retries: 4
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -476,6 +510,7 @@ profiles:
 	_, profile, err := Load(path, Overrides{
 		ToolCalls:          intPtr(0),
 		DuplicateToolCalls: intPtr(0),
+		OutputRetries:      intPtr(0),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -485,6 +520,9 @@ profiles:
 	}
 	if profile.MaxDuplicateToolCalls != 0 {
 		t.Fatalf("max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
+	}
+	if profile.MaxOutputRetries != 0 {
+		t.Fatalf("max output retries = %d", profile.MaxOutputRetries)
 	}
 }
 

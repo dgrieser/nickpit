@@ -15,6 +15,7 @@ profiles:
     model: test-model
     max_tool_calls: 2
     max_duplicate_tool_calls: 3
+    max_output_retries: 4
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +28,8 @@ profiles:
 		maxToolCallsSet:          true,
 		maxDuplicateToolCalls:    0,
 		maxDuplicateToolCallsSet: true,
+		maxOutputRetries:         0,
+		maxOutputRetriesSet:      true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -37,6 +40,9 @@ profiles:
 	}
 	if profile.MaxDuplicateToolCalls != 0 {
 		t.Fatalf("max duplicate tool calls = %d", profile.MaxDuplicateToolCalls)
+	}
+	if profile.MaxOutputRetries != 0 {
+		t.Fatalf("max output retries = %d", profile.MaxOutputRetries)
 	}
 }
 

@@ -33,7 +33,7 @@ type Engine struct {
 
 var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
 
-const defaultMaxJSONRetries = 3
+const defaultMaxOutputRetries = config.DefaultMaxOutputRetries
 
 type keyedLocker struct {
 	mu    sync.Mutex
@@ -150,7 +150,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	return result, enrichedCtx, nil
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
 	finalMessages, err := noToolsMessages(systemTemplate, messages, systemSnippet)
 	if err != nil {
 		return nil, err
@@ -168,7 +168,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			return resp, nil
 		}
 		var invalidResp *llm.InvalidResponseError
-		if !errors.As(err, &invalidResp) || attempt >= defaultMaxJSONRetries {
+		if !errors.As(err, &invalidResp) || attempt >= maxOutputRetries {
 			return nil, err
 		}
 		if invalidResp.ReasoningEffort != "" {
@@ -560,6 +560,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		RepoRoot:                   req.RepoRoot,
 		MaxToolCalls:               req.MaxToolCalls,
 		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
+		MaxOutputRetries:           req.MaxOutputRetries,
 		Section:                    sec,
 		NoToolsSystem:              noToolsSystem,
 		NoToolsSchemaSnippet:       reviewSnippet,

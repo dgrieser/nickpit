@@ -17,6 +17,7 @@ const (
 	DefaultMaxContextToken       = 120000
 	MaxToolCalls                 = 0
 	DefaultMaxDuplicateToolCalls = 5
+	DefaultMaxOutputRetries      = 5
 	DefaultConfigPath            = ".nickpit.yaml"
 	DefaultReasoningEffort       = "high"
 	DefaultGitHubTokenRef        = "${GITHUB_TOKEN}"
@@ -43,6 +44,7 @@ type Profile struct {
 	MaxContextTokens                int            `yaml:"max_context_tokens"`
 	MaxToolCalls                    int            `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls           int            `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries                int            `yaml:"max_output_retries"`
 	ReasoningEffort                 string         `yaml:"reasoning_effort"`
 	Workdir                         string         `yaml:"workdir"`
 	GitHubToken                     string         `yaml:"github_token"`
@@ -52,6 +54,7 @@ type Profile struct {
 	APIKeyConfigured                bool           `yaml:"-"`
 	MaxToolCallsConfigured          bool           `yaml:"-"`
 	MaxDuplicateToolCallsConfigured bool           `yaml:"-"`
+	MaxOutputRetriesConfigured      bool           `yaml:"-"`
 }
 
 type Overrides struct {
@@ -67,6 +70,7 @@ type Overrides struct {
 	MaxContextTokens   *int
 	ToolCalls          *int
 	DuplicateToolCalls *int
+	OutputRetries      *int
 	ReasoningEffort    string
 	Workdir            string
 	GitHubToken        string
@@ -324,6 +328,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.MaxDuplicateToolCalls = *overrides.DuplicateToolCalls
 		profile.MaxDuplicateToolCallsConfigured = true
 	}
+	if overrides.OutputRetries != nil {
+		profile.MaxOutputRetries = *overrides.OutputRetries
+		profile.MaxOutputRetriesConfigured = true
+	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
@@ -361,6 +369,12 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
 		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
+	}
+	if profile.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
+		profile.MaxOutputRetries = DefaultMaxOutputRetries
+	}
+	if profile.MaxOutputRetries < 0 {
+		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
 	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)
@@ -413,6 +427,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile.APIKeyConfigured = mappingValue(profileNode, "api_key") != nil
 		profile.MaxToolCallsConfigured = mappingValue(profileNode, "max_tool_calls") != nil
 		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil
+		profile.MaxOutputRetriesConfigured = mappingValue(profileNode, "max_output_retries") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil

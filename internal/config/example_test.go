@@ -46,5 +46,8 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.MaxDuplicateToolCalls != DefaultMaxDuplicateToolCalls {
 			t.Fatalf("%s max duplicate tool calls = %d", entry.name, profile.MaxDuplicateToolCalls)
 		}
+		if profile.MaxOutputRetries != DefaultMaxOutputRetries {
+			t.Fatalf("%s max output retries = %d", entry.name, profile.MaxOutputRetries)
+		}
 	}
 }

@@ -216,8 +216,9 @@ func TestVerifyRetriesMissingVerification(t *testing.T) {
 	}
 
 	verification, usage, err := engine.Verify(context.Background(), VerifyRequest{
-		ReviewCtx: sampleReviewCtx(),
-		Finding:   finding,
+		ReviewCtx:        sampleReviewCtx(),
+		Finding:          finding,
+		MaxOutputRetries: defaultMaxOutputRetries,
 	})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)

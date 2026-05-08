@@ -46,6 +46,8 @@ type app struct {
 	maxToolCallsSet               bool
 	maxDuplicateToolCalls         int
 	maxDuplicateToolCallsSet      bool
+	maxOutputRetries              int
+	maxOutputRetriesSet           bool
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
@@ -75,6 +77,7 @@ func newRootCmd() *cobra.Command {
 	cli := &app{
 		maxContextTokens:      config.DefaultMaxContextToken,
 		maxDuplicateToolCalls: config.DefaultMaxDuplicateToolCalls,
+		maxOutputRetries:      config.DefaultMaxOutputRetries,
 	}
 	root := &cobra.Command{
 		Use:           "nickpit",
@@ -108,6 +111,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxOutputRetries, &cli.maxOutputRetriesSet), "max-output-retries", "Maximum invalid output retries")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -145,6 +149,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.maxDuplicateToolCallsSet {
 		duplicateToolCalls = &a.maxDuplicateToolCalls
 	}
+	var outputRetries *int
+	if a.maxOutputRetriesSet {
+		outputRetries = &a.maxOutputRetries
+	}
 	var temperature *float64
 	if a.temperatureSet {
 		temperature = &a.temperature
@@ -175,6 +183,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		MaxContextTokens:   maxContextTokens,
 		ToolCalls:          toolCalls,
 		DuplicateToolCalls: duplicateToolCalls,
+		OutputRetries:      outputRetries,
 		Workdir:            a.workDir,
 		GitHubToken:        a.githubToken,
 		GitLabToken:        a.gitlabToken,
@@ -284,6 +293,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				MaxContextTokens:      profile.MaxContextTokens,
 				MaxToolCalls:          profile.MaxToolCalls,
 				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:      profile.MaxOutputRetries,
 				UseJSONSchema:         profile.UseJSONSchema,
 				PriorityThreshold:     a.priorityThreshold,
 				Submode:               submode,
@@ -334,6 +344,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				MaxContextTokens:      profile.MaxContextTokens,
 				MaxToolCalls:          profile.MaxToolCalls,
 				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:      profile.MaxOutputRetries,
 				UseJSONSchema:         profile.UseJSONSchema,
 				PriorityThreshold:     a.priorityThreshold,
 				Offline:               a.offline,
@@ -380,6 +391,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				MaxContextTokens:      profile.MaxContextTokens,
 				MaxToolCalls:          profile.MaxToolCalls,
 				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:      profile.MaxOutputRetries,
 				UseJSONSchema:         profile.UseJSONSchema,
 				PriorityThreshold:     a.priorityThreshold,
 				Offline:               a.offline,
@@ -555,6 +567,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if req.MaxDuplicateToolCalls == 0 {
 		req.MaxDuplicateToolCalls = profile.MaxDuplicateToolCalls
 	}
+	if req.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
+		req.MaxOutputRetries = profile.MaxOutputRetries
+	}
 	a.logProgress("Model", modelSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
@@ -580,6 +595,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			UseJSONSchema:            req.UseJSONSchema,
 			MaxToolCalls:             req.MaxToolCalls,
 			MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
+			MaxOutputRetries:         req.MaxOutputRetries,
 			DisableParallelToolCalls: req.DisableParallelToolCalls,
 			RepoRoot:                 req.RepoRoot,
 		}
@@ -822,6 +838,7 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	if req.MaxDuplicateToolCalls > 0 {
 		flags = append(flags, fmt.Sprintf("≤%d duplicate tool calls", req.MaxDuplicateToolCalls))
 	}
+	flags = append(flags, fmt.Sprintf("≤%d output retries", req.MaxOutputRetries))
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")
 	}

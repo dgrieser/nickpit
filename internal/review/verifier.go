@@ -22,6 +22,7 @@ type VerifyRequest struct {
 	UseJSONSchema            bool
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
+	MaxOutputRetries         int
 	DisableParallelToolCalls bool
 }
 
@@ -30,6 +31,7 @@ type VerifyOptions struct {
 	UseJSONSchema            bool
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
+	MaxOutputRetries         int
 	DisableParallelToolCalls bool
 	RepoRoot                 string
 }
@@ -107,6 +109,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			RepoRoot:                req.RepoRoot,
 			MaxToolCalls:            req.MaxToolCalls,
 			MaxDuplicateToolCalls:   req.MaxDuplicateToolCalls,
+			MaxOutputRetries:        req.MaxOutputRetries,
 			Section:                 req.Section,
 			NoToolsSystem:           systemTemplate,
 			NoToolsSchemaSnippet:    systemSnippet,
@@ -123,7 +126,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		if resp != nil && resp.Verification != nil {
 			return resp.Verification, usage, nil
 		}
-		if attempt >= defaultMaxJSONRetries {
+		if attempt >= req.MaxOutputRetries {
 			return nil, usage, fmt.Errorf("verify: missing verification in response")
 		}
 		e.logf("Verify: missing verification, retrying: attempt=%d", attempt+1)
@@ -169,6 +172,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				UseJSONSchema:            opts.UseJSONSchema,
 				MaxToolCalls:             opts.MaxToolCalls,
 				MaxDuplicateToolCalls:    opts.MaxDuplicateToolCalls,
+				MaxOutputRetries:         opts.MaxOutputRetries,
 				DisableParallelToolCalls: opts.DisableParallelToolCalls,
 			}
 			verification, usage, err := e.Verify(ctx, req)

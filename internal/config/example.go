@@ -52,6 +52,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("max_context_tokens", yamlInt(profile.MaxContextTokens)),
 		yamlEntry("max_tool_calls", yamlInt(profile.MaxToolCalls)),
 		yamlEntry("max_duplicate_tool_calls", yamlInt(profile.MaxDuplicateToolCalls)),
+		yamlEntry("max_output_retries", yamlInt(profile.MaxOutputRetries)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
 		yamlEntry("gitlab_base_url", yamlScalar(profile.GitLabBaseURL)),
@@ -70,6 +71,9 @@ func exampleProfile(profile Profile) Profile {
 	}
 	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
 		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
+	}
+	if profile.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
+		profile.MaxOutputRetries = DefaultMaxOutputRetries
 	}
 	if profile.GitHubToken == "" {
 		profile.GitHubToken = DefaultGitHubTokenRef

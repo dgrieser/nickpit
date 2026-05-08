@@ -973,6 +973,7 @@ func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
 		MaxToolCalls:     10,
+		MaxOutputRetries: defaultMaxOutputRetries,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1035,6 +1036,7 @@ func TestEngineRetriesInvalidOnlyToolCallsWithoutHistory(t *testing.T) {
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
 		MaxToolCalls:     10,
+		MaxOutputRetries: defaultMaxOutputRetries,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2572,6 +2574,7 @@ func TestEngineRetriesOnInvalidJSONResponse(t *testing.T) {
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
+		MaxOutputRetries: defaultMaxOutputRetries,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2645,6 +2648,7 @@ func TestEngineRetriesToolsOmittedInvalidJSONWithoutTools(t *testing.T) {
 	result, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
+		MaxOutputRetries: defaultMaxOutputRetries,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2700,8 +2704,8 @@ func TestEngineRetriesToolsOmittedInvalidJSONWithoutTools(t *testing.T) {
 }
 
 func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
-	results := make([]scriptedLLMResult, 0, defaultMaxJSONRetries+1)
-	for i := 0; i <= defaultMaxJSONRetries; i++ {
+	results := make([]scriptedLLMResult, 0, defaultMaxOutputRetries+1)
+	for i := 0; i <= defaultMaxOutputRetries; i++ {
 		results = append(results, scriptedLLMResult{
 			err: &llm.InvalidResponseError{
 				RawContent: "still bad",
@@ -2714,6 +2718,7 @@ func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
+		MaxOutputRetries: defaultMaxOutputRetries,
 	})
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
@@ -2721,8 +2726,8 @@ func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
 	if !errors.Is(err, llm.ErrInvalidJSON) {
 		t.Fatalf("expected ErrInvalidJSON, got %v", err)
 	}
-	if len(llmClient.reqs) != defaultMaxJSONRetries+1 {
-		t.Fatalf("requests = %d, want %d", len(llmClient.reqs), defaultMaxJSONRetries+1)
+	if len(llmClient.reqs) != defaultMaxOutputRetries+1 {
+		t.Fatalf("requests = %d, want %d", len(llmClient.reqs), defaultMaxOutputRetries+1)
 	}
 }
 
