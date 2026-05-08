@@ -206,6 +206,51 @@ func TestReasoningRendererLivePreviewShrinksToFitTerminal(t *testing.T) {
 	}
 }
 
+func TestReasoningRendererLivePreviewKeepsStableHeightForShortContent(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &ReasoningRenderer{w: &buf, isTTY: true, width: 80, height: 12}
+
+	id := renderer.Begin("review")
+	emptyRows := visibleLineCount(renderer.buildLiveLocked(), renderer.termWidth())
+	renderer.Append(id, "line\n")
+	oneLineRows := visibleLineCount(renderer.buildLiveLocked(), renderer.termWidth())
+	renderer.Append(id, "second\nthird\n")
+	multipleLineRows := visibleLineCount(renderer.buildLiveLocked(), renderer.termWidth())
+
+	for name, rows := range map[string]int{
+		"empty":    emptyRows,
+		"one":      oneLineRows,
+		"multiple": multipleLineRows,
+	} {
+		if rows != 11 {
+			t.Fatalf("%s live preview rows=%d, want stable 11-row preview", name, rows)
+		}
+	}
+}
+
+func TestReasoningRendererLivePreviewRedrawsInPlace(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &ReasoningRenderer{w: &buf, isTTY: true, width: 80, height: 12}
+
+	id := renderer.Begin("review")
+	buf.Reset()
+	renderer.Append(id, "line\n")
+
+	got := buf.String()
+	if !strings.Contains(got, "\x1b[11A") {
+		t.Fatalf("live preview should move back to redraw in place: %q", got)
+	}
+	if strings.Contains(got, "\x1b[0J") {
+		t.Fatalf("ordinary live redraw should not clear terminal tail: %q", got)
+	}
+
+	buf.Reset()
+	renderer.Append(id, "")
+	if got := buf.String(); got != "" {
+		t.Fatalf("unchanged live preview should not rewrite terminal: %q", got)
+	}
+}
+
 func TestReasoningRendererLivePreviewPrefixesHeadersWithEmptyLine(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := &ReasoningRenderer{w: &buf, isTTY: true, width: 80, height: 12}

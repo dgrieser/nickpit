@@ -21,6 +21,7 @@ type ReasoningRenderer struct {
 	isTTY        bool
 	sections     []*reasoningSection
 	lastLiveRows int
+	lastLive     string
 	width        int // test override
 	height       int // test override
 }
@@ -152,13 +153,61 @@ func (r *ReasoningRenderer) formatBanner(label string) string {
 }
 
 func (r *ReasoningRenderer) redrawLiveLocked() {
-	r.clearLiveLocked()
+	live := r.buildLiveLocked()
+	if live == r.lastLive {
+		return
+	}
+	if live == "" {
+		r.clearLiveLocked()
+		return
+	}
+	if r.lastLiveRows > 0 {
+		_, _ = fmt.Fprintf(r.w, "\x1b[%dA", r.lastLiveRows)
+	}
+	r.writeLiveLocked(live)
+	newRows := visibleLineCount(live, r.termWidth())
+	if r.lastLiveRows > newRows {
+		_, _ = io.WriteString(r.w, "\x1b[0J")
+	}
+	r.lastLive = live
+	r.lastLiveRows = newRows
+}
+
+func (r *ReasoningRenderer) redrawLiveFromOutsideLocked() {
+	r.lastLive = ""
+	r.lastLiveRows = 0
 	live := r.buildLiveLocked()
 	if live == "" {
 		return
 	}
-	_, _ = io.WriteString(r.w, live)
+	r.writeLiveLocked(live)
 	r.lastLiveRows = visibleLineCount(live, r.termWidth())
+	r.lastLive = live
+}
+
+func (r *ReasoningRenderer) writeLiveLocked(live string) {
+	_, _ = io.WriteString(r.w, clearLineEnds(live))
+}
+
+func clearLineEnds(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(s, '\n')
+		if i < 0 {
+			b.WriteString(s)
+			b.WriteString("\x1b[0K")
+			return b.String()
+		}
+		b.WriteString(s[:i])
+		b.WriteString("\x1b[0K\n")
+		s = s[i+1:]
+		if s == "" {
+			return b.String()
+		}
+	}
 }
 
 func (r *ReasoningRenderer) clearLiveLocked() {
@@ -167,6 +216,7 @@ func (r *ReasoningRenderer) clearLiveLocked() {
 	}
 	_, _ = fmt.Fprintf(r.w, "\x1b[%dA\x1b[0J", r.lastLiveRows)
 	r.lastLiveRows = 0
+	r.lastLive = ""
 }
 
 func (r *ReasoningRenderer) buildLiveLocked() string {
@@ -200,15 +250,32 @@ func (r *ReasoningRenderer) buildLiveLocked() string {
 		out.WriteString(r.formatBanner(sec.label))
 		body := latestRows(sec.body.String(), bodyRows, width)
 		if r.useANSI {
-			fmt.Fprintf(&out, "\x1b[3;90m%s\x1b[0m", body)
+			fmt.Fprintf(&out, "\x1b[3;90m%s\x1b[0m", padRows(body, bodyRows, width))
 		} else {
-			out.WriteString(body)
-		}
-		if body == "" || !strings.HasSuffix(body, "\n") {
-			out.WriteByte('\n')
+			out.WriteString(padRows(body, bodyRows, width))
 		}
 	}
 	return out.String()
+}
+
+func padRows(s string, minRows, width int) string {
+	if minRows <= 0 {
+		return s
+	}
+	rows := visibleLineCount(s, width)
+	if rows == 0 {
+		rows = 1
+	}
+	var b strings.Builder
+	b.WriteString(s)
+	if s == "" || !strings.HasSuffix(s, "\n") {
+		b.WriteByte('\n')
+	}
+	for rows < minRows {
+		b.WriteByte('\n')
+		rows++
+	}
+	return b.String()
 }
 
 func latestRows(content string, maxRows, width int) string {
@@ -350,6 +417,6 @@ func (r *ReasoningRenderer) WriteOutside(text string) {
 		_, _ = io.WriteString(r.w, "\n")
 	}
 	if r.isTTY {
-		r.redrawLiveLocked()
+		r.redrawLiveFromOutsideLocked()
 	}
 }
