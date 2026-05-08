@@ -59,17 +59,20 @@ func (d *reasoningLoopDetector) onDelta(delta string) {
 	if d.detected {
 		return
 	}
-	for _, ch := range delta {
-		if ch == '\n' {
-			line := d.currentLine.String()
-			d.currentLine.Reset()
-			d.lines = append(d.lines, line)
-			if d.checkLoopLocked() {
-				return
-			}
-		} else {
-			d.currentLine.WriteRune(ch)
+	for {
+		idx := strings.IndexByte(delta, '\n')
+		if idx == -1 {
+			d.currentLine.WriteString(delta)
+			break
 		}
+		d.currentLine.WriteString(delta[:idx])
+		line := d.currentLine.String()
+		d.currentLine.Reset()
+		d.lines = append(d.lines, line)
+		if d.checkLoopLocked() {
+			return
+		}
+		delta = delta[idx+1:]
 	}
 }
 
@@ -110,8 +113,17 @@ func (d *reasoningLoopDetector) checkLoopLocked() bool {
 			}
 		}
 		if match {
-			d.trigger(strings.Join(d.lines[b2:], "\n"), b1)
-			return true
+			hasContent := false
+			for i := 0; i < k; i++ {
+				if strings.TrimSpace(d.lines[b2+i]) != "" {
+					hasContent = true
+					break
+				}
+			}
+			if hasContent {
+				d.trigger(strings.Join(d.lines[b2:], "\n"), b1)
+				return true
+			}
 		}
 	}
 	return false

@@ -535,43 +535,23 @@ func sanitizeMessagesForNoTools(messages []Message) []Message {
 }
 
 func addReasoningBudgetRetryHint(req *ReviewRequest) {
-	if req == nil {
-		return
-	}
-	if len(req.Messages) == 0 {
-		req.UserContent = appendUserHint(req.UserContent, reasoningBudgetRetryHint)
-		return
-	}
-	hint := strings.TrimSpace(reasoningBudgetRetryHint)
-	if hint == "" {
-		return
-	}
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == openai.ChatMessageRoleUser {
-			if strings.Contains(req.Messages[i].Content, hint) {
-				return
-			}
-		}
-	}
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == openai.ChatMessageRoleUser && strings.TrimSpace(req.Messages[i].Content) != "" {
-			req.Messages = append(req.Messages[:i+1], append([]Message{{Role: openai.ChatMessageRoleUser, Content: hint}}, req.Messages[i+1:]...)...)
-			return
-		}
-	}
-	req.Messages = append(req.Messages, Message{Role: openai.ChatMessageRoleUser, Content: hint})
+	addReasoningRetryHint(req, reasoningBudgetRetryHint)
 }
 
 func addReasoningLoopRetryHint(req *ReviewRequest) {
+	addReasoningRetryHint(req, reasoningLoopRetryHint)
+}
+
+func addReasoningRetryHint(req *ReviewRequest, hint string) {
 	if req == nil {
 		return
 	}
-	if len(req.Messages) == 0 {
-		req.UserContent = appendUserHint(req.UserContent, reasoningLoopRetryHint)
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
 		return
 	}
-	hint := strings.TrimSpace(reasoningLoopRetryHint)
-	if hint == "" {
+	if len(req.Messages) == 0 {
+		req.UserContent = appendUserHint(req.UserContent, hint)
 		return
 	}
 	for i := len(req.Messages) - 1; i >= 0; i-- {
