@@ -65,6 +65,12 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.MaxOutputRetries != 0 {
 		base.MaxOutputRetries = override.MaxOutputRetries
 	}
+	if override.MaxReasoningSecondsConfigured {
+		base.MaxReasoningSecondsConfigured = true
+		base.MaxReasoningSeconds = override.MaxReasoningSeconds
+	} else if override.MaxReasoningSeconds != 0 {
+		base.MaxReasoningSeconds = override.MaxReasoningSeconds
+	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}

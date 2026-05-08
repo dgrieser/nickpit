@@ -49,5 +49,8 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.MaxOutputRetries != DefaultMaxOutputRetries {
 			t.Fatalf("%s max output retries = %d", entry.name, profile.MaxOutputRetries)
 		}
+		if profile.MaxReasoningSeconds != DefaultMaxReasoningSeconds {
+			t.Fatalf("%s max reasoning seconds = %d", entry.name, profile.MaxReasoningSeconds)
+		}
 	}
 }

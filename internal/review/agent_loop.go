@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
@@ -29,6 +30,7 @@ type agentLoopRequest struct {
 	MaxToolCalls               int
 	MaxDuplicateToolCalls      int
 	MaxOutputRetries           int
+	MaxReasoningSeconds        int
 	ParallelToolCalls          bool
 	Section                    *logging.ReasoningSection
 	NoToolsMessages            func([]llm.Message) ([]llm.Message, error)
@@ -63,6 +65,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		ExtraBody:         req.ExtraBody,
 		ParallelToolCalls: req.ParallelToolCalls,
 		ReasoningEffort:   req.ReasoningEffort,
+		MaxReasoning:      time.Duration(req.MaxReasoningSeconds) * time.Second,
 	}
 
 	messages := append([]llm.Message(nil), req.Messages...)

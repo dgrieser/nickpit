@@ -16,6 +16,7 @@ profiles:
     max_tool_calls: 2
     max_duplicate_tool_calls: 3
     max_output_retries: 4
+    max_reasoning_seconds: 5
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -30,6 +31,8 @@ profiles:
 		maxDuplicateToolCallsSet: true,
 		maxOutputRetries:         0,
 		maxOutputRetriesSet:      true,
+		maxReasoningSeconds:      0,
+		maxReasoningSecondsSet:   true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -43,6 +46,9 @@ profiles:
 	}
 	if profile.MaxOutputRetries != 0 {
 		t.Fatalf("max output retries = %d", profile.MaxOutputRetries)
+	}
+	if profile.MaxReasoningSeconds != 0 {
+		t.Fatalf("max reasoning seconds = %d", profile.MaxReasoningSeconds)
 	}
 }
 

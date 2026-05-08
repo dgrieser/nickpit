@@ -1472,6 +1472,55 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestClientReviewFallsBackAfterReasoningTimeout(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		if len(efforts) == 1 {
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-1",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{
+					{
+						"index": 0,
+						"delta": map[string]any{
+							"reasoning_content": "thinking",
+						},
+					},
+				},
+			})
+			<-r.Context().Done()
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		MaxReasoning:    20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
 func TestClientReviewAddsConciseReasoningHintAfterBudgetExhaustion(t *testing.T) {
 	var userMessages []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

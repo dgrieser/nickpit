@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/logging"
@@ -104,6 +105,7 @@ type ReviewRequest struct {
 	ExtraBody         map[string]any
 	ParallelToolCalls bool
 	ReasoningEffort   string
+	MaxReasoning      time.Duration
 	ReasoningSink     ReasoningSink
 }
 
@@ -184,6 +186,16 @@ type ReasoningBudgetExhaustedError struct {
 	ReasoningEffort string
 }
 
+type reasoningTimeoutController struct {
+	limit   time.Duration
+	cancel  context.CancelFunc
+	timer   *time.Timer
+	mu      sync.Mutex
+	expired bool
+	started bool
+	stopped bool
+}
+
 func (e *streamReadError) Error() string {
 	return e.err.Error()
 }
@@ -206,6 +218,56 @@ func (e *llmHTTPStatusError) Unwrap() error {
 
 func (e *ReasoningBudgetExhaustedError) Error() string {
 	return reasoningBudgetExhaustedMessage
+}
+
+func newReasoningTimeoutController(limit time.Duration, cancel context.CancelFunc) *reasoningTimeoutController {
+	if limit <= 0 {
+		return nil
+	}
+	return &reasoningTimeoutController{limit: limit, cancel: cancel}
+}
+
+func (t *reasoningTimeoutController) Start() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.started {
+		return
+	}
+	t.started = true
+	t.timer = time.AfterFunc(t.limit, func() {
+		t.mu.Lock()
+		if t.stopped {
+			t.mu.Unlock()
+			return
+		}
+		t.expired = true
+		t.mu.Unlock()
+		t.cancel()
+	})
+}
+
+func (t *reasoningTimeoutController) Stop() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stopped = true
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+}
+
+func (t *reasoningTimeoutController) Expired() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.expired
 }
 
 func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
@@ -712,7 +774,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logHighlightedJSON("LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning)
 	if err != nil {
 		return nil, err
 	}
@@ -883,11 +945,12 @@ func NormalizeToolCallArguments(arguments string) (string, bool) {
 	return string(normalized), true
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		detector := newReasoningLoopDetector(streamCancel)
+		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
 		c.transport.reset()
 
@@ -928,8 +991,9 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			continue
 		}
 
-		resp, streamErr := c.collectStream(stream, sink, detector)
+		resp, streamErr := c.collectStream(stream, sink, detector, timeout)
 		closeErr := stream.Close()
+		timeout.Stop()
 		streamCancel()
 		if streamErr != nil {
 			if closeErr != nil {
@@ -946,6 +1010,10 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					c.logger.PrintBlock("Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
 				}
 				return nil, loopErr
+			}
+			if timeout.Expired() {
+				c.logf("Reasoning time limit exceeded: effort=%q limit=%s", payload.ReasoningEffort, maxReasoning)
+				return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 			}
 			var readErr *streamReadError
 			if errors.As(streamErr, &readErr) {
@@ -993,7 +1061,7 @@ func (c *OpenAIClient) logRetryHTTPStatus(status, currentAttempt int, waitFor ti
 	c.logger.PrintStatusLine(fmt.Sprintf("LLM request failed with status %d, retrying in %s...", status, waitFor))
 }
 
-func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector) (*streamedResponse, error) {
+func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
 		toolCalls        []*toolCallBuilder
@@ -1084,6 +1152,7 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink R
 			if choice.Delta.ReasoningContent != "" {
 				if !reasoningStarted {
 					reasoningStarted = true
+					timeout.Start()
 				}
 				if s := ensureSink(); s != nil {
 					s.Append(choice.Delta.ReasoningContent)
@@ -1093,10 +1162,12 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink R
 				}
 			}
 			if choice.Delta.Content != "" {
+				timeout.Stop()
 				contentBuilder.WriteString(choice.Delta.Content)
 				sawContent = true
 			}
 			if len(choice.Delta.ToolCalls) > 0 {
+				timeout.Stop()
 				sawToolCalls = true
 				mergeToolCallDeltas(&toolCalls, choice.Delta.ToolCalls)
 			}

@@ -23,6 +23,7 @@ type VerifyRequest struct {
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
 	MaxOutputRetries         int
+	MaxReasoningSeconds      int
 	DisableParallelToolCalls bool
 }
 
@@ -32,6 +33,7 @@ type VerifyOptions struct {
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
 	MaxOutputRetries         int
+	MaxReasoningSeconds      int
 	DisableParallelToolCalls bool
 	RepoRoot                 string
 }
@@ -110,6 +112,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			MaxToolCalls:            req.MaxToolCalls,
 			MaxDuplicateToolCalls:   req.MaxDuplicateToolCalls,
 			MaxOutputRetries:        req.MaxOutputRetries,
+			MaxReasoningSeconds:     req.MaxReasoningSeconds,
 			Section:                 req.Section,
 			NoToolsSystem:           systemTemplate,
 			NoToolsSchemaSnippet:    systemSnippet,
@@ -173,6 +176,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxToolCalls:             opts.MaxToolCalls,
 				MaxDuplicateToolCalls:    opts.MaxDuplicateToolCalls,
 				MaxOutputRetries:         opts.MaxOutputRetries,
+				MaxReasoningSeconds:      opts.MaxReasoningSeconds,
 				DisableParallelToolCalls: opts.DisableParallelToolCalls,
 			}
 			verification, usage, err := e.Verify(ctx, req)

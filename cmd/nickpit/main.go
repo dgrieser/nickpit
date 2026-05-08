@@ -48,6 +48,8 @@ type app struct {
 	maxDuplicateToolCallsSet      bool
 	maxOutputRetries              int
 	maxOutputRetriesSet           bool
+	maxReasoningSeconds           int
+	maxReasoningSecondsSet        bool
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
@@ -78,6 +80,7 @@ func newRootCmd() *cobra.Command {
 		maxContextTokens:      config.DefaultMaxContextToken,
 		maxDuplicateToolCalls: config.DefaultMaxDuplicateToolCalls,
 		maxOutputRetries:      config.DefaultMaxOutputRetries,
+		maxReasoningSeconds:   config.DefaultMaxReasoningSeconds,
 	}
 	root := &cobra.Command{
 		Use:           "nickpit",
@@ -112,6 +115,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxOutputRetries, &cli.maxOutputRetriesSet), "max-output-retries", "Maximum invalid output retries")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningSeconds, &cli.maxReasoningSecondsSet), "max-reasoning-seconds", "Maximum seconds to allow reasoning before falling back to lower effort")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -153,6 +157,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.maxOutputRetriesSet {
 		outputRetries = &a.maxOutputRetries
 	}
+	var reasoningSeconds *int
+	if a.maxReasoningSecondsSet {
+		reasoningSeconds = &a.maxReasoningSeconds
+	}
 	var temperature *float64
 	if a.temperatureSet {
 		temperature = &a.temperature
@@ -184,6 +192,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		ToolCalls:          toolCalls,
 		DuplicateToolCalls: duplicateToolCalls,
 		OutputRetries:      outputRetries,
+		ReasoningSeconds:   reasoningSeconds,
 		Workdir:            a.workDir,
 		GitHubToken:        a.githubToken,
 		GitLabToken:        a.gitlabToken,
@@ -294,6 +303,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				MaxToolCalls:          profile.MaxToolCalls,
 				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
 				MaxOutputRetries:      profile.MaxOutputRetries,
+				MaxReasoningSeconds:   profile.MaxReasoningSeconds,
 				UseJSONSchema:         profile.UseJSONSchema,
 				PriorityThreshold:     a.priorityThreshold,
 				Submode:               submode,
@@ -345,6 +355,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				MaxToolCalls:          profile.MaxToolCalls,
 				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
 				MaxOutputRetries:      profile.MaxOutputRetries,
+				MaxReasoningSeconds:   profile.MaxReasoningSeconds,
 				UseJSONSchema:         profile.UseJSONSchema,
 				PriorityThreshold:     a.priorityThreshold,
 				Offline:               a.offline,
@@ -392,6 +403,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				MaxToolCalls:          profile.MaxToolCalls,
 				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
 				MaxOutputRetries:      profile.MaxOutputRetries,
+				MaxReasoningSeconds:   profile.MaxReasoningSeconds,
 				UseJSONSchema:         profile.UseJSONSchema,
 				PriorityThreshold:     a.priorityThreshold,
 				Offline:               a.offline,
@@ -570,6 +582,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if req.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
 		req.MaxOutputRetries = profile.MaxOutputRetries
 	}
+	if req.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
+		req.MaxReasoningSeconds = profile.MaxReasoningSeconds
+	}
 	a.logProgress("Model", modelSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
@@ -596,6 +611,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			MaxToolCalls:             req.MaxToolCalls,
 			MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
 			MaxOutputRetries:         req.MaxOutputRetries,
+			MaxReasoningSeconds:      req.MaxReasoningSeconds,
 			DisableParallelToolCalls: req.DisableParallelToolCalls,
 			RepoRoot:                 req.RepoRoot,
 		}
@@ -839,6 +855,9 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 		flags = append(flags, fmt.Sprintf("≤%d duplicate tool calls", req.MaxDuplicateToolCalls))
 	}
 	flags = append(flags, fmt.Sprintf("≤%d output retries", req.MaxOutputRetries))
+	if req.MaxReasoningSeconds > 0 {
+		flags = append(flags, fmt.Sprintf("≤%ds reasoning", req.MaxReasoningSeconds))
+	}
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")
 	}

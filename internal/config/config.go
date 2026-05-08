@@ -18,6 +18,7 @@ const (
 	MaxToolCalls                 = 0
 	DefaultMaxDuplicateToolCalls = 5
 	DefaultMaxOutputRetries      = 5
+	DefaultMaxReasoningSeconds   = 600
 	DefaultConfigPath            = ".nickpit.yaml"
 	DefaultReasoningEffort       = "high"
 	DefaultGitHubTokenRef        = "${GITHUB_TOKEN}"
@@ -45,6 +46,7 @@ type Profile struct {
 	MaxToolCalls                    int            `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls           int            `yaml:"max_duplicate_tool_calls"`
 	MaxOutputRetries                int            `yaml:"max_output_retries"`
+	MaxReasoningSeconds             int            `yaml:"max_reasoning_seconds"`
 	ReasoningEffort                 string         `yaml:"reasoning_effort"`
 	Workdir                         string         `yaml:"workdir"`
 	GitHubToken                     string         `yaml:"github_token"`
@@ -55,6 +57,7 @@ type Profile struct {
 	MaxToolCallsConfigured          bool           `yaml:"-"`
 	MaxDuplicateToolCallsConfigured bool           `yaml:"-"`
 	MaxOutputRetriesConfigured      bool           `yaml:"-"`
+	MaxReasoningSecondsConfigured   bool           `yaml:"-"`
 }
 
 type Overrides struct {
@@ -71,6 +74,7 @@ type Overrides struct {
 	ToolCalls          *int
 	DuplicateToolCalls *int
 	OutputRetries      *int
+	ReasoningSeconds   *int
 	ReasoningEffort    string
 	Workdir            string
 	GitHubToken        string
@@ -332,6 +336,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.MaxOutputRetries = *overrides.OutputRetries
 		profile.MaxOutputRetriesConfigured = true
 	}
+	if overrides.ReasoningSeconds != nil {
+		profile.MaxReasoningSeconds = *overrides.ReasoningSeconds
+		profile.MaxReasoningSecondsConfigured = true
+	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
@@ -375,6 +383,12 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
+	}
+	if profile.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
+		profile.MaxReasoningSeconds = DefaultMaxReasoningSeconds
+	}
+	if profile.MaxReasoningSeconds < 0 {
+		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
 	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)
@@ -428,6 +442,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile.MaxToolCallsConfigured = mappingValue(profileNode, "max_tool_calls") != nil
 		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil
 		profile.MaxOutputRetriesConfigured = mappingValue(profileNode, "max_output_retries") != nil
+		profile.MaxReasoningSecondsConfigured = mappingValue(profileNode, "max_reasoning_seconds") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil

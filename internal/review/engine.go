@@ -561,6 +561,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		MaxToolCalls:               req.MaxToolCalls,
 		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
 		MaxOutputRetries:           req.MaxOutputRetries,
+		MaxReasoningSeconds:        req.MaxReasoningSeconds,
 		Section:                    sec,
 		NoToolsSystem:              noToolsSystem,
 		NoToolsSchemaSnippet:       reviewSnippet,
