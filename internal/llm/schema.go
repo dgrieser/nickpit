@@ -64,7 +64,7 @@ var FindingsSchema = mustMarshalJSON(map[string]any{
 })
 
 func FindingsExamplePromptSnippet() string {
-	return mustLoadPrompt("findings_example.tmpl")
+	return mustLoadPrompt("agent_review_result_snippet.tmpl")
 }
 
 func mustMarshalJSON(v any) json.RawMessage {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/prompts"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -31,8 +32,6 @@ func stripPriorityPrefix(title string) string {
 }
 
 const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model"
-const reasoningBudgetRetryHint = "IMPORTANT: Keep your reasoning concise and return the requested answer as soon as possible."
-const reasoningLoopRetryHint = "IMPORTANT: Keep your reasoning concise, avoid repeating yourself, and return the requested answer as soon as possible."
 
 var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 
@@ -532,11 +531,27 @@ func sanitizeMessagesForNoTools(messages []Message) []Message {
 }
 
 func addReasoningBudgetRetryHint(req *ReviewRequest) {
-	addReasoningRetryHint(req, reasoningBudgetRetryHint)
+	addReasoningRetryHint(req, reasoningRetryHint(false))
 }
 
 func addReasoningLoopRetryHint(req *ReviewRequest) {
-	addReasoningRetryHint(req, reasoningLoopRetryHint)
+	addReasoningRetryHint(req, reasoningRetryHint(true))
+}
+
+func reasoningRetryHint(loopDetected bool) string {
+	tmpl, err := prompts.Load("helper_reasoning_snippet.tmpl")
+	if err != nil {
+		panic(fmt.Sprintf("llm: load reasoning helper prompt: %v", err))
+	}
+	rendered, err := RenderPrompt(tmpl, struct {
+		LoopDetected bool
+	}{
+		LoopDetected: loopDetected,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("llm: render reasoning helper prompt: %v", err))
+	}
+	return rendered
 }
 
 func addReasoningRetryHint(req *ReviewRequest, hint string) {

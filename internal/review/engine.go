@@ -340,7 +340,7 @@ type contextAgentResult struct {
 }
 
 func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
-	systemTemplate, err := e.loadPrompt("review_system.tmpl")
+	systemTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -406,20 +406,20 @@ var reviewVectors = []struct {
 	name      string
 	focusFile string
 }{
-	{"Code Quality", "focus_code_quality.tmpl"},
-	{"Security", "focus_security.tmpl"},
-	{"Architecture", "focus_architecture.tmpl"},
-	{"Performance", "focus_performance.tmpl"},
-	{"Testing", "focus_testing.tmpl"},
-	{"Best Practices", "focus_best_practices.tmpl"},
+	{"Code Quality", "agent_review_codequality_system_prompt.tmpl"},
+	{"Security", "agent_review_security_system_prompt.tmpl"},
+	{"Architecture", "agent_review_architecture_system_prompt.tmpl"},
+	{"Performance", "agent_review_performance_system_prompt.tmpl"},
+	{"Testing", "agent_review_testing_system_prompt.tmpl"},
+	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl"},
 }
 
 func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
-	baseTemplate, err := e.loadPrompt("review_system.tmpl")
+	baseTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
 	if err != nil {
 		return nil, nil, err
 	}
-	contextTemplate, err := e.loadPrompt("context_system.tmpl")
+	contextTemplate, err := e.loadPrompt("agent_context_system_prompt.tmpl")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -568,7 +568,7 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 }
 
 func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, vectorResults []reviewAgentResult, schema []byte, req model.ReviewRequest) (reviewAgentResult, error) {
-	systemTemplate, err := e.loadPrompt("merge_system.tmpl")
+	systemTemplate, err := e.loadPrompt("agent_merge_system_prompt.tmpl")
 	if err != nil {
 		return reviewAgentResult{}, err
 	}
@@ -854,7 +854,7 @@ func contextAgentMarkdownContent(contentMessages []string) string {
 	if len(merged) == 0 {
 		return ""
 	}
-	rendered, err := renderPromptFile("context_agent_notes.tmpl", struct {
+	rendered, err := renderPromptFile("agent_context_notes_snippet.tmpl", struct {
 		Content string
 	}{
 		Content: strings.Join(merged, "\n\n---\n\n"),
@@ -935,7 +935,7 @@ func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exam
 	if exampleSnippet == "" {
 		exampleSnippet = llm.FindingsExamplePromptSnippet()
 	}
-	rendered, err := renderPromptFile("json_retry_feedback.tmpl", struct {
+	rendered, err := renderPromptFile("helper_json_snippet.tmpl", struct {
 		Reason         string
 		MissingFields  string
 		ExampleSnippet string
@@ -1495,7 +1495,7 @@ func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry) (st
 	if len(history) > 0 {
 		lastResult = history[len(history)-1].Result
 	}
-	rendered, err := renderPromptFile("tool_followup.tmpl", struct {
+	rendered, err := renderPromptFile("helper_tools_snippet.tmpl", struct {
 		History []struct {
 			Index   int
 			Summary string

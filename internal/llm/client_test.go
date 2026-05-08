@@ -1481,10 +1481,10 @@ func TestClientReviewAddsConciseReasoningHintAfterBudgetExhaustion(t *testing.T)
 	if len(userMessages) != 2 {
 		t.Fatalf("user messages = %d, want 2", len(userMessages))
 	}
-	if strings.Contains(userMessages[0], reasoningBudgetRetryHint) {
+	if strings.Contains(userMessages[0], reasoningRetryHint(false)) {
 		t.Fatalf("first request should not include retry hint: %q", userMessages[0])
 	}
-	if !strings.Contains(userMessages[1], reasoningBudgetRetryHint) {
+	if !strings.Contains(userMessages[1], reasoningRetryHint(false)) {
 		t.Fatalf("retry request missing retry hint: %q", userMessages[1])
 	}
 }
@@ -1537,7 +1537,7 @@ func TestClientReviewAddsConciseReasoningHintAfterSyntheticUserMessage(t *testin
 		t.Fatalf("retry messages = %d, want 5", len(retryMessages))
 	}
 	originalUser, _ := retryMessages[1]["content"].(string)
-	if strings.Contains(originalUser, reasoningBudgetRetryHint) {
+	if strings.Contains(originalUser, reasoningRetryHint(false)) {
 		t.Fatalf("original user message should not include retry hint: %q", originalUser)
 	}
 	syntheticUser, _ := retryMessages[3]["content"].(string)
@@ -1545,8 +1545,8 @@ func TestClientReviewAddsConciseReasoningHintAfterSyntheticUserMessage(t *testin
 		t.Fatalf("synthetic user message should not include retry hint: %q", syntheticUser)
 	}
 	hintUser, _ := retryMessages[4]["content"].(string)
-	if hintUser != reasoningBudgetRetryHint {
-		t.Fatalf("retry hint message = %q, want %q", hintUser, reasoningBudgetRetryHint)
+	if hintUser != reasoningRetryHint(false) {
+		t.Fatalf("retry hint message = %q, want %q", hintUser, reasoningRetryHint(false))
 	}
 }
 
@@ -1811,7 +1811,7 @@ func TestClientReviewNoToolsRetryIncludesHintWhenBudgetPreviouslyExhausted(t *te
 	if got, want := attemptSummary(attempts), "high:true,medium:true,low:true,minimal:true,none:true,off:true,high:false"; got != want {
 		t.Fatalf("attempts = %s, want %s", got, want)
 	}
-	if got := strings.Count(attempts[len(attempts)-1].user, reasoningBudgetRetryHint); got != 1 {
+	if got := strings.Count(attempts[len(attempts)-1].user, reasoningRetryHint(false)); got != 1 {
 		t.Fatalf("no-tools retry hint count = %d in %q", got, attempts[len(attempts)-1].user)
 	}
 	if resp.ReasoningEffort != "high" {
@@ -1912,14 +1912,14 @@ func TestClientReviewNoToolsRetryUsesProvidedNoToolsMessages(t *testing.T) {
 	if content, _ := noToolsMessages[3]["content"].(string); strings.Contains(content, "synthetic tool followup") {
 		t.Fatalf("no-tools messages should use provided converted history, got %q", content)
 	}
-	if content, _ := noToolsMessages[3]["content"].(string); strings.Contains(content, reasoningBudgetRetryHint) {
+	if content, _ := noToolsMessages[3]["content"].(string); strings.Contains(content, reasoningRetryHint(false)) {
 		t.Fatalf("converted tool-result message should not include retry hint: %q", content)
 	}
 	if role, _ := noToolsMessages[4]["role"].(string); role != "user" {
 		t.Fatalf("retry hint role = %q, want user", role)
 	}
-	if content, _ := noToolsMessages[4]["content"].(string); content != reasoningBudgetRetryHint {
-		t.Fatalf("retry hint message = %q, want %q", content, reasoningBudgetRetryHint)
+	if content, _ := noToolsMessages[4]["content"].(string); content != reasoningRetryHint(false) {
+		t.Fatalf("retry hint message = %q, want %q", content, reasoningRetryHint(false))
 	}
 	for _, msg := range noToolsMessages {
 		if msg["role"] == "tool" {
@@ -1992,7 +1992,7 @@ func TestAddReasoningBudgetRetryHintAddsStandaloneUserMessage(t *testing.T) {
 	if req.Messages[1].Content != "review request" {
 		t.Fatalf("original user content was mutated: %q", req.Messages[1].Content)
 	}
-	if req.Messages[2].Role != "user" || req.Messages[2].Content != reasoningBudgetRetryHint {
+	if req.Messages[2].Role != "user" || req.Messages[2].Content != reasoningRetryHint(false) {
 		t.Fatalf("retry hint message = %#v", req.Messages[2])
 	}
 	if req.Messages[3].Role != "assistant" || req.Messages[3].Content != "I inspected a.go." {
@@ -2004,14 +2004,14 @@ func TestAddReasoningBudgetRetryHintIsIdempotent(t *testing.T) {
 	req := &ReviewRequest{
 		Messages: []Message{
 			{Role: "system", Content: "system"},
-			{Role: "user", Content: "review request\n\n" + reasoningBudgetRetryHint},
+			{Role: "user", Content: "review request\n\n" + reasoningRetryHint(false)},
 		},
 	}
 
 	addReasoningBudgetRetryHint(req)
 	addReasoningBudgetRetryHint(req)
 
-	if got := strings.Count(req.Messages[1].Content, reasoningBudgetRetryHint); got != 1 {
+	if got := strings.Count(req.Messages[1].Content, reasoningRetryHint(false)); got != 1 {
 		t.Fatalf("retry hint count = %d in %q", got, req.Messages[1].Content)
 	}
 }

@@ -40,7 +40,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: nil review context")
 	}
 
-	systemTemplate, err := e.loadPrompt("verify_system.tmpl")
+	systemTemplate, err := e.loadPrompt("agent_verify_system_prompt.tmpl")
 	if err != nil {
 		return nil, usage, err
 	}
