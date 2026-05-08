@@ -1,6 +1,6 @@
 You used the following tools up to now:
 {{range .History}}
-{{.Index}}. {{.Summary}}{{end}}
+{{.Index}}. {{.Name}}{{if .OptimizedTo}} (replaced by {{.OptimizedTo}}){{end}}: tool_call_id={{printf "%q" .ToolCallID}}, arguments=[{{.Arguments}}]; {{.Outcome}}{{end}}
 
 {{if .RetryLastTool}}
 Please retry the last tool call.

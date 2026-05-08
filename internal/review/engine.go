@@ -35,95 +35,6 @@ var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\(
 
 const defaultMaxJSONRetries = 3
 
-var inspectFileToolParameters = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "path": {
-      "type": "string",
-      "description": "Repo-relative file path"
-    },
-    "line_start": {
-      "type": "integer",
-      "description": "Optional starting line number for partial file retrieval",
-      "minimum": 1
-    },
-    "line_end": {
-      "type": "integer",
-      "description": "Optional ending line number for partial file retrieval",
-      "minimum": 1
-    }
-  },
-  "required": ["path"],
-  "additionalProperties": false
-}`)
-
-var listFilesToolParameters = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "path": {
-      "type": "string",
-      "description": "Repo-relative folder path; omit or pass an empty string to list the repo root"
-    },
-    "depth": {
-      "type": "integer",
-      "description": "Optional traversal depth for nested folders; defaults to 1",
-      "minimum": 1
-    }
-  },
-  "additionalProperties": false
-}`)
-
-var searchToolParameters = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "path": {
-      "type": "string",
-      "description": "Repo-relative file or folder path; omit or pass an empty string to search from the repo root"
-    },
-    "query": {
-      "type": "string",
-      "description": "Search string to find"
-    },
-    "context_lines": {
-      "type": "integer",
-      "description": "Optional number of surrounding lines to include before and after each match; defaults to 5",
-      "minimum": 0
-    },
-    "max_results": {
-      "type": "integer",
-      "description": "Optional maximum number of matches to return; omit or pass 0 for unlimited",
-      "minimum": 1
-    },
-    "case_sensitive": {
-      "type": "boolean",
-      "description": "Optional case-sensitive match mode; defaults to false"
-    }
-  },
-  "required": ["query"],
-  "additionalProperties": false
-}`)
-
-var callHierarchyToolParameters = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "symbol": {
-      "type": "string",
-      "description": "Function name to inspect"
-    },
-    "path": {
-      "type": "string",
-      "description": "Optional repo-relative file or folder path containing the function; omit or pass an empty string to search from the repo root"
-    },
-    "depth": {
-      "type": "integer",
-      "description": "Optional traversal depth for the call hierarchy; defaults to 10",
-      "minimum": 1
-    }
-  },
-  "required": ["symbol"],
-  "additionalProperties": false
-}`)
-
 type keyedLocker struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
@@ -173,42 +84,6 @@ func (e *Engine) SetSearchToolOptimization(enabled bool) {
 
 func (e *Engine) SetMultiAgentReview(enabled bool) {
 	e.multiAgentReview = enabled
-}
-
-func reviewerToolDefinitions() []llm.ToolDefinition {
-	return []llm.ToolDefinition{
-		{
-			Name:        "inspect_file",
-			Description: toolDescription("inspect_file"),
-			Parameters:  inspectFileToolParameters,
-		},
-		{
-			Name:        "list_files",
-			Description: toolDescription("list_files"),
-			Parameters:  listFilesToolParameters,
-		},
-		{
-			Name:        "search",
-			Description: toolDescription("search"),
-			Parameters:  searchToolParameters,
-		},
-		{
-			Name:        "find_callers",
-			Description: toolDescription("find_callers"),
-			Parameters:  callHierarchyToolParameters,
-		},
-		{
-			Name:        "find_callees",
-			Description: toolDescription("find_callees"),
-			Parameters:  callHierarchyToolParameters,
-		},
-	}
-}
-
-func toolDescription(name string) string {
-	return mustRenderPromptFile("helper_tool_description_snippet.tmpl", struct {
-		Name string
-	}{Name: name})
 }
 
 func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, error) {
@@ -767,9 +642,11 @@ func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, 
 	rendered, err := llm.RenderPrompt(template, struct {
 		Kind                     string
 		ParallelToolCallGuidance bool
+		ToolListing              string
 	}{
 		Kind:                     config.kind,
 		ParallelToolCallGuidance: config.parallelToolCallGuidance,
+		ToolListing:              toolInstructionsListing(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering tool instructions prompt: %w", err)
@@ -1465,12 +1342,6 @@ func mustToolResultJSON(value any) string {
 	return string(data)
 }
 
-func toolArgumentSchema(name string) string {
-	return mustRenderPromptFile("helper_tool_schema_snippet.tmpl", struct {
-		Name string
-	}{Name: name})
-}
-
 type toolErrorData struct {
 	Code     string
 	ToolName string
@@ -1485,10 +1356,6 @@ func missingToolArgumentMessage(toolName, argument string) string {
 		Argument: argument,
 		Schema:   toolArgumentSchema(toolName),
 	})
-}
-
-func toolErrorMessage(data toolErrorData) string {
-	return mustRenderPromptFile("helper_tool_error_snippet.tmpl", data)
 }
 
 func parseToolArguments(toolName string, raw string, dst any) error {
@@ -1530,28 +1397,16 @@ func agentLoopKind(role string) string {
 }
 
 func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, kind string) (string, error) {
-	items := make([]struct {
-		Index   int
-		Summary string
-	}, 0, len(history))
+	items := make([]syntheticToolFollowupEntry, 0, len(history))
 	for i, entry := range history {
-		items = append(items, struct {
-			Index   int
-			Summary string
-		}{
-			Index:   i + 1,
-			Summary: syntheticToolCallSummary(entry),
-		})
+		items = append(items, syntheticToolFollowupEntryFromHistory(i+1, entry))
 	}
 	lastResult := toolResultSummary{}
 	if len(history) > 0 {
 		lastResult = history[len(history)-1].Result
 	}
 	rendered, err := renderPromptFile("helper_tools_snippet.tmpl", struct {
-		History []struct {
-			Index   int
-			Summary string
-		}
+		History       []syntheticToolFollowupEntry
 		RetryLastTool bool
 		Kind          string
 	}{
@@ -1565,7 +1420,16 @@ func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, kin
 	return rendered, nil
 }
 
-func syntheticToolCallSummary(entry toolCallHistoryEntry) string {
+type syntheticToolFollowupEntry struct {
+	Index       int
+	Name        string
+	OptimizedTo string
+	ToolCallID  string
+	Arguments   string
+	Outcome     string
+}
+
+func syntheticToolFollowupEntryFromHistory(index int, entry toolCallHistoryEntry) syntheticToolFollowupEntry {
 	toolCall := entry.ToolCall
 	result := entry.Result
 	var args struct {
@@ -1580,19 +1444,14 @@ func syntheticToolCallSummary(entry toolCallHistoryEntry) string {
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
 	_ = llm.LenientUnmarshal(toolCall.Arguments, &args)
-	return mustRenderPromptFile("helper_tool_history_snippet.tmpl", struct {
-		Name        string
-		OptimizedTo string
-		ToolCallID  string
-		Arguments   string
-		Outcome     string
-	}{
+	return syntheticToolFollowupEntry{
+		Index:       index,
 		Name:        toolCall.Name,
 		OptimizedTo: entry.OptimizedTo,
 		ToolCallID:  toolCall.ID,
 		Arguments:   syntheticToolArguments(toolCall.Name, args),
 		Outcome:     syntheticToolOutcome(toolCall.Name, result),
-	})
+	}
 }
 
 type toolResultSummary struct {

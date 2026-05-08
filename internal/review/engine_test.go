@@ -587,6 +587,176 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	}
 }
 
+func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
+	definitions := reviewerToolDefinitions()
+	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees"}
+	if len(definitions) != len(wantNames) {
+		t.Fatalf("tool definitions = %d", len(definitions))
+	}
+	for i, wantName := range wantNames {
+		if definitions[i].Name != wantName {
+			t.Fatalf("tool[%d].Name = %q, want %q", i, definitions[i].Name, wantName)
+		}
+		if definitions[i].Description == "" {
+			t.Fatalf("tool[%d] missing description", i)
+		}
+	}
+}
+
+func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
+	definitions := reviewerToolDefinitions()
+	requiredByTool := map[string][]string{
+		"inspect_file": []string{"path"},
+		"search":       []string{"query"},
+		"find_callers": []string{"symbol"},
+		"find_callees": []string{"symbol"},
+	}
+	for _, definition := range definitions {
+		var schema map[string]any
+		if err := json.Unmarshal(definition.Parameters, &schema); err != nil {
+			t.Fatalf("%s schema should be valid JSON: %v", definition.Name, err)
+		}
+		if schema["type"] != "object" {
+			t.Fatalf("%s schema type = %#v", definition.Name, schema["type"])
+		}
+		if schema["additionalProperties"] != false {
+			t.Fatalf("%s schema additionalProperties = %#v", definition.Name, schema["additionalProperties"])
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok || len(properties) == 0 {
+			t.Fatalf("%s schema missing properties: %#v", definition.Name, schema["properties"])
+		}
+		required := map[string]bool{}
+		for _, value := range schemaStringSlice(schema["required"]) {
+			required[value] = true
+		}
+		for _, name := range requiredByTool[definition.Name] {
+			if !required[name] {
+				t.Fatalf("%s schema missing required field %q: %#v", definition.Name, name, schema["required"])
+			}
+		}
+	}
+}
+
+func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
+	engine := NewEngine(stubSource{}, &capturingLLM{}, nil, config.Profile{})
+	rendered, err := engine.renderToolInstructions(toolInstructionsConfig{kind: "review", parallelToolCallGuidance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing := toolInstructionsListing()
+	if !strings.Contains(rendered, listing) {
+		t.Fatalf("tool instructions missing generated listing:\n%s", rendered)
+	}
+	if !strings.Contains(listing, "- `search` tool with a repo-relative `path` and a `query`") {
+		t.Fatalf("generated listing missing search tool: %q", listing)
+	}
+}
+
+func TestToolErrorMessagesComeFromCatalog(t *testing.T) {
+	tests := []struct {
+		name string
+		data toolErrorData
+		want string
+	}{
+		{
+			name: "retrieval unavailable",
+			data: toolErrorData{Code: "retrieval_unavailable"},
+			want: "retrieval is unavailable for this review",
+		},
+		{
+			name: "unsupported tool",
+			data: toolErrorData{Code: "unsupported_tool", ToolName: "bad_tool"},
+			want: `unsupported tool "bad_tool"`,
+		},
+		{
+			name: "missing argument",
+			data: toolErrorData{Code: "missing_argument", Argument: "query", Schema: toolArgumentSchema("search")},
+			want: `missing required argument: query; expected {"path"?: "<repo-relative path>", "query": "<text>", "context_lines"?: int, "max_results"?: int, "case_sensitive"?: bool}`,
+		},
+		{
+			name: "already requested file",
+			data: toolErrorData{Code: "already_requested_file"},
+			want: "file contents were already provided for this review",
+		},
+		{
+			name: "already requested tool",
+			data: toolErrorData{Code: "already_requested_tool"},
+			want: "tool result was already provided for this review",
+		},
+		{
+			name: "encoding failed",
+			data: toolErrorData{Code: "encoding_failed"},
+			want: "failed to encode tool result",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := toolErrorMessage(tt.data); got != tt.want {
+				t.Fatalf("toolErrorMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
+	engine := NewEngine(stubSource{}, &capturingLLM{}, nil, config.Profile{})
+	baseHistory := []toolCallHistoryEntry{
+		{
+			ToolCall: llm.ToolCall{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run(","context_lines":0}`},
+			Result:   toolResultSummary{Lines: 2, Files: 1},
+		},
+	}
+	optimizedHistory := []toolCallHistoryEntry{
+		{
+			ToolCall:    llm.ToolCall{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run(","context_lines":0}`},
+			Result:      toolResultSummary{Lines: 2, Files: 1},
+			OptimizedTo: "find_callers",
+		},
+	}
+	errorHistory := []toolCallHistoryEntry{
+		{
+			ToolCall: llm.ToolCall{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"missing.go"}`},
+			Result:   toolResultSummary{IsError: true, Code: "retrieval_failed", Message: "not found"},
+		},
+	}
+
+	retry, err := engine.renderSyntheticToolFollowup(errorHistory, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(retry, "Please retry the last tool call.") {
+		t.Fatalf("retry follow-up = %q", retry)
+	}
+
+	contextRendered, err := engine.renderSyntheticToolFollowup(baseHistory, "context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(contextRendered, "return the summary of what you believe the patch is intended to do") {
+		t.Fatalf("context follow-up = %q", contextRendered)
+	}
+
+	reviewRendered, err := engine.renderSyntheticToolFollowup(optimizedHistory, "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reviewRendered, "1. search (replaced by find_callers): tool_call_id=\"call_1\"") {
+		t.Fatalf("review follow-up missing structured history: %q", reviewRendered)
+	}
+	if !strings.Contains(reviewRendered, "return the requested JSON format") {
+		t.Fatalf("review follow-up = %q", reviewRendered)
+	}
+
+	verifyRendered, err := engine.renderSyntheticToolFollowup(baseHistory, "verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(verifyRendered, "return the requested JSON format") || !strings.Contains(verifyRendered, "verification") {
+		t.Fatalf("verify follow-up = %q", verifyRendered)
+	}
+}
+
 func TestEngineCanDisableParallelToolCallsAndGuidance(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
@@ -2698,4 +2868,19 @@ func TestEngineMergeTruncatesToMaxResults(t *testing.T) {
 	if payload["result_count"] != float64(2) {
 		t.Fatalf("result_count = %#v, want 2 (merged set capped at max_results)", payload["result_count"])
 	}
+}
+
+func schemaStringSlice(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if ok {
+			result = append(result, text)
+		}
+	}
+	return result
 }
