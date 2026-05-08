@@ -168,7 +168,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			return resp, nil
 		}
 		var invalidResp *llm.InvalidResponseError
-		if !errors.As(err, &invalidResp) || attempt >= maxOutputRetries {
+		if !errors.As(err, &invalidResp) || !outputRetriesRemaining(attempt, maxOutputRetries) {
 			return nil, err
 		}
 		if invalidResp.ReasoningEffort != "" {

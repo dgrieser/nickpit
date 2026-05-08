@@ -93,7 +93,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		resp, err := e.loggedReview(ctx, llmReq, req.Section)
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
-			if errors.As(err, &invalidResp) && jsonRetries < req.MaxOutputRetries {
+			if errors.As(err, &invalidResp) && outputRetriesRemaining(jsonRetries, req.MaxOutputRetries) {
 				if invalidResp.ReasoningEffort != "" {
 					result.reasoningEffort = invalidResp.ReasoningEffort
 					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
@@ -131,7 +131,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		originalToolCalls := len(resp.ToolCalls)
 		resp.ToolCalls, _ = filterAgentToolCalls(resp.ToolCalls, req.Tools)
 		if originalToolCalls > 0 && len(resp.ToolCalls) == 0 {
-			if jsonRetries < req.MaxOutputRetries {
+			if outputRetriesRemaining(jsonRetries, req.MaxOutputRetries) {
 				jsonRetries++
 				e.logf("Invalid tool call response, retrying without tool history: agent=%s attempt=%d", req.AgentName, jsonRetries)
 				if strings.TrimSpace(resp.RawResponse) != "" {
@@ -195,6 +195,10 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 	}
 	result.messages = append([]llm.Message(nil), messages...)
 	return result, nil
+}
+
+func outputRetriesRemaining(used, max int) bool {
+	return max == 0 || used < max
 }
 
 func agentLoopNoToolsMessages(req agentLoopRequest, messages []llm.Message) ([]llm.Message, error) {

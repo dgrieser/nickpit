@@ -84,7 +84,7 @@ Append `--verbose` or `--debug` to print step-by-step execution details to stder
 By default, NickPit includes the expected JSON schema directly in the system prompt.
 Use `--use-json-schema` to send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
 
-NickPit can lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` disables those retries.
+NickPit can lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` means unlimited.
 
 Reasoning calls are capped with `--max-reasoning-seconds` or `max_reasoning_seconds`; the default is `600`. When the cap is hit, NickPit aborts the stream and retries through the existing lower-reasoning-effort fallback path.
 

@@ -129,7 +129,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		if resp != nil && resp.Verification != nil {
 			return resp.Verification, usage, nil
 		}
-		if attempt >= req.MaxOutputRetries {
+		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
 			return nil, usage, fmt.Errorf("verify: missing verification in response")
 		}
 		e.logf("Verify: missing verification, retrying: attempt=%d", attempt+1)

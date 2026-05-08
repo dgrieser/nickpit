@@ -2731,6 +2731,41 @@ func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
 	}
 }
 
+func TestEngineTreatsZeroMaxOutputRetriesAsUnlimited(t *testing.T) {
+	results := make([]scriptedLLMResult, 0, defaultMaxOutputRetries+2)
+	for i := 0; i <= defaultMaxOutputRetries; i++ {
+		results = append(results, scriptedLLMResult{
+			err: &llm.InvalidResponseError{
+				RawContent: "still bad",
+				Reason:     "could not parse JSON",
+			},
+		})
+	}
+	results = append(results, scriptedLLMResult{
+		resp: &llm.ReviewResponse{
+			OverallCorrectness:     "patch is correct",
+			OverallExplanation:     "recovered",
+			OverallConfidenceScore: 0.7,
+		},
+	})
+	llmClient := &scriptedLLM{results: results}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxOutputRetries: 0,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.OverallExplanation != "recovered" {
+		t.Fatalf("overall explanation = %q", result.OverallExplanation)
+	}
+	if len(llmClient.reqs) != defaultMaxOutputRetries+2 {
+		t.Fatalf("requests = %d, want %d", len(llmClient.reqs), defaultMaxOutputRetries+2)
+	}
+}
+
 func TestEngineParsesLenientToolArguments(t *testing.T) {
 	retrievalEngine := &countingRetrieval{}
 	llmClient := &capturingLLM{
