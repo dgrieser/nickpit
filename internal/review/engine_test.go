@@ -807,8 +807,8 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if len(result.AgentRuns) != 8 {
 		t.Fatalf("agent runs = %d, want context + 6 reviewers + merge", len(result.AgentRuns))
 	}
-	if result.ToolCalls != 7 {
-		t.Fatalf("tool calls = %d, want context + one per vector", result.ToolCalls)
+	if result.TotalToolCalls != 7 {
+		t.Fatalf("tool calls = %d, want context + one per vector", result.TotalToolCalls)
 	}
 	if len(trimmed.SupplementalContext) == 0 {
 		t.Fatal("context was not attached")
@@ -904,8 +904,8 @@ func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("requests = %d", len(llmClient.reqs))
 	}
-	if result.ToolCalls != 1 {
-		t.Fatalf("tool calls = %d", result.ToolCalls)
+	if result.TotalToolCalls != 1 {
+		t.Fatalf("tool calls = %d", result.TotalToolCalls)
 	}
 	if got := result.TokensUsed.TotalTokens; got != 10 {
 		t.Fatalf("total tokens = %d", got)
@@ -977,8 +977,8 @@ func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ToolCalls != 1 {
-		t.Fatalf("tool calls = %d", result.ToolCalls)
+	if result.TotalToolCalls != 1 {
+		t.Fatalf("tool calls = %d", result.TotalToolCalls)
 	}
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("requests = %d", len(llmClient.reqs))
@@ -1340,8 +1340,8 @@ func TestEngineStopsAtToolRoundLimit(t *testing.T) {
 	if result.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
 	}
-	if result.ToolCalls != 1 {
-		t.Fatalf("tool calls = %d", result.ToolCalls)
+	if result.TotalToolCalls != 1 {
+		t.Fatalf("tool calls = %d", result.TotalToolCalls)
 	}
 }
 
@@ -1378,8 +1378,8 @@ func TestEngineCountsParallelToolCallsIndividuallyForLimit(t *testing.T) {
 	if len(llmClient.reqs[1].Tools) != 0 {
 		t.Fatalf("final call should have no tools, got %d", len(llmClient.reqs[1].Tools))
 	}
-	if result.ToolCalls != 0 {
-		t.Fatalf("tool calls = %d", result.ToolCalls)
+	if result.TotalToolCalls != 0 {
+		t.Fatalf("tool calls = %d", result.TotalToolCalls)
 	}
 	if len(retrievalEngine.paths) != 0 {
 		t.Fatalf("retrieval should not run when batch exceeds limit: %#v", retrievalEngine.paths)
@@ -1427,11 +1427,14 @@ func TestEngineStopsAtDuplicateToolCallLimit(t *testing.T) {
 	if result.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
 	}
-	if result.ToolCalls != 2 {
-		t.Fatalf("tool calls = %d", result.ToolCalls)
+	if result.TotalToolCalls != 2 {
+		t.Fatalf("tool calls = %d", result.TotalToolCalls)
 	}
-	if result.DuplicateToolCalls != 1 {
-		t.Fatalf("duplicate tool calls = %d", result.DuplicateToolCalls)
+	if len(result.AgentRuns) != 1 {
+		t.Fatalf("agent runs = %d", len(result.AgentRuns))
+	}
+	if result.AgentRuns[0].DuplicateToolCalls != 1 {
+		t.Fatalf("duplicate tool calls = %d", result.AgentRuns[0].DuplicateToolCalls)
 	}
 	if len(retrievalEngine.paths) != 1 {
 		t.Fatalf("retrieval calls = %d", len(retrievalEngine.paths))
@@ -2448,8 +2451,8 @@ func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
 	if result.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
 	}
-	if result.ToolCalls != 2 {
-		t.Fatalf("tool calls = %d", result.ToolCalls)
+	if result.TotalToolCalls != 2 {
+		t.Fatalf("tool calls = %d", result.TotalToolCalls)
 	}
 	if len(retrievalEngine.paths) != 2 {
 		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)

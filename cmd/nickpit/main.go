@@ -839,10 +839,18 @@ func reviewResultSummary(result *model.ReviewResult) string {
 	return strings.Join([]string{
 		"status=OK",
 		fmt.Sprintf("findings=%d", len(result.Findings)),
-		fmt.Sprintf("tool_calls=%d", result.ToolCalls),
-		fmt.Sprintf("duplicate_tool_calls=%d", result.DuplicateToolCalls),
+		fmt.Sprintf("total_tool_calls=%d", result.TotalToolCalls),
+		fmt.Sprintf("duplicate_tool_calls=%d", totalDuplicateToolCalls(result.AgentRuns)),
 		fmt.Sprintf("prompt_tokens=%d", result.TokensUsed.PromptTokens),
 		fmt.Sprintf("completion_tokens=%d", result.TokensUsed.CompletionTokens),
 		fmt.Sprintf("total_tokens=%d", result.TokensUsed.TotalTokens),
 	}, ", ")
+}
+
+func totalDuplicateToolCalls(runs []model.AgentRun) int {
+	total := 0
+	for _, run := range runs {
+		total += run.DuplicateToolCalls
+	}
+	return total
 }

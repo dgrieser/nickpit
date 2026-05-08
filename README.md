@@ -86,7 +86,7 @@ Use `--use-json-schema` to send the review schema via the API `response_format` 
 
 NickPit can lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`.
 
-Reviews run a context agent first, then six specialist reviewers in parallel: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Their findings are merged by a final no-tools agent before the verifier runs. Tool-call limits apply independently to each context, reviewer, and verifier agent. JSON output includes an `agent_runs` summary with per-agent token and tool usage.
+Reviews run a context agent first, then six specialist reviewers in parallel: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Their findings are merged by a final no-tools agent before the verifier runs. Tool-call limits apply independently to each context, reviewer, and verifier agent. JSON output includes `total_tool_calls` at the root plus an `agent_runs` summary with each agent's token usage, tool usage, duplicate tool calls, and configured tool-call limits.
 
 ### Filtering by Priority
 

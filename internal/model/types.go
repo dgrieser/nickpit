@@ -61,19 +61,18 @@ type ReviewResult struct {
 	BaseURL                string     `json:"base_url,omitempty"`
 	Model                  string     `json:"model,omitempty"`
 	ReasoningEffort        string     `json:"reasoning_effort,omitempty"`
-	MaxToolCalls           int        `json:"max_tool_calls"`
-	MaxDuplicateToolCalls  int        `json:"max_duplicate_tool_calls,omitempty"`
-	ToolCalls              int        `json:"tool_calls,omitempty"`
-	DuplicateToolCalls     int        `json:"duplicate_tool_calls"`
+	TotalToolCalls         int        `json:"total_tool_calls,omitempty"`
 }
 
 type AgentRun struct {
-	Name               string     `json:"name"`
-	Role               string     `json:"role"`
-	Findings           int        `json:"findings,omitempty"`
-	ToolCalls          int        `json:"tool_calls,omitempty"`
-	DuplicateToolCalls int        `json:"duplicate_tool_calls,omitempty"`
-	TokensUsed         TokenUsage `json:"tokens_used,omitempty"`
+	Name                  string     `json:"name"`
+	Role                  string     `json:"role"`
+	Findings              int        `json:"findings,omitempty"`
+	MaxToolCalls          int        `json:"max_tool_calls"`
+	MaxDuplicateToolCalls int        `json:"max_duplicate_tool_calls,omitempty"`
+	ToolCalls             int        `json:"tool_calls,omitempty"`
+	DuplicateToolCalls    int        `json:"duplicate_tool_calls"`
+	TokensUsed            TokenUsage `json:"tokens_used,omitempty"`
 }
 
 type ReviewContext struct {

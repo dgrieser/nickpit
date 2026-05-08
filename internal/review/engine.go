@@ -144,8 +144,6 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	result.Model = e.config.Model
 	result.Repo = req.Repo
 	result.Identifier = req.Identifier
-	result.MaxToolCalls = req.MaxToolCalls
-	result.MaxDuplicateToolCalls = req.MaxDuplicateToolCalls
 	result.BaseURL = e.config.BaseURL
 	result.BaseRef = reviewCtx.Repository.BaseRef
 	result.HeadRef = reviewCtx.Repository.HeadRef
@@ -276,9 +274,9 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 		OverallCorrectness:     run.resp.OverallCorrectness,
 		OverallExplanation:     run.resp.OverallExplanation,
 		OverallConfidenceScore: run.resp.OverallConfidenceScore,
+		AgentRuns:              []model.AgentRun{run.run},
 		TokensUsed:             run.run.TokensUsed,
-		ToolCalls:              run.run.ToolCalls,
-		DuplicateToolCalls:     run.run.DuplicateToolCalls,
+		TotalToolCalls:         run.run.ToolCalls,
 		ReasoningEffort:        run.reasoningEffort,
 	}, reviewCtx, nil
 }
@@ -362,13 +360,11 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	allRuns = append(allRuns, contextResult.run)
 	totalUsage := contextResult.run.TokensUsed
 	toolCalls := contextResult.run.ToolCalls
-	duplicateToolCalls := contextResult.run.DuplicateToolCalls
 	effectiveReasoningEffort := contextResult.reasoningEffort
 	for _, result := range vectorResults {
 		allRuns = append(allRuns, result.run)
 		totalUsage = addTokenUsage(totalUsage, result.run.TokensUsed)
 		toolCalls += result.run.ToolCalls
-		duplicateToolCalls += result.run.DuplicateToolCalls
 		if result.reasoningEffort != "" {
 			effectiveReasoningEffort = result.reasoningEffort
 		}
@@ -397,8 +393,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		OverallConfidenceScore: mergeResult.resp.OverallConfidenceScore,
 		AgentRuns:              allRuns,
 		TokensUsed:             totalUsage,
-		ToolCalls:              toolCalls,
-		DuplicateToolCalls:     duplicateToolCalls,
+		TotalToolCalls:         toolCalls,
 		ReasoningEffort:        effectiveReasoningEffort,
 	}, enriched, nil
 }
@@ -588,12 +583,14 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		toolCallHistory:    loopResult.toolCallHistory,
 		duplicateToolCalls: loopResult.duplicateToolCalls,
 		run: model.AgentRun{
-			Name:               agent.name,
-			Role:               agent.role,
-			Findings:           len(loopResult.resp.Findings),
-			ToolCalls:          loopResult.toolCalls,
-			DuplicateToolCalls: loopResult.duplicateToolCalls,
-			TokensUsed:         loopResult.tokensUsed,
+			Name:                  agent.name,
+			Role:                  agent.role,
+			Findings:              len(loopResult.resp.Findings),
+			MaxToolCalls:          req.MaxToolCalls,
+			MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
+			ToolCalls:             loopResult.toolCalls,
+			DuplicateToolCalls:    loopResult.duplicateToolCalls,
+			TokensUsed:            loopResult.tokensUsed,
 		},
 	}, nil
 }

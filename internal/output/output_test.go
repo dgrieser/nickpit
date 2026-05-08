@@ -37,9 +37,10 @@ func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewJSONFormatter(&buf)
 	err := formatter.FormatFindings(&model.ReviewResult{
-		Findings:           []model.Finding{},
-		MaxToolCalls:       0,
-		DuplicateToolCalls: 0,
+		Findings: []model.Finding{},
+		AgentRuns: []model.AgentRun{
+			{Name: "reviewer", Role: "reviewer", MaxToolCalls: 0, DuplicateToolCalls: 0},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -49,11 +50,22 @@ func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := payload["max_tool_calls"]; !ok || got != float64(0) {
-		t.Fatalf("max_tool_calls = %#v, present=%t", got, ok)
+	if _, ok := payload["max_tool_calls"]; ok {
+		t.Fatalf("root max_tool_calls should be omitted: %#v", payload["max_tool_calls"])
 	}
-	if got, ok := payload["duplicate_tool_calls"]; !ok || got != float64(0) {
-		t.Fatalf("duplicate_tool_calls = %#v, present=%t", got, ok)
+	runs, ok := payload["agent_runs"].([]any)
+	if !ok || len(runs) != 1 {
+		t.Fatalf("agent_runs = %#v", payload["agent_runs"])
+	}
+	run, ok := runs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("agent run = %#v", runs[0])
+	}
+	if got, ok := run["max_tool_calls"]; !ok || got != float64(0) {
+		t.Fatalf("agent max_tool_calls = %#v, present=%t", got, ok)
+	}
+	if got, ok := run["duplicate_tool_calls"]; !ok || got != float64(0) {
+		t.Fatalf("agent duplicate_tool_calls = %#v, present=%t", got, ok)
 	}
 }
 
