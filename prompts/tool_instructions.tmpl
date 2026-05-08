@@ -1,11 +1,19 @@
-{{if eq .Kind "context"}}Call one of the following tools:{{else if eq .Kind "review"}}Another senior engineer already collected the code context needed for your code review, see the following messages. In some cases, you might still need more code context, use the following tools, if necessary:{{else if eq .Kind "verify"}}Multiple senior engineers already collected the code context needed, see the following messages. In the rare case that you need more code context for your verification, call any of the following tools:{{end}}
+{{if eq .Kind "context"}}Call one of the following tools:
+{{else if eq .Kind "review"}}Another senior engineer already collected the code context needed for your code review.
+In some cases, you might still need more code context, use the following tools, if necessary:
+{{else if eq .Kind "verify"}}Multiple senior engineers already collected the code context needed.
+In the rare case that you still need more code context for your verification, use the following tools:{{end}}
 - `inspect_file` tool with a repo-relative `path` to retrieve the contents of a file.
 - `list_files` tool with a repo-relative `path` to list all files in a folder (recursively).
 - `find_callers` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function across Go, Python, and Node.js/TypeScript code.
 - `find_callees` tool with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls across Go, Python, and Node.js/TypeScript code.
 - `search` tool with a repo-relative `path` and a `query` to search recursively for relevant matches.
 
-Important:
-- {{if eq .Kind "context"}}Make as many tool calls as necessary, to gather additional context.{{else if eq .Kind "review"}}Make as many tool calls as necessary, to gather additional context.{{else if eq .Kind "verify"}}Make as many tool calls as necessary to gather evidence for the verdict.{{end}}
-{{if .ParallelToolCallGuidance}}- If possible, call multiple tools in parallel, e.g. in one turn.
-{{end}}- {{if eq .Kind "context"}}Once you have enough context, stop calling tools and return the summary of what you believe the patch is intended to do.{{else if eq .Kind "review"}}Once you have enough context to judge the patch, stop calling tools and return the final review as JSON.{{else if eq .Kind "verify"}}Once you have enough evidence to judge the finding, stop calling tools and return the verification as JSON.{{end}}
+Important:{{if eq .Kind "context"}}
+- In each turn, first decide whether you already have enough context for a useful code review.
+- If you already have enough context, stop calling tools and return the summary of what you believe the patch is intended to do.
+{{else if eq .Kind "review" or eq .Kind "verify"}}
+- Check the provided context first.
+- Only make additional tool calls, if the provided context is really insufficient.{{end}}
+{{if .ParallelToolCallGuidance}}
+- If possible, call multiple tools in parallel, e.g. in one turn.{{end}}
