@@ -179,30 +179,36 @@ func reviewerToolDefinitions() []llm.ToolDefinition {
 	return []llm.ToolDefinition{
 		{
 			Name:        "inspect_file",
-			Description: "Retrieve content of repo-relative file",
+			Description: toolDescription("inspect_file"),
 			Parameters:  inspectFileToolParameters,
 		},
 		{
 			Name:        "list_files",
-			Description: "List files of repo-relative folder",
+			Description: toolDescription("list_files"),
 			Parameters:  listFilesToolParameters,
 		},
 		{
 			Name:        "search",
-			Description: "Search recursively inside repo-relative file or folder",
+			Description: toolDescription("search"),
 			Parameters:  searchToolParameters,
 		},
 		{
 			Name:        "find_callers",
-			Description: "Resolve function by symbol name and return caller hierarchy and method bodies",
+			Description: toolDescription("find_callers"),
 			Parameters:  callHierarchyToolParameters,
 		},
 		{
 			Name:        "find_callees",
-			Description: "Resolve function by symbol name and return its callee hierarchy and method bodies",
+			Description: toolDescription("find_callees"),
 			Parameters:  callHierarchyToolParameters,
 		},
 	}
+}
+
+func toolDescription(name string) string {
+	return mustRenderPromptFile("helper_tool_description_snippet.tmpl", struct {
+		Name string
+	}{Name: name})
 }
 
 func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, error) {
@@ -963,6 +969,14 @@ func renderPromptFile(name string, data any) (string, error) {
 	return llm.RenderPrompt(tmpl, data)
 }
 
+func mustRenderPromptFile(name string, data any) string {
+	rendered, err := renderPromptFile(name, data)
+	if err != nil {
+		panic(fmt.Sprintf("review: rendering prompt %s: %v", name, err))
+	}
+	return rendered
+}
+
 func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
 	languages := changedLanguages(ctx)
 	guides := make([]model.StyleGuide, 0, len(languages))
@@ -1143,7 +1157,7 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 
 func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
 	if e.retrieval == nil {
-		return toolError("", "retrieval_unavailable", "retrieval is unavailable for this review")
+		return toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"}))
 	}
 	switch toolCall.Name {
 	case "inspect_file":
@@ -1157,7 +1171,7 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	case "find_callees":
 		return e.executeCallHierarchy(ctx, repoRoot, toolCall, false, state)
 	default:
-		return toolError("", "unsupported_tool", fmt.Sprintf("unsupported tool %q", toolCall.Name))
+		return toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
 	}
 }
 
@@ -1173,7 +1187,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Path == "" {
-		return toolError("", "missing_argument", fmt.Sprintf("missing required argument: path; expected %s", toolArgumentSchemas["inspect_file"]))
+		return toolError("", "missing_argument", missingToolArgumentMessage(toolCall.Name, "path"))
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	unlock := state.fileLocks.lock(normalizedPath)
@@ -1183,7 +1197,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	state.mu.Unlock()
 	if ok {
 		e.logf("Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
-		return toolError(seenContent.Path, "already_requested", "file contents were already provided for this review")
+		return toolError(seenContent.Path, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_file"}))
 	}
 
 	if args.LineStart > 0 || args.LineEnd > 0 {
@@ -1201,7 +1215,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		state.mu.Unlock()
 		if covered {
 			e.logf("Skipping duplicate tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, requested.Start, requested.End)
-			return toolError(content.Path, "already_requested", "file contents were already provided for this review")
+			return toolError(content.Path, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_file"}))
 		}
 		return mustToolResultJSON(map[string]any{
 			"path":       content.Path,
@@ -1249,7 +1263,7 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	state.mu.Unlock()
 	if ok {
 		e.logf("Skipping duplicate tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
-		return toolError(normalizedPath, "already_requested", "tool result was already provided for this review")
+		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
 	e.logf("Executing tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
 	listing, err := e.retrieval.ListFiles(ctx, repoRoot, normalizedPath, args.Depth)
@@ -1280,7 +1294,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	args.Path = strings.TrimSpace(args.Path)
 	args.Query = strings.TrimSpace(args.Query)
 	if args.Query == "" {
-		return toolError(normalizeToolPath(args.Path), "missing_argument", fmt.Sprintf("missing required argument: query; expected %s", toolArgumentSchemas["search"]))
+		return toolError(normalizeToolPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "query"))
 	}
 	if args.ContextLines < 0 {
 		args.ContextLines = 5
@@ -1295,7 +1309,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			state.mu.Unlock()
 			if ok {
 				e.logf("Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
-				return toolError(normalizedPath, "already_requested", "tool result was already provided for this review")
+				return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 			}
 			e.logf("Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
 			return e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
@@ -1389,7 +1403,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 	args.Symbol = strings.TrimSpace(args.Symbol)
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Symbol == "" {
-		return toolError(normalizeToolPath(args.Path), "missing_argument", fmt.Sprintf("missing required argument: symbol; expected %s", toolArgumentSchemas[toolCall.Name]))
+		return toolError(normalizeToolPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
 	}
 	if args.Depth <= 0 {
 		args.Depth = 10
@@ -1403,7 +1417,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 	state.mu.Unlock()
 	if ok {
 		e.logf("Skipping duplicate tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
-		return toolError(normalizedPath, "already_requested", "tool result was already provided for this review")
+		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
 	e.logf("Executing tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
 
@@ -1439,22 +1453,46 @@ func callHierarchyDedupKey(name, path, symbol string, depth int) string {
 func mustToolResultJSON(value any) string {
 	data, err := json.Marshal(value)
 	if err != nil {
-		return `{"status":"error","error":{"code":"encoding_failed","message":"failed to encode tool result"}}`
+		return mustToolResultJSON(map[string]any{
+			"status": "error",
+			"error": map[string]any{
+				"code":    "encoding_failed",
+				"message": toolErrorMessage(toolErrorData{Code: "encoding_failed"}),
+			},
+		})
 	}
 	return string(data)
 }
 
-var toolArgumentSchemas = map[string]string{
-	"inspect_file": `{"path": "<repo-relative path>", "line_start"?: int, "line_end"?: int}`,
-	"list_files":   `{"path"?: "<repo-relative folder>", "depth"?: int}`,
-	"search":       `{"path"?: "<repo-relative path>", "query": "<text>", "context_lines"?: int, "max_results"?: int, "case_sensitive"?: bool}`,
-	"find_callers": `{"symbol": "<function name>", "path"?: "<repo-relative path>", "depth"?: int}`,
-	"find_callees": `{"symbol": "<function name>", "path"?: "<repo-relative path>", "depth"?: int}`,
+func toolArgumentSchema(name string) string {
+	return mustRenderPromptFile("helper_tool_schema_snippet.tmpl", struct {
+		Name string
+	}{Name: name})
+}
+
+type toolErrorData struct {
+	Code     string
+	ToolName string
+	Argument string
+	Schema   string
+	Message  string
+}
+
+func missingToolArgumentMessage(toolName, argument string) string {
+	return toolErrorMessage(toolErrorData{
+		Code:     "missing_argument",
+		Argument: argument,
+		Schema:   toolArgumentSchema(toolName),
+	})
+}
+
+func toolErrorMessage(data toolErrorData) string {
+	return mustRenderPromptFile("helper_tool_error_snippet.tmpl", data)
 }
 
 func parseToolArguments(toolName string, raw string, dst any) error {
 	if err := llm.LenientUnmarshal(raw, dst); err != nil {
-		schema := toolArgumentSchemas[toolName]
+		schema := toolArgumentSchema(toolName)
 		if schema == "" {
 			return fmt.Errorf("invalid tool arguments for %s: %v; received: %s", toolName, err, raw)
 		}
@@ -1526,11 +1564,19 @@ func syntheticToolCallSummary(entry toolCallHistoryEntry) string {
 		CaseSensitive bool   `json:"case_sensitive"`
 	}
 	_ = llm.LenientUnmarshal(toolCall.Arguments, &args)
-	name := toolCall.Name
-	if entry.OptimizedTo != "" {
-		name = fmt.Sprintf("%s (replaced by %s)", toolCall.Name, entry.OptimizedTo)
-	}
-	return fmt.Sprintf("%s: tool_call_id=%q, arguments=[%s]; %s", name, toolCall.ID, syntheticToolArguments(toolCall.Name, args), syntheticToolOutcome(toolCall.Name, result))
+	return mustRenderPromptFile("helper_tool_history_snippet.tmpl", struct {
+		Name        string
+		OptimizedTo string
+		ToolCallID  string
+		Arguments   string
+		Outcome     string
+	}{
+		Name:        toolCall.Name,
+		OptimizedTo: entry.OptimizedTo,
+		ToolCallID:  toolCall.ID,
+		Arguments:   syntheticToolArguments(toolCall.Name, args),
+		Outcome:     syntheticToolOutcome(toolCall.Name, result),
+	})
 }
 
 type toolResultSummary struct {
