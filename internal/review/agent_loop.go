@@ -219,6 +219,7 @@ func validAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) [
 	valid := make([]llm.ToolCall, 0, len(toolCalls))
 	for _, toolCall := range toolCalls {
 		if validAgentToolCall(toolCall, knownTools) {
+			toolCall.Arguments, _ = llm.NormalizeToolCallArguments(toolCall.Arguments)
 			valid = append(valid, toolCall)
 		}
 	}

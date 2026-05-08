@@ -730,6 +730,44 @@ func TestClientReviewDeduplicatesXMLToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesSanitizesToolCallHistory(t *testing.T) {
+	messages := buildMessages(&ReviewRequest{
+		Messages: []Message{
+			{Role: "system", Content: "system"},
+			{Role: "user", Content: "user"},
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{
+					{ID: "call_bad_json", Name: "inspect_file", Arguments: `no json here`},
+					{ID: "call_empty_name", Name: "", Arguments: `{"path":"bad.go"}`},
+					{ID: "call_valid", Name: "find_callers", Arguments: `{"symbol": "AddSession", "path": "pkg/projects"}}`},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_bad_json", Content: `{"content":"bad"}`},
+			{Role: "tool", ToolCallID: "call_valid", Content: `{"content":"valid"}`},
+			{Role: "user", Content: "continue"},
+		},
+	})
+
+	if len(messages) != 5 {
+		t.Fatalf("messages = %d, want 5: %#v", len(messages), messages)
+	}
+	assistant := messages[2]
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("assistant tool calls = %#v", assistant.ToolCalls)
+	}
+	call := assistant.ToolCalls[0]
+	if call.ID != "call_valid" || call.Function.Name != "find_callers" {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if call.Function.Arguments != `{"path":"pkg/projects","symbol":"AddSession"}` {
+		t.Fatalf("arguments = %q", call.Function.Arguments)
+	}
+	if messages[3].Role != openai.ChatMessageRoleTool || messages[3].ToolCallID != "call_valid" {
+		t.Fatalf("tool result message = %#v", messages[3])
+	}
+}
+
 func TestClientReviewCanDisableParallelToolCalls(t *testing.T) {
 	var payload map[string]any
 

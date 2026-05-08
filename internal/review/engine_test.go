@@ -626,6 +626,15 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 		if !ok || len(properties) == 0 {
 			t.Fatalf("%s schema missing properties: %#v", definition.Name, schema["properties"])
 		}
+		if definition.Name == "search" {
+			maxResults, ok := properties["max_results"].(map[string]any)
+			if !ok {
+				t.Fatalf("search schema missing max_results property: %#v", properties)
+			}
+			if maxResults["minimum"] != float64(0) {
+				t.Fatalf("search max_results minimum = %#v, want 0", maxResults["minimum"])
+			}
+		}
 		required := map[string]bool{}
 		for _, value := range schemaStringSlice(schema["required"]) {
 			required[value] = true
@@ -948,7 +957,7 @@ func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
 					{ID: "call_bad_json", Name: "inspect_file", Arguments: `no json here`},
 					{ID: "call_unknown", Name: "unknown_tool", Arguments: `{"path":"extra.go"}`},
 					{ID: "call_missing_required", Name: "search", Arguments: `{"path":"."}`},
-					{ID: "call_valid", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+					{ID: "call_valid", Name: "inspect_file", Arguments: `{"path":"extra.go"}}`},
 				},
 			},
 			{
@@ -984,6 +993,9 @@ func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
 	}
 	if assistantMessage.ToolCalls[0].ID != "call_valid" {
 		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
+	}
+	if assistantMessage.ToolCalls[0].Arguments != `{"path":"extra.go"}` {
+		t.Fatalf("assistant tool call arguments = %q", assistantMessage.ToolCalls[0].Arguments)
 	}
 	if req.Messages[3].Role != "tool" || req.Messages[3].ToolCallID != "call_valid" {
 		t.Fatalf("tool message = %#v", req.Messages[3])

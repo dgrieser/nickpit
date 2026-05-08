@@ -767,8 +767,9 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 
 func buildMessages(req *ReviewRequest) []openai.ChatCompletionMessage {
 	if len(req.Messages) > 0 {
-		messages := make([]openai.ChatCompletionMessage, 0, len(req.Messages))
-		for _, msg := range req.Messages {
+		sanitized := sanitizeMessageHistory(req.Messages)
+		messages := make([]openai.ChatCompletionMessage, 0, len(sanitized))
+		for _, msg := range sanitized {
 			messages = append(messages, toOpenAIMessage(msg))
 		}
 		return messages
@@ -808,17 +809,78 @@ func toOpenAIMessage(msg Message) openai.ChatCompletionMessage {
 	if len(msg.ToolCalls) > 0 {
 		converted.ToolCalls = make([]openai.ToolCall, 0, len(msg.ToolCalls))
 		for _, call := range msg.ToolCalls {
+			arguments, ok := NormalizeToolCallArguments(call.Arguments)
+			if !ok || strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
+				continue
+			}
 			converted.ToolCalls = append(converted.ToolCalls, openai.ToolCall{
 				ID:   call.ID,
 				Type: openai.ToolTypeFunction,
 				Function: openai.FunctionCall{
 					Name:      call.Name,
-					Arguments: call.Arguments,
+					Arguments: arguments,
 				},
 			})
 		}
+		if len(converted.ToolCalls) == 0 {
+			converted.ToolCalls = nil
+		}
 	}
 	return converted
+}
+
+func sanitizeMessageHistory(messages []Message) []Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	sanitized := make([]Message, 0, len(messages))
+	validToolCallIDs := make(map[string]struct{})
+	for _, msg := range messages {
+		if msg.Role == openai.ChatMessageRoleAssistant && len(msg.ToolCalls) > 0 {
+			msg.ToolCalls = sanitizeToolCalls(msg.ToolCalls)
+			for _, call := range msg.ToolCalls {
+				validToolCallIDs[call.ID] = struct{}{}
+			}
+		}
+		if msg.Role == openai.ChatMessageRoleTool {
+			if _, ok := validToolCallIDs[msg.ToolCallID]; !ok {
+				continue
+			}
+		}
+		sanitized = append(sanitized, msg)
+	}
+	return sanitized
+}
+
+func sanitizeToolCalls(toolCalls []ToolCall) []ToolCall {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	sanitized := make([]ToolCall, 0, len(toolCalls))
+	for _, call := range toolCalls {
+		if strings.TrimSpace(call.ID) == "" || strings.TrimSpace(call.Name) == "" {
+			continue
+		}
+		arguments, ok := NormalizeToolCallArguments(call.Arguments)
+		if !ok {
+			continue
+		}
+		call.Arguments = arguments
+		sanitized = append(sanitized, call)
+	}
+	return sanitized
+}
+
+func NormalizeToolCallArguments(arguments string) (string, bool) {
+	var args any
+	if err := LenientUnmarshal(arguments, &args); err != nil {
+		return "", false
+	}
+	normalized, err := json.Marshal(args)
+	if err != nil {
+		return "", false
+	}
+	return string(normalized), true
 }
 
 func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink) (*streamedResponse, error) {

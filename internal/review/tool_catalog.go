@@ -57,7 +57,7 @@ var toolCatalogDefinition = []toolCatalogEntry{
 			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
 			{Name: "context_lines", Type: "integer", Description: "Optional number of surrounding lines to include before and after each match; defaults to 5", Example: "int", Minimum: toolIntPtr(0)},
-			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: toolIntPtr(1)},
+			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: toolIntPtr(0)},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive match mode; defaults to false", Example: "bool"},
 		},
 	},
