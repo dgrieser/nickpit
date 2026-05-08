@@ -453,10 +453,18 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 	if err != nil {
 		return reviewAgentResult{}, err
 	}
+	commonSnippets, err := agentCommonSystemPromptSnippets("merge", reviewOutputSchemaSnippetFor(req.UseJSONSchema))
+	if err != nil {
+		return reviewAgentResult{}, err
+	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
-		OutputSchemaSnippet string
+		FindingInstructionsSnippet string
+		PrioritySnippet            string
+		OutputFormatSnippet        string
 	}{
-		OutputSchemaSnippet: reviewOutputSchemaSnippetFor(req.UseJSONSchema),
+		FindingInstructionsSnippet: commonSnippets.findingInstructions,
+		PrioritySnippet:            commonSnippets.priority,
+		OutputFormatSnippet:        commonSnippets.outputFormat,
 	})
 	if err != nil {
 		return reviewAgentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
@@ -610,18 +618,29 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 			return "", err
 		}
 	}
+	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
+	commonSnippets, err := agentCommonSystemPromptSnippets("review", outputSchemaSnippet)
+	if err != nil {
+		return "", err
+	}
 	systemPrompt, err := llm.RenderPrompt(template, struct {
-		OutputSchemaSnippet      string
-		ParallelToolCallGuidance bool
-		HasTools                 bool
-		FocusSnippet             string
-		ToolInstructions         string
+		OutputSchemaSnippet        string
+		FindingInstructionsSnippet string
+		PrioritySnippet            string
+		OutputFormatSnippet        string
+		ParallelToolCallGuidance   bool
+		HasTools                   bool
+		FocusSnippet               string
+		ToolInstructions           string
 	}{
-		OutputSchemaSnippet:      reviewOutputSchemaSnippetFor(req.UseJSONSchema),
-		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
-		HasTools:                 hasTools,
-		FocusSnippet:             strings.TrimSpace(focusSnippet),
-		ToolInstructions:         toolInstructions,
+		OutputSchemaSnippet:        outputSchemaSnippet,
+		FindingInstructionsSnippet: commonSnippets.findingInstructions,
+		PrioritySnippet:            commonSnippets.priority,
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+		ParallelToolCallGuidance:   !req.DisableParallelToolCalls,
+		HasTools:                   hasTools,
+		FocusSnippet:               strings.TrimSpace(focusSnippet),
+		ToolInstructions:           toolInstructions,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering review system prompt: %w", err)
@@ -782,14 +801,24 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 }
 
 func noToolsMessages(systemTemplate string, messages []llm.Message, snippet string) ([]llm.Message, error) {
+	commonSnippets, err := agentCommonSystemPromptSnippets("review", snippet)
+	if err != nil {
+		return nil, err
+	}
 	noToolsPrompt, err := llm.RenderPrompt(systemTemplate, struct {
-		OutputSchemaSnippet      string
-		ParallelToolCallGuidance bool
-		HasTools                 bool
-		ToolInstructions         string
+		OutputSchemaSnippet        string
+		FindingInstructionsSnippet string
+		PrioritySnippet            string
+		OutputFormatSnippet        string
+		ParallelToolCallGuidance   bool
+		HasTools                   bool
+		ToolInstructions           string
 	}{
-		OutputSchemaSnippet: snippet,
-		HasTools:            false,
+		OutputSchemaSnippet:        snippet,
+		FindingInstructionsSnippet: commonSnippets.findingInstructions,
+		PrioritySnippet:            commonSnippets.priority,
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+		HasTools:                   false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)
@@ -845,6 +874,48 @@ func renderPromptFile(name string, data any) (string, error) {
 		return "", err
 	}
 	return llm.RenderPrompt(tmpl, data)
+}
+
+func agentCommonSystemPromptSnippet(kind string, snippet string, outputSchemaSnippet string) (string, error) {
+	rendered, err := renderPromptFile("agent_common_system_prompt_snippet.tmpl", struct {
+		Kind                string
+		Snippet             string
+		OutputSchemaSnippet string
+	}{
+		Kind:                kind,
+		Snippet:             snippet,
+		OutputSchemaSnippet: outputSchemaSnippet,
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering common system prompt snippet %q for %s: %w", snippet, kind, err)
+	}
+	return rendered, nil
+}
+
+type agentCommonSystemPromptSnippetSet struct {
+	findingInstructions string
+	priority            string
+	outputFormat        string
+}
+
+func agentCommonSystemPromptSnippets(kind string, outputSchemaSnippet string) (agentCommonSystemPromptSnippetSet, error) {
+	findingInstructions, err := agentCommonSystemPromptSnippet(kind, "findings", "")
+	if err != nil {
+		return agentCommonSystemPromptSnippetSet{}, err
+	}
+	priority, err := agentCommonSystemPromptSnippet(kind, "priority", "")
+	if err != nil {
+		return agentCommonSystemPromptSnippetSet{}, err
+	}
+	outputFormat, err := agentCommonSystemPromptSnippet(kind, "output_format", outputSchemaSnippet)
+	if err != nil {
+		return agentCommonSystemPromptSnippetSet{}, err
+	}
+	return agentCommonSystemPromptSnippetSet{
+		findingInstructions: findingInstructions,
+		priority:            priority,
+		outputFormat:        outputFormat,
+	}, nil
 }
 
 func mustRenderPromptFile(name string, data any) string {

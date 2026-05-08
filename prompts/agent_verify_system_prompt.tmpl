@@ -17,12 +17,7 @@ When evaluating the finding:
 - if the finding is true, prefer keeping the original priority unless the evidence clearly demands a different level
 - if the finding is false (not caused by this patch, not reachable, contradicted by the code), set `valid` to false
 
-### PRIORITY
-Use these priority levels:
-- 0: blocking release or major universal failure
-- 1: urgent and should be fixed in the next cycle
-- 2: normal bug worth fixing
-- 3: low-priority issue
+{{.PrioritySnippet}}
 
 Set `priority` to the same value as the original finding's `priority` UNLESS you believe the priority should change.
 {{if .HasTools}}

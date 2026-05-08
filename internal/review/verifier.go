@@ -53,13 +53,19 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
+	prioritySnippet, err := agentCommonSystemPromptSnippet("verify", "priority", "")
+	if err != nil {
+		return nil, usage, err
+	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet      string
+		PrioritySnippet          string
 		ParallelToolCallGuidance bool
 		HasTools                 bool
 		ToolInstructions         string
 	}{
 		OutputSchemaSnippet:      systemSnippet,
+		PrioritySnippet:          prioritySnippet,
 		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
 		HasTools:                 true,
 		ToolInstructions:         toolInstructions,
