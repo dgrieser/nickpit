@@ -435,9 +435,6 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		}
 		resp, err := c.reviewOnce(ctx, &attemptReq)
 		if err == nil {
-			if loopDetected {
-				resp.ReasoningEffort = originalEffort
-			}
 			return resp, nil
 		}
 		var budgetErr *ReasoningBudgetExhaustedError
