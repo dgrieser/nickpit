@@ -44,6 +44,7 @@ type agentLoopResult struct {
 	contentMessages    []string
 	toolMessages       []llm.Message
 	toolCallHistory    []toolCallHistoryEntry
+	messages           []llm.Message
 	toolCalls          int
 	duplicateToolCalls int
 }
@@ -123,8 +124,23 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		result.contentMessages = appendResponseContent(result.contentMessages, resp)
 		result.resp = resp
 
-		resp.ToolCalls = validAgentToolCalls(resp.ToolCalls, req.Tools)
+		originalToolCalls := len(resp.ToolCalls)
+		resp.ToolCalls, _ = filterAgentToolCalls(resp.ToolCalls, req.Tools)
+		if originalToolCalls > 0 && len(resp.ToolCalls) == 0 {
+			if jsonRetries < defaultMaxJSONRetries {
+				jsonRetries++
+				e.logf("Invalid tool call response, retrying without tool history: agent=%s attempt=%d", req.AgentName, jsonRetries)
+				if strings.TrimSpace(resp.RawResponse) != "" {
+					messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
+				}
+				continue
+			}
+			return agentLoopResult{}, fmt.Errorf("agent %s returned only invalid tool calls", req.AgentName)
+		}
 		if len(resp.ToolCalls) == 0 {
+			if strings.TrimSpace(resp.RawResponse) != "" {
+				messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
+			}
 			break
 		}
 		pendingToolCalls := len(resp.ToolCalls)
@@ -173,6 +189,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 	if result.resp == nil {
 		return agentLoopResult{}, fmt.Errorf("agent %s returned no response", req.AgentName)
 	}
+	result.messages = append([]llm.Message(nil), messages...)
 	return result, nil
 }
 
@@ -207,8 +224,13 @@ func (e *Engine) logJSONRetry(req agentLoopRequest, attempt int, invalidResp *ll
 }
 
 func validAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) []llm.ToolCall {
+	valid, _ := filterAgentToolCalls(toolCalls, tools)
+	return valid
+}
+
+func filterAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) ([]llm.ToolCall, int) {
 	if len(toolCalls) == 0 {
-		return nil
+		return nil, 0
 	}
 	knownTools := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {
@@ -217,13 +239,16 @@ func validAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) [
 		}
 	}
 	valid := make([]llm.ToolCall, 0, len(toolCalls))
+	dropped := 0
 	for _, toolCall := range toolCalls {
 		if validAgentToolCall(toolCall, knownTools) {
 			toolCall.Arguments, _ = llm.NormalizeToolCallArguments(toolCall.Arguments)
 			valid = append(valid, toolCall)
+		} else {
+			dropped++
 		}
 	}
-	return valid
+	return valid, dropped
 }
 
 func validAgentToolCall(toolCall llm.ToolCall, knownTools map[string]struct{}) bool {

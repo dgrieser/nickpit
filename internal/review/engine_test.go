@@ -1011,6 +1011,52 @@ func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
 	}
 }
 
+func TestEngineRetriesInvalidOnlyToolCallsWithoutHistory(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_unknown", Name: "unknown_tool", Arguments: `{"path":"extra.go"}`},
+				},
+				RawResponse: "bad tool call",
+				TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			},
+			{
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "summary",
+				OverallConfidenceScore: 0.5,
+				TokensUsed:             model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+		MaxToolCalls:     10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TotalToolCalls != 0 {
+		t.Fatalf("tool calls = %d", result.TotalToolCalls)
+	}
+	if result.TokensUsed.TotalTokens != 5 {
+		t.Fatalf("total tokens = %d", result.TokensUsed.TotalTokens)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d", len(llmClient.reqs))
+	}
+	if len(llmClient.reqs[1].Messages) != len(llmClient.reqs[0].Messages)+1 {
+		t.Fatalf("retry should preserve regular assistant history: first=%d second=%d", len(llmClient.reqs[0].Messages), len(llmClient.reqs[1].Messages))
+	}
+	last := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1]
+	if last.Role != "assistant" || last.Content != "bad tool call" || len(last.ToolCalls) != 0 {
+		t.Fatalf("retry assistant history = %#v", last)
+	}
+}
+
 func TestEngineProvidesNoToolsMessagesWithoutSyntheticFollowup(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{

@@ -89,40 +89,48 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		{Role: "user", Content: userPrompt},
 	}
 
-	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
-		AgentName:               "verify",
-		AgentKind:               "verify",
-		Messages:                messages,
-		Tools:                   reviewerToolDefinitions(),
-		Schema:                  schema,
-		SchemaKind:              llm.SchemaKindVerify,
-		Model:                   e.config.Model,
-		MaxTokens:               e.config.MaxTokens,
-		Temperature:             e.config.Temperature,
-		TopP:                    e.config.TopP,
-		ExtraBody:               e.config.ExtraBody,
-		ParallelToolCalls:       !req.DisableParallelToolCalls,
-		ReasoningEffort:         e.config.ReasoningEffort,
-		RepoRoot:                req.RepoRoot,
-		MaxToolCalls:            req.MaxToolCalls,
-		MaxDuplicateToolCalls:   req.MaxDuplicateToolCalls,
-		Section:                 req.Section,
-		NoToolsSystem:           systemTemplate,
-		NoToolsSchemaSnippet:    systemSnippet,
-		JSONRetryExampleSnippet: exampleSnippet,
-		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-			return noToolsMessages(systemTemplate, messages, systemSnippet)
-		},
-	})
-	if err != nil {
-		return nil, usage, err
+	for attempt := 0; ; attempt++ {
+		loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
+			AgentName:               "verify",
+			AgentKind:               "verify",
+			Messages:                messages,
+			Tools:                   reviewerToolDefinitions(),
+			Schema:                  schema,
+			SchemaKind:              llm.SchemaKindVerify,
+			Model:                   e.config.Model,
+			MaxTokens:               e.config.MaxTokens,
+			Temperature:             e.config.Temperature,
+			TopP:                    e.config.TopP,
+			ExtraBody:               e.config.ExtraBody,
+			ParallelToolCalls:       !req.DisableParallelToolCalls,
+			ReasoningEffort:         e.config.ReasoningEffort,
+			RepoRoot:                req.RepoRoot,
+			MaxToolCalls:            req.MaxToolCalls,
+			MaxDuplicateToolCalls:   req.MaxDuplicateToolCalls,
+			Section:                 req.Section,
+			NoToolsSystem:           systemTemplate,
+			NoToolsSchemaSnippet:    systemSnippet,
+			JSONRetryExampleSnippet: exampleSnippet,
+			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
+				return noToolsMessages(systemTemplate, messages, systemSnippet)
+			},
+		})
+		if err != nil {
+			return nil, usage, err
+		}
+		usage = addTokenUsage(usage, loopResult.tokensUsed)
+		resp := loopResult.resp
+		if resp != nil && resp.Verification != nil {
+			return resp.Verification, usage, nil
+		}
+		if attempt >= defaultMaxJSONRetries {
+			return nil, usage, fmt.Errorf("verify: missing verification in response")
+		}
+		e.logf("Verify: missing verification, retrying: attempt=%d", attempt+1)
+		if len(loopResult.messages) > 0 {
+			messages = loopResult.messages
+		}
 	}
-	usage = loopResult.tokensUsed
-	resp := loopResult.resp
-	if resp == nil || resp.Verification == nil {
-		return nil, usage, fmt.Errorf("verify: missing verification in response")
-	}
-	return resp.Verification, usage, nil
 }
 
 func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, error) {

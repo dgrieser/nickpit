@@ -194,6 +194,52 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	}
 }
 
+func TestVerifyRetriesMissingVerification(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{
+		responses: []*llm.ReviewResponse{
+			{
+				RawResponse: "not verification",
+				TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+			},
+			{
+				Verification: &model.FindingVerification{Valid: false, Priority: 3, ConfidenceScore: 0.9, Remarks: "not valid"},
+				TokensUsed:   model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	finding := model.Finding{
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+	}
+
+	verification, usage, err := engine.Verify(context.Background(), VerifyRequest{
+		ReviewCtx: sampleReviewCtx(),
+		Finding:   finding,
+	})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	if verification == nil || verification.Valid || verification.Remarks != "not valid" {
+		t.Fatalf("verification = %#v", verification)
+	}
+	if usage.TotalTokens != 5 {
+		t.Fatalf("usage total = %d, want 5", usage.TotalTokens)
+	}
+	if len(llmClient.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(llmClient.requests))
+	}
+	if len(llmClient.requests[1].Messages) != len(llmClient.requests[0].Messages)+1 {
+		t.Fatalf("retry should preserve regular assistant history: first=%d second=%d", len(llmClient.requests[0].Messages), len(llmClient.requests[1].Messages))
+	}
+	last := llmClient.requests[1].Messages[len(llmClient.requests[1].Messages)-1]
+	if last.Role != "assistant" || last.Content != "not verification" {
+		t.Fatalf("retry assistant history = %#v", last)
+	}
+}
+
 func TestVerifyIncludesStyleGuides(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
