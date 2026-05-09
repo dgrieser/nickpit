@@ -64,6 +64,7 @@ type app struct {
 	disableParallelToolCalls      bool
 	noVerify                      bool
 	verifyConcurrency             int
+	noFinalize                    bool
 	hideInvalid                   bool
 	logger                        *logging.Logger
 }
@@ -131,6 +132,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.noVerify, "no-verify", false, "Skip the second-pass verifier")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
+	root.PersistentFlags().BoolVar(&cli.noFinalize, "no-finalize", false, "Skip the final reconciliation pass that uses verifier feedback to refine findings")
 	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
 
 	root.AddCommand(cli.newLocalCmd())
@@ -624,6 +626,24 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			result.Findings[i].Verification = verifications[i]
 		}
 		result.VerifyTokensUsed = verifyUsage
+	}
+
+	if !a.noFinalize && len(result.Findings) > 0 && trimmedCtx != nil {
+		finalizeOpts := review.FinalizeOptions{
+			UseJSONSchema:            req.UseJSONSchema,
+			MaxOutputRetries:         req.MaxOutputRetries,
+			MaxReasoningSeconds:      req.MaxReasoningSeconds,
+			DisableParallelToolCalls: req.DisableParallelToolCalls,
+			RepoRoot:                 req.RepoRoot,
+		}
+		finalized, finalizeRun, finalizeErr := engine.Finalize(ctx, trimmedCtx, result, finalizeOpts)
+		if finalizeErr != nil {
+			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v", finalizeErr))
+			return finalizeErr
+		}
+		finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
+		finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)
+		result = finalized
 	}
 
 	var formatter output.Formatter

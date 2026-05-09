@@ -55,6 +55,7 @@ type ReviewResult struct {
 	AgentRuns              []AgentRun `json:"agent_runs,omitempty"`
 	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
 	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used,omitempty"`
+	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used,omitempty"`
 	Mode                   string     `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`

@@ -78,9 +78,10 @@ type OpenAIClient struct {
 type SchemaKind string
 
 const (
-	SchemaKindReview SchemaKind = "review"
-	SchemaKindVerify SchemaKind = "verify"
-	SchemaKindText   SchemaKind = "text"
+	SchemaKindReview   SchemaKind = "review"
+	SchemaKindVerify   SchemaKind = "verify"
+	SchemaKindFinalize SchemaKind = "finalize"
+	SchemaKindText     SchemaKind = "text"
 )
 
 // ReasoningSink receives streaming reasoning content from collectStream.

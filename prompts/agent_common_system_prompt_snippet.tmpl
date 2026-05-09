@@ -1,12 +1,12 @@
 {{if eq .Snippet "findings"}}
-For each finding{{if eq .Kind "merge"}}, merged or not{{end}}:
+For each finding{{if eq .Kind "merge"}}, merged or not{{else if eq .Kind "finalize"}} you keep{{end}}:
 - use ONE distinct issue per finding
 - make the title imperative and less than 80 characters
 - set `priority` to 0, 1, 2 or 3 (always required)
 - keep the body to ONE paragraph, matter-of-fact, and EXPLICIT about the scenario where it fails
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
-{{if ne .Kind "merge"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
+{{if and (ne .Kind "merge") (ne .Kind "finalize")}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
 {{end}}{{else if eq .Snippet "priority"}}
 ### PRIORITY
 Use these priority levels:
