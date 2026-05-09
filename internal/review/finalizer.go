@@ -78,7 +78,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, err
 	}
 
-	out := cloneReviewResultMetadata(in)
+	out := in.Clone()
 	out.Findings = result.resp.Findings
 	out.OverallCorrectness = result.resp.OverallCorrectness
 	out.OverallExplanation = result.resp.OverallExplanation
@@ -128,15 +128,6 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 		return "", fmt.Errorf("finalize: rendering finalize prompt json: %w", err)
 	}
 	return user, nil
-}
-
-func cloneReviewResultMetadata(in *model.ReviewResult) *model.ReviewResult {
-	out := *in
-	out.Findings = nil
-	if len(in.AgentRuns) > 0 {
-		out.AgentRuns = append([]model.AgentRun(nil), in.AgentRuns...)
-	}
-	return &out
 }
 
 func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {

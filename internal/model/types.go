@@ -267,6 +267,16 @@ func CloneContext(src *ReviewContext) *ReviewContext {
 	return &out
 }
 
+func (r *ReviewResult) Clone() *ReviewResult {
+	if r == nil {
+		return nil
+	}
+	data, _ := json.Marshal(r)
+	var out ReviewResult
+	_ = json.Unmarshal(data, &out)
+	return &out
+}
+
 func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
 	if src == nil {
 		return nil
