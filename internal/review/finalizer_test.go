@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -312,5 +313,192 @@ func TestFinalizePriorityFloorSkipsWhenNoInputMatch(t *testing.T) {
 	// but defensively we don't apply a wrong floor).
 	if out.Findings[0].Finalization.Priority != 0 {
 		t.Fatalf("priority = %d, want 0 (unchanged when no input match)", out.Findings[0].Finalization.Priority)
+	}
+}
+
+func TestFinalizeWeightedConfidenceStandardAverage(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
+						Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "ok"},
+						// LLM emits an arbitrary value; code must overwrite.
+						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.123, Remarks: "keep"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue", Body: "b", ConfidenceScore: 0.6, Priority: intPtr(1), CodeLocation: loc,
+				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "ok"}},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	// 0.6*0.8 + 0.4*0.6 = 0.72, divergence 0.2 < 0.3 → no clamp.
+	got := out.Findings[0].Finalization.ConfidenceScore
+	if math.Abs(got-0.72) > 1e-9 {
+		t.Fatalf("confidence = %v, want 0.72", got)
+	}
+}
+
+func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
+						Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.9, Remarks: "keep"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue", Body: "b", ConfidenceScore: 0.4, Priority: intPtr(1), CodeLocation: loc,
+				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"}},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	// 0.6*0.9 + 0.4*0.4 = 0.70, divergence 0.5 > 0.3, clamp to min(0.9, 0.4) = 0.4.
+	got := out.Findings[0].Finalization.ConfidenceScore
+	if math.Abs(got-0.4) > 1e-9 {
+		t.Fatalf("confidence = %v, want 0.4 (clamped)", got)
+	}
+}
+
+func TestFinalizeWeightedConfidenceFallsBackWhenNoVerification(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
+						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.0, Remarks: "keep"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue", Body: "b", ConfidenceScore: 0.65, Priority: intPtr(1), CodeLocation: loc},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	got := out.Findings[0].Finalization.ConfidenceScore
+	if math.Abs(got-0.65) > 1e-9 {
+		t.Fatalf("confidence = %v, want 0.65 (review fallback)", got)
+	}
+}
+
+func TestFinalizeWeightedConfidenceSurvivesReorder(t *testing.T) {
+	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				// LLM reorders B before A.
+				Findings: []model.Finding{
+					{
+						Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB,
+						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.5, Remarks: "ok"},
+						Finalization: &model.FindingFinalization{Title: "Issue B", Body: "b", Priority: 2, ConfidenceScore: 0.99, Remarks: "x"},
+					},
+					{
+						Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
+						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.9, Remarks: "ok"},
+						Finalization: &model.FindingFinalization{Title: "Issue A", Body: "a", Priority: 2, ConfidenceScore: 0.99, Remarks: "x"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue A", Body: "a", ConfidenceScore: 0.8, Priority: intPtr(2), CodeLocation: locA,
+				Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.9, Remarks: "ok"}},
+			{Title: "Issue B", Body: "b", ConfidenceScore: 0.4, Priority: intPtr(2), CodeLocation: locB,
+				Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.5, Remarks: "ok"}},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	// Index 0 = Issue B: 0.6*0.5 + 0.4*0.4 = 0.46, divergence 0.1 < 0.3 → 0.46.
+	gotB := out.Findings[0].Finalization.ConfidenceScore
+	if math.Abs(gotB-0.46) > 1e-9 {
+		t.Fatalf("B confidence = %v, want 0.46", gotB)
+	}
+	// Index 1 = Issue A: 0.6*0.9 + 0.4*0.8 = 0.86, divergence 0.1 < 0.3 → 0.86.
+	gotA := out.Findings[1].Finalization.ConfidenceScore
+	if math.Abs(gotA-0.86) > 1e-9 {
+		t.Fatalf("A confidence = %v, want 0.86", gotA)
+	}
+}
+
+func TestFinalizeWeightedConfidenceSkipsWhenNoInputMatch(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Hallucinated", Body: "x", Priority: intPtr(1),
+						CodeLocation: model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 9, End: 9}},
+						Finalization: &model.FindingFinalization{Title: "Hallucinated", Body: "x", Priority: 1, ConfidenceScore: 0.42, Remarks: "new"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Real", Body: "r", ConfidenceScore: 0.7, Priority: intPtr(2),
+				CodeLocation: model.CodeLocation{FilePath: "real.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	// No input match → confidence untouched.
+	got := out.Findings[0].Finalization.ConfidenceScore
+	if math.Abs(got-0.42) > 1e-9 {
+		t.Fatalf("confidence = %v, want 0.42 (unchanged when no input match)", got)
 	}
 }

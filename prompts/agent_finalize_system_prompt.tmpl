@@ -11,9 +11,6 @@ Your job:
    - decide on the final `finalization.priority` by reasoning about current `verification.priority` and `finding.priority`
      - DO NOT raise the final `finalization.priority` above the higher of `verification.priority` and `finding.priority`
      - pay attention to the original `finding.confidence_score` and `verification.confidence_score` in your reasoning
-   - produce final `finalization.confidence_score` as a weighted average:
-     - `0.6 × verification.confidence_score + 0.4 × finding.review_confidence_score`
-     - if the two scores diverge by more than 0.3, do not exceed the lower of the two
    - produce final `finalization.title` and `finalization.body`:
      - either copy them from the current `finding.title` and `finding.body`
      - or refine them based on `verification.remarks`
@@ -36,7 +33,6 @@ Output `finalization` and updated `overall_correctness`, `overall_explanation`, 
 - DO NOT wrap the JSON in markdown fences or extra prose
 - produce JSON only and match the schema EXACTLY
 - `finalization.priority` is an integer 0-3
-- `finalization.confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
 - `finalization.title` and `finalization.body` contain the final title and body you want downstream output to use
 - `finalization.remarks` is a short paragraph explaining what you did
 - `overall_correctness`, `overall_explanation`, and `overall_confidence_score` are updated based on the finalization

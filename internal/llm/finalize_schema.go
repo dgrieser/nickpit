@@ -5,16 +5,18 @@ package llm
 // and records its own decision in `finalization`.
 var finalizeSchemaDefinition = buildFinalizeSchemaDefinition()
 
+// confidence_score is intentionally omitted: it is computed deterministically
+// in code (see applyWeightedConfidence in internal/review/finalizer.go) rather
+// than emitted by the LLM.
 var finalizationSchemaDefinition = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
-		"title":            map[string]any{"type": "string", "examples": []any{"Example final title"}},
-		"body":             map[string]any{"type": "string", "examples": []any{"Example final explanation."}},
-		"priority":         map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "examples": []any{1}},
-		"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
-		"remarks":          map[string]any{"type": "string", "examples": []any{"Example explanation of the final decision."}},
+		"title":    map[string]any{"type": "string", "examples": []any{"Example final title"}},
+		"body":     map[string]any{"type": "string", "examples": []any{"Example final explanation."}},
+		"priority": map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "examples": []any{1}},
+		"remarks":  map[string]any{"type": "string", "examples": []any{"Example explanation of the final decision."}},
 	},
-	"required": []string{"title", "body", "priority", "confidence_score", "remarks"},
+	"required": []string{"title", "body", "priority", "remarks"},
 }
 
 func buildFinalizeSchemaDefinition() map[string]any {

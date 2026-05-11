@@ -4,9 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
+)
+
+const (
+	finalizeVerificationWeight = 0.6
+	finalizeReviewWeight       = 0.4
+	finalizeDivergenceClamp    = 0.3
 )
 
 type FinalizeOptions struct {
@@ -85,6 +92,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
 	mergeInputSuggestions(out.Findings, in.Findings)
 	enforcePriorityFloor(out.Findings, in.Findings)
+	applyWeightedConfidence(out.Findings, in.Findings)
 	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
 	return out, result.run, nil
 }
@@ -192,6 +200,37 @@ func enforcePriorityFloor(out, in []model.Finding) {
 		if out[i].Finalization.Priority < floor {
 			out[i].Finalization.Priority = floor
 		}
+	}
+}
+
+// applyWeightedConfidence overwrites finalization.confidence_score with a
+// deterministic weighted average of the review confidence and the verifier's
+// confidence. Moved out of the LLM prompt because LLMs are unreliable at
+// arithmetic. If verification is missing, the review confidence is used as-is.
+// Hallucinated findings with no input match are skipped (no value applied).
+func applyWeightedConfidence(out, in []model.Finding) {
+	for i := range out {
+		if out[i].Finalization == nil {
+			continue
+		}
+		orig := findInputMatch(out[i], in)
+		if orig == nil {
+			continue
+		}
+		review := orig.ConfidenceScore
+		if orig.Verification == nil {
+			out[i].Finalization.ConfidenceScore = review
+			continue
+		}
+		verify := orig.Verification.ConfidenceScore
+		score := finalizeVerificationWeight*verify + finalizeReviewWeight*review
+		if math.Abs(verify-review) > finalizeDivergenceClamp {
+			lower := math.Min(verify, review)
+			if score > lower {
+				score = lower
+			}
+		}
+		out[i].Finalization.ConfidenceScore = score
 	}
 }
 
