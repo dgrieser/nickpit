@@ -20,6 +20,7 @@ type agentLoopRequest struct {
 	Tools                      []llm.ToolDefinition
 	Schema                     []byte
 	SchemaKind                 llm.SchemaKind
+	Constraints                llm.ResponseConstraints
 	Model                      string
 	MaxTokens                  *int
 	Temperature                *float64
@@ -58,6 +59,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		Tools:             append([]llm.ToolDefinition(nil), req.Tools...),
 		Schema:            req.Schema,
 		SchemaKind:        req.SchemaKind,
+		Constraints:       req.Constraints,
 		Model:             req.Model,
 		MaxTokens:         req.MaxTokens,
 		Temperature:       req.Temperature,

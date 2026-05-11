@@ -2717,7 +2717,7 @@ func TestStripPriorityPrefix(t *testing.T) {
 
 func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 	content := `{"findings":[{"title":"[P1] Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	resp, err := parseReviewResponse(content, SchemaKindReview)
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
 	}
@@ -2731,7 +2731,7 @@ func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 
 func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	_, err := parseReviewResponse(content, SchemaKindReview)
+	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
@@ -2751,7 +2751,7 @@ func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 
 func TestParseReviewResponseFlagsOutOfRangePriority(t *testing.T) {
 	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":7,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	_, err := parseReviewResponse(content, SchemaKindReview)
+	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
@@ -2770,7 +2770,7 @@ func TestParseReviewResponseFlagsOutOfRangePriority(t *testing.T) {
 
 func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
 	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	_, err := parseReviewResponse(content, SchemaKindFinalize)
+	_, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
@@ -2789,7 +2789,7 @@ func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
 
 func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
 	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	resp, err := parseReviewResponse(content, SchemaKindFinalize)
+	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
 	}

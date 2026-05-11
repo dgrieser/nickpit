@@ -53,7 +53,7 @@ func TestVerifyExamplePromptSnippetIsJSON(t *testing.T) {
 
 func TestParseVerifyResponseRequiresFields(t *testing.T) {
 	content := `{"valid": true, "priority": 1}`
-	_, err := parseReviewResponse(content, SchemaKindVerify)
+	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err == nil {
 		t.Fatalf("expected InvalidResponseError")
 	}
@@ -68,7 +68,7 @@ func TestParseVerifyResponseRequiresFields(t *testing.T) {
 
 func TestParseVerifyResponseHappyPath(t *testing.T) {
 	content := `{"valid": false, "priority": 2, "confidence_score": 0.81, "remarks": "not reachable"}`
-	resp, err := parseReviewResponse(content, SchemaKindVerify)
+	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 
 func TestParseVerifyResponseRejectsOutOfRangePriority(t *testing.T) {
 	content := `{"valid": true, "priority": 9, "confidence_score": 0.5, "remarks": "x"}`
-	_, err := parseReviewResponse(content, SchemaKindVerify)
+	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !asErr(err, &invalid) {
 		t.Fatalf("expected InvalidResponseError, got %v", err)

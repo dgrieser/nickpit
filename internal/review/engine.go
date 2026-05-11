@@ -196,6 +196,7 @@ type reviewAgent struct {
 	extraMessages []llm.Message
 	schema        []byte
 	schemaKind    llm.SchemaKind
+	constraints   llm.ResponseConstraints
 	hasTools      bool
 }
 
@@ -282,16 +283,22 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 }
 
 var reviewVectors = []struct {
-	name      string
-	focusFile string
+	name        string
+	focusFile   string
+	constraints llm.ResponseConstraints
 }{
-	{"Code Quality", "agent_review_codequality_system_prompt.tmpl"},
-	{"Security", "agent_review_security_system_prompt.tmpl"},
-	{"Architecture", "agent_review_architecture_system_prompt.tmpl"},
-	{"Performance", "agent_review_performance_system_prompt.tmpl"},
-	{"Testing", "agent_review_testing_system_prompt.tmpl"},
-	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl"},
+	{"Code Quality", "agent_review_codequality_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Security", "agent_review_security_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Architecture", "agent_review_architecture_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Performance", "agent_review_performance_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Testing", "agent_review_testing_system_prompt.tmpl", llm.ResponseConstraints{
+		MinPriority:        intPtrVal(2),
+		AllowedCorrectness: []string{"patch is correct"},
+	}},
+	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl", llm.ResponseConstraints{}},
 }
+
+func intPtrVal(v int) *int { return &v }
 
 func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	baseTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
@@ -405,8 +412,9 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 	for i, vector := range reviewVectors {
 		wg.Add(1)
 		go func(idx int, vector struct {
-			name      string
-			focusFile string
+			name        string
+			focusFile   string
+			constraints llm.ResponseConstraints
 		}) {
 			defer wg.Done()
 			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, true)
@@ -419,6 +427,10 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				errs[idx] = err
 				return
 			}
+			agentSchema := schema
+			if req.UseJSONSchema && (vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil) {
+				agentSchema = llm.FindingsSchemaWithConstraints(vector.constraints)
+			}
 			result, err := e.runReviewAgent(ctx, reviewAgent{
 				name:          vector.name,
 				role:          "reviewer",
@@ -426,8 +438,9 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				noToolsSystem: noToolsSystem,
 				user:          userPrompt,
 				extraMessages: contextMessages,
-				schema:        schema,
+				schema:        agentSchema,
 				schemaKind:    llm.SchemaKindReview,
+				constraints:   vector.constraints,
 				hasTools:      true,
 			}, req)
 			results[idx] = result
@@ -550,6 +563,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		Tools:                      tools,
 		Schema:                     agent.schema,
 		SchemaKind:                 agent.schemaKind,
+		Constraints:                agent.constraints,
 		Model:                      e.config.Model,
 		MaxTokens:                  e.config.MaxTokens,
 		Temperature:                e.config.Temperature,

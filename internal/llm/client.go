@@ -91,6 +91,13 @@ type ReasoningSink interface {
 	End()
 }
 
+// ResponseConstraints narrows what values are acceptable in a parsed agent response.
+type ResponseConstraints struct {
+	MinPriority        *int     // finding priority must be >= this value
+	MaxPriority        *int     // finding priority must be <= this value
+	AllowedCorrectness []string // overall_correctness must be one of these; nil means default enum
+}
+
 type ReviewRequest struct {
 	SystemPrompt      string
 	UserContent       string
@@ -99,6 +106,7 @@ type ReviewRequest struct {
 	Tools             []ToolDefinition
 	Schema            json.RawMessage
 	SchemaKind        SchemaKind
+	Constraints       ResponseConstraints
 	Model             string
 	MaxTokens         *int
 	Temperature       *float64
@@ -804,7 +812,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		resp = &ReviewResponse{ToolCalls: toolCalls}
 	} else {
 		var err error
-		resp, err = parseReviewResponse(content, req.SchemaKind)
+		resp, err = parseReviewResponse(content, req.SchemaKind, req.Constraints)
 		if err != nil {
 			var invalidResp *InvalidResponseError
 			if errors.As(err, &invalidResp) {
@@ -1659,7 +1667,7 @@ func canonicalToolCallKey(call ToolCall) string {
 	return call.Name + "\x00" + string(normalized)
 }
 
-func parseReviewResponse(content string, kind SchemaKind) (*ReviewResponse, error) {
+func parseReviewResponse(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, error) {
 	if kind == SchemaKindText {
 		return &ReviewResponse{}, nil
 	}
@@ -1676,7 +1684,7 @@ func parseReviewResponse(content string, kind SchemaKind) (*ReviewResponse, erro
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 	}
-	if missing := missingResponseFields(&parsed, content, kind); len(missing) > 0 {
+	if missing := missingResponseFields(&parsed, content, kind, constraints); len(missing) > 0 {
 		return &parsed, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
@@ -1723,21 +1731,23 @@ func missingVerifyFields(content string) []string {
 	return missing
 }
 
-func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind) []string {
+func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind, constraints ResponseConstraints) []string {
 	var raw map[string]json.RawMessage
 	_ = LenientUnmarshal(content, &raw)
 	var missing []string
 	if _, ok := raw["findings"]; !ok && parsed.Findings == nil {
 		missing = append(missing, "findings")
 	}
-	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"], kind)...)
+	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"], kind, constraints)...)
 	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
 		missing = append(missing, "overall_correctness")
 	} else {
-		switch parsed.OverallCorrectness {
-		case "patch is correct", "patch is incorrect":
-		default:
-			missing = append(missing, `overall_correctness (must be "patch is correct" or "patch is incorrect")`)
+		allowed := constraints.AllowedCorrectness
+		if len(allowed) == 0 {
+			allowed = []string{"patch is correct", "patch is incorrect"}
+		}
+		if !containsString(allowed, parsed.OverallCorrectness) {
+			missing = append(missing, fmt.Sprintf("overall_correctness (must be one of: %v)", allowed))
 		}
 	}
 	if strings.TrimSpace(parsed.OverallExplanation) == "" {
@@ -1749,13 +1759,30 @@ func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKi
 	return missing
 }
 
-func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage, kind SchemaKind) []string {
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage, kind SchemaKind, constraints ResponseConstraints) []string {
 	if len(findings) == 0 {
 		return nil
 	}
 	var rawItems []map[string]json.RawMessage
 	if len(rawFindings) > 0 {
 		_ = json.Unmarshal(rawFindings, &rawItems)
+	}
+	effectiveMin := 0
+	effectiveMax := 3
+	if constraints.MinPriority != nil {
+		effectiveMin = *constraints.MinPriority
+	}
+	if constraints.MaxPriority != nil {
+		effectiveMax = *constraints.MaxPriority
 	}
 	var missing []string
 	for i, finding := range findings {
@@ -1768,8 +1795,8 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage,
 			missing = append(missing, fmt.Sprintf("findings[%d].priority", i))
 			continue
 		}
-		if *finding.Priority < 0 || *finding.Priority > 3 {
-			missing = append(missing, fmt.Sprintf("findings[%d].priority (must be 0-3)", i))
+		if *finding.Priority < effectiveMin || *finding.Priority > effectiveMax {
+			missing = append(missing, fmt.Sprintf("findings[%d].priority (must be %d-%d)", i, effectiveMin, effectiveMax))
 		}
 		if kind == SchemaKindFinalize {
 			missing = append(missing, missingFinalizeFindingFields(i, rawItem, finding)...)
