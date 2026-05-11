@@ -622,6 +622,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			result.Findings[i].Verification = verifications[i]
 		}
 		result.VerifyTokensUsed = verifyUsage
+		result.Findings = dropInvalidFindings(result.Findings)
 	}
 
 	if len(result.Findings) > 0 && trimmedCtx != nil {
@@ -885,6 +886,17 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 		strings.Join(flags, ", "),
 		profile.BaseURL,
 	)
+}
+
+func dropInvalidFindings(findings []model.Finding) []model.Finding {
+	out := findings[:0]
+	for _, f := range findings {
+		if f.Verification != nil && !f.Verification.Valid {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 func reviewResultSummary(result *model.ReviewResult) string {
