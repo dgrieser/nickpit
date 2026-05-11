@@ -101,8 +101,12 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 				return err
 			}
 		}
+		title, body, conf := finding.Title, finding.Body, finding.ConfidenceScore
+		if finding.Finalization != nil {
+			title, body, conf = finding.Finalization.Title, finding.Finalization.Body, finding.Finalization.ConfidenceScore
+		}
 		if _, err := fmt.Fprintf(f.w, "%s\n%s\nConfidence: %.2f\n\n",
-			finding.Title, finding.Body, finding.ConfidenceScore,
+			title, body, conf,
 		); err != nil {
 			return err
 		}
@@ -118,7 +122,7 @@ func renderFinalization(v *model.FindingFinalization) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("  finalized  conf %.2f", v.ConfidenceScore))
+	b.WriteString("  finalized")
 	if remarks := strings.TrimSpace(v.Remarks); remarks != "" {
 		b.WriteString("\n  final remark: ")
 		b.WriteString(truncateRemark(remarks, 200))

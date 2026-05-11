@@ -292,13 +292,13 @@ var reviewVectors = []struct {
 	{"Architecture", "agent_review_architecture_system_prompt.tmpl", llm.ResponseConstraints{}},
 	{"Performance", "agent_review_performance_system_prompt.tmpl", llm.ResponseConstraints{}},
 	{"Testing", "agent_review_testing_system_prompt.tmpl", llm.ResponseConstraints{
-		MinPriority:        intPtrVal(2),
+		MinPriority:        intPtr(2),
 		AllowedCorrectness: []string{"patch is correct"},
 	}},
 	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl", llm.ResponseConstraints{}},
 }
 
-func intPtrVal(v int) *int { return &v }
+func intPtr(v int) *int { return &v }
 
 func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	baseTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
@@ -428,7 +428,7 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				return
 			}
 			agentSchema := schema
-			if req.UseJSONSchema && (vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil) {
+			if req.UseJSONSchema && (vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil || len(vector.constraints.AllowedCorrectness) > 0) {
 				agentSchema = llm.FindingsSchemaWithConstraints(vector.constraints)
 			}
 			result, err := e.runReviewAgent(ctx, reviewAgent{

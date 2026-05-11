@@ -83,6 +83,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	out.OverallCorrectness = result.resp.OverallCorrectness
 	out.OverallExplanation = result.resp.OverallExplanation
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
+	enforcePriorityCeiling(out.Findings, in.Findings)
 	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
 	return out, result.run, nil
 }
@@ -128,6 +129,24 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 		return "", fmt.Errorf("finalize: rendering finalize prompt json: %w", err)
 	}
 	return user, nil
+}
+
+// enforcePriorityCeiling ensures finalization.priority is not more critical (lower number)
+// than the most critical value among the original finding and its verifier.
+func enforcePriorityCeiling(out, in []model.Finding) {
+	for i := range out {
+		if i >= len(in) || out[i].Finalization == nil {
+			continue
+		}
+		orig := in[i]
+		ceiling := model.PriorityRank(orig.Priority)
+		if orig.Verification != nil && orig.Verification.Priority < ceiling {
+			ceiling = orig.Verification.Priority
+		}
+		if out[i].Finalization.Priority < ceiling {
+			out[i].Finalization.Priority = ceiling
+		}
+	}
 }
 
 func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {

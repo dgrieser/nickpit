@@ -7,7 +7,10 @@ import (
 	"sort"
 )
 
-func buildFindingsSchemaDefinition(minPriority, maxPriority int) map[string]any {
+func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectness []string) map[string]any {
+	if len(allowedCorrectness) == 0 {
+		allowedCorrectness = []string{"patch is correct", "patch is incorrect"}
+	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -57,7 +60,7 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int) map[string]any 
 					"required": []string{"title", "body", "confidence_score", "priority", "code_location"},
 				},
 			},
-			"overall_correctness":      map[string]any{"type": "string", "enum": []string{"patch is correct", "patch is incorrect"}},
+			"overall_correctness":      map[string]any{"type": "string", "enum": allowedCorrectness},
 			"overall_explanation":      map[string]any{"type": "string", "examples": []any{"The patch is incorrect because it introduces a correctness issue."}},
 			"overall_confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
 		},
@@ -65,11 +68,11 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int) map[string]any 
 	}
 }
 
-var findingsSchemaDefinition = buildFindingsSchemaDefinition(0, 3)
+var findingsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil)
 
 var FindingsSchema = mustMarshalCleanSchema(findingsSchemaDefinition)
 
-// FindingsSchemaWithConstraints returns a findings schema with a narrowed priority range.
+// FindingsSchemaWithConstraints returns a findings schema narrowed by the given constraints.
 func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	min, max := 0, 3
 	if c.MinPriority != nil {
@@ -78,7 +81,7 @@ func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max))
+	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness))
 }
 
 func FindingsExamplePromptSnippet() string {

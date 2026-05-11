@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1746,7 +1747,7 @@ func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKi
 		if len(allowed) == 0 {
 			allowed = []string{"patch is correct", "patch is incorrect"}
 		}
-		if !containsString(allowed, parsed.OverallCorrectness) {
+		if !slices.Contains(allowed, parsed.OverallCorrectness) {
 			missing = append(missing, fmt.Sprintf("overall_correctness (must be one of: %v)", allowed))
 		}
 	}
@@ -1757,15 +1758,6 @@ func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKi
 		missing = append(missing, "overall_confidence_score")
 	}
 	return missing
-}
-
-func containsString(ss []string, s string) bool {
-	for _, v := range ss {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage, kind SchemaKind, constraints ResponseConstraints) []string {
