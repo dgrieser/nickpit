@@ -37,7 +37,10 @@ func buildFinalizeSchemaDefinition() map[string]any {
 	}
 	itemProps["verification"] = deepCopySchema(verifySchemaDefinition)
 	itemProps["finalization"] = deepCopySchema(finalizationSchemaDefinition)
-	required, _ := items["required"].([]string)
+	required, ok := items["required"].([]string)
+	if !ok {
+		panic("llm: findingsSchemaDefinition findings.items.required is not []string")
+	}
 	items["required"] = append(append([]string{}, required...), "verification", "finalization")
 	return root
 }

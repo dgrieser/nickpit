@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -270,9 +271,14 @@ func CloneContext(src *ReviewContext) *ReviewContext {
 	if src == nil {
 		return nil
 	}
-	data, _ := json.Marshal(src)
+	data, err := json.Marshal(src)
+	if err != nil {
+		panic(fmt.Sprintf("model: CloneContext marshal: %v", err))
+	}
 	var out ReviewContext
-	_ = json.Unmarshal(data, &out)
+	if err := json.Unmarshal(data, &out); err != nil {
+		panic(fmt.Sprintf("model: CloneContext unmarshal: %v", err))
+	}
 	return &out
 }
 
@@ -280,9 +286,14 @@ func (r *ReviewResult) Clone() *ReviewResult {
 	if r == nil {
 		return nil
 	}
-	data, _ := json.Marshal(r)
+	data, err := json.Marshal(r)
+	if err != nil {
+		panic(fmt.Sprintf("model: Clone marshal: %v", err))
+	}
 	var out ReviewResult
-	_ = json.Unmarshal(data, &out)
+	if err := json.Unmarshal(data, &out); err != nil {
+		panic(fmt.Sprintf("model: Clone unmarshal: %v", err))
+	}
 	return &out
 }
 
