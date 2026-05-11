@@ -96,7 +96,11 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 				return err
 			}
 		}
-		if line := renderFinalization(finding.Finalization); line != "" {
+		prevRank := model.PriorityRank(finding.Priority)
+		if finding.Verification != nil {
+			prevRank = finding.Verification.Priority
+		}
+		if line := f.renderFinalization(finding.Finalization, prevRank); line != "" {
 			if _, err := fmt.Fprintln(f.w, line); err != nil {
 				return err
 			}
@@ -117,12 +121,18 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 	return err
 }
 
-func renderFinalization(v *model.FindingFinalization) string {
+func (f *TerminalFormatter) renderFinalization(v *model.FindingFinalization, prevRank int) string {
 	if v == nil {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("  finalized")
+	if v.Priority != prevRank {
+		arrow := fmt.Sprintf("  P%d→P%d", prevRank, v.Priority)
+		b.WriteString(f.colorPriorityArrow(arrow))
+	} else {
+		fmt.Fprintf(&b, "  P%d", v.Priority)
+	}
 	if remarks := strings.TrimSpace(v.Remarks); remarks != "" {
 		b.WriteString("\n  final remark: ")
 		b.WriteString(truncateRemark(remarks, 200))

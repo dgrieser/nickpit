@@ -889,7 +889,7 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 }
 
 func dropInvalidFindings(findings []model.Finding) []model.Finding {
-	out := findings[:0]
+	out := make([]model.Finding, 0, len(findings))
 	for _, f := range findings {
 		if f.Verification != nil && !f.Verification.Valid {
 			continue

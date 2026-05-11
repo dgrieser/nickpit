@@ -114,6 +114,59 @@ func TestTerminalFormatterRendersVerification(t *testing.T) {
 	}
 }
 
+func TestTerminalFormatterRendersFinalizationPriorityChange(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewTerminalFormatter(&buf, false)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title: "Bug", Body: "B", ConfidenceScore: 0.8, Priority: intPtr(1),
+				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+				Finalization: &model.FindingFinalization{Title: "Bug", Body: "B", Priority: 2, ConfidenceScore: 0.7, Remarks: "downgraded"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "finalized") {
+		t.Fatalf("missing finalized marker:\n%s", out)
+	}
+	if !strings.Contains(out, "P1→P2") {
+		t.Fatalf("missing finalize priority arrow:\n%s", out)
+	}
+	if !strings.Contains(out, "final remark: downgraded") {
+		t.Fatalf("missing final remark:\n%s", out)
+	}
+}
+
+func TestTerminalFormatterRendersFinalizationPriorityUnchanged(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewTerminalFormatter(&buf, false)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title: "Bug", Body: "B", ConfidenceScore: 0.8, Priority: intPtr(1),
+				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+				Finalization: &model.FindingFinalization{Title: "Bug", Body: "B", Priority: 1, ConfidenceScore: 0.85, Remarks: "kept"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "finalized  P1") {
+		t.Fatalf("missing finalized priority display:\n%s", out)
+	}
+	if strings.Contains(out, "P1→P1") {
+		t.Fatalf("unwanted arrow for unchanged priority:\n%s", out)
+	}
+}
+
 func TestTerminalFormatterHideInvalid(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewTerminalFormatter(&buf, false).WithHideInvalid(true)

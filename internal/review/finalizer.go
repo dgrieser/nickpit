@@ -84,7 +84,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	out.OverallExplanation = result.resp.OverallExplanation
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
 	mergeInputSuggestions(out.Findings, in.Findings)
-	enforcePriorityCeiling(out.Findings, in.Findings)
+	enforcePriorityFloor(out.Findings, in.Findings)
 	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
 	return out, result.run, nil
 }
@@ -170,20 +170,27 @@ func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
 	return locMatches[0]
 }
 
-// enforcePriorityCeiling ensures finalization.priority is not more critical (lower number)
-// than the most critical value among the original finding and its verifier.
-func enforcePriorityCeiling(out, in []model.Finding) {
+// enforcePriorityFloor ensures finalization.priority is not more critical (lower number)
+// than the most critical value among the original finding and its verifier. "Floor" refers
+// to the integer value: lower numbers = more critical, so the floor is the minimum integer
+// the finalizer is allowed to emit. Matching is by code_location, with finding title as a
+// tiebreaker when multiple input findings share the same location, so reordering or dropping
+// by the LLM does not misalign the floor.
+func enforcePriorityFloor(out, in []model.Finding) {
 	for i := range out {
-		if i >= len(in) || out[i].Finalization == nil {
+		if out[i].Finalization == nil {
 			continue
 		}
-		orig := in[i]
-		ceiling := model.PriorityRank(orig.Priority)
-		if orig.Verification != nil && orig.Verification.Priority < ceiling {
-			ceiling = orig.Verification.Priority
+		orig := findInputMatch(out[i], in)
+		if orig == nil {
+			continue
 		}
-		if out[i].Finalization.Priority < ceiling {
-			out[i].Finalization.Priority = ceiling
+		floor := model.PriorityRank(orig.Priority)
+		if orig.Verification != nil && orig.Verification.Priority < floor {
+			floor = orig.Verification.Priority
+		}
+		if out[i].Finalization.Priority < floor {
+			out[i].Finalization.Priority = floor
 		}
 	}
 }

@@ -237,3 +237,80 @@ func TestFinalizeMergesSuggestionsWithCollidingLocationByTitle(t *testing.T) {
 		t.Fatalf("findings[1] = %+v, want title=Issue A suggestion=fix A", out.Findings[1])
 	}
 }
+
+func TestFinalizePriorityFloorSurvivesReorder(t *testing.T) {
+	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}
+	// LLM reorders B before A AND tries to escalate B from P2 -> P0.
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB,
+						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
+						Finalization: &model.FindingFinalization{Title: "Issue B", Body: "b", Priority: 0, ConfidenceScore: 0.6, Remarks: "escalate"},
+					},
+					{
+						Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
+						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
+						Finalization: &model.FindingFinalization{Title: "Issue A", Body: "a", Priority: 2, ConfidenceScore: 0.6, Remarks: "keep"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+			{Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	// Index 0 of out is Issue B (LLM reordered). Index-based matching would have
+	// taken Issue A's floor. With code_location matching, floor for B is P2.
+	if out.Findings[0].Title != "Issue B" || out.Findings[0].Finalization.Priority != 2 {
+		t.Fatalf("findings[0] = %+v, want title=Issue B priority=2 (clamped)", out.Findings[0])
+	}
+	if out.Findings[1].Title != "Issue A" || out.Findings[1].Finalization.Priority != 2 {
+		t.Fatalf("findings[1] = %+v, want title=Issue A priority=2", out.Findings[1])
+	}
+}
+
+func TestFinalizePriorityFloorSkipsWhenNoInputMatch(t *testing.T) {
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Hallucinated", Body: "x", Priority: intPtr(0), CodeLocation: model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 9, End: 9}},
+						Finalization: &model.FindingFinalization{Title: "Hallucinated", Body: "x", Priority: 0, ConfidenceScore: 0.5, Remarks: "new"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Real", Body: "r", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "real.go", LineRange: model.LineRange{Start: 1, End: 1}}, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	// No matching input → floor skipped; LLM's P0 stays untouched (the prompt forbids new findings,
+	// but defensively we don't apply a wrong floor).
+	if out.Findings[0].Finalization.Priority != 0 {
+		t.Fatalf("priority = %d, want 0 (unchanged when no input match)", out.Findings[0].Finalization.Priority)
+	}
+}
