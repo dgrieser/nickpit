@@ -1,5 +1,7 @@
 package llm
 
+import "encoding/json"
+
 // finalizeSchemaDefinition extends the findings schema with per-finding
 // verifier input and finalizer output. The finalizer preserves `verification`
 // and records its own decision in `finalization`.
@@ -20,28 +22,31 @@ var finalizationSchemaDefinition = map[string]any{
 }
 
 func buildFinalizeSchemaDefinition() map[string]any {
-	root := deepCopySchema(findingsSchemaDefinition).(map[string]any)
+	return extendFindingsForFinalize(deepCopySchema(findingsSchemaDefinition).(map[string]any))
+}
+
+func extendFindingsForFinalize(root map[string]any) map[string]any {
 	properties, ok := root["properties"].(map[string]any)
 	if !ok {
-		panic("llm: findingsSchemaDefinition missing properties")
+		panic("llm: findings schema missing properties")
 	}
 	findings, ok := properties["findings"].(map[string]any)
 	if !ok {
-		panic("llm: findingsSchemaDefinition missing findings property")
+		panic("llm: findings schema missing findings property")
 	}
 	items, ok := findings["items"].(map[string]any)
 	if !ok {
-		panic("llm: findingsSchemaDefinition findings.items malformed")
+		panic("llm: findings schema findings.items malformed")
 	}
 	itemProps, ok := items["properties"].(map[string]any)
 	if !ok {
-		panic("llm: findingsSchemaDefinition findings.items.properties malformed")
+		panic("llm: findings schema findings.items.properties malformed")
 	}
 	itemProps["verification"] = deepCopySchema(verifySchemaDefinition)
 	itemProps["finalization"] = deepCopySchema(finalizationSchemaDefinition)
 	required, ok := items["required"].([]string)
 	if !ok {
-		panic("llm: findingsSchemaDefinition findings.items.required is not []string")
+		panic("llm: findings schema findings.items.required is not []string")
 	}
 	items["required"] = append(append([]string{}, required...), "verification", "finalization")
 	return root
@@ -71,6 +76,20 @@ func deepCopySchema(v any) any {
 }
 
 var FinalizeSchema = mustMarshalCleanSchema(finalizeSchemaDefinition)
+
+// FinalizeSchemaWithConstraints returns the finalize schema narrowed by the
+// given constraints (priority bounds + allowed overall_correctness values).
+func FinalizeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
+	min, max := 0, 3
+	if c.MinPriority != nil {
+		min = *c.MinPriority
+	}
+	if c.MaxPriority != nil {
+		max = *c.MaxPriority
+	}
+	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness)
+	return mustMarshalCleanSchema(extendFindingsForFinalize(root))
+}
 
 func FinalizeExamplePromptSnippet() string {
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeSchemaDefinition)))

@@ -24,25 +24,28 @@ func NewTrimmer(maxTokens int, estimator model.TokenEstimator) *Trimmer {
 	return &Trimmer{maxTokens: maxTokens, estimator: estimator}
 }
 
-func (t *Trimmer) Trim(ctx *model.ReviewContext) *model.ReviewContext {
-	cloned := model.CloneContext(ctx)
+func (t *Trimmer) Trim(ctx *model.ReviewContext) (*model.ReviewContext, error) {
+	cloned, err := model.CloneContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if cloned == nil {
-		return nil
+		return nil, nil
 	}
 	if t.estimator.Estimate(renderContextText(cloned)) <= t.maxTokens {
-		return cloned
+		return cloned, nil
 	}
 
 	cloned = t.dropGeneratedFiles(cloned)
 	if t.estimator.Estimate(renderContextText(cloned)) <= t.maxTokens {
-		return cloned
+		return cloned, nil
 	}
 
 	t.trimComments(cloned)
 	t.trimCommits(cloned)
 	t.trimSupplemental(cloned)
 	t.trimDiff(cloned)
-	return cloned
+	return cloned, nil
 }
 
 func (t *Trimmer) dropGeneratedFiles(ctx *model.ReviewContext) *model.ReviewContext {

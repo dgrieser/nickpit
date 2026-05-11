@@ -267,34 +267,34 @@ func PriorityThresholdRank(value string) int {
 	}
 }
 
-func CloneContext(src *ReviewContext) *ReviewContext {
+func CloneContext(src *ReviewContext) (*ReviewContext, error) {
 	if src == nil {
-		return nil
+		return nil, nil
 	}
 	data, err := json.Marshal(src)
 	if err != nil {
-		panic(fmt.Sprintf("model: CloneContext marshal: %v", err))
+		return nil, fmt.Errorf("model: CloneContext marshal: %w", err)
 	}
 	var out ReviewContext
 	if err := json.Unmarshal(data, &out); err != nil {
-		panic(fmt.Sprintf("model: CloneContext unmarshal: %v", err))
+		return nil, fmt.Errorf("model: CloneContext unmarshal: %w", err)
 	}
-	return &out
+	return &out, nil
 }
 
-func (r *ReviewResult) Clone() *ReviewResult {
+func (r *ReviewResult) Clone() (*ReviewResult, error) {
 	if r == nil {
-		return nil
+		return nil, nil
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
-		panic(fmt.Sprintf("model: Clone marshal: %v", err))
+		return nil, fmt.Errorf("model: Clone marshal: %w", err)
 	}
 	var out ReviewResult
 	if err := json.Unmarshal(data, &out); err != nil {
-		panic(fmt.Sprintf("model: Clone unmarshal: %v", err))
+		return nil, fmt.Errorf("model: Clone unmarshal: %w", err)
 	}
-	return &out
+	return &out, nil
 }
 
 func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {

@@ -125,7 +125,10 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		trimmer = NewTrimmer(req.MaxContextTokens, model.SimpleEstimator{})
 	}
 
-	trimmed := trimmer.Trim(reviewCtx)
+	trimmed, err := trimmer.Trim(reviewCtx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("review: trim context: %w", err)
+	}
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	var result *model.ReviewResult
 	var enrichedCtx *model.ReviewContext
@@ -337,7 +340,10 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		return nil, nil, err
 	}
 
-	enriched := model.CloneContext(reviewCtx)
+	enriched, err := model.CloneContext(reviewCtx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("review: cloning context: %w", err)
+	}
 	enriched.SupplementalContext = append(enriched.SupplementalContext, supplementalFromContextAgent(contextResult.toolMessages)...)
 	payload = model.PromptPayloadFromContext(enriched)
 	payload.StyleGuides, err = e.styleGuidesFor(enriched)

@@ -284,7 +284,7 @@ func TestFinalizePriorityFloorSurvivesReorder(t *testing.T) {
 	}
 }
 
-func TestFinalizePriorityFloorSkipsWhenNoInputMatch(t *testing.T) {
+func TestFinalizeDropsHallucinatedFindingsWithoutInputMatch(t *testing.T) {
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
@@ -309,10 +309,10 @@ func TestFinalizePriorityFloorSkipsWhenNoInputMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	// No matching input → floor skipped; LLM's P0 stays untouched (the prompt forbids new findings,
-	// but defensively we don't apply a wrong floor).
-	if out.Findings[0].Finalization.Priority != 0 {
-		t.Fatalf("priority = %d, want 0 (unchanged when no input match)", out.Findings[0].Finalization.Priority)
+	// Prompt forbids new findings; in-code defence drops them so arbitrary
+	// LLM priority/confidence cannot ship as a real finding.
+	if len(out.Findings) != 0 {
+		t.Fatalf("findings = %d, want 0 (hallucinated finding dropped)", len(out.Findings))
 	}
 }
 
@@ -496,9 +496,51 @@ func TestFinalizeWeightedConfidenceSkipsWhenNoInputMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	// No input match → confidence untouched.
-	got := out.Findings[0].Finalization.ConfidenceScore
-	if math.Abs(got-0.42) > 1e-9 {
-		t.Fatalf("confidence = %v, want 0.42 (unchanged when no input match)", got)
+	// Hallucinated finding has no input match → dropped, real finding has no
+	// finalization (because the LLM only returned the hallucination) → also dropped.
+	if len(out.Findings) != 0 {
+		t.Fatalf("findings = %d, want 0 (hallucinated dropped)", len(out.Findings))
+	}
+}
+
+// Regression: with no input findings, Finalize must short-circuit before any
+// LLM call. Skips network, schema work, and the rest of the pipeline.
+func TestFinalizeEarlySkipsOnEmptyFindings(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings:           nil,
+		OverallCorrectness: "patch is correct",
+	}
+
+	out, run, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 0 {
+		t.Fatalf("LLM requests = %d, want 0 (no findings → no LLM call)", len(llmClient.reqs))
+	}
+	if out == nil || out.OverallCorrectness != "patch is correct" {
+		t.Fatalf("out = %+v, want input cloned through unchanged", out)
+	}
+	if run.Name != "finalize" {
+		t.Fatalf("run.Name = %q, want finalize", run.Name)
+	}
+}
+
+// Regression: when all input findings are P2 / P3, the finalizer must be
+// constrained so it cannot flip overall_correctness to "patch is incorrect".
+func TestFinalizeRefusesPatchIncorrectWithoutCriticalFindings(t *testing.T) {
+	if cs := finalizeConstraintsFor([]model.Finding{
+		{Priority: intPtr(2)},
+		{Priority: intPtr(3)},
+	}).AllowedCorrectness; len(cs) != 1 || cs[0] != "patch is correct" {
+		t.Fatalf("constraints = %#v, want [patch is correct]", cs)
+	}
+	if cs := finalizeConstraintsFor([]model.Finding{
+		{Priority: intPtr(2)},
+		{Priority: intPtr(1)},
+	}).AllowedCorrectness; len(cs) != 0 {
+		t.Fatalf("constraints = %#v, want unconstrained (P1 present)", cs)
 	}
 }

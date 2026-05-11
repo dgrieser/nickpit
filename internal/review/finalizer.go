@@ -31,6 +31,13 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: nil review result")
 	}
+	if len(in.Findings) == 0 {
+		out, err := in.Clone()
+		if err != nil {
+			return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
+		}
+		return out, model.AgentRun{Name: "finalize", Role: "finalize"}, nil
+	}
 
 	systemTemplate, err := e.loadPrompt("agent_finalize_system_prompt.tmpl")
 	if err != nil {
@@ -70,6 +77,10 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
+	constraints := finalizeConstraintsFor(in.Findings)
+	if opts.UseJSONSchema && len(constraints.AllowedCorrectness) > 0 {
+		schema = llm.FinalizeSchemaWithConstraints(constraints)
+	}
 	e.logProgress("Finalize", fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runReviewAgent(ctx, reviewAgent{
 		name:          "finalize",
@@ -79,14 +90,18 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		user:          userPrompt,
 		schema:        schema,
 		schemaKind:    llm.SchemaKindFinalize,
+		constraints:   constraints,
 		hasTools:      false,
 	}, req)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
 
-	out := in.Clone()
-	out.Findings = result.resp.Findings
+	out, err := in.Clone()
+	if err != nil {
+		return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
+	}
+	out.Findings = dropUnmatchedFindings(result.resp.Findings, in.Findings)
 	out.OverallCorrectness = result.resp.OverallCorrectness
 	out.OverallExplanation = result.resp.OverallExplanation
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
@@ -138,6 +153,22 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 		return "", fmt.Errorf("finalize: rendering finalize prompt json: %w", err)
 	}
 	return user, nil
+}
+
+// dropUnmatchedFindings removes finalizer-output findings whose code_location
+// has no input match. The finalize prompt forbids new findings; this is the
+// in-code defence so hallucinated entries cannot bypass priority floor and
+// weighted-confidence (which both skip on no-match) and ship with arbitrary
+// LLM values.
+func dropUnmatchedFindings(out, in []model.Finding) []model.Finding {
+	kept := make([]model.Finding, 0, len(out))
+	for i := range out {
+		if findInputMatch(out[i], in) == nil {
+			continue
+		}
+		kept = append(kept, out[i])
+	}
+	return kept
 }
 
 // mergeInputSuggestions defends against the finalizer LLM dropping `suggestions`
@@ -232,6 +263,36 @@ func applyWeightedConfidence(out, in []model.Finding) {
 		}
 		out[i].Finalization.ConfidenceScore = score
 	}
+}
+
+// finalizeConstraintsFor returns the constraints to apply to the finalizer
+// based on the verified findings. If no input finding is P0 or P1, the
+// finalizer cannot flip overall_correctness to "patch is incorrect" — that
+// outcome must be driven by at least one critical finding.
+func finalizeConstraintsFor(in []model.Finding) llm.ResponseConstraints {
+	hasCritical := false
+	for _, f := range in {
+		if model.PriorityRank(f.Priority) < 2 {
+			hasCritical = true
+			break
+		}
+	}
+	if hasCritical {
+		return llm.ResponseConstraints{}
+	}
+	return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is correct"}}
+}
+
+// DropInvalidFindings removes findings the verifier marked as invalid.
+func DropInvalidFindings(findings []model.Finding) []model.Finding {
+	out := make([]model.Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.Verification != nil && !f.Verification.Valid {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {

@@ -2803,3 +2803,20 @@ func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
 		t.Fatalf("finalization title/body = %#v", resp.Findings[0].Finalization)
 	}
 }
+
+// Regression: schema intentionally omits finalization.confidence_score (it is
+// computed in code). The parser must not require it; otherwise every JSON-
+// schema-mode finalize call would fail with InvalidResponseError.
+func TestParseFinalizeResponseAcceptsFinalizationWithoutConfidenceScore(t *testing.T) {
+	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings[0].Finalization == nil {
+		t.Fatal("finalization nil")
+	}
+	if resp.Findings[0].Finalization.Title != "Final fix" {
+		t.Fatalf("finalization.title = %q", resp.Findings[0].Finalization.Title)
+	}
+}

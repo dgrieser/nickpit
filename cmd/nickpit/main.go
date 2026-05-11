@@ -622,7 +622,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			result.Findings[i].Verification = verifications[i]
 		}
 		result.VerifyTokensUsed = verifyUsage
-		result.Findings = dropInvalidFindings(result.Findings)
+		result.Findings = review.DropInvalidFindings(result.Findings)
 	}
 
 	if len(result.Findings) > 0 && trimmedCtx != nil {
@@ -635,12 +635,12 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		}
 		finalized, finalizeRun, finalizeErr := engine.Finalize(ctx, trimmedCtx, result, finalizeOpts)
 		if finalizeErr != nil {
-			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v", finalizeErr))
-			return finalizeErr
+			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v; falling back to verified result", finalizeErr))
+		} else {
+			finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
+			finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)
+			result = finalized
 		}
-		finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
-		finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)
-		result = finalized
 	}
 
 	var formatter output.Formatter
@@ -886,17 +886,6 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 		strings.Join(flags, ", "),
 		profile.BaseURL,
 	)
-}
-
-func dropInvalidFindings(findings []model.Finding) []model.Finding {
-	out := make([]model.Finding, 0, len(findings))
-	for _, f := range findings {
-		if f.Verification != nil && !f.Verification.Valid {
-			continue
-		}
-		out = append(out, f)
-	}
-	return out
 }
 
 func reviewResultSummary(result *model.ReviewResult) string {

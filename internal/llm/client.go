@@ -1807,7 +1807,7 @@ func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, fin
 	if _, ok := rawItem["finalization"]; !ok || finding.Finalization == nil {
 		missing = append(missing, fmt.Sprintf("findings[%d].finalization", i))
 	} else {
-		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].finalization", i), rawItem["finalization"], []string{"title", "body", "priority", "confidence_score", "remarks"})...)
+		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].finalization", i), rawItem["finalization"], []string{"title", "body", "priority", "remarks"})...)
 		if finding.Finalization.Priority < 0 || finding.Finalization.Priority > 3 {
 			missing = append(missing, fmt.Sprintf("findings[%d].finalization.priority (must be 0-3)", i))
 		}
