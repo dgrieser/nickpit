@@ -923,7 +923,11 @@ func agentCommonSystemPromptSnippets(kind string, outputSchemaSnippet string) (a
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
-	outputFormat, err := agentCommonSystemPromptSnippet(kind, "output_format", outputSchemaSnippet)
+	outputFormatSnippet := "output_format"
+	if outputSchemaSnippet == "" {
+		outputFormatSnippet = "response_format"
+	}
+	outputFormat, err := agentCommonSystemPromptSnippet(kind, outputFormatSnippet, outputSchemaSnippet)
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}

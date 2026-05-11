@@ -83,6 +83,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	out.OverallCorrectness = result.resp.OverallCorrectness
 	out.OverallExplanation = result.resp.OverallExplanation
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
+	mergeInputSuggestions(out.Findings, in.Findings)
 	enforcePriorityCeiling(out.Findings, in.Findings)
 	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
 	return out, result.run, nil
@@ -129,6 +130,44 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 		return "", fmt.Errorf("finalize: rendering finalize prompt json: %w", err)
 	}
 	return user, nil
+}
+
+// mergeInputSuggestions defends against the finalizer LLM dropping `suggestions`
+// by restoring them from the matching input finding when the output finding has
+// none. Matching is by code_location, with finding title as a tiebreaker when
+// multiple input findings share the same location.
+func mergeInputSuggestions(out, in []model.Finding) {
+	for i := range out {
+		if len(out[i].Suggestions) > 0 {
+			continue
+		}
+		src := findInputMatch(out[i], in)
+		if src == nil || len(src.Suggestions) == 0 {
+			continue
+		}
+		out[i].Suggestions = append([]model.Suggestion(nil), src.Suggestions...)
+	}
+}
+
+func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
+	var locMatches []*model.Finding
+	for i := range in {
+		if in[i].CodeLocation == target.CodeLocation {
+			locMatches = append(locMatches, &in[i])
+		}
+	}
+	switch len(locMatches) {
+	case 0:
+		return nil
+	case 1:
+		return locMatches[0]
+	}
+	for _, m := range locMatches {
+		if m.Title == target.Title {
+			return m
+		}
+	}
+	return locMatches[0]
 }
 
 // enforcePriorityCeiling ensures finalization.priority is not more critical (lower number)
