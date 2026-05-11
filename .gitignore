@@ -3,3 +3,4 @@
 .nickpit.yaml.example
 bin/
 *.swp
+*.log
