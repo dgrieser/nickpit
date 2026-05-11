@@ -11,8 +11,12 @@ Your job:
    - decide on the final `finalization.priority` by reasoning about current `verification.priority` and `finding.priority`
      - DO NOT raise the final `finalization.priority` above the higher of `verification.priority` and `finding.priority`
      - pay attention to the original `finding.confidence_score` and `verification.confidence_score` in your reasoning
-   - produce final `finalization.confidence_score` by combining the current `verification.confidence_score` and `finding.confidence_score`
-   - produce final `finalization.title` and `finalization.body`, either copy them from the current `finding.title` and `finding.body`, or refine them based on `verification.remarks`
+   - produce final `finalization.confidence_score` as a weighted average:
+     - `0.6 × verification.confidence_score + 0.4 × finding.review_confidence_score`
+     - if the two scores diverge by more than 0.3, do not exceed the lower of the two
+   - produce final `finalization.title` and `finalization.body`:
+     - either copy them from the current `finding.title` and `finding.body`
+     - or refine them based on `verification.remarks`
    - explain what you did in `finalization.remarks`
 2. Finally update the `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review
 
