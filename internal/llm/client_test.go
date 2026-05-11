@@ -2767,3 +2767,39 @@ func TestParseReviewResponseFlagsOutOfRangePriority(t *testing.T) {
 		t.Fatalf("missing fields = %v, want findings[0].priority entry", invalid.MissingFields)
 	}
 }
+
+func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
+	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content, SchemaKindFinalize)
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	found := false
+	for _, m := range invalid.MissingFields {
+		if m == "findings[0].finalization" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing fields = %v, want findings[0].finalization", invalid.MissingFields)
+	}
+}
+
+func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
+	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindFinalize)
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings[0].Finalization == nil {
+		t.Fatal("finalization nil")
+	}
+	if resp.Findings[0].Finalization.Remarks != "keep" {
+		t.Fatalf("finalization.remarks = %q", resp.Findings[0].Finalization.Remarks)
+	}
+	if resp.Findings[0].Finalization.Title != "Final fix" || resp.Findings[0].Finalization.Body != "final body" {
+		t.Fatalf("finalization title/body = %#v", resp.Findings[0].Finalization)
+	}
+}

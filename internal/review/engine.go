@@ -565,7 +565,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		Section:                    sec,
 		NoToolsSystem:              noToolsSystem,
 		NoToolsSchemaSnippet:       reviewSnippet,
-		JSONRetryExampleSnippet:    llm.FindingsExamplePromptSnippet(),
+		JSONRetryExampleSnippet:    exampleSnippetFor(agent.schemaKind),
 		JSONRetryProgressAgentName: agent.name,
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			if !agent.hasTools {
@@ -795,6 +795,9 @@ func addTokenUsage(left, right model.TokenUsage) model.TokenUsage {
 func exampleSnippetFor(kind llm.SchemaKind) string {
 	if kind == llm.SchemaKindVerify {
 		return llm.VerifyExamplePromptSnippet()
+	}
+	if kind == llm.SchemaKindFinalize {
+		return llm.FinalizeExamplePromptSnippet()
 	}
 	return llm.FindingsExamplePromptSnippet()
 }

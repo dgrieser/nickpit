@@ -164,10 +164,19 @@ type Finding struct {
 	CodeLocation    CodeLocation         `json:"code_location"`
 	Suggestions     []Suggestion         `json:"suggestions,omitempty"`
 	Verification    *FindingVerification `json:"verification,omitempty"`
+	Finalization    *FindingFinalization `json:"finalization,omitempty"`
 }
 
 type FindingVerification struct {
 	Valid           bool    `json:"valid"`
+	Priority        int     `json:"priority"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	Remarks         string  `json:"remarks"`
+}
+
+type FindingFinalization struct {
+	Title           string  `json:"title"`
+	Body            string  `json:"body"`
 	Priority        int     `json:"priority"`
 	ConfidenceScore float64 `json:"confidence_score"`
 	Remarks         string  `json:"remarks"`

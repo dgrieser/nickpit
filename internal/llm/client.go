@@ -1676,7 +1676,7 @@ func parseReviewResponse(content string, kind SchemaKind) (*ReviewResponse, erro
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 	}
-	if missing := missingResponseFields(&parsed, content); len(missing) > 0 {
+	if missing := missingResponseFields(&parsed, content, kind); len(missing) > 0 {
 		return &parsed, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
@@ -1723,14 +1723,14 @@ func missingVerifyFields(content string) []string {
 	return missing
 }
 
-func missingResponseFields(parsed *ReviewResponse, content string) []string {
+func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind) []string {
 	var raw map[string]json.RawMessage
 	_ = LenientUnmarshal(content, &raw)
 	var missing []string
 	if _, ok := raw["findings"]; !ok && parsed.Findings == nil {
 		missing = append(missing, "findings")
 	}
-	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"])...)
+	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"], kind)...)
 	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
 		missing = append(missing, "overall_correctness")
 	} else {
@@ -1749,7 +1749,7 @@ func missingResponseFields(parsed *ReviewResponse, content string) []string {
 	return missing
 }
 
-func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage) []string {
+func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage, kind SchemaKind) []string {
 	if len(findings) == 0 {
 		return nil
 	}
@@ -1770,6 +1770,39 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage)
 		}
 		if *finding.Priority < 0 || *finding.Priority > 3 {
 			missing = append(missing, fmt.Sprintf("findings[%d].priority (must be 0-3)", i))
+		}
+		if kind == SchemaKindFinalize {
+			missing = append(missing, missingFinalizeFindingFields(i, rawItem, finding)...)
+		}
+	}
+	return missing
+}
+
+func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, finding model.Finding) []string {
+	var missing []string
+	if _, ok := rawItem["verification"]; !ok || finding.Verification == nil {
+		missing = append(missing, fmt.Sprintf("findings[%d].verification", i))
+	} else {
+		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].verification", i), rawItem["verification"], []string{"valid", "priority", "confidence_score", "remarks"})...)
+	}
+	if _, ok := rawItem["finalization"]; !ok || finding.Finalization == nil {
+		missing = append(missing, fmt.Sprintf("findings[%d].finalization", i))
+	} else {
+		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].finalization", i), rawItem["finalization"], []string{"title", "body", "priority", "confidence_score", "remarks"})...)
+		if finding.Finalization.Priority < 0 || finding.Finalization.Priority > 3 {
+			missing = append(missing, fmt.Sprintf("findings[%d].finalization.priority (must be 0-3)", i))
+		}
+	}
+	return missing
+}
+
+func missingNestedFields(prefix string, raw json.RawMessage, fields []string) []string {
+	var object map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &object)
+	var missing []string
+	for _, field := range fields {
+		if _, ok := object[field]; !ok {
+			missing = append(missing, prefix+"."+field)
 		}
 	}
 	return missing

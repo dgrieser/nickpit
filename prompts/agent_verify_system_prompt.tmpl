@@ -26,7 +26,7 @@ Set `priority` to the same value as the original finding's `priority` UNLESS you
 {{end}}
 ## OUTPUT FORMAT
 {{if .OutputSchemaSnippet}}
-Output the verification in the following JSON format:
+Output `verification` in the following JSON format:
 
 ```json
 {{.OutputSchemaSnippet}}
@@ -34,10 +34,10 @@ Output the verification in the following JSON format:
 
 - DO NOT wrap the JSON in markdown fences or extra prose
 - produce JSON only and match the schema EXACTLY
-- `valid` is a boolean (true if the finding is a real issue introduced by the patch)
-- `priority` is an integer 0-3
-- `confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
-- `remarks` is one short paragraph explaining the verdict
+- `verification.valid` is a boolean (true if the finding is a real issue introduced by the patch)
+- `verification.priority` is an integer 0-3
+- `verification.confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
+- `verification.remarks` is one short paragraph explaining the verdict
 {{else}}
 Output the verification using the specified `response_format`.
 {{end}}

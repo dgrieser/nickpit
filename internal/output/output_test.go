@@ -180,6 +180,41 @@ func TestJSONFormatterIncludesVerification(t *testing.T) {
 	}
 }
 
+func TestJSONFormatterIncludesFinalization(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewJSONFormatter(&buf)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title: "x", Body: "y", Priority: intPtr(1),
+				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Finalization: &model.FindingFinalization{Title: "final x", Body: "final y", Priority: 1, ConfidenceScore: 0.75, Remarks: "kept after verifier feedback"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	first := payload["findings"].([]any)[0].(map[string]any)
+	v, ok := first["finalization"].(map[string]any)
+	if !ok {
+		t.Fatalf("finalization missing: %#v", first)
+	}
+	if v["confidence_score"] != 0.75 {
+		t.Fatalf("finalization.confidence_score = %#v", v["confidence_score"])
+	}
+	if v["title"] != "final x" || v["body"] != "final y" {
+		t.Fatalf("finalization title/body = %#v", v)
+	}
+	if v["remarks"] != "kept after verifier feedback" {
+		t.Fatalf("finalization.remarks = %#v", v["remarks"])
+	}
+}
+
 func TestJSONFormatterOmitsVerificationWhenNil(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewJSONFormatter(&buf)

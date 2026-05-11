@@ -62,9 +62,7 @@ type app struct {
 	showProgress                  bool
 	disableSearchToolOptimization bool
 	disableParallelToolCalls      bool
-	noVerify                      bool
 	verifyConcurrency             int
-	noFinalize                    bool
 	hideInvalid                   bool
 	logger                        *logging.Logger
 }
@@ -130,9 +128,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
-	root.PersistentFlags().BoolVar(&cli.noVerify, "no-verify", false, "Skip the second-pass verifier")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
-	root.PersistentFlags().BoolVar(&cli.noFinalize, "no-finalize", false, "Skip the final reconciliation pass that uses verifier feedback to refine findings")
 	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
 
 	root.AddCommand(cli.newLocalCmd())
@@ -606,7 +602,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	a.logProgress("Result", reviewResultSummary(result))
 
-	if !a.noVerify && len(result.Findings) > 0 && trimmedCtx != nil {
+	if len(result.Findings) > 0 && trimmedCtx != nil {
 		verifyOpts := review.VerifyOptions{
 			Concurrency:              a.verifyConcurrency,
 			UseJSONSchema:            req.UseJSONSchema,
@@ -628,7 +624,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		result.VerifyTokensUsed = verifyUsage
 	}
 
-	if !a.noFinalize && len(result.Findings) > 0 && trimmedCtx != nil {
+	if len(result.Findings) > 0 && trimmedCtx != nil {
 		finalizeOpts := review.FinalizeOptions{
 			UseJSONSchema:            req.UseJSONSchema,
 			MaxOutputRetries:         req.MaxOutputRetries,

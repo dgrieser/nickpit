@@ -157,6 +157,18 @@ profiles:
 	}
 }
 
+func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
+	cmd := newRootCmd()
+	for _, name := range []string{"no-verify", "no-finalize"} {
+		if cmd.PersistentFlags().Lookup(name) != nil {
+			t.Fatalf("unexpected persistent flag %q", name)
+		}
+	}
+	if cmd.PersistentFlags().Lookup("verify-concurrency") == nil {
+		t.Fatal("verify-concurrency flag missing")
+	}
+}
+
 func TestMissingAPIKeyHintUsesDefaultProfileEnv(t *testing.T) {
 	tests := []struct {
 		name    string

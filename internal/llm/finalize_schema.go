@@ -1,10 +1,21 @@
 package llm
 
-// finalizeSchemaDefinition extends the findings schema with a per-finding
-// `verification` object whose shape matches the verifier output. The finalizer
-// agent uses this object to record what it did to each surviving finding
-// (decision + remarks).
+// finalizeSchemaDefinition extends the findings schema with per-finding
+// verifier input and finalizer output. The finalizer preserves `verification`
+// and records its own decision in `finalization`.
 var finalizeSchemaDefinition = buildFinalizeSchemaDefinition()
+
+var finalizationSchemaDefinition = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"title":            map[string]any{"type": "string", "examples": []any{"Example final title"}},
+		"body":             map[string]any{"type": "string", "examples": []any{"Example final explanation."}},
+		"priority":         map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "examples": []any{1}},
+		"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
+		"remarks":          map[string]any{"type": "string", "examples": []any{"Example explanation of the final decision."}},
+	},
+	"required": []string{"title", "body", "priority", "confidence_score", "remarks"},
+}
 
 func buildFinalizeSchemaDefinition() map[string]any {
 	root := deepCopySchema(findingsSchemaDefinition).(map[string]any)
@@ -25,8 +36,9 @@ func buildFinalizeSchemaDefinition() map[string]any {
 		panic("llm: findingsSchemaDefinition findings.items.properties malformed")
 	}
 	itemProps["verification"] = deepCopySchema(verifySchemaDefinition)
+	itemProps["finalization"] = deepCopySchema(finalizationSchemaDefinition)
 	required, _ := items["required"].([]string)
-	items["required"] = append(append([]string{}, required...), "verification")
+	items["required"] = append(append([]string{}, required...), "verification", "finalization")
 	return root
 }
 

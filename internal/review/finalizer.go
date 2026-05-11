@@ -34,13 +34,13 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, err
 	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
-		FindingInstructionsSnippet string
-		PrioritySnippet            string
-		OutputFormatSnippet        string
+		PrioritySnippet     string
+		OutputSchemaSnippet string
+		OutputFormatSnippet string
 	}{
-		FindingInstructionsSnippet: commonSnippets.findingInstructions,
-		PrioritySnippet:            commonSnippets.priority,
-		OutputFormatSnippet:        commonSnippets.outputFormat,
+		PrioritySnippet:     commonSnippets.priority,
+		OutputSchemaSnippet: finalizeOutputSchemaSnippetFor(opts.UseJSONSchema),
+		OutputFormatSnippet: commonSnippets.outputFormat,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)

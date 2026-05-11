@@ -126,3 +126,38 @@ func TestFindingsExamplePromptSnippetHasUnprefixedTitle(t *testing.T) {
 		t.Fatalf("snippet missing unprefixed title: %s", snippet)
 	}
 }
+
+func TestFinalizeSchemaRequiresVerificationAndFinalization(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(FinalizeSchema, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	properties := schema["properties"].(map[string]any)
+	findings := properties["findings"].(map[string]any)
+	items := findings["items"].(map[string]any)
+	requiredAny := items["required"].([]any)
+	required := make([]string, 0, len(requiredAny))
+	for _, r := range requiredAny {
+		if s, ok := r.(string); ok {
+			required = append(required, s)
+		}
+	}
+	for _, field := range []string{"verification", "finalization"} {
+		if !slices.Contains(required, field) {
+			t.Fatalf("required missing %q: %v", field, required)
+		}
+	}
+	findingProps := items["properties"].(map[string]any)
+	if _, ok := findingProps["finalization"].(map[string]any); !ok {
+		t.Fatalf("finalization schema missing: %#v", findingProps["finalization"])
+	}
+}
+
+func TestFinalizeExamplePromptSnippetIncludesFinalization(t *testing.T) {
+	snippet := FinalizeExamplePromptSnippet()
+	for _, required := range []string{`"verification"`, `"finalization"`, `"title"`, `"body"`, `"confidence_score"`, `"remarks"`} {
+		if !strings.Contains(snippet, required) {
+			t.Fatalf("snippet missing %q: %s", required, snippet)
+		}
+	}
+}
