@@ -1,9 +1,5 @@
 # TODO
 
-- actually "use" the verification feedback, e.g.
-  - patch is incorrect on any review agent with confidence > 0.75 should programmatically add "patch is incorrect"
-  - testing agent results should be downgraded if they are p1 and should never lead to "patch is incorrect"
-  - should this be another agent without tools or logic in the code?
 - Logging: Change to "[agent: <agent_name>]"
 - Logging: Put turns into bracket, e.g. "[agent: <agent_name>, turn: <round>]"
 - Logging: Fix wrong Reasoning Done progress message.
