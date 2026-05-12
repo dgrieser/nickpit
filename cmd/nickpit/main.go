@@ -578,12 +578,14 @@ func (a *app) newCheckCmd() *cobra.Command {
 			checker.SetLogger(logger)
 			result := checker.Run(cmd.Context())
 			if a.jsonOutput {
-				if err := writeJSON(result); err != nil {
+				if err := writeJSON(struct {
+					Check modelcheck.CheckSummary `json:"check"`
+				}{Check: result.Summary()}); err != nil {
 					return err
 				}
 				return validatePreReviewModelCheck(result)
 			}
-			if err := writeModelCheckOutput(result); err != nil {
+			if err := a.writeModelCheckOutput(result); err != nil {
 				return err
 			}
 			return validatePreReviewModelCheck(result)
@@ -809,27 +811,68 @@ func writeJSON(value any) error {
 	return enc.Encode(value)
 }
 
-func writeModelCheckOutput(result modelcheck.Result) error {
-	for _, probe := range result.Probes {
-		line := fmt.Sprintf("%s: %s", probe.Name, probe.Status)
-		if probe.ReasoningEffort != "" {
-			line += fmt.Sprintf(" (reasoning_effort=%s", probe.ReasoningEffort)
-			if probe.Tools {
-				line += ", tools=true"
+func stdoutIsTerminal() bool {
+	stat, err := os.Stdout.Stat()
+	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
+}
+
+func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
+	s := result.Summary()
+	useANSI := stdoutIsTerminal()
+
+	key := func(name string) string {
+		if useANSI {
+			return "\x1b[33m" + name + "\x1b[0m\x1b[90m:\x1b[0m"
+		}
+		return name + ":"
+	}
+	bool_ := func(v bool) string {
+		if useANSI {
+			if v {
+				return "\x1b[32mtrue\x1b[0m"
 			}
-			line += ")"
+			return "\x1b[90mfalse\x1b[0m"
 		}
-		if probe.Error != "" {
-			line += ": " + probe.Error
+		if v {
+			return "true"
 		}
-		if _, err := fmt.Fprintln(os.Stdout, line); err != nil {
-			return err
-		}
+		return "false"
 	}
-	if _, err := fmt.Fprintf(os.Stdout, "passed_efforts: %s\n", strings.Join(result.PassedEfforts, ", ")); err != nil {
-		return err
+	effort_ := func(e string) string {
+		if useANSI {
+			return "\x1b[34m" + e + "\x1b[0m"
+		}
+		return e
 	}
-	return nil
+	bullet := "      - "
+	if useANSI {
+		bullet = "      \x1b[90m-\x1b[0m "
+	}
+
+	var sb strings.Builder
+	if useANSI {
+		fmt.Fprintf(&sb, "\x1b[1mcheck\x1b[0m\x1b[90m:\x1b[0m\n")
+	} else {
+		fmt.Fprintf(&sb, "check:\n")
+	}
+	fmt.Fprintf(&sb, "  %s %s\n", key("response"), bool_(s.Response))
+	fmt.Fprintf(&sb, "  %s\n", key("reasoning"))
+	fmt.Fprintf(&sb, "    %s %s\n", key("traces"), bool_(s.Reasoning.Traces))
+	fmt.Fprintf(&sb, "    %s\n", key("efforts"))
+	for _, e := range s.Reasoning.Efforts {
+		fmt.Fprintf(&sb, "%s%s\n", bullet, effort_(e))
+	}
+	if len(s.Reasoning.Efforts) == 0 {
+		fmt.Fprintf(&sb, "      []\n")
+	}
+	fmt.Fprintf(&sb, "  %s %s\n", key("tools"), bool_(s.Tools))
+	if s.JSONSchema != nil {
+		fmt.Fprintf(&sb, "  %s %s\n", key("json_schema"), bool_(*s.JSONSchema))
+	} else if s.JSONResponse != nil {
+		fmt.Fprintf(&sb, "  %s %s\n", key("json_response"), bool_(*s.JSONResponse))
+	}
+	_, err := fmt.Fprint(os.Stdout, sb.String())
+	return err
 }
 
 func validatePreReviewModelCheck(result modelcheck.Result) error {

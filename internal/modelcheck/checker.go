@@ -29,6 +29,7 @@ type ProbeResult struct {
 	Name            string `json:"name"`
 	ReasoningEffort string `json:"reasoning_effort"`
 	Tools           bool   `json:"tools"`
+	Reasoned        bool   `json:"reasoned"`
 	Status          Status `json:"status"`
 	Error           string `json:"error,omitempty"`
 }
@@ -39,6 +40,41 @@ type Result struct {
 	UseJSONSchema    bool          `json:"use_json_schema"`
 	Probes           []ProbeResult `json:"probes"`
 	PassedEfforts    []string      `json:"passed_efforts"`
+}
+
+type ReasoningSummary struct {
+	Traces  bool     `json:"traces"`
+	Efforts []string `json:"efforts"`
+}
+
+type CheckSummary struct {
+	Response     bool             `json:"response"`
+	Reasoning    ReasoningSummary `json:"reasoning"`
+	Tools        bool             `json:"tools"`
+	JSONSchema   *bool            `json:"json_schema,omitempty"`
+	JSONResponse *bool            `json:"json_response,omitempty"`
+}
+
+func (r Result) Summary() CheckSummary {
+	noTools := r.ConfiguredNoTools()
+	tools := r.ConfiguredTools()
+	traces := noTools.Reasoned || tools.Reasoned
+	s := CheckSummary{
+		Response: noTools.Status == StatusOK,
+		Reasoning: ReasoningSummary{
+			Traces:  traces,
+			Efforts: r.PassedEfforts,
+		},
+		Tools: tools.Status == StatusOK,
+	}
+	if r.UseJSONSchema {
+		ok := r.ConfiguredJSONSchema().Status == StatusOK
+		s.JSONSchema = &ok
+	} else {
+		ok := r.ConfiguredJSONOutput().Status == StatusOK
+		s.JSONResponse = &ok
+	}
+	return s
 }
 
 type Checker struct {
@@ -136,6 +172,7 @@ func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeRe
 	if err != nil {
 		return classifyProbeError(probe, err)
 	}
+	probe.Reasoned = resp.Reasoned
 	if !strings.Contains(resp.RawResponse, finalSentinel) {
 		probe.Status = StatusFailed
 		probe.Error = "response did not contain sentinel"
@@ -168,6 +205,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		if err != nil {
 			return classifyProbeError(probe, err)
 		}
+		probe.Reasoned = probe.Reasoned || resp.Reasoned
 		if len(resp.ToolCalls) == 0 {
 			if listed && allInspected(engine.files, inspected) && strings.Contains(resp.RawResponse, finalSentinel) {
 				probe.Status = StatusOK
@@ -210,6 +248,7 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 	if err != nil {
 		return classifyProbeError(probe, err)
 	}
+	probe.Reasoned = resp.Reasoned
 	var v any
 	if err := llm.LenientUnmarshal(resp.RawResponse, &v); err != nil {
 		probe.Status = StatusFailed
@@ -236,6 +275,7 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 	if err != nil {
 		return classifyProbeError(probe, err)
 	}
+	probe.Reasoned = resp.Reasoned
 	var v any
 	if err := llm.LenientUnmarshal(resp.RawResponse, &v); err != nil {
 		probe.Status = StatusFailed
