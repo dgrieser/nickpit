@@ -13,7 +13,26 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/prompts"
 )
+
+func mustRenderCheckPrompt(name string, data any) string {
+	tmpl, err := prompts.Load(name)
+	if err != nil {
+		panic(fmt.Sprintf("modelcheck: %v", err))
+	}
+	rendered, err := llm.RenderPrompt(tmpl, data)
+	if err != nil {
+		panic(fmt.Sprintf("modelcheck: rendering %s: %v", name, err))
+	}
+	return rendered
+}
+
+func checkReasoningSnippet() string {
+	return mustRenderCheckPrompt("helper_reasoning_snippet.tmpl", struct {
+		LoopDetected bool
+	}{})
+}
 
 type Status string
 
@@ -161,9 +180,10 @@ func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeRe
 	probe := ProbeResult{Name: name, ReasoningEffort: effort}
 	sec := c.openSection(name)
 	defer sec.End()
+	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
-		{Role: "system", Content: "You are checking whether this model can answer simple NickPit health checks."},
-		{Role: "user", Content: "Reply exactly with " + finalSentinel + "."},
+		{Role: "system", Content: mustRenderCheckPrompt("check_no_tools_system.tmpl", struct{ ReasoningSnippet string }{rs})},
+		{Role: "user", Content: mustRenderCheckPrompt("check_no_tools_user.tmpl", struct{ Sentinel string }{finalSentinel})},
 	}, nil)
 	if sec != nil {
 		req.ReasoningSink = sec
@@ -186,13 +206,14 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 	probe := ProbeResult{Name: "configured_tools", ReasoningEffort: effort, Tools: true}
 	sec := c.openSection("configured_tools")
 	defer sec.End()
+	rs := checkReasoningSnippet()
 	engine := newMemoryEngine(map[string]string{
 		"README.md":       "# Fixture\nNickPit model check fixture.\n",
 		"internal/app.go": "package internal\n\nfunc Check() string { return \"ok\" }\n",
 	})
 	messages := []llm.Message{
-		{Role: "system", Content: "You are checking whether this model can use NickPit retrieval tools."},
-		{Role: "user", Content: "Call list_files for the repo root. Then call inspect_file for every listed file. After all files are inspected, reply exactly with " + finalSentinel + "."},
+		{Role: "system", Content: mustRenderCheckPrompt("check_tools_system.tmpl", struct{ ReasoningSnippet string }{rs})},
+		{Role: "user", Content: mustRenderCheckPrompt("check_tools_user.tmpl", struct{ Sentinel string }{finalSentinel})},
 	}
 	listed := false
 	inspected := map[string]struct{}{}
@@ -236,10 +257,10 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 	probe := ProbeResult{Name: "configured_json_output", ReasoningEffort: effort}
 	sec := c.openSection("configured_json_output")
 	defer sec.End()
-	example := llm.FindingsExamplePromptSnippet()
+	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
-		{Role: "system", Content: "You are checking whether this model can produce JSON output for NickPit code reviews."},
-		{Role: "user", Content: "Reply with a JSON object matching this structure:\n" + example},
+		{Role: "system", Content: mustRenderCheckPrompt("check_json_output_system.tmpl", struct{ ReasoningSnippet string }{rs})},
+		{Role: "user", Content: mustRenderCheckPrompt("check_json_output_user.tmpl", struct{ OutputSchemaSnippet string }{llm.FindingsExamplePromptSnippet()})},
 	}, nil)
 	if sec != nil {
 		req.ReasoningSink = sec
@@ -263,9 +284,10 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 	probe := ProbeResult{Name: "configured_json_schema", ReasoningEffort: effort}
 	sec := c.openSection("configured_json_schema")
 	defer sec.End()
+	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
-		{Role: "system", Content: "You are checking whether this model supports JSON schema output enforcement for NickPit code reviews."},
-		{Role: "user", Content: "Reply with a JSON object matching the provided schema."},
+		{Role: "system", Content: mustRenderCheckPrompt("check_json_schema_system.tmpl", struct{ ReasoningSnippet string }{rs})},
+		{Role: "user", Content: mustRenderCheckPrompt("check_json_schema_user.tmpl", nil)},
 	}, nil)
 	req.Schema = llm.FindingsSchema
 	if sec != nil {
