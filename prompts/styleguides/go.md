@@ -24,6 +24,53 @@ goimports -w .
 - Consistent brace placement
 - Standardized spacing
 
+## Version-Aware Go
+
+Check the module's `go` directive before reviewing language semantics or
+suggesting newer APIs. The `go` directive controls language version behavior;
+the installed toolchain may be newer than the module target.
+
+```go
+module example.com/app
+
+go 1.24.0
+
+tool github.com/golangci/golangci-lint/cmd/golangci-lint
+```
+
+For Go 1.24 and newer modules, use `tool` directives in `go.mod` to track
+executable development tools instead of blank-import `tools.go` files.
+
+### Generics
+
+Use generics when they remove duplication across real types or express a
+container/helper API. Prefer ordinary functions and interfaces when there is
+only one concrete caller or behavior differs by type.
+
+```go
+func Keys[K comparable, V any](m map[K]V) []K {
+    keys := make([]K, 0, len(m))
+    for k := range m {
+        keys = append(keys, k)
+    }
+    return keys
+}
+```
+
+Keep constraints small and local when possible. Use `any` instead of
+`interface{}` for unconstrained type parameters.
+
+### Standard Library Helpers
+
+Prefer standard library helpers over local generic utilities when they match
+the need:
+
+- `slices` for sorting, searching, cloning, compacting, and comparing slices.
+- `maps` for cloning, copying, deleting, and iterating map contents.
+- `cmp` for ordered comparisons.
+- `clear` for clearing maps or zeroing slice contents.
+- `min` and `max` for simple ordered comparisons.
+
 ## Error Handling
 
 ### Explicit Error Checking
@@ -73,6 +120,23 @@ var validationErr *ValidationError
 if errors.As(err, &validationErr) {
     // Handle validation error
 }
+```
+
+### Multiple Errors
+
+Use `errors.Join` or multiple `%w` operands when an operation can fail in more
+than one independent way and callers should still be able to use `errors.Is`
+or `errors.As`.
+
+```go
+var errs []error
+if err := closer.Close(); err != nil {
+    errs = append(errs, fmt.Errorf("closing file: %w", err))
+}
+if err := cleanup(); err != nil {
+    errs = append(errs, fmt.Errorf("cleaning up: %w", err))
+}
+return errors.Join(errs...)
 ```
 
 ### Custom Error Types
@@ -321,6 +385,39 @@ func assertEqual[T comparable](t *testing.T, got, want T) {
 }
 ```
 
+### Test Context and Cleanup
+
+Use `t.Context()` in Go 1.24 and newer when code under test needs a context
+that is canceled before registered cleanup functions run.
+
+```go
+func TestWorkerStops(t *testing.T) {
+    worker := NewWorker()
+    go worker.Run(t.Context())
+
+    t.Cleanup(func() {
+        worker.Wait()
+    })
+}
+```
+
+Use `t.TempDir()`, `t.Setenv()`, `t.Chdir()`, and `t.Cleanup()` instead of
+manual cleanup where available.
+
+### Fuzzing
+
+Add fuzz tests for parsers, decoders, validators, and other code that accepts
+complex external input.
+
+```go
+func FuzzParse(f *testing.F) {
+    f.Add("valid input")
+    f.Fuzz(func(t *testing.T, input string) {
+        _, _ = Parse(input)
+    })
+}
+```
+
 ### Mocking with Interfaces
 
 ```go
@@ -366,6 +463,89 @@ func TestUserService_GetUser(t *testing.T) {
 ```
 
 ## Common Patterns
+
+### Range Loop Semantics
+
+Go 1.22 changed loop variables declared by `for` loops. When a loop uses `:=`,
+each iteration gets fresh variables, so closures and goroutines capture the
+iteration's values instead of one shared variable.
+
+```go
+// Go 1.22+: safe without v := v inside the loop.
+for _, v := range values {
+    go func() {
+        process(v)
+    }()
+}
+
+// Also applies to maps.
+for k, v := range m {
+    callbacks = append(callbacks, func() {
+        log.Printf("%s=%v", k, v)
+    })
+}
+```
+
+Do not add manual loop-variable copies in modules that require Go 1.22 or
+newer unless the copy has another purpose. In modules targeting older Go
+versions, keep the copy before capturing loop variables:
+
+```go
+for _, v := range values {
+    v := v
+    go func() {
+        process(v)
+    }()
+}
+```
+
+Map range behavior remains intentionally unspecified:
+
+- Iteration order is not stable.
+- Deleting an entry before it is reached means it will not be produced.
+- Adding an entry during iteration may or may not produce it.
+- Concurrent map reads and writes are unsafe without synchronization.
+
+Prefer collecting and sorting keys when deterministic map output is required:
+
+```go
+keys := make([]string, 0, len(m))
+for k := range m {
+    keys = append(keys, k)
+}
+slices.Sort(keys)
+
+for _, k := range keys {
+    fmt.Println(k, m[k])
+}
+```
+
+Go 1.22 also added integer ranges:
+
+```go
+for i := range 10 {
+    fmt.Println(i)
+}
+```
+
+Go 1.23 added range over iterator functions. Use it for custom collections
+when it makes iteration clearer than exposing internal storage:
+
+```go
+func (s *Set[E]) All() iter.Seq[E] {
+    return func(yield func(E) bool) {
+        for v := range s.m {
+            if !yield(v) {
+                return
+            }
+        }
+    }
+}
+
+for v := range set.All() {
+    fmt.Println(v)
+}
+```
 
 ### Options Pattern
 
@@ -438,6 +618,38 @@ func (s *Service) ProcessRequest(ctx context.Context, req *Request) (*Response, 
     return &Response{Data: result}, nil
 }
 ```
+
+Use cancellation causes when callers need to distinguish why a context ended.
+
+```go
+ctx, cancel := context.WithCancelCause(parent)
+defer cancel(nil)
+
+if err := work(ctx); err != nil {
+    cancel(fmt.Errorf("worker failed: %w", err))
+}
+
+if cause := context.Cause(ctx); cause != nil {
+    return cause
+}
+```
+
+### Structured Logging
+
+Use `log/slog` for structured application logs. Prefer stable key names and
+typed values over formatted strings.
+
+```go
+logger.InfoContext(ctx, "request complete",
+    "method", r.Method,
+    "path", r.URL.Path,
+    "status", status,
+    "duration", elapsed,
+)
+```
+
+Avoid logging secrets, tokens, credentials, or full request/response bodies
+unless they are explicitly scrubbed.
 
 ### Defer for Cleanup
 
