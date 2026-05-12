@@ -122,6 +122,23 @@ func TestReasoningRendererTTYReplaysFullReasoningAfterPreview(t *testing.T) {
 	}
 }
 
+func TestReasoningRendererNonTTYWritesFinalReasoning(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := &ReasoningRenderer{w: &buf, isTTY: false}
+
+	id := renderer.Begin("review")
+	renderer.Append(id, "reasoning content\n")
+	renderer.End(id)
+
+	got := buf.String()
+	if !strings.Contains(got, "reasoning content") {
+		t.Fatalf("expected final reasoning in non-TTY output, got: %q", got)
+	}
+	if !strings.Contains(got, "Reasoning for review") {
+		t.Fatalf("expected banner in non-TTY output, got: %q", got)
+	}
+}
+
 func TestReasoningRendererTTYProgressDoesNotCorruptFinalReasoning(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := &ReasoningRenderer{w: &buf, isTTY: true, width: 80, height: 12}

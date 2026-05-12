@@ -69,7 +69,7 @@ type app struct {
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		logging.New(os.Stderr, false, true).PrintError(err)
+		logging.New(os.Stderr, false, stderrIsTerminal()).PrintError(err)
 		os.Exit(1)
 	}
 }
@@ -546,7 +546,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 }
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
-	logger := logging.New(os.Stderr, a.verbose, true)
+	logger := logging.New(os.Stderr, a.verbose, stderrIsTerminal())
 	logger.SetShowReasoning(a.showReasoning)
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
@@ -898,6 +898,11 @@ func reviewResultSummary(result *model.ReviewResult) string {
 		fmt.Sprintf("completion_tokens=%d", result.TokensUsed.CompletionTokens),
 		fmt.Sprintf("total_tokens=%d", result.TokensUsed.TotalTokens),
 	}, ", ")
+}
+
+func stderrIsTerminal() bool {
+	stat, err := os.Stderr.Stat()
+	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
 }
 
 func totalDuplicateToolCalls(runs []model.AgentRun) int {
