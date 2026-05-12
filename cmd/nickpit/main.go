@@ -602,7 +602,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
 	if !a.skipModelCheck {
-		checkResult := modelcheck.New(client, profile).Run(ctx)
+		checker := modelcheck.New(client, profile)
+		checker.SetLogger(logger)
+		checkResult := checker.Run(ctx)
 		if err := validatePreReviewModelCheck(checkResult); err != nil {
 			return err
 		}
@@ -832,6 +834,15 @@ func validatePreReviewModelCheck(result modelcheck.Result) error {
 	}
 	if len(result.PassedEfforts) == 0 {
 		return fmt.Errorf("model check failed: no reasoning efforts passed")
+	}
+	if result.UseJSONSchema {
+		if probe := result.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
+			return fmt.Errorf("model check failed for JSON schema output: status=%s error=%s", probe.Status, probe.Error)
+		}
+	} else {
+		if probe := result.ConfiguredJSONOutput(); probe.Status != modelcheck.StatusOK {
+			return fmt.Errorf("model check failed for JSON text output: status=%s error=%s", probe.Status, probe.Error)
+		}
 	}
 	return nil
 }

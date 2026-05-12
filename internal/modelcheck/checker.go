@@ -11,6 +11,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 )
 
@@ -35,6 +36,7 @@ type ProbeResult struct {
 type Result struct {
 	Model            string        `json:"model"`
 	ConfiguredEffort string        `json:"configured_reasoning_effort"`
+	UseJSONSchema    bool          `json:"use_json_schema"`
 	Probes           []ProbeResult `json:"probes"`
 	PassedEfforts    []string      `json:"passed_efforts"`
 }
@@ -42,10 +44,28 @@ type Result struct {
 type Checker struct {
 	client  llm.Client
 	profile config.Profile
+	logger  *logging.Logger
 }
 
 func New(client llm.Client, profile config.Profile) *Checker {
 	return &Checker{client: client, profile: profile}
+}
+
+func (c *Checker) SetLogger(logger *logging.Logger) {
+	c.logger = logger
+}
+
+func (c *Checker) logProgress(label, summary string) {
+	if c.logger != nil {
+		c.logger.PrintProgress(label, summary)
+	}
+}
+
+func (c *Checker) openSection(name string) *logging.ReasoningSection {
+	if c.logger == nil {
+		return nil
+	}
+	return c.logger.OpenReasoningSection(name)
 }
 
 func (c *Checker) Run(ctx context.Context) Result {
@@ -56,10 +76,16 @@ func (c *Checker) Run(ctx context.Context) Result {
 	result := Result{
 		Model:            c.profile.Model,
 		ConfiguredEffort: configured,
+		UseJSONSchema:    c.profile.UseJSONSchema,
 	}
 
 	result.Probes = append(result.Probes, c.noToolsProbe(ctx, "configured_no_tools", configured))
 	result.Probes = append(result.Probes, c.toolsProbe(ctx, configured))
+	if c.profile.UseJSONSchema {
+		result.Probes = append(result.Probes, c.jsonSchemaProbe(ctx, configured))
+	} else {
+		result.Probes = append(result.Probes, c.jsonOutputProbe(ctx, configured))
+	}
 	for _, effort := range llm.KnownReasoningEfforts() {
 		if effort == configured {
 			continue
@@ -78,6 +104,14 @@ func (r Result) ConfiguredTools() ProbeResult {
 	return r.probeByName("configured_tools")
 }
 
+func (r Result) ConfiguredJSONOutput() ProbeResult {
+	return r.probeByName("configured_json_output")
+}
+
+func (r Result) ConfiguredJSONSchema() ProbeResult {
+	return r.probeByName("configured_json_schema")
+}
+
 func (r Result) probeByName(name string) ProbeResult {
 	for _, probe := range r.Probes {
 		if probe.Name == name {
@@ -89,10 +123,16 @@ func (r Result) probeByName(name string) ProbeResult {
 
 func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeResult {
 	probe := ProbeResult{Name: name, ReasoningEffort: effort}
-	resp, err := c.client.Review(ctx, c.baseRequest(effort, []llm.Message{
+	sec := c.openSection(name)
+	defer sec.End()
+	req := c.baseRequest(effort, []llm.Message{
 		{Role: "system", Content: "You are checking whether this model can answer simple NickPit health checks."},
 		{Role: "user", Content: "Reply exactly with " + finalSentinel + "."},
-	}, nil))
+	}, nil)
+	if sec != nil {
+		req.ReasoningSink = sec
+	}
+	resp, err := c.client.Review(ctx, req)
 	if err != nil {
 		return classifyProbeError(probe, err)
 	}
@@ -107,6 +147,8 @@ func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeRe
 
 func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 	probe := ProbeResult{Name: "configured_tools", ReasoningEffort: effort, Tools: true}
+	sec := c.openSection("configured_tools")
+	defer sec.End()
 	engine := newMemoryEngine(map[string]string{
 		"README.md":       "# Fixture\nNickPit model check fixture.\n",
 		"internal/app.go": "package internal\n\nfunc Check() string { return \"ok\" }\n",
@@ -118,7 +160,11 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 	listed := false
 	inspected := map[string]struct{}{}
 	for round := 0; round < 8; round++ {
-		resp, err := c.client.Review(ctx, c.baseRequest(effort, messages, toolDefinitions()))
+		req := c.baseRequest(effort, messages, toolDefinitions())
+		if sec != nil {
+			req.ReasoningSink = sec
+		}
+		resp, err := c.client.Review(ctx, req)
 		if err != nil {
 			return classifyProbeError(probe, err)
 		}
@@ -133,6 +179,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		}
 		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
 		for _, call := range resp.ToolCalls {
+			c.logProgress("Tool", call.Name)
 			content, err := executeToolCall(ctx, engine, call, &listed, inspected)
 			if err != nil {
 				probe.Status = StatusFailed
@@ -144,6 +191,58 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 	}
 	probe.Status = StatusFailed
 	probe.Error = "tool probe exceeded maximum rounds"
+	return probe
+}
+
+func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResult {
+	probe := ProbeResult{Name: "configured_json_output", ReasoningEffort: effort}
+	sec := c.openSection("configured_json_output")
+	defer sec.End()
+	example := llm.FindingsExamplePromptSnippet()
+	req := c.baseRequest(effort, []llm.Message{
+		{Role: "system", Content: "You are checking whether this model can produce JSON output for NickPit code reviews."},
+		{Role: "user", Content: "Reply with a JSON object matching this structure:\n" + example},
+	}, nil)
+	if sec != nil {
+		req.ReasoningSink = sec
+	}
+	resp, err := c.client.Review(ctx, req)
+	if err != nil {
+		return classifyProbeError(probe, err)
+	}
+	var v any
+	if err := llm.LenientUnmarshal(resp.RawResponse, &v); err != nil {
+		probe.Status = StatusFailed
+		probe.Error = "response is not parseable JSON: " + err.Error()
+		return probe
+	}
+	probe.Status = StatusOK
+	return probe
+}
+
+func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResult {
+	probe := ProbeResult{Name: "configured_json_schema", ReasoningEffort: effort}
+	sec := c.openSection("configured_json_schema")
+	defer sec.End()
+	req := c.baseRequest(effort, []llm.Message{
+		{Role: "system", Content: "You are checking whether this model supports JSON schema output enforcement for NickPit code reviews."},
+		{Role: "user", Content: "Reply with a JSON object matching the provided schema."},
+	}, nil)
+	req.Schema = llm.FindingsSchema
+	if sec != nil {
+		req.ReasoningSink = sec
+	}
+	resp, err := c.client.Review(ctx, req)
+	if err != nil {
+		return classifyProbeError(probe, err)
+	}
+	var v any
+	if err := llm.LenientUnmarshal(resp.RawResponse, &v); err != nil {
+		probe.Status = StatusFailed
+		probe.Error = "response is not parseable JSON: " + err.Error()
+		return probe
+	}
+	probe.Status = StatusOK
 	return probe
 }
 

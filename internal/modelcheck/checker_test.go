@@ -45,6 +45,7 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
 			}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{RawResponse: `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`}},
 		},
 	}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
@@ -53,6 +54,9 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 	}
 	if result.ConfiguredTools().Status != StatusOK {
 		t.Fatalf("tools status = %s error=%s", result.ConfiguredTools().Status, result.ConfiguredTools().Error)
+	}
+	if result.ConfiguredJSONOutput().Status != StatusOK {
+		t.Fatalf("json-output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
 	}
 	if len(client.reqs) < 4 {
 		t.Fatalf("requests = %d, want at least 4", len(client.reqs))
@@ -106,5 +110,98 @@ func TestCheckerRequiresToolSequence(t *testing.T) {
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
 	if result.ConfiguredTools().Status != StatusFailed {
 		t.Fatalf("tools status = %s, want failed", result.ConfiguredTools().Status)
+	}
+}
+
+func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
+	validJSON := `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
+				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
+				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
+			}}},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSON}},
+		},
+	}
+	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: false}).Run(context.Background())
+	if result.UseJSONSchema {
+		t.Fatal("UseJSONSchema should be false")
+	}
+	if result.ConfiguredJSONOutput().Status != StatusOK {
+		t.Fatalf("json-output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
+	}
+	if result.ConfiguredJSONSchema().Error != "probe did not run" {
+		t.Fatalf("json-schema probe should not have run, got error=%s", result.ConfiguredJSONSchema().Error)
+	}
+}
+
+func TestCheckerJSONOutputProbeFailsOnUnparseable(t *testing.T) {
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
+				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
+				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
+			}}},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{RawResponse: "not json at all"}},
+		},
+	}
+	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+	if result.ConfiguredJSONOutput().Status != StatusFailed {
+		t.Fatalf("json-output status = %s, want failed", result.ConfiguredJSONOutput().Status)
+	}
+}
+
+func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
+	validJSON := `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
+				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
+				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
+			}}},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSON}},
+		},
+	}
+	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
+	if !result.UseJSONSchema {
+		t.Fatal("UseJSONSchema should be true")
+	}
+	if result.ConfiguredJSONSchema().Status != StatusOK {
+		t.Fatalf("json-schema status = %s error=%s", result.ConfiguredJSONSchema().Status, result.ConfiguredJSONSchema().Error)
+	}
+	if result.ConfiguredJSONOutput().Error != "probe did not run" {
+		t.Fatalf("json-output probe should not have run, got error=%s", result.ConfiguredJSONOutput().Error)
+	}
+}
+
+func TestCheckerJSONSchemaProbeSetsSchemOnRequest(t *testing.T) {
+	validJSON := `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
+				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
+				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
+			}}},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSON}},
+		},
+	}
+	New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
+	// json-schema probe is request index 4 (after no-tools, 3 tools rounds, json-schema)
+	schemaReq := client.reqs[4]
+	if len(schemaReq.Schema) == 0 {
+		t.Fatal("json-schema probe request must have Schema set")
 	}
 }
