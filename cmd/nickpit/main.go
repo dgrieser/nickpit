@@ -568,8 +568,15 @@ func (a *app) newCheckCmd() *cobra.Command {
 				}
 				return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
 			}
+			logger := logging.New(os.Stderr, a.verbose, stderrIsTerminal())
+			logger.SetShowReasoning(a.showReasoning)
+			logger.SetShowProgress(a.showProgress)
+			a.logger = logger
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
-			result := modelcheck.New(client, profile).Run(cmd.Context())
+			client.SetLogger(logger)
+			checker := modelcheck.New(client, profile)
+			checker.SetLogger(logger)
+			result := checker.Run(cmd.Context())
 			if a.jsonOutput {
 				if err := writeJSON(result); err != nil {
 					return err
