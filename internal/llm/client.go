@@ -494,6 +494,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	var lastBudgetReq *ReviewRequest
 	budgetExhausted := false
 	var lastLoopErr *ReasoningLoopDetectedError
+	var lastLoopReq *ReviewRequest
 	loopDetected := false
 	for attemptIndex, effort := range efforts {
 		attemptReq := cloneReviewRequest(req)
@@ -522,6 +523,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var loopErr *ReasoningLoopDetectedError
 		if errors.As(err, &loopErr) {
 			lastLoopErr = loopErr
+			lastLoopReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
 				loopDetected = true
 				c.logf("Reasoning loop detected, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
@@ -553,6 +555,30 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var budgetErr *ReasoningBudgetExhaustedError
 		if errors.As(noToolsErr, &budgetErr) {
 			lastBudgetErr = budgetErr
+		} else {
+			var invalidResp *InvalidResponseError
+			if errors.As(noToolsErr, &invalidResp) {
+				invalidResp.ToolsOmitted = true
+			}
+			return nil, noToolsErr
+		}
+		c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
+	}
+	if lastLoopReq != nil && len(lastLoopReq.Tools) > 0 && lastBudgetErr == nil {
+		noToolsReq := cloneReviewRequest(lastLoopReq)
+		noToolsReq.Messages = noToolsFallbackMessages(lastLoopReq)
+		noToolsReq.Tools = nil
+		noToolsReq.ParallelToolCalls = false
+		addReasoningLoopRetryHint(&noToolsReq)
+		c.logf("Retrying last loop-detected reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
+		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		if noToolsErr == nil {
+			noToolsResp.ToolsOmitted = true
+			return noToolsResp, nil
+		}
+		var loopErr *ReasoningLoopDetectedError
+		if errors.As(noToolsErr, &loopErr) {
+			lastLoopErr = loopErr
 		} else {
 			var invalidResp *InvalidResponseError
 			if errors.As(noToolsErr, &invalidResp) {
