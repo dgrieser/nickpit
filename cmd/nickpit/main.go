@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/output"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
@@ -64,6 +65,7 @@ type app struct {
 	disableParallelToolCalls      bool
 	verifyConcurrency             int
 	hideInvalid                   bool
+	skipModelCheck                bool
 	logger                        *logging.Logger
 }
 
@@ -130,7 +132,9 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
 	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
+	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 
+	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
 	root.AddCommand(cli.newGitLabCmd())
@@ -545,6 +549,43 @@ func (a *app) newInspectCmd() *cobra.Command {
 	return cmd
 }
 
+func (a *app) newCheckCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Run environment and model checks",
+	}
+	modelCmd := &cobra.Command{
+		Use:   "model",
+		Short: "Check the configured model",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			profileName, profile, err := a.loadProfile()
+			if err != nil {
+				return err
+			}
+			if profile.APIKey == "" {
+				if profile.APIKeyConfigured {
+					return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
+				}
+				return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
+			}
+			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
+			result := modelcheck.New(client, profile).Run(cmd.Context())
+			if a.jsonOutput {
+				if err := writeJSON(result); err != nil {
+					return err
+				}
+				return validatePreReviewModelCheck(result)
+			}
+			if err := writeModelCheckOutput(result); err != nil {
+				return err
+			}
+			return validatePreReviewModelCheck(result)
+		},
+	}
+	cmd.AddCommand(modelCmd)
+	return cmd
+}
+
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
 	logger := logging.New(os.Stderr, a.verbose, stderrIsTerminal())
 	logger.SetShowReasoning(a.showReasoning)
@@ -556,6 +597,19 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
 		}
 		return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
+	}
+
+	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
+	client.SetLogger(logger)
+	if !a.skipModelCheck {
+		checkResult := modelcheck.New(client, profile).Run(ctx)
+		if err := validatePreReviewModelCheck(checkResult); err != nil {
+			return err
+		}
+		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
+		a.logProgress("ModelCheck", modelCheckSummary(checkResult))
+	} else {
+		a.logProgress("ModelCheck", "skipped")
 	}
 
 	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
@@ -585,8 +639,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	a.logProgress("Model", modelSummary(profile, req))
 
-	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
-	client.SetLogger(logger)
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
@@ -746,6 +798,56 @@ func writeJSON(value any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(value)
+}
+
+func writeModelCheckOutput(result modelcheck.Result) error {
+	for _, probe := range result.Probes {
+		line := fmt.Sprintf("%s: %s", probe.Name, probe.Status)
+		if probe.ReasoningEffort != "" {
+			line += fmt.Sprintf(" (reasoning_effort=%s", probe.ReasoningEffort)
+			if probe.Tools {
+				line += ", tools=true"
+			}
+			line += ")"
+		}
+		if probe.Error != "" {
+			line += ": " + probe.Error
+		}
+		if _, err := fmt.Fprintln(os.Stdout, line); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(os.Stdout, "passed_efforts: %s\n", strings.Join(result.PassedEfforts, ", ")); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePreReviewModelCheck(result modelcheck.Result) error {
+	if probe := result.ConfiguredNoTools(); probe.Status != modelcheck.StatusOK {
+		return fmt.Errorf("model check failed for configured reasoning effort without tools: status=%s error=%s", probe.Status, probe.Error)
+	}
+	if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
+		return fmt.Errorf("model check failed for configured reasoning effort with tools: status=%s error=%s", probe.Status, probe.Error)
+	}
+	if len(result.PassedEfforts) == 0 {
+		return fmt.Errorf("model check failed: no reasoning efforts passed")
+	}
+	return nil
+}
+
+func modelCheckSummary(result modelcheck.Result) string {
+	counts := map[modelcheck.Status]int{}
+	for _, probe := range result.Probes {
+		counts[probe.Status]++
+	}
+	return fmt.Sprintf(
+		"ok=%d unsupported=%d failed=%d passed_efforts=%s",
+		counts[modelcheck.StatusOK],
+		counts[modelcheck.StatusUnsupported],
+		counts[modelcheck.StatusFailed],
+		strings.Join(result.PassedEfforts, ","),
+	)
 }
 
 func (a *app) writeInspectOutput(value any) error {

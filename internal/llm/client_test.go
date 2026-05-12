@@ -1341,6 +1341,81 @@ func TestFallbackReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestKnownReasoningEfforts(t *testing.T) {
+	want := []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
+	got := KnownReasoningEfforts()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("KnownReasoningEfforts() = %v, want %v", got, want)
+	}
+	got[0] = "changed"
+	if KnownReasoningEfforts()[0] != "max" {
+		t.Fatal("KnownReasoningEfforts should return a copy")
+	}
+}
+
+func TestClientReviewFiltersFallbackReasoningEfforts(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{"reasoning_content": "thinking"},
+			}},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         map[string]any{},
+				"finish_reason": "length",
+			}},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-3",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.MaxRetries = 0
+	client.SetAllowedReasoningEfforts([]string{"minimal"})
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err == nil {
+		t.Fatal("expected budget error after filtered fallback")
+	}
+	want := []string{"high", "minimal"}
+	if strings.Join(efforts, ",") != strings.Join(want, ",") {
+		t.Fatalf("efforts = %v, want %v", efforts, want)
+	}
+}
+
 func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 	maxTokens := 10
 	temperature := 0.25

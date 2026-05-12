@@ -1,9 +1,18 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/model"
 )
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
@@ -166,6 +175,76 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	}
 	if cmd.PersistentFlags().Lookup("verify-concurrency") == nil {
 		t.Fatal("verify-concurrency flag missing")
+	}
+	if cmd.PersistentFlags().Lookup("skip-model-check") == nil {
+		t.Fatal("skip-model-check flag missing")
+	}
+}
+
+func TestRootCmdHasCheckModel(t *testing.T) {
+	cmd := newRootCmd()
+	check, _, err := cmd.Find([]string{"check", "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check == nil || check.Use != "model" {
+		t.Fatalf("check model command missing: %#v", check)
+	}
+}
+
+type recordingSource struct {
+	called bool
+	err    error
+}
+
+func (s *recordingSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	s.called = true
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &model.ReviewContext{Repository: model.RepositoryInfo{}, ChangedFiles: []model.ChangedFile{}}, nil
+}
+
+func TestRunReviewRunsModelCheckBeforeSourceWork(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	source := &recordingSource{}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         server.URL,
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "model check failed") {
+		t.Fatalf("error = %v, want model check failure", err)
+	}
+	if source.called {
+		t.Fatal("source should not run before model check passes")
+	}
+}
+
+func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
+	wantErr := errors.New("source called")
+	source := &recordingSource{err: wantErr}
+	err := (&app{skipModelCheck: true}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         "http://127.0.0.1:1",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want source error", err)
+	}
+	if !source.called {
+		t.Fatal("source should run when model check is skipped")
 	}
 }
 

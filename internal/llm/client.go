@@ -74,6 +74,7 @@ type OpenAIClient struct {
 	retrier            *Retrier
 	logger             *logging.Logger
 	transport          *capturingTransport
+	allowedEfforts     map[string]struct{}
 }
 
 type SchemaKind string
@@ -117,6 +118,7 @@ type ReviewRequest struct {
 	ReasoningEffort   string
 	MaxReasoning      time.Duration
 	ReasoningSink     ReasoningSink
+	SingleAttempt     bool
 }
 
 type Message struct {
@@ -307,6 +309,20 @@ func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
 	c.logger = logger
 }
 
+func (c *OpenAIClient) SetAllowedReasoningEfforts(efforts []string) {
+	c.allowedEfforts = make(map[string]struct{}, len(efforts))
+	for _, effort := range efforts {
+		effort = strings.ToLower(strings.TrimSpace(effort))
+		if effort != "" {
+			c.allowedEfforts[effort] = struct{}{}
+		}
+	}
+}
+
+func KnownReasoningEfforts() []string {
+	return append([]string(nil), reasoningEffortFallbackOrder...)
+}
+
 func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (map[string]any, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -486,8 +502,12 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 
 	originalEffort := req.ReasoningEffort
 	efforts := []string{originalEffort}
-	for _, effort := range fallbackReasoningEfforts(originalEffort) {
-		efforts = append(efforts, effort)
+	if !req.SingleAttempt {
+		for _, effort := range fallbackReasoningEfforts(originalEffort) {
+			if attemptReasoningEffortAllowed(effort, c.allowedEfforts) {
+				efforts = append(efforts, effort)
+			}
+		}
 	}
 
 	var lastBudgetErr *ReasoningBudgetExhaustedError
@@ -703,6 +723,18 @@ func fallbackReasoningEfforts(effort string) []string {
 		}
 	}
 	return []string{"low", "minimal", "none", "off"}
+}
+
+func attemptReasoningEffortAllowed(effort string, allowed map[string]struct{}) bool {
+	if allowed == nil {
+		return true
+	}
+	_, ok := allowed[strings.ToLower(strings.TrimSpace(effort))]
+	return ok
+}
+
+func IsReasoningEffortRejection(err error, effort string) bool {
+	return isReasoningEffortRejection(err, effort)
 }
 
 func isReasoningEffortRejection(err error, effort string) bool {
