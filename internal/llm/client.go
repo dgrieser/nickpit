@@ -696,7 +696,16 @@ func isReasoningEffortRejection(err error, effort string) bool {
 	return strings.Contains(message, "reasoning_effort") ||
 		strings.Contains(message, "reasoning effort") ||
 		(strings.Contains(message, "reasoning") && (strings.Contains(message, "support") || strings.Contains(message, "supported") || strings.Contains(message, "invalid") || strings.Contains(message, "value"))) ||
+		isOpaqueParameterValidationRejection(message, effort) ||
 		isUnknownVariantRejection(message, effort)
+}
+
+func isOpaqueParameterValidationRejection(message, effort string) bool {
+	if strings.TrimSpace(effort) == "" {
+		return false
+	}
+	return strings.Contains(message, "failed to validate") &&
+		strings.Contains(message, "parameter")
 }
 
 func isUnknownVariantRejection(message, effort string) bool {

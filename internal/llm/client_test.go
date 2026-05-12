@@ -2264,6 +2264,48 @@ func TestClientReviewContinuesAfterRejectedLowerReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestClientReviewContinuesAfterOpaqueLowerReasoningEffortRejection(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		switch effort {
+		case "low":
+			writeReasoningLengthSSE(t, w)
+		case "minimal":
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error":{"code":"400","message":"Got bad request: Failed to validate 1 parameters","param":"None","type":"None"}}`)); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+		case "none":
+			writeValidReviewSSE(t, w)
+		default:
+			t.Fatalf("unexpected effort %q", effort)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "low",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "low,minimal,none"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "none" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
 func TestClientReviewAttemptsAllLowerEffortsBeforeExhausting(t *testing.T) {
 	var efforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
