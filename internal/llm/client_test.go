@@ -1521,6 +1521,67 @@ func TestClientReviewFallsBackAfterReasoningTimeout(t *testing.T) {
 	}
 }
 
+func TestClientReviewFallsBackAfterFuzzyReasoningLoop(t *testing.T) {
+	var userMessages []string
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		messages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("messages missing or wrong type: %#v", payload["messages"])
+		}
+		lastUser := ""
+		for _, raw := range messages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("message has wrong type: %#v", raw)
+			}
+			if msg["role"] == "user" {
+				lastUser, _ = msg["content"].(string)
+			}
+		}
+		userMessages = append(userMessages, lastUser)
+
+		if len(efforts) == 1 {
+			writeFuzzyLoopReasoningSSE(t, w)
+			<-r.Context().Done()
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+	if len(userMessages) != 2 {
+		t.Fatalf("user messages = %d, want 2", len(userMessages))
+	}
+	if strings.Contains(userMessages[0], reasoningRetryHint(true)) {
+		t.Fatalf("first request should not include loop retry hint: %q", userMessages[0])
+	}
+	if !strings.Contains(userMessages[1], reasoningRetryHint(true)) {
+		t.Fatalf("retry request missing loop retry hint: %q", userMessages[1])
+	}
+}
+
 func TestClientReviewAddsConciseReasoningHintAfterBudgetExhaustion(t *testing.T) {
 	var userMessages []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2647,6 +2708,28 @@ func writeReasoningLengthSSE(t *testing.T, w http.ResponseWriter) {
 		},
 	})
 	writeSSEDone(t, w)
+}
+
+func writeFuzzyLoopReasoningSSE(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	reasoning := strings.Join(append(
+		fuzzyReasoningCycle("AddSession", "DropSession", "Close"),
+		fuzzyReasoningCycle("DropSession", "DropPod", "Close")...,
+	), "\n") + "\n"
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"reasoning_content": reasoning,
+				},
+			},
+		},
+	})
 }
 
 func writeValidReviewSSE(t *testing.T, w http.ResponseWriter) {
