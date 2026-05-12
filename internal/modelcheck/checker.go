@@ -86,20 +86,22 @@ func (r Result) Summary() CheckSummary {
 		},
 		Tools: tools.Status == StatusOK,
 	}
-	if r.UseJSONSchema {
-		ok := r.ConfiguredJSONSchema().Status == StatusOK
-		s.JSONSchema = &ok
-	} else {
-		ok := r.ConfiguredJSONOutput().Status == StatusOK
+	if p := r.ConfiguredJSONOutput(); p.Error != "probe did not run" {
+		ok := p.Status == StatusOK
 		s.JSONResponse = &ok
+	}
+	if p := r.ConfiguredJSONSchema(); p.Error != "probe did not run" {
+		ok := p.Status == StatusOK
+		s.JSONSchema = &ok
 	}
 	return s
 }
 
 type Checker struct {
-	client  llm.Client
-	profile config.Profile
-	logger  *logging.Logger
+	client      llm.Client
+	profile     config.Profile
+	logger      *logging.Logger
+	runBothJSON bool
 }
 
 func New(client llm.Client, profile config.Profile) *Checker {
@@ -108,6 +110,10 @@ func New(client llm.Client, profile config.Profile) *Checker {
 
 func (c *Checker) SetLogger(logger *logging.Logger) {
 	c.logger = logger
+}
+
+func (c *Checker) SetRunBothJSON(v bool) {
+	c.runBothJSON = v
 }
 
 func (c *Checker) logProgress(label, summary string) {
@@ -136,7 +142,10 @@ func (c *Checker) Run(ctx context.Context) Result {
 
 	result.Probes = append(result.Probes, c.noToolsProbe(ctx, "configured_no_tools", configured))
 	result.Probes = append(result.Probes, c.toolsProbe(ctx, configured))
-	if c.profile.UseJSONSchema {
+	if c.runBothJSON {
+		result.Probes = append(result.Probes, c.jsonOutputProbe(ctx, configured))
+		result.Probes = append(result.Probes, c.jsonSchemaProbe(ctx, configured))
+	} else if c.profile.UseJSONSchema {
 		result.Probes = append(result.Probes, c.jsonSchemaProbe(ctx, configured))
 	} else {
 		result.Probes = append(result.Probes, c.jsonOutputProbe(ctx, configured))

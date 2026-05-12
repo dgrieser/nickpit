@@ -576,6 +576,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 			client.SetLogger(logger)
 			checker := modelcheck.New(client, profile)
 			checker.SetLogger(logger)
+			checker.SetRunBothJSON(true)
 			result := checker.Run(cmd.Context())
 			if a.jsonOutput {
 				if err := writeJSON(struct {
@@ -866,10 +867,11 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 		fmt.Fprintf(&sb, "      []\n")
 	}
 	fmt.Fprintf(&sb, "  %s %s\n", key("tools"), bool_(s.Tools))
+	if s.JSONResponse != nil {
+		fmt.Fprintf(&sb, "  %s %s\n", key("json_response"), bool_(*s.JSONResponse))
+	}
 	if s.JSONSchema != nil {
 		fmt.Fprintf(&sb, "  %s %s\n", key("json_schema"), bool_(*s.JSONSchema))
-	} else if s.JSONResponse != nil {
-		fmt.Fprintf(&sb, "  %s %s\n", key("json_response"), bool_(*s.JSONResponse))
 	}
 	_, err := fmt.Fprint(os.Stdout, sb.String())
 	return err
