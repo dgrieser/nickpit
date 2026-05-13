@@ -421,18 +421,19 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm.ToolDefinition) *llm.ReviewRequest {
 	maxReasoning := time.Duration(c.profile.MaxReasoningSeconds) * time.Second
 	return &llm.ReviewRequest{
-		Messages:          append([]llm.Message(nil), messages...),
-		Tools:             tools,
-		SchemaKind:        llm.SchemaKindText,
-		Model:             c.profile.Model,
-		MaxTokens:         c.profile.MaxTokens,
-		Temperature:       c.profile.Temperature,
-		TopP:              c.profile.TopP,
-		ExtraBody:         c.profile.ExtraBody,
-		ParallelToolCalls: true,
-		ReasoningEffort:   effort,
-		MaxReasoning:      maxReasoning,
-		SingleAttempt:     true,
+		Messages:                append([]llm.Message(nil), messages...),
+		Tools:                   tools,
+		SchemaKind:              llm.SchemaKindText,
+		Model:                   c.profile.Model,
+		MaxTokens:               c.profile.MaxTokens,
+		Temperature:             c.profile.Temperature,
+		TopP:                    c.profile.TopP,
+		ExtraBody:               c.profile.ExtraBody,
+		ParallelToolCalls:       true,
+		ReasoningEffort:         effort,
+		MaxReasoning:            maxReasoning,
+		MaxReasoningLoopRepeats: c.profile.MaxReasoningLoopRepeats,
+		SingleAttempt:           true,
 	}
 }
 

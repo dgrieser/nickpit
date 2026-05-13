@@ -20,6 +20,7 @@ type FinalizeOptions struct {
 	UseJSONSchema            bool
 	MaxOutputRetries         int
 	MaxReasoningSeconds      int
+	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	RepoRoot                 string
 }
@@ -74,6 +75,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		RepoRoot:                 opts.RepoRoot,
 		MaxOutputRetries:         opts.MaxOutputRetries,
 		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}

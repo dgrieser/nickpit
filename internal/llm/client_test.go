@@ -548,7 +548,8 @@ func TestClientReviewReassemblesStreamedToolCalls(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls: true,
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1532,9 +1533,10 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	resp, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:    "system",
-		UserContent:     "user",
-		ReasoningEffort: "high",
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1633,9 +1635,10 @@ func TestClientReviewFallsBackAfterFuzzyReasoningLoop(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	resp, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:    "system",
-		UserContent:     "user",
-		ReasoningEffort: "high",
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1654,6 +1657,43 @@ func TestClientReviewFallsBackAfterFuzzyReasoningLoop(t *testing.T) {
 	}
 	if !strings.Contains(userMessages[1], reasoningRetryHint(true)) {
 		t.Fatalf("retry request missing loop retry hint: %q", userMessages[1])
+	}
+}
+
+func TestClientReviewDisablesReasoningLoopDetection(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		for range 12 {
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-reasoning",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{
+					{
+						"index": 0,
+						"delta": map[string]any{"reasoning_content": "same thought\n"},
+					},
+				},
+			})
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
 	}
 }
 
@@ -1894,7 +1934,8 @@ func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls: true,
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
 	})
 	var invalidResp *InvalidResponseError
 	if !errors.As(err, &invalidResp) {
@@ -1951,7 +1992,8 @@ func TestClientReviewRetriesLastBudgetExhaustedEffortWithoutToolsAfterFallbacks(
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls: true,
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2018,7 +2060,8 @@ func TestClientReviewRetriesLastLoopDetectedEffortWithoutToolsAfterFallbacks(t *
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls: true,
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2899,10 +2942,18 @@ func writeReasoningLengthSSE(t *testing.T, w http.ResponseWriter) {
 
 func writeFuzzyLoopReasoningSSE(t *testing.T, w http.ResponseWriter) {
 	t.Helper()
-	reasoning := strings.Join(append(
-		fuzzyReasoningCycle("AddSession", "DropSession", "Close"),
-		fuzzyReasoningCycle("DropSession", "DropPod", "Close")...,
-	), "\n") + "\n"
+	var lines []string
+	for _, cycle := range [][3]string{
+		{"AddSession", "DropSession", "Close"},
+		{"DropSession", "DropPod", "Close"},
+		{"CreateSession", "DeleteSession", "Close"},
+		{"OpenSession", "RemoveSession", "Close"},
+		{"StartSession", "StopSession", "Close"},
+		{"MakeSession", "ClearSession", "Close"},
+	} {
+		lines = append(lines, fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2])...)
+	}
+	reasoning := strings.Join(lines, "\n") + "\n"
 	writeSSEChunk(t, w, map[string]any{
 		"id":      "chunk-1",
 		"object":  "chat.completion.chunk",

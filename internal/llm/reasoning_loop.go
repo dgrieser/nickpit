@@ -8,11 +8,6 @@ import (
 )
 
 const (
-	// loopRepeatLineThreshold catches the simplest failure mode: the model
-	// emits the exact same line repeatedly. Blank lines do not count because
-	// streaming/rendering can produce harmless blank separators.
-	loopRepeatLineThreshold = 5
-
 	// Exact block detection compares the most recent k completed lines against
 	// the k lines immediately before them. The max is high enough for review
 	// loops that repeat an entire "finding / priority / suggestion" cycle, but
@@ -65,17 +60,25 @@ func (e *ReasoningLoopDetectedError) Error() string {
 }
 
 type reasoningLoopDetector struct {
-	mu               sync.Mutex
-	cancel           context.CancelFunc
-	detected         bool
-	loopStartContent string
-	repeatedContent  string
-	lines            []string
-	currentLine      strings.Builder
+	mu                sync.Mutex
+	cancel            context.CancelFunc
+	maxRepeats        int
+	detected          bool
+	loopStartContent  string
+	repeatedContent   string
+	lines             []string
+	currentLine       strings.Builder
+	fuzzyRepeats      map[int]int
+	fuzzyLastMatchEnd map[int]int
 }
 
-func newReasoningLoopDetector(cancel context.CancelFunc) *reasoningLoopDetector {
-	return &reasoningLoopDetector{cancel: cancel}
+func newReasoningLoopDetector(cancel context.CancelFunc, maxRepeats int) *reasoningLoopDetector {
+	return &reasoningLoopDetector{
+		cancel:            cancel,
+		maxRepeats:        maxRepeats,
+		fuzzyRepeats:      make(map[int]int, len(loopFuzzyWindowSizes)),
+		fuzzyLastMatchEnd: make(map[int]int, len(loopFuzzyWindowSizes)),
+	}
 }
 
 func (d *reasoningLoopDetector) Detected() bool {
@@ -119,42 +122,51 @@ func (d *reasoningLoopDetector) onDelta(delta string) {
 func (d *reasoningLoopDetector) checkLoopLocked() bool {
 	n := len(d.lines)
 
-	// Strategy 1: same non-empty line repeated loopRepeatLineThreshold times consecutively.
-	if n >= loopRepeatLineThreshold {
+	// Strategy 1: same non-empty line repeated beyond the configured allowance.
+	lineThreshold := d.maxRepeats + 2
+	if n >= lineThreshold {
 		last := d.lines[n-1]
 		if strings.TrimSpace(last) != "" {
 			allSame := true
-			for i := n - loopRepeatLineThreshold; i < n-1; i++ {
+			for i := n - lineThreshold; i < n-1; i++ {
 				if d.lines[i] != last {
 					allSame = false
 					break
 				}
 			}
 			if allSame {
-				d.trigger(strings.Join(d.lines[n-loopRepeatLineThreshold:], "\n"), n-loopRepeatLineThreshold)
+				d.trigger(strings.Join(d.lines[n-lineThreshold:], "\n"), n-lineThreshold)
 				return true
 			}
 		}
 	}
 
-	// Strategy 2: block of k lines appearing twice consecutively.
-	maxK := n / 2
+	// Strategy 2: block of k lines appearing consecutively beyond the allowance.
+	requiredCopies := d.maxRepeats + 2
+	maxK := n / requiredCopies
 	if maxK > loopBlockMaxLines {
 		maxK = loopBlockMaxLines
 	}
 	for k := loopBlockMinLines; k <= maxK; k++ {
-		b1 := n - 2*k
-		b2 := n - k
-		match := true
-		for i := 0; i < k; i++ {
-			if d.lines[b1+i] != d.lines[b2+i] {
-				match = false
+		recentStart := n - k
+		if !hasRepeatedBlockSignal(d.lines[recentStart:]) {
+			continue
+		}
+		copies := 1
+		for copyStart := recentStart - k; copyStart >= 0; copyStart -= k {
+			match := true
+			for i := 0; i < k; i++ {
+				if d.lines[copyStart+i] != d.lines[recentStart+i] {
+					match = false
+					break
+				}
+			}
+			if !match {
 				break
 			}
-		}
-		if match {
-			if hasRepeatedBlockSignal(d.lines[b2:]) {
-				d.trigger(strings.Join(d.lines[b2:], "\n"), b1)
+			copies++
+			if copies >= requiredCopies {
+				d.trigger(strings.Join(d.lines[recentStart:], "\n"), n-copies*k)
 				return true
 			}
 		}
@@ -191,6 +203,7 @@ func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
 		prev := fuzzyReasoningWindow(d.lines[prevStart:recentStart])
 		recent := fuzzyReasoningWindow(d.lines[recentStart:])
 		if !prev.enoughSignal() || !recent.enoughSignal() {
+			d.fuzzyRepeats[k] = 0
 			continue
 		}
 
@@ -199,9 +212,18 @@ func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
 		// which helps focus on breadth of overlap rather than raw length.
 		score := jaccardSimilarity(prev.shingles, recent.shingles)
 		if score >= loopFuzzyStrictThreshold || score >= loopFuzzyMarkerThreshold && shareDecisionMarkers(prev.markers, recent.markers) {
-			d.trigger(strings.Join(d.lines[recentStart:], "\n"), prevStart)
-			return true
+			if lastEnd := d.fuzzyLastMatchEnd[k]; lastEnd == 0 || n-lastEnd >= k {
+				d.fuzzyRepeats[k]++
+				d.fuzzyLastMatchEnd[k] = n
+				if d.fuzzyRepeats[k] > d.maxRepeats {
+					d.trigger(strings.Join(d.lines[recentStart:], "\n"), prevStart-(d.maxRepeats*k))
+					return true
+				}
+			}
+			continue
 		}
+		d.fuzzyRepeats[k] = 0
+		d.fuzzyLastMatchEnd[k] = 0
 	}
 	return false
 }

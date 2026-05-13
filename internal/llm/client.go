@@ -102,24 +102,25 @@ type ResponseConstraints struct {
 }
 
 type ReviewRequest struct {
-	SystemPrompt      string
-	UserContent       string
-	Messages          []Message
-	NoToolsMessages   []Message
-	Tools             []ToolDefinition
-	Schema            json.RawMessage
-	SchemaKind        SchemaKind
-	Constraints       ResponseConstraints
-	Model             string
-	MaxTokens         *int
-	Temperature       *float64
-	TopP              *float64
-	ExtraBody         map[string]any
-	ParallelToolCalls bool
-	ReasoningEffort   string
-	MaxReasoning      time.Duration
-	ReasoningSink     ReasoningSink
-	SingleAttempt     bool
+	SystemPrompt            string
+	UserContent             string
+	Messages                []Message
+	NoToolsMessages         []Message
+	Tools                   []ToolDefinition
+	Schema                  json.RawMessage
+	SchemaKind              SchemaKind
+	Constraints             ResponseConstraints
+	Model                   string
+	MaxTokens               *int
+	Temperature             *float64
+	TopP                    *float64
+	ExtraBody               map[string]any
+	ParallelToolCalls       bool
+	ReasoningEffort         string
+	MaxReasoning            time.Duration
+	MaxReasoningLoopRepeats int
+	ReasoningSink           ReasoningSink
+	SingleAttempt           bool
 }
 
 type Message struct {
@@ -164,6 +165,45 @@ type capture struct {
 }
 
 type extraBodyContextKey struct{}
+
+type captureSlot struct {
+	mu  sync.Mutex
+	cap *capture
+}
+
+func (s *captureSlot) set(c *capture) {
+	s.mu.Lock()
+	s.cap = c
+	s.mu.Unlock()
+}
+
+func (s *captureSlot) snapshot() *capture {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cap == nil {
+		return nil
+	}
+	cloned := *s.cap
+	if cloned.header != nil {
+		cloned.header = cloned.header.Clone()
+	}
+	if cloned.body != nil {
+		cloned.body = append([]byte(nil), cloned.body...)
+	}
+	return &cloned
+}
+
+type captureSlotContextKey struct{}
+
+func contextWithCaptureSlot(ctx context.Context) (context.Context, *captureSlot) {
+	slot := &captureSlot{}
+	return context.WithValue(ctx, captureSlotContextKey{}, slot), slot
+}
+
+func captureSlotFromContext(ctx context.Context) *captureSlot {
+	slot, _ := ctx.Value(captureSlotContextKey{}).(*captureSlot)
+	return slot
+}
 
 type streamedResponse struct {
 	content          string
@@ -852,7 +892,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logHighlightedJSON("LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, req.MaxReasoningLoopRepeats)
 	if err != nil {
 		return nil, err
 	}
@@ -1030,17 +1070,20 @@ func NormalizeToolCallArguments(arguments string) (string, bool) {
 	return string(normalized), true
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, maxReasoningLoopRepeats int) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
-		detector := newReasoningLoopDetector(streamCancel)
+		streamCtx, slot := contextWithCaptureSlot(streamCtx)
+		var detector *reasoningLoopDetector
+		if maxReasoningLoopRepeats > 0 {
+			detector = newReasoningLoopDetector(streamCancel, maxReasoningLoopRepeats)
+		}
 		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
-		c.transport.reset()
 
 		stream, err := c.sdkClient.CreateChatCompletionStream(streamCtx, payload)
-		capture := c.transport.snapshot()
+		capture := slot.snapshot()
 		if capture != nil && capture.code != 0 {
 			c.logf("LLM stream opened: status=%s", capture.status)
 		}
@@ -1305,18 +1348,22 @@ func finalizeToolCalls(builders []*toolCallBuilder) []ToolCall {
 
 type capturingTransport struct {
 	base http.RoundTripper
-	last *capture
 }
 
 func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	slot := captureSlotFromContext(req.Context())
 	if err := injectExtraBody(req); err != nil {
-		t.last = nil
+		if slot != nil {
+			slot.set(nil)
+		}
 		return nil, err
 	}
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
-		t.last = nil
+		if slot != nil {
+			slot.set(nil)
+		}
 		return nil, err
 	}
 
@@ -1329,37 +1376,22 @@ func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") &&
 		resp.StatusCode >= http.StatusOK &&
 		resp.StatusCode < http.StatusBadRequest {
-		t.last = captured
+		if slot != nil {
+			slot.set(captured)
+		}
 		return resp, nil
 	}
 
 	data, readErr := readAndRestoreBody(resp)
 	captured.body = data
-	t.last = captured
+	if slot != nil {
+		slot.set(captured)
+	}
 	if readErr != nil {
 		return nil, readErr
 	}
 
 	return resp, nil
-}
-
-func (t *capturingTransport) reset() {
-	t.last = nil
-}
-
-func (t *capturingTransport) snapshot() *capture {
-	if t.last == nil {
-		return nil
-	}
-
-	cloned := *t.last
-	if cloned.header != nil {
-		cloned.header = cloned.header.Clone()
-	}
-	if cloned.body != nil {
-		cloned.body = append([]byte(nil), cloned.body...)
-	}
-	return &cloned
 }
 
 func readAndRestoreBody(resp *http.Response) ([]byte, error) {

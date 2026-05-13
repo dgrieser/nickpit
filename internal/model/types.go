@@ -40,6 +40,7 @@ type ReviewRequest struct {
 	MaxDuplicateToolCalls    int
 	MaxOutputRetries         int
 	MaxReasoningSeconds      int
+	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	UseJSONSchema            bool
 	PriorityThreshold        string

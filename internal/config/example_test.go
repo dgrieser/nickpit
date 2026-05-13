@@ -52,6 +52,9 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.MaxReasoningSeconds != DefaultMaxReasoningSeconds {
 			t.Fatalf("%s max reasoning seconds = %d", entry.name, profile.MaxReasoningSeconds)
 		}
+		if profile.MaxReasoningLoopRepeats != DefaultMaxReasoningLoopRepeats {
+			t.Fatalf("%s max reasoning loop repeats = %d", entry.name, profile.MaxReasoningLoopRepeats)
+		}
 		if profile.ReasoningEffort != DefaultReasoningEffort {
 			t.Fatalf("%s reasoning effort = %q", entry.name, profile.ReasoningEffort)
 		}

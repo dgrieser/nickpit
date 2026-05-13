@@ -8,9 +8,13 @@ import (
 
 func TestReasoningLoopDetectorRepeatedLine(t *testing.T) {
 	d, canceled := newTestReasoningLoopDetector()
-	for range loopRepeatLineThreshold {
+	for range 5 {
 		d.onDelta("same thought\n")
 	}
+	if d.Detected() {
+		t.Fatal("repeated line loop detected before allowed repeats were exhausted")
+	}
+	d.onDelta("same thought\n")
 	if !d.Detected() {
 		t.Fatal("expected repeated line loop")
 	}
@@ -21,8 +25,13 @@ func TestReasoningLoopDetectorRepeatedLine(t *testing.T) {
 
 func TestReasoningLoopDetectorLongExactBlock(t *testing.T) {
 	d, _ := newTestReasoningLoopDetector()
-	for i := range 55 {
-		d.onDelta(fmt.Sprintf("line %02d has useful reasoning\n", i))
+	for repeat := range 5 {
+		for i := range 55 {
+			d.onDelta(fmt.Sprintf("line %02d has useful reasoning\n", i))
+		}
+		if d.Detected() {
+			t.Fatalf("exact block loop detected too early after copy %d", repeat+1)
+		}
 	}
 	for i := range 55 {
 		d.onDelta(fmt.Sprintf("line %02d has useful reasoning\n", i))
@@ -35,10 +44,22 @@ func TestReasoningLoopDetectorLongExactBlock(t *testing.T) {
 func TestReasoningLoopDetectorFuzzyDecisionCycle(t *testing.T) {
 	d, _ := newTestReasoningLoopDetector()
 	d.onDelta("Initial analysis before the cycle begins.\n")
-	for _, line := range fuzzyReasoningCycle("AddSession", "DropSession", "Close") {
-		d.onDelta(line + "\n")
+	cycles := [][3]string{
+		{"AddSession", "DropSession", "Close"},
+		{"DropSession", "DropPod", "Close"},
+		{"CreateSession", "DeleteSession", "Close"},
+		{"OpenSession", "RemoveSession", "Close"},
+		{"StartSession", "StopSession", "Close"},
 	}
-	for _, line := range fuzzyReasoningCycle("DropSession", "DropPod", "Close") {
+	for _, cycle := range cycles {
+		for _, line := range fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2]) {
+			d.onDelta(line + "\n")
+		}
+		if d.Detected() {
+			t.Fatal("fuzzy decision loop detected before allowed repeats were exhausted")
+		}
+	}
+	for _, line := range fuzzyReasoningCycle("MakeSession", "ClearSession", "Close") {
 		d.onDelta(line + "\n")
 	}
 	if !d.Detected() {
@@ -64,8 +85,16 @@ func TestReasoningLoopDetectorIgnoresShortRepeatedHeadings(t *testing.T) {
 func TestReasoningLoopDetectorWaitsForCompletedLines(t *testing.T) {
 	d, _ := newTestReasoningLoopDetector()
 	cycleA := strings.Join(fuzzyReasoningCycle("AddSession", "DropSession", "Close"), "\n")
-	cycleB := strings.Join(fuzzyReasoningCycle("DropSession", "DropPod", "Close"), "\n")
 	d.onDelta(cycleA + "\n")
+	for _, cycle := range [][3]string{
+		{"DropSession", "DropPod", "Close"},
+		{"CreateSession", "DeleteSession", "Close"},
+		{"OpenSession", "RemoveSession", "Close"},
+		{"StartSession", "StopSession", "Close"},
+	} {
+		d.onDelta(strings.Join(fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2]), "\n") + "\n")
+	}
+	cycleB := strings.Join(fuzzyReasoningCycle("MakeSession", "ClearSession", "Close"), "\n")
 	d.onDelta(cycleB)
 	if d.Detected() {
 		t.Fatal("partial final line should not complete fuzzy loop")
@@ -80,7 +109,7 @@ func newTestReasoningLoopDetector() (*reasoningLoopDetector, *bool) {
 	canceled := false
 	d := newReasoningLoopDetector(func() {
 		canceled = true
-	})
+	}, 4)
 	return d, &canceled
 }
 
