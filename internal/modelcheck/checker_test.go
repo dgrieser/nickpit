@@ -1,19 +1,25 @@
 package modelcheck
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 type scriptedClient struct {
+	mu        sync.Mutex
 	responses []scriptedResponse
 	reqs      []*llm.ReviewRequest
 }
@@ -26,6 +32,8 @@ type scriptedResponse struct {
 const validJSONProbeResponse = `{"check":"json_capability","status":"ok","confidence_score":0.9}`
 
 func (s *scriptedClient) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	cloned := *req
 	cloned.Messages = append([]llm.Message(nil), req.Messages...)
 	cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)
@@ -38,6 +46,56 @@ func (s *scriptedClient) Review(_ context.Context, req *llm.ReviewRequest) (*llm
 	return next.resp, next.err
 }
 
+func runSequential(client llm.Client, profile config.Profile) Result {
+	checker := New(client, profile)
+	checker.SetParallel(false)
+	return checker.Run(context.Background())
+}
+
+type concurrentClient struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+}
+
+func (c *concurrentClient) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.active--
+		c.mu.Unlock()
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if len(req.Tools) > 0 && !hasToolMessage(req.Messages) {
+		return &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}, nil
+	}
+	if req.SchemaKind == llm.SchemaKindJSON {
+		return &llm.ReviewResponse{RawResponse: validJSONProbeResponse}, nil
+	}
+	return &llm.ReviewResponse{RawResponse: finalSentinel}, nil
+}
+
+func (c *concurrentClient) MaxActive() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.maxActive
+}
+
+func hasToolMessage(messages []llm.Message) bool {
+	for _, msg := range messages {
+		if msg.Role == "tool" {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 	client := &scriptedClient{
 		responses: []scriptedResponse{
@@ -48,7 +106,7 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
-	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 	if result.ConfiguredNoTools().Status != StatusOK {
 		t.Fatalf("no-tools status = %s", result.ConfiguredNoTools().Status)
 	}
@@ -75,11 +133,86 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 	}
 }
 
+func TestResultSummaryIncludesCompatibility(t *testing.T) {
+	result := Result{
+		Probes: []ProbeResult{
+			{Name: "configured_no_tools", ReasoningEffort: "high", Status: StatusOK},
+			{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: StatusOK},
+			{Name: "configured_json_output", ReasoningEffort: "high", Status: StatusOK},
+			{Name: "configured_json_schema", ReasoningEffort: "high", Status: StatusFailed},
+		},
+		PassedEfforts: []string{"high"},
+	}
+	summary := result.Summary()
+	if !summary.Compatible {
+		t.Fatal("summary should be compatible when response, tools, and JSON output pass")
+	}
+	if summary.JSONSchema == nil || *summary.JSONSchema {
+		t.Fatalf("json schema = %v, want false", summary.JSONSchema)
+	}
+}
+
+func TestCheckerRunsProbesInParallelByDefault(t *testing.T) {
+	client := &concurrentClient{}
+	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+	if client.MaxActive() < 2 {
+		t.Fatalf("max active requests = %d, want parallel probes", client.MaxActive())
+	}
+	if result.ConfiguredTools().Status != StatusOK {
+		t.Fatalf("tools status = %s error=%s", result.ConfiguredTools().Status, result.ConfiguredTools().Error)
+	}
+}
+
+func TestCheckerCanDisableParallelProbes(t *testing.T) {
+	client := &concurrentClient{}
+	checker := New(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	checker.SetParallel(false)
+	checker.Run(context.Background())
+	if client.MaxActive() != 1 {
+		t.Fatalf("max active requests = %d, want sequential probes", client.MaxActive())
+	}
+}
+
+func TestCheckerShowProgressLogsProbeRequestsResponsesAndResults(t *testing.T) {
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel, Reasoned: true}},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		},
+	}
+	var stderr bytes.Buffer
+	logger := logging.New(&stderr, false, false)
+	logger.SetShowProgress(true)
+	checker := New(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	checker.SetParallel(false)
+	checker.SetLogger(logger)
+
+	checker.Run(context.Background())
+
+	got := stderr.String()
+	for _, want := range []string{
+		"ModelCheck: probe=configured_no_tools, effort=high, tools=false",
+		"Request: [configured_no_tools:high] #1",
+		"Response: [configured_no_tools:high] #1 status=ok",
+		"ModelCheck: probe=configured_no_tools, effort=high, status=ok, reasoned=true",
+		"Tool: list_files status=ok",
+		"ModelCheck: probe=configured_json_output, effort=high, status=ok",
+		"ModelCheck: probe=fallback_no_tools, effort=",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("progress log missing %q\nlog:\n%s", want, got)
+		}
+	}
+}
+
 func TestCheckerClassifiesGenericFailure(t *testing.T) {
 	client := &scriptedClient{
 		responses: []scriptedResponse{{err: errors.New("boom")}},
 	}
-	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 	if result.ConfiguredNoTools().Status != StatusFailed {
 		t.Fatalf("status = %s, want failed", result.ConfiguredNoTools().Status)
 	}
@@ -110,7 +243,7 @@ func TestCheckerRequiresToolSequence(t *testing.T) {
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_file", Name: "inspect_file", Arguments: `{"path":"README.md"}`}}}},
 		},
 	}
-	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 	if result.ConfiguredTools().Status != StatusFailed {
 		t.Fatalf("tools status = %s, want failed", result.ConfiguredTools().Status)
 	}
@@ -142,7 +275,7 @@ func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
-	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: false}).Run(context.Background())
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: false})
 	if result.UseJSONSchema {
 		t.Fatal("UseJSONSchema should be false")
 	}
@@ -163,7 +296,7 @@ func TestCheckerJSONOutputProbeFailsOnUnparseable(t *testing.T) {
 			{resp: &llm.ReviewResponse{RawResponse: "not json at all"}},
 		},
 	}
-	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 	if result.ConfiguredJSONOutput().Status != StatusFailed {
 		t.Fatalf("json-output status = %s, want failed", result.ConfiguredJSONOutput().Status)
 	}
@@ -180,7 +313,7 @@ func TestCheckerJSONOutputProbeFailsOnWrongShape(t *testing.T) {
 					{resp: &llm.ReviewResponse{RawResponse: raw}},
 				},
 			}
-			result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+			result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 			if result.ConfiguredJSONOutput().Status != StatusFailed {
 				t.Fatalf("json-output status = %s, want failed", result.ConfiguredJSONOutput().Status)
 			}
@@ -198,7 +331,7 @@ func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
-	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true})
 	if !result.UseJSONSchema {
 		t.Fatal("UseJSONSchema should be true")
 	}
@@ -220,7 +353,7 @@ func TestCheckerJSONSchemaProbeSetsSchemOnRequest(t *testing.T) {
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
-	New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
+	runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true})
 	// json-schema probe is request index 4 (after no-tools, 2 tools rounds, json-output, json-schema).
 	schemaReq := client.reqs[4]
 	if len(schemaReq.Schema) == 0 {

@@ -572,11 +572,21 @@ func (a *app) newCheckCmd() *cobra.Command {
 			logger.SetShowReasoning(a.showReasoning)
 			logger.SetShowProgress(a.showProgress)
 			a.logger = logger
+			a.logProgress("Model", modelSummary(profile, model.ReviewRequest{
+				MaxContextTokens:      profile.MaxContextTokens,
+				MaxToolCalls:          profile.MaxToolCalls,
+				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:      profile.MaxOutputRetries,
+				MaxReasoningSeconds:   profile.MaxReasoningSeconds,
+				UseJSONSchema:         profile.UseJSONSchema,
+			}))
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			checker := modelcheck.New(client, profile)
 			checker.SetLogger(logger)
+			checker.SetParallel(!a.disableParallelToolCalls)
 			result := checker.Run(cmd.Context())
+			a.logProgress("ModelCheck", modelCheckSummary(result))
 			if a.jsonOutput {
 				if err := writeJSON(struct {
 					Check modelcheck.CheckSummary `json:"check"`
@@ -632,6 +642,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if !a.skipModelCheck {
 		checker := modelcheck.New(client, profile)
 		checker.SetLogger(logger)
+		checker.SetParallel(!a.disableParallelToolCalls)
 		checkResult := checker.Run(ctx)
 		if err := validatePreReviewModelCheck(checkResult); err != nil {
 			return err
@@ -821,57 +832,54 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	s := result.Summary()
 	useANSI := stdoutIsTerminal()
 
-	key := func(name string) string {
-		if useANSI {
-			return "\x1b[33m" + name + "\x1b[0m\x1b[90m:\x1b[0m"
-		}
-		return name + ":"
-	}
-	bool_ := func(v bool) string {
+	mark := func(v bool) string {
 		if useANSI {
 			if v {
-				return "\x1b[32mtrue\x1b[0m"
+				return "\x1b[32m✓\x1b[0m"
 			}
-			return "\x1b[90mfalse\x1b[0m"
+			return "\x1b[31m✗\x1b[0m"
 		}
 		if v {
-			return "true"
+			return "✓"
 		}
-		return "false"
+		return "✗"
 	}
-	effort_ := func(e string) string {
+	label := func(text string) string {
+		if useANSI {
+			return "\x1b[1m" + text + "\x1b[0m"
+		}
+		return text
+	}
+	effort := func(e string) string {
 		if useANSI {
 			return "\x1b[34m" + e + "\x1b[0m"
 		}
 		return e
 	}
-	bullet := "      - "
-	if useANSI {
-		bullet = "      \x1b[90m-\x1b[0m "
+	optionalMark := func(v *bool) string {
+		if v == nil {
+			return "?"
+		}
+		return mark(*v)
 	}
 
 	var sb strings.Builder
-	if useANSI {
-		fmt.Fprintf(&sb, "\x1b[1mcheck\x1b[0m\x1b[90m:\x1b[0m\n")
-	} else {
-		fmt.Fprintf(&sb, "check:\n")
-	}
-	fmt.Fprintf(&sb, "  %s %s\n", key("response"), bool_(s.Response))
-	fmt.Fprintf(&sb, "  %s\n", key("reasoning"))
-	fmt.Fprintf(&sb, "    %s %s\n", key("traces"), bool_(s.Reasoning.Traces))
-	fmt.Fprintf(&sb, "    %s\n", key("efforts"))
-	for _, e := range s.Reasoning.Efforts {
-		fmt.Fprintf(&sb, "%s%s\n", bullet, effort_(e))
-	}
-	if len(s.Reasoning.Efforts) == 0 {
-		fmt.Fprintf(&sb, "      []\n")
-	}
-	fmt.Fprintf(&sb, "  %s %s\n", key("tools"), bool_(s.Tools))
-	if s.JSONResponse != nil {
-		fmt.Fprintf(&sb, "  %s %s\n", key("json_response"), bool_(*s.JSONResponse))
-	}
+	fmt.Fprintf(&sb, "%s %s\n", mark(s.Compatible), label("Model is compatible"))
+	fmt.Fprintf(&sb, "\n")
+	fmt.Fprintf(&sb, "%s Response\n", mark(s.Response))
+	fmt.Fprintf(&sb, "%s Tool Use\n", mark(s.Tools))
+	fmt.Fprintf(&sb, "%s Structured Output\n", optionalMark(s.JSONResponse))
 	if s.JSONSchema != nil {
-		fmt.Fprintf(&sb, "  %s %s\n", key("json_schema"), bool_(*s.JSONSchema))
+		fmt.Fprintf(&sb, "%s JSON Schema\n", optionalMark(s.JSONSchema))
+	}
+	fmt.Fprintf(&sb, "%s Reasoning Traces\n", mark(s.Reasoning.Traces))
+	fmt.Fprintf(&sb, "\n")
+	fmt.Fprintf(&sb, "%s\n", label("Supported Efforts"))
+	if len(s.Reasoning.Efforts) == 0 {
+		fmt.Fprintf(&sb, "  none\n")
+	}
+	for _, e := range s.Reasoning.Efforts {
+		fmt.Fprintf(&sb, "  %s %s\n", mark(true), effort(e))
 	}
 	_, err := fmt.Fprint(os.Stdout, sb.String())
 	return err

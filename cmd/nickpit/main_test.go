@@ -14,6 +14,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/modelcheck"
 )
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
@@ -193,6 +194,40 @@ func TestRootCmdHasCheckModel(t *testing.T) {
 	}
 }
 
+func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
+	out := captureStdout(t, func() {
+		err := (&app{}).writeModelCheckOutput(modelcheck.Result{
+			Probes: []modelcheck.ProbeResult{
+				{Name: "configured_no_tools", ReasoningEffort: "high", Reasoned: true, Status: modelcheck.StatusOK},
+				{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: modelcheck.StatusOK},
+				{Name: "configured_json_output", ReasoningEffort: "high", Status: modelcheck.StatusOK},
+				{Name: "configured_json_schema", ReasoningEffort: "high", Status: modelcheck.StatusOK},
+			},
+			PassedEfforts: []string{"high", "medium"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{
+		"✓ Model is compatible",
+		"✓ Tool Use",
+		"✓ Structured Output",
+		"✓ JSON Schema",
+		"✓ Reasoning Traces",
+		"Supported Efforts",
+		"  ✓ high",
+		"  ✓ medium",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "check:") || strings.Contains(out, "json_response:") {
+		t.Fatalf("output should not use YAML style\n%s", out)
+	}
+}
+
 type recordingSource struct {
 	called bool
 	err    error
@@ -305,6 +340,30 @@ func captureStderr(t *testing.T, fn func()) string {
 	}()
 	defer func() {
 		os.Stderr = original
+		_ = r.Close()
+	}()
+
+	fn()
+
+	_ = w.Close()
+	return <-done
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	defer func() {
+		os.Stdout = original
 		_ = r.Close()
 	}()
 

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -85,6 +86,7 @@ type ReasoningSummary struct {
 }
 
 type CheckSummary struct {
+	Compatible   bool             `json:"compatible"`
 	Response     bool             `json:"response"`
 	Reasoning    ReasoningSummary `json:"reasoning"`
 	Tools        bool             `json:"tools"`
@@ -112,21 +114,27 @@ func (r Result) Summary() CheckSummary {
 		ok := p.Status == StatusOK
 		s.JSONSchema = &ok
 	}
+	s.Compatible = s.Response && s.Tools && s.JSONResponse != nil && *s.JSONResponse
 	return s
 }
 
 type Checker struct {
-	client  llm.Client
-	profile config.Profile
-	logger  *logging.Logger
+	client   llm.Client
+	profile  config.Profile
+	logger   *logging.Logger
+	parallel bool
 }
 
 func New(client llm.Client, profile config.Profile) *Checker {
-	return &Checker{client: client, profile: profile}
+	return &Checker{client: client, profile: profile, parallel: true}
 }
 
 func (c *Checker) SetLogger(logger *logging.Logger) {
 	c.logger = logger
+}
+
+func (c *Checker) SetParallel(enabled bool) {
+	c.parallel = enabled
 }
 
 func (c *Checker) logProgress(label, summary string) {
@@ -142,6 +150,48 @@ func (c *Checker) openSection(name string) *logging.ReasoningSection {
 	return c.logger.OpenReasoningSection(name)
 }
 
+func probeLabel(name, effort string) string {
+	if effort == "" {
+		return name
+	}
+	return fmt.Sprintf("%s:%s", name, effort)
+}
+
+func (c *Checker) logProbeStart(probe ProbeResult) {
+	c.logProgress("ModelCheck", fmt.Sprintf("probe=%s, effort=%s, tools=%t", probe.Name, probe.ReasoningEffort, probe.Tools))
+}
+
+func (c *Checker) logProbeResult(probe ProbeResult) {
+	parts := []string{
+		fmt.Sprintf("probe=%s", probe.Name),
+		fmt.Sprintf("effort=%s", probe.ReasoningEffort),
+		fmt.Sprintf("status=%s", probe.Status),
+		fmt.Sprintf("reasoned=%t", probe.Reasoned),
+	}
+	if probe.Error != "" {
+		parts = append(parts, fmt.Sprintf("error=%q", probe.Error))
+	}
+	c.logProgress("ModelCheck", strings.Join(parts, ", "))
+}
+
+func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection, probe ProbeResult) (*llm.ReviewResponse, error) {
+	callNum := sec.IncrCallNum()
+	label := sec.Label()
+	if label == "" {
+		label = probeLabel(probe.Name, probe.ReasoningEffort)
+	}
+	c.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
+	start := time.Now()
+	resp, err := c.client.Review(ctx, req)
+	elapsed := time.Since(start).Truncate(time.Second)
+	status := "ok"
+	if err != nil {
+		status = "error"
+	}
+	c.logProgress("Response", fmt.Sprintf("[%s] #%d status=%s after %s", label, callNum, status, elapsed))
+	return resp, err
+}
+
 func (c *Checker) Run(ctx context.Context) Result {
 	configured := strings.ToLower(strings.TrimSpace(c.profile.ReasoningEffort))
 	if configured == "" {
@@ -153,18 +203,43 @@ func (c *Checker) Run(ctx context.Context) Result {
 		UseJSONSchema:    c.profile.UseJSONSchema,
 	}
 
-	result.Probes = append(result.Probes, c.noToolsProbe(ctx, "configured_no_tools", configured))
-	result.Probes = append(result.Probes, c.toolsProbe(ctx, configured))
-	result.Probes = append(result.Probes, c.jsonOutputProbe(ctx, configured))
-	result.Probes = append(result.Probes, c.jsonSchemaProbe(ctx, configured))
+	probes := []func() ProbeResult{
+		func() ProbeResult { return c.noToolsProbe(ctx, "configured_no_tools", configured) },
+		func() ProbeResult { return c.toolsProbe(ctx, configured) },
+		func() ProbeResult { return c.jsonOutputProbe(ctx, configured) },
+		func() ProbeResult { return c.jsonSchemaProbe(ctx, configured) },
+	}
 	for _, effort := range llm.KnownReasoningEfforts() {
 		if effort == configured {
 			continue
 		}
-		result.Probes = append(result.Probes, c.noToolsProbe(ctx, "fallback_no_tools", effort))
+		effort := effort
+		probes = append(probes, func() ProbeResult { return c.noToolsProbe(ctx, "fallback_no_tools", effort) })
 	}
+	result.Probes = c.runProbes(probes)
 	result.PassedEfforts = passedEfforts(result.Probes)
 	return result
+}
+
+func (c *Checker) runProbes(probes []func() ProbeResult) []ProbeResult {
+	results := make([]ProbeResult, len(probes))
+	if !c.parallel {
+		for i, probe := range probes {
+			results[i] = probe()
+		}
+		return results
+	}
+
+	var wg sync.WaitGroup
+	for i, probe := range probes {
+		wg.Add(1)
+		go func(i int, probe func() ProbeResult) {
+			defer wg.Done()
+			results[i] = probe()
+		}(i, probe)
+	}
+	wg.Wait()
+	return results
 }
 
 func (r Result) ConfiguredNoTools() ProbeResult {
@@ -194,7 +269,9 @@ func (r Result) probeByName(name string) ProbeResult {
 
 func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeResult {
 	probe := ProbeResult{Name: name, ReasoningEffort: effort}
-	sec := c.openSection(name)
+	c.logProbeStart(probe)
+	defer func() { c.logProbeResult(probe) }()
+	sec := c.openSection(probeLabel(name, effort))
 	defer sec.End()
 	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
@@ -204,9 +281,10 @@ func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeRe
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
-	resp, err := c.client.Review(ctx, req)
+	resp, err := c.reviewProbe(ctx, req, sec, probe)
 	if err != nil {
-		return classifyProbeError(probe, err)
+		probe = classifyProbeError(probe, err)
+		return probe
 	}
 	probe.Reasoned = resp.Reasoned
 	if !strings.Contains(resp.RawResponse, finalSentinel) {
@@ -220,7 +298,9 @@ func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeRe
 
 func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 	probe := ProbeResult{Name: "configured_tools", ReasoningEffort: effort, Tools: true}
-	sec := c.openSection("configured_tools")
+	c.logProbeStart(probe)
+	defer func() { c.logProbeResult(probe) }()
+	sec := c.openSection(probeLabel("configured_tools", effort))
 	defer sec.End()
 	rs := checkReasoningSnippet()
 	engine := newMemoryEngine(map[string]string{
@@ -244,9 +324,10 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		if sec != nil {
 			req.ReasoningSink = sec
 		}
-		resp, err := c.client.Review(ctx, req)
+		resp, err := c.reviewProbe(ctx, req, sec, probe)
 		if err != nil {
-			return classifyProbeError(probe, err)
+			probe = classifyProbeError(probe, err)
+			return probe
 		}
 		probe.Reasoned = probe.Reasoned || resp.Reasoned
 		if len(resp.ToolCalls) == 0 {
@@ -260,13 +341,14 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		}
 		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
 		for _, call := range resp.ToolCalls {
-			c.logProgress("Tool", call.Name)
 			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
+				c.logProgress("Tool", fmt.Sprintf("%s status=error, error=%q", call.Name, err.Error()))
 				probe.Status = StatusFailed
 				probe.Error = err.Error()
 				return probe
 			}
+			c.logProgress("Tool", fmt.Sprintf("%s status=ok", call.Name))
 			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: content})
 		}
 	}
@@ -277,7 +359,9 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 
 func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResult {
 	probe := ProbeResult{Name: "configured_json_output", ReasoningEffort: effort}
-	sec := c.openSection("configured_json_output")
+	c.logProbeStart(probe)
+	defer func() { c.logProbeResult(probe) }()
+	sec := c.openSection(probeLabel("configured_json_output", effort))
 	defer sec.End()
 	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
@@ -288,9 +372,10 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
-	resp, err := c.client.Review(ctx, req)
+	resp, err := c.reviewProbe(ctx, req, sec, probe)
 	if err != nil {
-		return classifyProbeError(probe, err)
+		probe = classifyProbeError(probe, err)
+		return probe
 	}
 	probe.Reasoned = resp.Reasoned
 	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
@@ -304,7 +389,9 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 
 func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResult {
 	probe := ProbeResult{Name: "configured_json_schema", ReasoningEffort: effort}
-	sec := c.openSection("configured_json_schema")
+	c.logProbeStart(probe)
+	defer func() { c.logProbeResult(probe) }()
+	sec := c.openSection(probeLabel("configured_json_schema", effort))
 	defer sec.End()
 	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
@@ -316,9 +403,10 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
-	resp, err := c.client.Review(ctx, req)
+	resp, err := c.reviewProbe(ctx, req, sec, probe)
 	if err != nil {
-		return classifyProbeError(probe, err)
+		probe = classifyProbeError(probe, err)
+		return probe
 	}
 	probe.Reasoned = resp.Reasoned
 	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
