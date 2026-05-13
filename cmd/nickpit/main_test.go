@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -231,6 +232,47 @@ func TestRunReviewRunsModelCheckBeforeSourceWork(t *testing.T) {
 	}
 }
 
+func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	stderr := captureStderr(t, func() {
+		err := (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
+			Model:                      "Qwen3.5-122B-A10B-FP8",
+			BaseURL:                    server.URL,
+			APIKey:                     "token",
+			ReasoningEffort:            "high",
+			MaxContextTokens:           120000,
+			MaxDuplicateToolCalls:      5,
+			MaxOutputRetries:           2,
+			MaxOutputRetriesConfigured: true,
+			UseJSONSchema:              true,
+		}, model.ReviewRequest{
+			Mode:                  model.ModeLocal,
+			RepoRoot:              t.TempDir(),
+			MaxOutputRetries:      2,
+			MaxDuplicateToolCalls: 5,
+			UseJSONSchema:         true,
+			PriorityThreshold:     "p3",
+		})
+		if err == nil || !strings.Contains(err.Error(), "model check failed") {
+			t.Fatalf("error = %v, want model check failure", err)
+		}
+	})
+
+	want := "Model: Qwen3.5-122B-A10B-FP8:high [120k context, ≤5 duplicate tool calls, ≤2 output retries, parallel, structured] @ " + server.URL
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", want, stderr)
+	}
+}
+
 func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
 	wantErr := errors.New("source called")
 	source := &recordingSource{err: wantErr}
@@ -246,6 +288,30 @@ func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
 	if !source.called {
 		t.Fatal("source should run when model check is skipped")
 	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	defer func() {
+		os.Stderr = original
+		_ = r.Close()
+	}()
+
+	fn()
+
+	_ = w.Close()
+	return <-done
 }
 
 func TestMissingAPIKeyHintUsesDefaultProfileEnv(t *testing.T) {

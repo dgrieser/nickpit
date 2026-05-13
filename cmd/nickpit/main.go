@@ -608,6 +608,25 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
 	}
 
+	req.DisableParallelToolCalls = a.disableParallelToolCalls
+	req.ProfileName = profileName
+	if req.MaxContextTokens == 0 {
+		req.MaxContextTokens = profile.MaxContextTokens
+	}
+	if req.MaxToolCalls == 0 {
+		req.MaxToolCalls = profile.MaxToolCalls
+	}
+	if req.MaxDuplicateToolCalls == 0 {
+		req.MaxDuplicateToolCalls = profile.MaxDuplicateToolCalls
+	}
+	if req.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
+		req.MaxOutputRetries = profile.MaxOutputRetries
+	}
+	if req.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
+		req.MaxReasoningSeconds = profile.MaxReasoningSeconds
+	}
+	a.logProgress("Model", modelSummary(profile, req))
+
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
 	if !a.skipModelCheck {
@@ -631,24 +650,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		defer cleanup()
 	}
 	req.RepoRoot = repoRoot
-	req.DisableParallelToolCalls = a.disableParallelToolCalls
-	req.ProfileName = profileName
-	if req.MaxContextTokens == 0 {
-		req.MaxContextTokens = profile.MaxContextTokens
-	}
-	if req.MaxToolCalls == 0 {
-		req.MaxToolCalls = profile.MaxToolCalls
-	}
-	if req.MaxDuplicateToolCalls == 0 {
-		req.MaxDuplicateToolCalls = profile.MaxDuplicateToolCalls
-	}
-	if req.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
-		req.MaxOutputRetries = profile.MaxOutputRetries
-	}
-	if req.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
-		req.MaxReasoningSeconds = profile.MaxReasoningSeconds
-	}
-	a.logProgress("Model", modelSummary(profile, req))
 
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
