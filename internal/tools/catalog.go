@@ -1,21 +1,22 @@
-package review
+package tools
 
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 )
 
-type toolCatalogEntry struct {
+type catalogEntry struct {
 	Name               string
 	APIDescription     string
 	ListingDescription string
-	Parameters         []toolCatalogParameter
+	Parameters         []CatalogParameter
 }
 
-type toolCatalogParameter struct {
+type CatalogParameter struct {
 	Name        string
 	Type        string
 	Description string
@@ -24,40 +25,48 @@ type toolCatalogParameter struct {
 	Minimum     *int
 }
 
-type toolErrorDefinition struct {
+type ErrorData struct {
+	Code     string
+	ToolName string
+	Argument string
+	Schema   string
+	Message  string
+}
+
+type errorDefinition struct {
 	Code    string
 	Message string
 }
 
-var toolCatalogDefinition = []toolCatalogEntry{
+var catalogDefinition = []catalogEntry{
 	{
 		Name:               "inspect_file",
 		APIDescription:     "Retrieve content of repo-relative file",
 		ListingDescription: "with a repo-relative `path` to retrieve the contents of a file.",
-		Parameters: []toolCatalogParameter{
+		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file path", Example: `"<repo-relative path>"`, Required: true},
-			{Name: "line_start", Type: "integer", Description: "Optional starting line number for partial file retrieval", Example: "int", Minimum: toolIntPtr(1)},
-			{Name: "line_end", Type: "integer", Description: "Optional ending line number for partial file retrieval", Example: "int", Minimum: toolIntPtr(1)},
+			{Name: "line_start", Type: "integer", Description: "Optional starting line number for partial file retrieval", Example: "int", Minimum: intPtr(1)},
+			{Name: "line_end", Type: "integer", Description: "Optional ending line number for partial file retrieval", Example: "int", Minimum: intPtr(1)},
 		},
 	},
 	{
 		Name:               "list_files",
 		APIDescription:     "List files of repo-relative folder",
 		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively).",
-		Parameters: []toolCatalogParameter{
+		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative folder path; omit or pass an empty string to list the repo root", Example: `"<repo-relative folder>"`},
-			{Name: "depth", Type: "integer", Description: "Optional traversal depth for nested folders; defaults to 1", Example: "int", Minimum: toolIntPtr(1)},
+			{Name: "depth", Type: "integer", Description: "Optional traversal depth for nested folders; defaults to 1", Example: "int", Minimum: intPtr(1)},
 		},
 	},
 	{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder",
 		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches.",
-		Parameters: []toolCatalogParameter{
+		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
-			{Name: "context_lines", Type: "integer", Description: "Optional number of surrounding lines to include before and after each match; defaults to 5", Example: "int", Minimum: toolIntPtr(0)},
-			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: toolIntPtr(0)},
+			{Name: "context_lines", Type: "integer", Description: "Optional number of surrounding lines to include before and after each match; defaults to 5", Example: "int", Minimum: intPtr(0)},
+			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: intPtr(0)},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive match mode; defaults to false", Example: "bool"},
 		},
 	},
@@ -65,17 +74,17 @@ var toolCatalogDefinition = []toolCatalogEntry{
 		Name:               "find_callers",
 		APIDescription:     "Resolve function by symbol name and return caller hierarchy and method bodies",
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function across Go, Python, and Node.js/TypeScript code.",
-		Parameters:         callHierarchyToolCatalogParameters(),
+		Parameters:         callHierarchyParameters(),
 	},
 	{
 		Name:               "find_callees",
 		APIDescription:     "Resolve function by symbol name and return its callee hierarchy and method bodies",
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls across Go, Python, and Node.js/TypeScript code.",
-		Parameters:         callHierarchyToolCatalogParameters(),
+		Parameters:         callHierarchyParameters(),
 	},
 }
 
-var toolErrorDefinitions = map[string]toolErrorDefinition{
+var errorDefinitions = map[string]errorDefinition{
 	"retrieval_unavailable":  {Code: "retrieval_unavailable", Message: "retrieval is unavailable for this review"},
 	"unsupported_tool":       {Code: "unsupported_tool", Message: "unsupported tool %q"},
 	"missing_argument":       {Code: "missing_argument", Message: "missing required argument: %s; expected %s"},
@@ -84,40 +93,48 @@ var toolErrorDefinitions = map[string]toolErrorDefinition{
 	"encoding_failed":        {Code: "encoding_failed", Message: "failed to encode tool result"},
 }
 
-func toolIntPtr(value int) *int {
+func intPtr(value int) *int {
 	return &value
 }
 
-func callHierarchyToolCatalogParameters() []toolCatalogParameter {
-	return []toolCatalogParameter{
+func callHierarchyParameters() []CatalogParameter {
+	return []CatalogParameter{
 		{Name: "symbol", Type: "string", Description: "Function name to inspect", Example: `"<function name>"`, Required: true},
 		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path containing the function; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
-		{Name: "depth", Type: "integer", Description: "Optional traversal depth for the call hierarchy; defaults to 10", Example: "int", Minimum: toolIntPtr(1)},
+		{Name: "depth", Type: "integer", Description: "Optional traversal depth for the call hierarchy; defaults to 10", Example: "int", Minimum: intPtr(1)},
 	}
 }
 
-func reviewerToolDefinitions() []llm.ToolDefinition {
-	definitions := make([]llm.ToolDefinition, 0, len(toolCatalogDefinition))
-	for _, entry := range toolCatalogDefinition {
+func Definitions(names ...string) ([]llm.ToolDefinition, error) {
+	entries, err := selectEntries(names...)
+	if err != nil {
+		return nil, err
+	}
+	definitions := make([]llm.ToolDefinition, 0, len(entries))
+	for _, entry := range entries {
 		definitions = append(definitions, llm.ToolDefinition{
 			Name:        entry.Name,
 			Description: entry.APIDescription,
 			Parameters:  entry.parametersJSON(),
 		})
 	}
-	return definitions
+	return definitions, nil
 }
 
-func toolInstructionsListing() string {
+func InstructionsListing(names ...string) (string, error) {
+	entries, err := selectEntries(names...)
+	if err != nil {
+		return "", err
+	}
 	var builder strings.Builder
-	for _, entry := range toolCatalogDefinition {
+	for _, entry := range entries {
 		fmt.Fprintf(&builder, "- `%s` tool %s\n", entry.Name, entry.ListingDescription)
 	}
-	return strings.TrimRight(builder.String(), "\n")
+	return strings.TrimRight(builder.String(), "\n"), nil
 }
 
-func toolArgumentSchema(name string) string {
-	entry, ok := lookupToolCatalogEntry(name)
+func ArgumentSchema(name string) string {
+	entry, ok := lookupEntry(name)
 	if !ok {
 		return ""
 	}
@@ -132,8 +149,8 @@ func toolArgumentSchema(name string) string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-func toolErrorMessage(data toolErrorData) string {
-	definition, ok := toolErrorDefinitions[data.Code]
+func ErrorMessage(data ErrorData) string {
+	definition, ok := errorDefinitions[data.Code]
 	if !ok {
 		return data.Message
 	}
@@ -147,24 +164,50 @@ func toolErrorMessage(data toolErrorData) string {
 	}
 }
 
-func lookupToolCatalogEntry(name string) (toolCatalogEntry, bool) {
-	for _, entry := range toolCatalogDefinition {
+func selectEntries(names ...string) ([]catalogEntry, error) {
+	if len(names) == 0 {
+		return append([]catalogEntry(nil), catalogDefinition...), nil
+	}
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[name] = struct{}{}
+	}
+	selected := make([]catalogEntry, 0, len(names))
+	for _, entry := range catalogDefinition {
+		if _, ok := wanted[entry.Name]; ok {
+			selected = append(selected, entry)
+			delete(wanted, entry.Name)
+		}
+	}
+	if len(wanted) > 0 {
+		missing := make([]string, 0, len(wanted))
+		for name := range wanted {
+			missing = append(missing, name)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("unsupported tools: %s", strings.Join(missing, ", "))
+	}
+	return selected, nil
+}
+
+func lookupEntry(name string) (catalogEntry, bool) {
+	for _, entry := range catalogDefinition {
 		if entry.Name == name {
 			return entry, true
 		}
 	}
-	return toolCatalogEntry{}, false
+	return catalogEntry{}, false
 }
 
-func (entry toolCatalogEntry) parametersJSON() json.RawMessage {
+func (entry catalogEntry) parametersJSON() json.RawMessage {
 	data, err := json.Marshal(entry.parametersSchema())
 	if err != nil {
-		panic(fmt.Sprintf("review: marshaling tool schema for %s: %v", entry.Name, err))
+		panic(fmt.Sprintf("tools: marshaling tool schema for %s: %v", entry.Name, err))
 	}
 	return data
 }
 
-func (entry toolCatalogEntry) parametersSchema() map[string]any {
+func (entry catalogEntry) parametersSchema() map[string]any {
 	properties := make(map[string]any, len(entry.Parameters))
 	required := make([]string, 0)
 	for _, parameter := range entry.Parameters {

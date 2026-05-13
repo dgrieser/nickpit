@@ -10,6 +10,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 type scriptedClient struct {
@@ -115,7 +116,7 @@ func TestCheckerRequiresToolSequence(t *testing.T) {
 }
 
 func TestToolDefinitionsCanSelectListFilesOnly(t *testing.T) {
-	definitions, err := toolDefinitions("list_files")
+	definitions, err := toolcatalog.Definitions("list_files")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestToolDefinitionsCanSelectListFilesOnly(t *testing.T) {
 }
 
 func TestToolDefinitionsRejectUnknownTool(t *testing.T) {
-	if _, err := toolDefinitions("missing_tool"); err == nil {
+	if _, err := toolcatalog.Definitions("missing_tool"); err == nil {
 		t.Fatal("toolDefinitions should reject unknown tools")
 	}
 }

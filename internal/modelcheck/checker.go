@@ -13,6 +13,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/prompts"
 )
 
@@ -242,7 +243,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		{Role: "user", Content: mustRenderCheckPrompt("check_tools_user.tmpl", struct{ Sentinel string }{finalSentinel})},
 	}
 	listed := false
-	tools, err := toolDefinitions("list_files")
+	tools, err := toolcatalog.Definitions("list_files")
 	if err != nil {
 		probe.Status = StatusFailed
 		probe.Error = err.Error()
@@ -389,44 +390,6 @@ func passedEfforts(probes []ProbeResult) []string {
 	sort.Strings(extra)
 	efforts = append(extra, efforts...)
 	return efforts
-}
-
-func toolDefinitions(names ...string) ([]llm.ToolDefinition, error) {
-	all := []llm.ToolDefinition{
-		{
-			Name:        "list_files",
-			Description: "List files in the in-memory fixture repository",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"depth":{"type":"integer","minimum":1}},"additionalProperties":false}`),
-		},
-		{
-			Name:        "inspect_file",
-			Description: "Read one file from the in-memory fixture repository",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
-		},
-	}
-	if len(names) == 0 {
-		return all, nil
-	}
-	wanted := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		wanted[name] = struct{}{}
-	}
-	selected := make([]llm.ToolDefinition, 0, len(names))
-	for _, definition := range all {
-		if _, ok := wanted[definition.Name]; ok {
-			selected = append(selected, definition)
-			delete(wanted, definition.Name)
-		}
-	}
-	if len(wanted) > 0 {
-		missing := make([]string, 0, len(wanted))
-		for name := range wanted {
-			missing = append(missing, name)
-		}
-		sort.Strings(missing)
-		return nil, fmt.Errorf("unsupported modelcheck tools: %s", strings.Join(missing, ", "))
-	}
-	return selected, nil
 }
 
 func toolSet(definitions []llm.ToolDefinition) map[string]struct{} {

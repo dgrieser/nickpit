@@ -2507,7 +2507,6 @@ func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
 	}
 }
 
-
 func pathOrDefault(path, fallback string) string {
 	if path == "" {
 		return fallback

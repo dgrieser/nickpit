@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 )
@@ -670,6 +671,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 type toolInstructionsConfig struct {
 	kind                     string
 	parallelToolCallGuidance bool
+	toolNames                []string
 }
 
 func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, error) {
@@ -684,12 +686,28 @@ func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, 
 	}{
 		Kind:                     config.kind,
 		ParallelToolCallGuidance: config.parallelToolCallGuidance,
-		ToolListing:              toolInstructionsListing(),
+		ToolListing:              toolInstructionsListing(config.toolNames...),
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering tool instructions prompt: %w", err)
 	}
 	return rendered, nil
+}
+
+func reviewerToolDefinitions(names ...string) []llm.ToolDefinition {
+	definitions, err := toolcatalog.Definitions(names...)
+	if err != nil {
+		panic(fmt.Sprintf("review: selecting tool definitions: %v", err))
+	}
+	return definitions
+}
+
+func toolInstructionsListing(names ...string) string {
+	listing, err := toolcatalog.InstructionsListing(names...)
+	if err != nil {
+		panic(fmt.Sprintf("review: selecting tool instructions: %v", err))
+	}
+	return listing
 }
 
 func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([]llm.Message, error) {
@@ -1439,12 +1457,14 @@ func mustToolResultJSON(value any) string {
 	return string(data)
 }
 
-type toolErrorData struct {
-	Code     string
-	ToolName string
-	Argument string
-	Schema   string
-	Message  string
+type toolErrorData = toolcatalog.ErrorData
+
+func toolErrorMessage(data toolErrorData) string {
+	return toolcatalog.ErrorMessage(data)
+}
+
+func toolArgumentSchema(name string) string {
+	return toolcatalog.ArgumentSchema(name)
 }
 
 func missingToolArgumentMessage(toolName, argument string) string {
