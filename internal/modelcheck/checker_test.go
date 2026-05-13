@@ -45,6 +45,7 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
@@ -138,6 +139,7 @@ func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: false}).Run(context.Background())
@@ -147,8 +149,8 @@ func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
 	if result.ConfiguredJSONOutput().Status != StatusOK {
 		t.Fatalf("json-output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
 	}
-	if result.ConfiguredJSONSchema().Error != "probe did not run" {
-		t.Fatalf("json-schema probe should not have run, got error=%s", result.ConfiguredJSONSchema().Error)
+	if result.ConfiguredJSONSchema().Status != StatusOK {
+		t.Fatalf("json-schema status = %s error=%s", result.ConfiguredJSONSchema().Status, result.ConfiguredJSONSchema().Error)
 	}
 }
 
@@ -193,6 +195,7 @@ func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
@@ -202,8 +205,8 @@ func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 	if result.ConfiguredJSONSchema().Status != StatusOK {
 		t.Fatalf("json-schema status = %s error=%s", result.ConfiguredJSONSchema().Status, result.ConfiguredJSONSchema().Error)
 	}
-	if result.ConfiguredJSONOutput().Error != "probe did not run" {
-		t.Fatalf("json-output probe should not have run, got error=%s", result.ConfiguredJSONOutput().Error)
+	if result.ConfiguredJSONOutput().Status != StatusOK {
+		t.Fatalf("json-output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
 	}
 }
 
@@ -214,11 +217,12 @@ func TestCheckerJSONSchemaProbeSetsSchemOnRequest(t *testing.T) {
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
-	// json-schema probe is request index 3 (after no-tools, 2 tools rounds, json-schema).
-	schemaReq := client.reqs[3]
+	// json-schema probe is request index 4 (after no-tools, 2 tools rounds, json-output, json-schema).
+	schemaReq := client.reqs[4]
 	if len(schemaReq.Schema) == 0 {
 		t.Fatal("json-schema probe request must have Schema set")
 	}

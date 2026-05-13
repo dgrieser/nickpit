@@ -576,7 +576,6 @@ func (a *app) newCheckCmd() *cobra.Command {
 			client.SetLogger(logger)
 			checker := modelcheck.New(client, profile)
 			checker.SetLogger(logger)
-			checker.SetRunBothJSON(true)
 			result := checker.Run(cmd.Context())
 			if a.jsonOutput {
 				if err := writeJSON(struct {

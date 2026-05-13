@@ -116,10 +116,9 @@ func (r Result) Summary() CheckSummary {
 }
 
 type Checker struct {
-	client      llm.Client
-	profile     config.Profile
-	logger      *logging.Logger
-	runBothJSON bool
+	client  llm.Client
+	profile config.Profile
+	logger  *logging.Logger
 }
 
 func New(client llm.Client, profile config.Profile) *Checker {
@@ -128,10 +127,6 @@ func New(client llm.Client, profile config.Profile) *Checker {
 
 func (c *Checker) SetLogger(logger *logging.Logger) {
 	c.logger = logger
-}
-
-func (c *Checker) SetRunBothJSON(v bool) {
-	c.runBothJSON = v
 }
 
 func (c *Checker) logProgress(label, summary string) {
@@ -160,14 +155,8 @@ func (c *Checker) Run(ctx context.Context) Result {
 
 	result.Probes = append(result.Probes, c.noToolsProbe(ctx, "configured_no_tools", configured))
 	result.Probes = append(result.Probes, c.toolsProbe(ctx, configured))
-	if c.runBothJSON {
-		result.Probes = append(result.Probes, c.jsonOutputProbe(ctx, configured))
-		result.Probes = append(result.Probes, c.jsonSchemaProbe(ctx, configured))
-	} else if c.profile.UseJSONSchema {
-		result.Probes = append(result.Probes, c.jsonSchemaProbe(ctx, configured))
-	} else {
-		result.Probes = append(result.Probes, c.jsonOutputProbe(ctx, configured))
-	}
+	result.Probes = append(result.Probes, c.jsonOutputProbe(ctx, configured))
+	result.Probes = append(result.Probes, c.jsonSchemaProbe(ctx, configured))
 	for _, effort := range llm.KnownReasoningEfforts() {
 		if effort == configured {
 			continue
@@ -320,7 +309,7 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
 		{Role: "system", Content: mustRenderCheckPrompt("check_json_schema_system.tmpl", struct{ ReasoningSnippet string }{rs})},
-		{Role: "user", Content: mustRenderCheckPrompt("check_json_schema_user.tmpl", nil)},
+		{Role: "user", Content: mustRenderCheckPrompt("check_json_schema_user.tmpl", struct{ OutputSchemaSnippet string }{jsonProbeExample})},
 	}, nil)
 	req.Schema = jsonProbeSchema
 	req.SchemaKind = llm.SchemaKindJSON
