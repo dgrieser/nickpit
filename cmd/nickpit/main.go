@@ -904,22 +904,19 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 }
 
 func validatePreReviewModelCheck(result modelcheck.Result) error {
-	if probe := result.ConfiguredNoTools(); probe.Status != modelcheck.StatusOK {
-		return fmt.Errorf("model check failed for configured reasoning effort without tools: status=%s error=%s", probe.Status, probe.Error)
-	}
-	if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
-		return fmt.Errorf("model check failed for configured reasoning effort with tools: status=%s error=%s", probe.Status, probe.Error)
-	}
 	if len(result.PassedEfforts) == 0 {
 		return fmt.Errorf("model check failed: no reasoning efforts passed")
 	}
+	if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
+		return fmt.Errorf("model check failed for tool use at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+	}
 	if result.UseJSONSchema {
 		if probe := result.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
-			return fmt.Errorf("model check failed for JSON schema output: status=%s error=%s", probe.Status, probe.Error)
+			return fmt.Errorf("model check failed for JSON schema output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
 		}
 	} else {
 		if probe := result.ConfiguredJSONOutput(); probe.Status != modelcheck.StatusOK {
-			return fmt.Errorf("model check failed for JSON text output: status=%s error=%s", probe.Status, probe.Error)
+			return fmt.Errorf("model check failed for JSON text output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
 		}
 	}
 	return nil

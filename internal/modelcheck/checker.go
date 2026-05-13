@@ -203,21 +203,29 @@ func (c *Checker) Run(ctx context.Context) Result {
 		UseJSONSchema:    c.profile.UseJSONSchema,
 	}
 
-	probes := []func() ProbeResult{
+	effortProbes := []func() ProbeResult{
 		func() ProbeResult { return c.noToolsProbe(ctx, "configured_no_tools", configured) },
-		func() ProbeResult { return c.toolsProbe(ctx, configured) },
-		func() ProbeResult { return c.jsonOutputProbe(ctx, configured) },
-		func() ProbeResult { return c.jsonSchemaProbe(ctx, configured) },
 	}
 	for _, effort := range llm.KnownReasoningEfforts() {
 		if effort == configured {
 			continue
 		}
 		effort := effort
-		probes = append(probes, func() ProbeResult { return c.noToolsProbe(ctx, "fallback_no_tools", effort) })
+		effortProbes = append(effortProbes, func() ProbeResult { return c.noToolsProbe(ctx, "fallback_no_tools", effort) })
 	}
-	result.Probes = c.runProbes(probes)
+	result.Probes = c.runProbes(effortProbes)
 	result.PassedEfforts = passedEfforts(result.Probes)
+
+	simpleEffort := result.simpleProbeEffort()
+	if simpleEffort == "" {
+		return result
+	}
+	simpleProbes := []func() ProbeResult{
+		func() ProbeResult { return c.toolsProbe(ctx, simpleEffort) },
+		func() ProbeResult { return c.jsonOutputProbe(ctx, simpleEffort) },
+		func() ProbeResult { return c.jsonSchemaProbe(ctx, simpleEffort) },
+	}
+	result.Probes = append(result.Probes, c.runProbes(simpleProbes)...)
 	return result
 }
 
@@ -265,6 +273,16 @@ func (r Result) probeByName(name string) ProbeResult {
 		}
 	}
 	return ProbeResult{Name: name, Status: StatusFailed, Error: "probe did not run"}
+}
+
+func (r Result) simpleProbeEffort() string {
+	if probe := r.ConfiguredNoTools(); probe.Status == StatusOK {
+		return probe.ReasoningEffort
+	}
+	if len(r.PassedEfforts) == 0 {
+		return ""
+	}
+	return r.PassedEfforts[0]
 }
 
 func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeResult {

@@ -592,12 +592,19 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			}
 			break
 		}
-		if attemptIndex > 0 {
-			if !isReasoningEffortRejection(err, effort) {
-				return nil, err
+		if isReasoningEffortRejection(err, effort) {
+			if attemptIndex+1 < len(efforts) {
+				c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				continue
 			}
-			c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
-			continue
+			if attemptIndex > 0 {
+				c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				continue
+			}
+			return nil, err
+		}
+		if attemptIndex > 0 {
+			return nil, err
 		}
 		return nil, err
 	}

@@ -31,6 +31,14 @@ type scriptedResponse struct {
 
 const validJSONProbeResponse = `{"check":"json_capability","status":"ok","confidence_score":0.9}`
 
+func successfulEffortDiscoveryResponses(after ...scriptedResponse) []scriptedResponse {
+	responses := make([]scriptedResponse, 0, len(llm.KnownReasoningEfforts())+len(after))
+	for range llm.KnownReasoningEfforts() {
+		responses = append(responses, scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}})
+	}
+	return append(responses, after...)
+}
+
 func (s *scriptedClient) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -98,13 +106,12 @@ func hasToolMessage(messages []llm.Message) bool {
 
 func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 	client := &scriptedClient{
-		responses: []scriptedResponse{
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-		},
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
 	}
 	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 	if result.ConfiguredNoTools().Status != StatusOK {
@@ -119,11 +126,18 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 	if len(client.reqs) < 3 {
 		t.Fatalf("requests = %d, want at least 3", len(client.reqs))
 	}
-	if len(client.reqs[1].Tools) != 1 || client.reqs[1].Tools[0].Name != "list_files" {
-		t.Fatalf("tool probe tools = %#v, want only list_files", client.reqs[1].Tools)
+	var firstToolReq *llm.ReviewRequest
+	for _, req := range client.reqs {
+		if len(req.Tools) > 0 {
+			firstToolReq = req
+			break
+		}
+	}
+	if firstToolReq == nil || len(firstToolReq.Tools) != 1 || firstToolReq.Tools[0].Name != "list_files" {
+		t.Fatalf("tool probe tools = %#v, want only list_files", firstToolReq)
 	}
 	toolResponseCount := 0
-	for _, msg := range client.reqs[2].Messages {
+	for _, msg := range client.reqs[len(llm.KnownReasoningEfforts())+1].Messages {
 		if msg.Role == "tool" {
 			toolResponseCount++
 		}
@@ -179,6 +193,38 @@ func TestCheckerRunsProbesInParallelByDefault(t *testing.T) {
 	}
 }
 
+func TestCheckerUsesDiscoveredEffortForSimpleProbes(t *testing.T) {
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{err: errors.New("configured effort unavailable")},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{err: errors.New("effort unavailable")},
+			{err: errors.New("effort unavailable")},
+			{err: errors.New("effort unavailable")},
+			{err: errors.New("effort unavailable")},
+			{err: errors.New("effort unavailable")},
+			{err: errors.New("effort unavailable")},
+			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		},
+	}
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	if result.ConfiguredNoTools().Status != StatusFailed {
+		t.Fatalf("configured no-tools status = %s, want failed", result.ConfiguredNoTools().Status)
+	}
+	if result.ConfiguredTools().ReasoningEffort != "max" {
+		t.Fatalf("tools effort = %q, want max", result.ConfiguredTools().ReasoningEffort)
+	}
+	if result.ConfiguredTools().Status != StatusOK {
+		t.Fatalf("tools status = %s error=%s", result.ConfiguredTools().Status, result.ConfiguredTools().Error)
+	}
+	if got, want := strings.Join(result.PassedEfforts, ","), "max"; got != want {
+		t.Fatalf("passed efforts = %s, want %s", got, want)
+	}
+}
+
 func TestCheckerCanDisableParallelProbes(t *testing.T) {
 	client := &concurrentClient{}
 	checker := New(client, config.Profile{Model: "model", ReasoningEffort: "high"})
@@ -191,14 +237,14 @@ func TestCheckerCanDisableParallelProbes(t *testing.T) {
 
 func TestCheckerShowProgressLogsProbeRequestsResponsesAndResults(t *testing.T) {
 	client := &scriptedClient{
-		responses: []scriptedResponse{
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel, Reasoned: true}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-		},
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
 	}
+	client.responses[0].resp.Reasoned = true
 	var stderr bytes.Buffer
 	logger := logging.New(&stderr, false, false)
 	logger.SetShowProgress(true)
@@ -254,10 +300,9 @@ func TestCheckerClassifiesUnsupportedReasoningEffort(t *testing.T) {
 
 func TestCheckerRequiresToolSequence(t *testing.T) {
 	client := &scriptedClient{
-		responses: []scriptedResponse{
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_file", Name: "inspect_file", Arguments: `{"path":"README.md"}`}}}},
-		},
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_file", Name: "inspect_file", Arguments: `{"path":"README.md"}`}}}},
+		),
 	}
 	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 	if result.ConfiguredTools().Status != StatusFailed {
@@ -283,13 +328,12 @@ func TestToolDefinitionsRejectUnknownTool(t *testing.T) {
 
 func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
 	client := &scriptedClient{
-		responses: []scriptedResponse{
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-		},
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
 	}
 	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: false})
 	if result.UseJSONSchema {
@@ -305,12 +349,11 @@ func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
 
 func TestCheckerJSONOutputProbeFailsOnUnparseable(t *testing.T) {
 	client := &scriptedClient{
-		responses: []scriptedResponse{
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: "not json at all"}},
-		},
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: "not json at all"}},
+		),
 	}
 	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 	if result.ConfiguredJSONOutput().Status != StatusFailed {
@@ -322,12 +365,11 @@ func TestCheckerJSONOutputProbeFailsOnWrongShape(t *testing.T) {
 	for _, raw := range []string{`{}`, `[]`, `{"check":"json_capability","status":"ok","confidence_score":0.9,"extra":true}`} {
 		t.Run(raw, func(t *testing.T) {
 			client := &scriptedClient{
-				responses: []scriptedResponse{
-					{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-					{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-					{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-					{resp: &llm.ReviewResponse{RawResponse: raw}},
-				},
+				responses: successfulEffortDiscoveryResponses(
+					scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+					scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+					scriptedResponse{resp: &llm.ReviewResponse{RawResponse: raw}},
+				),
 			}
 			result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
 			if result.ConfiguredJSONOutput().Status != StatusFailed {
@@ -339,13 +381,12 @@ func TestCheckerJSONOutputProbeFailsOnWrongShape(t *testing.T) {
 
 func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 	client := &scriptedClient{
-		responses: []scriptedResponse{
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-		},
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
 	}
 	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true})
 	if !result.UseJSONSchema {
@@ -361,17 +402,15 @@ func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 
 func TestCheckerJSONSchemaProbeSetsSchemOnRequest(t *testing.T) {
 	client := &scriptedClient{
-		responses: []scriptedResponse{
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
-		},
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
 	}
 	runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true})
-	// json-schema probe is request index 4 (after no-tools, 2 tools rounds, json-output, json-schema).
-	schemaReq := client.reqs[4]
+	schemaReq := client.reqs[len(client.reqs)-1]
 	if len(schemaReq.Schema) == 0 {
 		t.Fatal("json-schema probe request must have Schema set")
 	}
