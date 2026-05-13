@@ -133,6 +133,22 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 	}
 }
 
+func TestCheckerReasoningSnippetIncludesLoopDetectedGuidance(t *testing.T) {
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+		},
+	}
+	runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	if len(client.reqs) == 0 || len(client.reqs[0].Messages) == 0 {
+		t.Fatal("expected captured model check request")
+	}
+	systemPrompt := client.reqs[0].Messages[0].Content
+	if !strings.Contains(systemPrompt, "AVOID overthinking or repeating yourself") {
+		t.Fatalf("system prompt missing loop-detected reasoning guidance:\n%s", systemPrompt)
+	}
+}
+
 func TestResultSummaryIncludesCompatibility(t *testing.T) {
 	result := Result{
 		Probes: []ProbeResult{

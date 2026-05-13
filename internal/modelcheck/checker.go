@@ -33,7 +33,7 @@ func mustRenderCheckPrompt(name string, data any) string {
 func checkReasoningSnippet() string {
 	return mustRenderCheckPrompt("helper_reasoning_snippet.tmpl", struct {
 		LoopDetected bool
-	}{})
+	}{LoopDetected: true})
 }
 
 type Status string
