@@ -83,6 +83,7 @@ const (
 	SchemaKindReview   SchemaKind = "review"
 	SchemaKindVerify   SchemaKind = "verify"
 	SchemaKindFinalize SchemaKind = "finalize"
+	SchemaKindJSON     SchemaKind = "json"
 	SchemaKindText     SchemaKind = "text"
 )
 
@@ -824,7 +825,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		payload.ResponseFormat = &openai.ChatCompletionResponseFormat{
 			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
 			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
-				Name:   "review_response",
+				Name:   responseFormatName(req.SchemaKind),
 				Schema: json.RawMessage(req.Schema),
 				Strict: true,
 			},
@@ -902,6 +903,13 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		resp.TokensUsed.TotalTokens,
 	)
 	return resp, nil
+}
+
+func responseFormatName(kind SchemaKind) string {
+	if kind == SchemaKindJSON {
+		return "json_response"
+	}
+	return "review_response"
 }
 
 func buildMessages(req *ReviewRequest) []openai.ChatCompletionMessage {
@@ -1737,6 +1745,16 @@ func canonicalToolCallKey(call ToolCall) string {
 
 func parseReviewResponse(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, error) {
 	if kind == SchemaKindText {
+		return &ReviewResponse{}, nil
+	}
+	if kind == SchemaKindJSON {
+		var parsed any
+		if err := LenientUnmarshal(content, &parsed); err != nil {
+			return nil, &InvalidResponseError{
+				RawContent: content,
+				Reason:     fmt.Sprintf("could not parse JSON: %v", err),
+			}
+		}
 		return &ReviewResponse{}, nil
 	}
 	if kind == SchemaKindVerify {

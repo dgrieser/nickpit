@@ -22,6 +22,8 @@ type scriptedResponse struct {
 	err  error
 }
 
+const validJSONProbeResponse = `{"check":"json_capability","status":"ok","confidence_score":0.9}`
+
 func (s *scriptedClient) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
 	cloned := *req
 	cloned.Messages = append([]llm.Message(nil), req.Messages...)
@@ -40,12 +42,8 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 		responses: []scriptedResponse{
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
-				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
-				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
-			}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
@@ -58,17 +56,20 @@ func TestCheckerRunsToolProbeWithInMemoryFixture(t *testing.T) {
 	if result.ConfiguredJSONOutput().Status != StatusOK {
 		t.Fatalf("json-output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
 	}
-	if len(client.reqs) < 4 {
-		t.Fatalf("requests = %d, want at least 4", len(client.reqs))
+	if len(client.reqs) < 3 {
+		t.Fatalf("requests = %d, want at least 3", len(client.reqs))
+	}
+	if len(client.reqs[1].Tools) != 1 || client.reqs[1].Tools[0].Name != "list_files" {
+		t.Fatalf("tool probe tools = %#v, want only list_files", client.reqs[1].Tools)
 	}
 	toolResponseCount := 0
-	for _, msg := range client.reqs[3].Messages {
+	for _, msg := range client.reqs[2].Messages {
 		if msg.Role == "tool" {
 			toolResponseCount++
 		}
 	}
-	if toolResponseCount != 3 {
-		t.Fatalf("tool responses before final request = %d, want 3", toolResponseCount)
+	if toolResponseCount != 1 {
+		t.Fatalf("tool responses before final request = %d, want 1", toolResponseCount)
 	}
 }
 
@@ -113,18 +114,29 @@ func TestCheckerRequiresToolSequence(t *testing.T) {
 	}
 }
 
+func TestToolDefinitionsCanSelectListFilesOnly(t *testing.T) {
+	definitions, err := toolDefinitions("list_files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(definitions) != 1 || definitions[0].Name != "list_files" {
+		t.Fatalf("definitions = %#v, want only list_files", definitions)
+	}
+}
+
+func TestToolDefinitionsRejectUnknownTool(t *testing.T) {
+	if _, err := toolDefinitions("missing_tool"); err == nil {
+		t.Fatal("toolDefinitions should reject unknown tools")
+	}
+}
+
 func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
-	validJSON := `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`
 	client := &scriptedClient{
 		responses: []scriptedResponse{
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
-				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
-				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
-			}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSON}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: false}).Run(context.Background())
@@ -144,10 +156,6 @@ func TestCheckerJSONOutputProbeFailsOnUnparseable(t *testing.T) {
 		responses: []scriptedResponse{
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
-				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
-				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
-			}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{RawResponse: "not json at all"}},
 		},
@@ -158,18 +166,32 @@ func TestCheckerJSONOutputProbeFailsOnUnparseable(t *testing.T) {
 	}
 }
 
+func TestCheckerJSONOutputProbeFailsOnWrongShape(t *testing.T) {
+	for _, raw := range []string{`{}`, `[]`, `{"check":"json_capability","status":"ok","confidence_score":0.9,"extra":true}`} {
+		t.Run(raw, func(t *testing.T) {
+			client := &scriptedClient{
+				responses: []scriptedResponse{
+					{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+					{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+					{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+					{resp: &llm.ReviewResponse{RawResponse: raw}},
+				},
+			}
+			result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())
+			if result.ConfiguredJSONOutput().Status != StatusFailed {
+				t.Fatalf("json-output status = %s, want failed", result.ConfiguredJSONOutput().Status)
+			}
+		})
+	}
+}
+
 func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
-	validJSON := `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`
 	client := &scriptedClient{
 		responses: []scriptedResponse{
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
-				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
-				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
-			}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSON}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
@@ -185,23 +207,24 @@ func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 }
 
 func TestCheckerJSONSchemaProbeSetsSchemOnRequest(t *testing.T) {
-	validJSON := `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"ok","overall_confidence_score":0.9}`
 	client := &scriptedClient{
 		responses: []scriptedResponse{
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
-			{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{
-				{ID: "call_readme", Name: "inspect_file", Arguments: `{"path":"README.md"}`},
-				{ID: "call_app", Name: "inspect_file", Arguments: `{"path":"internal/app.go"}`},
-			}}},
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
-			{resp: &llm.ReviewResponse{RawResponse: validJSON}},
+			{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		},
 	}
 	New(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true}).Run(context.Background())
-	// json-schema probe is request index 4 (after no-tools, 3 tools rounds, json-schema)
-	schemaReq := client.reqs[4]
+	// json-schema probe is request index 3 (after no-tools, 2 tools rounds, json-schema).
+	schemaReq := client.reqs[3]
 	if len(schemaReq.Schema) == 0 {
 		t.Fatal("json-schema probe request must have Schema set")
+	}
+	if schemaReq.SchemaKind != llm.SchemaKindJSON {
+		t.Fatalf("schema kind = %v, want json", schemaReq.SchemaKind)
+	}
+	if string(schemaReq.Schema) == string(llm.FindingsSchema) {
+		t.Fatal("json-schema probe should use simple modelcheck schema, not findings schema")
 	}
 }

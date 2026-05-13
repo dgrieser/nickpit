@@ -44,6 +44,23 @@ const (
 
 const finalSentinel = "NICKPIT_MODEL_CHECK_OK"
 
+const jsonProbeExample = `{
+  "check": "json_capability",
+  "status": "ok",
+  "confidence_score": 0.9
+}`
+
+var jsonProbeSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "check": {"type": "string", "enum": ["json_capability"]},
+    "status": {"type": "string", "enum": ["ok"]},
+    "confidence_score": {"type": "number", "minimum": 0, "maximum": 1}
+  },
+  "required": ["check", "status", "confidence_score"],
+  "additionalProperties": false
+}`)
+
 type ProbeResult struct {
 	Name            string `json:"name"`
 	ReasoningEffort string `json:"reasoning_effort"`
@@ -225,9 +242,15 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		{Role: "user", Content: mustRenderCheckPrompt("check_tools_user.tmpl", struct{ Sentinel string }{finalSentinel})},
 	}
 	listed := false
-	inspected := map[string]struct{}{}
+	tools, err := toolDefinitions("list_files")
+	if err != nil {
+		probe.Status = StatusFailed
+		probe.Error = err.Error()
+		return probe
+	}
+	allowedTools := toolSet(tools)
 	for round := 0; round < 8; round++ {
-		req := c.baseRequest(effort, messages, toolDefinitions())
+		req := c.baseRequest(effort, messages, tools)
 		if sec != nil {
 			req.ReasoningSink = sec
 		}
@@ -237,7 +260,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		}
 		probe.Reasoned = probe.Reasoned || resp.Reasoned
 		if len(resp.ToolCalls) == 0 {
-			if listed && allInspected(engine.files, inspected) && strings.Contains(resp.RawResponse, finalSentinel) {
+			if listed && strings.Contains(resp.RawResponse, finalSentinel) {
 				probe.Status = StatusOK
 				return probe
 			}
@@ -248,7 +271,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
 		for _, call := range resp.ToolCalls {
 			c.logProgress("Tool", call.Name)
-			content, err := executeToolCall(ctx, engine, call, &listed, inspected)
+			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
 				probe.Status = StatusFailed
 				probe.Error = err.Error()
@@ -269,8 +292,9 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 	rs := checkReasoningSnippet()
 	req := c.baseRequest(effort, []llm.Message{
 		{Role: "system", Content: mustRenderCheckPrompt("check_json_output_system.tmpl", struct{ ReasoningSnippet string }{rs})},
-		{Role: "user", Content: mustRenderCheckPrompt("check_json_output_user.tmpl", struct{ OutputSchemaSnippet string }{llm.FindingsExamplePromptSnippet()})},
+		{Role: "user", Content: mustRenderCheckPrompt("check_json_output_user.tmpl", struct{ OutputSchemaSnippet string }{jsonProbeExample})},
 	}, nil)
+	req.SchemaKind = llm.SchemaKindJSON
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
@@ -279,10 +303,9 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 		return classifyProbeError(probe, err)
 	}
 	probe.Reasoned = resp.Reasoned
-	var v any
-	if err := llm.LenientUnmarshal(resp.RawResponse, &v); err != nil {
+	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
 		probe.Status = StatusFailed
-		probe.Error = "response is not parseable JSON: " + err.Error()
+		probe.Error = err.Error()
 		return probe
 	}
 	probe.Status = StatusOK
@@ -298,7 +321,8 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 		{Role: "system", Content: mustRenderCheckPrompt("check_json_schema_system.tmpl", struct{ ReasoningSnippet string }{rs})},
 		{Role: "user", Content: mustRenderCheckPrompt("check_json_schema_user.tmpl", nil)},
 	}, nil)
-	req.Schema = llm.FindingsSchema
+	req.Schema = jsonProbeSchema
+	req.SchemaKind = llm.SchemaKindJSON
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
@@ -307,10 +331,9 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 		return classifyProbeError(probe, err)
 	}
 	probe.Reasoned = resp.Reasoned
-	var v any
-	if err := llm.LenientUnmarshal(resp.RawResponse, &v); err != nil {
+	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
 		probe.Status = StatusFailed
-		probe.Error = "response is not parseable JSON: " + err.Error()
+		probe.Error = err.Error()
 		return probe
 	}
 	probe.Status = StatusOK
@@ -368,8 +391,8 @@ func passedEfforts(probes []ProbeResult) []string {
 	return efforts
 }
 
-func toolDefinitions() []llm.ToolDefinition {
-	return []llm.ToolDefinition{
+func toolDefinitions(names ...string) ([]llm.ToolDefinition, error) {
+	all := []llm.ToolDefinition{
 		{
 			Name:        "list_files",
 			Description: "List files in the in-memory fixture repository",
@@ -381,6 +404,37 @@ func toolDefinitions() []llm.ToolDefinition {
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
 		},
 	}
+	if len(names) == 0 {
+		return all, nil
+	}
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[name] = struct{}{}
+	}
+	selected := make([]llm.ToolDefinition, 0, len(names))
+	for _, definition := range all {
+		if _, ok := wanted[definition.Name]; ok {
+			selected = append(selected, definition)
+			delete(wanted, definition.Name)
+		}
+	}
+	if len(wanted) > 0 {
+		missing := make([]string, 0, len(wanted))
+		for name := range wanted {
+			missing = append(missing, name)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("unsupported modelcheck tools: %s", strings.Join(missing, ", "))
+	}
+	return selected, nil
+}
+
+func toolSet(definitions []llm.ToolDefinition) map[string]struct{} {
+	set := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		set[definition.Name] = struct{}{}
+	}
+	return set
 }
 
 type toolArgs struct {
@@ -388,7 +442,10 @@ type toolArgs struct {
 	Depth int    `json:"depth"`
 }
 
-func executeToolCall(ctx context.Context, engine *memoryEngine, call llm.ToolCall, listed *bool, inspected map[string]struct{}) (string, error) {
+func executeToolCall(ctx context.Context, engine *memoryEngine, call llm.ToolCall, allowed map[string]struct{}, listed *bool) (string, error) {
+	if _, ok := allowed[call.Name]; !ok {
+		return "", fmt.Errorf("unsupported tool %q", call.Name)
+	}
 	var args toolArgs
 	if strings.TrimSpace(call.Arguments) != "" {
 		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
@@ -417,7 +474,6 @@ func executeToolCall(ctx context.Context, engine *memoryEngine, call llm.ToolCal
 		if err != nil {
 			return "", err
 		}
-		inspected[content.Path] = struct{}{}
 		return marshalToolResult(content)
 	default:
 		return "", fmt.Errorf("unsupported tool %q", call.Name)
@@ -432,16 +488,27 @@ func marshalToolResult(value any) (string, error) {
 	return string(data), nil
 }
 
-func allInspected(files map[string]string, inspected map[string]struct{}) bool {
-	if len(files) != len(inspected) {
-		return false
+func validateJSONProbeResponse(content string) error {
+	var raw map[string]json.RawMessage
+	if err := llm.LenientUnmarshal(content, &raw); err != nil {
+		return fmt.Errorf("response is not parseable JSON object: %w", err)
 	}
-	for path := range files {
-		if _, ok := inspected[path]; !ok {
-			return false
-		}
+	if len(raw) != 3 {
+		return fmt.Errorf("response does not match JSON probe shape")
 	}
-	return true
+	var check string
+	if err := json.Unmarshal(raw["check"], &check); err != nil || check != "json_capability" {
+		return fmt.Errorf("response does not match JSON probe shape")
+	}
+	var status string
+	if err := json.Unmarshal(raw["status"], &status); err != nil || status != "ok" {
+		return fmt.Errorf("response does not match JSON probe shape")
+	}
+	var confidence float64
+	if err := json.Unmarshal(raw["confidence_score"], &confidence); err != nil || confidence < 0 || confidence > 1 {
+		return fmt.Errorf("response does not match JSON probe shape")
+	}
+	return nil
 }
 
 type memoryEngine struct {

@@ -3038,6 +3038,21 @@ func TestParseReviewResponseFlagsOutOfRangePriority(t *testing.T) {
 	}
 }
 
+func TestParseJSONResponseAcceptsArbitraryJSON(t *testing.T) {
+	content := `{"check":"json_capability","status":"ok","confidence_score":0.9}`
+	if _, err := parseReviewResponse(content, SchemaKindJSON, ResponseConstraints{}); err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+}
+
+func TestParseJSONResponseRejectsUnparseableOutput(t *testing.T) {
+	_, err := parseReviewResponse("not json", SchemaKindJSON, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+}
+
 func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
 	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	_, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
