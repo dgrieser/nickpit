@@ -173,8 +173,13 @@ type Finding struct {
 }
 
 func EnsureFindingIDs(findings []Finding) {
+	seen := make(map[string]struct{}, len(findings))
 	for i := range findings {
 		EnsureFindingID(&findings[i])
+		if _, ok := seen[findings[i].ID]; ok {
+			findings[i].ID = newUniqueUUID(seen)
+		}
+		seen[findings[i].ID] = struct{}{}
 	}
 }
 
@@ -184,6 +189,15 @@ func EnsureFindingID(f *Finding) {
 	}
 	if _, err := uuid.Parse(f.ID); err != nil {
 		f.ID = uuid.NewString()
+	}
+}
+
+func newUniqueUUID(seen map[string]struct{}) string {
+	for {
+		id := uuid.NewString()
+		if _, ok := seen[id]; !ok {
+			return id
+		}
 	}
 }
 
