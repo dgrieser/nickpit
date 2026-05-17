@@ -1,6 +1,5 @@
 # TODO
 
-- Add ID to each finding in code so we have clear references everywhere
 - Logging: Change to "[agent: <agent_name>]"
 - Logging: Put turns into bracket, e.g. "[agent: <agent_name>, turn: <round>]"
 - Logging: Fix wrong Reasoning Done progress message.
