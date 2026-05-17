@@ -219,7 +219,9 @@ func mergeInputVerification(out, in []model.Finding) {
 func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
 	if target.ID != "" {
 		for i := range in {
-			if in[i].ID == target.ID {
+			// ID matches still need a location cross-check so swapped IDs cannot
+			// attach one finding's ID to another finding's code location.
+			if in[i].ID == target.ID && in[i].CodeLocation == target.CodeLocation {
 				return &in[i]
 			}
 		}

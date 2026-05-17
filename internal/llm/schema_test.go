@@ -140,8 +140,11 @@ func TestFindingsWithIDSchemaRequiresID(t *testing.T) {
 
 func TestFindingsWithIDExamplePromptSnippetIncludesID(t *testing.T) {
 	snippet := FindingsWithIDExamplePromptSnippet()
-	if !strings.Contains(snippet, `"id": "11111111-1111-4111-8111-111111111111"`) {
+	if !strings.Contains(snippet, `"id": "<uuid-v4>"`) {
 		t.Fatalf("snippet missing id: %s", snippet)
+	}
+	if strings.Contains(snippet, "11111111-1111-4111-8111-111111111111") {
+		t.Fatalf("snippet should not use copyable UUID literal: %s", snippet)
 	}
 }
 

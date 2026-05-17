@@ -45,7 +45,9 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if req.ReviewCtx == nil {
 		return nil, usage, fmt.Errorf("verify: nil review context")
 	}
-	model.EnsureFindingID(&req.Finding)
+	if model.EnsureFindingID(&req.Finding) {
+		e.logf("Verify generated replacement ID for invalid finding ID: title=%q", req.Finding.Title)
+	}
 
 	systemTemplate, err := e.loadPrompt("agent_verify_system_prompt.tmpl")
 	if err != nil {
@@ -145,7 +147,10 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 }
 
 func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, error) {
-	model.EnsureFindingIDs(findings)
+	findings = append([]model.Finding(nil), findings...)
+	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
+		e.logf("Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
+	}
 	verifications := make([]*model.FindingVerification, len(findings))
 	if len(findings) == 0 {
 		return verifications, model.TokenUsage{}, nil

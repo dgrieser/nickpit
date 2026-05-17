@@ -1,6 +1,8 @@
 {{if eq .Snippet "findings"}}
 For each finding{{if eq .Kind "merge"}}, merged or not{{else if eq .Kind "finalize"}} you keep{{end}}:
-{{if eq .Kind "merge"}}- output `id` for every finding; preserve one source `id` when keeping or merging input findings, and generate a UUID only if no input `id` applies
+{{if eq .Kind "merge"}}- output `id` for every finding; preserve one source `id` when keeping or merging input findings
+- DO NOT generate a fresh UUID
+- NEVER copy the `<uuid-v4>` placeholder
 {{end}}
 - use ONE distinct issue per finding
 - make the title imperative and less than 80 characters

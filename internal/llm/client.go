@@ -930,13 +930,17 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		resp = &ReviewResponse{ToolCalls: toolCalls}
 	} else {
 		var err error
-		resp, err = parseReviewResponse(content, req.SchemaKind, req.Constraints)
+		var overwrittenIDs int
+		resp, overwrittenIDs, err = parseReviewResponseWithIDBackfill(content, req.SchemaKind, req.Constraints)
 		if err != nil {
 			var invalidResp *InvalidResponseError
 			if errors.As(err, &invalidResp) {
 				invalidResp.ReasoningEffort = payload.ReasoningEffort
 			}
 			return nil, err
+		}
+		if overwrittenIDs > 0 {
+			c.logf("Generated replacement IDs for invalid finding IDs: count=%d", overwrittenIDs)
 		}
 	}
 	resp.RawResponse = content
@@ -1785,25 +1789,31 @@ func canonicalToolCallKey(call ToolCall) string {
 }
 
 func parseReviewResponse(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, error) {
+	resp, _, err := parseReviewResponseWithIDBackfill(content, kind, constraints)
+	return resp, err
+}
+
+func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, int, error) {
 	if kind == SchemaKindText {
-		return &ReviewResponse{}, nil
+		return &ReviewResponse{}, 0, nil
 	}
 	if kind == SchemaKindJSON {
 		var parsed any
 		if err := LenientUnmarshal(content, &parsed); err != nil {
-			return nil, &InvalidResponseError{
+			return nil, 0, &InvalidResponseError{
 				RawContent: content,
 				Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 			}
 		}
-		return &ReviewResponse{}, nil
+		return &ReviewResponse{}, 0, nil
 	}
 	if kind == SchemaKindVerify {
-		return parseVerifyResponse(content)
+		resp, err := parseVerifyResponse(content)
+		return resp, 0, err
 	}
 	var parsed ReviewResponse
 	if err := LenientUnmarshal(content, &parsed); err != nil {
-		return nil, &InvalidResponseError{
+		return nil, 0, &InvalidResponseError{
 			RawContent: content,
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
@@ -1811,15 +1821,15 @@ func parseReviewResponse(content string, kind SchemaKind, constraints ResponseCo
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 	}
-	model.EnsureFindingIDs(parsed.Findings)
 	if missing := missingResponseFields(&parsed, content, kind, constraints); len(missing) > 0 {
-		return &parsed, &InvalidResponseError{
+		return &parsed, 0, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
 			MissingFields: missing,
 		}
 	}
-	return &parsed, nil
+	overwrittenIDs := model.EnsureFindingIDs(parsed.Findings)
+	return &parsed, overwrittenIDs, nil
 }
 
 func parseVerifyResponse(content string) (*ReviewResponse, error) {
@@ -1946,9 +1956,7 @@ func rawUUIDIsValid(raw json.RawMessage) bool {
 
 func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, finding model.Finding) []string {
 	var missing []string
-	if _, ok := rawItem["verification"]; !ok || finding.Verification == nil {
-		missing = append(missing, fmt.Sprintf("findings[%d].verification", i))
-	} else {
+	if _, ok := rawItem["verification"]; ok {
 		prefix := fmt.Sprintf("findings[%d].verification", i)
 		missing = append(missing, missingNestedFields(prefix, rawItem["verification"], []string{"id", "valid", "priority", "confidence_score", "remarks"})...)
 		var verificationFields map[string]json.RawMessage

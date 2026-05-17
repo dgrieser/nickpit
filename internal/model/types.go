@@ -161,6 +161,8 @@ type CommitSummary struct {
 }
 
 type Finding struct {
+	// ID is required at serialization boundaries; regenerate legacy artifacts
+	// that predate UUID finding IDs.
 	ID              string               `json:"id"`
 	Title           string               `json:"title"`
 	Body            string               `json:"body"`
@@ -172,24 +174,31 @@ type Finding struct {
 	Finalization    *FindingFinalization `json:"finalization,omitempty"`
 }
 
-func EnsureFindingIDs(findings []Finding) {
+func EnsureFindingIDs(findings []Finding) int {
 	seen := make(map[string]struct{}, len(findings))
+	overwrote := 0
 	for i := range findings {
-		EnsureFindingID(&findings[i])
+		if EnsureFindingID(&findings[i]) {
+			overwrote++
+		}
 		if _, ok := seen[findings[i].ID]; ok {
 			findings[i].ID = newUniqueUUID(seen)
 		}
 		seen[findings[i].ID] = struct{}{}
 	}
+	return overwrote
 }
 
-func EnsureFindingID(f *Finding) {
+func EnsureFindingID(f *Finding) bool {
 	if f == nil {
-		return
+		return false
 	}
 	if _, err := uuid.Parse(f.ID); err != nil {
+		overwrote := f.ID != ""
 		f.ID = uuid.NewString()
+		return overwrote
 	}
+	return false
 }
 
 func newUniqueUUID(seen map[string]struct{}) string {
@@ -209,6 +218,8 @@ type FindingVerification struct {
 	Remarks         string  `json:"remarks"`
 }
 
+// Verification.ID mirrors parent Finding.ID by design; uniqueness is enforced
+// upstream by EnsureFindingIDs.
 func EnsureVerificationID(v *FindingVerification, fallback string) {
 	if v == nil {
 		return

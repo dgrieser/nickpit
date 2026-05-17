@@ -63,6 +63,7 @@ type multiAgentLLM struct {
 	vectorCalls   map[string]int
 	mergeTools    int
 	mergePayload  map[string]any
+	mergeSchema   []byte
 	contextSystem string
 	vectorContext map[string]string
 	vectorSystem  map[string]string
@@ -126,6 +127,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		}, nil
 	}
 	s.mergeTools = len(req.Tools)
+	s.mergeSchema = append([]byte(nil), req.Schema...)
 	if len(req.Messages) > 1 {
 		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
 	}
@@ -908,6 +910,50 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
 		}
 	}
+}
+
+func TestEngineMergeSchemaHonorsPriorityThreshold(t *testing.T) {
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		RepoRoot:          ".",
+		MaxContextTokens:  1000,
+		UseJSONSchema:     true,
+		PriorityThreshold: "p1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.mergeSchema) == 0 {
+		t.Fatal("merge schema empty")
+	}
+	priority := schemaFindingProperty(t, llmClient.mergeSchema, "priority")
+	if got := priority["minimum"]; got != float64(0) {
+		t.Fatalf("priority minimum = %#v, want 0", got)
+	}
+	if got := priority["maximum"]; got != float64(1) {
+		t.Fatalf("priority maximum = %#v, want 1", got)
+	}
+}
+
+func schemaFindingProperty(t *testing.T, schema []byte, property string) map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := json.Unmarshal(schema, &root); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	properties := root["properties"].(map[string]any)
+	findings := properties["findings"].(map[string]any)
+	items := findings["items"].(map[string]any)
+	findingProps := items["properties"].(map[string]any)
+	out, ok := findingProps[property].(map[string]any)
+	if !ok {
+		t.Fatalf("finding property %q missing: %#v", property, findingProps[property])
+	}
+	return out
 }
 
 func TestEngineDoesNotUseAPISchemaByDefault(t *testing.T) {

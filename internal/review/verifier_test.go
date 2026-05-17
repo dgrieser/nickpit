@@ -121,6 +121,33 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	}
 }
 
+func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	findings := []model.Finding{
+		{ID: "not-a-uuid", Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+	}
+	_, _, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Concurrency: 1})
+	if err != nil {
+		t.Fatalf("VerifyAll returned err: %v", err)
+	}
+	if findings[0].ID != "not-a-uuid" {
+		t.Fatalf("input ID mutated to %q", findings[0].ID)
+	}
+	if len(llmClient.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(llmClient.requests))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal user prompt: %v", err)
+	}
+	verifyFinding := payload["finding"].(map[string]any)
+	if verifyFinding["id"] == "not-a-uuid" || strings.TrimSpace(verifyFinding["id"].(string)) == "" {
+		t.Fatalf("verify prompt finding id = %#v, want generated copy ID", verifyFinding["id"])
+	}
+}
+
 func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{

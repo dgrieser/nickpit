@@ -42,6 +42,9 @@ func TestVerifyExamplePromptSnippetIncludesAllFields(t *testing.T) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}
 	}
+	if !strings.Contains(snippet, `"id": "<uuid-v4>"`) {
+		t.Fatalf("snippet should use UUID placeholder: %s", snippet)
+	}
 }
 
 func TestVerifyExamplePromptSnippetIsJSON(t *testing.T) {

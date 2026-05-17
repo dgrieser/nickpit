@@ -52,7 +52,7 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 	}
 	requiredFindingFields := []string{"title", "body", "confidence_score", "priority", "code_location"}
 	if requireID {
-		findingProperties["id"] = map[string]any{"type": "string", "examples": []any{"11111111-1111-4111-8111-111111111111"}}
+		findingProperties["id"] = map[string]any{"type": "string", "examples": []any{"<uuid-v4>"}}
 		requiredFindingFields = append([]string{"id"}, requiredFindingFields...)
 	}
 	return map[string]any{
@@ -114,10 +114,13 @@ func FindingsWithIDExamplePromptSnippet() string {
 }
 
 func mustMarshalJSON(v any) json.RawMessage {
-	data, err := json.Marshal(v)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
 		panic(fmt.Sprintf("llm: marshal schema: %v", err))
 	}
+	data := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	return json.RawMessage(data)
 }
 
