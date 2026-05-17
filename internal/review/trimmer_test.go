@@ -9,7 +9,7 @@ import (
 
 func TestTrimmerDropsGeneratedFilesFromEmbeddedMappings(t *testing.T) {
 	trimmer := NewTrimmer(1, model.SimpleEstimator{})
-	ctx := trimmer.Trim(&model.ReviewContext{
+	ctx, err := trimmer.Trim(&model.ReviewContext{
 		Title: strings.Repeat("x", 100),
 		ChangedFiles: []model.ChangedFile{
 			{Path: "pkg/service.go", Status: model.FileModified},
@@ -17,6 +17,9 @@ func TestTrimmerDropsGeneratedFilesFromEmbeddedMappings(t *testing.T) {
 			{Path: "web/package-lock.json", Status: model.FileModified},
 		},
 	})
+	if err != nil {
+		t.Fatalf("Trim: %v", err)
+	}
 
 	if len(ctx.ChangedFiles) != 1 || ctx.ChangedFiles[0].Path != "pkg/service.go" {
 		t.Fatalf("changed files = %#v", ctx.ChangedFiles)

@@ -11,3 +11,6 @@ When reviewing a patch, ask yourself:
 - Are fixtures and assertions specific enough to catch the bug being guarded?
 - Are tests aligned with existing project conventions?
 - Are testing additions useful without being brittle or unnecessarily broad?
+
+DO NOT assign priority 0 or 1 to any finding; testing findings are at most priority 2.
+DO NOT emit `overall_correctness: patch is incorrect`.

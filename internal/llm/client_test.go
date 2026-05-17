@@ -548,7 +548,8 @@ func TestClientReviewReassemblesStreamedToolCalls(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls: true,
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1341,6 +1342,81 @@ func TestFallbackReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestKnownReasoningEfforts(t *testing.T) {
+	want := []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
+	got := KnownReasoningEfforts()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("KnownReasoningEfforts() = %v, want %v", got, want)
+	}
+	got[0] = "changed"
+	if KnownReasoningEfforts()[0] != "max" {
+		t.Fatal("KnownReasoningEfforts should return a copy")
+	}
+}
+
+func TestClientReviewFiltersFallbackReasoningEfforts(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{{
+				"index": 0,
+				"delta": map[string]any{"reasoning_content": "thinking"},
+			}},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{{
+				"index":         0,
+				"delta":         map[string]any{},
+				"finish_reason": "length",
+			}},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-3",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.MaxRetries = 0
+	client.SetAllowedReasoningEfforts([]string{"minimal"})
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err == nil {
+		t.Fatal("expected budget error after filtered fallback")
+	}
+	want := []string{"high", "minimal"}
+	if strings.Join(efforts, ",") != strings.Join(want, ",") {
+		t.Fatalf("efforts = %v, want %v", efforts, want)
+	}
+}
+
 func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 	maxTokens := 10
 	temperature := 0.25
@@ -1457,9 +1533,10 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	resp, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:    "system",
-		UserContent:     "user",
-		ReasoningEffort: "high",
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1518,6 +1595,105 @@ func TestClientReviewFallsBackAfterReasoningTimeout(t *testing.T) {
 	}
 	if resp.ReasoningEffort != "medium" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewFallsBackAfterFuzzyReasoningLoop(t *testing.T) {
+	var userMessages []string
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		messages, ok := payload["messages"].([]any)
+		if !ok {
+			t.Fatalf("messages missing or wrong type: %#v", payload["messages"])
+		}
+		lastUser := ""
+		for _, raw := range messages {
+			msg, ok := raw.(map[string]any)
+			if !ok {
+				t.Fatalf("message has wrong type: %#v", raw)
+			}
+			if msg["role"] == "user" {
+				lastUser, _ = msg["content"].(string)
+			}
+		}
+		userMessages = append(userMessages, lastUser)
+
+		if len(efforts) == 1 {
+			writeFuzzyLoopReasoningSSE(t, w)
+			<-r.Context().Done()
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+	if len(userMessages) != 2 {
+		t.Fatalf("user messages = %d, want 2", len(userMessages))
+	}
+	if strings.Contains(userMessages[0], reasoningRetryHint(true)) {
+		t.Fatalf("first request should not include loop retry hint: %q", userMessages[0])
+	}
+	if !strings.Contains(userMessages[1], reasoningRetryHint(true)) {
+		t.Fatalf("retry request missing loop retry hint: %q", userMessages[1])
+	}
+}
+
+func TestClientReviewDisablesReasoningLoopDetection(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		for range 12 {
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-reasoning",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{
+					{
+						"index": 0,
+						"delta": map[string]any{"reasoning_content": "same thought\n"},
+					},
+				},
+			})
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
 	}
 }
 
@@ -1758,7 +1934,8 @@ func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls: true,
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
 	})
 	var invalidResp *InvalidResponseError
 	if !errors.As(err, &invalidResp) {
@@ -1815,13 +1992,85 @@ func TestClientReviewRetriesLastBudgetExhaustedEffortWithoutToolsAfterFallbacks(
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls: true,
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,minimal:true,none:true,off:true,off:false"; got != want {
 		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "off" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+	if !resp.ToolsOmitted {
+		t.Fatal("expected response to record omitted tools")
+	}
+}
+
+func TestClientReviewRetriesLastLoopDetectedEffortWithoutToolsAfterFallbacks(t *testing.T) {
+	var attempts []struct {
+		effort   string
+		hasTools bool
+		user     string
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		user := ""
+		if msgs, ok := payload["messages"].([]any); ok {
+			for _, raw := range msgs {
+				msg, _ := raw.(map[string]any)
+				if msg["role"] == "user" {
+					user, _ = msg["content"].(string)
+				}
+			}
+		}
+		attempts = append(attempts, struct {
+			effort   string
+			hasTools bool
+			user     string
+		}{effort, hasTools, user})
+		if effort == "off" && !hasTools {
+			writeValidReviewSSE(t, w)
+			return
+		}
+		writeFuzzyLoopReasoningSSE(t, w)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user content",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := attemptSummary(attempts), "high:true,medium:true,low:true,minimal:true,none:true,off:true,off:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if got := strings.Count(attempts[len(attempts)-1].user, reasoningRetryHint(true)); got != 1 {
+		t.Fatalf("no-tools retry loop hint count = %d in %q", got, attempts[len(attempts)-1].user)
 	}
 	if resp.ReasoningEffort != "off" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
@@ -2199,6 +2448,89 @@ func TestClientReviewContinuesAfterRejectedLowerReasoningEffort(t *testing.T) {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
 	}
 	if resp.ReasoningEffort != "low" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewContinuesAfterRejectedOriginalReasoningEffort(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		switch effort {
+		case "high":
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error":{"message":"reasoning_effort value is invalid"}}`)); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+		case "low":
+			writeValidReviewSSE(t, w)
+		default:
+			t.Fatalf("unexpected effort %q", effort)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.SetAllowedReasoningEfforts([]string{"low"})
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,low"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "low" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewContinuesAfterOpaqueLowerReasoningEffortRejection(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		switch effort {
+		case "low":
+			writeReasoningLengthSSE(t, w)
+		case "minimal":
+			w.WriteHeader(http.StatusBadRequest)
+			if _, err := w.Write([]byte(`{"error":{"code":"400","message":"Got bad request: Failed to validate 1 parameters","param":"None","type":"None"}}`)); err != nil {
+				t.Fatalf("write error: %v", err)
+			}
+		case "none":
+			writeValidReviewSSE(t, w)
+		default:
+			t.Fatalf("unexpected effort %q", effort)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "low",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "low,minimal,none"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "none" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
 	}
 }
@@ -2649,6 +2981,36 @@ func writeReasoningLengthSSE(t *testing.T, w http.ResponseWriter) {
 	writeSSEDone(t, w)
 }
 
+func writeFuzzyLoopReasoningSSE(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	var lines []string
+	for _, cycle := range [][3]string{
+		{"AddSession", "DropSession", "Close"},
+		{"DropSession", "DropPod", "Close"},
+		{"CreateSession", "DeleteSession", "Close"},
+		{"OpenSession", "RemoveSession", "Close"},
+		{"StartSession", "StopSession", "Close"},
+		{"MakeSession", "ClearSession", "Close"},
+	} {
+		lines = append(lines, fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2])...)
+	}
+	reasoning := strings.Join(lines, "\n") + "\n"
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"reasoning_content": reasoning,
+				},
+			},
+		},
+	})
+}
+
 func writeValidReviewSSE(t *testing.T, w http.ResponseWriter) {
 	t.Helper()
 	writeSSEChunk(t, w, map[string]any{
@@ -2717,7 +3079,7 @@ func TestStripPriorityPrefix(t *testing.T) {
 
 func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 	content := `{"findings":[{"title":"[P1] Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	resp, err := parseReviewResponse(content, SchemaKindReview)
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
 	}
@@ -2731,7 +3093,7 @@ func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 
 func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	_, err := parseReviewResponse(content, SchemaKindReview)
+	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
@@ -2751,7 +3113,7 @@ func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 
 func TestParseReviewResponseFlagsOutOfRangePriority(t *testing.T) {
 	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":7,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	_, err := parseReviewResponse(content, SchemaKindReview)
+	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
@@ -2765,5 +3127,73 @@ func TestParseReviewResponseFlagsOutOfRangePriority(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing fields = %v, want findings[0].priority entry", invalid.MissingFields)
+	}
+}
+
+func TestParseJSONResponseAcceptsArbitraryJSON(t *testing.T) {
+	content := `{"check":"json_capability","status":"ok","confidence_score":0.9}`
+	if _, err := parseReviewResponse(content, SchemaKindJSON, ResponseConstraints{}); err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+}
+
+func TestParseJSONResponseRejectsUnparseableOutput(t *testing.T) {
+	_, err := parseReviewResponse("not json", SchemaKindJSON, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+}
+
+func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
+	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	found := false
+	for _, m := range invalid.MissingFields {
+		if m == "findings[0].finalization" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing fields = %v, want findings[0].finalization", invalid.MissingFields)
+	}
+}
+
+func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
+	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings[0].Finalization == nil {
+		t.Fatal("finalization nil")
+	}
+	if resp.Findings[0].Finalization.Remarks != "keep" {
+		t.Fatalf("finalization.remarks = %q", resp.Findings[0].Finalization.Remarks)
+	}
+	if resp.Findings[0].Finalization.Title != "Final fix" || resp.Findings[0].Finalization.Body != "final body" {
+		t.Fatalf("finalization title/body = %#v", resp.Findings[0].Finalization)
+	}
+}
+
+// Regression: schema intentionally omits finalization.confidence_score (it is
+// computed in code). The parser must not require it; otherwise every JSON-
+// schema-mode finalize call would fail with InvalidResponseError.
+func TestParseFinalizeResponseAcceptsFinalizationWithoutConfidenceScore(t *testing.T) {
+	content := `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"valid":true,"priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings[0].Finalization == nil {
+		t.Fatal("finalization nil")
+	}
+	if resp.Findings[0].Finalization.Title != "Final fix" {
+		t.Fatalf("finalization.title = %q", resp.Findings[0].Finalization.Title)
 	}
 }

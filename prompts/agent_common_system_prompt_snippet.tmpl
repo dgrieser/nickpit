@@ -1,21 +1,22 @@
 {{if eq .Snippet "findings"}}
-For each finding{{if eq .Kind "merge"}}, merged or not{{end}}:
+For each finding{{if eq .Kind "merge"}}, merged or not{{else if eq .Kind "finalize"}} you keep{{end}}:
 - use ONE distinct issue per finding
 - make the title imperative and less than 80 characters
 - set `priority` to 0, 1, 2 or 3 (always required)
 - keep the body to ONE paragraph, matter-of-fact, and EXPLICIT about the scenario where it fails
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
-{{if ne .Kind "merge"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
-{{end}}{{else if eq .Snippet "priority"}}
+{{if eq .Kind "review"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
+{{end}}{{end}}
+{{if eq .Snippet "priority"}}
 ### PRIORITY
 Use these priority levels:
 - 0: blocking release or major universal failure
 - 1: urgent and should be fixed in the next cycle
 - 2: normal bug worth fixing
 - 3: low-priority issue
-{{else if eq .Snippet "output_format"}}
-{{if .OutputSchemaSnippet}}
+{{end}}
+{{if eq .Snippet "output_format"}}
 Make sure to output the findings in the following JSON format:
 
 ```json
@@ -24,7 +25,7 @@ Make sure to output the findings in the following JSON format:
 
 - DO NOT wrap the JSON in markdown fences or extra prose
 - produce JSON only and match the schema EXACTLY
-{{else}}
-Make sure to output the findings using the specifed `response_format`
 {{end}}
+{{if eq .Snippet "response_format"}}
+Make sure to output the findings using the specified `response_format`
 {{end}}

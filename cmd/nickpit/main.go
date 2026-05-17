@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/output"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
@@ -50,6 +51,8 @@ type app struct {
 	maxOutputRetriesSet           bool
 	maxReasoningSeconds           int
 	maxReasoningSecondsSet        bool
+	maxReasoningLoopRepeats       int
+	maxReasoningLoopRepeatsSet    bool
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
@@ -62,25 +65,26 @@ type app struct {
 	showProgress                  bool
 	disableSearchToolOptimization bool
 	disableParallelToolCalls      bool
-	noVerify                      bool
 	verifyConcurrency             int
 	hideInvalid                   bool
+	skipModelCheck                bool
 	logger                        *logging.Logger
 }
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		logging.New(os.Stderr, false, true).PrintError(err)
+		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
 }
 
 func newRootCmd() *cobra.Command {
 	cli := &app{
-		maxContextTokens:      config.DefaultMaxContextToken,
-		maxDuplicateToolCalls: config.DefaultMaxDuplicateToolCalls,
-		maxOutputRetries:      config.DefaultMaxOutputRetries,
-		maxReasoningSeconds:   config.DefaultMaxReasoningSeconds,
+		maxContextTokens:        config.DefaultMaxContextToken,
+		maxDuplicateToolCalls:   config.DefaultMaxDuplicateToolCalls,
+		maxOutputRetries:        config.DefaultMaxOutputRetries,
+		maxReasoningSeconds:     config.DefaultMaxReasoningSeconds,
+		maxReasoningLoopRepeats: config.DefaultMaxReasoningLoopRepeats,
 	}
 	root := &cobra.Command{
 		Use:           "nickpit",
@@ -116,6 +120,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxOutputRetries, &cli.maxOutputRetriesSet), "max-output-retries", "Maximum invalid output retries")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningSeconds, &cli.maxReasoningSecondsSet), "max-reasoning-seconds", "Maximum seconds to allow reasoning before falling back to lower effort")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningLoopRepeats, &cli.maxReasoningLoopRepeatsSet), "max-reasoning-loop-repeats", "Allowed repeated reasoning loops before falling back (0 disables loop detection)")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -129,10 +134,11 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
-	root.PersistentFlags().BoolVar(&cli.noVerify, "no-verify", false, "Skip the second-pass verifier")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
 	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
+	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 
+	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newLocalCmd())
 	root.AddCommand(cli.newGitHubCmd())
 	root.AddCommand(cli.newGitLabCmd())
@@ -161,6 +167,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.maxReasoningSecondsSet {
 		reasoningSeconds = &a.maxReasoningSeconds
 	}
+	var reasoningLoopRepeats *int
+	if a.maxReasoningLoopRepeatsSet {
+		reasoningLoopRepeats = &a.maxReasoningLoopRepeats
+	}
 	var temperature *float64
 	if a.temperatureSet {
 		temperature = &a.temperature
@@ -179,24 +189,25 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		}
 	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile:            a.profile,
-		Model:              a.model,
-		BaseURL:            a.baseURL,
-		APIKey:             a.apiKey,
-		ReasoningEffort:    a.reasoningEffort,
-		Temperature:        temperature,
-		TopP:               topP,
-		ExtraBody:          extraBody,
-		UseJSONSchema:      a.useJSONSchema,
-		MaxContextTokens:   maxContextTokens,
-		ToolCalls:          toolCalls,
-		DuplicateToolCalls: duplicateToolCalls,
-		OutputRetries:      outputRetries,
-		ReasoningSeconds:   reasoningSeconds,
-		Workdir:            a.workDir,
-		GitHubToken:        a.githubToken,
-		GitLabToken:        a.gitlabToken,
-		GitLabBaseURL:      a.gitlabBaseURL,
+		Profile:              a.profile,
+		Model:                a.model,
+		BaseURL:              a.baseURL,
+		APIKey:               a.apiKey,
+		ReasoningEffort:      a.reasoningEffort,
+		Temperature:          temperature,
+		TopP:                 topP,
+		ExtraBody:            extraBody,
+		UseJSONSchema:        a.useJSONSchema,
+		MaxContextTokens:     maxContextTokens,
+		ToolCalls:            toolCalls,
+		DuplicateToolCalls:   duplicateToolCalls,
+		OutputRetries:        outputRetries,
+		ReasoningSeconds:     reasoningSeconds,
+		ReasoningLoopRepeats: reasoningLoopRepeats,
+		Workdir:              a.workDir,
+		GitHubToken:          a.githubToken,
+		GitLabToken:          a.gitlabToken,
+		GitLabBaseURL:        a.gitlabBaseURL,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -291,22 +302,23 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				return err
 			}
 			req := model.ReviewRequest{
-				Mode:                  model.ModeLocal,
-				RepoRoot:              repoRoot,
-				Workdir:               profile.Workdir,
-				BaseRef:               firstNonEmpty(base, from),
-				HeadRef:               firstNonEmpty(head, to),
-				IncludeComments:       a.includeComments,
-				IncludeCommits:        a.includeCommits,
-				IncludeFullFiles:      a.includeFullFiles,
-				MaxContextTokens:      profile.MaxContextTokens,
-				MaxToolCalls:          profile.MaxToolCalls,
-				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
-				MaxOutputRetries:      profile.MaxOutputRetries,
-				MaxReasoningSeconds:   profile.MaxReasoningSeconds,
-				UseJSONSchema:         profile.UseJSONSchema,
-				PriorityThreshold:     a.priorityThreshold,
-				Submode:               submode,
+				Mode:                    model.ModeLocal,
+				RepoRoot:                repoRoot,
+				Workdir:                 profile.Workdir,
+				BaseRef:                 firstNonEmpty(base, from),
+				HeadRef:                 firstNonEmpty(head, to),
+				IncludeComments:         a.includeComments,
+				IncludeCommits:          a.includeCommits,
+				IncludeFullFiles:        a.includeFullFiles,
+				MaxContextTokens:        profile.MaxContextTokens,
+				MaxToolCalls:            profile.MaxToolCalls,
+				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:        profile.MaxOutputRetries,
+				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
+				UseJSONSchema:           profile.UseJSONSchema,
+				PriorityThreshold:       a.priorityThreshold,
+				Submode:                 submode,
 			}
 			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -345,20 +357,21 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			}
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
 			req := model.ReviewRequest{
-				Mode:                  model.ModeGitHub,
-				Workdir:               profile.Workdir,
-				Repo:                  repo,
-				Identifier:            pr,
-				IncludeComments:       a.includeComments,
-				IncludeCommits:        a.includeCommits,
-				MaxContextTokens:      profile.MaxContextTokens,
-				MaxToolCalls:          profile.MaxToolCalls,
-				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
-				MaxOutputRetries:      profile.MaxOutputRetries,
-				MaxReasoningSeconds:   profile.MaxReasoningSeconds,
-				UseJSONSchema:         profile.UseJSONSchema,
-				PriorityThreshold:     a.priorityThreshold,
-				Offline:               a.offline,
+				Mode:                    model.ModeGitHub,
+				Workdir:                 profile.Workdir,
+				Repo:                    repo,
+				Identifier:              pr,
+				IncludeComments:         a.includeComments,
+				IncludeCommits:          a.includeCommits,
+				MaxContextTokens:        profile.MaxContextTokens,
+				MaxToolCalls:            profile.MaxToolCalls,
+				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:        profile.MaxOutputRetries,
+				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
+				UseJSONSchema:           profile.UseJSONSchema,
+				PriorityThreshold:       a.priorityThreshold,
+				Offline:                 a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -393,20 +406,21 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			}
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
 			req := model.ReviewRequest{
-				Mode:                  model.ModeGitLab,
-				Workdir:               profile.Workdir,
-				Repo:                  project,
-				Identifier:            mr,
-				IncludeComments:       a.includeComments,
-				IncludeCommits:        a.includeCommits,
-				MaxContextTokens:      profile.MaxContextTokens,
-				MaxToolCalls:          profile.MaxToolCalls,
-				MaxDuplicateToolCalls: profile.MaxDuplicateToolCalls,
-				MaxOutputRetries:      profile.MaxOutputRetries,
-				MaxReasoningSeconds:   profile.MaxReasoningSeconds,
-				UseJSONSchema:         profile.UseJSONSchema,
-				PriorityThreshold:     a.priorityThreshold,
-				Offline:               a.offline,
+				Mode:                    model.ModeGitLab,
+				Workdir:                 profile.Workdir,
+				Repo:                    project,
+				Identifier:              mr,
+				IncludeComments:         a.includeComments,
+				IncludeCommits:          a.includeCommits,
+				MaxContextTokens:        profile.MaxContextTokens,
+				MaxToolCalls:            profile.MaxToolCalls,
+				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:        profile.MaxOutputRetries,
+				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
+				UseJSONSchema:           profile.UseJSONSchema,
+				PriorityThreshold:       a.priorityThreshold,
+				Offline:                 a.offline,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -547,8 +561,65 @@ func (a *app) newInspectCmd() *cobra.Command {
 	return cmd
 }
 
+func (a *app) newCheckCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Run environment and model checks",
+	}
+	modelCmd := &cobra.Command{
+		Use:   "model",
+		Short: "Check the configured model",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			profileName, profile, err := a.loadProfile()
+			if err != nil {
+				return err
+			}
+			if profile.APIKey == "" {
+				if profile.APIKeyConfigured {
+					return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
+				}
+				return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
+			}
+			logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
+			logger.SetShowReasoning(a.showReasoning)
+			logger.SetShowProgress(a.showProgress)
+			a.logger = logger
+			a.logProgress("Model", modelSummary(profile, model.ReviewRequest{
+				MaxContextTokens:        profile.MaxContextTokens,
+				MaxToolCalls:            profile.MaxToolCalls,
+				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:        profile.MaxOutputRetries,
+				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
+				UseJSONSchema:           profile.UseJSONSchema,
+			}))
+			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
+			client.SetLogger(logger)
+			checker := modelcheck.New(client, profile)
+			checker.SetLogger(logger)
+			checker.SetParallel(!a.disableParallelToolCalls)
+			result := checker.Run(cmd.Context())
+			a.logProgress("ModelCheck", modelCheckSummary(result))
+			if a.jsonOutput {
+				if err := writeJSON(struct {
+					Check modelcheck.CheckSummary `json:"check"`
+				}{Check: result.Summary()}); err != nil {
+					return err
+				}
+				return validatePreReviewModelCheck(result)
+			}
+			if err := a.writeModelCheckOutput(result); err != nil {
+				return err
+			}
+			return validatePreReviewModelCheck(result)
+		},
+	}
+	cmd.AddCommand(modelCmd)
+	return cmd
+}
+
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
-	logger := logging.New(os.Stderr, a.verbose, true)
+	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
@@ -560,14 +631,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
 	}
 
-	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
-	if err != nil {
-		return err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	req.RepoRoot = repoRoot
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
@@ -585,10 +648,36 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if req.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
 		req.MaxReasoningSeconds = profile.MaxReasoningSeconds
 	}
+	if req.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
+		req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
+	}
 	a.logProgress("Model", modelSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
+	if !a.skipModelCheck {
+		checker := modelcheck.New(client, profile)
+		checker.SetLogger(logger)
+		checker.SetParallel(!a.disableParallelToolCalls)
+		checkResult := checker.Run(ctx)
+		if err := validatePreReviewModelCheck(checkResult); err != nil {
+			return err
+		}
+		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
+		a.logProgress("ModelCheck", modelCheckSummary(checkResult))
+	} else {
+		a.logProgress("ModelCheck", "skipped")
+	}
+
+	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
+	if err != nil {
+		return err
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	req.RepoRoot = repoRoot
+
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
@@ -604,7 +693,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	a.logProgress("Result", reviewResultSummary(result))
 
-	if !a.noVerify && len(result.Findings) > 0 && trimmedCtx != nil {
+	if len(result.Findings) > 0 && trimmedCtx != nil {
 		verifyOpts := review.VerifyOptions{
 			Concurrency:              a.verifyConcurrency,
 			UseJSONSchema:            req.UseJSONSchema,
@@ -612,6 +701,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
 			MaxOutputRetries:         req.MaxOutputRetries,
 			MaxReasoningSeconds:      req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls: req.DisableParallelToolCalls,
 			RepoRoot:                 req.RepoRoot,
 		}
@@ -624,6 +714,26 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			result.Findings[i].Verification = verifications[i]
 		}
 		result.VerifyTokensUsed = verifyUsage
+		result.Findings = review.DropInvalidFindings(result.Findings)
+	}
+
+	if len(result.Findings) > 0 && trimmedCtx != nil {
+		finalizeOpts := review.FinalizeOptions{
+			UseJSONSchema:            req.UseJSONSchema,
+			MaxOutputRetries:         req.MaxOutputRetries,
+			MaxReasoningSeconds:      req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
+			DisableParallelToolCalls: req.DisableParallelToolCalls,
+			RepoRoot:                 req.RepoRoot,
+		}
+		finalized, finalizeRun, finalizeErr := engine.Finalize(ctx, trimmedCtx, result, finalizeOpts)
+		if finalizeErr != nil {
+			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v; falling back to verified result", finalizeErr))
+		} else {
+			finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
+			finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)
+			result = finalized
+		}
 	}
 
 	var formatter output.Formatter
@@ -731,6 +841,101 @@ func writeJSON(value any) error {
 	return enc.Encode(value)
 }
 
+func isTerminal(f *os.File) bool {
+	stat, err := f.Stat()
+	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
+}
+
+func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
+	s := result.Summary()
+	useANSI := isTerminal(os.Stdout)
+
+	mark := func(v bool) string {
+		if useANSI {
+			if v {
+				return "\x1b[32m✓\x1b[0m"
+			}
+			return "\x1b[31m✗\x1b[0m"
+		}
+		if v {
+			return "✓"
+		}
+		return "✗"
+	}
+	label := func(text string) string {
+		if useANSI {
+			return "\x1b[1m" + text + "\x1b[0m"
+		}
+		return text
+	}
+	effort := func(e string) string {
+		if useANSI {
+			return "\x1b[34m" + e + "\x1b[0m"
+		}
+		return e
+	}
+	optionalMark := func(v *bool) string {
+		if v == nil {
+			return "?"
+		}
+		return mark(*v)
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s %s\n", mark(s.Compatible), label("Model is compatible"))
+	fmt.Fprintf(&sb, "\n")
+	fmt.Fprintf(&sb, "%s Response\n", mark(s.Response))
+	fmt.Fprintf(&sb, "%s Tool Use\n", mark(s.Tools))
+	fmt.Fprintf(&sb, "%s Structured Output\n", optionalMark(s.JSONResponse))
+	if s.JSONSchema != nil {
+		fmt.Fprintf(&sb, "%s JSON Schema\n", optionalMark(s.JSONSchema))
+	}
+	fmt.Fprintf(&sb, "%s Reasoning Traces\n", mark(s.Reasoning.Traces))
+	fmt.Fprintf(&sb, "\n")
+	fmt.Fprintf(&sb, "%s\n", label("Supported Efforts"))
+	if len(s.Reasoning.Efforts) == 0 {
+		fmt.Fprintf(&sb, "  none\n")
+	}
+	for _, e := range s.Reasoning.Efforts {
+		fmt.Fprintf(&sb, "  %s %s\n", mark(true), effort(e))
+	}
+	_, err := fmt.Fprint(os.Stdout, sb.String())
+	return err
+}
+
+func validatePreReviewModelCheck(result modelcheck.Result) error {
+	if len(result.PassedEfforts) == 0 {
+		return fmt.Errorf("model check failed: no reasoning efforts passed")
+	}
+	if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
+		return fmt.Errorf("model check failed for tool use at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+	}
+	if result.UseJSONSchema {
+		if probe := result.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
+			return fmt.Errorf("model check failed for JSON schema output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+		}
+	} else {
+		if probe := result.ConfiguredJSONOutput(); probe.Status != modelcheck.StatusOK {
+			return fmt.Errorf("model check failed for JSON text output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+		}
+	}
+	return nil
+}
+
+func modelCheckSummary(result modelcheck.Result) string {
+	counts := map[modelcheck.Status]int{}
+	for _, probe := range result.Probes {
+		counts[probe.Status]++
+	}
+	return fmt.Sprintf(
+		"ok=%d unsupported=%d failed=%d passed_efforts=%s",
+		counts[modelcheck.StatusOK],
+		counts[modelcheck.StatusUnsupported],
+		counts[modelcheck.StatusFailed],
+		strings.Join(result.PassedEfforts, ","),
+	)
+}
+
 func (a *app) writeInspectOutput(value any) error {
 	if a.jsonOutput {
 		return writeJSON(value)
@@ -817,8 +1022,8 @@ func parseRepoFromRemoteURL(raw string) string {
 	}
 	// SCP-style: git@github.com:owner/repo.git
 	//            git@gitlab.com:group/project.git
-	if i := strings.Index(raw, ":"); i != -1 {
-		return strings.TrimSuffix(raw[i+1:], ".git")
+	if _, after, ok := strings.Cut(raw, ":"); ok {
+		return strings.TrimSuffix(after, ".git")
 	}
 	return ""
 }
@@ -857,6 +1062,9 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	flags = append(flags, fmt.Sprintf("≤%d output retries", req.MaxOutputRetries))
 	if req.MaxReasoningSeconds > 0 {
 		flags = append(flags, fmt.Sprintf("≤%ds reasoning", req.MaxReasoningSeconds))
+	}
+	if req.MaxReasoningLoopRepeats > 0 {
+		flags = append(flags, fmt.Sprintf("≤%d reasoning loop repeats", req.MaxReasoningLoopRepeats))
 	}
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")

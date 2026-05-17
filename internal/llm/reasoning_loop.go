@@ -4,13 +4,48 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 const (
-	loopRepeatLineThreshold = 5   // same non-empty line N times in a row
-	loopBlockMinLines       = 2   // minimum block size for block repetition
-	loopBlockMaxLines       = 20  // max block size checked (caps O(n) work per line)
+	// Exact block detection compares the most recent k completed lines against
+	// the k lines immediately before them. The max is high enough for review
+	// loops that repeat an entire "finding / priority / suggestion" cycle, but
+	// still bounded so each newline keeps predictable work.
+	loopBlockMinLines       = 2
+	loopBlockMaxLines       = 80
+	loopBlockMinUniqueLines = 3
+
+	// Fuzzy detection exists for loops that are semantically identical but not
+	// byte-identical. Example: the model repeats the same review decision cycle,
+	// while swapping method names or rewording "after Close returns" into
+	// "after Close releases the mutex".
+	//
+	// The minimum token and shingle counts keep short repeated boilerplate from
+	// firing the detector. Repeated headings like "Priority: 2" and "Suggestion"
+	// are not enough signal.
+	loopFuzzyMinTokens         = 120
+	loopFuzzyMinUniqueShingles = 60
+
+	// Shingles are contiguous token groups. Four-token shingles are long enough
+	// to represent phrasing, but short enough that small wording changes still
+	// leave overlap between repeated reasoning windows.
+	loopFuzzyShingleSize = 4
+
+	// Strict threshold triggers on very similar windows without extra evidence.
+	// Marker threshold is lower, but requires both windows to contain repeated
+	// review-decision markers such as findings, priorities, suggestions, or
+	// "actually/wait" reconsideration. This catches loop.log-style behavior
+	// while reducing false positives from normal long reasoning.
+	loopFuzzyMarkerThreshold = 0.68
+	loopFuzzyStrictThreshold = 0.82
 )
+
+// loopFuzzyWindowSizes are measured in completed reasoning lines. Each window
+// is compared only with the immediately preceding same-sized window. Multiple
+// sizes let us catch both compact and longer decision cycles without searching
+// the whole history or comparing unrelated sections.
+var loopFuzzyWindowSizes = []int{24, 32, 48, 64}
 
 // ReasoningLoopDetectedError is returned when the model's streaming reasoning
 // content repeats itself, indicating it has entered an infinite loop.
@@ -25,17 +60,25 @@ func (e *ReasoningLoopDetectedError) Error() string {
 }
 
 type reasoningLoopDetector struct {
-	mu               sync.Mutex
-	cancel           context.CancelFunc
-	detected         bool
-	loopStartContent string
-	repeatedContent  string
-	lines            []string
-	currentLine      strings.Builder
+	mu                sync.Mutex
+	cancel            context.CancelFunc
+	maxRepeats        int
+	detected          bool
+	loopStartContent  string
+	repeatedContent   string
+	lines             []string
+	currentLine       strings.Builder
+	fuzzyRepeats      map[int]int
+	fuzzyLastMatchEnd map[int]int
 }
 
-func newReasoningLoopDetector(cancel context.CancelFunc) *reasoningLoopDetector {
-	return &reasoningLoopDetector{cancel: cancel}
+func newReasoningLoopDetector(cancel context.CancelFunc, maxRepeats int) *reasoningLoopDetector {
+	return &reasoningLoopDetector{
+		cancel:            cancel,
+		maxRepeats:        maxRepeats,
+		fuzzyRepeats:      make(map[int]int, len(loopFuzzyWindowSizes)),
+		fuzzyLastMatchEnd: make(map[int]int, len(loopFuzzyWindowSizes)),
+	}
 }
 
 func (d *reasoningLoopDetector) Detected() bool {
@@ -79,54 +122,266 @@ func (d *reasoningLoopDetector) onDelta(delta string) {
 func (d *reasoningLoopDetector) checkLoopLocked() bool {
 	n := len(d.lines)
 
-	// Strategy 1: same non-empty line repeated loopRepeatLineThreshold times consecutively.
-	if n >= loopRepeatLineThreshold {
+	// Strategy 1: same non-empty line repeated beyond the configured allowance.
+	lineThreshold := d.maxRepeats + 2
+	if n >= lineThreshold {
 		last := d.lines[n-1]
 		if strings.TrimSpace(last) != "" {
 			allSame := true
-			for i := n - loopRepeatLineThreshold; i < n-1; i++ {
+			for i := n - lineThreshold; i < n-1; i++ {
 				if d.lines[i] != last {
 					allSame = false
 					break
 				}
 			}
 			if allSame {
-				d.trigger(strings.Join(d.lines[n-loopRepeatLineThreshold:], "\n"), n-loopRepeatLineThreshold)
+				d.trigger(strings.Join(d.lines[n-lineThreshold:], "\n"), n-lineThreshold)
 				return true
 			}
 		}
 	}
 
-	// Strategy 2: block of k lines appearing twice consecutively.
-	maxK := n / 2
+	// Strategy 2: block of k lines appearing consecutively beyond the allowance.
+	requiredCopies := d.maxRepeats + 2
+	maxK := n / requiredCopies
 	if maxK > loopBlockMaxLines {
 		maxK = loopBlockMaxLines
 	}
 	for k := loopBlockMinLines; k <= maxK; k++ {
-		b1 := n - 2*k
-		b2 := n - k
-		match := true
-		for i := 0; i < k; i++ {
-			if d.lines[b1+i] != d.lines[b2+i] {
-				match = false
-				break
-			}
+		recentStart := n - k
+		if !hasRepeatedBlockSignal(d.lines[recentStart:]) {
+			continue
 		}
-		if match {
-			hasContent := false
+		copies := 1
+		for copyStart := recentStart - k; copyStart >= 0; copyStart -= k {
+			match := true
 			for i := 0; i < k; i++ {
-				if strings.TrimSpace(d.lines[b2+i]) != "" {
-					hasContent = true
+				if d.lines[copyStart+i] != d.lines[recentStart+i] {
+					match = false
 					break
 				}
 			}
-			if hasContent {
-				d.trigger(strings.Join(d.lines[b2:], "\n"), b1)
+			if !match {
+				break
+			}
+			copies++
+			if copies >= requiredCopies {
+				d.trigger(strings.Join(d.lines[recentStart:], "\n"), n-copies*k)
 				return true
 			}
 		}
 	}
+
+	if d.checkFuzzyLoopLocked(n) {
+		return true
+	}
 	return false
+}
+
+func hasRepeatedBlockSignal(lines []string) bool {
+	unique := make(map[string]struct{})
+	for _, line := range lines {
+		normalized := strings.ToLower(strings.TrimSpace(line))
+		if normalized != "" {
+			unique[normalized] = struct{}{}
+		}
+	}
+	return len(unique) >= loopBlockMinUniqueLines
+}
+
+func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
+	for _, k := range loopFuzzyWindowSizes {
+		if n < 2*k {
+			continue
+		}
+		prevStart := n - 2*k
+		recentStart := n - k
+
+		// Compare only adjacent windows. A repeated reasoning loop is expected
+		// to recur immediately; comparing every pair of historical windows would
+		// be slower and would flag legitimate revisits to earlier topics.
+		prev := fuzzyReasoningWindow(d.lines[prevStart:recentStart])
+		recent := fuzzyReasoningWindow(d.lines[recentStart:])
+		if !prev.enoughSignal() || !recent.enoughSignal() {
+			d.fuzzyRepeats[k] = 0
+			continue
+		}
+
+		// Jaccard similarity is intersection / union of the shingle sets. It is
+		// insensitive to repeated copies of the same phrase inside one window,
+		// which helps focus on breadth of overlap rather than raw length.
+		score := jaccardSimilarity(prev.shingles, recent.shingles)
+		if score >= loopFuzzyStrictThreshold || score >= loopFuzzyMarkerThreshold && shareDecisionMarkers(prev.markers, recent.markers) {
+			if lastEnd := d.fuzzyLastMatchEnd[k]; lastEnd == 0 || n-lastEnd >= k {
+				d.fuzzyRepeats[k]++
+				d.fuzzyLastMatchEnd[k] = n
+				if d.fuzzyRepeats[k] > d.maxRepeats {
+					d.trigger(strings.Join(d.lines[recentStart:], "\n"), prevStart-(d.maxRepeats*k))
+					return true
+				}
+			}
+			continue
+		}
+		d.fuzzyRepeats[k] = 0
+		d.fuzzyLastMatchEnd[k] = 0
+	}
+	return false
+}
+
+type fuzzyWindow struct {
+	// tokens are normalized words from the raw reasoning lines. They are kept so
+	// enoughSignal can reject tiny windows before shingle similarity is trusted.
+	tokens   []string
+	shingles map[string]struct{}
+
+	// markers summarize high-level review states observed in the window. They
+	// are not model semantics; they are simple phrase buckets for repeated
+	// review behavior that previously escaped exact matching.
+	markers map[string]struct{}
+}
+
+func (w fuzzyWindow) enoughSignal() bool {
+	return len(w.tokens) >= loopFuzzyMinTokens && len(w.shingles) >= loopFuzzyMinUniqueShingles
+}
+
+func fuzzyReasoningWindow(lines []string) fuzzyWindow {
+	tokens := make([]string, 0, len(lines)*8)
+	markers := make(map[string]struct{})
+	for _, line := range lines {
+		for _, marker := range decisionMarkers(line) {
+			markers[marker] = struct{}{}
+		}
+		tokens = append(tokens, normalizeReasoningTokens(line)...)
+	}
+	return fuzzyWindow{
+		tokens:   tokens,
+		shingles: tokenShingles(tokens, loopFuzzyShingleSize),
+		markers:  markers,
+	}
+}
+
+// normalizeReasoningTokens intentionally removes details that often change
+// between loop iterations while preserving the structure of the reasoning:
+// case and punctuation disappear, code spans become "ident", and digit runs
+// become "num". One-character tokens are dropped because they mostly add noise.
+func normalizeReasoningTokens(s string) []string {
+	var tokens []string
+	var b strings.Builder
+	inCode := false
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		token := b.String()
+		b.Reset()
+		if len(token) > 1 {
+			tokens = append(tokens, token)
+		}
+	}
+	for _, r := range s {
+		if r == '`' {
+			flush()
+			if inCode {
+				// Treat the full code span as one placeholder. In review loops,
+				// identifiers often vary across iterations even when the model is
+				// following the same reasoning script.
+				tokens = append(tokens, "ident")
+			}
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			continue
+		}
+		switch {
+		case unicode.IsLetter(r):
+			b.WriteRune(unicode.ToLower(r))
+		case unicode.IsDigit(r):
+			if b.String() != "num" {
+				flush()
+				// Collapse each run of digits into one token so line numbers,
+				// priorities, counters, and attempt numbers do not prevent a match.
+				b.WriteString("num")
+			}
+		default:
+			flush()
+		}
+	}
+	flush()
+	return tokens
+}
+
+// tokenShingles returns a set, not a multiset. We only care whether a phrase
+// shape appears in both windows, not how many times it appears inside one
+// window.
+func tokenShingles(tokens []string, size int) map[string]struct{} {
+	shingles := make(map[string]struct{})
+	if size <= 0 || len(tokens) < size {
+		return shingles
+	}
+	for i := 0; i+size <= len(tokens); i++ {
+		shingles[strings.Join(tokens[i:i+size], " ")] = struct{}{}
+	}
+	return shingles
+}
+
+// jaccardSimilarity returns 0..1 overlap between two shingle sets. Identical
+// sets score 1. Disjoint sets score 0.
+func jaccardSimilarity(a, b map[string]struct{}) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	for shingle := range a {
+		if _, ok := b[shingle]; ok {
+			intersection++
+		}
+	}
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+// decisionMarkers are coarse signs that the model is repeating the review
+// decision process itself. They let lower fuzzy similarity trigger only when
+// both windows share important review states, avoiding false positives from
+// ordinary long explanations that happen to reuse vocabulary.
+func decisionMarkers(s string) []string {
+	normalized := strings.Join(normalizeReasoningTokens(s), " ")
+	var markers []string
+	for _, marker := range []struct {
+		name    string
+		phrases []string
+	}{
+		{"finding", []string{"finding", "formulate the finding", "finalize the finding", "finalize my findings"}},
+		{"priority", []string{"priority"}},
+		{"suggestion", []string{"suggestion"}},
+		{"reconsider", []string{"actually", "wait", "reconsider", "overthinking"}},
+		{"old_new_code", []string{"old code", "new code"}},
+		{"main_issue", []string{"main issue", "pre existing", "introduced by the patch"}},
+	} {
+		for _, phrase := range marker.phrases {
+			if strings.Contains(normalized, phrase) {
+				markers = append(markers, marker.name)
+				break
+			}
+		}
+	}
+	return markers
+}
+
+// shareDecisionMarkers requires more than one shared marker so one repeated
+// word, such as "finding", cannot make a weak fuzzy match trigger by itself.
+func shareDecisionMarkers(a, b map[string]struct{}) bool {
+	shared := 0
+	for marker := range a {
+		if _, ok := b[marker]; ok {
+			shared++
+		}
+	}
+	return shared >= 2
 }
 
 func (d *reasoningLoopDetector) trigger(repeatedContent string, loopStartLine int) {

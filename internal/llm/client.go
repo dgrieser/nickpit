@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,14 +74,17 @@ type OpenAIClient struct {
 	retrier            *Retrier
 	logger             *logging.Logger
 	transport          *capturingTransport
+	allowedEfforts     map[string]struct{}
 }
 
 type SchemaKind string
 
 const (
-	SchemaKindReview SchemaKind = "review"
-	SchemaKindVerify SchemaKind = "verify"
-	SchemaKindText   SchemaKind = "text"
+	SchemaKindReview   SchemaKind = "review"
+	SchemaKindVerify   SchemaKind = "verify"
+	SchemaKindFinalize SchemaKind = "finalize"
+	SchemaKindJSON     SchemaKind = "json"
+	SchemaKindText     SchemaKind = "text"
 )
 
 // ReasoningSink receives streaming reasoning content from collectStream.
@@ -90,23 +94,33 @@ type ReasoningSink interface {
 	End()
 }
 
+// ResponseConstraints narrows what values are acceptable in a parsed agent response.
+type ResponseConstraints struct {
+	MinPriority        *int     // finding priority must be >= this value
+	MaxPriority        *int     // finding priority must be <= this value
+	AllowedCorrectness []string // overall_correctness must be one of these; nil means default enum
+}
+
 type ReviewRequest struct {
-	SystemPrompt      string
-	UserContent       string
-	Messages          []Message
-	NoToolsMessages   []Message
-	Tools             []ToolDefinition
-	Schema            json.RawMessage
-	SchemaKind        SchemaKind
-	Model             string
-	MaxTokens         *int
-	Temperature       *float64
-	TopP              *float64
-	ExtraBody         map[string]any
-	ParallelToolCalls bool
-	ReasoningEffort   string
-	MaxReasoning      time.Duration
-	ReasoningSink     ReasoningSink
+	SystemPrompt            string
+	UserContent             string
+	Messages                []Message
+	NoToolsMessages         []Message
+	Tools                   []ToolDefinition
+	Schema                  json.RawMessage
+	SchemaKind              SchemaKind
+	Constraints             ResponseConstraints
+	Model                   string
+	MaxTokens               *int
+	Temperature             *float64
+	TopP                    *float64
+	ExtraBody               map[string]any
+	ParallelToolCalls       bool
+	ReasoningEffort         string
+	MaxReasoning            time.Duration
+	MaxReasoningLoopRepeats int
+	ReasoningSink           ReasoningSink
+	SingleAttempt           bool
 }
 
 type Message struct {
@@ -151,6 +165,45 @@ type capture struct {
 }
 
 type extraBodyContextKey struct{}
+
+type captureSlot struct {
+	mu  sync.Mutex
+	cap *capture
+}
+
+func (s *captureSlot) set(c *capture) {
+	s.mu.Lock()
+	s.cap = c
+	s.mu.Unlock()
+}
+
+func (s *captureSlot) snapshot() *capture {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cap == nil {
+		return nil
+	}
+	cloned := *s.cap
+	if cloned.header != nil {
+		cloned.header = cloned.header.Clone()
+	}
+	if cloned.body != nil {
+		cloned.body = append([]byte(nil), cloned.body...)
+	}
+	return &cloned
+}
+
+type captureSlotContextKey struct{}
+
+func contextWithCaptureSlot(ctx context.Context) (context.Context, *captureSlot) {
+	slot := &captureSlot{}
+	return context.WithValue(ctx, captureSlotContextKey{}, slot), slot
+}
+
+func captureSlotFromContext(ctx context.Context) *captureSlot {
+	slot, _ := ctx.Value(captureSlotContextKey{}).(*captureSlot)
+	return slot
+}
 
 type streamedResponse struct {
 	content          string
@@ -295,6 +348,20 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 
 func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
 	c.logger = logger
+}
+
+func (c *OpenAIClient) SetAllowedReasoningEfforts(efforts []string) {
+	c.allowedEfforts = make(map[string]struct{}, len(efforts))
+	for _, effort := range efforts {
+		effort = strings.ToLower(strings.TrimSpace(effort))
+		if effort != "" {
+			c.allowedEfforts[effort] = struct{}{}
+		}
+	}
+}
+
+func KnownReasoningEfforts() []string {
+	return append([]string(nil), reasoningEffortFallbackOrder...)
 }
 
 func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (map[string]any, error) {
@@ -476,14 +543,19 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 
 	originalEffort := req.ReasoningEffort
 	efforts := []string{originalEffort}
-	for _, effort := range fallbackReasoningEfforts(originalEffort) {
-		efforts = append(efforts, effort)
+	if !req.SingleAttempt {
+		for _, effort := range fallbackReasoningEfforts(originalEffort) {
+			if attemptReasoningEffortAllowed(effort, c.allowedEfforts) {
+				efforts = append(efforts, effort)
+			}
+		}
 	}
 
 	var lastBudgetErr *ReasoningBudgetExhaustedError
 	var lastBudgetReq *ReviewRequest
 	budgetExhausted := false
 	var lastLoopErr *ReasoningLoopDetectedError
+	var lastLoopReq *ReviewRequest
 	loopDetected := false
 	for attemptIndex, effort := range efforts {
 		attemptReq := cloneReviewRequest(req)
@@ -512,6 +584,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var loopErr *ReasoningLoopDetectedError
 		if errors.As(err, &loopErr) {
 			lastLoopErr = loopErr
+			lastLoopReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
 				loopDetected = true
 				c.logf("Reasoning loop detected, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
@@ -519,12 +592,19 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			}
 			break
 		}
-		if attemptIndex > 0 {
-			if !isReasoningEffortRejection(err, effort) {
-				return nil, err
+		if isReasoningEffortRejection(err, effort) {
+			if attemptIndex+1 < len(efforts) {
+				c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				continue
 			}
-			c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
-			continue
+			if attemptIndex > 0 {
+				c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				continue
+			}
+			return nil, err
+		}
+		if attemptIndex > 0 {
+			return nil, err
 		}
 		return nil, err
 	}
@@ -543,6 +623,30 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		var budgetErr *ReasoningBudgetExhaustedError
 		if errors.As(noToolsErr, &budgetErr) {
 			lastBudgetErr = budgetErr
+		} else {
+			var invalidResp *InvalidResponseError
+			if errors.As(noToolsErr, &invalidResp) {
+				invalidResp.ToolsOmitted = true
+			}
+			return nil, noToolsErr
+		}
+		c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
+	}
+	if lastLoopReq != nil && len(lastLoopReq.Tools) > 0 && lastBudgetErr == nil {
+		noToolsReq := cloneReviewRequest(lastLoopReq)
+		noToolsReq.Messages = noToolsFallbackMessages(lastLoopReq)
+		noToolsReq.Tools = nil
+		noToolsReq.ParallelToolCalls = false
+		addReasoningLoopRetryHint(&noToolsReq)
+		c.logf("Retrying last loop-detected reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
+		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		if noToolsErr == nil {
+			noToolsResp.ToolsOmitted = true
+			return noToolsResp, nil
+		}
+		var loopErr *ReasoningLoopDetectedError
+		if errors.As(noToolsErr, &loopErr) {
+			lastLoopErr = loopErr
 		} else {
 			var invalidResp *InvalidResponseError
 			if errors.As(noToolsErr, &invalidResp) {
@@ -669,6 +773,18 @@ func fallbackReasoningEfforts(effort string) []string {
 	return []string{"low", "minimal", "none", "off"}
 }
 
+func attemptReasoningEffortAllowed(effort string, allowed map[string]struct{}) bool {
+	if allowed == nil {
+		return true
+	}
+	_, ok := allowed[strings.ToLower(strings.TrimSpace(effort))]
+	return ok
+}
+
+func IsReasoningEffortRejection(err error, effort string) bool {
+	return isReasoningEffortRejection(err, effort)
+}
+
 func isReasoningEffortRejection(err error, effort string) bool {
 	var statusErr *llmHTTPStatusError
 	if !errors.As(err, &statusErr) {
@@ -686,7 +802,16 @@ func isReasoningEffortRejection(err error, effort string) bool {
 	return strings.Contains(message, "reasoning_effort") ||
 		strings.Contains(message, "reasoning effort") ||
 		(strings.Contains(message, "reasoning") && (strings.Contains(message, "support") || strings.Contains(message, "supported") || strings.Contains(message, "invalid") || strings.Contains(message, "value"))) ||
+		isOpaqueParameterValidationRejection(message, effort) ||
 		isUnknownVariantRejection(message, effort)
+}
+
+func isOpaqueParameterValidationRejection(message, effort string) bool {
+	if strings.TrimSpace(effort) == "" {
+		return false
+	}
+	return strings.Contains(message, "failed to validate") &&
+		strings.Contains(message, "parameter")
 }
 
 func isUnknownVariantRejection(message, effort string) bool {
@@ -747,7 +872,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		payload.ResponseFormat = &openai.ChatCompletionResponseFormat{
 			Type: openai.ChatCompletionResponseFormatTypeJSONSchema,
 			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
-				Name:   "review_response",
+				Name:   responseFormatName(req.SchemaKind),
 				Schema: json.RawMessage(req.Schema),
 				Strict: true,
 			},
@@ -774,7 +899,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logHighlightedJSON("LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, req.MaxReasoningLoopRepeats)
 	if err != nil {
 		return nil, err
 	}
@@ -803,7 +928,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		resp = &ReviewResponse{ToolCalls: toolCalls}
 	} else {
 		var err error
-		resp, err = parseReviewResponse(content, req.SchemaKind)
+		resp, err = parseReviewResponse(content, req.SchemaKind, req.Constraints)
 		if err != nil {
 			var invalidResp *InvalidResponseError
 			if errors.As(err, &invalidResp) {
@@ -825,6 +950,13 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		resp.TokensUsed.TotalTokens,
 	)
 	return resp, nil
+}
+
+func responseFormatName(kind SchemaKind) string {
+	if kind == SchemaKindJSON {
+		return "json_response"
+	}
+	return "review_response"
 }
 
 func buildMessages(req *ReviewRequest) []openai.ChatCompletionMessage {
@@ -945,17 +1077,20 @@ func NormalizeToolCallArguments(arguments string) (string, bool) {
 	return string(normalized), true
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, maxReasoningLoopRepeats int) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
-		detector := newReasoningLoopDetector(streamCancel)
+		streamCtx, slot := contextWithCaptureSlot(streamCtx)
+		var detector *reasoningLoopDetector
+		if maxReasoningLoopRepeats > 0 {
+			detector = newReasoningLoopDetector(streamCancel, maxReasoningLoopRepeats)
+		}
 		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		c.logf("Sending LLM request: attempt=%d", attempt+1)
-		c.transport.reset()
 
 		stream, err := c.sdkClient.CreateChatCompletionStream(streamCtx, payload)
-		capture := c.transport.snapshot()
+		capture := slot.snapshot()
 		if capture != nil && capture.code != 0 {
 			c.logf("LLM stream opened: status=%s", capture.status)
 		}
@@ -1220,18 +1355,22 @@ func finalizeToolCalls(builders []*toolCallBuilder) []ToolCall {
 
 type capturingTransport struct {
 	base http.RoundTripper
-	last *capture
 }
 
 func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	slot := captureSlotFromContext(req.Context())
 	if err := injectExtraBody(req); err != nil {
-		t.last = nil
+		if slot != nil {
+			slot.set(nil)
+		}
 		return nil, err
 	}
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
-		t.last = nil
+		if slot != nil {
+			slot.set(nil)
+		}
 		return nil, err
 	}
 
@@ -1244,37 +1383,22 @@ func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if strings.Contains(req.Header.Get("Accept"), "text/event-stream") &&
 		resp.StatusCode >= http.StatusOK &&
 		resp.StatusCode < http.StatusBadRequest {
-		t.last = captured
+		if slot != nil {
+			slot.set(captured)
+		}
 		return resp, nil
 	}
 
 	data, readErr := readAndRestoreBody(resp)
 	captured.body = data
-	t.last = captured
+	if slot != nil {
+		slot.set(captured)
+	}
 	if readErr != nil {
 		return nil, readErr
 	}
 
 	return resp, nil
-}
-
-func (t *capturingTransport) reset() {
-	t.last = nil
-}
-
-func (t *capturingTransport) snapshot() *capture {
-	if t.last == nil {
-		return nil
-	}
-
-	cloned := *t.last
-	if cloned.header != nil {
-		cloned.header = cloned.header.Clone()
-	}
-	if cloned.body != nil {
-		cloned.body = append([]byte(nil), cloned.body...)
-	}
-	return &cloned
 }
 
 func readAndRestoreBody(resp *http.Response) ([]byte, error) {
@@ -1658,8 +1782,18 @@ func canonicalToolCallKey(call ToolCall) string {
 	return call.Name + "\x00" + string(normalized)
 }
 
-func parseReviewResponse(content string, kind SchemaKind) (*ReviewResponse, error) {
+func parseReviewResponse(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, error) {
 	if kind == SchemaKindText {
+		return &ReviewResponse{}, nil
+	}
+	if kind == SchemaKindJSON {
+		var parsed any
+		if err := LenientUnmarshal(content, &parsed); err != nil {
+			return nil, &InvalidResponseError{
+				RawContent: content,
+				Reason:     fmt.Sprintf("could not parse JSON: %v", err),
+			}
+		}
 		return &ReviewResponse{}, nil
 	}
 	if kind == SchemaKindVerify {
@@ -1675,7 +1809,7 @@ func parseReviewResponse(content string, kind SchemaKind) (*ReviewResponse, erro
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 	}
-	if missing := missingResponseFields(&parsed, content); len(missing) > 0 {
+	if missing := missingResponseFields(&parsed, content, kind, constraints); len(missing) > 0 {
 		return &parsed, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
@@ -1722,21 +1856,23 @@ func missingVerifyFields(content string) []string {
 	return missing
 }
 
-func missingResponseFields(parsed *ReviewResponse, content string) []string {
+func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind, constraints ResponseConstraints) []string {
 	var raw map[string]json.RawMessage
 	_ = LenientUnmarshal(content, &raw)
 	var missing []string
 	if _, ok := raw["findings"]; !ok && parsed.Findings == nil {
 		missing = append(missing, "findings")
 	}
-	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"])...)
+	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"], kind, constraints)...)
 	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
 		missing = append(missing, "overall_correctness")
 	} else {
-		switch parsed.OverallCorrectness {
-		case "patch is correct", "patch is incorrect":
-		default:
-			missing = append(missing, `overall_correctness (must be "patch is correct" or "patch is incorrect")`)
+		allowed := constraints.AllowedCorrectness
+		if len(allowed) == 0 {
+			allowed = []string{"patch is correct", "patch is incorrect"}
+		}
+		if !slices.Contains(allowed, parsed.OverallCorrectness) {
+			missing = append(missing, fmt.Sprintf("overall_correctness (must be one of: %v)", allowed))
 		}
 	}
 	if strings.TrimSpace(parsed.OverallExplanation) == "" {
@@ -1748,13 +1884,21 @@ func missingResponseFields(parsed *ReviewResponse, content string) []string {
 	return missing
 }
 
-func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage) []string {
+func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage, kind SchemaKind, constraints ResponseConstraints) []string {
 	if len(findings) == 0 {
 		return nil
 	}
 	var rawItems []map[string]json.RawMessage
 	if len(rawFindings) > 0 {
 		_ = json.Unmarshal(rawFindings, &rawItems)
+	}
+	effectiveMin := 0
+	effectiveMax := 3
+	if constraints.MinPriority != nil {
+		effectiveMin = *constraints.MinPriority
+	}
+	if constraints.MaxPriority != nil {
+		effectiveMax = *constraints.MaxPriority
 	}
 	var missing []string
 	for i, finding := range findings {
@@ -1767,8 +1911,41 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage)
 			missing = append(missing, fmt.Sprintf("findings[%d].priority", i))
 			continue
 		}
-		if *finding.Priority < 0 || *finding.Priority > 3 {
-			missing = append(missing, fmt.Sprintf("findings[%d].priority (must be 0-3)", i))
+		if *finding.Priority < effectiveMin || *finding.Priority > effectiveMax {
+			missing = append(missing, fmt.Sprintf("findings[%d].priority (must be %d-%d)", i, effectiveMin, effectiveMax))
+		}
+		if kind == SchemaKindFinalize {
+			missing = append(missing, missingFinalizeFindingFields(i, rawItem, finding)...)
+		}
+	}
+	return missing
+}
+
+func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, finding model.Finding) []string {
+	var missing []string
+	if _, ok := rawItem["verification"]; !ok || finding.Verification == nil {
+		missing = append(missing, fmt.Sprintf("findings[%d].verification", i))
+	} else {
+		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].verification", i), rawItem["verification"], []string{"valid", "priority", "confidence_score", "remarks"})...)
+	}
+	if _, ok := rawItem["finalization"]; !ok || finding.Finalization == nil {
+		missing = append(missing, fmt.Sprintf("findings[%d].finalization", i))
+	} else {
+		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].finalization", i), rawItem["finalization"], []string{"title", "body", "priority", "remarks"})...)
+		if finding.Finalization.Priority < 0 || finding.Finalization.Priority > 3 {
+			missing = append(missing, fmt.Sprintf("findings[%d].finalization.priority (must be 0-3)", i))
+		}
+	}
+	return missing
+}
+
+func missingNestedFields(prefix string, raw json.RawMessage, fields []string) []string {
+	var object map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &object)
+	var missing []string
+	for _, field := range fields {
+		if _, ok := object[field]; !ok {
+			missing = append(missing, prefix+"."+field)
 		}
 	}
 	return missing

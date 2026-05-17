@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -39,6 +40,7 @@ type ReviewRequest struct {
 	MaxDuplicateToolCalls    int
 	MaxOutputRetries         int
 	MaxReasoningSeconds      int
+	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	UseJSONSchema            bool
 	PriorityThreshold        string
@@ -55,6 +57,7 @@ type ReviewResult struct {
 	AgentRuns              []AgentRun `json:"agent_runs,omitempty"`
 	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
 	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used,omitempty"`
+	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used,omitempty"`
 	Mode                   string     `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`
@@ -163,10 +166,19 @@ type Finding struct {
 	CodeLocation    CodeLocation         `json:"code_location"`
 	Suggestions     []Suggestion         `json:"suggestions,omitempty"`
 	Verification    *FindingVerification `json:"verification,omitempty"`
+	Finalization    *FindingFinalization `json:"finalization,omitempty"`
 }
 
 type FindingVerification struct {
 	Valid           bool    `json:"valid"`
+	Priority        int     `json:"priority"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	Remarks         string  `json:"remarks"`
+}
+
+type FindingFinalization struct {
+	Title           string  `json:"title"`
+	Body            string  `json:"body"`
 	Priority        int     `json:"priority"`
 	ConfidenceScore float64 `json:"confidence_score"`
 	Remarks         string  `json:"remarks"`
@@ -256,14 +268,34 @@ func PriorityThresholdRank(value string) int {
 	}
 }
 
-func CloneContext(src *ReviewContext) *ReviewContext {
+func CloneContext(src *ReviewContext) (*ReviewContext, error) {
 	if src == nil {
-		return nil
+		return nil, nil
 	}
-	data, _ := json.Marshal(src)
+	data, err := json.Marshal(src)
+	if err != nil {
+		return nil, fmt.Errorf("model: CloneContext marshal: %w", err)
+	}
 	var out ReviewContext
-	_ = json.Unmarshal(data, &out)
-	return &out
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("model: CloneContext unmarshal: %w", err)
+	}
+	return &out, nil
+}
+
+func (r *ReviewResult) Clone() (*ReviewResult, error) {
+	if r == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return nil, fmt.Errorf("model: Clone marshal: %w", err)
+	}
+	var out ReviewResult
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("model: Clone unmarshal: %w", err)
+	}
+	return &out, nil
 }
 
 func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {

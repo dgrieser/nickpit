@@ -96,8 +96,21 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 				return err
 			}
 		}
+		prevRank := model.PriorityRank(finding.Priority)
+		if finding.Verification != nil {
+			prevRank = finding.Verification.Priority
+		}
+		if line := f.renderFinalization(finding.Finalization, prevRank); line != "" {
+			if _, err := fmt.Fprintln(f.w, line); err != nil {
+				return err
+			}
+		}
+		title, body, conf := finding.Title, finding.Body, finding.ConfidenceScore
+		if finding.Finalization != nil {
+			title, body, conf = finding.Finalization.Title, finding.Finalization.Body, finding.Finalization.ConfidenceScore
+		}
 		if _, err := fmt.Fprintf(f.w, "%s\n%s\nConfidence: %.2f\n\n",
-			finding.Title, finding.Body, finding.ConfidenceScore,
+			title, body, conf,
 		); err != nil {
 			return err
 		}
@@ -106,6 +119,25 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		result.OverallCorrectness, result.OverallExplanation, result.OverallConfidenceScore,
 		result.TokensUsed.PromptTokens, result.TokensUsed.CompletionTokens, result.TokensUsed.TotalTokens)
 	return err
+}
+
+func (f *TerminalFormatter) renderFinalization(v *model.FindingFinalization, prevRank int) string {
+	if v == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("  finalized")
+	if v.Priority != prevRank {
+		arrow := fmt.Sprintf("  P%d→P%d", prevRank, v.Priority)
+		b.WriteString(f.colorPriorityArrow(arrow))
+	} else {
+		fmt.Fprintf(&b, "  P%d", v.Priority)
+	}
+	if remarks := strings.TrimSpace(v.Remarks); remarks != "" {
+		b.WriteString("\n  final remark: ")
+		b.WriteString(truncateRemark(remarks, 200))
+	}
+	return b.String()
 }
 
 func (f *TerminalFormatter) renderVerification(v *model.FindingVerification, originalRank int) string {

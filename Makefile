@@ -4,7 +4,7 @@ BINDIR ?= $(PREFIX)/bin
 
 .DEFAULT_GOAL := build
 
-.PHONY: help generate build debug install test lint fmt
+.PHONY: help generate build debug install test race lint fmt
 
 .DEFAULT:
 	@echo "Error: unknown target '$@'"
@@ -31,6 +31,9 @@ install: build ## Install the binary to $(BINDIR)
 
 test: ## Run the test suite
 	go test ./...
+
+race: ## Run the race detector
+	go test -race ./...
 
 lint: ## Run go vet
 	go vet ./...

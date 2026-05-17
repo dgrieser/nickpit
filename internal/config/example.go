@@ -54,6 +54,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("max_duplicate_tool_calls", yamlInt(profile.MaxDuplicateToolCalls)),
 		yamlEntry("max_output_retries", yamlInt(profile.MaxOutputRetries)),
 		yamlEntry("max_reasoning_seconds", yamlInt(profile.MaxReasoningSeconds)),
+		yamlEntry("max_reasoning_loop_repeats", yamlInt(profile.MaxReasoningLoopRepeats)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
@@ -79,6 +80,9 @@ func exampleProfile(profile Profile) Profile {
 	}
 	if profile.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
 		profile.MaxReasoningSeconds = DefaultMaxReasoningSeconds
+	}
+	if profile.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
+		profile.MaxReasoningLoopRepeats = DefaultMaxReasoningLoopRepeats
 	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort

@@ -1,9 +1,20 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/modelcheck"
 )
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
@@ -155,6 +166,197 @@ profiles:
 	if err == nil {
 		t.Fatal("expected invalid --extra-body error")
 	}
+}
+
+func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
+	cmd := newRootCmd()
+	for _, name := range []string{"no-verify", "no-finalize"} {
+		if cmd.PersistentFlags().Lookup(name) != nil {
+			t.Fatalf("unexpected persistent flag %q", name)
+		}
+	}
+	if cmd.PersistentFlags().Lookup("verify-concurrency") == nil {
+		t.Fatal("verify-concurrency flag missing")
+	}
+	if cmd.PersistentFlags().Lookup("skip-model-check") == nil {
+		t.Fatal("skip-model-check flag missing")
+	}
+}
+
+func TestRootCmdHasCheckModel(t *testing.T) {
+	cmd := newRootCmd()
+	check, _, err := cmd.Find([]string{"check", "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check == nil || check.Use != "model" {
+		t.Fatalf("check model command missing: %#v", check)
+	}
+}
+
+func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
+	out := captureStdout(t, func() {
+		err := (&app{}).writeModelCheckOutput(modelcheck.Result{
+			Probes: []modelcheck.ProbeResult{
+				{Name: "configured_no_tools", ReasoningEffort: "high", Reasoned: true, Status: modelcheck.StatusOK},
+				{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: modelcheck.StatusOK},
+				{Name: "configured_json_output", ReasoningEffort: "high", Status: modelcheck.StatusOK},
+				{Name: "configured_json_schema", ReasoningEffort: "high", Status: modelcheck.StatusOK},
+			},
+			PassedEfforts: []string{"high", "medium"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{
+		"✓ Model is compatible",
+		"✓ Tool Use",
+		"✓ Structured Output",
+		"✓ JSON Schema",
+		"✓ Reasoning Traces",
+		"Supported Efforts",
+		"  ✓ high",
+		"  ✓ medium",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "check:") || strings.Contains(out, "json_response:") {
+		t.Fatalf("output should not use YAML style\n%s", out)
+	}
+}
+
+type recordingSource struct {
+	called bool
+	err    error
+}
+
+func (s *recordingSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	s.called = true
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &model.ReviewContext{Repository: model.RepositoryInfo{}, ChangedFiles: []model.ChangedFile{}}, nil
+}
+
+func TestRunReviewRunsModelCheckBeforeSourceWork(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	source := &recordingSource{}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         server.URL,
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "model check failed") {
+		t.Fatalf("error = %v, want model check failure", err)
+	}
+	if source.called {
+		t.Fatal("source should not run before model check passes")
+	}
+}
+
+func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	stderr := captureStderr(t, func() {
+		err := (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
+			Model:                      "Qwen3.5-122B-A10B-FP8",
+			BaseURL:                    server.URL,
+			APIKey:                     "token",
+			ReasoningEffort:            "high",
+			MaxContextTokens:           120000,
+			MaxDuplicateToolCalls:      5,
+			MaxOutputRetries:           2,
+			MaxOutputRetriesConfigured: true,
+			UseJSONSchema:              true,
+		}, model.ReviewRequest{
+			Mode:                  model.ModeLocal,
+			RepoRoot:              t.TempDir(),
+			MaxOutputRetries:      2,
+			MaxDuplicateToolCalls: 5,
+			UseJSONSchema:         true,
+			PriorityThreshold:     "p3",
+		})
+		if err == nil || !strings.Contains(err.Error(), "model check failed") {
+			t.Fatalf("error = %v, want model check failure", err)
+		}
+	})
+
+	want := "Model: Qwen3.5-122B-A10B-FP8:high [120k context, ≤5 duplicate tool calls, ≤2 output retries, parallel, structured] @ " + server.URL
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", want, stderr)
+	}
+}
+
+func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
+	wantErr := errors.New("source called")
+	source := &recordingSource{err: wantErr}
+	err := (&app{skipModelCheck: true}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         "http://127.0.0.1:1",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want source error", err)
+	}
+	if !source.called {
+		t.Fatal("source should run when model check is skipped")
+	}
+}
+
+func captureOutput(t *testing.T, stream **os.File, fn func()) string {
+	t.Helper()
+	original := *stream
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	*stream = w
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	defer func() {
+		*stream = original
+		_ = r.Close()
+	}()
+
+	fn()
+
+	_ = w.Close()
+	return <-done
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	return captureOutput(t, &os.Stderr, fn)
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	return captureOutput(t, &os.Stdout, fn)
 }
 
 func TestMissingAPIKeyHintUsesDefaultProfileEnv(t *testing.T) {

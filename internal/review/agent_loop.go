@@ -20,6 +20,7 @@ type agentLoopRequest struct {
 	Tools                      []llm.ToolDefinition
 	Schema                     []byte
 	SchemaKind                 llm.SchemaKind
+	Constraints                llm.ResponseConstraints
 	Model                      string
 	MaxTokens                  *int
 	Temperature                *float64
@@ -31,6 +32,7 @@ type agentLoopRequest struct {
 	MaxDuplicateToolCalls      int
 	MaxOutputRetries           int
 	MaxReasoningSeconds        int
+	MaxReasoningLoopRepeats    int
 	ParallelToolCalls          bool
 	Section                    *logging.ReasoningSection
 	NoToolsMessages            func([]llm.Message) ([]llm.Message, error)
@@ -54,18 +56,20 @@ type agentLoopResult struct {
 
 func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentLoopResult, error) {
 	llmReq := &llm.ReviewRequest{
-		Messages:          req.Messages,
-		Tools:             append([]llm.ToolDefinition(nil), req.Tools...),
-		Schema:            req.Schema,
-		SchemaKind:        req.SchemaKind,
-		Model:             req.Model,
-		MaxTokens:         req.MaxTokens,
-		Temperature:       req.Temperature,
-		TopP:              req.TopP,
-		ExtraBody:         req.ExtraBody,
-		ParallelToolCalls: req.ParallelToolCalls,
-		ReasoningEffort:   req.ReasoningEffort,
-		MaxReasoning:      time.Duration(req.MaxReasoningSeconds) * time.Second,
+		Messages:                req.Messages,
+		Tools:                   append([]llm.ToolDefinition(nil), req.Tools...),
+		Schema:                  req.Schema,
+		SchemaKind:              req.SchemaKind,
+		Constraints:             req.Constraints,
+		Model:                   req.Model,
+		MaxTokens:               req.MaxTokens,
+		Temperature:             req.Temperature,
+		TopP:                    req.TopP,
+		ExtraBody:               req.ExtraBody,
+		ParallelToolCalls:       req.ParallelToolCalls,
+		ReasoningEffort:         req.ReasoningEffort,
+		MaxReasoning:            time.Duration(req.MaxReasoningSeconds) * time.Second,
+		MaxReasoningLoopRepeats: req.MaxReasoningLoopRepeats,
 	}
 
 	messages := append([]llm.Message(nil), req.Messages...)

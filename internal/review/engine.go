@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 )
@@ -125,7 +126,10 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		trimmer = NewTrimmer(req.MaxContextTokens, model.SimpleEstimator{})
 	}
 
-	trimmed := trimmer.Trim(reviewCtx)
+	trimmed, err := trimmer.Trim(reviewCtx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("review: trim context: %w", err)
+	}
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	var result *model.ReviewResult
 	var enrichedCtx *model.ReviewContext
@@ -196,6 +200,7 @@ type reviewAgent struct {
 	extraMessages []llm.Message
 	schema        []byte
 	schemaKind    llm.SchemaKind
+	constraints   llm.ResponseConstraints
 	hasTools      bool
 }
 
@@ -282,16 +287,22 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 }
 
 var reviewVectors = []struct {
-	name      string
-	focusFile string
+	name        string
+	focusFile   string
+	constraints llm.ResponseConstraints
 }{
-	{"Code Quality", "agent_review_codequality_system_prompt.tmpl"},
-	{"Security", "agent_review_security_system_prompt.tmpl"},
-	{"Architecture", "agent_review_architecture_system_prompt.tmpl"},
-	{"Performance", "agent_review_performance_system_prompt.tmpl"},
-	{"Testing", "agent_review_testing_system_prompt.tmpl"},
-	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl"},
+	{"Code Quality", "agent_review_codequality_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Security", "agent_review_security_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Architecture", "agent_review_architecture_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Performance", "agent_review_performance_system_prompt.tmpl", llm.ResponseConstraints{}},
+	{"Testing", "agent_review_testing_system_prompt.tmpl", llm.ResponseConstraints{
+		MinPriority:        intPtr(2),
+		AllowedCorrectness: []string{"patch is correct"},
+	}},
+	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl", llm.ResponseConstraints{}},
 }
+
+func intPtr(v int) *int { return &v }
 
 func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	baseTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
@@ -330,7 +341,10 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		return nil, nil, err
 	}
 
-	enriched := model.CloneContext(reviewCtx)
+	enriched, err := model.CloneContext(reviewCtx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("review: cloning context: %w", err)
+	}
 	enriched.SupplementalContext = append(enriched.SupplementalContext, supplementalFromContextAgent(contextResult.toolMessages)...)
 	payload = model.PromptPayloadFromContext(enriched)
 	payload.StyleGuides, err = e.styleGuidesFor(enriched)
@@ -405,8 +419,9 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 	for i, vector := range reviewVectors {
 		wg.Add(1)
 		go func(idx int, vector struct {
-			name      string
-			focusFile string
+			name        string
+			focusFile   string
+			constraints llm.ResponseConstraints
 		}) {
 			defer wg.Done()
 			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, true)
@@ -419,6 +434,10 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				errs[idx] = err
 				return
 			}
+			agentSchema := schema
+			if req.UseJSONSchema && (vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil || len(vector.constraints.AllowedCorrectness) > 0) {
+				agentSchema = llm.FindingsSchemaWithConstraints(vector.constraints)
+			}
 			result, err := e.runReviewAgent(ctx, reviewAgent{
 				name:          vector.name,
 				role:          "reviewer",
@@ -426,8 +445,9 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				noToolsSystem: noToolsSystem,
 				user:          userPrompt,
 				extraMessages: contextMessages,
-				schema:        schema,
+				schema:        agentSchema,
 				schemaKind:    llm.SchemaKindReview,
+				constraints:   vector.constraints,
 				hasTools:      true,
 			}, req)
 			results[idx] = result
@@ -550,6 +570,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		Tools:                      tools,
 		Schema:                     agent.schema,
 		SchemaKind:                 agent.schemaKind,
+		Constraints:                agent.constraints,
 		Model:                      e.config.Model,
 		MaxTokens:                  e.config.MaxTokens,
 		Temperature:                e.config.Temperature,
@@ -562,10 +583,11 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
 		MaxOutputRetries:           req.MaxOutputRetries,
 		MaxReasoningSeconds:        req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:    req.MaxReasoningLoopRepeats,
 		Section:                    sec,
 		NoToolsSystem:              noToolsSystem,
 		NoToolsSchemaSnippet:       reviewSnippet,
-		JSONRetryExampleSnippet:    llm.FindingsExamplePromptSnippet(),
+		JSONRetryExampleSnippet:    exampleSnippetFor(agent.schemaKind),
 		JSONRetryProgressAgentName: agent.name,
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			if !agent.hasTools {
@@ -650,6 +672,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 type toolInstructionsConfig struct {
 	kind                     string
 	parallelToolCallGuidance bool
+	toolNames                []string
 }
 
 func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, error) {
@@ -664,12 +687,28 @@ func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, 
 	}{
 		Kind:                     config.kind,
 		ParallelToolCallGuidance: config.parallelToolCallGuidance,
-		ToolListing:              toolInstructionsListing(),
+		ToolListing:              toolInstructionsListing(config.toolNames...),
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering tool instructions prompt: %w", err)
 	}
 	return rendered, nil
+}
+
+func reviewerToolDefinitions(names ...string) []llm.ToolDefinition {
+	definitions, err := toolcatalog.Definitions(names...)
+	if err != nil {
+		panic(fmt.Sprintf("review: selecting tool definitions: %v", err))
+	}
+	return definitions
+}
+
+func toolInstructionsListing(names ...string) string {
+	listing, err := toolcatalog.InstructionsListing(names...)
+	if err != nil {
+		panic(fmt.Sprintf("review: selecting tool instructions: %v", err))
+	}
+	return listing
 }
 
 func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([]llm.Message, error) {
@@ -796,6 +835,9 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 	if kind == llm.SchemaKindVerify {
 		return llm.VerifyExamplePromptSnippet()
 	}
+	if kind == llm.SchemaKindFinalize {
+		return llm.FinalizeExamplePromptSnippet()
+	}
 	return llm.FindingsExamplePromptSnippet()
 }
 
@@ -906,7 +948,11 @@ func agentCommonSystemPromptSnippets(kind string, outputSchemaSnippet string) (a
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
-	outputFormat, err := agentCommonSystemPromptSnippet(kind, "output_format", outputSchemaSnippet)
+	outputFormatSnippet := "output_format"
+	if outputSchemaSnippet == "" {
+		outputFormatSnippet = "response_format"
+	}
+	outputFormat, err := agentCommonSystemPromptSnippet(kind, outputFormatSnippet, outputSchemaSnippet)
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
@@ -1412,12 +1458,14 @@ func mustToolResultJSON(value any) string {
 	return string(data)
 }
 
-type toolErrorData struct {
-	Code     string
-	ToolName string
-	Argument string
-	Schema   string
-	Message  string
+type toolErrorData = toolcatalog.ErrorData
+
+func toolErrorMessage(data toolErrorData) string {
+	return toolcatalog.ErrorMessage(data)
+}
+
+func toolArgumentSchema(name string) string {
+	return toolcatalog.ArgumentSchema(name)
 }
 
 func missingToolArgumentMessage(toolName, argument string) string {

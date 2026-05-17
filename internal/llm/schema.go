@@ -7,63 +7,82 @@ import (
 	"sort"
 )
 
-var findingsSchemaDefinition = map[string]any{
-	"type": "object",
-	"properties": map[string]any{
-		"findings": map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"title":            map[string]any{"type": "string", "examples": []any{"Example title"}},
-					"body":             map[string]any{"type": "string", "examples": []any{"Example explanation of why this is a problem."}},
-					"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
-					"priority":         map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "examples": []any{1}},
-					"code_location": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"file_path": map[string]any{"type": "string", "examples": []any{"file.go"}},
-							"line_range": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"start": map[string]any{"type": "integer"},
-									"end":   map[string]any{"type": "integer"},
-								},
-								"required": []string{"start", "end"},
-							},
-						},
-						"required": []string{"file_path", "line_range"},
-					},
-					"suggestions": map[string]any{
-						"type": "array",
-						"items": map[string]any{
+func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectness []string) map[string]any {
+	if len(allowedCorrectness) == 0 {
+		allowedCorrectness = []string{"patch is correct", "patch is incorrect"}
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"findings": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title":            map[string]any{"type": "string", "examples": []any{"Example title"}},
+						"body":             map[string]any{"type": "string", "examples": []any{"Example explanation of why this is a problem."}},
+						"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
+						"priority":         map[string]any{"type": "integer", "minimum": minPriority, "maximum": maxPriority, "examples": []any{minPriority}},
+						"code_location": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"body": map[string]any{"type": "string", "examples": []any{"replacement code"}},
+								"file_path": map[string]any{"type": "string", "examples": []any{"file.go"}},
 								"line_range": map[string]any{
 									"type": "object",
 									"properties": map[string]any{
-										"start": map[string]any{"type": "integer", "examples": []any{10}},
-										"end":   map[string]any{"type": "integer", "examples": []any{12}},
+										"start": map[string]any{"type": "integer"},
+										"end":   map[string]any{"type": "integer"},
 									},
 									"required": []string{"start", "end"},
 								},
 							},
-							"required": []string{"body", "line_range"},
+							"required": []string{"file_path", "line_range"},
+						},
+						"suggestions": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"body": map[string]any{"type": "string", "examples": []any{"replacement code"}},
+									"line_range": map[string]any{
+										"type": "object",
+										"properties": map[string]any{
+											"start": map[string]any{"type": "integer", "examples": []any{10}},
+											"end":   map[string]any{"type": "integer", "examples": []any{12}},
+										},
+										"required": []string{"start", "end"},
+									},
+								},
+								"required": []string{"body", "line_range"},
+							},
 						},
 					},
+					"required": []string{"title", "body", "confidence_score", "priority", "code_location"},
 				},
-				"required": []string{"title", "body", "confidence_score", "priority", "code_location"},
 			},
+			"overall_correctness":      map[string]any{"type": "string", "enum": allowedCorrectness},
+			"overall_explanation":      map[string]any{"type": "string", "examples": []any{"The patch is incorrect because it introduces a correctness issue."}},
+			"overall_confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
 		},
-		"overall_correctness":      map[string]any{"type": "string", "enum": []string{"patch is correct", "patch is incorrect"}},
-		"overall_explanation":      map[string]any{"type": "string", "examples": []any{"The patch is incorrect because it introduces a correctness issue."}},
-		"overall_confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
-	},
-	"required": []string{"findings", "overall_correctness", "overall_explanation", "overall_confidence_score"},
+		"required": []string{"findings", "overall_correctness", "overall_explanation", "overall_confidence_score"},
+	}
 }
 
+var findingsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil)
+
 var FindingsSchema = mustMarshalCleanSchema(findingsSchemaDefinition)
+
+// FindingsSchemaWithConstraints returns a findings schema narrowed by the given constraints.
+func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
+	min, max := 0, 3
+	if c.MinPriority != nil {
+		min = *c.MinPriority
+	}
+	if c.MaxPriority != nil {
+		max = *c.MaxPriority
+	}
+	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness))
+}
 
 func FindingsExamplePromptSnippet() string {
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsSchemaDefinition)))
