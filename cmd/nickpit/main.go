@@ -1022,8 +1022,8 @@ func parseRepoFromRemoteURL(raw string) string {
 	}
 	// SCP-style: git@github.com:owner/repo.git
 	//            git@gitlab.com:group/project.git
-	if i := strings.Index(raw, ":"); i != -1 {
-		return strings.TrimSuffix(raw[i+1:], ".git")
+	if _, after, ok := strings.Cut(raw, ":"); ok {
+		return strings.TrimSuffix(after, ".git")
 	}
 	return ""
 }
