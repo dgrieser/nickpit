@@ -3,6 +3,7 @@ module github.com/dgrieser/nickpit
 go 1.25.0
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/term v0.42.0

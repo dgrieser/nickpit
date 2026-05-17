@@ -12,6 +12,7 @@ import (
 )
 
 func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
@@ -36,6 +37,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
 			{
+				ID:              findingID,
 				Title:           "Fix issue",
 				Body:            "body",
 				ConfidenceScore: 0.7,
@@ -65,6 +67,9 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("finalize system prompt missing %s:\n%s", want, systemPrompt)
 		}
+	}
+	if !strings.Contains(req.Messages[1].Content, `"id": "`+findingID+`"`) {
+		t.Fatalf("finalize user prompt missing finding id:\n%s", req.Messages[1].Content)
 	}
 }
 
@@ -138,7 +143,8 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 }
 
 func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
-	inputVerification := &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"}
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	inputVerification := &model.FindingVerification{ID: findingID, Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
@@ -161,6 +167,7 @@ func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
 			{
+				ID:              findingID,
 				Title:           "Fix issue",
 				Body:            "body",
 				ConfidenceScore: 0.7,
@@ -596,6 +603,31 @@ func TestFinalizeWeightedConfidenceSkipsWhenNoInputMatch(t *testing.T) {
 	}
 }
 
+func TestDropUnmatchedFindingsRestampsSwappedIDLocation(t *testing.T) {
+	const idA = "11111111-1111-4111-8111-111111111111"
+	const idB = "22222222-2222-4222-8222-222222222222"
+	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}
+	in := []model.Finding{
+		{ID: idA, Title: "Issue A", CodeLocation: locA},
+		{ID: idB, Title: "Issue B", CodeLocation: locB},
+	}
+	out := []model.Finding{
+		{ID: idA, Title: "Issue B", CodeLocation: locB},
+	}
+
+	got := dropUnmatchedFindings(out, in)
+	if len(got) != 1 {
+		t.Fatalf("findings = %d, want 1 location match", len(got))
+	}
+	if got[0].ID != idB {
+		t.Fatalf("id = %q, want restamped to location match %q", got[0].ID, idB)
+	}
+	if got[0].CodeLocation != locB {
+		t.Fatalf("location = %#v, want %#v", got[0].CodeLocation, locB)
+	}
+}
+
 // Regression: with no input findings, Finalize must short-circuit before any
 // LLM call. Skips network, schema work, and the rest of the pipeline.
 func TestFinalizeEarlySkipsOnEmptyFindings(t *testing.T) {
@@ -635,5 +667,47 @@ func TestFinalizeRefusesPatchIncorrectWithoutCriticalFindings(t *testing.T) {
 		{Priority: intPtr(1)},
 	}).AllowedCorrectness; len(cs) != 0 {
 		t.Fatalf("constraints = %#v, want unconstrained (P1 present)", cs)
+	}
+}
+
+func TestFinalizePreservesInputIDWhenLLMDropsIt(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{{
+			Findings: []model.Finding{{
+				Title:           "Fix issue",
+				Body:            "body",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
+			}},
+			OverallCorrectness:     "patch is correct",
+			OverallExplanation:     "ok",
+			OverallConfidenceScore: 0.7,
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{{
+			ID:              findingID,
+			Title:           "Fix issue",
+			Body:            "body",
+			ConfidenceScore: 0.7,
+			Priority:        intPtr(1),
+			CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+			Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+		}},
+		OverallCorrectness:     "patch is correct",
+		OverallExplanation:     "ok",
+		OverallConfidenceScore: 0.7,
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	if got := out.Findings[0].ID; got != findingID {
+		t.Fatalf("id = %q, want %q", got, findingID)
 	}
 }

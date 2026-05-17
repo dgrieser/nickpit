@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ReviewMode string
@@ -159,6 +161,9 @@ type CommitSummary struct {
 }
 
 type Finding struct {
+	// ID is required at serialization boundaries; regenerate legacy artifacts
+	// that predate UUID finding IDs.
+	ID              string               `json:"id"`
 	Title           string               `json:"title"`
 	Body            string               `json:"body"`
 	ConfidenceScore float64              `json:"confidence_score"`
@@ -169,11 +174,64 @@ type Finding struct {
 	Finalization    *FindingFinalization `json:"finalization,omitempty"`
 }
 
+func EnsureFindingIDs(findings []Finding) int {
+	seen := make(map[string]struct{}, len(findings))
+	overwrote := 0
+	for i := range findings {
+		if EnsureFindingID(&findings[i]) {
+			overwrote++
+		}
+		if _, ok := seen[findings[i].ID]; ok {
+			findings[i].ID = newUniqueUUID(seen)
+		}
+		seen[findings[i].ID] = struct{}{}
+	}
+	return overwrote
+}
+
+func EnsureFindingID(f *Finding) bool {
+	if f == nil {
+		return false
+	}
+	if _, err := uuid.Parse(f.ID); err != nil {
+		overwrote := f.ID != ""
+		f.ID = uuid.NewString()
+		return overwrote
+	}
+	return false
+}
+
+func newUniqueUUID(seen map[string]struct{}) string {
+	for {
+		id := uuid.NewString()
+		if _, ok := seen[id]; !ok {
+			return id
+		}
+	}
+}
+
 type FindingVerification struct {
+	ID              string  `json:"id"`
 	Valid           bool    `json:"valid"`
 	Priority        int     `json:"priority"`
 	ConfidenceScore float64 `json:"confidence_score"`
 	Remarks         string  `json:"remarks"`
+}
+
+// Verification.ID mirrors parent Finding.ID by design; uniqueness is enforced
+// upstream by EnsureFindingIDs.
+func EnsureVerificationID(v *FindingVerification, fallback string) {
+	if v == nil {
+		return
+	}
+	if _, err := uuid.Parse(v.ID); err == nil {
+		return
+	}
+	if _, err := uuid.Parse(fallback); err == nil {
+		v.ID = fallback
+		return
+	}
+	v.ID = uuid.NewString()
 }
 
 type FindingFinalization struct {

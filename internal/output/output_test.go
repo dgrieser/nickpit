@@ -16,7 +16,7 @@ func TestTerminalFormatter(t *testing.T) {
 	formatter := NewTerminalFormatter(&buf, false)
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{
-			{Title: "Problem", Body: "Description", ConfidenceScore: 0.82, Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 10, End: 12}}},
+			{ID: "11111111-1111-4111-8111-111111111111", Title: "Problem", Body: "Description", ConfidenceScore: 0.82, Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 10, End: 12}}},
 		},
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "Summary text",
@@ -230,6 +230,27 @@ func TestJSONFormatterIncludesVerification(t *testing.T) {
 	}
 	if v["remarks"] != "ok" {
 		t.Fatalf("verification.remarks = %#v", v["remarks"])
+	}
+}
+
+func TestJSONFormatterIncludesFindingID(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewJSONFormatter(&buf)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{
+			{ID: "11111111-1111-4111-8111-111111111111", Title: "x", Body: "y", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	first := payload["findings"].([]any)[0].(map[string]any)
+	if first["id"] != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("id = %#v", first["id"])
 	}
 }
 

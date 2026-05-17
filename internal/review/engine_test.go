@@ -17,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/google/uuid"
 )
 
 type stubSource struct{}
@@ -62,6 +63,7 @@ type multiAgentLLM struct {
 	vectorCalls   map[string]int
 	mergeTools    int
 	mergePayload  map[string]any
+	mergeSchema   []byte
 	contextSystem string
 	vectorContext map[string]string
 	vectorSystem  map[string]string
@@ -125,6 +127,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		}, nil
 	}
 	s.mergeTools = len(req.Tools)
+	s.mergeSchema = append([]byte(nil), req.Schema...)
 	if len(req.Messages) > 1 {
 		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
 	}
@@ -467,6 +470,62 @@ func TestEnginePriorityFilter(t *testing.T) {
 	}
 	if len(result.Findings) != 1 {
 		t.Fatalf("findings = %d", len(result.Findings))
+	}
+}
+
+func TestEngineAssignsFindingIDs(t *testing.T) {
+	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		MaxContextTokens:  1000,
+		PriorityThreshold: "p3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2", len(result.Findings))
+	}
+	seen := map[string]bool{}
+	for _, finding := range result.Findings {
+		if _, err := uuid.Parse(finding.ID); err != nil {
+			t.Fatalf("finding ID %q is not a UUID: %v", finding.ID, err)
+		}
+		if seen[finding.ID] {
+			t.Fatalf("duplicate finding ID %q", finding.ID)
+		}
+		seen[finding.ID] = true
+	}
+}
+
+func TestEnginePreservesExistingFindingID(t *testing.T) {
+	const existingID = "11111111-1111-4111-8111-111111111111"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{{
+			Findings: []model.Finding{{
+				ID:              existingID,
+				Title:           "x",
+				Body:            "y",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+			}},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "summary",
+			OverallConfidenceScore: 0.8,
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	result, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		MaxContextTokens:  1000,
+		PriorityThreshold: "p3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Findings[0].ID; got != existingID {
+		t.Fatalf("id = %q, want %q", got, existingID)
 	}
 }
 
@@ -851,6 +910,50 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
 		}
 	}
+}
+
+func TestEngineMergeSchemaHonorsPriorityThreshold(t *testing.T) {
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		RepoRoot:          ".",
+		MaxContextTokens:  1000,
+		UseJSONSchema:     true,
+		PriorityThreshold: "p1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.mergeSchema) == 0 {
+		t.Fatal("merge schema empty")
+	}
+	priority := schemaFindingProperty(t, llmClient.mergeSchema, "priority")
+	if got := priority["minimum"]; got != float64(0) {
+		t.Fatalf("priority minimum = %#v, want 0", got)
+	}
+	if got := priority["maximum"]; got != float64(1) {
+		t.Fatalf("priority maximum = %#v, want 1", got)
+	}
+}
+
+func schemaFindingProperty(t *testing.T, schema []byte, property string) map[string]any {
+	t.Helper()
+	var root map[string]any
+	if err := json.Unmarshal(schema, &root); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	properties := root["properties"].(map[string]any)
+	findings := properties["findings"].(map[string]any)
+	items := findings["items"].(map[string]any)
+	findingProps := items["properties"].(map[string]any)
+	out, ok := findingProps[property].(map[string]any)
+	if !ok {
+		t.Fatalf("finding property %q missing: %#v", property, findingProps[property])
+	}
+	return out
 }
 
 func TestEngineDoesNotUseAPISchemaByDefault(t *testing.T) {

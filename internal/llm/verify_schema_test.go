@@ -22,7 +22,7 @@ func TestVerifySchemaRequiresAllFields(t *testing.T) {
 			required = append(required, s)
 		}
 	}
-	for _, field := range []string{"valid", "priority", "confidence_score", "remarks"} {
+	for _, field := range []string{"id", "valid", "priority", "confidence_score", "remarks"} {
 		if !slices.Contains(required, field) {
 			t.Fatalf("required missing %q: %v", field, required)
 		}
@@ -37,10 +37,13 @@ func TestVerifySchemaStripsExamples(t *testing.T) {
 
 func TestVerifyExamplePromptSnippetIncludesAllFields(t *testing.T) {
 	snippet := VerifyExamplePromptSnippet()
-	for _, required := range []string{`"valid"`, `"priority"`, `"confidence_score"`, `"remarks"`} {
+	for _, required := range []string{`"id"`, `"valid"`, `"priority"`, `"confidence_score"`, `"remarks"`} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}
+	}
+	if !strings.Contains(snippet, `"id": "<uuid-v4>"`) {
+		t.Fatalf("snippet should use UUID placeholder: %s", snippet)
 	}
 }
 
@@ -52,7 +55,7 @@ func TestVerifyExamplePromptSnippetIsJSON(t *testing.T) {
 }
 
 func TestParseVerifyResponseRequiresFields(t *testing.T) {
-	content := `{"valid": true, "priority": 1}`
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 1}`
 	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err == nil {
 		t.Fatalf("expected InvalidResponseError")
@@ -67,13 +70,16 @@ func TestParseVerifyResponseRequiresFields(t *testing.T) {
 }
 
 func TestParseVerifyResponseHappyPath(t *testing.T) {
-	content := `{"valid": false, "priority": 2, "confidence_score": 0.81, "remarks": "not reachable"}`
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": false, "priority": 2, "confidence_score": 0.81, "remarks": "not reachable"}`
 	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
 	if resp.Verification == nil {
 		t.Fatalf("verification nil")
+	}
+	if resp.Verification.ID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("id = %q", resp.Verification.ID)
 	}
 	if resp.Verification.Valid {
 		t.Fatalf("valid should be false")
@@ -90,7 +96,7 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 }
 
 func TestParseVerifyResponseRejectsOutOfRangePriority(t *testing.T) {
-	content := `{"valid": true, "priority": 9, "confidence_score": 0.5, "remarks": "x"}`
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 9, "confidence_score": 0.5, "remarks": "x"}`
 	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !asErr(err, &invalid) {
