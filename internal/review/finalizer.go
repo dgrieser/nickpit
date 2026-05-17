@@ -108,6 +108,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	out.OverallExplanation = result.resp.OverallExplanation
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
 	mergeInputSuggestions(out.Findings, in.Findings)
+	mergeInputVerification(out.Findings, in.Findings)
 	enforcePriorityFloor(out.Findings, in.Findings)
 	applyWeightedConfidence(out.Findings, in.Findings)
 	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
@@ -187,6 +188,25 @@ func mergeInputSuggestions(out, in []model.Finding) {
 			continue
 		}
 		out[i].Suggestions = append([]model.Suggestion(nil), src.Suggestions...)
+	}
+}
+
+// mergeInputVerification restores `verification` from the matching input
+// finding when the finalizer LLM does not echo it. The finalize prompt does
+// not instruct the LLM to repeat verification, so the schema does not require
+// it; downstream consumers still want the verifier verdict on each finding.
+// LLM-emitted verification wins when present.
+func mergeInputVerification(out, in []model.Finding) {
+	for i := range out {
+		if out[i].Verification != nil {
+			continue
+		}
+		src := findInputMatch(out[i], in)
+		if src == nil || src.Verification == nil {
+			continue
+		}
+		v := *src.Verification
+		out[i].Verification = &v
 	}
 }
 

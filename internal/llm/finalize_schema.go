@@ -48,7 +48,10 @@ func extendFindingsForFinalize(root map[string]any) map[string]any {
 	if !ok {
 		panic("llm: findings schema findings.items.required is not []string")
 	}
-	items["required"] = append(append([]string{}, required...), "verification", "finalization")
+	// `verification` is not required: the finalize prompt does not instruct the
+	// LLM to echo it. It is repopulated from input post-parse (see
+	// mergeInputVerification in internal/review/finalizer.go).
+	items["required"] = append(append([]string{}, required...), "finalization")
 	return root
 }
 

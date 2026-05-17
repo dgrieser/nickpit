@@ -127,7 +127,7 @@ func TestFindingsExamplePromptSnippetHasUnprefixedTitle(t *testing.T) {
 	}
 }
 
-func TestFinalizeSchemaRequiresVerificationAndFinalization(t *testing.T) {
+func TestFinalizeSchemaRequiresFinalizationButNotVerification(t *testing.T) {
 	var schema map[string]any
 	if err := json.Unmarshal(FinalizeSchema, &schema); err != nil {
 		t.Fatalf("unmarshal schema: %v", err)
@@ -142,14 +142,18 @@ func TestFinalizeSchemaRequiresVerificationAndFinalization(t *testing.T) {
 			required = append(required, s)
 		}
 	}
-	for _, field := range []string{"verification", "finalization"} {
-		if !slices.Contains(required, field) {
-			t.Fatalf("required missing %q: %v", field, required)
-		}
+	if !slices.Contains(required, "finalization") {
+		t.Fatalf("required missing %q: %v", "finalization", required)
+	}
+	if slices.Contains(required, "verification") {
+		t.Fatalf("required must not include %q (prompt does not instruct LLM to echo it; merged from input post-parse): %v", "verification", required)
 	}
 	findingProps := items["properties"].(map[string]any)
 	if _, ok := findingProps["finalization"].(map[string]any); !ok {
 		t.Fatalf("finalization schema missing: %#v", findingProps["finalization"])
+	}
+	if _, ok := findingProps["verification"].(map[string]any); !ok {
+		t.Fatalf("verification schema property still expected (optional): %#v", findingProps["verification"])
 	}
 }
 

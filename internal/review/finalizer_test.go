@@ -137,6 +137,99 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 	}
 }
 
+func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
+	inputVerification := &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title:           "Fix issue",
+						Body:            "body",
+						ConfidenceScore: 0.7,
+						Priority:        intPtr(1),
+						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
+						// no Verification echoed back by the model
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title:           "Fix issue",
+				Body:            "body",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Verification:    inputVerification,
+			},
+		},
+		OverallCorrectness: "patch is correct",
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	got := out.Findings[0].Verification
+	if got == nil {
+		t.Fatalf("verification was dropped; want it restored from input")
+	}
+	if *got != *inputVerification {
+		t.Fatalf("verification = %+v, want %+v", *got, *inputVerification)
+	}
+}
+
+func TestFinalizeKeepsLLMVerificationWhenProvided(t *testing.T) {
+	llmVerification := &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.9, Remarks: "refined"}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title:           "Fix issue",
+						Body:            "body",
+						ConfidenceScore: 0.7,
+						Priority:        intPtr(1),
+						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+						Verification:    llmVerification,
+						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 2, ConfidenceScore: 0.85, Remarks: "ok"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title:           "Fix issue",
+				Body:            "body",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.5, Remarks: "stale"},
+			},
+		},
+		OverallCorrectness: "patch is correct",
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	got := out.Findings[0].Verification
+	if got == nil || *got != *llmVerification {
+		t.Fatalf("verification = %+v, want %+v (LLM output must win when present)", got, llmVerification)
+	}
+}
+
 func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 	llmSuggestions := []model.Suggestion{
 		{Body: "refined fix", LineRange: model.LineRange{Start: 20, End: 21}},
