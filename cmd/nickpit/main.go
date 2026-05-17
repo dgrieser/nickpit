@@ -73,7 +73,7 @@ type app struct {
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		logging.New(os.Stderr, false, stderrIsTerminal()).PrintError(err)
+		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
 }
@@ -580,7 +580,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 				}
 				return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
 			}
-			logger := logging.New(os.Stderr, a.verbose, stderrIsTerminal())
+			logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 			logger.SetShowReasoning(a.showReasoning)
 			logger.SetShowProgress(a.showProgress)
 			a.logger = logger
@@ -619,7 +619,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 }
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
-	logger := logging.New(os.Stderr, a.verbose, stderrIsTerminal())
+	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
@@ -841,14 +841,14 @@ func writeJSON(value any) error {
 	return enc.Encode(value)
 }
 
-func stdoutIsTerminal() bool {
-	stat, err := os.Stdout.Stat()
+func isTerminal(f *os.File) bool {
+	stat, err := f.Stat()
 	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
 }
 
 func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	s := result.Summary()
-	useANSI := stdoutIsTerminal()
+	useANSI := isTerminal(os.Stdout)
 
 	mark := func(v bool) string {
 		if useANSI {
@@ -1089,11 +1089,6 @@ func reviewResultSummary(result *model.ReviewResult) string {
 		fmt.Sprintf("completion_tokens=%d", result.TokensUsed.CompletionTokens),
 		fmt.Sprintf("total_tokens=%d", result.TokensUsed.TotalTokens),
 	}, ", ")
-}
-
-func stderrIsTerminal() bool {
-	stat, err := os.Stderr.Stat()
-	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
 }
 
 func totalDuplicateToolCalls(runs []model.AgentRun) int {

@@ -325,21 +325,21 @@ func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
 	}
 }
 
-func captureStderr(t *testing.T, fn func()) string {
+func captureOutput(t *testing.T, stream **os.File, fn func()) string {
 	t.Helper()
-	original := os.Stderr
+	original := *stream
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stderr = w
+	*stream = w
 	done := make(chan string, 1)
 	go func() {
 		data, _ := io.ReadAll(r)
 		done <- string(data)
 	}()
 	defer func() {
-		os.Stderr = original
+		*stream = original
 		_ = r.Close()
 	}()
 
@@ -349,28 +349,14 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	return captureOutput(t, &os.Stderr, fn)
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
-	original := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	done := make(chan string, 1)
-	go func() {
-		data, _ := io.ReadAll(r)
-		done <- string(data)
-	}()
-	defer func() {
-		os.Stdout = original
-		_ = r.Close()
-	}()
-
-	fn()
-
-	_ = w.Close()
-	return <-done
+	return captureOutput(t, &os.Stdout, fn)
 }
 
 func TestMissingAPIKeyHintUsesDefaultProfileEnv(t *testing.T) {
