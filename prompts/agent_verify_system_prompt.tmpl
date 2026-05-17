@@ -34,6 +34,7 @@ Output `verification` in the following JSON format:
 
 - DO NOT wrap the JSON in markdown fences or extra prose
 - produce JSON only and match the schema EXACTLY
+- `verification.id` is the same UUID as the input `finding.id`
 - `verification.valid` is a boolean (true if the finding is a real issue introduced by the patch)
 - `verification.priority` is an integer 0-3
 - `verification.confidence_score` is a number between 0 and 1 expressing your confidence in the verdict

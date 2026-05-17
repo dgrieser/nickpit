@@ -22,7 +22,7 @@ var finalizationSchemaDefinition = map[string]any{
 }
 
 func buildFinalizeSchemaDefinition() map[string]any {
-	return extendFindingsForFinalize(deepCopySchema(findingsSchemaDefinition).(map[string]any))
+	return extendFindingsForFinalize(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any))
 }
 
 func extendFindingsForFinalize(root map[string]any) map[string]any {
@@ -90,7 +90,7 @@ func FinalizeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness)
+	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true)
 	return mustMarshalCleanSchema(extendFindingsForFinalize(root))
 }
 

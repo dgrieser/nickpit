@@ -7,9 +7,53 @@ import (
 	"sort"
 )
 
-func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectness []string) map[string]any {
+func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectness []string, requireID bool) map[string]any {
 	if len(allowedCorrectness) == 0 {
 		allowedCorrectness = []string{"patch is correct", "patch is incorrect"}
+	}
+	findingProperties := map[string]any{
+		"title":            map[string]any{"type": "string", "examples": []any{"Example title"}},
+		"body":             map[string]any{"type": "string", "examples": []any{"Example explanation of why this is a problem."}},
+		"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
+		"priority":         map[string]any{"type": "integer", "minimum": minPriority, "maximum": maxPriority, "examples": []any{minPriority}},
+		"code_location": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string", "examples": []any{"file.go"}},
+				"line_range": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"start": map[string]any{"type": "integer"},
+						"end":   map[string]any{"type": "integer"},
+					},
+					"required": []string{"start", "end"},
+				},
+			},
+			"required": []string{"file_path", "line_range"},
+		},
+		"suggestions": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"body": map[string]any{"type": "string", "examples": []any{"replacement code"}},
+					"line_range": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"start": map[string]any{"type": "integer", "examples": []any{10}},
+							"end":   map[string]any{"type": "integer", "examples": []any{12}},
+						},
+						"required": []string{"start", "end"},
+					},
+				},
+				"required": []string{"body", "line_range"},
+			},
+		},
+	}
+	requiredFindingFields := []string{"title", "body", "confidence_score", "priority", "code_location"}
+	if requireID {
+		findingProperties["id"] = map[string]any{"type": "string", "examples": []any{"11111111-1111-4111-8111-111111111111"}}
+		requiredFindingFields = append([]string{"id"}, requiredFindingFields...)
 	}
 	return map[string]any{
 		"type": "object",
@@ -17,47 +61,9 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 			"findings": map[string]any{
 				"type": "array",
 				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"title":            map[string]any{"type": "string", "examples": []any{"Example title"}},
-						"body":             map[string]any{"type": "string", "examples": []any{"Example explanation of why this is a problem."}},
-						"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
-						"priority":         map[string]any{"type": "integer", "minimum": minPriority, "maximum": maxPriority, "examples": []any{minPriority}},
-						"code_location": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"file_path": map[string]any{"type": "string", "examples": []any{"file.go"}},
-								"line_range": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"start": map[string]any{"type": "integer"},
-										"end":   map[string]any{"type": "integer"},
-									},
-									"required": []string{"start", "end"},
-								},
-							},
-							"required": []string{"file_path", "line_range"},
-						},
-						"suggestions": map[string]any{
-							"type": "array",
-							"items": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"body": map[string]any{"type": "string", "examples": []any{"replacement code"}},
-									"line_range": map[string]any{
-										"type": "object",
-										"properties": map[string]any{
-											"start": map[string]any{"type": "integer", "examples": []any{10}},
-											"end":   map[string]any{"type": "integer", "examples": []any{12}},
-										},
-										"required": []string{"start", "end"},
-									},
-								},
-								"required": []string{"body", "line_range"},
-							},
-						},
-					},
-					"required": []string{"title", "body", "confidence_score", "priority", "code_location"},
+					"type":       "object",
+					"properties": findingProperties,
+					"required":   requiredFindingFields,
 				},
 			},
 			"overall_correctness":      map[string]any{"type": "string", "enum": allowedCorrectness},
@@ -68,9 +74,13 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 	}
 }
 
-var findingsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil)
+var findingsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, false)
+
+var findingsWithIDSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, true)
 
 var FindingsSchema = mustMarshalCleanSchema(findingsSchemaDefinition)
+
+var FindingsWithIDSchema = mustMarshalCleanSchema(findingsWithIDSchemaDefinition)
 
 // FindingsSchemaWithConstraints returns a findings schema narrowed by the given constraints.
 func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
@@ -81,11 +91,26 @@ func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness))
+	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, false))
+}
+
+func FindingsWithIDSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
+	min, max := 0, 3
+	if c.MinPriority != nil {
+		min = *c.MinPriority
+	}
+	if c.MaxPriority != nil {
+		max = *c.MaxPriority
+	}
+	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true))
 }
 
 func FindingsExamplePromptSnippet() string {
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsSchemaDefinition)))
+}
+
+func FindingsWithIDExamplePromptSnippet() string {
+	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsWithIDSchemaDefinition)))
 }
 
 func mustMarshalJSON(v any) json.RawMessage {

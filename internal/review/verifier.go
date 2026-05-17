@@ -45,6 +45,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if req.ReviewCtx == nil {
 		return nil, usage, fmt.Errorf("verify: nil review context")
 	}
+	model.EnsureFindingID(&req.Finding)
 
 	systemTemplate, err := e.loadPrompt("agent_verify_system_prompt.tmpl")
 	if err != nil {
@@ -130,6 +131,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		usage = addTokenUsage(usage, loopResult.tokensUsed)
 		resp := loopResult.resp
 		if resp != nil && resp.Verification != nil {
+			model.EnsureVerificationID(resp.Verification, req.Finding.ID)
 			return resp.Verification, usage, nil
 		}
 		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
@@ -143,6 +145,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 }
 
 func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, error) {
+	model.EnsureFindingIDs(findings)
 	verifications := make([]*model.FindingVerification, len(findings))
 	if len(findings) == 0 {
 		return verifications, model.TokenUsage{}, nil
@@ -236,12 +239,14 @@ func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding m
 	}
 
 	findingForVerify := struct {
+		ID           string             `json:"id"`
 		Title        string             `json:"title"`
 		Body         string             `json:"body"`
 		Priority     int                `json:"priority"`
 		CodeLocation model.CodeLocation `json:"code_location"`
 		Suggestions  []model.Suggestion `json:"suggestions,omitempty"`
 	}{
+		ID:           finding.ID,
 		Title:        finding.Title,
 		Body:         finding.Body,
 		Priority:     model.PriorityRank(finding.Priority),

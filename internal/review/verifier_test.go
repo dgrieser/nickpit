@@ -275,11 +275,61 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	}
 }
 
+func TestVerifyFallsBackVerificationIDToFindingID(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	llmClient := &scriptedVerifyLLM{
+		responses: []*llm.ReviewResponse{{
+			Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	finding := model.Finding{
+		ID:           findingID,
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+	}
+	verification, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	if verification.ID != findingID {
+		t.Fatalf("verification.ID = %q, want %q", verification.ID, findingID)
+	}
+}
+
+func TestVerifyPreservesValidVerificationIDFromLLM(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	const llmID = "22222222-2222-4222-8222-222222222222"
+	llmClient := &scriptedVerifyLLM{
+		responses: []*llm.ReviewResponse{{
+			Verification: &model.FindingVerification{ID: llmID, Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	finding := model.Finding{
+		ID:           findingID,
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+	}
+	verification, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	if verification.ID != llmID {
+		t.Fatalf("verification.ID = %q, want %q", verification.ID, llmID)
+	}
+}
+
 func TestVerifyIncludesSuggestions(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	finding := model.Finding{
+		ID:           "11111111-1111-4111-8111-111111111111",
 		Title:        "x",
 		Body:         "x",
 		Priority:     intPtr(1),
@@ -299,6 +349,9 @@ func TestVerifyIncludesSuggestions(t *testing.T) {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
 	verifyFinding := payload["finding"].(map[string]any)
+	if verifyFinding["id"] != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("finding id = %#v", verifyFinding["id"])
+	}
 	suggestions, ok := verifyFinding["suggestions"].([]any)
 	if !ok || len(suggestions) != 2 {
 		t.Fatalf("suggestions = %#v", verifyFinding["suggestions"])

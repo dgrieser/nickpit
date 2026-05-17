@@ -21,6 +21,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/prompts"
+	"github.com/google/uuid"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -81,6 +82,7 @@ type SchemaKind string
 
 const (
 	SchemaKindReview   SchemaKind = "review"
+	SchemaKindMerge    SchemaKind = "merge"
 	SchemaKindVerify   SchemaKind = "verify"
 	SchemaKindFinalize SchemaKind = "finalize"
 	SchemaKindJSON     SchemaKind = "json"
@@ -1809,6 +1811,7 @@ func parseReviewResponse(content string, kind SchemaKind, constraints ResponseCo
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 	}
+	model.EnsureFindingIDs(parsed.Findings)
 	if missing := missingResponseFields(&parsed, content, kind, constraints); len(missing) > 0 {
 		return &parsed, &InvalidResponseError{
 			RawContent:    content,
@@ -1848,10 +1851,13 @@ func missingVerifyFields(content string) []string {
 	var raw map[string]json.RawMessage
 	_ = LenientUnmarshal(content, &raw)
 	var missing []string
-	for _, field := range []string{"valid", "priority", "confidence_score", "remarks"} {
+	for _, field := range []string{"id", "valid", "priority", "confidence_score", "remarks"} {
 		if _, ok := raw[field]; !ok {
 			missing = append(missing, field)
 		}
+	}
+	if rawID, ok := raw["id"]; ok && !rawUUIDIsValid(rawID) {
+		missing = append(missing, "id (must be UUID)")
 	}
 	return missing
 }
@@ -1914,6 +1920,14 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage,
 		if *finding.Priority < effectiveMin || *finding.Priority > effectiveMax {
 			missing = append(missing, fmt.Sprintf("findings[%d].priority (must be %d-%d)", i, effectiveMin, effectiveMax))
 		}
+		if kind == SchemaKindMerge || kind == SchemaKindFinalize {
+			rawID, hasIDKey := rawItem["id"]
+			if !hasIDKey {
+				missing = append(missing, fmt.Sprintf("findings[%d].id", i))
+			} else if !rawUUIDIsValid(rawID) {
+				missing = append(missing, fmt.Sprintf("findings[%d].id (must be UUID)", i))
+			}
+		}
 		if kind == SchemaKindFinalize {
 			missing = append(missing, missingFinalizeFindingFields(i, rawItem, finding)...)
 		}
@@ -1921,12 +1935,27 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage,
 	return missing
 }
 
+func rawUUIDIsValid(raw json.RawMessage) bool {
+	var id string
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return false
+	}
+	_, err := uuid.Parse(id)
+	return err == nil
+}
+
 func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, finding model.Finding) []string {
 	var missing []string
 	if _, ok := rawItem["verification"]; !ok || finding.Verification == nil {
 		missing = append(missing, fmt.Sprintf("findings[%d].verification", i))
 	} else {
-		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].verification", i), rawItem["verification"], []string{"valid", "priority", "confidence_score", "remarks"})...)
+		prefix := fmt.Sprintf("findings[%d].verification", i)
+		missing = append(missing, missingNestedFields(prefix, rawItem["verification"], []string{"id", "valid", "priority", "confidence_score", "remarks"})...)
+		var verificationFields map[string]json.RawMessage
+		_ = json.Unmarshal(rawItem["verification"], &verificationFields)
+		if rawID, ok := verificationFields["id"]; ok && !rawUUIDIsValid(rawID) {
+			missing = append(missing, prefix+".id (must be UUID)")
+		}
 	}
 	if _, ok := rawItem["finalization"]; !ok || finding.Finalization == nil {
 		missing = append(missing, fmt.Sprintf("findings[%d].finalization", i))

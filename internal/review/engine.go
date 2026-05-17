@@ -264,6 +264,7 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 		return nil, nil, err
 	}
 	filtered := filterByPriority(run.resp.Findings, req.PriorityThreshold)
+	model.EnsureFindingIDs(filtered)
 	e.logf(
 		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(run.resp.Findings),
@@ -366,7 +367,11 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		return nil, nil, err
 	}
 
-	mergeResult, err := e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, schema, req)
+	var mergeSchema []byte
+	if req.UseJSONSchema {
+		mergeSchema = llm.FindingsWithIDSchema
+	}
+	mergeResult, err := e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchema, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -390,6 +395,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}
 
 	filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
+	model.EnsureFindingIDs(filtered)
 	e.logf(
 		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(mergeResult.resp.Findings),
@@ -468,7 +474,7 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 	if err != nil {
 		return reviewAgentResult{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("merge", reviewOutputSchemaSnippetFor(req.UseJSONSchema))
+	commonSnippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(req.UseJSONSchema))
 	if err != nil {
 		return reviewAgentResult{}, err
 	}
@@ -499,7 +505,7 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		noToolsSystem: system,
 		user:          mergeUser,
 		schema:        schema,
-		schemaKind:    llm.SchemaKindReview,
+		schemaKind:    llm.SchemaKindMerge,
 		hasTools:      false,
 	}, req)
 }
@@ -559,7 +565,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	if agent.hasTools {
 		tools = reviewerToolDefinitions()
 	}
-	reviewSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
+	reviewSnippet := outputSchemaSnippetFor(agent.schemaKind, req.UseJSONSchema)
 	if agent.schemaKind == llm.SchemaKindText {
 		reviewSnippet = ""
 	}
@@ -835,6 +841,9 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 	if kind == llm.SchemaKindVerify {
 		return llm.VerifyExamplePromptSnippet()
 	}
+	if kind == llm.SchemaKindMerge {
+		return llm.FindingsWithIDExamplePromptSnippet()
+	}
 	if kind == llm.SchemaKindFinalize {
 		return llm.FinalizeExamplePromptSnippet()
 	}
@@ -1055,6 +1064,26 @@ func reviewOutputSchemaSnippetFor(useJSONSchema bool) string {
 		return ""
 	}
 	return llm.FindingsExamplePromptSnippet()
+}
+
+func mergeOutputSchemaSnippetFor(useJSONSchema bool) string {
+	if useJSONSchema {
+		return ""
+	}
+	return llm.FindingsWithIDExamplePromptSnippet()
+}
+
+func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {
+	if kind == llm.SchemaKindMerge {
+		return mergeOutputSchemaSnippetFor(useJSONSchema)
+	}
+	if kind == llm.SchemaKindFinalize {
+		return finalizeOutputSchemaSnippetFor(useJSONSchema)
+	}
+	if kind == llm.SchemaKindVerify {
+		return verifyOutputSchemaSnippetFor(useJSONSchema)
+	}
+	return reviewOutputSchemaSnippetFor(useJSONSchema)
 }
 
 func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, state *toolRoundState) []llm.Message {

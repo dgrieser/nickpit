@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ReviewMode string
@@ -159,6 +161,7 @@ type CommitSummary struct {
 }
 
 type Finding struct {
+	ID              string               `json:"id"`
 	Title           string               `json:"title"`
 	Body            string               `json:"body"`
 	ConfidenceScore float64              `json:"confidence_score"`
@@ -169,11 +172,41 @@ type Finding struct {
 	Finalization    *FindingFinalization `json:"finalization,omitempty"`
 }
 
+func EnsureFindingIDs(findings []Finding) {
+	for i := range findings {
+		EnsureFindingID(&findings[i])
+	}
+}
+
+func EnsureFindingID(f *Finding) {
+	if f == nil {
+		return
+	}
+	if _, err := uuid.Parse(f.ID); err != nil {
+		f.ID = uuid.NewString()
+	}
+}
+
 type FindingVerification struct {
+	ID              string  `json:"id"`
 	Valid           bool    `json:"valid"`
 	Priority        int     `json:"priority"`
 	ConfidenceScore float64 `json:"confidence_score"`
 	Remarks         string  `json:"remarks"`
+}
+
+func EnsureVerificationID(v *FindingVerification, fallback string) {
+	if v == nil {
+		return
+	}
+	if _, err := uuid.Parse(v.ID); err == nil {
+		return
+	}
+	if _, err := uuid.Parse(fallback); err == nil {
+		v.ID = fallback
+		return
+	}
+	v.ID = uuid.NewString()
 }
 
 type FindingFinalization struct {

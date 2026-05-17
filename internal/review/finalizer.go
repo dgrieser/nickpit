@@ -130,6 +130,7 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 	findings := make([]map[string]any, 0, len(in.Findings))
 	for _, finding := range in.Findings {
 		entry := map[string]any{
+			"id":                      finding.ID,
 			"title":                   finding.Title,
 			"body":                    finding.Body,
 			"priority":                model.PriorityRank(finding.Priority),
@@ -140,7 +141,9 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 			entry["suggestions"] = finding.Suggestions
 		}
 		if finding.Verification != nil {
-			entry["verification"] = finding.Verification
+			verification := *finding.Verification
+			model.EnsureVerificationID(&verification, finding.ID)
+			entry["verification"] = &verification
 		}
 		findings = append(findings, entry)
 	}
@@ -159,16 +162,18 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 }
 
 // dropUnmatchedFindings removes finalizer-output findings whose code_location
-// has no input match. The finalize prompt forbids new findings; this is the
+// or ID has no input match. The finalize prompt forbids new findings; this is the
 // in-code defence so hallucinated entries cannot bypass priority floor and
 // weighted-confidence (which both skip on no-match) and ship with arbitrary
 // LLM values.
 func dropUnmatchedFindings(out, in []model.Finding) []model.Finding {
 	kept := make([]model.Finding, 0, len(out))
 	for i := range out {
-		if findInputMatch(out[i], in) == nil {
+		match := findInputMatch(out[i], in)
+		if match == nil {
 			continue
 		}
+		out[i].ID = match.ID
 		kept = append(kept, out[i])
 	}
 	return kept
@@ -206,11 +211,19 @@ func mergeInputVerification(out, in []model.Finding) {
 			continue
 		}
 		v := *src.Verification
+		model.EnsureVerificationID(&v, out[i].ID)
 		out[i].Verification = &v
 	}
 }
 
 func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
+	if target.ID != "" {
+		for i := range in {
+			if in[i].ID == target.ID {
+				return &in[i]
+			}
+		}
+	}
 	var locMatches []*model.Finding
 	for i := range in {
 		if in[i].CodeLocation == target.CodeLocation {
