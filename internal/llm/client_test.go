@@ -373,6 +373,38 @@ func TestClientReviewRetries429WithProgressLoggingUntilSuccess(t *testing.T) {
 	}
 }
 
+func TestClientReviewRetries500WithDefaultMaxRetries(t *testing.T) {
+	var attempts int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 5 {
+			http.Error(w, "Provider returned error", http.StatusInternalServerError)
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = time.Nanosecond
+	client.retrier.MaxBackoff = time.Nanosecond
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if attempts != 6 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+}
+
 func TestRetrierBackoffCapsAtConfiguredBounds(t *testing.T) {
 	retrier := NewRetrier()
 	retrier.InitialBackoff = time.Second

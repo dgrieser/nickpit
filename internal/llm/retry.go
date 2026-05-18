@@ -16,7 +16,7 @@ type Retrier struct {
 
 func NewRetrier() *Retrier {
 	return &Retrier{
-		MaxRetries:     3,
+		MaxRetries:     5,
 		InitialBackoff: time.Second,
 		MaxBackoff:     30 * time.Second,
 		RetryableHTTP: map[int]struct{}{
