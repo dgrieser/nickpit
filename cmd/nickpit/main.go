@@ -328,8 +328,8 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 		cmd.Flags().StringVar(&from, "from", "", "Base commit")
 		cmd.Flags().StringVar(&to, "to", "HEAD", "Head commit")
 	case "branch":
-		cmd.Flags().StringVar(&base, "base", "", "Base branch")
-		cmd.Flags().StringVar(&head, "head", "HEAD", "Head branch")
+		cmd.Flags().StringVar(&base, "base", "", "Base branch, e.g. the target branch; usually main or master")
+		cmd.Flags().StringVar(&head, "head", "HEAD", "Head branch, e.g. the source branch; usually the branch to review")
 	}
 	return cmd
 }

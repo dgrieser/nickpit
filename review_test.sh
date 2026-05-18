@@ -12,7 +12,8 @@ Run repeated local branch reviews against a working tree.
 
 Options:
   -w, --workdir WORKDIR     Working directory to review (required)
-  -b, --base BRANCH         Branch to review against
+  --base BRANCH             Branch to review against
+  --head BRANCH             Branch to review
   -m, --model MODEL         Model to use (default: ${DEFAULT_MODEL})
   -e, --effort EFFORT       Reasoning effort to use (default: ${DEFAULT_EFFORT})
   -p, --profile PROFILE     Config profile to use (default: ${DEFAULT_PROFILE})
@@ -50,7 +51,8 @@ DEFAULT_LOG_FILE_SUFFIX="log"
 DEFAULT_REVIEW_COUNT=10
 
 workdir=""
-base=""
+base_branch=""
+head_branch=""
 model="${DEFAULT_MODEL}"
 effort="${DEFAULT_EFFORT}"
 profile="${DEFAULT_PROFILE}"
@@ -68,10 +70,15 @@ while [ "${#}" -gt 0 ]; do
             [ -z "${1}" ] && usage
             workdir="${1}"
             ;;
-        -b|--base)
+        --base)
             shift
             [ -z "${1}" ] && usage
-            base="${1}"
+            base_branch="${1}"
+            ;;
+        --head)
+            shift
+            [ -z "${1}" ] && usage
+            head_branch="${1}"
             ;;
         -m|--model)
             shift
@@ -136,7 +143,7 @@ nickpit_args=(
     --verbose
 )
 
-[ -n "${base}" ] && nickpit_args+=(--base "${base}")
+[ -n "${base_branch}" ] && nickpit_args+=(--base "${base_branch}")
 
 for i in $(seq 1 ${review_count}); do
     log_file="${log_file_prefix}$(date +%Y-%m-%d-%H-%M-%S).${log_file_suffix}"
