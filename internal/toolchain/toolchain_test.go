@@ -324,6 +324,27 @@ jobs:
 	}
 }
 
+func TestScanPipfileSingleQuoted(t *testing.T) {
+	body := "[requires]\npython_version = '3.11'\n"
+	fsys := fstest.MapFS{"Pipfile": &fstest.MapFile{Data: []byte(body)}}
+	got := ScanFS(fsys, ctxWithChangedFiles("a.py"))
+	if findVersion(got, "Pipfile", "python_version") != "3.11" {
+		t.Fatalf("single-quoted python_version not captured: %#v", got)
+	}
+}
+
+func TestScanPyprojectSingleQuoted(t *testing.T) {
+	body := "[project]\nrequires-python = '>=3.10'\n\n[tool.poetry.dependencies]\npython = '^3.11'\n"
+	fsys := fstest.MapFS{"pyproject.toml": &fstest.MapFile{Data: []byte(body)}}
+	got := ScanFS(fsys, ctxWithChangedFiles("a.py"))
+	if findVersion(got, "pyproject.toml", "requires-python") != ">=3.10" {
+		t.Errorf("single-quoted requires-python missing: %#v", got)
+	}
+	if findVersion(got, "pyproject.toml", "tool.poetry.dependencies.python") != "^3.11" {
+		t.Errorf("single-quoted poetry python missing: %#v", got)
+	}
+}
+
 func TestScanPyprojectIgnoresUnrelatedSections(t *testing.T) {
 	body := `[project]
 name = "x"

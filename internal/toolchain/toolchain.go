@@ -190,7 +190,7 @@ func scanRuntimeTxt(fsys fs.FS) []model.ToolchainVersion {
 	return []model.ToolchainVersion{{Language: langPython, Source: "runtime.txt", Version: match[1]}}
 }
 
-var pipfilePyRe = regexp.MustCompile(`(?m)^\s*python_(version|full_version)\s*=\s*"([^"]+)"`)
+var pipfilePyRe = regexp.MustCompile(`(?m)^\s*python_(version|full_version)\s*=\s*['"]([^'"]+)['"]`)
 
 func scanPipfile(fsys fs.FS) []model.ToolchainVersion {
 	data, err := readFile(fsys, "Pipfile")
@@ -206,8 +206,8 @@ func scanPipfile(fsys fs.FS) []model.ToolchainVersion {
 
 var (
 	pyprojectSectionRe   = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
-	pyprojectRequiresRe  = regexp.MustCompile(`^\s*requires-python\s*=\s*"([^"]+)"`)
-	pyprojectPyAssignRe  = regexp.MustCompile(`^\s*python\s*=\s*"([^"]+)"`)
+	pyprojectRequiresRe  = regexp.MustCompile(`^\s*requires-python\s*=\s*['"]([^'"]+)['"]`)
+	pyprojectPyAssignRe  = regexp.MustCompile(`^\s*python\s*=\s*['"]([^'"]+)['"]`)
 	poetryDepsSectionSet = map[string]bool{
 		"tool.poetry.dependencies":     true,
 		"tool.poetry.dev-dependencies": true,
