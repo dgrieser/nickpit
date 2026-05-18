@@ -95,6 +95,7 @@ type ReviewContext struct {
 	DiffHunks           []DiffHunk         `json:"diff_hunks,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
+	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`
 	OmittedSections     []string           `json:"omitted_sections,omitempty"`
 }
 
@@ -109,7 +110,17 @@ type ReviewPromptPayload struct {
 	StyleGuides         []StyleGuide       `json:"style_guides,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
+	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`
 	OmittedSections     []string           `json:"omitted_sections,omitempty"`
+}
+
+type ToolchainVersion struct {
+	Language    string `json:"language"`
+	Source      string `json:"source,omitempty"`
+	Field       string `json:"field,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Unavailable bool   `json:"unavailable,omitempty"`
 }
 
 type RepositoryInfo struct {
@@ -370,6 +381,7 @@ func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
 		DiffHunks:           src.DiffHunks,
 		Comments:            src.Comments,
 		SupplementalContext: src.SupplementalContext,
+		ToolchainVersions:   src.ToolchainVersions,
 		OmittedSections:     src.OmittedSections,
 	}
 }
