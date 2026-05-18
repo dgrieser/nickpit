@@ -83,7 +83,7 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 }
 
 // SetToolchainCapture overrides the toolchain version detector. Intended for
-// tests; production code uses the default exec-backed capture.
+// tests; production code uses the default manifest parsing capture.
 func (e *Engine) SetToolchainCapture(fn func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion) {
 	e.toolchainCapture = fn
 }
