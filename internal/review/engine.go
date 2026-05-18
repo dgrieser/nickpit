@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/toolchain"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
@@ -30,6 +31,7 @@ type Engine struct {
 	logger                 *logging.Logger
 	searchToolOptimization bool
 	multiAgentReview       bool
+	toolchainCapture       func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion
 }
 
 var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
@@ -76,7 +78,14 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		retrieval:              retrievalEngine,
 		config:                 profile,
 		searchToolOptimization: true,
+		toolchainCapture:       toolchain.Capture,
 	}
+}
+
+// SetToolchainCapture overrides the toolchain version detector. Intended for
+// tests; production code uses the default manifest parsing capture.
+func (e *Engine) SetToolchainCapture(fn func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion) {
+	e.toolchainCapture = fn
 }
 
 func (e *Engine) SetLogger(logger *logging.Logger) {
@@ -109,6 +118,13 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	}
 	reviewCtx.CheckoutRoot = req.RepoRoot
 	reviewCtx.Identifier = req.Identifier
+
+	if e.toolchainCapture != nil {
+		reviewCtx.ToolchainVersions = e.toolchainCapture(ctx, req.RepoRoot, reviewCtx)
+		if len(reviewCtx.ToolchainVersions) > 0 {
+			e.logf("Captured toolchain versions: count=%d", len(reviewCtx.ToolchainVersions))
+		}
+	}
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
 		e.logf("Including full files: count=%d", len(reviewCtx.ChangedFiles))
