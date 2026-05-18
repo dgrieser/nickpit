@@ -67,6 +67,8 @@ func (s *LocalSource) resolveDefaults(ctx context.Context, req model.ReviewReque
 			return req, err
 		}
 		req.BaseRef = baseRef
+	} else if remoteRef, ok := s.originRemoteRef(ctx, req.BaseRef); ok {
+		req.BaseRef = remoteRef
 	}
 	if req.HeadRef == "HEAD" {
 		headRef, err := s.currentBranch(ctx)
@@ -83,7 +85,16 @@ func (s *LocalSource) defaultBranch(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimPrefix(strings.TrimSpace(out), "origin/"), nil
+	return strings.TrimSpace(out), nil
+}
+
+func (s *LocalSource) originRemoteRef(ctx context.Context, ref string) (string, bool) {
+	if ref == "" || strings.Contains(ref, "/") {
+		return "", false
+	}
+	remoteRef := "origin/" + ref
+	_, err := s.git.Run(ctx, "show-ref", "--verify", "--quiet", "refs/remotes/"+remoteRef)
+	return remoteRef, err == nil
 }
 
 func (s *LocalSource) currentBranch(ctx context.Context) (string, error) {

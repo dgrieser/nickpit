@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -31,12 +32,17 @@ func TestParseUnifiedDiff(t *testing.T) {
 
 type stubGitRunner struct {
 	outputs map[string]string
+	errors  map[string]error
 	calls   [][]string
 }
 
 func (r *stubGitRunner) Run(_ context.Context, args ...string) (string, error) {
 	r.calls = append(r.calls, append([]string(nil), args...))
-	return r.outputs[joinArgs(args)], nil
+	key := joinArgs(args)
+	if err := r.errors[key]; err != nil {
+		return "", err
+	}
+	return r.outputs[key], nil
 }
 
 func joinArgs(args []string) string {
@@ -59,7 +65,7 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 		outputs: map[string]string{
 			joinArgs([]string{"symbolic-ref", "--short", "refs/remotes/origin/HEAD"}): "origin/main\n",
 			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}):                     "fix/memleak\n",
-			joinArgs([]string{"diff", "main...fix/memleak"}):                          string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
+			joinArgs([]string{"diff", "origin/main...fix/memleak"}):                   string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
 		},
 	}
 	source := &LocalSource{
@@ -76,7 +82,7 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if ctx.Repository.BaseRef != "main" {
+	if ctx.Repository.BaseRef != "origin/main" {
 		t.Fatalf("base ref = %q", ctx.Repository.BaseRef)
 	}
 	if ctx.Repository.HeadRef != "fix/memleak" {
@@ -90,6 +96,73 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 	}
 	if got := runner.calls[1]; len(got) != 3 || got[0] != "symbolic-ref" || got[2] != "HEAD" {
 		t.Fatalf("head symbolic-ref args = %#v", got)
+	}
+	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "origin/main...fix/memleak" {
+		t.Fatalf("diff args = %#v", got)
+	}
+}
+
+func TestLocalSourceResolveContextPrefersOriginForExplicitBranchBase(t *testing.T) {
+	runner := &stubGitRunner{
+		outputs: map[string]string{
+			joinArgs([]string{"show-ref", "--verify", "--quiet", "refs/remotes/origin/main"}): "",
+			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}):                             "fix/memleak\n",
+			joinArgs([]string{"diff", "origin/main...fix/memleak"}):                           string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
+		},
+	}
+	source := &LocalSource{
+		repoRoot: t.TempDir(),
+		git:      runner,
+	}
+
+	ctx, err := source.ResolveContext(context.Background(), model.ReviewRequest{
+		Mode:    model.ModeLocal,
+		Submode: "branch",
+		BaseRef: "main",
+		HeadRef: "HEAD",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ctx.Repository.BaseRef != "origin/main" {
+		t.Fatalf("base ref = %q", ctx.Repository.BaseRef)
+	}
+	if got := runner.calls[0]; len(got) != 4 || got[0] != "show-ref" || got[3] != "refs/remotes/origin/main" {
+		t.Fatalf("show-ref args = %#v", got)
+	}
+	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "origin/main...fix/memleak" {
+		t.Fatalf("diff args = %#v", got)
+	}
+}
+
+func TestLocalSourceResolveContextKeepsExplicitBranchBaseWhenOriginMissing(t *testing.T) {
+	runner := &stubGitRunner{
+		outputs: map[string]string{
+			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}): "fix/memleak\n",
+			joinArgs([]string{"diff", "main...fix/memleak"}):      string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
+		},
+		errors: map[string]error{
+			joinArgs([]string{"show-ref", "--verify", "--quiet", "refs/remotes/origin/main"}): errors.New("missing ref"),
+		},
+	}
+	source := &LocalSource{
+		repoRoot: t.TempDir(),
+		git:      runner,
+	}
+
+	ctx, err := source.ResolveContext(context.Background(), model.ReviewRequest{
+		Mode:    model.ModeLocal,
+		Submode: "branch",
+		BaseRef: "main",
+		HeadRef: "HEAD",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ctx.Repository.BaseRef != "main" {
+		t.Fatalf("base ref = %q", ctx.Repository.BaseRef)
 	}
 	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "main...fix/memleak" {
 		t.Fatalf("diff args = %#v", got)
