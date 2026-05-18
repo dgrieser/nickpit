@@ -437,7 +437,7 @@ func TestRetrierBackoffUses429MessageResetTimeWithinCap(t *testing.T) {
 	retrier := NewRetrier()
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
-	retrier.MaxRateLimitDelay = 5 * time.Minute
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
 	retrier.now = func() time.Time {
 		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
 	}
@@ -455,7 +455,7 @@ func TestRetrierBackoffIgnores429MessageResetTimeOutsideCap(t *testing.T) {
 	retrier := NewRetrier()
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
-	retrier.MaxRateLimitDelay = 5 * time.Minute
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
 	retrier.now = func() time.Time {
 		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
 	}
@@ -470,7 +470,7 @@ func TestRetrierBackoffIgnoresPastAndMalformed429MessageResetTimes(t *testing.T)
 	retrier := NewRetrier()
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
-	retrier.MaxRateLimitDelay = 5 * time.Minute
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
 	retrier.now = func() time.Time {
 		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
 	}
@@ -489,7 +489,7 @@ func TestRetrierBackoffIgnores429MessageResetTimeWhenDisabled(t *testing.T) {
 	retrier := NewRetrier()
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
-	retrier.MaxRateLimitDelay = 0
+	retrier.SetMaxRateLimitDelay(0)
 	retrier.now = func() time.Time {
 		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
 	}

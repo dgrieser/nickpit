@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,17 +14,16 @@ type Retrier struct {
 	MaxRetries        int
 	InitialBackoff    time.Duration
 	MaxBackoff        time.Duration
-	MaxRateLimitDelay time.Duration
+	maxRateLimitDelay atomic.Int64
 	RetryableHTTP     map[int]struct{}
 	now               func() time.Time
 }
 
 func NewRetrier() *Retrier {
-	return &Retrier{
-		MaxRetries:        5,
-		InitialBackoff:    time.Second,
-		MaxBackoff:        30 * time.Second,
-		MaxRateLimitDelay: 5 * time.Minute,
+	r := &Retrier{
+		MaxRetries:     5,
+		InitialBackoff: time.Second,
+		MaxBackoff:     30 * time.Second,
 		RetryableHTTP: map[int]struct{}{
 			http.StatusTooManyRequests:     {},
 			http.StatusInternalServerError: {},
@@ -32,6 +32,16 @@ func NewRetrier() *Retrier {
 			http.StatusGatewayTimeout:      {},
 		},
 	}
+	r.maxRateLimitDelay.Store(int64(5 * time.Minute))
+	return r
+}
+
+func (r *Retrier) SetMaxRateLimitDelay(delay time.Duration) {
+	r.maxRateLimitDelay.Store(int64(delay))
+}
+
+func (r *Retrier) MaxRateLimitDelay() time.Duration {
+	return time.Duration(r.maxRateLimitDelay.Load())
 }
 
 func (r *Retrier) ShouldRetry(status int) bool {
@@ -69,8 +79,13 @@ func (r *Retrier) Backoff(attempt int, resp *http.Response) time.Duration {
 	return backoff
 }
 
+func (r *Retrier) RateLimitMessageDelay(message string) (time.Duration, bool) {
+	return r.rateLimitMessageDelay(message)
+}
+
 func (r *Retrier) rateLimitMessageDelay(message string) (time.Duration, bool) {
-	if r.MaxRateLimitDelay <= 0 {
+	cap := r.MaxRateLimitDelay()
+	if cap <= 0 {
 		return 0, false
 	}
 	resetAt, ok := parseRateLimitResetTime(message)
@@ -82,7 +97,7 @@ func (r *Retrier) rateLimitMessageDelay(message string) (time.Duration, bool) {
 		now = r.now
 	}
 	delay := resetAt.Sub(now())
-	if delay <= 0 || delay > r.MaxRateLimitDelay {
+	if delay <= 0 || delay > cap {
 		return 0, false
 	}
 	return delay, true
@@ -104,7 +119,7 @@ func (r *Retrier) WaitFor(ctx context.Context, delay time.Duration) error {
 }
 
 var rateLimitResetTimePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*(?:UTC|GMT|Z|[+-]\d{2}:?\d{2}))`),
+	regexp.MustCompile(`(?i)\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:\s*(?:UTC|GMT|Z|[+-]\d{2}:?\d{2}))`),
 	regexp.MustCompile(`(?i)[A-Za-z]{3},\s+\d{2}\s+[A-Za-z]{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+(?:GMT|UTC)`),
 }
 

@@ -353,7 +353,7 @@ func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
 }
 
 func (c *OpenAIClient) SetMaxRateLimitDelay(delay time.Duration) {
-	c.retrier.MaxRateLimitDelay = delay
+	c.retrier.SetMaxRateLimitDelay(delay)
 }
 
 func (c *OpenAIClient) SetAllowedReasoningEfforts(efforts []string) {
@@ -1116,6 +1116,11 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				}
 				resp := responseFromCapture(capture)
 				waitFor := c.retrier.BackoffForHTTPStatus(attempt, status, resp, statusErr.message)
+				if status == http.StatusTooManyRequests {
+					if _, ok := c.retrier.RateLimitMessageDelay(statusErr.message); ok {
+						c.logf("Retry honoring 429 reset hint: %s", waitFor)
+					}
+				}
 				c.logRetryHTTPStatus(status, attempt+1, waitFor)
 				c.logf("Retrying request: status=%d backoff=%s", status, waitFor)
 				if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
