@@ -144,6 +144,7 @@ nickpit_args=(
 )
 
 [ -n "${base_branch}" ] && nickpit_args+=(--base "${base_branch}")
+[ -n "${head_branch}" ] && nickpit_args+=(--head "${head_branch}")
 
 for i in $(seq 1 ${review_count}); do
     log_file="${log_file_prefix}$(date +%Y-%m-%d-%H-%M-%S).${log_file_suffix}"
