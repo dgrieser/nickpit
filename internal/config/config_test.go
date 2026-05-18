@@ -36,6 +36,9 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	if profile.MaxReasoningLoopRepeats != 0 {
 		t.Fatalf("default max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
 	}
+	if profile.MaxRateLimitDelaySeconds != 0 {
+		t.Fatalf("default max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
+	}
 	if profile.APIKey != "$OPENROUTER_API_KEY" {
 		t.Fatalf("default api key ref = %q", profile.APIKey)
 	}
@@ -82,6 +85,34 @@ func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
 	}
 	if profile.MaxReasoningLoopRepeats != DefaultMaxReasoningLoopRepeats {
 		t.Fatalf("max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
+	}
+	if profile.MaxRateLimitDelaySeconds != DefaultMaxRateLimitDelaySeconds {
+		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
+	}
+}
+
+func TestLoadConfigUsesConfiguredRateLimitDelay(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_rate_limit_delay_seconds: 12
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxRateLimitDelaySeconds != 12 {
+		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
+	}
+	if !profile.MaxRateLimitDelaySecondsConfigured {
+		t.Fatal("expected max_rate_limit_delay_seconds to be marked as configured")
 	}
 }
 

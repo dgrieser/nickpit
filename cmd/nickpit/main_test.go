@@ -28,22 +28,25 @@ profiles:
     max_duplicate_tool_calls: 3
     max_output_retries: 4
     max_reasoning_seconds: 5
+    max_rate_limit_delay_seconds: 6
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	app := &app{
-		profile:                  "default",
-		configPath:               path,
-		maxToolCalls:             0,
-		maxToolCallsSet:          true,
-		maxDuplicateToolCalls:    0,
-		maxDuplicateToolCallsSet: true,
-		maxOutputRetries:         0,
-		maxOutputRetriesSet:      true,
-		maxReasoningSeconds:      0,
-		maxReasoningSecondsSet:   true,
+		profile:                     "default",
+		configPath:                  path,
+		maxToolCalls:                0,
+		maxToolCallsSet:             true,
+		maxDuplicateToolCalls:       0,
+		maxDuplicateToolCallsSet:    true,
+		maxOutputRetries:            0,
+		maxOutputRetriesSet:         true,
+		maxReasoningSeconds:         0,
+		maxReasoningSecondsSet:      true,
+		maxRateLimitDelaySeconds:    0,
+		maxRateLimitDelaySecondsSet: true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -60,6 +63,9 @@ profiles:
 	}
 	if profile.MaxReasoningSeconds != 0 {
 		t.Fatalf("max reasoning seconds = %d", profile.MaxReasoningSeconds)
+	}
+	if profile.MaxRateLimitDelaySeconds != 0 {
+		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
 	}
 }
 
@@ -88,6 +94,34 @@ profiles:
 	}
 	if profile.MaxContextTokens != 0 {
 		t.Fatalf("max context tokens = %d", profile.MaxContextTokens)
+	}
+}
+
+func TestLoadProfileAppliesRateLimitDelayCLIOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_rate_limit_delay_seconds: 12
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:                     "default",
+		configPath:                  path,
+		maxRateLimitDelaySeconds:    20,
+		maxRateLimitDelaySecondsSet: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxRateLimitDelaySeconds != 20 {
+		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
 	}
 }
 

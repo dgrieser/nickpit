@@ -352,6 +352,10 @@ func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
 	c.logger = logger
 }
 
+func (c *OpenAIClient) SetMaxRateLimitDelay(delay time.Duration) {
+	c.retrier.MaxRateLimitDelay = delay
+}
+
 func (c *OpenAIClient) SetAllowedReasoningEfforts(efforts []string) {
 	c.allowedEfforts = make(map[string]struct{}, len(efforts))
 	for _, effort := range efforts {
@@ -1111,10 +1115,10 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					return nil, statusErr
 				}
 				resp := responseFromCapture(capture)
-				waitFor := c.retrier.Backoff(attempt, resp)
+				waitFor := c.retrier.BackoffForHTTPStatus(attempt, status, resp, statusErr.message)
 				c.logRetryHTTPStatus(status, attempt+1, waitFor)
 				c.logf("Retrying request: status=%d backoff=%s", status, waitFor)
-				if waitErr := c.retrier.Wait(ctx, attempt, resp); waitErr != nil {
+				if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
 				}
 				continue
