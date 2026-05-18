@@ -126,7 +126,7 @@ func scanToolVersions(fsys fs.FS) []model.ToolchainVersion {
 		return nil
 	}
 	var out []model.ToolchainVersion
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -205,8 +205,13 @@ func scanPipfile(fsys fs.FS) []model.ToolchainVersion {
 }
 
 var (
-	pyprojectRequiresRe = regexp.MustCompile(`(?m)^\s*requires-python\s*=\s*"([^"]+)"`)
-	pyprojectPoetryPyRe = regexp.MustCompile(`(?m)^\s*python\s*=\s*"([^"]+)"`)
+	pyprojectSectionRe   = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
+	pyprojectRequiresRe  = regexp.MustCompile(`^\s*requires-python\s*=\s*"([^"]+)"`)
+	pyprojectPyAssignRe  = regexp.MustCompile(`^\s*python\s*=\s*"([^"]+)"`)
+	poetryDepsSectionSet = map[string]bool{
+		"tool.poetry.dependencies":     true,
+		"tool.poetry.dev-dependencies": true,
+	}
 )
 
 func scanPyproject(fsys fs.FS) []model.ToolchainVersion {
@@ -214,13 +219,25 @@ func scanPyproject(fsys fs.FS) []model.ToolchainVersion {
 	if err != nil {
 		return nil
 	}
-	content := string(data)
 	var out []model.ToolchainVersion
-	if match := pyprojectRequiresRe.FindStringSubmatch(content); match != nil {
-		out = append(out, model.ToolchainVersion{Language: langPython, Source: "pyproject.toml", Field: "requires-python", Version: match[1]})
-	}
-	if match := pyprojectPoetryPyRe.FindStringSubmatch(content); match != nil {
-		out = append(out, model.ToolchainVersion{Language: langPython, Source: "pyproject.toml", Field: "tool.poetry.dependencies.python", Version: match[1]})
+	section := ""
+	seenPoetry := false
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if match := pyprojectSectionRe.FindStringSubmatch(line); match != nil {
+			section = strings.TrimSpace(match[1])
+			continue
+		}
+		if match := pyprojectRequiresRe.FindStringSubmatch(line); match != nil {
+			out = append(out, model.ToolchainVersion{Language: langPython, Source: "pyproject.toml", Field: "requires-python", Version: match[1]})
+			continue
+		}
+		if seenPoetry || !poetryDepsSectionSet[section] {
+			continue
+		}
+		if match := pyprojectPyAssignRe.FindStringSubmatch(line); match != nil {
+			out = append(out, model.ToolchainVersion{Language: langPython, Source: "pyproject.toml", Field: section + ".python", Version: match[1]})
+			seenPoetry = true
+		}
 	}
 	return out
 }
@@ -266,7 +283,11 @@ func scanPackageJSON(fsys fs.FS) []model.ToolchainVersion {
 	}
 	var parsed packageJSON
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return []model.ToolchainVersion{{Language: langJavaScript, Source: "package.json", Error: err.Error()}}
+		msg := err.Error()
+		return []model.ToolchainVersion{
+			{Language: langJavaScript, Source: "package.json", Error: msg},
+			{Language: langTypeScript, Source: "package.json", Error: msg},
+		}
 	}
 	var out []model.ToolchainVersion
 	if value := strings.TrimSpace(parsed.Engines["node"]); value != "" {
@@ -409,6 +430,9 @@ func workflowMatches(content, source string, re *regexp.Regexp, language, field 
 	for _, match := range re.FindAllStringSubmatch(content, -1) {
 		value := strings.TrimSpace(match[1])
 		if value == "" {
+			continue
+		}
+		if strings.HasPrefix(value, "[") || strings.Contains(value, "${{") {
 			continue
 		}
 		out = append(out, model.ToolchainVersion{Language: language, Source: source, Field: field, Version: value})

@@ -3,6 +3,7 @@ package toolchain
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -292,6 +293,87 @@ jobs:
 	}
 	if findVersion(got, ".github/workflows/ci.yml", "node-version") != "20.x" {
 		t.Errorf("node-version missing: %#v", got)
+	}
+}
+
+func TestScanGithubWorkflowsSkipsMatrixAndTemplate(t *testing.T) {
+	body := `name: ci
+jobs:
+  matrix:
+    strategy:
+      matrix:
+        node-version: [18, 20]
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+`
+	fsys := fstest.MapFS{".github/workflows/ci.yml": &fstest.MapFile{Data: []byte(body)}}
+	got := ScanFS(fsys, ctxWithChangedFiles("a.go", "a.py", "a.js"))
+	if v := findVersion(got, ".github/workflows/ci.yml", "node-version"); v != "" {
+		t.Errorf("node-version list value should be skipped, got %q", v)
+	}
+	if v := findVersion(got, ".github/workflows/ci.yml", "go-version"); v != "" {
+		t.Errorf("go-version template should be skipped, got %q", v)
+	}
+	if v := findVersion(got, ".github/workflows/ci.yml", "python-version"); v != "3.12" {
+		t.Errorf("python-version should be captured, got %q", v)
+	}
+}
+
+func TestScanPyprojectIgnoresUnrelatedSections(t *testing.T) {
+	body := `[project]
+name = "x"
+requires-python = ">=3.10"
+
+[tool.foo]
+python = "not-a-version"
+
+[project.dependencies]
+python = "not-a-version"
+`
+	fsys := fstest.MapFS{"pyproject.toml": &fstest.MapFile{Data: []byte(body)}}
+	got := ScanFS(fsys, ctxWithChangedFiles("a.py"))
+	if findVersion(got, "pyproject.toml", "requires-python") != ">=3.10" {
+		t.Errorf("requires-python missing: %#v", got)
+	}
+	for _, entry := range got {
+		if entry.Source == "pyproject.toml" && strings.HasSuffix(entry.Field, ".python") {
+			t.Errorf("unexpected poetry attribution outside dependencies section: %#v", entry)
+		}
+	}
+}
+
+func TestScanPyprojectPoetryDevDeps(t *testing.T) {
+	body := `[tool.poetry.dev-dependencies]
+python = "^3.11"
+`
+	fsys := fstest.MapFS{"pyproject.toml": &fstest.MapFile{Data: []byte(body)}}
+	got := ScanFS(fsys, ctxWithChangedFiles("a.py"))
+	if findVersion(got, "pyproject.toml", "tool.poetry.dev-dependencies.python") != "^3.11" {
+		t.Fatalf("dev-dependencies python missing: %#v", got)
+	}
+}
+
+func TestScanPackageJSONParseErrorEmitsTSEntry(t *testing.T) {
+	fsys := fstest.MapFS{"package.json": &fstest.MapFile{Data: []byte("{not json")}}
+	got := ScanFS(fsys, ctxWithChangedFiles("a.js", "a.ts"))
+	var jsErr, tsErr bool
+	for _, entry := range got {
+		if entry.Source == "package.json" && entry.Error != "" {
+			if entry.Language == langJavaScript {
+				jsErr = true
+			}
+			if entry.Language == langTypeScript {
+				tsErr = true
+			}
+		}
+	}
+	if !jsErr || !tsErr {
+		t.Fatalf("expected both JS and TS error entries, got %#v", got)
 	}
 }
 
