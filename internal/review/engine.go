@@ -34,6 +34,10 @@ type Engine struct {
 
 var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
 
+// ErrEmptyDiff is returned when the resolved review context has no changed files
+// and no diff content, meaning there is nothing meaningful to review.
+var ErrEmptyDiff = errors.New("review: empty diff (no changed files and no diff content)")
+
 const defaultMaxOutputRetries = config.DefaultMaxOutputRetries
 
 type keyedLocker struct {
@@ -100,6 +104,9 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	}
 	e.logProgress("Review", reviewContextSummary(reviewCtx, req))
 	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
+	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
+		return nil, nil, ErrEmptyDiff
+	}
 	reviewCtx.CheckoutRoot = req.RepoRoot
 	reviewCtx.Identifier = req.Identifier
 
