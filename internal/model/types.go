@@ -58,6 +58,7 @@ type ReviewResult struct {
 	OverallExplanation     string     `json:"overall_explanation"`
 	OverallConfidenceScore float64    `json:"overall_confidence_score"`
 	AgentRuns              []AgentRun `json:"agent_runs,omitempty"`
+	Warnings               []string   `json:"warnings,omitempty"`
 	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
 	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used,omitempty"`
 	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used,omitempty"`
@@ -81,7 +82,18 @@ type AgentRun struct {
 	ToolCalls             int        `json:"tool_calls,omitempty"`
 	DuplicateToolCalls    int        `json:"duplicate_tool_calls"`
 	TokensUsed            TokenUsage `json:"tokens_used,omitempty"`
+	// Status is one of AgentRunStatus*. Empty = implicit ok (preserves
+	// backward compatibility with pre-failure-tolerance consumers).
+	Status string `json:"status,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
+
+const (
+	AgentRunStatusOK      = ""
+	AgentRunStatusPartial = "partial"
+	AgentRunStatusFailed  = "failed"
+	AgentRunStatusSkipped = "skipped"
+)
 
 type ReviewContext struct {
 	Mode                ReviewMode         `json:"mode"`

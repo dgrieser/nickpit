@@ -59,16 +59,19 @@ type capturingLLM struct {
 }
 
 type multiAgentLLM struct {
-	mu            sync.Mutex
-	context       int
-	vectorCalls   map[string]int
-	mergeTools    int
-	mergePayload  map[string]any
-	mergeSchema   []byte
-	contextSystem string
-	vectorContext map[string]string
-	vectorSystem  map[string]string
-	vectorNudge   map[string]string
+	mu             sync.Mutex
+	context        int
+	vectorCalls    map[string]int
+	mergeTools     int
+	mergePayload   map[string]any
+	mergeSchema    []byte
+	contextSystem  string
+	vectorContext  map[string]string
+	vectorSystem   map[string]string
+	vectorNudge    map[string]string
+	contextFailErr error
+	vectorFailErr  map[string]error
+	mergeFailErr   error
 }
 
 func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -93,6 +96,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	if strings.Contains(system, "DO NOT produce review findings yourself") {
 		s.contextSystem = system
 		s.context++
+		if s.contextFailErr != nil {
+			return nil, s.contextFailErr
+		}
 		if s.context == 1 {
 			return &llm.ReviewResponse{
 				ToolCalls: []llm.ToolCall{{ID: "context_call", Name: "list_files", Arguments: `{"path":"internal","depth":1}`}},
@@ -114,6 +120,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 			if msg.Role == "user" && strings.Contains(msg.Content, "You may have missed issues") {
 				s.vectorNudge[name] = msg.Content
 			}
+		}
+		if err := s.vectorFailErr[name]; err != nil {
+			return nil, err
 		}
 		if s.vectorCalls[name] == 1 {
 			return &llm.ReviewResponse{
@@ -138,6 +147,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	s.mergeSchema = append([]byte(nil), req.Schema...)
 	if len(req.Messages) > 1 {
 		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
+	}
+	if s.mergeFailErr != nil {
+		return nil, s.mergeFailErr
 	}
 	return &llm.ReviewResponse{
 		Findings: []model.Finding{{
@@ -357,7 +369,7 @@ func TestRunReviewAgent_NudgeReviewerOnly(t *testing.T) {
 	}
 }
 
-func TestRunReviewAgent_NudgeErrorPropagates(t *testing.T) {
+func TestRunReviewAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
 			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
@@ -367,12 +379,18 @@ func TestRunReviewAgent_NudgeErrorPropagates(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	_, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
-	if err == nil {
-		t.Fatal("expected nudge error")
+	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if got, want := err.Error(), "nudge 2"; !strings.Contains(got, want) {
-		t.Fatalf("error = %q, want containing %q", got, want)
+	if got, want := result.run.Status, model.AgentRunStatusPartial; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if !strings.Contains(result.run.Error, "nudge 2") {
+		t.Fatalf("run.Error = %q, want containing %q", result.run.Error, "nudge 2")
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A", "B"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
 	}
 	if len(llmClient.reqs) != 3 {
 		t.Fatalf("llm calls = %d, want 3", len(llmClient.reqs))
@@ -1192,6 +1210,187 @@ func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {
 		if !strings.Contains(nudge, want) {
 			t.Fatalf("%s nudge missing question %q: %q", name, want, nudge)
 		}
+	}
+}
+
+func TestMultiAgentToleratesVectorFailure(t *testing.T) {
+	llmClient := &multiAgentLLM{
+		vectorFailErr: map[string]error{"Security": errors.New("security upstream fail")},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatalf("RunWithContext returned err: %v", err)
+	}
+	var securityRun *model.AgentRun
+	successfulReviewers := 0
+	for i := range result.AgentRuns {
+		run := &result.AgentRuns[i]
+		if run.Name == "Security" {
+			securityRun = run
+			continue
+		}
+		if run.Role == "reviewer" && run.Status == model.AgentRunStatusOK {
+			successfulReviewers++
+		}
+	}
+	if securityRun == nil {
+		t.Fatal("missing Security AgentRun")
+	}
+	if securityRun.Status != model.AgentRunStatusFailed {
+		t.Fatalf("Security status = %q, want failed", securityRun.Status)
+	}
+	if !strings.Contains(securityRun.Error, "security upstream fail") {
+		t.Fatalf("Security run error = %q", securityRun.Error)
+	}
+	if successfulReviewers != 5 {
+		t.Fatalf("successful reviewer runs = %d, want 5", successfulReviewers)
+	}
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "Security reviewer failed") && strings.Contains(w, "security upstream fail") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected Security warning in %#v", result.Warnings)
+	}
+}
+
+func TestMultiAgentToleratesContextFailure(t *testing.T) {
+	llmClient := &multiAgentLLM{contextFailErr: errors.New("context upstream fail")}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatalf("RunWithContext returned err: %v", err)
+	}
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "Context agent failed") && strings.Contains(w, "context upstream fail") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected context warning in %#v", result.Warnings)
+	}
+	for _, name := range []string{"Code Quality", "Security", "Architecture", "Performance", "Testing", "Best Practices"} {
+		if llmClient.vectorContext[name] != "" {
+			t.Fatalf("%s reviewer received non-empty context notes: %q", name, llmClient.vectorContext[name])
+		}
+	}
+}
+
+func TestMultiAgentToleratesMergeFailure(t *testing.T) {
+	llmClient := &multiAgentLLM{mergeFailErr: errors.New("merge upstream fail")}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatalf("RunWithContext returned err: %v", err)
+	}
+	if len(result.Findings) == 0 {
+		t.Fatal("expected fallback findings from vector union")
+	}
+	if !strings.Contains(result.OverallExplanation, "Merge agent unavailable") {
+		t.Fatalf("OverallExplanation = %q", result.OverallExplanation)
+	}
+	foundWarning := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "Merge agent failed") && strings.Contains(w, "merge upstream fail") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected merge warning in %#v", result.Warnings)
+	}
+	var mergeRun *model.AgentRun
+	for i := range result.AgentRuns {
+		if result.AgentRuns[i].Role == "merge" {
+			mergeRun = &result.AgentRuns[i]
+		}
+	}
+	if mergeRun == nil || mergeRun.Status != model.AgentRunStatusFailed {
+		t.Fatalf("merge AgentRun = %#v, want Status=failed", mergeRun)
+	}
+}
+
+func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
+	llmClient := &multiAgentLLM{
+		vectorFailErr: map[string]error{
+			"Code Quality":   errors.New("cq fail"),
+			"Security":       errors.New("sec fail"),
+			"Architecture":   errors.New("arch fail"),
+			"Performance":    errors.New("perf fail"),
+			"Testing":        errors.New("test fail"),
+			"Best Practices": errors.New("bp fail"),
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatalf("RunWithContext returned err: %v", err)
+	}
+	failedReviewers := 0
+	for _, run := range result.AgentRuns {
+		if run.Role == "reviewer" && run.Status == model.AgentRunStatusFailed {
+			failedReviewers++
+		}
+	}
+	if failedReviewers != 6 {
+		t.Fatalf("failed reviewer runs = %d, want 6", failedReviewers)
+	}
+	if len(result.Warnings) < 6 {
+		t.Fatalf("warnings = %d, want at least 6", len(result.Warnings))
+	}
+	// All-vectors-failed must short-circuit the merge LLM call to avoid
+	// hallucinated findings from an empty payload.
+	foundShortCircuit := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "All vector reviewers failed") && strings.Contains(w, "skipped merge agent") {
+			foundShortCircuit = true
+		}
+	}
+	if !foundShortCircuit {
+		t.Fatalf("expected short-circuit warning in %#v", result.Warnings)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("expected empty findings on short-circuit, got %d", len(result.Findings))
+	}
+	var mergeRun *model.AgentRun
+	for i := range result.AgentRuns {
+		if result.AgentRuns[i].Role == "merge" {
+			mergeRun = &result.AgentRuns[i]
+		}
+	}
+	if mergeRun == nil || mergeRun.Status != model.AgentRunStatusSkipped {
+		t.Fatalf("merge AgentRun = %#v, want Status=skipped", mergeRun)
 	}
 }
 

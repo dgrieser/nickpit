@@ -729,7 +729,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			DisableParallelToolCalls: req.DisableParallelToolCalls,
 			RepoRoot:                 req.RepoRoot,
 		}
-		verifications, verifyUsage, verifyErr := engine.VerifyAll(ctx, trimmedCtx, result.Findings, verifyOpts)
+		verifications, verifyUsage, verifyWarnings, verifyErr := engine.VerifyAll(ctx, trimmedCtx, result.Findings, verifyOpts)
 		if verifyErr != nil {
 			a.logProgress("Verify", fmt.Sprintf("status=ERROR, error=%v", verifyErr))
 			return verifyErr
@@ -738,6 +738,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			result.Findings[i].Verification = verifications[i]
 		}
 		result.VerifyTokensUsed = verifyUsage
+		result.Warnings = append(result.Warnings, verifyWarnings...)
 		result.Findings = review.DropInvalidFindings(result.Findings)
 	}
 
@@ -753,6 +754,13 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		finalized, finalizeRun, finalizeErr := engine.Finalize(ctx, trimmedCtx, result, finalizeOpts)
 		if finalizeErr != nil {
 			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v; falling back to verified result", finalizeErr))
+			result.Warnings = append(result.Warnings, fmt.Sprintf("Finalize failed: %v; using verified result", finalizeErr))
+			finalizeRun.Name = "finalize"
+			finalizeRun.Role = "finalize"
+			finalizeRun.Status = model.AgentRunStatusFailed
+			finalizeRun.Error = finalizeErr.Error()
+			result.FinalizeTokensUsed = finalizeRun.TokensUsed
+			result.AgentRuns = append(result.AgentRuns, finalizeRun)
 		} else {
 			finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
 			finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)
@@ -766,7 +774,40 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	} else {
 		formatter = output.NewTerminalFormatter(os.Stdout, true).WithHideInvalid(a.hideInvalid)
 	}
-	return formatter.FormatFindings(result)
+	if err := formatter.FormatFindings(result); err != nil {
+		return err
+	}
+	// Distinguish "review produced nothing because every reviewer crashed"
+	// from "review succeeded with some soft warnings" — only the former is a
+	// CI-level failure. Empty findings alone are not a failure (clean diff).
+	if reviewProducedNothing(result) {
+		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
+	}
+	return nil
+}
+
+// reviewProducedNothing reports whether the review pipeline collapsed: every
+// reviewer-role AgentRun failed and no findings emerged. Returns false if any
+// reviewer succeeded (even partially) — those runs may legitimately produce no
+// findings on a clean diff.
+func reviewProducedNothing(result *model.ReviewResult) bool {
+	if result == nil {
+		return false
+	}
+	if len(result.Findings) > 0 {
+		return false
+	}
+	reviewerSeen := false
+	for _, run := range result.AgentRuns {
+		if run.Role != "reviewer" {
+			continue
+		}
+		reviewerSeen = true
+		if run.Status != model.AgentRunStatusFailed {
+			return false
+		}
+	}
+	return reviewerSeen
 }
 
 func missingAPIKeyHint(profileName string, configured bool) string {
