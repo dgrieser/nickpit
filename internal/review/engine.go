@@ -603,7 +603,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	if agent.schemaKind == llm.SchemaKindText {
 		reviewSnippet = ""
 	}
-	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
+	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
 		AgentKind:                  agentLoopKind(agent.role),
 		Messages:                   messages,
@@ -635,26 +635,68 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			}
 			return noToolsMessagesFromRendered(noToolsSystem, messages)
 		},
-	})
+	}
+	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
 		return reviewAgentResult{}, err
 	}
+	totalFindings := append([]model.Finding(nil), loopResult.resp.Findings...)
+	totalTokens := loopResult.tokensUsed
+	totalToolCalls := loopResult.toolCalls
+	totalDuplicates := loopResult.duplicateToolCalls
+	latestResp := loopResult.resp
+	latestReasoningEffort := loopResult.reasoningEffort
+	historyMessages := messagesWithFinalResponse(loopResult.messages, loopResult.resp)
+	contentMessages := append([]string(nil), loopResult.contentMessages...)
+	toolMessages := append([]llm.Message(nil), loopResult.toolMessages...)
+	toolCallHistory := append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
+
+	if agent.role == "reviewer" && req.NudgeCount > 0 {
+		nudgeText, err := e.loadPrompt("agent_review_nudge_user_message.tmpl")
+		if err != nil {
+			return reviewAgentResult{}, err
+		}
+		for i := 0; i < req.NudgeCount; i++ {
+			e.logf("Nudge round: agent=%s round=%d/%d", agent.name, i+1, req.NudgeCount)
+			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
+			nudgeReq := loopReq
+			nudgeReq.Messages = nudged
+			nudgeReq.ReasoningEffort = e.config.ReasoningEffort
+			sub, err := e.runAgentLoop(ctx, nudgeReq)
+			if err != nil {
+				return reviewAgentResult{}, fmt.Errorf("nudge %d: %w", i+1, err)
+			}
+			totalFindings = appendNewFindings(totalFindings, sub.resp.Findings)
+			totalTokens = addTokenUsage(totalTokens, sub.tokensUsed)
+			totalToolCalls += sub.toolCalls
+			totalDuplicates += sub.duplicateToolCalls
+			latestResp = sub.resp
+			latestReasoningEffort = sub.reasoningEffort
+			historyMessages = messagesWithFinalResponse(sub.messages, sub.resp)
+			contentMessages = append(contentMessages, sub.contentMessages...)
+			toolMessages = append(toolMessages, sub.toolMessages...)
+			toolCallHistory = append(toolCallHistory, sub.toolCallHistory...)
+		}
+		latest := *latestResp
+		latest.Findings = totalFindings
+		latestResp = &latest
+	}
 	return reviewAgentResult{
-		resp:               loopResult.resp,
-		reasoningEffort:    loopResult.reasoningEffort,
-		contentMessages:    loopResult.contentMessages,
-		toolMessages:       loopResult.toolMessages,
-		toolCallHistory:    loopResult.toolCallHistory,
-		duplicateToolCalls: loopResult.duplicateToolCalls,
+		resp:               latestResp,
+		reasoningEffort:    latestReasoningEffort,
+		contentMessages:    contentMessages,
+		toolMessages:       toolMessages,
+		toolCallHistory:    toolCallHistory,
+		duplicateToolCalls: totalDuplicates,
 		run: model.AgentRun{
 			Name:                  agent.name,
 			Role:                  agent.role,
-			Findings:              len(loopResult.resp.Findings),
+			Findings:              len(latestResp.Findings),
 			MaxToolCalls:          req.MaxToolCalls,
 			MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
-			ToolCalls:             loopResult.toolCalls,
-			DuplicateToolCalls:    loopResult.duplicateToolCalls,
-			TokensUsed:            loopResult.tokensUsed,
+			ToolCalls:             totalToolCalls,
+			DuplicateToolCalls:    totalDuplicates,
+			TokensUsed:            totalTokens,
 		},
 	}, nil
 }
@@ -772,6 +814,58 @@ func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([
 	return finalMessages, nil
 }
 
+func appendNewFindings(existing, candidates []model.Finding) []model.Finding {
+	if len(candidates) == 0 {
+		return existing
+	}
+	out := append([]model.Finding(nil), existing...)
+	seenIDTitles := make(map[string]struct{}, len(out))
+	seenTitleLocations := make(map[string]struct{}, len(out))
+	for _, finding := range out {
+		recordFindingKeys(seenIDTitles, seenTitleLocations, finding)
+	}
+	for _, finding := range candidates {
+		idTitleKey, titleLocationKey := findingDedupKeys(finding)
+		if idTitleKey != "" {
+			if _, ok := seenIDTitles[idTitleKey]; ok {
+				continue
+			}
+		}
+		if titleLocationKey != "" {
+			if _, ok := seenTitleLocations[titleLocationKey]; ok {
+				continue
+			}
+		}
+		out = append(out, finding)
+		recordFindingKeys(seenIDTitles, seenTitleLocations, finding)
+	}
+	return out
+}
+
+func recordFindingKeys(seenIDTitles, seenTitleLocations map[string]struct{}, finding model.Finding) {
+	idTitleKey, titleLocationKey := findingDedupKeys(finding)
+	if idTitleKey != "" {
+		seenIDTitles[idTitleKey] = struct{}{}
+	}
+	if titleLocationKey != "" {
+		seenTitleLocations[titleLocationKey] = struct{}{}
+	}
+}
+
+func findingDedupKeys(finding model.Finding) (string, string) {
+	title := strings.ToLower(strings.TrimSpace(finding.Title))
+	if title == "" {
+		return "", ""
+	}
+	idTitleKey := ""
+	if id := strings.TrimSpace(finding.ID); id != "" {
+		idTitleKey = id + "\x00" + title
+	}
+	loc := finding.CodeLocation
+	titleLocationKey := fmt.Sprintf("%s\x00%s\x00%d\x00%d", title, loc.FilePath, loc.LineRange.Start, loc.LineRange.End)
+	return idTitleKey, titleLocationKey
+}
+
 func vectorReviewPayloads(results []reviewAgentResult) []map[string]any {
 	out := make([]map[string]any, 0, len(results))
 	for _, result := range results {
@@ -812,6 +906,20 @@ func appendResponseContent(contentMessages []string, resp *llm.ReviewResponse) [
 		contentMessages = append(contentMessages, content)
 	}
 	return contentMessages
+}
+
+func messagesWithFinalResponse(messages []llm.Message, resp *llm.ReviewResponse) []llm.Message {
+	out := append([]llm.Message(nil), messages...)
+	if resp == nil || strings.TrimSpace(resp.RawResponse) == "" {
+		return out
+	}
+	if len(out) > 0 {
+		last := out[len(out)-1]
+		if last.Role == "assistant" && last.Content == resp.RawResponse && len(last.ToolCalls) == 0 {
+			return out
+		}
+	}
+	return append(out, llm.Message{Role: "assistant", Content: resp.RawResponse})
 }
 
 func contextAgentMarkdownMessages(contentMessages []string) []llm.Message {

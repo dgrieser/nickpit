@@ -29,6 +29,7 @@ profiles:
     max_output_retries: 4
     max_reasoning_seconds: 5
     max_rate_limit_delay_seconds: 6
+    nudge_count: 7
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +48,8 @@ profiles:
 		maxReasoningSecondsSet:      true,
 		maxRateLimitDelaySeconds:    0,
 		maxRateLimitDelaySecondsSet: true,
+		nudgeCount:                  0,
+		nudgeCountSet:               true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -66,6 +69,9 @@ profiles:
 	}
 	if profile.MaxRateLimitDelaySeconds != 0 {
 		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
+	}
+	if profile.NudgeCount != 0 {
+		t.Fatalf("nudge count = %d", profile.NudgeCount)
 	}
 }
 
@@ -105,6 +111,7 @@ profiles:
   default:
     model: test-model
     max_rate_limit_delay_seconds: 12
+    nudge_count: 2
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -115,6 +122,8 @@ profiles:
 		configPath:                  path,
 		maxRateLimitDelaySeconds:    20,
 		maxRateLimitDelaySecondsSet: true,
+		nudgeCount:                  4,
+		nudgeCountSet:               true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -122,6 +131,9 @@ profiles:
 	}
 	if profile.MaxRateLimitDelaySeconds != 20 {
 		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
+	}
+	if profile.NudgeCount != 4 {
+		t.Fatalf("nudge count = %d", profile.NudgeCount)
 	}
 }
 

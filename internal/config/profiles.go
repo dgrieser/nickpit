@@ -83,6 +83,12 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.MaxRateLimitDelaySeconds != 0 {
 		base.MaxRateLimitDelaySeconds = override.MaxRateLimitDelaySeconds
 	}
+	if override.NudgeCountConfigured {
+		base.NudgeCountConfigured = true
+		base.NudgeCount = override.NudgeCount
+	} else if override.NudgeCount != 0 {
+		base.NudgeCount = override.NudgeCount
+	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}

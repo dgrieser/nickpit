@@ -56,6 +56,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("max_reasoning_seconds", yamlInt(profile.MaxReasoningSeconds)),
 		yamlEntry("max_reasoning_loop_repeats", yamlInt(profile.MaxReasoningLoopRepeats)),
 		yamlEntry("max_rate_limit_delay_seconds", yamlInt(profile.MaxRateLimitDelaySeconds)),
+		yamlEntry("nudge_count", yamlInt(profile.NudgeCount)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
@@ -87,6 +88,9 @@ func exampleProfile(profile Profile) Profile {
 	}
 	if profile.MaxRateLimitDelaySeconds == 0 && !profile.MaxRateLimitDelaySecondsConfigured {
 		profile.MaxRateLimitDelaySeconds = DefaultMaxRateLimitDelaySeconds
+	}
+	if profile.NudgeCount == 0 && !profile.NudgeCountConfigured {
+		profile.NudgeCount = DefaultNudgeCount
 	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort
