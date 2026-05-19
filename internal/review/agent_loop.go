@@ -34,6 +34,7 @@ type agentLoopRequest struct {
 	MaxReasoningSeconds        int
 	MaxReasoningLoopRepeats    int
 	ParallelToolCalls          bool
+	State                      *agentLoopState
 	Section                    *logging.ReasoningSection
 	NoToolsMessages            func([]llm.Message) ([]llm.Message, error)
 	NoToolsSystem              string
@@ -52,6 +53,24 @@ type agentLoopResult struct {
 	messages           []llm.Message
 	toolCalls          int
 	duplicateToolCalls int
+}
+
+type agentLoopState struct {
+	toolState              *toolRoundState
+	jsonRetries            int
+	jsonRepairWithoutTools bool
+	toolCalls              int
+	duplicateToolCalls     int
+}
+
+func newAgentLoopState() *agentLoopState {
+	return &agentLoopState{
+		toolState: &toolRoundState{
+			seenFiles:      make(map[string]retrieval.FileContent),
+			seenFileRanges: make(map[string][]model.LineRange),
+			seenToolCalls:  make(map[string]struct{}),
+		},
+	}
 }
 
 func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentLoopResult, error) {
@@ -74,14 +93,11 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 
 	messages := append([]llm.Message(nil), req.Messages...)
 	result := agentLoopResult{reasoningEffort: req.ReasoningEffort}
-	toolState := &toolRoundState{
-		seenFiles:      make(map[string]retrieval.FileContent),
-		seenFileRanges: make(map[string][]model.LineRange),
-		seenToolCalls:  make(map[string]struct{}),
+	state := req.State
+	if state == nil {
+		state = newAgentLoopState()
 	}
 	var syntheticFollowup *llm.Message
-	jsonRetries := 0
-	jsonRepairWithoutTools := false
 
 	for {
 		noToolsHistory, err := agentLoopNoToolsMessages(req, messages)
@@ -97,19 +113,19 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		resp, err := e.loggedReview(ctx, llmReq, req.Section)
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
-			if errors.As(err, &invalidResp) && outputRetriesRemaining(jsonRetries, req.MaxOutputRetries) {
+			if errors.As(err, &invalidResp) && outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
 				if invalidResp.ReasoningEffort != "" {
 					result.reasoningEffort = invalidResp.ReasoningEffort
 					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 				}
-				if invalidResp.ToolsOmitted || jsonRepairWithoutTools {
-					jsonRepairWithoutTools = true
+				if invalidResp.ToolsOmitted || state.jsonRepairWithoutTools {
+					state.jsonRepairWithoutTools = true
 					messages = noToolsHistory
 					llmReq.Tools = nil
 					llmReq.ParallelToolCalls = false
 				}
-				jsonRetries++
-				e.logJSONRetry(req, jsonRetries, invalidResp)
+				state.jsonRetries++
+				e.logJSONRetry(req, state.jsonRetries, invalidResp)
 				if strings.TrimSpace(invalidResp.RawContent) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 				}
@@ -135,9 +151,9 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		originalToolCalls := len(resp.ToolCalls)
 		resp.ToolCalls, _ = filterAgentToolCalls(resp.ToolCalls, req.Tools)
 		if originalToolCalls > 0 && len(resp.ToolCalls) == 0 {
-			if outputRetriesRemaining(jsonRetries, req.MaxOutputRetries) {
-				jsonRetries++
-				e.logf("Invalid tool call response, retrying without tool history: agent=%s attempt=%d", req.AgentName, jsonRetries)
+			if outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
+				state.jsonRetries++
+				e.logf("Invalid tool call response, retrying without tool history: agent=%s attempt=%d", req.AgentName, state.jsonRetries)
 				if strings.TrimSpace(resp.RawResponse) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 				}
@@ -152,8 +168,8 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			break
 		}
 		pendingToolCalls := len(resp.ToolCalls)
-		if req.MaxToolCalls > 0 && result.toolCalls+pendingToolCalls > req.MaxToolCalls {
-			e.logf("Tool call limit reached, making final call without tools: agent=%s limit=%d used=%d requested=%d", req.AgentName, req.MaxToolCalls, result.toolCalls, pendingToolCalls)
+		if req.MaxToolCalls > 0 && state.toolCalls+pendingToolCalls > req.MaxToolCalls {
+			e.logf("Tool call limit reached, making final call without tools: agent=%s limit=%d used=%d requested=%d", req.AgentName, req.MaxToolCalls, state.toolCalls, pendingToolCalls)
 			finalMessages := append([]llm.Message(nil), messages...)
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
@@ -168,16 +184,19 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			break
 		}
 
-		e.logf("Executing tool batch: agent=%s used=%d requested=%d", req.AgentName, result.toolCalls, pendingToolCalls)
+		e.logf("Executing tool batch: agent=%s used=%d requested=%d", req.AgentName, state.toolCalls, pendingToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
-		batch := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, toolState)
+		batch := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, state.toolState)
 		messages = append(messages, batch...)
 		result.toolMessages = append(result.toolMessages, batch...)
 		result.toolCallHistory = append(result.toolCallHistory, collectToolCallHistory(resp.ToolCalls, batch)...)
-		result.duplicateToolCalls += countDuplicateToolCalls(batch)
+		duplicates := countDuplicateToolCalls(batch)
+		result.duplicateToolCalls += duplicates
+		state.duplicateToolCalls += duplicates
 		result.toolCalls += pendingToolCalls
-		if req.MaxDuplicateToolCalls > 0 && result.duplicateToolCalls >= req.MaxDuplicateToolCalls {
-			e.logf("Duplicate tool call limit reached, making final call without tools: agent=%s limit=%d duplicates=%d", req.AgentName, req.MaxDuplicateToolCalls, result.duplicateToolCalls)
+		state.toolCalls += pendingToolCalls
+		if req.MaxDuplicateToolCalls > 0 && state.duplicateToolCalls >= req.MaxDuplicateToolCalls {
+			e.logf("Duplicate tool call limit reached, making final call without tools: agent=%s limit=%d duplicates=%d", req.AgentName, req.MaxDuplicateToolCalls, state.duplicateToolCalls)
 			resp, err = e.agentLoopReviewWithoutTools(ctx, llmReq, req, messages)
 			if err != nil {
 				return agentLoopResult{}, err

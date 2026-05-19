@@ -55,6 +55,9 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.MaxReasoningLoopRepeats != DefaultMaxReasoningLoopRepeats {
 			t.Fatalf("%s max reasoning loop repeats = %d", entry.name, profile.MaxReasoningLoopRepeats)
 		}
+		if profile.NudgeCount != DefaultNudgeCount {
+			t.Fatalf("%s nudge count = %d", entry.name, profile.NudgeCount)
+		}
 		if profile.ReasoningEffort != DefaultReasoningEffort {
 			t.Fatalf("%s reasoning effort = %q", entry.name, profile.ReasoningEffort)
 		}

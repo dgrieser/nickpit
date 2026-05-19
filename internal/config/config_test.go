@@ -39,6 +39,9 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	if profile.MaxRateLimitDelaySeconds != 0 {
 		t.Fatalf("default max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
 	}
+	if profile.NudgeCount != 0 {
+		t.Fatalf("default nudge count = %d", profile.NudgeCount)
+	}
 	if profile.APIKey != "$OPENROUTER_API_KEY" {
 		t.Fatalf("default api key ref = %q", profile.APIKey)
 	}
@@ -89,6 +92,9 @@ func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
 	if profile.MaxRateLimitDelaySeconds != DefaultMaxRateLimitDelaySeconds {
 		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
 	}
+	if profile.NudgeCount != DefaultNudgeCount {
+		t.Fatalf("nudge count = %d", profile.NudgeCount)
+	}
 }
 
 func TestLoadConfigUsesConfiguredRateLimitDelay(t *testing.T) {
@@ -113,6 +119,31 @@ profiles:
 	}
 	if !profile.MaxRateLimitDelaySecondsConfigured {
 		t.Fatal("expected max_rate_limit_delay_seconds to be marked as configured")
+	}
+}
+
+func TestLoadConfigUsesConfiguredNudgeCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    nudge_count: 0
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.NudgeCount != 0 {
+		t.Fatalf("nudge count = %d", profile.NudgeCount)
+	}
+	if !profile.NudgeCountConfigured {
+		t.Fatal("expected nudge_count to be marked as configured")
 	}
 }
 
@@ -596,6 +627,36 @@ profiles:
 	}
 }
 
+func TestLoadConfigNudgeCountFromFileAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    nudge_count: 2
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.NudgeCount != 2 {
+		t.Fatalf("nudge count = %d", profile.NudgeCount)
+	}
+
+	_, profile, err = Load(path, Overrides{NudgeCount: intPtr(4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.NudgeCount != 4 {
+		t.Fatalf("override nudge count = %d", profile.NudgeCount)
+	}
+}
+
 func TestLoadConfigRejectsNegativeMaxReasoningLoopRepeats(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -618,6 +679,28 @@ profiles:
 	}
 }
 
+func TestLoadConfigRejectsNegativeNudgeCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    nudge_count: -1
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil {
+		t.Fatal("expected negative nudge count error")
+	}
+	if got, want := err.Error(), "nudge_count must be non-negative"; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want containing %q", got, want)
+	}
+}
+
 func TestLoadConfigExplicitZeroToolCallOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -630,6 +713,7 @@ profiles:
     max_output_retries: 4
     max_reasoning_seconds: 5
     max_reasoning_loop_repeats: 6
+    nudge_count: 7
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -641,6 +725,7 @@ profiles:
 		OutputRetries:        intPtr(0),
 		ReasoningSeconds:     intPtr(0),
 		ReasoningLoopRepeats: intPtr(0),
+		NudgeCount:           intPtr(0),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -659,6 +744,9 @@ profiles:
 	}
 	if profile.MaxReasoningLoopRepeats != 0 {
 		t.Fatalf("max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
+	}
+	if profile.NudgeCount != 0 {
+		t.Fatalf("nudge count = %d", profile.NudgeCount)
 	}
 }
 

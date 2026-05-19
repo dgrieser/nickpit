@@ -1,0 +1,16 @@
+You may have missed issues.
+
+- Re-examine the diff thoroughly
+- Look for subtler issues you may have skipped
+{{if .QuestionsSnippet}}
+
+Ask yourself these original questions again:
+{{.QuestionsSnippet}}
+{{else}}
+- Remember the original questions you should ask yourself
+{{end}}
+{{if .HasResponseFormat}}
+- Return your response in the same response format as before
+{{else}}
+- Respond in the same format as before
+{{end}}

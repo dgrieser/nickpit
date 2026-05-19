@@ -215,16 +215,17 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 }
 
 type reviewAgent struct {
-	name          string
-	role          string
-	system        string
-	noToolsSystem string
-	user          string
-	extraMessages []llm.Message
-	schema        []byte
-	schemaKind    llm.SchemaKind
-	constraints   llm.ResponseConstraints
-	hasTools      bool
+	name             string
+	role             string
+	system           string
+	noToolsSystem    string
+	user             string
+	extraMessages    []llm.Message
+	questionsSnippet string
+	schema           []byte
+	schemaKind       llm.SchemaKind
+	constraints      llm.ResponseConstraints
+	hasTools         bool
 }
 
 type reviewAgentResult struct {
@@ -312,20 +313,48 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 	}, reviewCtx, nil
 }
 
-var reviewVectors = []struct {
-	name        string
-	focusFile   string
-	constraints llm.ResponseConstraints
-}{
-	{"Code Quality", "agent_review_codequality_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Security", "agent_review_security_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Architecture", "agent_review_architecture_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Performance", "agent_review_performance_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Testing", "agent_review_testing_system_prompt.tmpl", llm.ResponseConstraints{
-		MinPriority:        intPtr(2),
-		AllowedCorrectness: []string{"patch is correct"},
-	}},
-	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl", llm.ResponseConstraints{}},
+type reviewVector struct {
+	name          string
+	focusFile     string
+	questionsFile string
+	constraints   llm.ResponseConstraints
+}
+
+var reviewVectors = []reviewVector{
+	{
+		name:          "Code Quality",
+		focusFile:     "agent_review_codequality_system_prompt.tmpl",
+		questionsFile: "agent_review_codequality_questions.tmpl",
+	},
+	{
+		name:          "Security",
+		focusFile:     "agent_review_security_system_prompt.tmpl",
+		questionsFile: "agent_review_security_questions.tmpl",
+	},
+	{
+		name:          "Architecture",
+		focusFile:     "agent_review_architecture_system_prompt.tmpl",
+		questionsFile: "agent_review_architecture_questions.tmpl",
+	},
+	{
+		name:          "Performance",
+		focusFile:     "agent_review_performance_system_prompt.tmpl",
+		questionsFile: "agent_review_performance_questions.tmpl",
+	},
+	{
+		name:          "Testing",
+		focusFile:     "agent_review_testing_system_prompt.tmpl",
+		questionsFile: "agent_review_testing_questions.tmpl",
+		constraints: llm.ResponseConstraints{
+			MinPriority:        intPtr(2),
+			AllowedCorrectness: []string{"patch is correct"},
+		},
+	},
+	{
+		name:          "Best Practices",
+		focusFile:     "agent_review_bestpractices_system_prompt.tmpl",
+		questionsFile: "agent_review_bestpractices_questions.tmpl",
+	},
 }
 
 func intPtr(v int) *int { return &v }
@@ -457,18 +486,19 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 	var wg sync.WaitGroup
 	for i, vector := range reviewVectors {
 		wg.Add(1)
-		go func(idx int, vector struct {
-			name        string
-			focusFile   string
-			constraints llm.ResponseConstraints
-		}) {
+		go func(idx int, vector reviewVector) {
 			defer wg.Done()
-			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, true)
+			questionsSnippet, err := e.renderReviewerQuestionsSnippet(vector.questionsFile)
 			if err != nil {
 				errs[idx] = err
 				return
 			}
-			noToolsSystem, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, false)
+			system, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, true)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
+			noToolsSystem, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, false)
 			if err != nil {
 				errs[idx] = err
 				return
@@ -478,16 +508,17 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				agentSchema = llm.FindingsSchemaWithConstraints(vector.constraints)
 			}
 			result, err := e.runReviewAgent(ctx, reviewAgent{
-				name:          vector.name,
-				role:          "reviewer",
-				system:        system,
-				noToolsSystem: noToolsSystem,
-				user:          userPrompt,
-				extraMessages: contextMessages,
-				schema:        agentSchema,
-				schemaKind:    llm.SchemaKindReview,
-				constraints:   vector.constraints,
-				hasTools:      true,
+				name:             vector.name,
+				role:             "reviewer",
+				system:           system,
+				noToolsSystem:    noToolsSystem,
+				user:             userPrompt,
+				extraMessages:    contextMessages,
+				questionsSnippet: questionsSnippet,
+				schema:           agentSchema,
+				schemaKind:       llm.SchemaKindReview,
+				constraints:      vector.constraints,
+				hasTools:         true,
 			}, req)
 			results[idx] = result
 			errs[idx] = err
@@ -603,7 +634,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	if agent.schemaKind == llm.SchemaKindText {
 		reviewSnippet = ""
 	}
-	loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
+	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
 		AgentKind:                  agentLoopKind(agent.role),
 		Messages:                   messages,
@@ -635,36 +666,139 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			}
 			return noToolsMessagesFromRendered(noToolsSystem, messages)
 		},
-	})
+	}
+	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
 		return reviewAgentResult{}, err
 	}
+	if loopResult.resp == nil {
+		return reviewAgentResult{}, fmt.Errorf("agent %s returned no response", agent.name)
+	}
+	totalFindings := append([]model.Finding(nil), loopResult.resp.Findings...)
+	totalTokens := loopResult.tokensUsed
+	totalToolCalls := loopResult.toolCalls
+	totalDuplicates := loopResult.duplicateToolCalls
+	latestResp := loopResult.resp
+	latestReasoningEffort := loopResult.reasoningEffort
+	historyMessages := messagesWithFinalResponse(loopResult.messages, loopResult.resp)
+	contentMessages := append([]string(nil), loopResult.contentMessages...)
+	toolMessages := append([]llm.Message(nil), loopResult.toolMessages...)
+	toolCallHistory := append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
+
+	if agent.role == "reviewer" && req.NudgeCount > 0 {
+		nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
+			HasResponseFormat bool
+			QuestionsSnippet  string
+		}{
+			HasResponseFormat: agent.schemaKind != llm.SchemaKindText,
+			QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
+		})
+		if err != nil {
+			return reviewAgentResult{}, err
+		}
+		// One shared agentLoopState across all nudge rounds: tool-call, duplicate,
+		// and JSON-retry budgets are pooled for the entire nudge phase rather than
+		// reset per round. Intentional — prevents a chatty model from multiplying
+		// its budget by NudgeCount.
+		nudgeState := newAgentLoopState()
+		// Reset reasoning effort to the configured baseline at the start of the
+		// nudge phase. Intentional: a back-off triggered during the initial round
+		// (e.g. JSON repair forcing high → low) should not permanently degrade
+		// the nudges. Subsequent rounds still carry their own back-offs forward
+		// via the sub.reasoningEffort update below.
+		nudgeReasoningEffort := e.config.ReasoningEffort
+		for i := 0; i < req.NudgeCount; i++ {
+			e.logf("Nudge round: agent=%s round=%d/%d", agent.name, i+1, req.NudgeCount)
+			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
+			nudgeReq := loopReq
+			nudgeReq.Messages = nudged
+			nudgeReq.ReasoningEffort = nudgeReasoningEffort
+			nudgeReq.State = nudgeState
+			sub, err := e.runAgentLoop(ctx, nudgeReq)
+			if err != nil {
+				return reviewAgentResult{}, fmt.Errorf("nudge %d: %w", i+1, err)
+			}
+			if sub.resp == nil {
+				return reviewAgentResult{}, fmt.Errorf("nudge %d: agent %s returned no response", i+1, agent.name)
+			}
+			totalFindings = appendNewFindings(totalFindings, sub.resp.Findings)
+			totalTokens = addTokenUsage(totalTokens, sub.tokensUsed)
+			totalToolCalls += sub.toolCalls
+			totalDuplicates += sub.duplicateToolCalls
+			latestResp = sub.resp
+			latestReasoningEffort = sub.reasoningEffort
+			if sub.reasoningEffort != "" {
+				nudgeReasoningEffort = sub.reasoningEffort
+			}
+			historyMessages = messagesWithFinalResponse(sub.messages, sub.resp)
+			contentMessages = append(contentMessages, sub.contentMessages...)
+			toolMessages = append(toolMessages, sub.toolMessages...)
+			toolCallHistory = append(toolCallHistory, sub.toolCallHistory...)
+		}
+		// Findings are the merged set across all nudge rounds, but RawResponse
+		// is only the last round's raw payload. Do not re-parse RawResponse and
+		// expect to recover the merged findings — use Findings directly.
+		latest := *latestResp
+		latest.Findings = totalFindings
+		latestResp = &latest
+	}
 	return reviewAgentResult{
-		resp:               loopResult.resp,
-		reasoningEffort:    loopResult.reasoningEffort,
-		contentMessages:    loopResult.contentMessages,
-		toolMessages:       loopResult.toolMessages,
-		toolCallHistory:    loopResult.toolCallHistory,
-		duplicateToolCalls: loopResult.duplicateToolCalls,
+		resp:               latestResp,
+		reasoningEffort:    latestReasoningEffort,
+		contentMessages:    contentMessages,
+		toolMessages:       toolMessages,
+		toolCallHistory:    toolCallHistory,
+		duplicateToolCalls: totalDuplicates,
 		run: model.AgentRun{
 			Name:                  agent.name,
 			Role:                  agent.role,
-			Findings:              len(loopResult.resp.Findings),
+			Findings:              len(latestResp.Findings),
 			MaxToolCalls:          req.MaxToolCalls,
 			MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
-			ToolCalls:             loopResult.toolCalls,
-			DuplicateToolCalls:    loopResult.duplicateToolCalls,
-			TokensUsed:            loopResult.tokensUsed,
+			ToolCalls:             totalToolCalls,
+			DuplicateToolCalls:    totalDuplicates,
+			TokensUsed:            totalTokens,
 		},
 	}, nil
 }
 
-func (e *Engine) renderReviewSystem(template, focusName string, req model.ReviewRequest, hasTools bool) (string, error) {
-	focusSnippet, err := e.loadPrompt(focusName)
+func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
+	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsSnippet)
 	if err != nil {
 		return "", err
 	}
 	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools)
+}
+
+func (e *Engine) renderReviewerQuestionsSnippet(questionsName string) (string, error) {
+	if strings.TrimSpace(questionsName) != "" {
+		questionsTemplate, err := e.loadPrompt(questionsName)
+		if err != nil {
+			return "", err
+		}
+		questionsSnippet, err := llm.RenderPrompt(questionsTemplate, nil)
+		if err != nil {
+			return "", fmt.Errorf("review: rendering reviewer questions prompt %s: %w", questionsName, err)
+		}
+		return strings.TrimSpace(questionsSnippet), nil
+	}
+	return "", nil
+}
+
+func (e *Engine) renderReviewerFocusSnippet(focusName, questionsSnippet string) (string, error) {
+	focusTemplate, err := e.loadPrompt(focusName)
+	if err != nil {
+		return "", err
+	}
+	rendered, err := llm.RenderPrompt(focusTemplate, struct {
+		QuestionsSnippet string
+	}{
+		QuestionsSnippet: strings.TrimSpace(questionsSnippet),
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering reviewer focus prompt %s: %w", focusName, err)
+	}
+	return rendered, nil
 }
 
 func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
@@ -772,6 +906,58 @@ func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([
 	return finalMessages, nil
 }
 
+func appendNewFindings(existing, candidates []model.Finding) []model.Finding {
+	if len(candidates) == 0 {
+		return existing
+	}
+	out := append([]model.Finding(nil), existing...)
+	seenIDTitles := make(map[string]struct{}, len(out))
+	seenTitleLocations := make(map[string]struct{}, len(out))
+	for _, finding := range out {
+		recordFindingKeys(seenIDTitles, seenTitleLocations, finding)
+	}
+	for _, finding := range candidates {
+		idTitleKey, titleLocationKey := findingDedupKeys(finding)
+		if idTitleKey != "" {
+			if _, ok := seenIDTitles[idTitleKey]; ok {
+				continue
+			}
+		}
+		if titleLocationKey != "" {
+			if _, ok := seenTitleLocations[titleLocationKey]; ok {
+				continue
+			}
+		}
+		out = append(out, finding)
+		recordFindingKeys(seenIDTitles, seenTitleLocations, finding)
+	}
+	return out
+}
+
+func recordFindingKeys(seenIDTitles, seenTitleLocations map[string]struct{}, finding model.Finding) {
+	idTitleKey, titleLocationKey := findingDedupKeys(finding)
+	if idTitleKey != "" {
+		seenIDTitles[idTitleKey] = struct{}{}
+	}
+	if titleLocationKey != "" {
+		seenTitleLocations[titleLocationKey] = struct{}{}
+	}
+}
+
+func findingDedupKeys(finding model.Finding) (string, string) {
+	title := strings.ToLower(strings.TrimSpace(finding.Title))
+	if title == "" {
+		return "", ""
+	}
+	idTitleKey := ""
+	if id := strings.TrimSpace(finding.ID); id != "" {
+		idTitleKey = id + "\x00" + title
+	}
+	loc := finding.CodeLocation
+	titleLocationKey := fmt.Sprintf("%s\x00%s\x00%d\x00%d", title, loc.FilePath, loc.LineRange.Start, loc.LineRange.End)
+	return idTitleKey, titleLocationKey
+}
+
 func vectorReviewPayloads(results []reviewAgentResult) []map[string]any {
 	out := make([]map[string]any, 0, len(results))
 	for _, result := range results {
@@ -812,6 +998,20 @@ func appendResponseContent(contentMessages []string, resp *llm.ReviewResponse) [
 		contentMessages = append(contentMessages, content)
 	}
 	return contentMessages
+}
+
+func messagesWithFinalResponse(messages []llm.Message, resp *llm.ReviewResponse) []llm.Message {
+	out := append([]llm.Message(nil), messages...)
+	if resp == nil || strings.TrimSpace(resp.RawResponse) == "" {
+		return out
+	}
+	if len(out) > 0 {
+		last := out[len(out)-1]
+		if last.Role == "assistant" && last.Content == resp.RawResponse {
+			return out
+		}
+	}
+	return append(out, llm.Message{Role: "assistant", Content: resp.RawResponse})
 }
 
 func contextAgentMarkdownMessages(contentMessages []string) []llm.Message {

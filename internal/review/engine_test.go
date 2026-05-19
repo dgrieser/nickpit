@@ -17,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
 )
 
@@ -67,6 +68,7 @@ type multiAgentLLM struct {
 	contextSystem string
 	vectorContext map[string]string
 	vectorSystem  map[string]string
+	vectorNudge   map[string]string
 }
 
 func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -80,6 +82,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if s.vectorContext == nil {
 		s.vectorContext = make(map[string]string)
+	}
+	if s.vectorNudge == nil {
+		s.vectorNudge = make(map[string]string)
 	}
 	system := ""
 	if len(req.Messages) > 0 {
@@ -105,6 +110,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		for _, msg := range req.Messages {
 			if msg.Role == "user" && strings.Contains(msg.Content, "## Notes") {
 				s.vectorContext[name] = msg.Content
+			}
+			if msg.Role == "user" && strings.Contains(msg.Content, "You may have missed issues") {
+				s.vectorNudge[name] = msg.Content
 			}
 		}
 		if s.vectorCalls[name] == 1 {
@@ -203,6 +211,250 @@ func cloneTestMessages(messages []llm.Message) []llm.Message {
 		}
 	}
 	return cloned
+}
+
+func TestRunReviewAgent_NudgeDuplicate(t *testing.T) {
+	first := nudgeFinding("A", 1)
+	second := nudgeFinding("B", 2)
+	duplicate := nudgeFinding("A", 1)
+	third := nudgeFinding("C", 3)
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, first)},
+			{resp: func() *llm.ReviewResponse {
+				resp := nudgeReviewResponse("second", 2, second)
+				resp.ReasoningEffort = "low"
+				return resp
+			}()},
+			{resp: nudgeReviewResponse("duplicate", 3, duplicate)},
+			{resp: nudgeReviewResponse("third", 4, third)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A", "B", "C"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if result.run.Findings != 3 {
+		t.Fatalf("agent run findings = %d", result.run.Findings)
+	}
+	if result.run.TokensUsed.TotalTokens != 10 {
+		t.Fatalf("tokens = %d", result.run.TokensUsed.TotalTokens)
+	}
+	if len(llmClient.reqs) != 4 {
+		t.Fatalf("llm calls = %d, want 4", len(llmClient.reqs))
+	}
+	wantEfforts := []string{"high", "high", "low", "low"}
+	for i, req := range llmClient.reqs {
+		if req.ReasoningEffort != wantEfforts[i] {
+			t.Fatalf("call %d reasoning effort = %q, want %q", i+1, req.ReasoningEffort, wantEfforts[i])
+		}
+	}
+	if got := llmClient.reqs[1].Messages; len(got) < 4 || !strings.Contains(got[len(got)-1].Content, "missed issues") {
+		t.Fatalf("first nudge messages = %#v", got)
+	}
+}
+
+func TestRunReviewAgent_NudgeKeepDuplicate(t *testing.T) {
+	first := nudgeFinding("A", 1)
+	changedLocation := nudgeFinding("A", 2)
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, first)},
+			{resp: nudgeReviewResponse("changed", 1, changedLocation)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A", "A"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunReviewAgent_NudgeZeroDisables(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
+			{resp: nudgeReviewResponse("second", 1, nudgeFinding("B", 2))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("llm calls = %d, want 1", len(llmClient.reqs))
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunReviewAgent_NudgeBudgetsResetOnceBeforeNudges(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
+			{resp: &llm.ReviewResponse{
+				ToolCalls:   []llm.ToolCall{{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`}},
+				RawResponse: "inspect first nudge",
+			}},
+			{resp: nudgeReviewResponse("second", 1, nudgeFinding("B", 2))},
+			{resp: &llm.ReviewResponse{
+				ToolCalls:   []llm.ToolCall{{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
+				RawResponse: "inspect second nudge",
+			}},
+			{resp: nudgeReviewResponse("third", 1, nudgeFinding("C", 3))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runReviewAgent(context.Background(), nudgeTestToolAgent("reviewer"), model.ReviewRequest{NudgeCount: 2, MaxToolCalls: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.run.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d, want one shared nudge-phase budget", result.run.ToolCalls)
+	}
+	if len(result.toolMessages) != 1 {
+		t.Fatalf("tool messages = %d, want only first nudge tool execution", len(result.toolMessages))
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A", "B", "C"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 5 {
+		t.Fatalf("llm calls = %d, want 5", len(llmClient.reqs))
+	}
+	if len(llmClient.reqs[4].Tools) != 0 {
+		t.Fatalf("second nudge final call should run without tools, got %d tools", len(llmClient.reqs[4].Tools))
+	}
+}
+
+func TestRunReviewAgent_NudgeReviewerOnly(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("context", 1)},
+			{resp: nudgeReviewResponse("unused", 1, nudgeFinding("B", 2))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	_, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("context"), model.ReviewRequest{NudgeCount: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("llm calls = %d, want 1", len(llmClient.reqs))
+	}
+}
+
+func TestRunReviewAgent_NudgeErrorPropagates(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
+			{resp: nudgeReviewResponse("second", 1, nudgeFinding("B", 2))},
+			{err: errors.New("boom")},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	_, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
+	if err == nil {
+		t.Fatal("expected nudge error")
+	}
+	if got, want := err.Error(), "nudge 2"; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want containing %q", got, want)
+	}
+	if len(llmClient.reqs) != 3 {
+		t.Fatalf("llm calls = %d, want 3", len(llmClient.reqs))
+	}
+}
+
+func TestAppendNewFindingsDuplicateKeys(t *testing.T) {
+	base := nudgeFinding("Same", 1)
+	sameIDSameTitle := nudgeFinding(" same ", 2)
+	sameIDSameTitle.ID = base.ID
+	sameIDDifferentTitle := nudgeFinding("Different", 1)
+	sameIDDifferentTitle.ID = base.ID
+	sameTitleSameLocation := nudgeFinding("SAME", 1)
+	sameTitleDifferentLocation := nudgeFinding("Same", 3)
+
+	got := appendNewFindings([]model.Finding{base}, []model.Finding{
+		sameIDSameTitle,
+		sameIDDifferentTitle,
+		sameTitleSameLocation,
+		sameTitleDifferentLocation,
+	})
+	if gotTitles, want := findingTitles(got), []string{"Same", "Different", "Same"}; !reflect.DeepEqual(gotTitles, want) {
+		t.Fatalf("findings = %#v, want %#v", gotTitles, want)
+	}
+}
+
+func nudgeTestEngine(llmClient llm.Client) *Engine {
+	return &Engine{
+		llm:       llmClient,
+		retrieval: stubRetrieval{},
+		config: config.Profile{
+			Model:           "test-model",
+			ReasoningEffort: "high",
+		},
+	}
+}
+
+func nudgeTestAgent(role string) reviewAgent {
+	return reviewAgent{
+		name:       role,
+		role:       role,
+		system:     "system",
+		user:       "user",
+		schemaKind: llm.SchemaKindReview,
+		hasTools:   false,
+	}
+}
+
+func nudgeTestToolAgent(role string) reviewAgent {
+	agent := nudgeTestAgent(role)
+	agent.hasTools = true
+	return agent
+}
+
+func nudgeReviewResponse(label string, tokens int, findings ...model.Finding) *llm.ReviewResponse {
+	return &llm.ReviewResponse{
+		Findings:               findings,
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     label,
+		OverallConfidenceScore: 0.9,
+		RawResponse:            `{"label":"` + label + `"}`,
+		TokensUsed:             model.TokenUsage{PromptTokens: tokens, CompletionTokens: tokens, TotalTokens: tokens},
+	}
+}
+
+func nudgeFinding(title string, line int) model.Finding {
+	return model.Finding{
+		ID:              uuid.NewString(),
+		Title:           title,
+		Body:            "body",
+		ConfidenceScore: 0.9,
+		Priority:        intPtr(2),
+		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
+	}
+}
+
+func findingTitles(findings []model.Finding) []string {
+	titles := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		titles = append(titles, finding.Title)
+	}
+	return titles
 }
 
 type stubRetrieval struct{}
@@ -908,6 +1160,79 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 		contextNote := llmClient.vectorContext[vector.name]
 		if !strings.Contains(contextNote, "## Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
 			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
+		}
+	}
+}
+
+func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+		NudgeCount:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]string{
+		"Code Quality": "- Does it work correctly?",
+		"Security":     "- Are there security concerns?",
+		"Testing":      "- Are changed behaviors covered by focused tests?",
+	}
+	for name, want := range checks {
+		nudge := llmClient.vectorNudge[name]
+		if !strings.Contains(nudge, "Ask yourself these original questions again:") {
+			t.Fatalf("%s nudge missing question header: %q", name, nudge)
+		}
+		if !strings.Contains(nudge, want) {
+			t.Fatalf("%s nudge missing question %q: %q", name, want, nudge)
+		}
+	}
+}
+
+func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
+	engine := NewEngine(stubSource{}, stubLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	baseTemplate, err := prompts.Load("agent_review_general_system_prompt.tmpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vector := range reviewVectors {
+		focusTemplate, err := prompts.Load(vector.focusFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		questionsTemplate, err := prompts.Load(vector.questionsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, question := range strings.Split(questionsTemplate, "\n") {
+			question = strings.TrimSpace(question)
+			if question == "" {
+				continue
+			}
+			if strings.Contains(focusTemplate, question) {
+				t.Fatalf("%s focus template still contains question %q", vector.name, question)
+			}
+		}
+		questionsSnippet, err := engine.renderReviewerQuestionsSnippet(vector.questionsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstQuestion := strings.TrimSpace(strings.Split(strings.TrimSpace(questionsTemplate), "\n")[0])
+		if !strings.Contains(system, firstQuestion) {
+			t.Fatalf("%s rendered system missing first question %q", vector.name, firstQuestion)
+		}
+		if strings.Contains(system, "{{.QuestionsSnippet}}") {
+			t.Fatalf("%s rendered system contains unresolved questions placeholder", vector.name)
 		}
 	}
 }

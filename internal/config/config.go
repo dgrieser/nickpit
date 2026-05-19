@@ -21,6 +21,7 @@ const (
 	DefaultMaxReasoningSeconds      = 600
 	DefaultMaxReasoningLoopRepeats  = 5
 	DefaultMaxRateLimitDelaySeconds = 300
+	DefaultNudgeCount               = 3
 	DefaultConfigPath               = ".nickpit.yaml"
 	DefaultReasoningEffort          = "high"
 	DefaultGitHubTokenRef           = "${GITHUB_TOKEN}"
@@ -51,6 +52,7 @@ type Profile struct {
 	MaxReasoningSeconds                int            `yaml:"max_reasoning_seconds"`
 	MaxReasoningLoopRepeats            int            `yaml:"max_reasoning_loop_repeats"`
 	MaxRateLimitDelaySeconds           int            `yaml:"max_rate_limit_delay_seconds"`
+	NudgeCount                         int            `yaml:"nudge_count"`
 	ReasoningEffort                    string         `yaml:"reasoning_effort"`
 	Workdir                            string         `yaml:"workdir"`
 	GitHubToken                        string         `yaml:"github_token"`
@@ -64,6 +66,7 @@ type Profile struct {
 	MaxReasoningSecondsConfigured      bool           `yaml:"-"`
 	MaxReasoningLoopRepeatsConfigured  bool           `yaml:"-"`
 	MaxRateLimitDelaySecondsConfigured bool           `yaml:"-"`
+	NudgeCountConfigured               bool           `yaml:"-"`
 }
 
 type Overrides struct {
@@ -83,6 +86,7 @@ type Overrides struct {
 	ReasoningSeconds      *int
 	ReasoningLoopRepeats  *int
 	RateLimitDelaySeconds *int
+	NudgeCount            *int
 	ReasoningEffort       string
 	Workdir               string
 	GitHubToken           string
@@ -356,6 +360,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.MaxRateLimitDelaySeconds = *overrides.RateLimitDelaySeconds
 		profile.MaxRateLimitDelaySecondsConfigured = true
 	}
+	if overrides.NudgeCount != nil {
+		profile.NudgeCount = *overrides.NudgeCount
+		profile.NudgeCountConfigured = true
+	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
@@ -418,6 +426,12 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.MaxRateLimitDelaySeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_rate_limit_delay_seconds must be non-negative")
 	}
+	if profile.NudgeCount == 0 && !profile.NudgeCountConfigured {
+		profile.NudgeCount = DefaultNudgeCount
+	}
+	if profile.NudgeCount < 0 {
+		return Profile{}, fmt.Errorf("config: nudge_count must be non-negative")
+	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort
 	}
@@ -476,6 +490,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile.MaxReasoningSecondsConfigured = mappingValue(profileNode, "max_reasoning_seconds") != nil
 		profile.MaxReasoningLoopRepeatsConfigured = mappingValue(profileNode, "max_reasoning_loop_repeats") != nil
 		profile.MaxRateLimitDelaySecondsConfigured = mappingValue(profileNode, "max_rate_limit_delay_seconds") != nil
+		profile.NudgeCountConfigured = mappingValue(profileNode, "nudge_count") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil
