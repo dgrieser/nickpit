@@ -197,6 +197,48 @@ func TestTerminalFormatterHideInvalid(t *testing.T) {
 	}
 }
 
+func TestTerminalFormatterRendersWarnings(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewTerminalFormatter(&buf, false)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{},
+		Warnings: []string{
+			"Verify failed for finding #1 \"x\": upstream 503",
+			"Finalize failed: timeout; using verified result",
+		},
+		OverallCorrectness: "patch is correct",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Warnings:") {
+		t.Fatalf("missing Warnings header:\n%s", out)
+	}
+	if !strings.Contains(out, "Verify failed for finding #1") {
+		t.Fatalf("missing verify warning:\n%s", out)
+	}
+	if !strings.Contains(out, "Finalize failed: timeout") {
+		t.Fatalf("missing finalize warning:\n%s", out)
+	}
+}
+
+func TestTerminalFormatterWarningsColored(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewTerminalFormatter(&buf, true)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{},
+		Warnings: []string{"something failed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "\x1b[33mWarnings:\x1b[0m") {
+		t.Fatalf("expected ANSI-yellow Warnings header:\n%q", out)
+	}
+}
+
 func TestJSONFormatterIncludesVerification(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewJSONFormatter(&buf)

@@ -396,12 +396,10 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if contextErr != nil {
 		e.logf("Context agent failed, continuing with degraded context: error=%v", contextErr)
 		warnings = append(warnings, fmt.Sprintf("Context agent failed: %v; continuing with degraded context", contextErr))
-		contextResult.run = model.AgentRun{
-			Name:   "context",
-			Role:   "context",
-			Status: "failed",
-			Error:  contextErr.Error(),
-		}
+		contextResult.run.Name = "context"
+		contextResult.run.Role = "context"
+		contextResult.run.Status = model.AgentRunStatusFailed
+		contextResult.run.Error = contextErr.Error()
 	}
 
 	enriched, err := model.CloneContext(reviewCtx)
@@ -439,11 +437,28 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 			mergeSchema = llm.FindingsWithIDSchema
 		}
 	}
-	mergeResult, mergeErr := e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchema, mergeConstraints, req)
-	if mergeErr != nil {
-		e.logf("Merge agent failed, falling back to deduped vector union: error=%v", mergeErr)
-		warnings = append(warnings, fmt.Sprintf("Merge agent failed: %v; falling back to deduped vector findings", mergeErr))
-		mergeResult = synthesizedMergeFromVectors(vectorResults, mergeErr)
+	var (
+		mergeResult reviewAgentResult
+		mergeErr    error
+	)
+	if allVectorsFailed(vectorResults) {
+		// Every vector reviewer failed — calling the merge LLM on an
+		// all-failed payload risks hallucinated findings. Short-circuit
+		// to the local synthesizer (empty findings) instead.
+		e.logf("All vector reviewers failed; skipping merge agent and emitting empty result")
+		warnings = append(warnings, "All vector reviewers failed; skipped merge agent and returning empty findings")
+		mergeResult = synthesizedMergeFromVectors(vectorResults, nil)
+	} else {
+		mergeResult, mergeErr = e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchema, mergeConstraints, req)
+		if mergeErr != nil {
+			e.logf("Merge agent failed, falling back to deduped vector union: error=%v", mergeErr)
+			warnings = append(warnings, fmt.Sprintf("Merge agent failed: %v; falling back to deduped vector findings", mergeErr))
+			partialMergeTokens := mergeResult.run.TokensUsed
+			partialMergeToolCalls := mergeResult.run.ToolCalls
+			mergeResult = synthesizedMergeFromVectors(vectorResults, mergeErr)
+			mergeResult.run.TokensUsed = partialMergeTokens
+			mergeResult.run.ToolCalls = partialMergeToolCalls
+		}
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
 	allRuns = append(allRuns, contextResult.run)
@@ -493,13 +508,27 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}, enriched, nil
 }
 
+// allVectorsFailed reports whether every per-vector reviewer returned a
+// failed status. Used to short-circuit the merge LLM call.
+func allVectorsFailed(results []reviewAgentResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, r := range results {
+		if r.run.Status != model.AgentRunStatusFailed {
+			return false
+		}
+	}
+	return true
+}
+
 // appendAgentRunWarnings folds AgentRun-level failures into the top-level
 // warnings list. Failures already surfaced via contextErr / mergeErr above are
 // skipped to avoid duplicates — the dedicated warning messages there are more
 // informative than the bare agent error string.
 func appendAgentRunWarnings(warnings []string, runs []model.AgentRun, contextErr, mergeErr error) []string {
 	for _, run := range runs {
-		if run.Status == "" || run.Status == "ok" {
+		if run.Status == model.AgentRunStatusOK {
 			continue
 		}
 		if run.Role == "context" && contextErr != nil {
@@ -508,9 +537,10 @@ func appendAgentRunWarnings(warnings []string, runs []model.AgentRun, contextErr
 		if run.Role == "merge" && mergeErr != nil {
 			continue
 		}
-		if run.Status == "failed" {
+		switch run.Status {
+		case model.AgentRunStatusFailed:
 			warnings = append(warnings, fmt.Sprintf("%s reviewer failed: %s", run.Name, run.Error))
-		} else if run.Status == "partial" {
+		case model.AgentRunStatusPartial:
 			warnings = append(warnings, fmt.Sprintf("%s reviewer partial result: %s", run.Name, run.Error))
 		}
 	}
@@ -616,9 +646,9 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 
 func (e *Engine) runContextAgent(ctx context.Context, agent reviewAgent, req model.ReviewRequest) (contextAgentResult, error) {
 	result, err := e.runReviewAgent(ctx, agent, req)
-	if err != nil {
-		return contextAgentResult{}, err
-	}
+	// Always project whatever runReviewAgent returned (even on err) so callers
+	// preserve accumulated tokens, tool calls, and partial content for
+	// telemetry / degraded-fallback flows.
 	return contextAgentResult{
 		run:                result.run,
 		reasoningEffort:    result.reasoningEffort,
@@ -626,7 +656,7 @@ func (e *Engine) runContextAgent(ctx context.Context, agent reviewAgent, req mod
 		toolMessages:       result.toolMessages,
 		toolCallHistory:    result.toolCallHistory,
 		duplicateToolCalls: result.duplicateToolCalls,
-	}, nil
+	}, err
 }
 
 func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (string, error) {
@@ -708,10 +738,10 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	}
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
-		return reviewAgentResult{}, err
+		return partialReviewAgentResult(agent, req, loopResult), err
 	}
 	if loopResult.resp == nil {
-		return reviewAgentResult{}, fmt.Errorf("agent %s returned no response", agent.name)
+		return partialReviewAgentResult(agent, req, loopResult), fmt.Errorf("agent %s returned no response", agent.name)
 	}
 	totalFindings := append([]model.Finding(nil), loopResult.resp.Findings...)
 	totalTokens := loopResult.tokensUsed
@@ -795,7 +825,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 				ToolCalls:             totalToolCalls,
 				DuplicateToolCalls:    totalDuplicates,
 				TokensUsed:            totalTokens,
-				Status:                "partial",
+				Status:                model.AgentRunStatusPartial,
 				Error:                 nudgeErr.Error(),
 			}
 			return reviewAgentResult{
@@ -973,13 +1003,37 @@ func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([
 	return finalMessages, nil
 }
 
+// partialReviewAgentResult wraps an aborted agent loop into a reviewAgentResult
+// so callers in failure branches can read accumulated tokens / tool calls /
+// content even when the loop errored. resp is intentionally left as the
+// loop's last response (possibly nil) — callers must check before using it.
+func partialReviewAgentResult(agent reviewAgent, req model.ReviewRequest, loop agentLoopResult) reviewAgentResult {
+	return reviewAgentResult{
+		resp:               loop.resp,
+		reasoningEffort:    loop.reasoningEffort,
+		contentMessages:    loop.contentMessages,
+		toolMessages:       loop.toolMessages,
+		toolCallHistory:    loop.toolCallHistory,
+		duplicateToolCalls: loop.duplicateToolCalls,
+		run: model.AgentRun{
+			Name:                  agent.name,
+			Role:                  agent.role,
+			MaxToolCalls:          req.MaxToolCalls,
+			MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
+			ToolCalls:             loop.toolCalls,
+			DuplicateToolCalls:    loop.duplicateToolCalls,
+			TokensUsed:            loop.tokensUsed,
+		},
+	}
+}
+
 func failedVectorResult(vector reviewVector, err error) reviewAgentResult {
 	return reviewAgentResult{
 		resp: &llm.ReviewResponse{},
 		run: model.AgentRun{
 			Name:   vector.name,
 			Role:   "reviewer",
-			Status: "failed",
+			Status: model.AgentRunStatusFailed,
 			Error:  err.Error(),
 		},
 	}
@@ -993,24 +1047,52 @@ func failedVectorResult(vector reviewVector, err error) reviewAgentResult {
 func synthesizedMergeFromVectors(vectorResults []reviewAgentResult, mergeErr error) reviewAgentResult {
 	var merged []model.Finding
 	for _, result := range vectorResults {
-		if result.run.Status == "failed" || result.resp == nil {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
 			continue
 		}
 		merged = appendNewFindings(merged, result.resp.Findings)
 	}
+	// Re-mint IDs locally: two vectors may emit distinct findings sharing the
+	// same valid UUID, which appendNewFindings keeps because dedup runs on
+	// title-location keys. EnsureFindingIDs upstream only replaces invalid
+	// UUIDs, so collisions would otherwise survive into the verifier.
+	remintDuplicateFindingIDs(merged)
 	resp := &llm.ReviewResponse{
 		Findings:           merged,
 		OverallCorrectness: "",
 		OverallExplanation: "Merge agent unavailable; findings are the union of per-vector reviewers, deduped locally.",
+	}
+	status := model.AgentRunStatusFailed
+	errStr := ""
+	if mergeErr != nil {
+		errStr = mergeErr.Error()
+	} else {
+		status = model.AgentRunStatusSkipped
 	}
 	return reviewAgentResult{
 		resp: resp,
 		run: model.AgentRun{
 			Name:   "merge",
 			Role:   "merge",
-			Status: "failed",
-			Error:  mergeErr.Error(),
+			Status: status,
+			Error:  errStr,
 		},
+	}
+}
+
+// remintDuplicateFindingIDs replaces colliding valid UUIDs in-place so that
+// downstream verifiers can address each finding by ID.
+func remintDuplicateFindingIDs(findings []model.Finding) {
+	seen := make(map[string]struct{}, len(findings))
+	for i := range findings {
+		if findings[i].ID == "" {
+			continue
+		}
+		if _, ok := seen[findings[i].ID]; ok {
+			findings[i].ID = ""
+			model.EnsureFindingID(&findings[i])
+		}
+		seen[findings[i].ID] = struct{}{}
 	}
 }
 
@@ -1073,8 +1155,8 @@ func vectorReviewPayloads(results []reviewAgentResult) []map[string]any {
 			"name": result.run.Name,
 			"role": result.run.Role,
 		}
-		if result.run.Status == "failed" {
-			entry["status"] = "failed"
+		if result.run.Status == model.AgentRunStatusFailed {
+			entry["status"] = model.AgentRunStatusFailed
 			if result.run.Error != "" {
 				entry["error"] = result.run.Error
 			}

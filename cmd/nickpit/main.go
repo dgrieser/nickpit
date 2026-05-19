@@ -758,7 +758,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			result.AgentRuns = append(result.AgentRuns, model.AgentRun{
 				Name:   "finalize",
 				Role:   "finalize",
-				Status: "failed",
+				Status: model.AgentRunStatusFailed,
 				Error:  finalizeErr.Error(),
 			})
 		} else {
@@ -774,7 +774,40 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	} else {
 		formatter = output.NewTerminalFormatter(os.Stdout, true).WithHideInvalid(a.hideInvalid)
 	}
-	return formatter.FormatFindings(result)
+	if err := formatter.FormatFindings(result); err != nil {
+		return err
+	}
+	// Distinguish "review produced nothing because every reviewer crashed"
+	// from "review succeeded with some soft warnings" — only the former is a
+	// CI-level failure. Empty findings alone are not a failure (clean diff).
+	if reviewProducedNothing(result) {
+		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
+	}
+	return nil
+}
+
+// reviewProducedNothing reports whether the review pipeline collapsed: every
+// reviewer-role AgentRun failed and no findings emerged. Returns false if any
+// reviewer succeeded (even partially) — those runs may legitimately produce no
+// findings on a clean diff.
+func reviewProducedNothing(result *model.ReviewResult) bool {
+	if result == nil {
+		return false
+	}
+	if len(result.Findings) > 0 {
+		return false
+	}
+	reviewerSeen := false
+	for _, run := range result.AgentRuns {
+		if run.Role != "reviewer" {
+			continue
+		}
+		reviewerSeen = true
+		if run.Status != model.AgentRunStatusFailed {
+			return false
+		}
+	}
+	return reviewerSeen
 }
 
 func missingAPIKeyHint(profileName string, configured bool) string {

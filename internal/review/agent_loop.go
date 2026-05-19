@@ -102,7 +102,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 	for {
 		noToolsHistory, err := agentLoopNoToolsMessages(req, messages)
 		if err != nil {
-			return agentLoopResult{}, err
+			return result, err
 		}
 		llmReq.NoToolsMessages = noToolsHistory
 		llmReq.Messages = messages
@@ -131,13 +131,13 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				}
 				feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
 				if err != nil {
-					return agentLoopResult{}, err
+					return result, err
 				}
 				messages = append(messages, llm.Message{Role: "user", Content: feedback})
 				syntheticFollowup = nil
 				continue
 			}
-			return agentLoopResult{}, err
+			return result, err
 		}
 
 		if resp.ReasoningEffort != "" {
@@ -159,7 +159,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				}
 				continue
 			}
-			return agentLoopResult{}, fmt.Errorf("agent %s returned only invalid tool calls", req.AgentName)
+			return result, fmt.Errorf("agent %s returned only invalid tool calls", req.AgentName)
 		}
 		if len(resp.ToolCalls) == 0 {
 			if strings.TrimSpace(resp.RawResponse) != "" {
@@ -176,7 +176,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			}
 			resp, err = e.agentLoopReviewWithoutTools(ctx, llmReq, req, finalMessages)
 			if err != nil {
-				return agentLoopResult{}, err
+				return result, err
 			}
 			result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 			result.contentMessages = appendResponseContent(result.contentMessages, resp)
@@ -199,7 +199,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			e.logf("Duplicate tool call limit reached, making final call without tools: agent=%s limit=%d duplicates=%d", req.AgentName, req.MaxDuplicateToolCalls, state.duplicateToolCalls)
 			resp, err = e.agentLoopReviewWithoutTools(ctx, llmReq, req, messages)
 			if err != nil {
-				return agentLoopResult{}, err
+				return result, err
 			}
 			result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 			result.contentMessages = appendResponseContent(result.contentMessages, resp)
@@ -208,13 +208,13 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		}
 		content, err := e.renderSyntheticToolFollowup(result.toolCallHistory, req.AgentKind)
 		if err != nil {
-			return agentLoopResult{}, err
+			return result, err
 		}
 		syntheticFollowup = &llm.Message{Role: "user", Content: content}
 	}
 
 	if result.resp == nil {
-		return agentLoopResult{}, fmt.Errorf("agent %s returned no response", req.AgentName)
+		return result, fmt.Errorf("agent %s returned no response", req.AgentName)
 	}
 	result.messages = append([]llm.Message(nil), messages...)
 	return result, nil

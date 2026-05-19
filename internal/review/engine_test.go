@@ -383,7 +383,7 @@ func TestRunReviewAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got, want := result.run.Status, "partial"; got != want {
+	if got, want := result.run.Status, model.AgentRunStatusPartial; got != want {
 		t.Fatalf("status = %q, want %q", got, want)
 	}
 	if !strings.Contains(result.run.Error, "nudge 2") {
@@ -1237,14 +1237,14 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 			securityRun = run
 			continue
 		}
-		if run.Role == "reviewer" && run.Status == "" {
+		if run.Role == "reviewer" && run.Status == model.AgentRunStatusOK {
 			successfulReviewers++
 		}
 	}
 	if securityRun == nil {
 		t.Fatal("missing Security AgentRun")
 	}
-	if securityRun.Status != "failed" {
+	if securityRun.Status != model.AgentRunStatusFailed {
 		t.Fatalf("Security status = %q, want failed", securityRun.Status)
 	}
 	if !strings.Contains(securityRun.Error, "security upstream fail") {
@@ -1329,7 +1329,7 @@ func TestMultiAgentToleratesMergeFailure(t *testing.T) {
 			mergeRun = &result.AgentRuns[i]
 		}
 	}
-	if mergeRun == nil || mergeRun.Status != "failed" {
+	if mergeRun == nil || mergeRun.Status != model.AgentRunStatusFailed {
 		t.Fatalf("merge AgentRun = %#v, want Status=failed", mergeRun)
 	}
 }
@@ -1359,7 +1359,7 @@ func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
 	}
 	failedReviewers := 0
 	for _, run := range result.AgentRuns {
-		if run.Role == "reviewer" && run.Status == "failed" {
+		if run.Role == "reviewer" && run.Status == model.AgentRunStatusFailed {
 			failedReviewers++
 		}
 	}
@@ -1368,6 +1368,29 @@ func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
 	}
 	if len(result.Warnings) < 6 {
 		t.Fatalf("warnings = %d, want at least 6", len(result.Warnings))
+	}
+	// All-vectors-failed must short-circuit the merge LLM call to avoid
+	// hallucinated findings from an empty payload.
+	foundShortCircuit := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "All vector reviewers failed") && strings.Contains(w, "skipped merge agent") {
+			foundShortCircuit = true
+		}
+	}
+	if !foundShortCircuit {
+		t.Fatalf("expected short-circuit warning in %#v", result.Warnings)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("expected empty findings on short-circuit, got %d", len(result.Findings))
+	}
+	var mergeRun *model.AgentRun
+	for i := range result.AgentRuns {
+		if result.AgentRuns[i].Role == "merge" {
+			mergeRun = &result.AgentRuns[i]
+		}
+	}
+	if mergeRun == nil || mergeRun.Status != model.AgentRunStatusSkipped {
+		t.Fatalf("merge AgentRun = %#v, want Status=skipped", mergeRun)
 	}
 }
 

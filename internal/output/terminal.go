@@ -58,11 +58,11 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		return err
 	}
 	if len(result.Warnings) > 0 {
-		if _, err := fmt.Fprintln(f.w, "Warnings:"); err != nil {
+		if _, err := fmt.Fprintln(f.w, f.colorWarning("Warnings:")); err != nil {
 			return err
 		}
 		for _, w := range result.Warnings {
-			if _, err := fmt.Fprintf(f.w, "  - %s\n", w); err != nil {
+			if _, err := fmt.Fprintf(f.w, "  %s %s\n", f.colorWarning("-"), w); err != nil {
 				return err
 			}
 		}
@@ -209,6 +209,13 @@ func (f *TerminalFormatter) colorVerifyInvalid(text string, confidence float64) 
 		code = "1;31"
 	}
 	return "\x1b[" + code + "m" + text + "\x1b[0m"
+}
+
+func (f *TerminalFormatter) colorWarning(text string) string {
+	if !f.useANSI {
+		return text
+	}
+	return "\x1b[33m" + text + "\x1b[0m"
 }
 
 func (f *TerminalFormatter) colorPriorityArrow(text string) string {

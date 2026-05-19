@@ -82,12 +82,18 @@ type AgentRun struct {
 	ToolCalls             int        `json:"tool_calls,omitempty"`
 	DuplicateToolCalls    int        `json:"duplicate_tool_calls"`
 	TokensUsed            TokenUsage `json:"tokens_used,omitempty"`
-	// Status is "" (implicit ok), "partial", "failed", or "skipped".
-	// Empty value preserves backward compatibility with consumers that
-	// existed before failure tolerance was introduced.
+	// Status is one of AgentRunStatus*. Empty = implicit ok (preserves
+	// backward compatibility with pre-failure-tolerance consumers).
 	Status string `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
+
+const (
+	AgentRunStatusOK      = ""
+	AgentRunStatusPartial = "partial"
+	AgentRunStatusFailed  = "failed"
+	AgentRunStatusSkipped = "skipped"
+)
 
 type ReviewContext struct {
 	Mode                ReviewMode         `json:"mode"`
