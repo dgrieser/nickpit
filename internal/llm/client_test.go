@@ -500,6 +500,21 @@ func TestRetrierBackoffIgnores429MessageResetTimeWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestRetrierBackoffSkipsPastTimestampPicksLaterValidOne(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = time.Second
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
+	retrier.now = func() time.Time {
+		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
+	}
+
+	message := "Request failed at 2026-05-18 18:00:00 UTC. Try again at 2026-05-18 18:18:30 UTC."
+	if got := retrier.BackoffForHTTPStatus(0, http.StatusTooManyRequests, nil, message); got != 30*time.Second {
+		t.Fatalf("multi-timestamp 429 backoff = %v", got)
+	}
+}
+
 func TestParseRateLimitResetTimeSupportsCommonLayouts(t *testing.T) {
 	want := time.Date(2026, 5, 18, 18, 18, 30, 0, time.UTC)
 	for _, message := range []string{

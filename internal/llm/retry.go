@@ -88,19 +88,18 @@ func (r *Retrier) rateLimitMessageDelay(message string) (time.Duration, bool) {
 	if cap <= 0 {
 		return 0, false
 	}
-	resetAt, ok := parseRateLimitResetTime(message)
-	if !ok {
-		return 0, false
-	}
 	now := time.Now
 	if r.now != nil {
 		now = r.now
 	}
-	delay := resetAt.Sub(now())
-	if delay <= 0 || delay > cap {
-		return 0, false
+	current := now()
+	for _, resetAt := range parseRateLimitResetTimes(message) {
+		delay := resetAt.Sub(current)
+		if delay > 0 && delay <= cap {
+			return delay, true
+		}
 	}
-	return delay, true
+	return 0, false
 }
 
 func (r *Retrier) Wait(ctx context.Context, attempt int, resp *http.Response) error {
@@ -141,18 +140,27 @@ var rateLimitResetTimeLayouts = []string{
 }
 
 func parseRateLimitResetTime(message string) (time.Time, bool) {
-	message = strings.TrimSpace(message)
-	if message == "" {
+	times := parseRateLimitResetTimes(message)
+	if len(times) == 0 {
 		return time.Time{}, false
 	}
+	return times[0], true
+}
+
+func parseRateLimitResetTimes(message string) []time.Time {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	var out []time.Time
 	for _, pattern := range rateLimitResetTimePatterns {
 		for _, candidate := range pattern.FindAllString(message, -1) {
 			if resetAt, ok := parseRateLimitResetTimeCandidate(candidate); ok {
-				return resetAt, true
+				out = append(out, resetAt)
 			}
 		}
 	}
-	return time.Time{}, false
+	return out
 }
 
 func parseRateLimitResetTimeCandidate(candidate string) (time.Time, bool) {
