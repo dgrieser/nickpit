@@ -652,7 +652,9 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	toolCallHistory := append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
 
 	if agent.role == "reviewer" && req.NudgeCount > 0 {
-		nudgeText, err := e.loadPrompt("agent_review_nudge_user_message.tmpl")
+		nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
+			HasResponseFormat bool
+		}{HasResponseFormat: agent.schemaKind != llm.SchemaKindText})
 		if err != nil {
 			return reviewAgentResult{}, err
 		}
@@ -677,6 +679,9 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			toolMessages = append(toolMessages, sub.toolMessages...)
 			toolCallHistory = append(toolCallHistory, sub.toolCallHistory...)
 		}
+		// Findings are the merged set across all nudge rounds, but RawResponse
+		// is only the last round's raw payload. Do not re-parse RawResponse and
+		// expect to recover the merged findings — use Findings directly.
 		latest := *latestResp
 		latest.Findings = totalFindings
 		latestResp = &latest

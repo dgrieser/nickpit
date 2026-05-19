@@ -3,4 +3,8 @@ You may have missed issues.
 - Re-examine the diff thoroughly
 - Look for subtler issues you may have skipped
 - Remember the original questions you should ask yourself
-- Return JSON in the same schema as before
+{{- if .HasResponseFormat }}
+- Return your response in the same response format as before
+{{- else }}
+- Respond in the same format as before
+{{- end }}
