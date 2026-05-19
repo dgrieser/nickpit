@@ -1219,7 +1219,11 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 				t.Fatalf("%s focus template still contains question %q", vector.name, question)
 			}
 		}
-		system, err := engine.renderReviewSystem(baseTemplate, vector.focusFile, vector.questionsFile, model.ReviewRequest{}, false)
+		questionsSnippet, err := engine.renderReviewerQuestionsSnippet(vector.questionsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false)
 		if err != nil {
 			t.Fatal(err)
 		}

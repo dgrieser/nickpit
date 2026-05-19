@@ -696,7 +696,15 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		if err != nil {
 			return reviewAgentResult{}, err
 		}
+		// One shared agentLoopState across all nudge rounds: tool-call, duplicate,
+		// and JSON-retry budgets are pooled for the entire nudge phase rather than
+		// reset per round. Intentional — prevents a chatty model from multiplying
+		// its budget by NudgeCount.
 		nudgeState := newAgentLoopState()
+		// Reset reasoning effort to the configured baseline for the nudge phase.
+		// Intentional: a back-off triggered during the initial round (e.g. JSON
+		// repair forcing high → low) should not permanently degrade the nudges,
+		// which start from a clean slate with fresh history.
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		for i := 0; i < req.NudgeCount; i++ {
 			e.logf("Nudge round: agent=%s round=%d/%d", agent.name, i+1, req.NudgeCount)
@@ -751,14 +759,6 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			TokensUsed:            totalTokens,
 		},
 	}, nil
-}
-
-func (e *Engine) renderReviewSystem(template, focusName, questionsName string, req model.ReviewRequest, hasTools bool) (string, error) {
-	questionsSnippet, err := e.renderReviewerQuestionsSnippet(questionsName)
-	if err != nil {
-		return "", err
-	}
-	return e.renderReviewSystemWithQuestions(template, focusName, questionsSnippet, req, hasTools)
 }
 
 func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
@@ -1006,7 +1006,7 @@ func messagesWithFinalResponse(messages []llm.Message, resp *llm.ReviewResponse)
 	}
 	if len(out) > 0 {
 		last := out[len(out)-1]
-		if last.Role == "assistant" && last.Content == resp.RawResponse && len(last.ToolCalls) == 0 {
+		if last.Role == "assistant" && last.Content == resp.RawResponse {
 			return out
 		}
 	}
