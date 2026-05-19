@@ -312,20 +312,48 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 	}, reviewCtx, nil
 }
 
-var reviewVectors = []struct {
-	name        string
-	focusFile   string
-	constraints llm.ResponseConstraints
-}{
-	{"Code Quality", "agent_review_codequality_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Security", "agent_review_security_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Architecture", "agent_review_architecture_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Performance", "agent_review_performance_system_prompt.tmpl", llm.ResponseConstraints{}},
-	{"Testing", "agent_review_testing_system_prompt.tmpl", llm.ResponseConstraints{
-		MinPriority:        intPtr(2),
-		AllowedCorrectness: []string{"patch is correct"},
-	}},
-	{"Best Practices", "agent_review_bestpractices_system_prompt.tmpl", llm.ResponseConstraints{}},
+type reviewVector struct {
+	name          string
+	focusFile     string
+	questionsFile string
+	constraints   llm.ResponseConstraints
+}
+
+var reviewVectors = []reviewVector{
+	{
+		name:          "Code Quality",
+		focusFile:     "agent_review_codequality_system_prompt.tmpl",
+		questionsFile: "agent_review_codequality_questions.tmpl",
+	},
+	{
+		name:          "Security",
+		focusFile:     "agent_review_security_system_prompt.tmpl",
+		questionsFile: "agent_review_security_questions.tmpl",
+	},
+	{
+		name:          "Architecture",
+		focusFile:     "agent_review_architecture_system_prompt.tmpl",
+		questionsFile: "agent_review_architecture_questions.tmpl",
+	},
+	{
+		name:          "Performance",
+		focusFile:     "agent_review_performance_system_prompt.tmpl",
+		questionsFile: "agent_review_performance_questions.tmpl",
+	},
+	{
+		name:          "Testing",
+		focusFile:     "agent_review_testing_system_prompt.tmpl",
+		questionsFile: "agent_review_testing_questions.tmpl",
+		constraints: llm.ResponseConstraints{
+			MinPriority:        intPtr(2),
+			AllowedCorrectness: []string{"patch is correct"},
+		},
+	},
+	{
+		name:          "Best Practices",
+		focusFile:     "agent_review_bestpractices_system_prompt.tmpl",
+		questionsFile: "agent_review_bestpractices_questions.tmpl",
+	},
 }
 
 func intPtr(v int) *int { return &v }
@@ -457,18 +485,14 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 	var wg sync.WaitGroup
 	for i, vector := range reviewVectors {
 		wg.Add(1)
-		go func(idx int, vector struct {
-			name        string
-			focusFile   string
-			constraints llm.ResponseConstraints
-		}) {
+		go func(idx int, vector reviewVector) {
 			defer wg.Done()
-			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, true)
+			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, vector.questionsFile, req, true)
 			if err != nil {
 				errs[idx] = err
 				return
 			}
-			noToolsSystem, err := e.renderReviewSystem(baseTemplate, vector.focusFile, req, false)
+			noToolsSystem, err := e.renderReviewSystem(baseTemplate, vector.focusFile, vector.questionsFile, req, false)
 			if err != nil {
 				errs[idx] = err
 				return
@@ -718,12 +742,39 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	}, nil
 }
 
-func (e *Engine) renderReviewSystem(template, focusName string, req model.ReviewRequest, hasTools bool) (string, error) {
-	focusSnippet, err := e.loadPrompt(focusName)
+func (e *Engine) renderReviewSystem(template, focusName, questionsName string, req model.ReviewRequest, hasTools bool) (string, error) {
+	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsName)
 	if err != nil {
 		return "", err
 	}
 	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools)
+}
+
+func (e *Engine) renderReviewerFocusSnippet(focusName, questionsName string) (string, error) {
+	questionsSnippet := ""
+	if strings.TrimSpace(questionsName) != "" {
+		questionsTemplate, err := e.loadPrompt(questionsName)
+		if err != nil {
+			return "", err
+		}
+		questionsSnippet, err = llm.RenderPrompt(questionsTemplate, nil)
+		if err != nil {
+			return "", fmt.Errorf("review: rendering reviewer questions prompt %s: %w", questionsName, err)
+		}
+	}
+	focusTemplate, err := e.loadPrompt(focusName)
+	if err != nil {
+		return "", err
+	}
+	rendered, err := llm.RenderPrompt(focusTemplate, struct {
+		QuestionsSnippet string
+	}{
+		QuestionsSnippet: strings.TrimSpace(questionsSnippet),
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering reviewer focus prompt %s: %w", focusName, err)
+	}
+	return rendered, nil
 }
 
 func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {

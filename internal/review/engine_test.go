@@ -17,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
 )
 
@@ -1152,6 +1153,44 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 		contextNote := llmClient.vectorContext[vector.name]
 		if !strings.Contains(contextNote, "## Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
 			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
+		}
+	}
+}
+
+func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
+	engine := NewEngine(stubSource{}, stubLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	baseTemplate, err := prompts.Load("agent_review_general_system_prompt.tmpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vector := range reviewVectors {
+		focusTemplate, err := prompts.Load(vector.focusFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		questionsTemplate, err := prompts.Load(vector.questionsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, question := range strings.Split(questionsTemplate, "\n") {
+			question = strings.TrimSpace(question)
+			if question == "" {
+				continue
+			}
+			if strings.Contains(focusTemplate, question) {
+				t.Fatalf("%s focus template still contains question %q", vector.name, question)
+			}
+		}
+		system, err := engine.renderReviewSystem(baseTemplate, vector.focusFile, vector.questionsFile, model.ReviewRequest{}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstQuestion := strings.TrimSpace(strings.Split(strings.TrimSpace(questionsTemplate), "\n")[0])
+		if !strings.Contains(system, firstQuestion) {
+			t.Fatalf("%s rendered system missing first question %q", vector.name, firstQuestion)
+		}
+		if strings.Contains(system, "{{.QuestionsSnippet}}") {
+			t.Fatalf("%s rendered system contains unresolved questions placeholder", vector.name)
 		}
 	}
 }
