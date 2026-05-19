@@ -701,10 +701,11 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		// reset per round. Intentional — prevents a chatty model from multiplying
 		// its budget by NudgeCount.
 		nudgeState := newAgentLoopState()
-		// Reset reasoning effort to the configured baseline for the nudge phase.
-		// Intentional: a back-off triggered during the initial round (e.g. JSON
-		// repair forcing high → low) should not permanently degrade the nudges,
-		// which start from a clean slate with fresh history.
+		// Reset reasoning effort to the configured baseline at the start of the
+		// nudge phase. Intentional: a back-off triggered during the initial round
+		// (e.g. JSON repair forcing high → low) should not permanently degrade
+		// the nudges. Subsequent rounds still carry their own back-offs forward
+		// via the sub.reasoningEffort update below.
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		for i := 0; i < req.NudgeCount; i++ {
 			e.logf("Nudge round: agent=%s round=%d/%d", agent.name, i+1, req.NudgeCount)
