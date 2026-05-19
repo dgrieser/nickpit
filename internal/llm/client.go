@@ -1141,7 +1141,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			continue
 		}
 
-		resp, streamErr := c.collectStream(stream, sink, detector, timeout)
+		resp, streamErr := c.collectStream(ctx, stream, sink, detector, timeout)
 		closeErr := stream.Close()
 		timeout.Stop()
 		streamCancel()
@@ -1211,7 +1211,7 @@ func (c *OpenAIClient) logRetryHTTPStatus(status, currentAttempt int, waitFor ti
 	c.logger.PrintStatusLine(fmt.Sprintf("LLM request failed with status %d, retrying in %s...", status, waitFor))
 }
 
-func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController) (*streamedResponse, error) {
+func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
 		toolCalls        []*toolCallBuilder
@@ -1251,7 +1251,7 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink R
 			lastFinishReason: lastFinishReason,
 		}
 	}
-	c.logf("LLM waiting for first stream chunk")
+	c.logfCtx(ctx, "LLM waiting for first stream chunk")
 
 	for {
 		chunk, err := stream.Recv()
@@ -1289,7 +1289,7 @@ func (c *OpenAIClient) collectStream(stream *openai.ChatCompletionStream, sink R
 		}
 		if !receivedChunk {
 			receivedChunk = true
-			c.logf("LLM first stream chunk received")
+			c.logfCtx(ctx, "LLM first stream chunk received")
 		}
 
 		for _, choice := range chunk.Choices {
@@ -1636,12 +1636,6 @@ func isReasoningOnlyPeerInternalStreamError(err *streamReadError) bool {
 	return strings.Contains(message, "stream error:") &&
 		strings.Contains(message, "INTERNAL_ERROR") &&
 		strings.Contains(message, "received from peer")
-}
-
-func (c *OpenAIClient) logf(format string, args ...any) {
-	if c.logger != nil {
-		c.logger.Printf(format, args...)
-	}
 }
 
 func agentLogPrefix(ctx context.Context) string {
