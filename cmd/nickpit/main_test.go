@@ -348,9 +348,13 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 		}
 	})
 
-	want := "Model: Qwen3.5-122B-A10B-FP8:high [120k context, ≤5 duplicate tool calls, ≤2 output retries, parallel, structured] @ " + server.URL
-	if !strings.Contains(stderr, want) {
-		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", want, stderr)
+	wantModel := "Model: Qwen3.5-122B-A10B-FP8:high [120k context] @ " + server.URL
+	if !strings.Contains(stderr, wantModel) {
+		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", wantModel, stderr)
+	}
+	wantAgent := "Agent: Structured [no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ tool calls, ≤5 duplicates, parallel]"
+	if !strings.Contains(stderr, wantAgent) {
+		t.Fatalf("stderr missing agent progress line\nwant: %s\nstderr:\n%s", wantAgent, stderr)
 	}
 }
 

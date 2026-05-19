@@ -201,8 +201,12 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		if invalidResp.ReasoningEffort != "" {
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
-		e.logf("Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
+		e.logfCtx(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
+		if tag, ok := agentTagFromContext(ctx); ok && tag.Name != "" {
+			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", tag.Name, attempt+1))
+		} else {
+			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
+		}
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		}
@@ -776,7 +780,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		var nudgeErr error
 		for i := 0; i < req.NudgeCount; i++ {
-			e.logf("Nudge round: agent=%s round=%d/%d", agent.name, i+1, req.NudgeCount)
+			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: agent.name})
+			e.logfCtx(nudgeCtx, "Nudge round: round=%d/%d", i+1, req.NudgeCount)
 			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
 			nudgeReq := loopReq
 			nudgeReq.Messages = nudged
@@ -785,12 +790,12 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			sub, err := e.runAgentLoop(ctx, nudgeReq)
 			if err != nil {
 				nudgeErr = fmt.Errorf("nudge %d: %w", i+1, err)
-				e.logf("Nudge failed, keeping prior findings: agent=%s round=%d/%d error=%v", agent.name, i+1, req.NudgeCount, err)
+				e.logfCtx(nudgeCtx, "Nudge failed, keeping prior findings: round=%d/%d error=%v", i+1, req.NudgeCount, err)
 				break
 			}
 			if sub.resp == nil {
 				nudgeErr = fmt.Errorf("nudge %d: agent %s returned no response", i+1, agent.name)
-				e.logf("Nudge returned no response, keeping prior findings: agent=%s round=%d/%d", agent.name, i+1, req.NudgeCount)
+				e.logfCtx(nudgeCtx, "Nudge returned no response, keeping prior findings: round=%d/%d", i+1, req.NudgeCount)
 				break
 			}
 			totalFindings = appendNewFindings(totalFindings, sub.resp.Findings)
@@ -1667,12 +1672,12 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	seenContent, ok := state.seenFiles[normalizedPath]
 	state.mu.Unlock()
 	if ok {
-		e.logf("Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+		e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
 		return toolError(seenContent.Path, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_file"}))
 	}
 
 	if args.LineStart > 0 || args.LineEnd > 0 {
-		e.logf("Executing tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, args.LineStart, args.LineEnd)
+		e.logfCtx(ctx, "Executing tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, args.LineStart, args.LineEnd)
 		content, err := e.retrieval.GetFileSlice(ctx, repoRoot, normalizedPath, args.LineStart, args.LineEnd)
 		if err != nil {
 			return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -1685,7 +1690,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		}
 		state.mu.Unlock()
 		if covered {
-			e.logf("Skipping duplicate tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, requested.Start, requested.End)
+			e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, requested.Start, requested.End)
 			return toolError(content.Path, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_file"}))
 		}
 		return mustToolResultJSON(map[string]any{
@@ -1697,7 +1702,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		})
 	}
 
-	e.logf("Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+	e.logfCtx(ctx, "Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
 	content, err := e.retrieval.GetFile(ctx, repoRoot, normalizedPath)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -1733,10 +1738,10 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	_, ok := state.seenToolCalls[key]
 	state.mu.Unlock()
 	if ok {
-		e.logf("Skipping duplicate tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
+		e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
 		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
-	e.logf("Executing tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
+	e.logfCtx(ctx, "Executing tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
 	listing, err := e.retrieval.ListFiles(ctx, repoRoot, normalizedPath, args.Depth)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -1779,10 +1784,10 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			_, ok := state.seenToolCalls[key]
 			state.mu.Unlock()
 			if ok {
-				e.logf("Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
+				e.logfCtx(ctx, "Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
 				return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 			}
-			e.logf("Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
+			e.logfCtx(ctx, "Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
 			return e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
 				ID:   toolCall.ID,
 				Name: "find_callers",
@@ -1794,7 +1799,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			}, true, state)
 		}
 	}
-	e.logf("Executing tool call: name=%s path=%s query=%q context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
+	e.logfCtx(ctx, "Executing tool call: name=%s path=%s query=%q context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	results, err := e.retrieval.Search(ctx, repoRoot, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -1806,7 +1811,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			regexPattern = "(?i)" + regexPattern
 		}
 		if compiled, compileErr := regexp.Compile(regexPattern); compileErr == nil {
-			e.logf("Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
+			e.logfCtx(ctx, "Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
 			regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, args.ContextLines, args.MaxResults)
 			if err != nil {
 				return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -1815,7 +1820,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			results.Results = merged
 			results.ResultCount = len(merged)
 		} else {
-			e.logf("Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
+			e.logfCtx(ctx, "Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
 		}
 	}
 
@@ -1887,10 +1892,10 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 	_, ok := state.seenToolCalls[key]
 	state.mu.Unlock()
 	if ok {
-		e.logf("Skipping duplicate tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
+		e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
 		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
-	e.logf("Executing tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
+	e.logfCtx(ctx, "Executing tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
 
 	symbol := retrieval.SymbolRef{Name: args.Symbol, Path: normalizedPath}
 	var (
@@ -2312,6 +2317,13 @@ func (e *Engine) logf(format string, args ...any) {
 	}
 }
 
+func (e *Engine) logfCtx(ctx context.Context, format string, args ...any) {
+	if e.logger == nil {
+		return
+	}
+	e.logger.Printf("%s%s", agentLogPrefix(ctx), fmt.Sprintf(format, args...))
+}
+
 func (e *Engine) logBlock(label, content string) {
 	if e.logger != nil {
 		e.logger.PrintBlock(label, content)
@@ -2322,6 +2334,51 @@ func (e *Engine) logJSON(label string, value any) {
 	if e.logger != nil {
 		e.logger.PrintJSON(label, value)
 	}
+}
+
+type agentTag struct {
+	Role string
+	Name string
+	Turn int
+}
+
+type agentTagKey struct{}
+
+func ctxWithAgent(ctx context.Context, tag agentTag) context.Context {
+	return context.WithValue(ctx, agentTagKey{}, tag)
+}
+
+func agentTagFromContext(ctx context.Context) (agentTag, bool) {
+	if ctx == nil {
+		return agentTag{}, false
+	}
+	tag, ok := ctx.Value(agentTagKey{}).(agentTag)
+	if !ok || (tag.Role == "" && tag.Name == "") {
+		return agentTag{}, false
+	}
+	return tag, true
+}
+
+func agentLogPrefix(ctx context.Context) string {
+	tag, ok := agentTagFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	if tag.Turn > 0 {
+		return fmt.Sprintf("[%s %s #%d] ", tag.Role, tag.Name, tag.Turn)
+	}
+	return fmt.Sprintf("[%s %s] ", tag.Role, tag.Name)
+}
+
+func agentLabelForLLM(ctx context.Context) string {
+	tag, ok := agentTagFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	if tag.Turn > 0 {
+		return fmt.Sprintf("%s %s #%d", tag.Role, tag.Name, tag.Turn)
+	}
+	return fmt.Sprintf("%s %s", tag.Role, tag.Name)
 }
 
 func (e *Engine) logProgress(label, summary string) {

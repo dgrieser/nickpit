@@ -61,6 +61,7 @@ type agentLoopState struct {
 	jsonRepairWithoutTools bool
 	toolCalls              int
 	duplicateToolCalls     int
+	callNum                int
 }
 
 func newAgentLoopState() *agentLoopState {
@@ -100,6 +101,9 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 	var syntheticFollowup *llm.Message
 
 	for {
+		state.callNum++
+		loopCtx := ctxWithAgent(ctx, agentTag{Role: req.AgentKind, Name: req.AgentName, Turn: state.callNum})
+		loopCtx = llm.WithAgentLabel(loopCtx, agentLabelForLLM(loopCtx))
 		noToolsHistory, err := agentLoopNoToolsMessages(req, messages)
 		if err != nil {
 			return result, err
@@ -110,7 +114,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
 		}
 
-		resp, err := e.loggedReview(ctx, llmReq, req.Section)
+		resp, err := e.loggedReview(loopCtx, llmReq, req.Section)
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
 			if errors.As(err, &invalidResp) && outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
@@ -125,7 +129,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 					llmReq.ParallelToolCalls = false
 				}
 				state.jsonRetries++
-				e.logJSONRetry(req, state.jsonRetries, invalidResp)
+				e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
 				if strings.TrimSpace(invalidResp.RawContent) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 				}
@@ -153,7 +157,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		if originalToolCalls > 0 && len(resp.ToolCalls) == 0 {
 			if outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
 				state.jsonRetries++
-				e.logf("Invalid tool call response, retrying without tool history: agent=%s attempt=%d", req.AgentName, state.jsonRetries)
+				e.logfCtx(loopCtx, "Invalid tool call response, retrying without tool history: attempt=%d", state.jsonRetries)
 				if strings.TrimSpace(resp.RawResponse) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 				}
@@ -169,12 +173,12 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		}
 		pendingToolCalls := len(resp.ToolCalls)
 		if req.MaxToolCalls > 0 && state.toolCalls+pendingToolCalls > req.MaxToolCalls {
-			e.logf("Tool call limit reached, making final call without tools: agent=%s limit=%d used=%d requested=%d", req.AgentName, req.MaxToolCalls, state.toolCalls, pendingToolCalls)
+			e.logfCtx(loopCtx, "Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, state.toolCalls, pendingToolCalls)
 			finalMessages := append([]llm.Message(nil), messages...)
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 			}
-			resp, err = e.agentLoopReviewWithoutTools(ctx, llmReq, req, finalMessages)
+			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, finalMessages)
 			if err != nil {
 				return result, err
 			}
@@ -184,9 +188,9 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			break
 		}
 
-		e.logf("Executing tool batch: agent=%s used=%d requested=%d", req.AgentName, state.toolCalls, pendingToolCalls)
+		e.logfCtx(loopCtx, "Executing tool batch: used=%d requested=%d", state.toolCalls, pendingToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
-		batch := e.executeToolCalls(ctx, req.RepoRoot, resp.ToolCalls, state.toolState)
+		batch := e.executeToolCalls(loopCtx, req.RepoRoot, resp.ToolCalls, state.toolState)
 		messages = append(messages, batch...)
 		result.toolMessages = append(result.toolMessages, batch...)
 		result.toolCallHistory = append(result.toolCallHistory, collectToolCallHistory(resp.ToolCalls, batch)...)
@@ -196,8 +200,8 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		result.toolCalls += pendingToolCalls
 		state.toolCalls += pendingToolCalls
 		if req.MaxDuplicateToolCalls > 0 && state.duplicateToolCalls >= req.MaxDuplicateToolCalls {
-			e.logf("Duplicate tool call limit reached, making final call without tools: agent=%s limit=%d duplicates=%d", req.AgentName, req.MaxDuplicateToolCalls, state.duplicateToolCalls)
-			resp, err = e.agentLoopReviewWithoutTools(ctx, llmReq, req, messages)
+			e.logfCtx(loopCtx, "Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, state.duplicateToolCalls)
+			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, messages)
 			if err != nil {
 				return result, err
 			}
@@ -245,12 +249,12 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 	return e.reviewWithoutTools(ctx, &noToolsReq, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.MaxOutputRetries, req.Section)
 }
 
-func (e *Engine) logJSONRetry(req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {
+func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {
 	if req.JSONRetryProgressAgentName == "" {
-		e.logf("Verify: invalid JSON, retrying: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
+		e.logfCtx(ctx, "Verify: invalid JSON, retrying: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
 		return
 	}
-	e.logf("Invalid JSON response, retrying with feedback: agent=%s attempt=%d reason=%q missing=%v", req.JSONRetryProgressAgentName, attempt, invalidResp.Reason, invalidResp.MissingFields)
+	e.logfCtx(ctx, "Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
 	e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", req.JSONRetryProgressAgentName, attempt))
 }
 
