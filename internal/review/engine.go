@@ -798,7 +798,9 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 				e.logfCtx(nudgeCtx, "Nudge returned no response, keeping prior findings: round=%d/%d", i+1, req.NudgeCount)
 				break
 			}
+			prevFindings := len(totalFindings)
 			totalFindings = appendNewFindings(totalFindings, sub.resp.Findings)
+			e.logfCtx(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", i+1, req.NudgeCount, len(sub.resp.Findings), len(totalFindings)-prevFindings, len(totalFindings))
 			totalTokens = addTokenUsage(totalTokens, sub.tokensUsed)
 			totalToolCalls += sub.toolCalls
 			totalDuplicates += sub.duplicateToolCalls
