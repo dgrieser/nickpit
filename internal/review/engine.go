@@ -640,6 +640,9 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	if err != nil {
 		return reviewAgentResult{}, err
 	}
+	if loopResult.resp == nil {
+		return reviewAgentResult{}, fmt.Errorf("agent %s returned no response", agent.name)
+	}
 	totalFindings := append([]model.Finding(nil), loopResult.resp.Findings...)
 	totalTokens := loopResult.tokensUsed
 	totalToolCalls := loopResult.toolCalls
@@ -658,15 +661,21 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 		if err != nil {
 			return reviewAgentResult{}, err
 		}
+		nudgeState := newAgentLoopState()
+		nudgeReasoningEffort := e.config.ReasoningEffort
 		for i := 0; i < req.NudgeCount; i++ {
 			e.logf("Nudge round: agent=%s round=%d/%d", agent.name, i+1, req.NudgeCount)
 			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
 			nudgeReq := loopReq
 			nudgeReq.Messages = nudged
-			nudgeReq.ReasoningEffort = e.config.ReasoningEffort
+			nudgeReq.ReasoningEffort = nudgeReasoningEffort
+			nudgeReq.State = nudgeState
 			sub, err := e.runAgentLoop(ctx, nudgeReq)
 			if err != nil {
 				return reviewAgentResult{}, fmt.Errorf("nudge %d: %w", i+1, err)
+			}
+			if sub.resp == nil {
+				return reviewAgentResult{}, fmt.Errorf("nudge %d: agent %s returned no response", i+1, agent.name)
 			}
 			totalFindings = appendNewFindings(totalFindings, sub.resp.Findings)
 			totalTokens = addTokenUsage(totalTokens, sub.tokensUsed)
@@ -674,6 +683,9 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			totalDuplicates += sub.duplicateToolCalls
 			latestResp = sub.resp
 			latestReasoningEffort = sub.reasoningEffort
+			if sub.reasoningEffort != "" {
+				nudgeReasoningEffort = sub.reasoningEffort
+			}
 			historyMessages = messagesWithFinalResponse(sub.messages, sub.resp)
 			contentMessages = append(contentMessages, sub.contentMessages...)
 			toolMessages = append(toolMessages, sub.toolMessages...)

@@ -213,7 +213,11 @@ func TestRunReviewAgent_NudgeDuplicate(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
 			{resp: nudgeReviewResponse("first", 1, first)},
-			{resp: nudgeReviewResponse("second", 2, second)},
+			{resp: func() *llm.ReviewResponse {
+				resp := nudgeReviewResponse("second", 2, second)
+				resp.ReasoningEffort = "low"
+				return resp
+			}()},
 			{resp: nudgeReviewResponse("duplicate", 3, duplicate)},
 			{resp: nudgeReviewResponse("third", 4, third)},
 		},
@@ -236,9 +240,10 @@ func TestRunReviewAgent_NudgeDuplicate(t *testing.T) {
 	if len(llmClient.reqs) != 4 {
 		t.Fatalf("llm calls = %d, want 4", len(llmClient.reqs))
 	}
+	wantEfforts := []string{"high", "high", "low", "low"}
 	for i, req := range llmClient.reqs {
-		if req.ReasoningEffort != "high" {
-			t.Fatalf("call %d reasoning effort = %q", i+1, req.ReasoningEffort)
+		if req.ReasoningEffort != wantEfforts[i] {
+			t.Fatalf("call %d reasoning effort = %q, want %q", i+1, req.ReasoningEffort, wantEfforts[i])
 		}
 	}
 	if got := llmClient.reqs[1].Messages; len(got) < 4 || !strings.Contains(got[len(got)-1].Content, "missed issues") {
@@ -284,6 +289,45 @@ func TestRunReviewAgent_NudgeZeroDisables(t *testing.T) {
 	}
 	if got, want := findingTitles(result.resp.Findings), []string{"A"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunReviewAgent_NudgeBudgetsResetOnceBeforeNudges(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
+			{resp: &llm.ReviewResponse{
+				ToolCalls:   []llm.ToolCall{{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`}},
+				RawResponse: "inspect first nudge",
+			}},
+			{resp: nudgeReviewResponse("second", 1, nudgeFinding("B", 2))},
+			{resp: &llm.ReviewResponse{
+				ToolCalls:   []llm.ToolCall{{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
+				RawResponse: "inspect second nudge",
+			}},
+			{resp: nudgeReviewResponse("third", 1, nudgeFinding("C", 3))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runReviewAgent(context.Background(), nudgeTestToolAgent("reviewer"), model.ReviewRequest{NudgeCount: 2, MaxToolCalls: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.run.ToolCalls != 1 {
+		t.Fatalf("tool calls = %d, want one shared nudge-phase budget", result.run.ToolCalls)
+	}
+	if len(result.toolMessages) != 1 {
+		t.Fatalf("tool messages = %d, want only first nudge tool execution", len(result.toolMessages))
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A", "B", "C"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 5 {
+		t.Fatalf("llm calls = %d, want 5", len(llmClient.reqs))
+	}
+	if len(llmClient.reqs[4].Tools) != 0 {
+		t.Fatalf("second nudge final call should run without tools, got %d tools", len(llmClient.reqs[4].Tools))
 	}
 }
 
@@ -349,7 +393,8 @@ func TestAppendNewFindingsDuplicateKeys(t *testing.T) {
 
 func nudgeTestEngine(llmClient llm.Client) *Engine {
 	return &Engine{
-		llm: llmClient,
+		llm:       llmClient,
+		retrieval: stubRetrieval{},
 		config: config.Profile{
 			Model:           "test-model",
 			ReasoningEffort: "high",
@@ -366,6 +411,12 @@ func nudgeTestAgent(role string) reviewAgent {
 		schemaKind: llm.SchemaKindReview,
 		hasTools:   false,
 	}
+}
+
+func nudgeTestToolAgent(role string) reviewAgent {
+	agent := nudgeTestAgent(role)
+	agent.hasTools = true
+	return agent
 }
 
 func nudgeReviewResponse(label string, tokens int, findings ...model.Finding) *llm.ReviewResponse {
