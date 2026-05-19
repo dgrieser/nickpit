@@ -582,7 +582,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			lastBudgetReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
 				budgetExhausted = true
-				c.logf("Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
+				c.logfCtx(ctx, "Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
 				continue
 			}
 			break
@@ -593,18 +593,18 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			lastLoopReq = &attemptReq
 			if attemptIndex+1 < len(efforts) {
 				loopDetected = true
-				c.logf("Reasoning loop detected, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
+				c.logfCtx(ctx, "Reasoning loop detected, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
 				continue
 			}
 			break
 		}
 		if isReasoningEffortRejection(err, effort) {
 			if attemptIndex+1 < len(efforts) {
-				c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				c.logfCtx(ctx, "Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
 				continue
 			}
 			if attemptIndex > 0 {
-				c.logf("Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				c.logfCtx(ctx, "Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
 				continue
 			}
 			return nil, err
@@ -620,7 +620,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.Tools = nil
 		noToolsReq.ParallelToolCalls = false
 		addReasoningBudgetRetryHint(&noToolsReq)
-		c.logf("Retrying last budget-exhausted reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
+		c.logfCtx(ctx, "Retrying last budget-exhausted reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
 		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
@@ -636,7 +636,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			}
 			return nil, noToolsErr
 		}
-		c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
+		c.logfCtx(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
 	if lastLoopReq != nil && len(lastLoopReq.Tools) > 0 && lastBudgetErr == nil {
 		noToolsReq := cloneReviewRequest(lastLoopReq)
@@ -644,7 +644,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.Tools = nil
 		noToolsReq.ParallelToolCalls = false
 		addReasoningLoopRetryHint(&noToolsReq)
-		c.logf("Retrying last loop-detected reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
+		c.logfCtx(ctx, "Retrying last loop-detected reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
 		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
@@ -660,7 +660,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			}
 			return nil, noToolsErr
 		}
-		c.logf("No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
+		c.logfCtx(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
 	if lastLoopErr != nil && lastBudgetErr == nil {
 		return nil, lastLoopErr
@@ -890,7 +890,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		return nil, fmt.Errorf("llm: encoding request: %w", err)
 	}
 
-	c.logf(
+	c.logfCtx(ctx,
 		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s top_p=%s extra_body_fields=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
 		payload.Model,
 		c.baseURL+"/chat/completions",
@@ -903,13 +903,13 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		len(payload.Messages),
 		len(payload.Tools),
 	)
-	c.logHighlightedJSON("LLM request payload:", payloadForLog)
+	c.logHighlightedJSONCtx(ctx, "LLM request payload:", payloadForLog)
 
 	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, req.MaxReasoningLoopRepeats)
 	if err != nil {
 		return nil, err
 	}
-	c.logf(
+	c.logfCtx(ctx,
 		"LLM stream summary: content_chunks=%t tool_calls=%t reasoning_chunks=%t usage_chunk=%t last_finish_reason=%q raw_response_bytes=%d",
 		streamed.sawContent,
 		streamed.sawToolCalls,
@@ -918,7 +918,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		streamed.lastFinishReason,
 		len(streamed.content),
 	)
-	c.logRawModelResponse(streamed)
+	c.logRawModelResponse(ctx, streamed)
 
 	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
 		return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
@@ -926,7 +926,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 
 	toolCalls, content, recoveredXMLToolCalls := mergeContentToolCalls(streamed.toolCalls, streamed.content)
 	if recoveredXMLToolCalls > 0 {
-		c.logf("Recovered XML-style tool calls: recovered=%d total_tool_calls=%d", recoveredXMLToolCalls, len(toolCalls))
+		c.logfCtx(ctx, "Recovered XML-style tool calls: recovered=%d total_tool_calls=%d", recoveredXMLToolCalls, len(toolCalls))
 	}
 
 	var resp *ReviewResponse
@@ -944,14 +944,14 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 			return nil, err
 		}
 		if overwrittenIDs > 0 {
-			c.logf("Generated replacement IDs for invalid finding IDs: count=%d", overwrittenIDs)
+			c.logfCtx(ctx, "Generated replacement IDs for invalid finding IDs: count=%d", overwrittenIDs)
 		}
 	}
 	resp.RawResponse = content
 	resp.TokensUsed = streamed.usage
 	resp.ReasoningEffort = payload.ReasoningEffort
 	resp.Reasoned = streamed.reasoned
-	c.logf(
+	c.logfCtx(ctx,
 		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
 		len(resp.Findings),
 		len(resp.ToolCalls),
@@ -1097,19 +1097,19 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			detector = newReasoningLoopDetector(streamCancel, maxReasoningLoopRepeats)
 		}
 		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
-		c.logf("Sending LLM request: attempt=%d", attempt+1)
+		c.logfCtx(ctx, "Sending LLM request: attempt=%d", attempt+1)
 
 		stream, err := c.sdkClient.CreateChatCompletionStream(streamCtx, payload)
 		capture := slot.snapshot()
 		if capture != nil && capture.code != 0 {
-			c.logf("LLM stream opened: status=%s", capture.status)
+			c.logfCtx(ctx, "LLM stream opened: status=%s", capture.status)
 		}
 		if err != nil {
 			if status := statusCodeFromError(err, capture); status > 0 {
 				statusErr := newLLMHTTPStatusError(err, capture)
-				c.logf("LLM request failed: attempt=%d error=%v", attempt+1, statusErr)
+				c.logfCtx(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, statusErr)
 				if body := httpErrorBody(err, capture); len(body) > 0 {
-					c.logMaybeJSON("LLM raw response body:", body)
+					c.logMaybeJSONCtx(ctx, "LLM raw response body:", body)
 				}
 				if !c.shouldRetryHTTPStatus(status, attempt) {
 					return nil, statusErr
@@ -1118,17 +1118,17 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				waitFor := c.retrier.BackoffForHTTPStatus(attempt, status, resp, statusErr.message)
 				if status == http.StatusTooManyRequests {
 					if _, ok := c.retrier.RateLimitMessageDelay(statusErr.message); ok {
-						c.logf("Retry honoring 429 reset hint: %s", waitFor)
+						c.logfCtx(ctx, "Retry honoring 429 reset hint: %s", waitFor)
 					}
 				}
 				c.logRetryHTTPStatus(status, attempt+1, waitFor)
-				c.logf("Retrying request: status=%d backoff=%s", status, waitFor)
+				c.logfCtx(ctx, "Retrying request: status=%d backoff=%s", status, waitFor)
 				if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
 				}
 				continue
 			}
-			c.logf("LLM request failed: attempt=%d error=%v", attempt+1, err)
+			c.logfCtx(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, err)
 			if !isRetryableNetworkError(err) || attempt >= c.retrier.MaxRetries {
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
@@ -1147,22 +1147,22 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 		streamCancel()
 		if streamErr != nil {
 			if closeErr != nil {
-				c.logf("LLM stream close failed after error: %v", closeErr)
+				c.logfCtx(ctx, "LLM stream close failed after error: %v", closeErr)
 			}
 			var loopErr *ReasoningLoopDetectedError
 			if errors.As(streamErr, &loopErr) {
 				loopErr.ReasoningEffort = payload.ReasoningEffort
-				c.logf("Reasoning loop detected: effort=%q", payload.ReasoningEffort)
+				c.logfCtx(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
 				if c.logger != nil {
 					if loopErr.LoopStartContent != "" {
-						c.logger.PrintBlock("Reasoning loop - content before repeat:", loopErr.LoopStartContent)
+						c.logBlockCtx(ctx, "Reasoning loop - content before repeat:", loopErr.LoopStartContent)
 					}
-					c.logger.PrintBlock("Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
+					c.logBlockCtx(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
 				}
 				return nil, loopErr
 			}
 			if timeout.Expired() {
-				c.logf("Reasoning time limit exceeded: effort=%q limit=%s", payload.ReasoningEffort, maxReasoning)
+				c.logfCtx(ctx, "Reasoning time limit exceeded: effort=%q limit=%s", payload.ReasoningEffort, maxReasoning)
 				return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 			}
 			var readErr *streamReadError
@@ -1174,7 +1174,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					if c.logger != nil {
 						c.logger.PrintStatusLine("LLM stream hit a network error, retrying...")
 					}
-					c.logf("Retrying request: stream network error")
+					c.logfCtx(ctx, "Retrying request: stream network error")
 					if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
 						return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
 					}
@@ -1644,37 +1644,54 @@ func (c *OpenAIClient) logf(format string, args ...any) {
 	}
 }
 
-func (c *OpenAIClient) logRawModelResponse(streamed *streamedResponse) {
-	if c.logger == nil || streamed == nil {
-		return
+func agentLogPrefix(ctx context.Context) string {
+	label := AgentLabelFromContext(ctx)
+	if label == "" {
+		return ""
 	}
-	c.logHighlightedJSON("LLM raw model response:", rawModelResponseForLog(streamed))
+	return "[" + label + "] "
 }
 
-func (c *OpenAIClient) logJSON(label string, value any) {
-	if c.logger != nil {
-		c.logger.PrintJSON(label, value)
-	}
-}
-
-func (c *OpenAIClient) logHighlightedJSON(label string, value any) {
+func (c *OpenAIClient) logfCtx(ctx context.Context, format string, args ...any) {
 	if c.logger == nil {
 		return
 	}
-	c.logger.Printf("%s", label)
+	c.logger.Printf(agentLogPrefix(ctx)+format, args...)
+}
+
+func (c *OpenAIClient) logBlockCtx(ctx context.Context, label, content string) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.PrintBlock(agentLogPrefix(ctx)+label, content)
+}
+
+func (c *OpenAIClient) logHighlightedJSONCtx(ctx context.Context, label string, value any) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.Printf("%s", agentLogPrefix(ctx)+label)
 	c.logger.PrintJSON("", value)
 }
 
-func (c *OpenAIClient) logMaybeJSON(label string, data []byte) {
+func (c *OpenAIClient) logMaybeJSONCtx(ctx context.Context, label string, data []byte) {
 	if c.logger == nil {
 		return
 	}
+	prefixed := agentLogPrefix(ctx) + label
 	var value any
 	if err := json.Unmarshal(data, &value); err == nil {
-		c.logger.PrintJSON(label, value)
+		c.logger.PrintJSON(prefixed, value)
 		return
 	}
-	c.logger.PrintBlock(label, string(data))
+	c.logger.PrintBlock(prefixed, string(data))
+}
+
+func (c *OpenAIClient) logRawModelResponse(ctx context.Context, streamed *streamedResponse) {
+	if c.logger == nil || streamed == nil {
+		return
+	}
+	c.logHighlightedJSONCtx(ctx, "LLM raw model response:", rawModelResponseForLog(streamed))
 }
 
 func rawModelResponseForLog(streamed *streamedResponse) any {

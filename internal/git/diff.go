@@ -57,6 +57,17 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 }
 
 func (s *LocalSource) resolveDefaults(ctx context.Context, req model.ReviewRequest) (model.ReviewRequest, error) {
+	if req.Submode == "uncommitted" {
+		req.HeadRef = "uncommitted"
+		if req.BaseRef == "" {
+			if branch, err := s.currentBranch(ctx); err == nil && branch != "" {
+				req.BaseRef = branch
+			} else {
+				req.BaseRef = "HEAD"
+			}
+		}
+		return req, nil
+	}
 	if req.Submode != "branch" {
 		return req, nil
 	}

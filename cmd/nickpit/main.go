@@ -606,7 +606,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 			logger.SetShowReasoning(a.showReasoning)
 			logger.SetShowProgress(a.showProgress)
 			a.logger = logger
-			a.logProgress("Model", modelSummary(profile, model.ReviewRequest{
+			checkReq := model.ReviewRequest{
 				MaxContextTokens:        profile.MaxContextTokens,
 				MaxToolCalls:            profile.MaxToolCalls,
 				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
@@ -614,7 +614,9 @@ func (a *app) newCheckCmd() *cobra.Command {
 				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				UseJSONSchema:           profile.UseJSONSchema,
-			}))
+			}
+			a.logProgress("Model", modelSummary(profile, checkReq))
+			a.logProgress("Agent", agentSummary(profile, checkReq))
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
@@ -675,6 +677,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
 	}
 	a.logProgress("Model", modelSummary(profile, req))
+	a.logProgress("Agent", agentSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
@@ -1118,30 +1121,51 @@ func (a *app) logProgress(label, summary string) {
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	flags := []string{fmt.Sprintf("%dk context", req.MaxContextTokens/1000)}
-	if req.MaxToolCalls > 0 {
-		flags = append(flags, fmt.Sprintf("≤%d tool calls", req.MaxToolCalls))
+	if profile.Temperature != nil {
+		flags = append(flags, fmt.Sprintf("temp=%g", *profile.Temperature))
 	}
-	if req.MaxDuplicateToolCalls > 0 {
-		flags = append(flags, fmt.Sprintf("≤%d duplicate tool calls", req.MaxDuplicateToolCalls))
-	}
-	flags = append(flags, fmt.Sprintf("≤%d output retries", req.MaxOutputRetries))
-	if req.MaxReasoningSeconds > 0 {
-		flags = append(flags, fmt.Sprintf("≤%ds reasoning", req.MaxReasoningSeconds))
-	}
-	if req.MaxReasoningLoopRepeats > 0 {
-		flags = append(flags, fmt.Sprintf("≤%d reasoning loop repeats", req.MaxReasoningLoopRepeats))
-	}
-	if !req.DisableParallelToolCalls {
-		flags = append(flags, "parallel")
-	}
-	if req.UseJSONSchema {
-		flags = append(flags, "structured")
+	if profile.TopP != nil {
+		flags = append(flags, fmt.Sprintf("top_p=%g", *profile.TopP))
 	}
 	return fmt.Sprintf("%s:%s [%s] @ %s",
 		profile.Model, profile.ReasoningEffort,
 		strings.Join(flags, ", "),
 		profile.BaseURL,
 	)
+}
+
+func agentSummary(profile config.Profile, req model.ReviewRequest) string {
+	kind := "Unstructured"
+	if req.UseJSONSchema {
+		kind = "Structured"
+	}
+	flags := []string{
+		disablable(req.NudgeCount, "", "nudges"),
+		disablable(req.MaxOutputRetries, "", "retries"),
+		unlimited(req.MaxReasoningSeconds, "s", "reasoning"),
+		unlimited(req.MaxReasoningLoopRepeats, "", "loop repeats"),
+		disablable(profile.MaxRateLimitDelaySeconds, "s", "rate-limit-delay"),
+		unlimited(req.MaxToolCalls, "", "tool calls"),
+		unlimited(req.MaxDuplicateToolCalls, "", "duplicates"),
+	}
+	if !req.DisableParallelToolCalls {
+		flags = append(flags, "parallel")
+	}
+	return fmt.Sprintf("%s [%s]", kind, strings.Join(flags, ", "))
+}
+
+func unlimited(n int, unit, label string) string {
+	if n <= 0 {
+		return "∞ " + label
+	}
+	return fmt.Sprintf("≤%d%s %s", n, unit, label)
+}
+
+func disablable(n int, unit, label string) string {
+	if n <= 0 {
+		return "no " + label
+	}
+	return fmt.Sprintf("≤%d%s %s", n, unit, label)
 }
 
 func reviewResultSummary(result *model.ReviewResult) string {

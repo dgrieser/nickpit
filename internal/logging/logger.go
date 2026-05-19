@@ -189,6 +189,8 @@ func (l *Logger) PrintProgress(label, summary string) {
 			coloredSummary = colorizeReasoningSummary(summary)
 		case "Model":
 			coloredSummary = colorizeModelSummary(summary)
+		case "Agent":
+			coloredSummary = colorizeAgentSummary(summary)
 		case "Review":
 			coloredSummary = colorizeReviewSummary(summary)
 		case "Result", "Tool":
@@ -531,6 +533,17 @@ func colorizeModelSummary(text string) string {
 		out += " \x1b[90m[\x1b[0m" + colorizeModelFlags(strings.TrimSuffix(flags, "]")) + "\x1b[90m]\x1b[0m"
 	}
 	return out + " \x1b[90m@\x1b[0m \x1b[35m" + urlPart + "\x1b[0m"
+}
+
+// format: Kind [flags]
+func colorizeAgentSummary(text string) string {
+	kind, rest, ok := strings.Cut(text, " [")
+	if !ok || !strings.HasSuffix(rest, "]") {
+		return colorizeProgressSummary(text)
+	}
+	flags := strings.TrimSuffix(rest, "]")
+	return "\x1b[34m" + kind + "\x1b[0m" +
+		" \x1b[90m[\x1b[0m" + colorizeModelFlags(flags) + "\x1b[90m]\x1b[0m"
 }
 
 func colorizeModelFlags(flagsStr string) string {
