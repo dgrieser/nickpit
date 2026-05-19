@@ -225,7 +225,7 @@ func cloneTestMessages(messages []llm.Message) []llm.Message {
 	return cloned
 }
 
-func TestRunReviewAgent_NudgeDuplicate(t *testing.T) {
+func TestRunAgent_NudgeDuplicate(t *testing.T) {
 	first := nudgeFinding("A", 1)
 	second := nudgeFinding("B", 2)
 	duplicate := nudgeFinding("A", 1)
@@ -244,7 +244,7 @@ func TestRunReviewAgent_NudgeDuplicate(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestRunReviewAgent_NudgeDuplicate(t *testing.T) {
 	}
 }
 
-func TestRunReviewAgent_NudgeKeepDuplicate(t *testing.T) {
+func TestRunAgent_NudgeKeepDuplicate(t *testing.T) {
 	first := nudgeFinding("A", 1)
 	changedLocation := nudgeFinding("A", 2)
 	llmClient := &scriptedLLM{
@@ -282,7 +282,7 @@ func TestRunReviewAgent_NudgeKeepDuplicate(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 1})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestRunReviewAgent_NudgeKeepDuplicate(t *testing.T) {
 	}
 }
 
-func TestRunReviewAgent_NudgeZeroDisables(t *testing.T) {
+func TestRunAgent_NudgeZeroDisables(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
 			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
@@ -300,7 +300,7 @@ func TestRunReviewAgent_NudgeZeroDisables(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 0})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestRunReviewAgent_NudgeZeroDisables(t *testing.T) {
 	}
 }
 
-func TestRunReviewAgent_NudgeBudgetsResetOnceBeforeNudges(t *testing.T) {
+func TestRunAgent_NudgeBudgetsResetOnceBeforeNudges(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
 			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
@@ -330,7 +330,7 @@ func TestRunReviewAgent_NudgeBudgetsResetOnceBeforeNudges(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runReviewAgent(context.Background(), nudgeTestToolAgent("reviewer"), model.ReviewRequest{NudgeCount: 2, MaxToolCalls: 1})
+	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("reviewer"), model.ReviewRequest{NudgeCount: 2, MaxToolCalls: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +351,7 @@ func TestRunReviewAgent_NudgeBudgetsResetOnceBeforeNudges(t *testing.T) {
 	}
 }
 
-func TestRunReviewAgent_NudgeReviewerOnly(t *testing.T) {
+func TestRunAgent_NudgeReviewerOnly(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
 			{resp: nudgeReviewResponse("context", 1)},
@@ -360,7 +360,7 @@ func TestRunReviewAgent_NudgeReviewerOnly(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	_, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("context"), model.ReviewRequest{NudgeCount: 2})
+	_, err := engine.runAgent(context.Background(), nudgeTestAgent("context"), model.ReviewRequest{NudgeCount: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestRunReviewAgent_NudgeReviewerOnly(t *testing.T) {
 	}
 }
 
-func TestRunReviewAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
+func TestRunAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
 			{resp: nudgeReviewResponse("first", 1, nudgeFinding("A", 1))},
@@ -379,7 +379,7 @@ func TestRunReviewAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runReviewAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -428,8 +428,8 @@ func nudgeTestEngine(llmClient llm.Client) *Engine {
 	}
 }
 
-func nudgeTestAgent(role string) reviewAgent {
-	return reviewAgent{
+func nudgeTestAgent(role string) agentSpec {
+	return agentSpec{
 		name:       role,
 		role:       role,
 		system:     "system",
@@ -439,7 +439,7 @@ func nudgeTestAgent(role string) reviewAgent {
 	}
 }
 
-func nudgeTestToolAgent(role string) reviewAgent {
+func nudgeTestToolAgent(role string) agentSpec {
 	agent := nudgeTestAgent(role)
 	agent.hasTools = true
 	return agent

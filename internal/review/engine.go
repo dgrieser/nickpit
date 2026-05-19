@@ -214,7 +214,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	}
 }
 
-type reviewAgent struct {
+type agentSpec struct {
 	name             string
 	role             string
 	system           string
@@ -228,7 +228,7 @@ type reviewAgent struct {
 	hasTools         bool
 }
 
-type reviewAgentResult struct {
+type agentResult struct {
 	resp               *llm.ReviewResponse
 	run                model.AgentRun
 	reasoningEffort    string
@@ -274,7 +274,7 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 	if req.UseJSONSchema {
 		schema = llm.FindingsSchema
 	}
-	run, err := e.runReviewAgent(ctx, reviewAgent{
+	run, err := e.runAgent(ctx, agentSpec{
 		name:          fmt.Sprintf("#1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef),
 		role:          "reviewer",
 		system:        systemPrompt,
@@ -384,7 +384,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
 
 	var warnings []string
-	contextResult, contextErr := e.runContextAgent(ctx, reviewAgent{
+	contextResult, contextErr := e.runContextAgent(ctx, agentSpec{
 		name:          "context",
 		role:          "context",
 		system:        contextSystem,
@@ -436,7 +436,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		}
 	}
 	var (
-		mergeResult reviewAgentResult
+		mergeResult agentResult
 		mergeErr    error
 	)
 	if allVectorsFailed(vectorResults) {
@@ -508,7 +508,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 
 // allVectorsFailed reports whether every per-vector reviewer returned a
 // failed status. Used to short-circuit the merge LLM call.
-func allVectorsFailed(results []reviewAgentResult) bool {
+func allVectorsFailed(results []agentResult) bool {
 	if len(results) == 0 {
 		return false
 	}
@@ -545,8 +545,8 @@ func appendAgentRunWarnings(warnings []string, runs []model.AgentRun, contextErr
 	return warnings
 }
 
-func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, contextMessages []llm.Message, schema []byte, req model.ReviewRequest) ([]reviewAgentResult, error) {
-	results := make([]reviewAgentResult, len(reviewVectors))
+func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, contextMessages []llm.Message, schema []byte, req model.ReviewRequest) ([]agentResult, error) {
+	results := make([]agentResult, len(reviewVectors))
 	errs := make([]error, len(reviewVectors))
 	var wg sync.WaitGroup
 	for i, vector := range reviewVectors {
@@ -572,7 +572,7 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 			if req.UseJSONSchema && (vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil || len(vector.constraints.AllowedCorrectness) > 0) {
 				agentSchema = llm.FindingsSchemaWithConstraints(vector.constraints)
 			}
-			result, err := e.runReviewAgent(ctx, reviewAgent{
+			result, err := e.runAgent(ctx, agentSpec{
 				name:             vector.name,
 				role:             "reviewer",
 				system:           system,
@@ -600,14 +600,14 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 	return results, nil
 }
 
-func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, vectorResults []reviewAgentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (reviewAgentResult, error) {
+func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_merge_system_prompt.tmpl")
 	if err != nil {
-		return reviewAgentResult{}, err
+		return agentResult{}, err
 	}
 	commonSnippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(req.UseJSONSchema))
 	if err != nil {
-		return reviewAgentResult{}, err
+		return agentResult{}, err
 	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
 		FindingInstructionsSnippet string
@@ -619,7 +619,7 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 	})
 	if err != nil {
-		return reviewAgentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
+		return agentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
 	}
 	mergeUser, err := llm.RenderJSON(map[string]any{
 		"review_context":      json.RawMessage(userPrompt),
@@ -627,9 +627,9 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		"vector_reviews":      vectorReviewPayloads(vectorResults),
 	})
 	if err != nil {
-		return reviewAgentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
+		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
 	}
-	return e.runReviewAgent(ctx, reviewAgent{
+	return e.runAgent(ctx, agentSpec{
 		name:          "merge",
 		role:          "merge",
 		system:        system,
@@ -642,9 +642,9 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 	}, req)
 }
 
-func (e *Engine) runContextAgent(ctx context.Context, agent reviewAgent, req model.ReviewRequest) (contextAgentResult, error) {
-	result, err := e.runReviewAgent(ctx, agent, req)
-	// Always project whatever runReviewAgent returned (even on err) so callers
+func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (contextAgentResult, error) {
+	result, err := e.runAgent(ctx, agent, req)
+	// Always project whatever runAgent returned (even on err) so callers
 	// preserve accumulated tokens, tool calls, and partial content for
 	// telemetry / degraded-fallback flows.
 	return contextAgentResult{
@@ -676,7 +676,7 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (
 	return systemPrompt, nil
 }
 
-func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req model.ReviewRequest) (reviewAgentResult, error) {
+func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	noToolsSystem := agent.noToolsSystem
 	if noToolsSystem == "" {
 		noToolsSystem = agent.system
@@ -736,10 +736,10 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	}
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
-		return partialReviewAgentResult(agent, req, loopResult), err
+		return partialAgentResult(agent, req, loopResult), err
 	}
 	if loopResult.resp == nil {
-		return partialReviewAgentResult(agent, req, loopResult), fmt.Errorf("agent %s returned no response", agent.name)
+		return partialAgentResult(agent, req, loopResult), fmt.Errorf("agent %s returned no response", agent.name)
 	}
 	totalFindings := append([]model.Finding(nil), loopResult.resp.Findings...)
 	totalTokens := loopResult.tokensUsed
@@ -761,7 +761,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
 		})
 		if err != nil {
-			return reviewAgentResult{}, err
+			return agentResult{}, err
 		}
 		// One shared agentLoopState across all nudge rounds: tool-call, duplicate,
 		// and JSON-retry budgets are pooled for the entire nudge phase rather than
@@ -826,7 +826,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 				Status:                model.AgentRunStatusPartial,
 				Error:                 nudgeErr.Error(),
 			}
-			return reviewAgentResult{
+			return agentResult{
 				resp:               latestResp,
 				reasoningEffort:    latestReasoningEffort,
 				contentMessages:    contentMessages,
@@ -837,7 +837,7 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 			}, nil
 		}
 	}
-	return reviewAgentResult{
+	return agentResult{
 		resp:               latestResp,
 		reasoningEffort:    latestReasoningEffort,
 		contentMessages:    contentMessages,
@@ -1001,12 +1001,12 @@ func noToolsMessagesFromRendered(systemPrompt string, messages []llm.Message) ([
 	return finalMessages, nil
 }
 
-// partialReviewAgentResult wraps an aborted agent loop into a reviewAgentResult
+// partialAgentResult wraps an aborted agent loop into a agentResult
 // so callers in failure branches can read accumulated tokens / tool calls /
 // content even when the loop errored. resp is intentionally left as the
 // loop's last response (possibly nil) — callers must check before using it.
-func partialReviewAgentResult(agent reviewAgent, req model.ReviewRequest, loop agentLoopResult) reviewAgentResult {
-	return reviewAgentResult{
+func partialAgentResult(agent agentSpec, req model.ReviewRequest, loop agentLoopResult) agentResult {
+	return agentResult{
 		resp:               loop.resp,
 		reasoningEffort:    loop.reasoningEffort,
 		contentMessages:    loop.contentMessages,
@@ -1025,8 +1025,8 @@ func partialReviewAgentResult(agent reviewAgent, req model.ReviewRequest, loop a
 	}
 }
 
-func failedVectorResult(vector reviewVector, err error) reviewAgentResult {
-	return reviewAgentResult{
+func failedVectorResult(vector reviewVector, err error) agentResult {
+	return agentResult{
 		resp: &llm.ReviewResponse{},
 		run: model.AgentRun{
 			Name:   vector.name,
@@ -1042,7 +1042,7 @@ func failedVectorResult(vector reviewVector, err error) reviewAgentResult {
 // and deduplicates via appendNewFindings (same id-title + title-location keys
 // the nudge loop uses), so downstream aggregation code can treat it like any
 // merge result.
-func synthesizedMergeFromVectors(vectorResults []reviewAgentResult, mergeErr error) reviewAgentResult {
+func synthesizedMergeFromVectors(vectorResults []agentResult, mergeErr error) agentResult {
 	var merged []model.Finding
 	for _, result := range vectorResults {
 		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
@@ -1067,7 +1067,7 @@ func synthesizedMergeFromVectors(vectorResults []reviewAgentResult, mergeErr err
 	} else {
 		status = model.AgentRunStatusSkipped
 	}
-	return reviewAgentResult{
+	return agentResult{
 		resp: resp,
 		run: model.AgentRun{
 			Name:   "merge",
@@ -1146,7 +1146,7 @@ func findingDedupKeys(finding model.Finding) (string, string) {
 	return idTitleKey, titleLocationKey
 }
 
-func vectorReviewPayloads(results []reviewAgentResult) []map[string]any {
+func vectorReviewPayloads(results []agentResult) []map[string]any {
 	out := make([]map[string]any, 0, len(results))
 	for _, result := range results {
 		entry := map[string]any{

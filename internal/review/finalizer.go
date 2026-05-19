@@ -84,7 +84,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		schema = llm.FinalizeSchemaWithConstraints(constraints)
 	}
 	e.logProgress("Finalize", fmt.Sprintf("findings=%d", len(in.Findings)))
-	result, err := e.runReviewAgent(ctx, reviewAgent{
+	result, err := e.runAgent(ctx, agentSpec{
 		name:          "finalize",
 		role:          "finalize",
 		system:        system,
