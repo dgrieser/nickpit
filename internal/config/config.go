@@ -12,19 +12,20 @@ import (
 )
 
 const (
-	DefaultProfileName             = "default"
-	DefaultFallbackProfileName     = "openrouter"
-	DefaultMaxContextToken         = 120000
-	MaxToolCalls                   = 0
-	DefaultMaxDuplicateToolCalls   = 5
-	DefaultMaxOutputRetries        = 5
-	DefaultMaxReasoningSeconds     = 600
-	DefaultMaxReasoningLoopRepeats = 5
-	DefaultConfigPath              = ".nickpit.yaml"
-	DefaultReasoningEffort         = "high"
-	DefaultGitHubTokenRef          = "${GITHUB_TOKEN}"
-	DefaultGitLabTokenRef          = "${GITLAB_TOKEN}"
-	DefaultGitLabBaseURLRef        = "${GITLAB_BASE_URL}"
+	DefaultProfileName              = "default"
+	DefaultFallbackProfileName      = "openrouter"
+	DefaultMaxContextToken          = 120000
+	MaxToolCalls                    = 0
+	DefaultMaxDuplicateToolCalls    = 5
+	DefaultMaxOutputRetries         = 5
+	DefaultMaxReasoningSeconds      = 600
+	DefaultMaxReasoningLoopRepeats  = 5
+	DefaultMaxRateLimitDelaySeconds = 300
+	DefaultConfigPath               = ".nickpit.yaml"
+	DefaultReasoningEffort          = "high"
+	DefaultGitHubTokenRef           = "${GITHUB_TOKEN}"
+	DefaultGitLabTokenRef           = "${GITLAB_TOKEN}"
+	DefaultGitLabBaseURLRef         = "${GITLAB_BASE_URL}"
 )
 
 var envReferencePattern = regexp.MustCompile(`^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$`)
@@ -35,55 +36,58 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                             string         `yaml:"model"`
-	BaseURL                           string         `yaml:"base_url"`
-	APIKey                            string         `yaml:"api_key"`
-	MaxTokens                         *int           `yaml:"max_tokens"`
-	Temperature                       *float64       `yaml:"temperature"`
-	TopP                              *float64       `yaml:"top_p"`
-	ExtraBody                         map[string]any `yaml:"extra_body"`
-	UseJSONSchema                     bool           `yaml:"use_json_schema"`
-	MaxContextTokens                  int            `yaml:"max_context_tokens"`
-	MaxToolCalls                      int            `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls             int            `yaml:"max_duplicate_tool_calls"`
-	MaxOutputRetries                  int            `yaml:"max_output_retries"`
-	MaxReasoningSeconds               int            `yaml:"max_reasoning_seconds"`
-	MaxReasoningLoopRepeats           int            `yaml:"max_reasoning_loop_repeats"`
-	ReasoningEffort                   string         `yaml:"reasoning_effort"`
-	Workdir                           string         `yaml:"workdir"`
-	GitHubToken                       string         `yaml:"github_token"`
-	GitLabToken                       string         `yaml:"gitlab_token"`
-	GitLabBaseURL                     string         `yaml:"gitlab_base_url"`
-	MaxContextTokensConfigured        bool           `yaml:"-"`
-	APIKeyConfigured                  bool           `yaml:"-"`
-	MaxToolCallsConfigured            bool           `yaml:"-"`
-	MaxDuplicateToolCallsConfigured   bool           `yaml:"-"`
-	MaxOutputRetriesConfigured        bool           `yaml:"-"`
-	MaxReasoningSecondsConfigured     bool           `yaml:"-"`
-	MaxReasoningLoopRepeatsConfigured bool           `yaml:"-"`
+	Model                              string         `yaml:"model"`
+	BaseURL                            string         `yaml:"base_url"`
+	APIKey                             string         `yaml:"api_key"`
+	MaxTokens                          *int           `yaml:"max_tokens"`
+	Temperature                        *float64       `yaml:"temperature"`
+	TopP                               *float64       `yaml:"top_p"`
+	ExtraBody                          map[string]any `yaml:"extra_body"`
+	UseJSONSchema                      bool           `yaml:"use_json_schema"`
+	MaxContextTokens                   int            `yaml:"max_context_tokens"`
+	MaxToolCalls                       int            `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls              int            `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries                   int            `yaml:"max_output_retries"`
+	MaxReasoningSeconds                int            `yaml:"max_reasoning_seconds"`
+	MaxReasoningLoopRepeats            int            `yaml:"max_reasoning_loop_repeats"`
+	MaxRateLimitDelaySeconds           int            `yaml:"max_rate_limit_delay_seconds"`
+	ReasoningEffort                    string         `yaml:"reasoning_effort"`
+	Workdir                            string         `yaml:"workdir"`
+	GitHubToken                        string         `yaml:"github_token"`
+	GitLabToken                        string         `yaml:"gitlab_token"`
+	GitLabBaseURL                      string         `yaml:"gitlab_base_url"`
+	MaxContextTokensConfigured         bool           `yaml:"-"`
+	APIKeyConfigured                   bool           `yaml:"-"`
+	MaxToolCallsConfigured             bool           `yaml:"-"`
+	MaxDuplicateToolCallsConfigured    bool           `yaml:"-"`
+	MaxOutputRetriesConfigured         bool           `yaml:"-"`
+	MaxReasoningSecondsConfigured      bool           `yaml:"-"`
+	MaxReasoningLoopRepeatsConfigured  bool           `yaml:"-"`
+	MaxRateLimitDelaySecondsConfigured bool           `yaml:"-"`
 }
 
 type Overrides struct {
-	Profile              string
-	Model                string
-	BaseURL              string
-	APIKey               string
-	MaxTokens            *int
-	Temperature          *float64
-	TopP                 *float64
-	ExtraBody            map[string]any
-	UseJSONSchema        bool
-	MaxContextTokens     *int
-	ToolCalls            *int
-	DuplicateToolCalls   *int
-	OutputRetries        *int
-	ReasoningSeconds     *int
-	ReasoningLoopRepeats *int
-	ReasoningEffort      string
-	Workdir              string
-	GitHubToken          string
-	GitLabToken          string
-	GitLabBaseURL        string
+	Profile               string
+	Model                 string
+	BaseURL               string
+	APIKey                string
+	MaxTokens             *int
+	Temperature           *float64
+	TopP                  *float64
+	ExtraBody             map[string]any
+	UseJSONSchema         bool
+	MaxContextTokens      *int
+	ToolCalls             *int
+	DuplicateToolCalls    *int
+	OutputRetries         *int
+	ReasoningSeconds      *int
+	ReasoningLoopRepeats  *int
+	RateLimitDelaySeconds *int
+	ReasoningEffort       string
+	Workdir               string
+	GitHubToken           string
+	GitLabToken           string
+	GitLabBaseURL         string
 }
 
 type defaultProfile struct {
@@ -348,6 +352,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.MaxReasoningLoopRepeats = *overrides.ReasoningLoopRepeats
 		profile.MaxReasoningLoopRepeatsConfigured = true
 	}
+	if overrides.RateLimitDelaySeconds != nil {
+		profile.MaxRateLimitDelaySeconds = *overrides.RateLimitDelaySeconds
+		profile.MaxRateLimitDelaySecondsConfigured = true
+	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
@@ -403,6 +411,12 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.MaxReasoningLoopRepeats < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_loop_repeats must be non-negative")
+	}
+	if profile.MaxRateLimitDelaySeconds == 0 && !profile.MaxRateLimitDelaySecondsConfigured {
+		profile.MaxRateLimitDelaySeconds = DefaultMaxRateLimitDelaySeconds
+	}
+	if profile.MaxRateLimitDelaySeconds < 0 {
+		return Profile{}, fmt.Errorf("config: max_rate_limit_delay_seconds must be non-negative")
 	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort
@@ -461,6 +475,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile.MaxOutputRetriesConfigured = mappingValue(profileNode, "max_output_retries") != nil
 		profile.MaxReasoningSecondsConfigured = mappingValue(profileNode, "max_reasoning_seconds") != nil
 		profile.MaxReasoningLoopRepeatsConfigured = mappingValue(profileNode, "max_reasoning_loop_repeats") != nil
+		profile.MaxRateLimitDelaySecondsConfigured = mappingValue(profileNode, "max_rate_limit_delay_seconds") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil

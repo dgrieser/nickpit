@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/git"
@@ -53,6 +54,8 @@ type app struct {
 	maxReasoningSecondsSet        bool
 	maxReasoningLoopRepeats       int
 	maxReasoningLoopRepeatsSet    bool
+	maxRateLimitDelaySeconds      int
+	maxRateLimitDelaySecondsSet   bool
 	offline                       bool
 	priorityThreshold             string
 	configPath                    string
@@ -80,11 +83,12 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	cli := &app{
-		maxContextTokens:        config.DefaultMaxContextToken,
-		maxDuplicateToolCalls:   config.DefaultMaxDuplicateToolCalls,
-		maxOutputRetries:        config.DefaultMaxOutputRetries,
-		maxReasoningSeconds:     config.DefaultMaxReasoningSeconds,
-		maxReasoningLoopRepeats: config.DefaultMaxReasoningLoopRepeats,
+		maxContextTokens:         config.DefaultMaxContextToken,
+		maxDuplicateToolCalls:    config.DefaultMaxDuplicateToolCalls,
+		maxOutputRetries:         config.DefaultMaxOutputRetries,
+		maxReasoningSeconds:      config.DefaultMaxReasoningSeconds,
+		maxReasoningLoopRepeats:  config.DefaultMaxReasoningLoopRepeats,
+		maxRateLimitDelaySeconds: config.DefaultMaxRateLimitDelaySeconds,
 	}
 	root := &cobra.Command{
 		Use:           "nickpit",
@@ -121,6 +125,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxOutputRetries, &cli.maxOutputRetriesSet), "max-output-retries", "Maximum invalid output retries")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningSeconds, &cli.maxReasoningSecondsSet), "max-reasoning-seconds", "Maximum seconds to allow reasoning before falling back to lower effort")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningLoopRepeats, &cli.maxReasoningLoopRepeatsSet), "max-reasoning-loop-repeats", "Allowed repeated reasoning loops before falling back (0 disables loop detection)")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxRateLimitDelaySeconds, &cli.maxRateLimitDelaySecondsSet), "max-rate-limit-delay-seconds", "Maximum seconds to wait for rate-limit reset times parsed from 429 responses (0 disables)")
 	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
@@ -171,6 +176,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.maxReasoningLoopRepeatsSet {
 		reasoningLoopRepeats = &a.maxReasoningLoopRepeats
 	}
+	var rateLimitDelaySeconds *int
+	if a.maxRateLimitDelaySecondsSet {
+		rateLimitDelaySeconds = &a.maxRateLimitDelaySeconds
+	}
 	var temperature *float64
 	if a.temperatureSet {
 		temperature = &a.temperature
@@ -189,25 +198,26 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		}
 	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile:              a.profile,
-		Model:                a.model,
-		BaseURL:              a.baseURL,
-		APIKey:               a.apiKey,
-		ReasoningEffort:      a.reasoningEffort,
-		Temperature:          temperature,
-		TopP:                 topP,
-		ExtraBody:            extraBody,
-		UseJSONSchema:        a.useJSONSchema,
-		MaxContextTokens:     maxContextTokens,
-		ToolCalls:            toolCalls,
-		DuplicateToolCalls:   duplicateToolCalls,
-		OutputRetries:        outputRetries,
-		ReasoningSeconds:     reasoningSeconds,
-		ReasoningLoopRepeats: reasoningLoopRepeats,
-		Workdir:              a.workDir,
-		GitHubToken:          a.githubToken,
-		GitLabToken:          a.gitlabToken,
-		GitLabBaseURL:        a.gitlabBaseURL,
+		Profile:               a.profile,
+		Model:                 a.model,
+		BaseURL:               a.baseURL,
+		APIKey:                a.apiKey,
+		ReasoningEffort:       a.reasoningEffort,
+		Temperature:           temperature,
+		TopP:                  topP,
+		ExtraBody:             extraBody,
+		UseJSONSchema:         a.useJSONSchema,
+		MaxContextTokens:      maxContextTokens,
+		ToolCalls:             toolCalls,
+		DuplicateToolCalls:    duplicateToolCalls,
+		OutputRetries:         outputRetries,
+		ReasoningSeconds:      reasoningSeconds,
+		ReasoningLoopRepeats:  reasoningLoopRepeats,
+		RateLimitDelaySeconds: rateLimitDelaySeconds,
+		Workdir:               a.workDir,
+		GitHubToken:           a.githubToken,
+		GitLabToken:           a.gitlabToken,
+		GitLabBaseURL:         a.gitlabBaseURL,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -595,6 +605,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 			}))
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
+			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 			checker := modelcheck.New(client, profile)
 			checker.SetLogger(logger)
 			checker.SetParallel(!a.disableParallelToolCalls)
@@ -655,6 +666,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
+	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	if !a.skipModelCheck {
 		checker := modelcheck.New(client, profile)
 		checker.SetLogger(logger)

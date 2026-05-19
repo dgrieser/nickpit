@@ -433,6 +433,108 @@ func TestRetrierBackoffCapsAtConfiguredBounds(t *testing.T) {
 	}
 }
 
+func TestRetrierBackoffUses429MessageResetTimeWithinCap(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = time.Second
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
+	retrier.now = func() time.Time {
+		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
+	}
+
+	message := "Rate limit exceeded. Try again at 2026-05-18 18:18:30 UTC."
+	if got := retrier.BackoffForHTTPStatus(0, http.StatusTooManyRequests, nil, message); got != 30*time.Second {
+		t.Fatalf("429 message reset backoff = %v", got)
+	}
+	if got := retrier.BackoffForHTTPStatus(0, http.StatusServiceUnavailable, nil, message); got != time.Second {
+		t.Fatalf("non-429 message reset backoff = %v", got)
+	}
+}
+
+func TestRetrierBackoffIgnores429MessageResetTimeOutsideCap(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = time.Second
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
+	retrier.now = func() time.Time {
+		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
+	}
+
+	message := "Rate limit exceeded. Try again at 2026-05-18 18:24:00 UTC."
+	if got := retrier.BackoffForHTTPStatus(0, http.StatusTooManyRequests, nil, message); got != time.Second {
+		t.Fatalf("429 message reset outside cap backoff = %v", got)
+	}
+}
+
+func TestRetrierBackoffIgnoresPastAndMalformed429MessageResetTimes(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = time.Second
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
+	retrier.now = func() time.Time {
+		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
+	}
+
+	for _, message := range []string{
+		"Rate limit exceeded. Try again at 2026-05-18 18:17:59 UTC.",
+		"Rate limit exceeded. Try again later.",
+	} {
+		if got := retrier.BackoffForHTTPStatus(0, http.StatusTooManyRequests, nil, message); got != time.Second {
+			t.Fatalf("429 message reset fallback backoff = %v for %q", got, message)
+		}
+	}
+}
+
+func TestRetrierBackoffIgnores429MessageResetTimeWhenDisabled(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = time.Second
+	retrier.SetMaxRateLimitDelay(0)
+	retrier.now = func() time.Time {
+		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
+	}
+
+	message := "Rate limit exceeded. Try again at 2026-05-18 18:18:30 UTC."
+	if got := retrier.BackoffForHTTPStatus(0, http.StatusTooManyRequests, nil, message); got != time.Second {
+		t.Fatalf("429 message reset disabled backoff = %v", got)
+	}
+}
+
+func TestRetrierBackoffSkipsPastTimestampPicksLaterValidOne(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = time.Second
+	retrier.SetMaxRateLimitDelay(5 * time.Minute)
+	retrier.now = func() time.Time {
+		return time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
+	}
+
+	message := "Request failed at 2026-05-18 18:00:00 UTC. Try again at 2026-05-18 18:18:30 UTC."
+	if got := retrier.BackoffForHTTPStatus(0, http.StatusTooManyRequests, nil, message); got != 30*time.Second {
+		t.Fatalf("multi-timestamp 429 backoff = %v", got)
+	}
+}
+
+func TestParseRateLimitResetTimeSupportsCommonLayouts(t *testing.T) {
+	want := time.Date(2026, 5, 18, 18, 18, 30, 0, time.UTC)
+	for _, message := range []string{
+		"Rate limit exceeded. Try again at 2026-05-18 18:18:30 UTC.",
+		"Rate limit exceeded. Try again at 2026-05-18 18:18:30 utc.",
+		"Rate limit exceeded. Try again at 2026-05-18 20:18:30 +02:00.",
+		"Rate limit exceeded. Try again at 2026-05-18T18:18:30Z.",
+		"Rate limit exceeded. Try again at 2026-05-18T18:18:30.000000000Z.",
+		"Rate limit exceeded. Try again at Mon, 18 May 2026 18:18:30 GMT.",
+	} {
+		got, ok := parseRateLimitResetTime(message)
+		if !ok {
+			t.Fatalf("failed to parse reset time from %q", message)
+		}
+		if !got.Equal(want) {
+			t.Fatalf("reset time = %v, want %v for %q", got, want, message)
+		}
+	}
+}
+
 func TestClientReviewUsesJSONSchemaWhenProvided(t *testing.T) {
 	var payload map[string]any
 
