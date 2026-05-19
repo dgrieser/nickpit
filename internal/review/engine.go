@@ -215,16 +215,17 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 }
 
 type reviewAgent struct {
-	name          string
-	role          string
-	system        string
-	noToolsSystem string
-	user          string
-	extraMessages []llm.Message
-	schema        []byte
-	schemaKind    llm.SchemaKind
-	constraints   llm.ResponseConstraints
-	hasTools      bool
+	name             string
+	role             string
+	system           string
+	noToolsSystem    string
+	user             string
+	extraMessages    []llm.Message
+	questionsSnippet string
+	schema           []byte
+	schemaKind       llm.SchemaKind
+	constraints      llm.ResponseConstraints
+	hasTools         bool
 }
 
 type reviewAgentResult struct {
@@ -487,12 +488,17 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 		wg.Add(1)
 		go func(idx int, vector reviewVector) {
 			defer wg.Done()
-			system, err := e.renderReviewSystem(baseTemplate, vector.focusFile, vector.questionsFile, req, true)
+			questionsSnippet, err := e.renderReviewerQuestionsSnippet(vector.questionsFile)
 			if err != nil {
 				errs[idx] = err
 				return
 			}
-			noToolsSystem, err := e.renderReviewSystem(baseTemplate, vector.focusFile, vector.questionsFile, req, false)
+			system, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, true)
+			if err != nil {
+				errs[idx] = err
+				return
+			}
+			noToolsSystem, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, false)
 			if err != nil {
 				errs[idx] = err
 				return
@@ -502,16 +508,17 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				agentSchema = llm.FindingsSchemaWithConstraints(vector.constraints)
 			}
 			result, err := e.runReviewAgent(ctx, reviewAgent{
-				name:          vector.name,
-				role:          "reviewer",
-				system:        system,
-				noToolsSystem: noToolsSystem,
-				user:          userPrompt,
-				extraMessages: contextMessages,
-				schema:        agentSchema,
-				schemaKind:    llm.SchemaKindReview,
-				constraints:   vector.constraints,
-				hasTools:      true,
+				name:             vector.name,
+				role:             "reviewer",
+				system:           system,
+				noToolsSystem:    noToolsSystem,
+				user:             userPrompt,
+				extraMessages:    contextMessages,
+				questionsSnippet: questionsSnippet,
+				schema:           agentSchema,
+				schemaKind:       llm.SchemaKindReview,
+				constraints:      vector.constraints,
+				hasTools:         true,
 			}, req)
 			results[idx] = result
 			errs[idx] = err
@@ -681,7 +688,11 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 	if agent.role == "reviewer" && req.NudgeCount > 0 {
 		nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
 			HasResponseFormat bool
-		}{HasResponseFormat: agent.schemaKind != llm.SchemaKindText})
+			QuestionsSnippet  string
+		}{
+			HasResponseFormat: agent.schemaKind != llm.SchemaKindText,
+			QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
+		})
 		if err != nil {
 			return reviewAgentResult{}, err
 		}
@@ -743,25 +754,37 @@ func (e *Engine) runReviewAgent(ctx context.Context, agent reviewAgent, req mode
 }
 
 func (e *Engine) renderReviewSystem(template, focusName, questionsName string, req model.ReviewRequest, hasTools bool) (string, error) {
-	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsName)
+	questionsSnippet, err := e.renderReviewerQuestionsSnippet(questionsName)
+	if err != nil {
+		return "", err
+	}
+	return e.renderReviewSystemWithQuestions(template, focusName, questionsSnippet, req, hasTools)
+}
+
+func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
+	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsSnippet)
 	if err != nil {
 		return "", err
 	}
 	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools)
 }
 
-func (e *Engine) renderReviewerFocusSnippet(focusName, questionsName string) (string, error) {
-	questionsSnippet := ""
+func (e *Engine) renderReviewerQuestionsSnippet(questionsName string) (string, error) {
 	if strings.TrimSpace(questionsName) != "" {
 		questionsTemplate, err := e.loadPrompt(questionsName)
 		if err != nil {
 			return "", err
 		}
-		questionsSnippet, err = llm.RenderPrompt(questionsTemplate, nil)
+		questionsSnippet, err := llm.RenderPrompt(questionsTemplate, nil)
 		if err != nil {
 			return "", fmt.Errorf("review: rendering reviewer questions prompt %s: %w", questionsName, err)
 		}
+		return strings.TrimSpace(questionsSnippet), nil
 	}
+	return "", nil
+}
+
+func (e *Engine) renderReviewerFocusSnippet(focusName, questionsSnippet string) (string, error) {
 	focusTemplate, err := e.loadPrompt(focusName)
 	if err != nil {
 		return "", err

@@ -68,6 +68,7 @@ type multiAgentLLM struct {
 	contextSystem string
 	vectorContext map[string]string
 	vectorSystem  map[string]string
+	vectorNudge   map[string]string
 }
 
 func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -81,6 +82,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if s.vectorContext == nil {
 		s.vectorContext = make(map[string]string)
+	}
+	if s.vectorNudge == nil {
+		s.vectorNudge = make(map[string]string)
 	}
 	system := ""
 	if len(req.Messages) > 0 {
@@ -106,6 +110,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		for _, msg := range req.Messages {
 			if msg.Role == "user" && strings.Contains(msg.Content, "## Notes") {
 				s.vectorContext[name] = msg.Content
+			}
+			if msg.Role == "user" && strings.Contains(msg.Content, "You may have missed issues") {
+				s.vectorNudge[name] = msg.Content
 			}
 		}
 		if s.vectorCalls[name] == 1 {
@@ -1153,6 +1160,37 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 		contextNote := llmClient.vectorContext[vector.name]
 		if !strings.Contains(contextNote, "## Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
 			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
+		}
+	}
+}
+
+func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+		NudgeCount:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]string{
+		"Code Quality": "- Does it work correctly?",
+		"Security":     "- Are there security concerns?",
+		"Testing":      "- Are changed behaviors covered by focused tests?",
+	}
+	for name, want := range checks {
+		nudge := llmClient.vectorNudge[name]
+		if !strings.Contains(nudge, "Ask yourself these original questions again:") {
+			t.Fatalf("%s nudge missing question header: %q", name, nudge)
+		}
+		if !strings.Contains(nudge, want) {
+			t.Fatalf("%s nudge missing question %q: %q", name, want, nudge)
 		}
 	}
 }
