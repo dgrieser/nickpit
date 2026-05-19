@@ -146,14 +146,14 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	}
 }
 
-func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, error) {
+func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, []string, error) {
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf("Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 	}
 	verifications := make([]*model.FindingVerification, len(findings))
 	if len(findings) == 0 {
-		return verifications, model.TokenUsage{}, nil
+		return verifications, model.TokenUsage{}, nil, nil
 	}
 	concurrency := opts.Concurrency
 	if concurrency <= 0 {
@@ -166,6 +166,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 	var (
 		mu        sync.Mutex
 		usageSum  model.TokenUsage
+		warnings  []string
 		semaphore = make(chan struct{}, concurrency)
 		wg        sync.WaitGroup
 	)
@@ -196,6 +197,9 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 			usageSum.PromptTokens += usage.PromptTokens
 			usageSum.CompletionTokens += usage.CompletionTokens
 			usageSum.TotalTokens += usage.TotalTokens
+			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("Verify failed for finding #%d %q: %v", idx+1, f.Title, err))
+			}
 			mu.Unlock()
 			if err != nil {
 				e.logf("Verify failed: index=%d title=%q error=%v", idx, f.Title, err)
@@ -205,8 +209,8 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		}(i, finding)
 	}
 	wg.Wait()
-	e.logProgress("Verify", fmt.Sprintf("done findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens))
-	return verifications, usageSum, nil
+	e.logProgress("Verify", fmt.Sprintf("done findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d warnings=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens, len(warnings)))
+	return verifications, usageSum, warnings, nil
 }
 
 func labelForFinding(idx int, f model.Finding) string {

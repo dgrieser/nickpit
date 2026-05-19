@@ -729,7 +729,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			DisableParallelToolCalls: req.DisableParallelToolCalls,
 			RepoRoot:                 req.RepoRoot,
 		}
-		verifications, verifyUsage, verifyErr := engine.VerifyAll(ctx, trimmedCtx, result.Findings, verifyOpts)
+		verifications, verifyUsage, verifyWarnings, verifyErr := engine.VerifyAll(ctx, trimmedCtx, result.Findings, verifyOpts)
 		if verifyErr != nil {
 			a.logProgress("Verify", fmt.Sprintf("status=ERROR, error=%v", verifyErr))
 			return verifyErr
@@ -738,6 +738,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			result.Findings[i].Verification = verifications[i]
 		}
 		result.VerifyTokensUsed = verifyUsage
+		result.Warnings = append(result.Warnings, verifyWarnings...)
 		result.Findings = review.DropInvalidFindings(result.Findings)
 	}
 
@@ -753,6 +754,13 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		finalized, finalizeRun, finalizeErr := engine.Finalize(ctx, trimmedCtx, result, finalizeOpts)
 		if finalizeErr != nil {
 			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v; falling back to verified result", finalizeErr))
+			result.Warnings = append(result.Warnings, fmt.Sprintf("Finalize failed: %v; using verified result", finalizeErr))
+			result.AgentRuns = append(result.AgentRuns, model.AgentRun{
+				Name:   "finalize",
+				Role:   "finalize",
+				Status: "failed",
+				Error:  finalizeErr.Error(),
+			})
 		} else {
 			finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
 			finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)

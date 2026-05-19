@@ -57,6 +57,19 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 	if _, err := fmt.Fprintf(f.w, "%s\n\n", header); err != nil {
 		return err
 	}
+	if len(result.Warnings) > 0 {
+		if _, err := fmt.Fprintln(f.w, "Warnings:"); err != nil {
+			return err
+		}
+		for _, w := range result.Warnings {
+			if _, err := fmt.Fprintf(f.w, "  - %s\n", w); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(f.w); err != nil {
+			return err
+		}
+	}
 	sort.SliceStable(result.Findings, func(i, j int) bool {
 		ri := model.PriorityRank(result.Findings[i].Priority)
 		rj := model.PriorityRank(result.Findings[j].Priority)

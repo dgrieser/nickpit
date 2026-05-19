@@ -84,7 +84,7 @@ func TestVerifyAllAttachesByIndex(t *testing.T) {
 		{Title: "first", Body: "b1", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		{Title: "second", Body: "b2", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 	}
-	verifications, usage, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Concurrency: 1})
+	verifications, usage, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Concurrency: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +100,9 @@ func TestVerifyAllAttachesByIndex(t *testing.T) {
 	if usage.TotalTokens != 6 {
 		t.Fatalf("usage total = %d, want 6", usage.TotalTokens)
 	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
+	}
 }
 
 func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
@@ -109,7 +112,7 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	findings := []model.Finding{
 		{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
-	verifications, _, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Concurrency: 1})
+	verifications, _, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Concurrency: 1})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
@@ -118,6 +121,12 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	}
 	if verifications[0] != nil {
 		t.Fatalf("verification = %#v, want nil", verifications[0])
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want 1", warnings)
+	}
+	if !strings.Contains(warnings[0], "Verify failed") || !strings.Contains(warnings[0], "upstream fail") {
+		t.Fatalf("warning content = %q", warnings[0])
 	}
 }
 
@@ -128,7 +137,7 @@ func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
 	findings := []model.Finding{
 		{ID: "not-a-uuid", Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
-	_, _, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Concurrency: 1})
+	_, _, _, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Concurrency: 1})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
