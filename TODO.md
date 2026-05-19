@@ -2,6 +2,7 @@
 
 - Add max turns for agents; unlimited by default
 - Add nudge N times for review agents; e.g. when review agent is done, ask it N more times to make sure it found everything; configurable; keep result before nudge; make sure IN CODE (NOT PROMPT): nudge only ADDs findings; add new findings previously reported findings; merge agent will take care of duplicates later. 
+- One agent should never abort the whole review, just continue with what is there
 - Add suggestion agent to format suggestions for gitlab/github
 - Add simplifier agent to shorten text on findings
 - Add reasoning summary agent to use for progress printing (e.g. "Reasoned about A, B and C", short)
