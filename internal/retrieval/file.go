@@ -253,6 +253,9 @@ func runFileSearch(repoRoot, path string, contextLines, maxResults int, match fu
 			return walkErr
 		}
 		if d.IsDir() {
+			if d.Name() == ".git" && currentPath != fullPath {
+				return filepath.SkipDir
+			}
 			relDir, err := repofs.RelPath(repoRoot, currentPath)
 			if err == nil && relDir != "" && ignores.IsIgnored(relDir, true) {
 				return filepath.SkipDir

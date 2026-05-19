@@ -133,6 +133,34 @@ func TestLocalEngineSearch(t *testing.T) {
 	}
 }
 
+func TestLocalEngineSearchSkipsGitDir(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".git", "logs", "refs", "heads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".git", "logs", "refs", "heads", "branch"), []byte("ttlExtenders\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte("ttlExtenders\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.Search(context.Background(), repoRoot, "", "ttlExtenders", 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 1 {
+		t.Fatalf("ResultCount = %d, want 1", got.ResultCount)
+	}
+	if got.Results[0].Path != "pkg/a.go" {
+		t.Fatalf("matched path = %q, want pkg/a.go", got.Results[0].Path)
+	}
+}
+
 func TestLocalEngineSearchSkipsBinaryFiles(t *testing.T) {
 	repoRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
