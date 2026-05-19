@@ -182,7 +182,8 @@ func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *
 	}
 	c.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
 	start := time.Now()
-	resp, err := c.client.Review(ctx, req)
+	probeCtx := llm.WithAgentLabel(ctx, fmt.Sprintf("modelcheck: %s, turn: #%d", label, callNum))
+	resp, err := c.client.Review(probeCtx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
 	status := "ok"
 	if err != nil {
