@@ -780,14 +780,14 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		var nudgeErr error
 		for i := 0; i < req.NudgeCount; i++ {
-			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: agent.name})
+			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: agent.name, Run: i + 1})
 			e.logfCtx(nudgeCtx, "Nudge round: round=%d/%d", i+1, req.NudgeCount)
 			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
 			nudgeReq := loopReq
 			nudgeReq.Messages = nudged
 			nudgeReq.ReasoningEffort = nudgeReasoningEffort
 			nudgeReq.State = nudgeState
-			sub, err := e.runAgentLoop(ctx, nudgeReq)
+			sub, err := e.runAgentLoop(nudgeCtx, nudgeReq)
 			if err != nil {
 				nudgeErr = fmt.Errorf("nudge %d: %w", i+1, err)
 				e.logfCtx(nudgeCtx, "Nudge failed, keeping prior findings: round=%d/%d error=%v", i+1, req.NudgeCount, err)
@@ -2341,6 +2341,7 @@ func (e *Engine) logJSON(label string, value any) {
 type agentTag struct {
 	Role string
 	Name string
+	Run  int
 	Turn int
 }
 
@@ -2366,10 +2367,7 @@ func agentLogPrefix(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	if tag.Turn > 0 {
-		return fmt.Sprintf("[%s %s #%d] ", tag.Role, tag.Name, tag.Turn)
-	}
-	return fmt.Sprintf("[%s %s] ", tag.Role, tag.Name)
+	return "[" + formatAgentTag(tag) + "] "
 }
 
 func agentLabelForLLM(ctx context.Context) string {
@@ -2377,10 +2375,18 @@ func agentLabelForLLM(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
-	if tag.Turn > 0 {
-		return fmt.Sprintf("%s %s #%d", tag.Role, tag.Name, tag.Turn)
+	return formatAgentTag(tag)
+}
+
+func formatAgentTag(tag agentTag) string {
+	head := fmt.Sprintf("%s: %s", tag.Role, tag.Name)
+	if tag.Run > 0 {
+		head = fmt.Sprintf("%s #%d", head, tag.Run)
 	}
-	return fmt.Sprintf("%s %s", tag.Role, tag.Name)
+	if tag.Turn > 0 {
+		head = fmt.Sprintf("%s, turn: #%d", head, tag.Turn)
+	}
+	return head
 }
 
 func (e *Engine) logProgress(label, summary string) {

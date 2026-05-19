@@ -102,7 +102,8 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 
 	for {
 		state.callNum++
-		loopCtx := ctxWithAgent(ctx, agentTag{Role: req.AgentKind, Name: req.AgentName, Turn: state.callNum})
+		existingTag, _ := agentTagFromContext(ctx)
+		loopCtx := ctxWithAgent(ctx, agentTag{Role: req.AgentKind, Name: req.AgentName, Run: existingTag.Run, Turn: state.callNum})
 		loopCtx = llm.WithAgentLabel(loopCtx, agentLabelForLLM(loopCtx))
 		noToolsHistory, err := agentLoopNoToolsMessages(req, messages)
 		if err != nil {
