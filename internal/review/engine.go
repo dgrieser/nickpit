@@ -396,8 +396,6 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if contextErr != nil {
 		e.logf("Context agent failed, continuing with degraded context: error=%v", contextErr)
 		warnings = append(warnings, fmt.Sprintf("Context agent failed: %v; continuing with degraded context", contextErr))
-		contextResult.run.Name = "context"
-		contextResult.run.Role = "context"
 		contextResult.run.Status = model.AgentRunStatusFailed
 		contextResult.run.Error = contextErr.Error()
 	}

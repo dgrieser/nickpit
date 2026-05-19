@@ -755,12 +755,12 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		if finalizeErr != nil {
 			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v; falling back to verified result", finalizeErr))
 			result.Warnings = append(result.Warnings, fmt.Sprintf("Finalize failed: %v; using verified result", finalizeErr))
-			result.AgentRuns = append(result.AgentRuns, model.AgentRun{
-				Name:   "finalize",
-				Role:   "finalize",
-				Status: model.AgentRunStatusFailed,
-				Error:  finalizeErr.Error(),
-			})
+			finalizeRun.Name = "finalize"
+			finalizeRun.Role = "finalize"
+			finalizeRun.Status = model.AgentRunStatusFailed
+			finalizeRun.Error = finalizeErr.Error()
+			result.FinalizeTokensUsed = finalizeRun.TokensUsed
+			result.AgentRuns = append(result.AgentRuns, finalizeRun)
 		} else {
 			finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
 			finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)

@@ -96,7 +96,9 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		hasTools:      false,
 	}, req)
 	if err != nil {
-		return nil, model.AgentRun{}, err
+		// Preserve partial AgentRun (tokens, tool calls accumulated before
+		// the loop aborted) for telemetry parity with merge/context failures.
+		return nil, result.run, err
 	}
 
 	out, err := in.Clone()
