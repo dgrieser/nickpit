@@ -202,7 +202,11 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
 		e.logfCtx(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
+		if tag, ok := agentTagFromContext(ctx); ok && tag.Name != "" {
+			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", tag.Name, attempt+1))
+		} else {
+			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
+		}
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		}
@@ -2317,7 +2321,7 @@ func (e *Engine) logfCtx(ctx context.Context, format string, args ...any) {
 	if e.logger == nil {
 		return
 	}
-	e.logger.Printf(agentLogPrefix(ctx)+format, args...)
+	e.logger.Printf("%s%s", agentLogPrefix(ctx), fmt.Sprintf(format, args...))
 }
 
 func (e *Engine) logBlock(label, content string) {

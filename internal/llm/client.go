@@ -1656,7 +1656,7 @@ func (c *OpenAIClient) logfCtx(ctx context.Context, format string, args ...any) 
 	if c.logger == nil {
 		return
 	}
-	c.logger.Printf(agentLogPrefix(ctx)+format, args...)
+	c.logger.Printf("%s%s", agentLogPrefix(ctx), fmt.Sprintf(format, args...))
 }
 
 func (c *OpenAIClient) logBlockCtx(ctx context.Context, label, content string) {
