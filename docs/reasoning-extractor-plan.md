@@ -132,8 +132,6 @@ and our buffer. Nil entries are filtered.
   reviewer turn (initial + every nudge) and place it on
   `loopReq.ReasoningSink`. Detach (set to nil) immediately after the
   turn returns, then snapshot the buffer string for the async Phase A
-  launch.
-
 #### 4. Reasoning-supported signal from model check + disable flag
 
 Add two fields to `model.ReviewRequest` (`internal/model/types.go`):
@@ -192,7 +190,7 @@ cancelled too.
 #### 6. New prompt templates (in `prompts/`, embedded via existing `embed.FS`)
 
 Each phase has its own system prompt; both phases share the same agent
-role (`reasoning_extract`) and are invoked through `e.runAgent` with
+role (`reasoning-extract`) and are invoked through `e.runAgent` with
 `SchemaKindText`. The output format is identical for both phases: a
 plain-text list, one item per line, no headers, no JSON, no markdown;
 the literal token `NONE` when the list is empty.
@@ -272,9 +270,6 @@ per-nudge round i:
     if extractEnabled && combined non-empty:
         deltaList = extractor(phase B, combined, accumulated findings JSON)
     nudge text uses deltaList (empty → unchanged template)
-    runTurn(nudge loopReq)                   # fires another Phase A async
-
-defer group.Wait()                           # drain trailing Phase A on return
 ```
 
 `NONE` / empty output from either phase is treated as an empty list.
@@ -297,13 +292,12 @@ Phase A (async) both update totals through the same helper.
   `agentLoopRequest`; forward into `llmReq.ReasoningSink`.
 - `internal/review/engine.go`
   - `loggedReview`: tee instead of overwrite.
-  - `runAgent`: allocate a fresh buffer per reviewer turn (initial +
-    each nudge); launch Phase A asynchronously after every turn that
-    emitted reasoning; before each nudge, wait for all in-flight
+  - `runAgent`: allocate a fresh buffer per reviewer turn (excl. 
+    nudge); launch Phase A asynchronously after every turn that
+    emitted reasoning; before first nudge, wait for all in-flight
     Phase A goroutines, then run Phase B synchronously against the
     combined list and the accumulated findings JSON; thread the delta
-    into the nudge template render call. Drain trailing Phase A
-    goroutines before returning. Use a single mutex-guarded
+    into the nudge template render call. Use a single mutex-guarded
     `phaseALists` slice — no per-turn local list paths.
   - Add helpers `runReasoningExtractPhaseA(ctx, reasoning, parentName, turnIdx)`
     and `runReasoningExtractPhaseB(ctx, combinedList, findingsJSON, parentName)`
@@ -348,7 +342,7 @@ Phase A (async) both update totals through the same helper.
 4. Add an engine-level test that fakes a reviewer response with both
    findings and a known reasoning trace (via a fake `ReasoningSink`
    feeder), drives at least two reviewer turns, and asserts: Phase A
-   is invoked once per turn with that turn's reasoning only; the next
+   is invoked once per turn with that turn's reasoning only; the first
    nudge blocks until all Phase A calls finish; Phase B is called with
    the joined list of all prior Phase A outputs and the accumulated
    findings JSON; and the rendered nudge message contains the appended
