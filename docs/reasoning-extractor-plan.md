@@ -9,33 +9,36 @@ just says "look again" generically.
 
 This plan wires a new auxiliary agent that runs in two phases:
 
-**Phase A — full list extraction (once)**
-After the initial reviewer call, the agent is shown ONLY the reasoning
-content (not the findings JSON) and asked to compile a list of every
-issue the model reasoned about. This list is fixed for the rest of the
-review — it is never recomputed.
+**Phase A — per-turn extraction (async, once per reviewer turn)**
+After each reviewer turn (initial call AND all following tuns BUT NOT the nudge calls), an
+extractor agent is fired asynchronously. It is shown ONLY that turn's
+reasoning content (not the findings JSON) and asked to compile a list
+of every issue the model reasoned about in that turn. The reviewer
+loop does not block on this — it proceeds while Phase A runs in the
+background. Each turn produces its own Phase A list.
 
-**Phase B — delta filtering (once per nudge round)**
-Before each nudge, the agent is shown the full list from Phase A together
-with the currently accumulated findings JSON, and asked to return only
-the items from the list that are NOT yet present in the findings JSON.
-The agent is instructed to err on the side of inclusion: when uncertain
-whether an item is already covered, return it; when an item touches the
-same lines but a different aspect, return it. The filtered output is
-what gets appended to that round's nudge user message.
-
-Reasoning emitted during nudge rounds is intentionally never consulted.
+**Phase B — delta filtering (once per nudge, synchronous)**
+Before each nudge round runs, the engine waits for all in-flight
+Phase A extractors to finish, concatenates their lists into a single
+combined list, then runs Phase B with (combined list, currently
+accumulated findings JSON). Phase B returns only items NOT yet present
+in the findings JSON. The agent is instructed to err on the side of
+inclusion: when uncertain whether an item is already covered, return
+it; when an item touches the same lines but a different aspect, return
+it. The filtered output is appended to that round's nudge user message.
 
 Skip rules (no extraction or filtering happens when):
 
-- The user passed `--disable-reasoning-extract`, OR
-- The model-check pre-flight detected the model does not emit reasoning
+- User passed `--disable-reasoning-extract`, OR
+- Model-check pre-flight detected the model does not emit reasoning
   traces (`CheckSummary.Reasoning.Traces == false`), OR
-- No reasoning content was collected during the initial reviewer call
-  (`resp.Reasoned == false` or empty buffer), OR
-- Phase A returned an empty full list, OR
-- Phase B returned an empty delta for the current round — that round uses
-  the unmodified standard nudge template.
+- A given turn produced no reasoning content (`resp.Reasoned == false`
+  or empty buffer) — that turn skips Phase A, later turns may still
+  fire, OR
+- Combined Phase A list is empty before a given nudge — that nudge
+  skips Phase B and uses the standard template, OR
+- Phase B returned an empty delta for the current round — same
+  fallback.
 
 ## Architecture
 
@@ -48,29 +51,40 @@ invoked inside this function, only when `agent.role == "reviewer"`
 
 Sequence inside `runAgent`:
 
-1. If reasoning extraction is enabled (see skip rules), attach a buffered
-   sink **only for the initial call**.
-2. Initial `runAgentLoop` call — reasoning collected into the buffer
-   sink.
-3. Detach the buffer sink immediately after the initial call; nudge
-   rounds run with no buffer attached (their reasoning is never
-   collected by us).
-4. If `req.NudgeCount > 0` and the buffer is non-empty and
-   `resp.Reasoned`:
-   a. **Phase A** — run the extractor once with the collected reasoning
-      only → `fullList` (immutable for the rest of this review).
-   b. Loop `i = 0 … NudgeCount-1`:
-      - If `fullList` is non-empty, run **Phase B** with
-        (`fullList`, accumulated findings JSON) → `deltaList` for this
-        round.
-      - Build the nudge message; if `deltaList` is non-empty, append it
-        to the standard nudge text.
-      - Run nudge `runAgentLoop` (no reasoning collection).
+1. If reasoning extraction is enabled (see skip rules), prepare:
+   - an `errgroup.Group` (or `sync.WaitGroup`) tracking in-flight
+     Phase A goroutines,
+   - a mutex-guarded `phaseALists []string` accumulating their results
+     across the entire review.
+2. **Every reviewer turn** (initial call and each nudge call) follows
+   the same `runTurn` pattern:
+   - Allocate a fresh `BufferedReasoningSink`, attach to
+     `loopReq.ReasoningSink` via the tee.
+   - Run `runAgentLoop`.
+   - Detach the buffer. If `resp.Reasoned` and the buffer is non-empty,
+     snapshot the buffer string and launch a goroutine that calls
+     Phase A with that snapshot. The goroutine appends its result
+     (skipping empty/`NONE`) to `phaseALists` under the mutex.
+3. **Before each nudge** (i = 0 … NudgeCount-1):
+   a. Wait for every in-flight Phase A goroutine to finish.
+   b. Concatenate `phaseALists` into `combinedList`. If empty, skip
+      Phase B and render the nudge with the standard template.
+   c. Otherwise run **Phase B** synchronously with (`combinedList`,
+      accumulated findings JSON) → `deltaList`.
+   d. Build the nudge message; if `deltaList` is non-empty, append it
+      to the standard nudge text. Run the nudge call via `runTurn` —
+      which itself attaches a fresh buffer and fires another Phase A
+      goroutine afterwards.
+4. After the final nudge call, drain any still-running Phase A
+   goroutines before `runAgent` returns so they do not leak.
 
-The extractor is never invoked through the nudge loop itself because its
-`role` is not `"reviewer"`. Phase B runs every nudge round (including
-the first) because the findings JSON grows across rounds and the delta
-must be recomputed each time.
+`phaseALists` accumulates across the entire review — Phase B sees every
+extracted item from every prior turn, not only the latest. The findings
+JSON passed into Phase B always reflects the currently accumulated set,
+so items the reviewer has since incorporated drop out naturally.
+
+The extractor is never invoked through the nudge loop itself because
+its `role` is not `"reviewer"`.
 
 ### New components
 
@@ -114,9 +128,11 @@ and our buffer. Nil entries are filtered.
   req.ReasoningSink = llm.TeeReasoningSinks(callSec, previousSink)
   defer func() { req.ReasoningSink = previousSink; callSec.End() }()
   ```
-- In `runAgent`, create a `BufferedReasoningSink` and place it on
-  `loopReq.ReasoningSink` before the initial call. Detach (set to nil)
-  before any nudge round.
+- In `runAgent`, allocate a fresh `BufferedReasoningSink` before each
+  reviewer turn (initial + every nudge) and place it on
+  `loopReq.ReasoningSink`. Detach (set to nil) immediately after the
+  turn returns, then snapshot the buffer string for the async Phase A
+  launch.
 
 #### 4. Reasoning-supported signal from model check + disable flag
 
@@ -169,7 +185,9 @@ Output is read from `result.contentMessages` (joined). `SchemaKindText`
 is already supported.
 
 The extractor's own reasoning is NOT collected (no buffer sink set on
-its `loopReq`).
+its `loopReq`). Phase A goroutines all share the parent context — if
+`runAgent` returns or the caller cancels, in-flight extractors are
+cancelled too.
 
 #### 6. New prompt templates (in `prompts/`, embedded via existing `embed.FS`)
 
@@ -224,33 +242,53 @@ field. Pass empty string for rounds where the list is empty.
 ### Skip-path summary inside `runAgent`
 
 ```
-extractEnabled = !req.DisableReasoningExtract && req.ModelEmitsReasoning
+extractEnabled := !req.DisableReasoningExtract && req.ModelEmitsReasoning
 
-if extractEnabled { allocate buffer, attach to loopReq.ReasoningSink }
+phaseALists := []string{}        # mutex-guarded
+group       := errgroup.Group    # tracks in-flight Phase A goroutines
 
-initial runAgentLoop call
-detach buffer immediately after
+runTurn(loopReq):
+    var buf *BufferedReasoningSink
+    if extractEnabled:
+        buf = new BufferedReasoningSink
+        attach buf to loopReq.ReasoningSink (tee)
+    resp := runAgentLoop(loopReq)
+    detach buf
+    if extractEnabled && resp.Reasoned && buf non-empty:
+        snapshot := buf.String()
+        group.Go(func() {
+            list := extractor(phase A, snapshot)   # findings NOT passed in
+            if list non-empty && list != "NONE":
+                lock; phaseALists = append(phaseALists, list); unlock
+        })
+    return resp
 
-fullList = ""
-if extractEnabled && buffer non-empty && resp.Reasoned:
-    fullList = extractor(phase A, reasoning)   # findings NOT passed in
+runTurn(initial loopReq)
 
 per-nudge round i:
-    deltaList = ""
-    if fullList non-empty:
-        deltaList = extractor(phase B, fullList, accumulated findings JSON)
+    group.Wait()                             # block on all in-flight Phase A
+    deltaList := ""
+    combined := join(phaseALists, "\n")
+    if extractEnabled && combined non-empty:
+        deltaList = extractor(phase B, combined, accumulated findings JSON)
     nudge text uses deltaList (empty → unchanged template)
-    run nudge (no buffer attached)
+    runTurn(nudge loopReq)                   # fires another Phase A async
+
+defer group.Wait()                           # drain trailing Phase A on return
 ```
 
 `NONE` / empty output from either phase is treated as an empty list.
 
 ### Telemetry
 
-The extractor's `model.AgentRun` (tokens, etc.) is appended to the
+Each extractor run's `model.AgentRun` (tokens, etc.) is appended to the
 parent reviewer's accumulated totals via the existing `addTokenUsage` /
-totals tracking in `runAgent`, mirroring how nudge token usage is
-folded in.
+totals tracking in `runAgent`, mirroring how nudge token usage is folded
+in. Because Phase A runs concurrently, totals updates from extractor
+goroutines must be routed through a concurrency-safe helper (either
+guarded by the same mutex used for `phaseALists` or by an existing
+single-writer abstraction). No dual paths — Phase B (synchronous) and
+Phase A (async) both update totals through the same helper.
 
 ## Files to modify
 
@@ -259,12 +297,16 @@ folded in.
   `agentLoopRequest`; forward into `llmReq.ReasoningSink`.
 - `internal/review/engine.go`
   - `loggedReview`: tee instead of overwrite.
-  - `runAgent`: allocate the buffer for the initial call only, run
-    Phase A once after the initial call, run Phase B inside each nudge
-    iteration before rendering, thread the delta into the nudge
-    template render call.
-  - Add helpers `runReasoningExtractPhaseA(ctx, reasoning, parentName)`
-    and `runReasoningExtractPhaseB(ctx, fullList, findingsJSON, parentName)`
+  - `runAgent`: allocate a fresh buffer per reviewer turn (initial +
+    each nudge); launch Phase A asynchronously after every turn that
+    emitted reasoning; before each nudge, wait for all in-flight
+    Phase A goroutines, then run Phase B synchronously against the
+    combined list and the accumulated findings JSON; thread the delta
+    into the nudge template render call. Drain trailing Phase A
+    goroutines before returning. Use a single mutex-guarded
+    `phaseALists` slice — no per-turn local list paths.
+  - Add helpers `runReasoningExtractPhaseA(ctx, reasoning, parentName, turnIdx)`
+    and `runReasoningExtractPhaseB(ctx, combinedList, findingsJSON, parentName)`
     near other helpers.
 - `internal/model/types.go`: add `ModelEmitsReasoning bool` and
   `DisableReasoningExtract bool` to `ReviewRequest`.
@@ -305,14 +347,21 @@ folded in.
    Reset + concurrent Append safety).
 4. Add an engine-level test that fakes a reviewer response with both
    findings and a known reasoning trace (via a fake `ReasoningSink`
-   feeder), asserts the extractor is called with the right inputs, and
-   asserts the rendered nudge message contains the appended list.
+   feeder), drives at least two reviewer turns, and asserts: Phase A
+   is invoked once per turn with that turn's reasoning only; the next
+   nudge blocks until all Phase A calls finish; Phase B is called with
+   the joined list of all prior Phase A outputs and the accumulated
+   findings JSON; and the rendered nudge message contains the appended
+   delta.
 5. Manual end-to-end: run `./review_test.sh` (or `nickpit local …`)
    against a model known to emit reasoning. Confirm from logs: Phase A
-   runs exactly once after the initial review (never on nudge
-   reasoning); Phase B runs once per nudge round; the nudge prompt
+   fires once per reviewer turn (initial + every nudge), runs
+   concurrently with the reviewer loop, and every in-flight Phase A is
+   awaited before the next nudge starts; Phase B runs once per nudge
+   round against the accumulated combined list; the nudge prompt
    includes the Phase B delta when non-empty; and the delta shrinks
-   across rounds as the reviewer picks items up.
+   across rounds as the reviewer picks items up. No Phase A goroutine
+   leaks past `runAgent` return.
 6. Manual end-to-end with `--skip-model-check` OR a model that does
    not emit reasoning: confirm the extractor is skipped and nudges use
    the standard template unchanged.
