@@ -115,6 +115,7 @@ var defaultProfiles = []defaultProfile{
 			BaseURL:         "https://llm.aihosting.mittwald.de/v1",
 			Model:           "Qwen3.5-122B-A10B-FP8",
 			ReasoningEffort: "high",
+			UseJSONSchema:   true,
 			APIKey:          "$MITTWALD_LLM_API_KEY",
 		},
 	},
