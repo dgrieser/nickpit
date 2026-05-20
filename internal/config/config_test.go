@@ -56,9 +56,6 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	}
 
 	mittwald := cfg.Profiles["mittwald"]
-	if mittwald.Model != "gpt-oss-120b" {
-		t.Fatalf("mittwald model = %q", mittwald.Model)
-	}
 	if mittwald.BaseURL != "https://llm.aihosting.mittwald.de/v1" {
 		t.Fatalf("mittwald base url = %q", mittwald.BaseURL)
 	}

@@ -112,9 +112,10 @@ var defaultProfiles = []defaultProfile{
 	{
 		name: "mittwald",
 		profile: Profile{
-			BaseURL: "https://llm.aihosting.mittwald.de/v1",
-			Model:   "gpt-oss-120b",
-			APIKey:  "$MITTWALD_LLM_API_KEY",
+			BaseURL:         "https://llm.aihosting.mittwald.de/v1",
+			Model:           "Qwen3.5-122B-A10B-FP8",
+			ReasoningEffort: "high",
+			APIKey:          "$MITTWALD_LLM_API_KEY",
 		},
 	},
 	{
