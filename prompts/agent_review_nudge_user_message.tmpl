@@ -14,3 +14,8 @@ Ask yourself these original questions again:
 {{else}}
 - Respond in the same format as before
 {{end}}
+{{if .ReasoningFindings}}
+
+In your prior reasoning you discussed these issues but did not include them in your findings. Add them now:
+{{.ReasoningFindings}}
+{{end}}

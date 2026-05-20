@@ -27,6 +27,7 @@ type agentLoopRequest struct {
 	TopP                       *float64
 	ExtraBody                  map[string]any
 	ReasoningEffort            string
+	ReasoningSink              llm.ReasoningSink
 	RepoRoot                   string
 	MaxToolCalls               int
 	MaxDuplicateToolCalls      int
@@ -88,6 +89,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		ExtraBody:               req.ExtraBody,
 		ParallelToolCalls:       req.ParallelToolCalls,
 		ReasoningEffort:         req.ReasoningEffort,
+		ReasoningSink:           req.ReasoningSink,
 		MaxReasoning:            time.Duration(req.MaxReasoningSeconds) * time.Second,
 		MaxReasoningLoopRepeats: req.MaxReasoningLoopRepeats,
 	}

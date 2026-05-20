@@ -227,6 +227,9 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	if cmd.PersistentFlags().Lookup("skip-model-check") == nil {
 		t.Fatal("skip-model-check flag missing")
 	}
+	if cmd.PersistentFlags().Lookup("disable-reasoning-extract") == nil {
+		t.Fatal("disable-reasoning-extract flag missing")
+	}
 }
 
 func TestRootCmdHasCheckModel(t *testing.T) {

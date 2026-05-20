@@ -70,6 +70,7 @@ type app struct {
 	showProgress                  bool
 	disableSearchToolOptimization bool
 	disableParallelToolCalls      bool
+	disableReasoningExtract       bool
 	verifyConcurrency             int
 	hideInvalid                   bool
 	skipModelCheck                bool
@@ -143,6 +144,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
+	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
 	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
@@ -657,6 +659,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
+	req.DisableReasoningExtract = a.disableReasoningExtract
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
 		req.MaxContextTokens = profile.MaxContextTokens
@@ -690,6 +693,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		if err := validatePreReviewModelCheck(checkResult); err != nil {
 			return err
 		}
+		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
 		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		a.logProgress("ModelCheck", modelCheckSummary(checkResult))
 	} else {
