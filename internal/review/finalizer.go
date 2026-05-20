@@ -37,7 +37,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		if err != nil {
 			return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
 		}
-		return out, model.AgentRun{Name: "finalize", Role: "finalize"}, nil
+		return out, model.AgentRun{Name: "Finalize Review", Role: "finalize"}, nil
 	}
 
 	systemTemplate, err := e.loadPrompt("agent_finalize_system_prompt.tmpl")
@@ -85,7 +85,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	}
 	e.logProgress("Finalize", fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
-		name:          "finalize",
+		name:          "Finalize Review",
 		role:          "finalize",
 		system:        system,
 		noToolsSystem: system,

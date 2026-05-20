@@ -389,7 +389,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 
 	var warnings []string
 	contextResult, contextErr := e.runContextAgent(ctx, agentSpec{
-		name:          "context",
+		name:          "Collect Context",
 		role:          "context",
 		system:        contextSystem,
 		noToolsSystem: contextSystem,
@@ -634,7 +634,7 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
 	}
 	return e.runAgent(ctx, agentSpec{
-		name:          "merge",
+		name:          "Merge Findings",
 		role:          "merge",
 		system:        system,
 		noToolsSystem: system,
@@ -780,10 +780,13 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		var nudgeErr error
 		for i := 0; i < req.NudgeCount; i++ {
-			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: agent.name, Run: i + 1})
+			nudgeName := fmt.Sprintf("%s - Nudge %d/%d", agent.name, i+1, req.NudgeCount)
+			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: nudgeName})
 			e.logfCtx(nudgeCtx, "Nudge round: round=%d/%d", i+1, req.NudgeCount)
 			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
 			nudgeReq := loopReq
+			nudgeReq.AgentName = nudgeName
+			nudgeReq.JSONRetryProgressAgentName = nudgeName
 			nudgeReq.Messages = nudged
 			nudgeReq.ReasoningEffort = nudgeReasoningEffort
 			nudgeReq.State = nudgeState
@@ -1077,7 +1080,7 @@ func synthesizedMergeFromVectors(vectorResults []agentResult, mergeErr error) ag
 	return agentResult{
 		resp: resp,
 		run: model.AgentRun{
-			Name:   "merge",
+			Name:   "Merge Findings",
 			Role:   "merge",
 			Status: status,
 			Error:  errStr,
@@ -2341,7 +2344,6 @@ func (e *Engine) logJSON(label string, value any) {
 type agentTag struct {
 	Role string
 	Name string
-	Run  int
 	Turn int
 }
 
@@ -2380,9 +2382,6 @@ func agentLabelForLLM(ctx context.Context) string {
 
 func formatAgentTag(tag agentTag) string {
 	head := fmt.Sprintf("%s: %s", tag.Role, tag.Name)
-	if tag.Run > 0 {
-		head = fmt.Sprintf("%s #%d", head, tag.Run)
-	}
 	if tag.Turn > 0 {
 		head = fmt.Sprintf("%s, turn: #%d", head, tag.Turn)
 	}

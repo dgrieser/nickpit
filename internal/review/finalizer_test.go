@@ -648,8 +648,8 @@ func TestFinalizeEarlySkipsOnEmptyFindings(t *testing.T) {
 	if out == nil || out.OverallCorrectness != "patch is correct" {
 		t.Fatalf("out = %+v, want input cloned through unchanged", out)
 	}
-	if run.Name != "finalize" {
-		t.Fatalf("run.Name = %q, want finalize", run.Name)
+	if run.Name != "Finalize Review" {
+		t.Fatalf("run.Name = %q, want Finalize Review", run.Name)
 	}
 }
 
