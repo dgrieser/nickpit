@@ -838,6 +838,11 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		// via the sub.reasoningEffort update below.
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		var nudgeErr error
+		// Phase B inputs: combinedPhaseAList (frozen after initial run) +
+		// totalFindings (append-only via appendNewFindings). Cache the delta
+		// keyed by len(totalFindings); recompute only when findings grew.
+		cachedPhaseBDelta := ""
+		cachedPhaseBFindingsLen := -1
 		for i := 0; i < req.NudgeCount; i++ {
 			nudgeName := fmt.Sprintf("%s - Nudge %d/%d", agent.name, i+1, req.NudgeCount)
 			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: nudgeName})
@@ -845,16 +850,22 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			waitPhaseA()
 			reasoningFindings := ""
 			if combined := combinedPhaseAList(); combined != "" {
-				findingsJSON, err := reasoningFindingsJSON(totalFindings)
-				if err != nil {
-					return agentResult{}, err
-				}
-				delta, result, err := e.runReasoningExtractPhaseB(nudgeCtx, combined, findingsJSON, agent.name, req)
-				addExtractorRun(result.run)
-				if err != nil {
-					e.logfCtx(nudgeCtx, "Reasoning extract phase B failed, using standard nudge: round=%d/%d error=%v", i+1, req.NudgeCount, err)
+				if cachedPhaseBFindingsLen == len(totalFindings) {
+					reasoningFindings = cachedPhaseBDelta
 				} else {
-					reasoningFindings = delta
+					findingsJSON, err := reasoningFindingsJSON(totalFindings)
+					if err != nil {
+						return agentResult{}, err
+					}
+					delta, result, err := e.runReasoningExtractPhaseB(nudgeCtx, combined, findingsJSON, agent.name, req)
+					addExtractorRun(result.run)
+					if err != nil {
+						e.logfCtx(nudgeCtx, "Reasoning extract phase B failed, using standard nudge: round=%d/%d error=%v", i+1, req.NudgeCount, err)
+					} else {
+						reasoningFindings = delta
+						cachedPhaseBDelta = delta
+						cachedPhaseBFindingsLen = len(totalFindings)
+					}
 				}
 			}
 			nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
