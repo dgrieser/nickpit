@@ -740,13 +740,12 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	}
 	extractEnabled := agent.role == "reviewer" && req.NudgeCount > 0 && !req.DisableReasoningExtract && req.ModelEmitsReasoning
 	var (
-		extractMu            sync.Mutex
-		phaseAWG             sync.WaitGroup
-		phaseALists          []string
-		extractorTokens      model.TokenUsage
-		extractorToolCalls   int
-		extractorDuplicates  int
-		reviewerTurnSequence int
+		extractMu           sync.Mutex
+		phaseAWG            sync.WaitGroup
+		phaseALists         []string
+		extractorTokens     model.TokenUsage
+		extractorToolCalls  int
+		extractorDuplicates int
 	)
 	addExtractorRun := func(run model.AgentRun) {
 		extractMu.Lock()
@@ -780,17 +779,17 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	waitPhaseA := func() {
 		phaseAWG.Wait()
 	}
-	launchPhaseA := func(turnIdx int, reasoning string) {
+	launchPhaseA := func(agentName string, iterIdx int, reasoning string) {
 		if strings.TrimSpace(reasoning) == "" {
 			return
 		}
 		phaseAWG.Add(1)
 		go func() {
 			defer phaseAWG.Done()
-			list, result, err := e.runReasoningExtractPhaseA(ctx, reasoning, agent.name, turnIdx, req)
+			list, result, err := e.runReasoningExtractPhaseA(ctx, reasoning, agentName, iterIdx, req)
 			addExtractorRun(result.run)
 			if err != nil {
-				e.logf("Reasoning extract phase A failed: agent=%s turn=%d error=%v", agent.name, turnIdx, err)
+				e.logf("Reasoning extract phase A failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
 				return
 			}
 			if strings.TrimSpace(list) == "" {
@@ -801,21 +800,13 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			extractMu.Unlock()
 		}()
 	}
-	runReviewerTurn := func(turnCtx context.Context, turnReq agentLoopRequest) (agentLoopResult, error) {
-		var buf *llm.BufferedReasoningSink
-		if extractEnabled {
-			buf = &llm.BufferedReasoningSink{}
-			turnReq.ReasoningSink = llm.TeeReasoningSinks(turnReq.ReasoningSink, buf)
+	if extractEnabled {
+		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
+			launchPhaseA(agentName, iterIdx, reasoning)
 		}
-		result, err := e.runAgentLoop(turnCtx, turnReq)
-		if err == nil && extractEnabled && result.resp != nil && result.resp.Reasoned && strings.TrimSpace(buf.String()) != "" {
-			reviewerTurnSequence++
-			launchPhaseA(reviewerTurnSequence, buf.String())
-		}
-		return result, err
 	}
 
-	loopResult, err := runReviewerTurn(ctx, loopReq)
+	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
 		waitPhaseA()
 		return partialAgentResult(agent, req, loopResult), err
@@ -886,7 +877,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			nudgeReq.Messages = nudged
 			nudgeReq.ReasoningEffort = nudgeReasoningEffort
 			nudgeReq.State = nudgeState
-			sub, err := runReviewerTurn(nudgeCtx, nudgeReq)
+			nudgeReq.OnReasoningTrace = nil
+			sub, err := e.runAgentLoop(nudgeCtx, nudgeReq)
 			if err != nil {
 				nudgeErr = fmt.Errorf("nudge %d: %w", i+1, err)
 				e.logfCtx(nudgeCtx, "Nudge failed, keeping prior findings: round=%d/%d error=%v", i+1, req.NudgeCount, err)
