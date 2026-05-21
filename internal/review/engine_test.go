@@ -380,15 +380,15 @@ func TestRunAgent_ReasoningExtractorAugmentsNudges(t *testing.T) {
 			"nudge one reasoning only",
 			"nudge two reasoning only",
 		},
-		phaseAOutputs: []string{
-			"phase-a-initial",
+		collectOutputs: []string{
+			"collect-initial",
 		},
-		phaseBOutputs: []string{
+		updateOutputs: []string{
 			"delta from initial",
 			"delta from nudge one",
 		},
-		firstPhaseAStarted: started,
-		releaseFirstPhaseA: release,
+		firstCollectStarted: started,
+		releaseFirstCollect: release,
 	}
 	engine := nudgeTestEngine(llmClient)
 
@@ -408,18 +408,18 @@ func TestRunAgent_ReasoningExtractorAugmentsNudges(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):
-		t.Fatal("phase A did not start")
+		t.Fatal("collect did not start")
 	}
 	time.Sleep(20 * time.Millisecond)
 	llmClient.mu.Lock()
 	reviewerCallsBeforeRelease := len(llmClient.reviewerMessages)
-	phaseBCallsBeforeRelease := len(llmClient.phaseBFullLists)
+	updateCallsBeforeRelease := len(llmClient.updateFullLists)
 	llmClient.mu.Unlock()
 	if reviewerCallsBeforeRelease != 1 {
-		t.Fatalf("reviewer calls before phase A release = %d, want 1", reviewerCallsBeforeRelease)
+		t.Fatalf("reviewer calls before collect release = %d, want 1", reviewerCallsBeforeRelease)
 	}
-	if phaseBCallsBeforeRelease != 0 {
-		t.Fatalf("phase B calls before phase A release = %d, want 0", phaseBCallsBeforeRelease)
+	if updateCallsBeforeRelease != 0 {
+		t.Fatalf("update findings calls before collect release = %d, want 0", updateCallsBeforeRelease)
 	}
 	close(release)
 
@@ -434,20 +434,20 @@ func TestRunAgent_ReasoningExtractorAugmentsNudges(t *testing.T) {
 	}
 
 	llmClient.mu.Lock()
-	phaseAInputs := append([]string(nil), llmClient.phaseAInputs...)
-	phaseBFullLists := append([]string(nil), llmClient.phaseBFullLists...)
-	phaseBFindingsJSON := append([]string(nil), llmClient.phaseBFindingsJSON...)
+	collectInputs := append([]string(nil), llmClient.collectInputs...)
+	updateFullLists := append([]string(nil), llmClient.updateFullLists...)
+	updateFindingsJSON := append([]string(nil), llmClient.updateFindingsJSON...)
 	reviewerMessages := append([]string(nil), llmClient.reviewerMessages...)
 	llmClient.mu.Unlock()
 
-	if want := []string{"initial reasoning only"}; !reflect.DeepEqual(phaseAInputs, want) {
-		t.Fatalf("phase A inputs = %#v, want %#v", phaseAInputs, want)
+	if want := []string{"initial reasoning only"}; !reflect.DeepEqual(collectInputs, want) {
+		t.Fatalf("collect inputs = %#v, want %#v", collectInputs, want)
 	}
-	if want := []string{"phase-a-initial", "phase-a-initial"}; !reflect.DeepEqual(phaseBFullLists, want) {
-		t.Fatalf("phase B lists = %#v, want %#v", phaseBFullLists, want)
+	if want := []string{"collect-initial", "collect-initial"}; !reflect.DeepEqual(updateFullLists, want) {
+		t.Fatalf("update findings lists = %#v, want %#v", updateFullLists, want)
 	}
-	if len(phaseBFindingsJSON) != 2 || !strings.Contains(phaseBFindingsJSON[0], "Initial finding") || !strings.Contains(phaseBFindingsJSON[1], "Nudge 1 finding") {
-		t.Fatalf("phase B findings JSON = %#v", phaseBFindingsJSON)
+	if len(updateFindingsJSON) != 2 || !strings.Contains(updateFindingsJSON[0], "Initial finding") || !strings.Contains(updateFindingsJSON[1], "Nudge 1 finding") {
+		t.Fatalf("update findings JSON = %#v", updateFindingsJSON)
 	}
 	if len(reviewerMessages) != 3 {
 		t.Fatalf("reviewer messages = %d, want 3", len(reviewerMessages))
@@ -463,15 +463,15 @@ func TestRunAgent_ReasoningExtractorAugmentsNudges(t *testing.T) {
 	}
 }
 
-func TestRunAgent_PerIterPhaseAInsideInitialReviewer(t *testing.T) {
+func TestRunAgent_PerIterCollectInsideInitialReviewer(t *testing.T) {
 	llmClient := &multiIterReasoningExtractLLM{
 		reviewerReasoning: []string{
 			"iter 1 reasoning",
 			"iter 2 reasoning",
 			"nudge reasoning must not extract",
 		},
-		phaseAOutputs: []string{"iter-1-list", "iter-2-list"},
-		phaseBOutputs: []string{"delta after nudge"},
+		collectOutputs: []string{"iter-1-list", "iter-2-list"},
+		updateOutputs: []string{"delta after nudge"},
 	}
 	engine := nudgeTestEngine(llmClient)
 
@@ -484,29 +484,29 @@ func TestRunAgent_PerIterPhaseAInsideInitialReviewer(t *testing.T) {
 	}
 
 	llmClient.mu.Lock()
-	phaseAInputs := append([]string(nil), llmClient.phaseAInputs...)
-	phaseBFullLists := append([]string(nil), llmClient.phaseBFullLists...)
+	collectInputs := append([]string(nil), llmClient.collectInputs...)
+	updateFullLists := append([]string(nil), llmClient.updateFullLists...)
 	reviewerCallNum := llmClient.reviewerCallNum
 	reviewerMessages := append([]string(nil), llmClient.reviewerMessages...)
 	llmClient.mu.Unlock()
 
-	sort.Strings(phaseAInputs)
-	if want := []string{"iter 1 reasoning", "iter 2 reasoning"}; !reflect.DeepEqual(phaseAInputs, want) {
-		t.Fatalf("phase A inputs = %#v, want %#v (nudge iter must not fire phase A)", phaseAInputs, want)
+	sort.Strings(collectInputs)
+	if want := []string{"iter 1 reasoning", "iter 2 reasoning"}; !reflect.DeepEqual(collectInputs, want) {
+		t.Fatalf("collect inputs = %#v, want %#v (nudge iter must not fire collect)", collectInputs, want)
 	}
-	if len(phaseBFullLists) != 1 {
-		t.Fatalf("phase B calls = %d, want 1", len(phaseBFullLists))
+	if len(updateFullLists) != 1 {
+		t.Fatalf("update findings calls = %d, want 1", len(updateFullLists))
 	}
-	gotLines := strings.Split(phaseBFullLists[0], "\n")
+	gotLines := strings.Split(updateFullLists[0], "\n")
 	sort.Strings(gotLines)
 	if want := []string{"iter-1-list", "iter-2-list"}; !reflect.DeepEqual(gotLines, want) {
-		t.Fatalf("phase B combined list lines = %#v, want %#v", gotLines, want)
+		t.Fatalf("update findings combined list lines = %#v, want %#v", gotLines, want)
 	}
 	if reviewerCallNum != 3 {
 		t.Fatalf("reviewer LLM calls = %d, want 3 (iter1+iter2+nudge1)", reviewerCallNum)
 	}
 	if len(reviewerMessages) < 3 || !strings.Contains(reviewerMessages[2], "delta after nudge") {
-		t.Fatalf("nudge message missing phase B delta: %#v", reviewerMessages)
+		t.Fatalf("nudge message missing update findings delta: %#v", reviewerMessages)
 	}
 	if result.run.TokensUsed.TotalTokens == 0 {
 		t.Fatal("extractor token usage should be folded into reviewer run")
@@ -3323,14 +3323,14 @@ type reasoningExtractLLM struct {
 	mu                     sync.Mutex
 	reviewerReasoning      []string
 	reviewerMessages       []string
-	phaseAInputs           []string
-	phaseAOutputs          []string
-	phaseBFullLists        []string
-	phaseBFindingsJSON     []string
-	phaseBOutputs          []string
-	firstPhaseAStarted     chan struct{}
-	releaseFirstPhaseA     chan struct{}
-	firstPhaseAStartedOnce sync.Once
+	collectInputs           []string
+	collectOutputs          []string
+	updateFullLists        []string
+	updateFindingsJSON     []string
+	updateOutputs          []string
+	firstCollectStarted     chan struct{}
+	releaseFirstCollect     chan struct{}
+	firstCollectStartedOnce sync.Once
 }
 
 func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -3343,26 +3343,26 @@ func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) 
 	case strings.Contains(system, "Read one reviewer reasoning trace"):
 		input := strings.TrimSpace(strings.TrimPrefix(user, "Reviewer reasoning trace:"))
 		s.mu.Lock()
-		idx := len(s.phaseAInputs)
-		s.phaseAInputs = append(s.phaseAInputs, input)
-		output := outputAt(s.phaseAOutputs, idx)
-		started := s.firstPhaseAStarted
-		release := s.releaseFirstPhaseA
+		idx := len(s.collectInputs)
+		s.collectInputs = append(s.collectInputs, input)
+		output := outputAt(s.collectOutputs, idx)
+		started := s.firstCollectStarted
+		release := s.releaseFirstCollect
 		s.mu.Unlock()
 		if idx == 0 && started != nil {
-			s.firstPhaseAStartedOnce.Do(func() { close(started) })
+			s.firstCollectStartedOnce.Do(func() { close(started) })
 		}
 		if idx == 0 && release != nil {
 			<-release
 		}
 		return textResponse(output, 1), nil
 	case strings.Contains(system, "Given a list of issues extracted from reviewer reasoning"):
-		fullList, findingsJSON := phaseBPayloadParts(user)
+		fullList, findingsJSON := updatePayloadParts(user)
 		s.mu.Lock()
-		idx := len(s.phaseBFullLists)
-		s.phaseBFullLists = append(s.phaseBFullLists, fullList)
-		s.phaseBFindingsJSON = append(s.phaseBFindingsJSON, findingsJSON)
-		output := outputAt(s.phaseBOutputs, idx)
+		idx := len(s.updateFullLists)
+		s.updateFullLists = append(s.updateFullLists, fullList)
+		s.updateFindingsJSON = append(s.updateFindingsJSON, findingsJSON)
+		output := outputAt(s.updateOutputs, idx)
 		s.mu.Unlock()
 		return textResponse(output, 1), nil
 	default:
@@ -3389,10 +3389,10 @@ type multiIterReasoningExtractLLM struct {
 	reviewerCallNum   int
 	reviewerMessages  []string
 	reviewerReasoning []string
-	phaseAInputs      []string
-	phaseAOutputs     []string
-	phaseBFullLists   []string
-	phaseBOutputs     []string
+	collectInputs      []string
+	collectOutputs     []string
+	updateFullLists   []string
+	updateOutputs     []string
 }
 
 func (s *multiIterReasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -3405,17 +3405,17 @@ func (s *multiIterReasoningExtractLLM) Review(_ context.Context, req *llm.Review
 	case strings.Contains(system, "Read one reviewer reasoning trace"):
 		input := strings.TrimSpace(strings.TrimPrefix(user, "Reviewer reasoning trace:"))
 		s.mu.Lock()
-		idx := len(s.phaseAInputs)
-		s.phaseAInputs = append(s.phaseAInputs, input)
-		output := outputAt(s.phaseAOutputs, idx)
+		idx := len(s.collectInputs)
+		s.collectInputs = append(s.collectInputs, input)
+		output := outputAt(s.collectOutputs, idx)
 		s.mu.Unlock()
 		return textResponse(output, 1), nil
 	case strings.Contains(system, "Given a list of issues extracted from reviewer reasoning"):
-		fullList, _ := phaseBPayloadParts(user)
+		fullList, _ := updatePayloadParts(user)
 		s.mu.Lock()
-		idx := len(s.phaseBFullLists)
-		s.phaseBFullLists = append(s.phaseBFullLists, fullList)
-		output := outputAt(s.phaseBOutputs, idx)
+		idx := len(s.updateFullLists)
+		s.updateFullLists = append(s.updateFullLists, fullList)
+		output := outputAt(s.updateOutputs, idx)
 		s.mu.Unlock()
 		return textResponse(output, 1), nil
 	default:
@@ -3470,7 +3470,7 @@ func lastUserContent(messages []llm.Message) string {
 	return ""
 }
 
-func phaseBPayloadParts(content string) (string, string) {
+func updatePayloadParts(content string) (string, string) {
 	const listStart = "Extracted issue list:"
 	const findingsStart = "Current findings JSON:"
 	_, rest, _ := strings.Cut(content, listStart)

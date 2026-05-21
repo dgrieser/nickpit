@@ -741,8 +741,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	extractEnabled := agent.role == "reviewer" && req.NudgeCount > 0 && !req.DisableReasoningExtract && req.ModelEmitsReasoning
 	var (
 		extractMu           sync.Mutex
-		phaseAWG            sync.WaitGroup
-		phaseALists         []string
+		collectWG           sync.WaitGroup
+		collectedLists      []string
 		extractorTokens     model.TokenUsage
 		extractorToolCalls  int
 		extractorDuplicates int
@@ -771,40 +771,40 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		_, _, duplicates := extractorTotals()
 		return base + duplicates
 	}
-	combinedPhaseAList := func() string {
+	combinedCollectedList := func() string {
 		extractMu.Lock()
 		defer extractMu.Unlock()
-		return strings.TrimSpace(strings.Join(phaseALists, "\n"))
+		return strings.TrimSpace(strings.Join(collectedLists, "\n"))
 	}
-	waitPhaseA := func() {
-		phaseAWG.Wait()
+	waitCollect := func() {
+		collectWG.Wait()
 	}
-	launchPhaseA := func(agentName string, iterIdx int, reasoning string) {
+	launchCollect := func(agentName string, iterIdx int, reasoning string) {
 		if strings.TrimSpace(reasoning) == "" {
 			return
 		}
-		phaseAWG.Add(1)
+		collectWG.Add(1)
 		go func() {
-			defer phaseAWG.Done()
-			list, result, err := e.runReasoningExtractPhaseA(ctx, reasoning, agentName, iterIdx, req)
+			defer collectWG.Done()
+			list, result, err := e.runReasoningCollectFindings(ctx, reasoning, agentName, iterIdx, req)
 			addExtractorRun(result.run)
 			if err != nil {
-				e.logf("Reasoning extract phase A failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
+				e.logf("Reasoning collect findings failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
 				return
 			}
 			if strings.TrimSpace(list) == "" {
 				return
 			}
 			extractMu.Lock()
-			phaseALists = append(phaseALists, list)
+			collectedLists = append(collectedLists, list)
 			extractMu.Unlock()
 		}()
 	}
 	if extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
-			launchPhaseA(agentName, iterIdx, reasoning)
+			launchCollect(agentName, iterIdx, reasoning)
 		}
-		defer waitPhaseA()
+		defer waitCollect()
 	}
 
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
@@ -838,33 +838,33 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		// via the sub.reasoningEffort update below.
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		var nudgeErr error
-		// Phase B inputs: combinedPhaseAList (frozen after initial run) +
-		// totalFindings (append-only via appendNewFindings). Cache the delta
-		// keyed by len(totalFindings); recompute only when findings grew.
-		cachedPhaseBDelta := ""
-		cachedPhaseBFindingsLen := -1
+		// UpdateFindings inputs: combinedCollectedList (frozen after initial
+		// run) + totalFindings (append-only via appendNewFindings). Cache the
+		// delta keyed by len(totalFindings); recompute only when findings grew.
+		cachedUpdateDelta := ""
+		cachedUpdateFindingsLen := -1
 		for i := 0; i < req.NudgeCount; i++ {
 			nudgeName := fmt.Sprintf("%s - Nudge %d/%d", agent.name, i+1, req.NudgeCount)
 			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: nudgeName})
 			e.logfCtx(nudgeCtx, "Nudge round: round=%d/%d", i+1, req.NudgeCount)
-			waitPhaseA()
+			waitCollect()
 			reasoningFindings := ""
-			if combined := combinedPhaseAList(); combined != "" {
-				if cachedPhaseBFindingsLen == len(totalFindings) {
-					reasoningFindings = cachedPhaseBDelta
+			if combined := combinedCollectedList(); combined != "" {
+				if cachedUpdateFindingsLen == len(totalFindings) {
+					reasoningFindings = cachedUpdateDelta
 				} else {
 					findingsJSON, err := reasoningFindingsJSON(totalFindings)
 					if err != nil {
 						return agentResult{}, err
 					}
-					delta, result, err := e.runReasoningExtractPhaseB(nudgeCtx, combined, findingsJSON, agent.name, req)
+					delta, result, err := e.runReasoningUpdateFindings(nudgeCtx, combined, findingsJSON, agent.name, req)
 					addExtractorRun(result.run)
 					if err != nil {
-						e.logfCtx(nudgeCtx, "Reasoning extract phase B failed, using standard nudge: round=%d/%d error=%v", i+1, req.NudgeCount, err)
+						e.logfCtx(nudgeCtx, "Reasoning update findings failed, using standard nudge: round=%d/%d error=%v", i+1, req.NudgeCount, err)
 					} else {
 						reasoningFindings = delta
-						cachedPhaseBDelta = delta
-						cachedPhaseBFindingsLen = len(totalFindings)
+						cachedUpdateDelta = delta
+						cachedUpdateFindingsLen = len(totalFindings)
 					}
 				}
 			}
@@ -965,12 +965,12 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	}, nil
 }
 
-func (e *Engine) runReasoningExtractPhaseA(ctx context.Context, reasoning, parentName string, turnIdx int, req model.ReviewRequest) (string, agentResult, error) {
-	system, err := renderPromptFile("agent_reasoning_extract_phase_a_system_prompt.tmpl", nil)
+func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, parentName string, turnIdx int, req model.ReviewRequest) (string, agentResult, error) {
+	system, err := renderPromptFile("agent_reasoning_collect_findings_system_prompt.tmpl", nil)
 	if err != nil {
 		return "", agentResult{}, err
 	}
-	user, err := renderPromptFile("agent_reasoning_extract_phase_a_user_message.tmpl", struct {
+	user, err := renderPromptFile("agent_reasoning_collect_findings_user_message.tmpl", struct {
 		ReasoningContent string
 	}{
 		ReasoningContent: reasoning,
@@ -979,7 +979,7 @@ func (e *Engine) runReasoningExtractPhaseA(ctx context.Context, reasoning, paren
 		return "", agentResult{}, err
 	}
 	result, err := e.runAgent(ctx, agentSpec{
-		name:       fmt.Sprintf("reasoning-extract:%s:turn-%d", parentName, turnIdx),
+		name:       fmt.Sprintf("reasoning-extract:%s:collect:turn-%d", parentName, turnIdx),
 		role:       "reasoning_extract",
 		system:     system,
 		user:       user,
@@ -989,12 +989,12 @@ func (e *Engine) runReasoningExtractPhaseA(ctx context.Context, reasoning, paren
 	return reasoningExtractOutput(result.contentMessages), result, err
 }
 
-func (e *Engine) runReasoningExtractPhaseB(ctx context.Context, combinedList, findingsJSON, parentName string, req model.ReviewRequest) (string, agentResult, error) {
-	system, err := renderPromptFile("agent_reasoning_extract_phase_b_system_prompt.tmpl", nil)
+func (e *Engine) runReasoningUpdateFindings(ctx context.Context, combinedList, findingsJSON, parentName string, req model.ReviewRequest) (string, agentResult, error) {
+	system, err := renderPromptFile("agent_reasoning_update_findings_system_prompt.tmpl", nil)
 	if err != nil {
 		return "", agentResult{}, err
 	}
-	user, err := renderPromptFile("agent_reasoning_extract_phase_b_user_message.tmpl", struct {
+	user, err := renderPromptFile("agent_reasoning_update_findings_user_message.tmpl", struct {
 		FullList     string
 		FindingsJSON string
 	}{
@@ -1005,7 +1005,7 @@ func (e *Engine) runReasoningExtractPhaseB(ctx context.Context, combinedList, fi
 		return "", agentResult{}, err
 	}
 	result, err := e.runAgent(ctx, agentSpec{
-		name:       fmt.Sprintf("reasoning-extract:%s:delta", parentName),
+		name:       fmt.Sprintf("reasoning-extract:%s:update", parentName),
 		role:       "reasoning_extract",
 		system:     system,
 		user:       user,
