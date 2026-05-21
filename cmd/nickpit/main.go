@@ -697,6 +697,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		a.logProgress("ModelCheck", modelCheckSummary(checkResult))
 	} else {
+		req.ModelEmitsReasoning = true
 		a.logProgress("ModelCheck", "skipped")
 	}
 
