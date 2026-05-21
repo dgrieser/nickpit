@@ -804,15 +804,14 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
 			launchPhaseA(agentName, iterIdx, reasoning)
 		}
+		defer waitPhaseA()
 	}
 
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
-		waitPhaseA()
 		return partialAgentResult(agent, req, loopResult), err
 	}
 	if loopResult.resp == nil {
-		waitPhaseA()
 		return partialAgentResult(agent, req, loopResult), fmt.Errorf("agent %s returned no response", agent.name)
 	}
 	totalFindings := append([]model.Finding(nil), loopResult.resp.Findings...)
@@ -912,7 +911,6 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		latest.Findings = totalFindings
 		latestResp = &latest
 		if nudgeErr != nil {
-			waitPhaseA()
 			run := model.AgentRun{
 				Name:                  agent.name,
 				Role:                  agent.role,
@@ -936,7 +934,6 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			}, nil
 		}
 	}
-	waitPhaseA()
 	return agentResult{
 		resp:               latestResp,
 		reasoningEffort:    latestReasoningEffort,
