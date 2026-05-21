@@ -27,6 +27,7 @@ type agentLoopRequest struct {
 	TopP                       *float64
 	ExtraBody                  map[string]any
 	ReasoningEffort            string
+	ReasoningSink              llm.ReasoningSink
 	RepoRoot                   string
 	MaxToolCalls               int
 	MaxDuplicateToolCalls      int
@@ -41,6 +42,7 @@ type agentLoopRequest struct {
 	NoToolsSchemaSnippet       string
 	JSONRetryExampleSnippet    string
 	JSONRetryProgressAgentName string
+	OnReasoningTrace           func(agentName string, iterIdx int, reasoning string)
 }
 
 type agentLoopResult struct {
@@ -88,6 +90,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		ExtraBody:               req.ExtraBody,
 		ParallelToolCalls:       req.ParallelToolCalls,
 		ReasoningEffort:         req.ReasoningEffort,
+		ReasoningSink:           req.ReasoningSink,
 		MaxReasoning:            time.Duration(req.MaxReasoningSeconds) * time.Second,
 		MaxReasoningLoopRepeats: req.MaxReasoningLoopRepeats,
 	}
@@ -114,7 +117,20 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			llmReq.Messages = append(append([]llm.Message(nil), messages...), *syntheticFollowup)
 		}
 
+		var perCallBuf *llm.BufferedReasoningSink
+		if req.OnReasoningTrace != nil {
+			perCallBuf = &llm.BufferedReasoningSink{}
+			llmReq.ReasoningSink = llm.TeeReasoningSinks(req.ReasoningSink, perCallBuf)
+		} else {
+			llmReq.ReasoningSink = req.ReasoningSink
+		}
+
 		resp, err := e.loggedReview(loopCtx, llmReq, req.Section)
+		if perCallBuf != nil && err == nil && resp != nil {
+			if trace := strings.TrimSpace(perCallBuf.String()); trace != "" {
+				req.OnReasoningTrace(req.AgentName, state.callNum, trace)
+			}
+		}
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
 			if errors.As(err, &invalidResp) && outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {

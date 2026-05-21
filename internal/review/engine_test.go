@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
@@ -366,6 +368,148 @@ func TestRunAgent_NudgeReviewerOnly(t *testing.T) {
 	}
 	if len(llmClient.reqs) != 1 {
 		t.Fatalf("llm calls = %d, want 1", len(llmClient.reqs))
+	}
+}
+
+func TestRunAgent_ReasoningExtractorAugmentsNudges(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	llmClient := &reasoningExtractLLM{
+		reviewerReasoning: []string{
+			"initial reasoning only",
+			"nudge one reasoning only",
+			"nudge two reasoning only",
+		},
+		phaseAOutputs: []string{
+			"phase-a-initial",
+		},
+		phaseBOutputs: []string{
+			"delta from initial",
+			"delta from nudge one",
+		},
+		firstPhaseAStarted: started,
+		releaseFirstPhaseA: release,
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	type runResult struct {
+		result agentResult
+		err    error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{
+			NudgeCount:          2,
+			ModelEmitsReasoning: true,
+		})
+		done <- runResult{result: result, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("phase A did not start")
+	}
+	time.Sleep(20 * time.Millisecond)
+	llmClient.mu.Lock()
+	reviewerCallsBeforeRelease := len(llmClient.reviewerMessages)
+	phaseBCallsBeforeRelease := len(llmClient.phaseBFullLists)
+	llmClient.mu.Unlock()
+	if reviewerCallsBeforeRelease != 1 {
+		t.Fatalf("reviewer calls before phase A release = %d, want 1", reviewerCallsBeforeRelease)
+	}
+	if phaseBCallsBeforeRelease != 0 {
+		t.Fatalf("phase B calls before phase A release = %d, want 0", phaseBCallsBeforeRelease)
+	}
+	close(release)
+
+	var got runResult
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAgent did not finish")
+	}
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+
+	llmClient.mu.Lock()
+	phaseAInputs := append([]string(nil), llmClient.phaseAInputs...)
+	phaseBFullLists := append([]string(nil), llmClient.phaseBFullLists...)
+	phaseBFindingsJSON := append([]string(nil), llmClient.phaseBFindingsJSON...)
+	reviewerMessages := append([]string(nil), llmClient.reviewerMessages...)
+	llmClient.mu.Unlock()
+
+	if want := []string{"initial reasoning only"}; !reflect.DeepEqual(phaseAInputs, want) {
+		t.Fatalf("phase A inputs = %#v, want %#v", phaseAInputs, want)
+	}
+	if want := []string{"phase-a-initial", "phase-a-initial"}; !reflect.DeepEqual(phaseBFullLists, want) {
+		t.Fatalf("phase B lists = %#v, want %#v", phaseBFullLists, want)
+	}
+	if len(phaseBFindingsJSON) != 2 || !strings.Contains(phaseBFindingsJSON[0], "Initial finding") || !strings.Contains(phaseBFindingsJSON[1], "Nudge 1 finding") {
+		t.Fatalf("phase B findings JSON = %#v", phaseBFindingsJSON)
+	}
+	if len(reviewerMessages) != 3 {
+		t.Fatalf("reviewer messages = %d, want 3", len(reviewerMessages))
+	}
+	if !strings.Contains(reviewerMessages[1], "delta from initial") {
+		t.Fatalf("first nudge missing reasoning delta: %q", reviewerMessages[1])
+	}
+	if !strings.Contains(reviewerMessages[2], "delta from nudge one") {
+		t.Fatalf("second nudge missing reasoning delta: %q", reviewerMessages[2])
+	}
+	if got.result.run.TokensUsed.TotalTokens == 0 {
+		t.Fatal("extractor token usage should be folded into reviewer run")
+	}
+}
+
+func TestRunAgent_PerIterPhaseAInsideInitialReviewer(t *testing.T) {
+	llmClient := &multiIterReasoningExtractLLM{
+		reviewerReasoning: []string{
+			"iter 1 reasoning",
+			"iter 2 reasoning",
+			"nudge reasoning must not extract",
+		},
+		phaseAOutputs: []string{"iter-1-list", "iter-2-list"},
+		phaseBOutputs: []string{"delta after nudge"},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("reviewer"), model.ReviewRequest{
+		NudgeCount:          1,
+		ModelEmitsReasoning: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	llmClient.mu.Lock()
+	phaseAInputs := append([]string(nil), llmClient.phaseAInputs...)
+	phaseBFullLists := append([]string(nil), llmClient.phaseBFullLists...)
+	reviewerCallNum := llmClient.reviewerCallNum
+	reviewerMessages := append([]string(nil), llmClient.reviewerMessages...)
+	llmClient.mu.Unlock()
+
+	sort.Strings(phaseAInputs)
+	if want := []string{"iter 1 reasoning", "iter 2 reasoning"}; !reflect.DeepEqual(phaseAInputs, want) {
+		t.Fatalf("phase A inputs = %#v, want %#v (nudge iter must not fire phase A)", phaseAInputs, want)
+	}
+	if len(phaseBFullLists) != 1 {
+		t.Fatalf("phase B calls = %d, want 1", len(phaseBFullLists))
+	}
+	gotLines := strings.Split(phaseBFullLists[0], "\n")
+	sort.Strings(gotLines)
+	if want := []string{"iter-1-list", "iter-2-list"}; !reflect.DeepEqual(gotLines, want) {
+		t.Fatalf("phase B combined list lines = %#v, want %#v", gotLines, want)
+	}
+	if reviewerCallNum != 3 {
+		t.Fatalf("reviewer LLM calls = %d, want 3 (iter1+iter2+nudge1)", reviewerCallNum)
+	}
+	if len(reviewerMessages) < 3 || !strings.Contains(reviewerMessages[2], "delta after nudge") {
+		t.Fatalf("nudge message missing phase B delta: %#v", reviewerMessages)
+	}
+	if result.run.TokensUsed.TotalTokens == 0 {
+		t.Fatal("extractor token usage should be folded into reviewer run")
 	}
 }
 
@@ -3173,6 +3317,165 @@ func (s *scriptedLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.Re
 	next := s.results[0]
 	s.results = s.results[1:]
 	return next.resp, next.err
+}
+
+type reasoningExtractLLM struct {
+	mu                     sync.Mutex
+	reviewerReasoning      []string
+	reviewerMessages       []string
+	phaseAInputs           []string
+	phaseAOutputs          []string
+	phaseBFullLists        []string
+	phaseBFindingsJSON     []string
+	phaseBOutputs          []string
+	firstPhaseAStarted     chan struct{}
+	releaseFirstPhaseA     chan struct{}
+	firstPhaseAStartedOnce sync.Once
+}
+
+func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	system := ""
+	if len(req.Messages) > 0 {
+		system = req.Messages[0].Content
+	}
+	user := lastUserContent(req.Messages)
+	switch {
+	case strings.Contains(system, "Read one reviewer reasoning trace"):
+		input := strings.TrimSpace(strings.TrimPrefix(user, "Reviewer reasoning trace:"))
+		s.mu.Lock()
+		idx := len(s.phaseAInputs)
+		s.phaseAInputs = append(s.phaseAInputs, input)
+		output := outputAt(s.phaseAOutputs, idx)
+		started := s.firstPhaseAStarted
+		release := s.releaseFirstPhaseA
+		s.mu.Unlock()
+		if idx == 0 && started != nil {
+			s.firstPhaseAStartedOnce.Do(func() { close(started) })
+		}
+		if idx == 0 && release != nil {
+			<-release
+		}
+		return textResponse(output, 1), nil
+	case strings.Contains(system, "Given a list of issues extracted from reviewer reasoning"):
+		fullList, findingsJSON := phaseBPayloadParts(user)
+		s.mu.Lock()
+		idx := len(s.phaseBFullLists)
+		s.phaseBFullLists = append(s.phaseBFullLists, fullList)
+		s.phaseBFindingsJSON = append(s.phaseBFindingsJSON, findingsJSON)
+		output := outputAt(s.phaseBOutputs, idx)
+		s.mu.Unlock()
+		return textResponse(output, 1), nil
+	default:
+		s.mu.Lock()
+		idx := len(s.reviewerMessages)
+		s.reviewerMessages = append(s.reviewerMessages, user)
+		reasoning := outputAt(s.reviewerReasoning, idx)
+		s.mu.Unlock()
+		if req.ReasoningSink != nil {
+			req.ReasoningSink.Append(reasoning)
+		}
+		title := "Initial finding"
+		if idx > 0 {
+			title = fmt.Sprintf("Nudge %d finding", idx)
+		}
+		resp := nudgeReviewResponse(title, 10, nudgeFinding(title, idx+1))
+		resp.Reasoned = true
+		return resp, nil
+	}
+}
+
+type multiIterReasoningExtractLLM struct {
+	mu                sync.Mutex
+	reviewerCallNum   int
+	reviewerMessages  []string
+	reviewerReasoning []string
+	phaseAInputs      []string
+	phaseAOutputs     []string
+	phaseBFullLists   []string
+	phaseBOutputs     []string
+}
+
+func (s *multiIterReasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	system := ""
+	if len(req.Messages) > 0 {
+		system = req.Messages[0].Content
+	}
+	user := lastUserContent(req.Messages)
+	switch {
+	case strings.Contains(system, "Read one reviewer reasoning trace"):
+		input := strings.TrimSpace(strings.TrimPrefix(user, "Reviewer reasoning trace:"))
+		s.mu.Lock()
+		idx := len(s.phaseAInputs)
+		s.phaseAInputs = append(s.phaseAInputs, input)
+		output := outputAt(s.phaseAOutputs, idx)
+		s.mu.Unlock()
+		return textResponse(output, 1), nil
+	case strings.Contains(system, "Given a list of issues extracted from reviewer reasoning"):
+		fullList, _ := phaseBPayloadParts(user)
+		s.mu.Lock()
+		idx := len(s.phaseBFullLists)
+		s.phaseBFullLists = append(s.phaseBFullLists, fullList)
+		output := outputAt(s.phaseBOutputs, idx)
+		s.mu.Unlock()
+		return textResponse(output, 1), nil
+	default:
+		s.mu.Lock()
+		idx := s.reviewerCallNum
+		s.reviewerCallNum++
+		s.reviewerMessages = append(s.reviewerMessages, user)
+		reasoning := outputAt(s.reviewerReasoning, idx)
+		s.mu.Unlock()
+		if req.ReasoningSink != nil {
+			req.ReasoningSink.Append(reasoning)
+		}
+		if idx == 0 {
+			return &llm.ReviewResponse{
+				RawResponse: "tool-call-iter-1",
+				ToolCalls: []llm.ToolCall{{
+					ID:        "iter1",
+					Name:      "inspect_file",
+					Arguments: `{"path":"main.go"}`,
+				}},
+				Reasoned:   true,
+				TokensUsed: model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 1},
+			}, nil
+		}
+		title := fmt.Sprintf("Finding %d", idx)
+		resp := nudgeReviewResponse(title, 10, nudgeFinding(title, idx+1))
+		resp.Reasoned = true
+		return resp, nil
+	}
+}
+
+func textResponse(content string, tokens int) *llm.ReviewResponse {
+	return &llm.ReviewResponse{
+		RawResponse: content,
+		TokensUsed:  model.TokenUsage{PromptTokens: tokens, CompletionTokens: tokens, TotalTokens: tokens},
+	}
+}
+
+func outputAt(values []string, idx int) string {
+	if idx < len(values) {
+		return values[idx]
+	}
+	return "NONE"
+}
+
+func lastUserContent(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+func phaseBPayloadParts(content string) (string, string) {
+	const listStart = "Extracted issue list:"
+	const findingsStart = "Current findings JSON:"
+	_, rest, _ := strings.Cut(content, listStart)
+	list, findings, _ := strings.Cut(rest, findingsStart)
+	return strings.TrimSpace(list), strings.TrimSpace(findings)
 }
 
 func TestEngineRetriesOnInvalidJSONResponse(t *testing.T) {

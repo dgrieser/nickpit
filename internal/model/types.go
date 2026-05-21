@@ -45,6 +45,8 @@ type ReviewRequest struct {
 	MaxReasoningLoopRepeats  int
 	NudgeCount               int
 	DisableParallelToolCalls bool
+	DisableReasoningExtract  bool
+	ModelEmitsReasoning      bool
 	UseJSONSchema            bool
 	PriorityThreshold        string
 	Offline                  bool

@@ -738,6 +738,75 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			return noToolsMessagesFromRendered(noToolsSystem, messages)
 		},
 	}
+	extractEnabled := agent.role == "reviewer" && req.NudgeCount > 0 && !req.DisableReasoningExtract && req.ModelEmitsReasoning
+	var (
+		extractMu           sync.Mutex
+		phaseAWG            sync.WaitGroup
+		phaseALists         []string
+		extractorTokens     model.TokenUsage
+		extractorToolCalls  int
+		extractorDuplicates int
+	)
+	addExtractorRun := func(run model.AgentRun) {
+		extractMu.Lock()
+		defer extractMu.Unlock()
+		extractorTokens = addTokenUsage(extractorTokens, run.TokensUsed)
+		extractorToolCalls += run.ToolCalls
+		extractorDuplicates += run.DuplicateToolCalls
+	}
+	extractorTotals := func() (model.TokenUsage, int, int) {
+		extractMu.Lock()
+		defer extractMu.Unlock()
+		return extractorTokens, extractorToolCalls, extractorDuplicates
+	}
+	totalTokensWithExtractors := func(base model.TokenUsage) model.TokenUsage {
+		tokens, _, _ := extractorTotals()
+		return addTokenUsage(base, tokens)
+	}
+	totalToolCallsWithExtractors := func(base int) int {
+		_, toolCalls, _ := extractorTotals()
+		return base + toolCalls
+	}
+	totalDuplicatesWithExtractors := func(base int) int {
+		_, _, duplicates := extractorTotals()
+		return base + duplicates
+	}
+	combinedPhaseAList := func() string {
+		extractMu.Lock()
+		defer extractMu.Unlock()
+		return strings.TrimSpace(strings.Join(phaseALists, "\n"))
+	}
+	waitPhaseA := func() {
+		phaseAWG.Wait()
+	}
+	launchPhaseA := func(agentName string, iterIdx int, reasoning string) {
+		if strings.TrimSpace(reasoning) == "" {
+			return
+		}
+		phaseAWG.Add(1)
+		go func() {
+			defer phaseAWG.Done()
+			list, result, err := e.runReasoningExtractPhaseA(ctx, reasoning, agentName, iterIdx, req)
+			addExtractorRun(result.run)
+			if err != nil {
+				e.logf("Reasoning extract phase A failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
+				return
+			}
+			if strings.TrimSpace(list) == "" {
+				return
+			}
+			extractMu.Lock()
+			phaseALists = append(phaseALists, list)
+			extractMu.Unlock()
+		}()
+	}
+	if extractEnabled {
+		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
+			launchPhaseA(agentName, iterIdx, reasoning)
+		}
+		defer waitPhaseA()
+	}
+
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
 		return partialAgentResult(agent, req, loopResult), err
@@ -757,16 +826,6 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	toolCallHistory := append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
 
 	if agent.role == "reviewer" && req.NudgeCount > 0 {
-		nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
-			HasResponseFormat bool
-			QuestionsSnippet  string
-		}{
-			HasResponseFormat: agent.schemaKind != llm.SchemaKindText,
-			QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
-		})
-		if err != nil {
-			return agentResult{}, err
-		}
 		// One shared agentLoopState across all nudge rounds: tool-call, duplicate,
 		// and JSON-retry budgets are pooled for the entire nudge phase rather than
 		// reset per round. Intentional — prevents a chatty model from multiplying
@@ -779,10 +838,48 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		// via the sub.reasoningEffort update below.
 		nudgeReasoningEffort := e.config.ReasoningEffort
 		var nudgeErr error
+		// Phase B inputs: combinedPhaseAList (frozen after initial run) +
+		// totalFindings (append-only via appendNewFindings). Cache the delta
+		// keyed by len(totalFindings); recompute only when findings grew.
+		cachedPhaseBDelta := ""
+		cachedPhaseBFindingsLen := -1
 		for i := 0; i < req.NudgeCount; i++ {
 			nudgeName := fmt.Sprintf("%s - Nudge %d/%d", agent.name, i+1, req.NudgeCount)
 			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: nudgeName})
 			e.logfCtx(nudgeCtx, "Nudge round: round=%d/%d", i+1, req.NudgeCount)
+			waitPhaseA()
+			reasoningFindings := ""
+			if combined := combinedPhaseAList(); combined != "" {
+				if cachedPhaseBFindingsLen == len(totalFindings) {
+					reasoningFindings = cachedPhaseBDelta
+				} else {
+					findingsJSON, err := reasoningFindingsJSON(totalFindings)
+					if err != nil {
+						return agentResult{}, err
+					}
+					delta, result, err := e.runReasoningExtractPhaseB(nudgeCtx, combined, findingsJSON, agent.name, req)
+					addExtractorRun(result.run)
+					if err != nil {
+						e.logfCtx(nudgeCtx, "Reasoning extract phase B failed, using standard nudge: round=%d/%d error=%v", i+1, req.NudgeCount, err)
+					} else {
+						reasoningFindings = delta
+						cachedPhaseBDelta = delta
+						cachedPhaseBFindingsLen = len(totalFindings)
+					}
+				}
+			}
+			nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
+				HasResponseFormat bool
+				QuestionsSnippet  string
+				ReasoningFindings string
+			}{
+				HasResponseFormat: agent.schemaKind != llm.SchemaKindText,
+				QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
+				ReasoningFindings: reasoningFindings,
+			})
+			if err != nil {
+				return agentResult{}, err
+			}
 			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
 			nudgeReq := loopReq
 			nudgeReq.AgentName = nudgeName
@@ -790,6 +887,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			nudgeReq.Messages = nudged
 			nudgeReq.ReasoningEffort = nudgeReasoningEffort
 			nudgeReq.State = nudgeState
+			nudgeReq.OnReasoningTrace = nil
 			sub, err := e.runAgentLoop(nudgeCtx, nudgeReq)
 			if err != nil {
 				nudgeErr = fmt.Errorf("nudge %d: %w", i+1, err)
@@ -830,9 +928,9 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 				Findings:              len(latestResp.Findings),
 				MaxToolCalls:          req.MaxToolCalls,
 				MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
-				ToolCalls:             totalToolCalls,
-				DuplicateToolCalls:    totalDuplicates,
-				TokensUsed:            totalTokens,
+				ToolCalls:             totalToolCallsWithExtractors(totalToolCalls),
+				DuplicateToolCalls:    totalDuplicatesWithExtractors(totalDuplicates),
+				TokensUsed:            totalTokensWithExtractors(totalTokens),
 				Status:                model.AgentRunStatusPartial,
 				Error:                 nudgeErr.Error(),
 			}
@@ -842,7 +940,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 				contentMessages:    contentMessages,
 				toolMessages:       toolMessages,
 				toolCallHistory:    toolCallHistory,
-				duplicateToolCalls: totalDuplicates,
+				duplicateToolCalls: totalDuplicatesWithExtractors(totalDuplicates),
 				run:                run,
 			}, nil
 		}
@@ -853,18 +951,90 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		contentMessages:    contentMessages,
 		toolMessages:       toolMessages,
 		toolCallHistory:    toolCallHistory,
-		duplicateToolCalls: totalDuplicates,
+		duplicateToolCalls: totalDuplicatesWithExtractors(totalDuplicates),
 		run: model.AgentRun{
 			Name:                  agent.name,
 			Role:                  agent.role,
 			Findings:              len(latestResp.Findings),
 			MaxToolCalls:          req.MaxToolCalls,
 			MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
-			ToolCalls:             totalToolCalls,
-			DuplicateToolCalls:    totalDuplicates,
-			TokensUsed:            totalTokens,
+			ToolCalls:             totalToolCallsWithExtractors(totalToolCalls),
+			DuplicateToolCalls:    totalDuplicatesWithExtractors(totalDuplicates),
+			TokensUsed:            totalTokensWithExtractors(totalTokens),
 		},
 	}, nil
+}
+
+func (e *Engine) runReasoningExtractPhaseA(ctx context.Context, reasoning, parentName string, turnIdx int, req model.ReviewRequest) (string, agentResult, error) {
+	system, err := renderPromptFile("agent_reasoning_extract_phase_a_system_prompt.tmpl", nil)
+	if err != nil {
+		return "", agentResult{}, err
+	}
+	user, err := renderPromptFile("agent_reasoning_extract_phase_a_user_message.tmpl", struct {
+		ReasoningContent string
+	}{
+		ReasoningContent: reasoning,
+	})
+	if err != nil {
+		return "", agentResult{}, err
+	}
+	result, err := e.runAgent(ctx, agentSpec{
+		name:       fmt.Sprintf("reasoning-extract:%s:turn-%d", parentName, turnIdx),
+		role:       "reasoning_extract",
+		system:     system,
+		user:       user,
+		schemaKind: llm.SchemaKindText,
+		hasTools:   false,
+	}, reasoningExtractRequest(req))
+	return reasoningExtractOutput(result.contentMessages), result, err
+}
+
+func (e *Engine) runReasoningExtractPhaseB(ctx context.Context, combinedList, findingsJSON, parentName string, req model.ReviewRequest) (string, agentResult, error) {
+	system, err := renderPromptFile("agent_reasoning_extract_phase_b_system_prompt.tmpl", nil)
+	if err != nil {
+		return "", agentResult{}, err
+	}
+	user, err := renderPromptFile("agent_reasoning_extract_phase_b_user_message.tmpl", struct {
+		FullList     string
+		FindingsJSON string
+	}{
+		FullList:     combinedList,
+		FindingsJSON: findingsJSON,
+	})
+	if err != nil {
+		return "", agentResult{}, err
+	}
+	result, err := e.runAgent(ctx, agentSpec{
+		name:       fmt.Sprintf("reasoning-extract:%s:delta", parentName),
+		role:       "reasoning_extract",
+		system:     system,
+		user:       user,
+		schemaKind: llm.SchemaKindText,
+		hasTools:   false,
+	}, reasoningExtractRequest(req))
+	return reasoningExtractOutput(result.contentMessages), result, err
+}
+
+func reasoningExtractRequest(req model.ReviewRequest) model.ReviewRequest {
+	req.NudgeCount = 0
+	req.DisableReasoningExtract = true
+	return req
+}
+
+func reasoningExtractOutput(messages []string) string {
+	out := strings.TrimSpace(strings.Join(messages, "\n"))
+	if strings.EqualFold(out, "NONE") {
+		return ""
+	}
+	return out
+}
+
+func reasoningFindingsJSON(findings []model.Finding) (string, error) {
+	return llm.RenderJSON(struct {
+		Findings []model.Finding `json:"findings"`
+	}{
+		Findings: findings,
+	})
 }
 
 func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
@@ -2289,7 +2459,7 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 	}
 	previousSink := req.ReasoningSink
 	callSec := e.openReviewRequestReasoningSection(label, callNum)
-	req.ReasoningSink = callSec
+	req.ReasoningSink = llm.TeeReasoningSinks(callSec, previousSink)
 	defer func() {
 		req.ReasoningSink = previousSink
 		callSec.End()
