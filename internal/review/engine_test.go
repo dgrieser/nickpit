@@ -471,7 +471,7 @@ func TestRunAgent_PerIterCollectInsideInitialReviewer(t *testing.T) {
 			"nudge reasoning must not extract",
 		},
 		collectOutputs: []string{"iter-1-list", "iter-2-list"},
-		updateOutputs: []string{"delta after nudge"},
+		updateOutputs:  []string{"delta after nudge"},
 	}
 	engine := nudgeTestEngine(llmClient)
 
@@ -3320,14 +3320,14 @@ func (s *scriptedLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.Re
 }
 
 type reasoningExtractLLM struct {
-	mu                     sync.Mutex
-	reviewerReasoning      []string
-	reviewerMessages       []string
+	mu                      sync.Mutex
+	reviewerReasoning       []string
+	reviewerMessages        []string
 	collectInputs           []string
 	collectOutputs          []string
-	updateFullLists        []string
-	updateFindingsJSON     []string
-	updateOutputs          []string
+	updateFullLists         []string
+	updateFindingsJSON      []string
+	updateOutputs           []string
 	firstCollectStarted     chan struct{}
 	releaseFirstCollect     chan struct{}
 	firstCollectStartedOnce sync.Once
@@ -3340,8 +3340,8 @@ func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) 
 	}
 	user := lastUserContent(req.Messages)
 	switch {
-	case strings.Contains(system, "Read one reviewer reasoning trace"):
-		input := strings.TrimSpace(strings.TrimPrefix(user, "Reviewer reasoning trace:"))
+	case isReasoningCollectPrompt(system):
+		input := collectPayloadReasoning(user)
 		s.mu.Lock()
 		idx := len(s.collectInputs)
 		s.collectInputs = append(s.collectInputs, input)
@@ -3356,7 +3356,7 @@ func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) 
 			<-release
 		}
 		return textResponse(output, 1), nil
-	case strings.Contains(system, "Given a list of issues extracted from reviewer reasoning"):
+	case isReasoningUpdatePrompt(system):
 		fullList, findingsJSON := updatePayloadParts(user)
 		s.mu.Lock()
 		idx := len(s.updateFullLists)
@@ -3389,8 +3389,8 @@ type multiIterReasoningExtractLLM struct {
 	reviewerCallNum   int
 	reviewerMessages  []string
 	reviewerReasoning []string
-	collectInputs      []string
-	collectOutputs     []string
+	collectInputs     []string
+	collectOutputs    []string
 	updateFullLists   []string
 	updateOutputs     []string
 }
@@ -3402,15 +3402,15 @@ func (s *multiIterReasoningExtractLLM) Review(_ context.Context, req *llm.Review
 	}
 	user := lastUserContent(req.Messages)
 	switch {
-	case strings.Contains(system, "Read one reviewer reasoning trace"):
-		input := strings.TrimSpace(strings.TrimPrefix(user, "Reviewer reasoning trace:"))
+	case isReasoningCollectPrompt(system):
+		input := collectPayloadReasoning(user)
 		s.mu.Lock()
 		idx := len(s.collectInputs)
 		s.collectInputs = append(s.collectInputs, input)
 		output := outputAt(s.collectOutputs, idx)
 		s.mu.Unlock()
 		return textResponse(output, 1), nil
-	case strings.Contains(system, "Given a list of issues extracted from reviewer reasoning"):
+	case isReasoningUpdatePrompt(system):
 		fullList, _ := updatePayloadParts(user)
 		s.mu.Lock()
 		idx := len(s.updateFullLists)
@@ -3470,9 +3470,29 @@ func lastUserContent(messages []llm.Message) string {
 	return ""
 }
 
+func isReasoningCollectPrompt(system string) bool {
+	return strings.Contains(system, "extracting possible findings in the notes")
+}
+
+func isReasoningUpdatePrompt(system string) bool {
+	return strings.Contains(system, "making sure that all findings noted by one engineer")
+}
+
+func collectPayloadReasoning(content string) string {
+	const notesStart = "Notes made by an engineer while doing a thorough code review:"
+	if _, rest, ok := strings.Cut(content, notesStart); ok {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(strings.TrimPrefix(content, "Reviewer reasoning trace:"))
+}
+
 func updatePayloadParts(content string) (string, string) {
-	const listStart = "Extracted issue list:"
-	const findingsStart = "Current findings JSON:"
+	listStart := "List of findings noted down by one engineer:"
+	findingsStart := "JSON with the findings of a code review done by another engineer:"
+	if !strings.Contains(content, listStart) || !strings.Contains(content, findingsStart) {
+		listStart = "Extracted issue list:"
+		findingsStart = "Current findings JSON:"
+	}
 	_, rest, _ := strings.Cut(content, listStart)
 	list, findings, _ := strings.Cut(rest, findingsStart)
 	return strings.TrimSpace(list), strings.TrimSpace(findings)
