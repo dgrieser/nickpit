@@ -107,3 +107,53 @@ func TestSuggestionUnmarshalAcceptsObject(t *testing.T) {
 		t.Fatalf("suggestion = %+v, want %+v", got, want)
 	}
 }
+
+func TestFindingVerificationMergeFromKeyAware(t *testing.T) {
+	dst := FindingVerification{
+		ID:              "id-1",
+		Valid:           true,
+		Priority:        2,
+		ConfidenceScore: 0.9,
+		Remarks:         "first",
+	}
+	src := FindingVerification{
+		ID:              "id-2",
+		Valid:           false,
+		Priority:        0,
+		ConfidenceScore: 0.0,
+		Remarks:         "second",
+	}
+	keys := map[string]bool{"valid": true, "priority": true, "confidence_score": true}
+	claimed, err := dst.MergeFrom(&src, keys)
+	if err != nil {
+		t.Fatalf("MergeFrom: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("expected claimed=true")
+	}
+	want := FindingVerification{
+		ID:              "id-1", // not in keys → preserved
+		Valid:           false,  // in keys → overwritten with src zero value
+		Priority:        0,      // in keys → overwritten with src zero value
+		ConfidenceScore: 0.0,    // in keys → overwritten with src zero value
+		Remarks:         "first", // not in keys → preserved
+	}
+	if dst != want {
+		t.Fatalf("dst = %+v, want %+v", dst, want)
+	}
+}
+
+func TestFindingVerificationMergeFromNoKeysReturnsUnclaimed(t *testing.T) {
+	dst := FindingVerification{ID: "keep"}
+	src := FindingVerification{ID: "discard"}
+	claimed, err := dst.MergeFrom(&src, map[string]bool{})
+	if err != nil {
+		t.Fatalf("MergeFrom: %v", err)
+	}
+	if claimed {
+		t.Fatalf("expected claimed=false for empty keys")
+	}
+	if dst.ID != "keep" {
+		t.Fatalf("dst mutated: %+v", dst)
+	}
+}

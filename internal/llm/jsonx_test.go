@@ -297,6 +297,88 @@ func TestLenientUnmarshalMergeFallbackTypeAppendsSlice(t *testing.T) {
 	}
 }
 
+type mergeableRecorder struct {
+	Sum         int              `json:"sum"`
+	Tag         string           `json:"tag"`
+	Calls       int              `json:"-"`
+	SeenKeysAll []map[string]bool `json:"-"`
+}
+
+func (m *mergeableRecorder) MergeFrom(other any, presentKeys map[string]bool) (bool, error) {
+	src := other.(*mergeableRecorder)
+	m.Calls++
+	keysCopy := make(map[string]bool, len(presentKeys))
+	for k, v := range presentKeys {
+		keysCopy[k] = v
+	}
+	m.SeenKeysAll = append(m.SeenKeysAll, keysCopy)
+	claimed := false
+	if presentKeys["sum"] {
+		m.Sum += src.Sum
+		claimed = true
+	}
+	if presentKeys["tag"] {
+		m.Tag = src.Tag
+		claimed = true
+	}
+	return claimed, nil
+}
+
+func TestLenientUnmarshalMergePrefersMergeableOverReflect(t *testing.T) {
+	var got mergeableRecorder
+	content := `{"sum":3,"tag":"a"}` + "\n" + `{"sum":4,"tag":"b"}`
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got.Calls != 2 {
+		t.Fatalf("Calls = %d, want 2", got.Calls)
+	}
+	if got.Sum != 7 {
+		t.Fatalf("Sum = %d, want 7 (Mergeable sums; reflect would last-non-zero-win to 4)", got.Sum)
+	}
+	if got.Tag != "b" {
+		t.Fatalf("Tag = %q, want b", got.Tag)
+	}
+}
+
+func TestLenientUnmarshalMergeMergeableReceivesPresentKeys(t *testing.T) {
+	var got mergeableRecorder
+	content := `{"sum":3}` + "\n" + `{"tag":"x"}`
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(got.SeenKeysAll) != 2 {
+		t.Fatalf("SeenKeysAll = %v", got.SeenKeysAll)
+	}
+	if !got.SeenKeysAll[0]["sum"] || got.SeenKeysAll[0]["tag"] {
+		t.Fatalf("first call keys = %v", got.SeenKeysAll[0])
+	}
+	if got.SeenKeysAll[1]["sum"] || !got.SeenKeysAll[1]["tag"] {
+		t.Fatalf("second call keys = %v", got.SeenKeysAll[1])
+	}
+}
+
+func TestLenientUnmarshalMergeMergeableNotClaimedFallsThroughToFallbacks(t *testing.T) {
+	fb := FallbackType{
+		NewInstance: func() any { return new(mergeableRecorder) },
+		Attach: func(into, parsed any) bool {
+			rr := into.(*mergeableRecorder)
+			rr.Tag = "from-fallback"
+			return true
+		},
+	}
+	var got mergeableRecorder
+	// Second candidate has no keys that mergeableRecorder claims; MergeFrom
+	// returns (false, nil) → fallback runs.
+	content := `{"sum":3,"tag":"first"}` + "\n" + `{"unrelated":99}`
+	if err := LenientUnmarshalMerge(content, &got, fb); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got.Tag != "from-fallback" {
+		t.Fatalf("Tag = %q, want fallback to claim", got.Tag)
+	}
+}
+
 func TestLenientUnmarshalMergeFallbackReturnsFalseFallsThrough(t *testing.T) {
 	type container struct {
 		Items []mergeNested `json:"items"`

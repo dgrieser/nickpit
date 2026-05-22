@@ -50,6 +50,25 @@ func LenientUnmarshal(content string, v any) error {
 	return json.Unmarshal([]byte(trimmed), v)
 }
 
+// Mergeable lets a target type define its own merge semantics for
+// LenientUnmarshalMerge. When the target's pointer implements this
+// interface, the merger calls MergeFrom for each successfully parsed
+// candidate instead of using the generic reflection-based merge.
+//
+// other is a *T pointing at the freshly-decoded candidate (same concrete
+// type as the accumulator). presentKeys is the set of top-level JSON keys
+// the candidate actually emitted — types should use it to distinguish
+// "field omitted" from "field set to its zero value". When the candidate
+// is a top-level JSON array (not an object), presentKeys is empty.
+//
+// Return value: claimed=true when the candidate contributed at least one
+// field to the accumulator. claimed=false signals "no relevant keys" so
+// LenientUnmarshalMerge falls through to its FallbackType list. err is
+// returned to the caller of LenientUnmarshalMerge unchanged.
+type Mergeable interface {
+	MergeFrom(other any, presentKeys map[string]bool) (claimed bool, err error)
+}
+
 // FallbackType lets a caller of LenientUnmarshalMerge declare additional
 // shapes to try when a JSON candidate parses successfully into *v but yields
 // the zero value (i.e. no fields overlapped), or fails to parse into *v at
@@ -105,12 +124,25 @@ func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) err
 	zeroVal := reflect.New(elemType).Elem().Interface()
 	merged := false
 
+	_, isMergeable := accumulator.Interface().(Mergeable)
 	for _, extracted := range candidates {
 		parsed, ok := tryParseCandidate(extracted, elemType)
-		if ok && !reflect.DeepEqual(parsed.Elem().Interface(), zeroVal) {
-			mergeJSONValue(accumulator.Elem(), parsed.Elem())
-			merged = true
-			continue
+		if ok {
+			if isMergeable {
+				keys := topLevelJSONKeys(extracted)
+				claimed, err := accumulator.Interface().(Mergeable).MergeFrom(parsed.Interface(), keys)
+				if err != nil {
+					return err
+				}
+				if claimed {
+					merged = true
+					continue
+				}
+			} else if !reflect.DeepEqual(parsed.Elem().Interface(), zeroVal) {
+				mergeJSONValue(accumulator.Elem(), parsed.Elem())
+				merged = true
+				continue
+			}
 		}
 		for _, fb := range fallbacks {
 			fbParsed, ok := tryParseFallback(extracted, fb.NewInstance)
@@ -129,6 +161,21 @@ func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) err
 		return nil
 	}
 	return LenientUnmarshal(content, v)
+}
+
+// topLevelJSONKeys returns the set of top-level keys present in a JSON
+// object candidate. For arrays or non-object candidates the returned map
+// is empty (and non-nil so callers can index it without nil checks).
+func topLevelJSONKeys(extracted string) map[string]bool {
+	keys := make(map[string]bool)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(extracted), &raw); err != nil {
+		return keys
+	}
+	for k := range raw {
+		keys[k] = true
+	}
+	return keys
 }
 
 func tryParseCandidate(extracted string, elemType reflect.Type) (reflect.Value, bool) {

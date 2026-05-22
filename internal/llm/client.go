@@ -1853,6 +1853,43 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 	return &parsed, overwrittenIDs, nil
 }
 
+// MergeFrom implements jsonx.Mergeable for ReviewResponse. Multi-block
+// LLM outputs are merged by appending findings and overwriting overall_*
+// fields only when the candidate emitted them. Wrapper-set fields
+// (tool_calls, tokens_used, raw_response, reasoning_effort, Reasoned,
+// ToolsOmitted) are populated by the llm package after parsing — never by
+// the model — so they are intentionally skipped here.
+func (r *ReviewResponse) MergeFrom(other any, presentKeys map[string]bool) (bool, error) {
+	src, ok := other.(*ReviewResponse)
+	if !ok || src == nil {
+		return false, nil
+	}
+	claimed := false
+	if presentKeys["findings"] {
+		if len(src.Findings) > 0 {
+			r.Findings = append(r.Findings, src.Findings...)
+		}
+		claimed = true
+	}
+	if presentKeys["overall_correctness"] {
+		r.OverallCorrectness = src.OverallCorrectness
+		claimed = true
+	}
+	if presentKeys["overall_explanation"] {
+		r.OverallExplanation = src.OverallExplanation
+		claimed = true
+	}
+	if presentKeys["overall_confidence_score"] {
+		r.OverallConfidenceScore = src.OverallConfidenceScore
+		claimed = true
+	}
+	if presentKeys["verification"] {
+		r.Verification = src.Verification
+		claimed = true
+	}
+	return claimed, nil
+}
+
 // reviewResponseFallbackTypes returns the fallback shapes used when the LLM
 // emits inner snippets next to a full ReviewResponse: a bare findings array,
 // a bare Finding object, or a bare Suggestion. Fallback order matters — a
@@ -1920,7 +1957,7 @@ func normalizeFindingSuggestions(findings []model.Finding) {
 
 func parseVerifyResponse(content string) (*ReviewResponse, error) {
 	var verification model.FindingVerification
-	if err := LenientUnmarshal(content, &verification); err != nil {
+	if err := LenientUnmarshalMerge(content, &verification); err != nil {
 		return nil, &InvalidResponseError{
 			RawContent: content,
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
@@ -1943,9 +1980,35 @@ func parseVerifyResponse(content string) (*ReviewResponse, error) {
 	return &ReviewResponse{Verification: &verification}, nil
 }
 
+// mergedRawVerifyBlocks reconstructs the merged raw view of a verify
+// response: top-level keys are unioned across all JSON candidates with
+// last-wins on collisions. Mirrors what FindingVerification.MergeFrom
+// does at the parsed level so missing-field validation reflects the
+// merged view of the input.
+func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
+	top := make(map[string]json.RawMessage)
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return top
+	}
+	candidates := extractJSONCandidates(trimmed)
+	if len(candidates) == 0 {
+		candidates = []string{StripCodeFences(trimmed)}
+	}
+	for _, c := range candidates {
+		var asMap map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(c), &asMap); err != nil {
+			continue
+		}
+		for k, val := range asMap {
+			top[k] = val
+		}
+	}
+	return top
+}
+
 func missingVerifyFields(content string) []string {
-	var raw map[string]json.RawMessage
-	_ = LenientUnmarshal(content, &raw)
+	raw := mergedRawVerifyBlocks(content)
 	var missing []string
 	for _, field := range []string{"id", "valid", "priority", "confidence_score", "remarks"} {
 		if _, ok := raw[field]; !ok {
