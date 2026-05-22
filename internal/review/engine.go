@@ -875,7 +875,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			}{
 				HasResponseFormat: agent.schemaKind != llm.SchemaKindText,
 				QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
-				ReasoningFindings: reasoningFindings,
+				ReasoningFindings: formatReasoningFindingsList(reasoningFindings),
 			})
 			if err != nil {
 				return agentResult{}, err
@@ -1027,6 +1027,23 @@ func reasoningExtractOutput(messages []string) string {
 		return ""
 	}
 	return out
+}
+
+func formatReasoningFindingsList(findings string) string {
+	lines := strings.Split(findings, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			out = append(out, line)
+			continue
+		}
+		out = append(out, "- "+line)
+	}
+	return strings.Join(out, "\n")
 }
 
 func reasoningFindingsJSON(findings []model.Finding) (string, error) {

@@ -561,6 +561,14 @@ func TestAppendNewFindingsDuplicateKeys(t *testing.T) {
 	}
 }
 
+func TestFormatReasoningFindingsList(t *testing.T) {
+	got := formatReasoningFindingsList("first possible issue\n\n- already listed\n  second possible issue  ")
+	want := "- first possible issue\n- already listed\n- second possible issue"
+	if got != want {
+		t.Fatalf("formatted findings = %q, want %q", got, want)
+	}
+}
+
 func nudgeTestEngine(llmClient llm.Client) *Engine {
 	return &Engine{
 		llm:       llmClient,
