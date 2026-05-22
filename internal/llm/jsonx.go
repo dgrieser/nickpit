@@ -31,8 +31,7 @@ func LenientUnmarshal(content string, v any) error {
 		}
 	}
 
-	extracted, ok := ExtractJSONObject(stripped)
-	if ok {
+	for _, extracted := range extractJSONCandidates(stripped) {
 		if err := json.Unmarshal([]byte(extracted), v); err == nil {
 			return nil
 		}
@@ -90,6 +89,14 @@ func isLanguageTag(s string) bool {
 // subsequent candidates are tried. Returns false if no balanced object or
 // array is found.
 func ExtractJSONObject(content string) (string, bool) {
+	for _, extracted := range extractJSONCandidates(content) {
+		return extracted, true
+	}
+	return "", false
+}
+
+func extractJSONCandidates(content string) []string {
+	var candidates []string
 	for pos := 0; pos < len(content); pos++ {
 		c := content[pos]
 		if c != '{' && c != '[' {
@@ -101,14 +108,15 @@ func ExtractJSONObject(content string) (string, bool) {
 		} else {
 			close = ']'
 		}
-		if extracted, ok := scanBalanced(content, pos, c, close); ok {
-			return extracted, true
+		if extracted, end, ok := scanBalanced(content, pos, c, close); ok {
+			candidates = append(candidates, extracted)
+			pos = end
 		}
 	}
-	return "", false
+	return candidates
 }
 
-func scanBalanced(content string, start int, open, close byte) (string, bool) {
+func scanBalanced(content string, start int, open, close byte) (string, int, bool) {
 	depth := 0
 	inString := false
 	escape := false
@@ -136,11 +144,11 @@ func scanBalanced(content string, start int, open, close byte) (string, bool) {
 		case close:
 			depth--
 			if depth == 0 {
-				return content[start : i+1], true
+				return content[start : i+1], i, true
 			}
 		}
 	}
-	return "", false
+	return "", 0, false
 }
 
 // RepairJSON applies best-effort fixes to common malformations produced by

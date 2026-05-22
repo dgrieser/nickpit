@@ -133,6 +133,21 @@ func TestLenientUnmarshal(t *testing.T) {
 			`Sure! Here is the configuration { as requested: {"a":1,"b":"hi","c":{"k":"v"}}`,
 			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
 		},
+		{
+			"markdown heading and bracketed prose before json",
+			"# Review\n\n[P1] Finding summary\n\n```json\n{\"a\":1,\"b\":\"hi\",\"c\":{\"k\":\"v\"}}\n```\n\nDone.",
+			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
+		},
+		{
+			"fenced markdown before json",
+			"```markdown\n[P1] Finding summary\n\n{\"a\":1,\"b\":\"hi\",\"c\":{\"k\":\"v\"}}\n```",
+			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
+		},
+		{
+			"priority label before json",
+			"[P1] Finding summary\n\n{\"a\":1,\"b\":\"hi\",\"c\":{\"k\":\"v\"}}",
+			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -95,6 +95,22 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 	}
 }
 
+func TestParseVerifyResponseSkipsMarkdownBeforeJSON(t *testing.T) {
+	content := "# Verify Findings\n\n[P1] Finding summary\n\n```json\n" +
+		`{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 1, "confidence_score": 0.91, "remarks": "confirmed"}` +
+		"\n```\n"
+	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if resp.Verification == nil {
+		t.Fatalf("verification nil")
+	}
+	if resp.Verification.ID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("id = %q", resp.Verification.ID)
+	}
+}
+
 func TestParseVerifyResponseRejectsOutOfRangePriority(t *testing.T) {
 	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 9, "confidence_score": 0.5, "remarks": "x"}`
 	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
