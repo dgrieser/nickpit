@@ -102,6 +102,10 @@ func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) err
 	if trimmed == "" {
 		return errors.New("empty content")
 	}
+	rt := reflect.TypeOf(v)
+	if rt == nil || rt.Kind() != reflect.Pointer || reflect.ValueOf(v).IsNil() {
+		return errors.New("v must be a non-nil pointer")
+	}
 	if err := json.Unmarshal([]byte(trimmed), v); err == nil {
 		return nil
 	}
@@ -114,10 +118,6 @@ func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) err
 		return LenientUnmarshal(content, v)
 	}
 
-	rt := reflect.TypeOf(v)
-	if rt == nil || rt.Kind() != reflect.Pointer {
-		return errors.New("v must be a non-nil pointer")
-	}
 	elemType := rt.Elem()
 	accumulator := reflect.New(elemType)
 	accumulator.Elem().Set(reflect.ValueOf(v).Elem())

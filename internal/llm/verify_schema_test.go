@@ -183,6 +183,24 @@ func TestParseVerifyResponseMissingFieldsDetectionAcrossBlocks(t *testing.T) {
 	}
 }
 
+func TestParseVerifyResponseRejectsMalformedTypedBlockAcrossBlocks(t *testing.T) {
+	content := "```json\n" +
+		`{"id":"11111111-1111-4111-8111-111111111111","valid":true,"priority":"high"}` +
+		"\n```\n\nMore:\n```json\n" +
+		`{"confidence_score":0.91,"remarks":"ok"}` +
+		"\n```\n"
+	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !asErr(err, &invalid) {
+		t.Fatalf("expected InvalidResponseError, got %v", err)
+	}
+	for _, want := range []string{"id", "valid", "priority"} {
+		if !slices.Contains(invalid.MissingFields, want) {
+			t.Fatalf("missing fields = %v, want %q", invalid.MissingFields, want)
+		}
+	}
+}
+
 func TestParseVerifyResponseRejectsOutOfRangePriority(t *testing.T) {
 	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 9, "confidence_score": 0.5, "remarks": "x"}`
 	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})

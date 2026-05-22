@@ -1982,11 +1982,10 @@ func parseVerifyResponse(content string) (*ReviewResponse, error) {
 	return &ReviewResponse{Verification: &verification}, nil
 }
 
-// mergedRawVerifyBlocks reconstructs the merged raw view of a verify
-// response: top-level keys are unioned across all JSON candidates with
-// last-wins on collisions. Mirrors what FindingVerification.MergeFrom
-// does at the parsed level so missing-field validation reflects the
-// merged view of the input.
+// mergedRawVerifyBlocks reconstructs the merged raw view of the verify
+// response candidates that were valid enough to merge into a typed
+// FindingVerification. Malformed typed candidates must not satisfy required
+// field checks just because their raw keys were present.
 func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 	top := make(map[string]json.RawMessage)
 	trimmed := strings.TrimSpace(content)
@@ -1998,11 +1997,14 @@ func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 		candidates = []string{StripCodeFences(trimmed)}
 	}
 	for _, c := range candidates {
-		parsed, _, ok := decodeJSONCandidate(c, func() any { return new(map[string]json.RawMessage) })
+		_, decoded, ok := decodeJSONCandidate(c, func() any { return new(model.FindingVerification) })
 		if !ok {
 			continue
 		}
-		asMap := *parsed.(*map[string]json.RawMessage)
+		var asMap map[string]json.RawMessage
+		if err := json.Unmarshal(decoded, &asMap); err != nil {
+			continue
+		}
 		for k, val := range asMap {
 			top[k] = val
 		}
@@ -2027,8 +2029,8 @@ func missingVerifyFields(content string) []string {
 // mergedRawReviewBlocks reconstructs the merged raw view of a review response
 // the same way LenientUnmarshalMerge merges parsed values: top-level scalar
 // keys union with last-wins, "findings" arrays concatenate across blocks,
-// and bare Finding-shaped objects (carrying a title or code_location key)
-// outside any top-level wrapper are harvested as additional raw findings.
+// and bare Finding-shaped objects outside any top-level wrapper are harvested
+// as additional raw findings when they match the parsed fallback predicate.
 // Bare Suggestion candidates are ignored — they have no anchor in the raw
 // view, matching the parsed-side fallback that requires a preceding Finding.
 func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, findings []json.RawMessage) {
@@ -2045,8 +2047,6 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 		if parsed, decoded, ok := decodeJSONCandidate(c, func() any { return new(map[string]json.RawMessage) }); ok {
 			asMap := *parsed.(*map[string]json.RawMessage)
 			_, hasFindings := asMap["findings"]
-			_, hasTitle := asMap["title"]
-			_, hasLoc := asMap["code_location"]
 			if hasFindings {
 				var items []json.RawMessage
 				if json.Unmarshal(asMap["findings"], &items) == nil {
@@ -2058,7 +2058,7 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 				}
 				continue
 			}
-			if hasTitle || hasLoc {
+			if rawCandidateIsBareFinding(decoded) {
 				findings = append(findings, json.RawMessage(decoded))
 				continue
 			}
@@ -2075,12 +2075,26 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 	return top, findings
 }
 
+func rawCandidateIsBareFinding(decoded []byte) bool {
+	var finding model.Finding
+	if err := json.Unmarshal(decoded, &finding); err != nil {
+		return false
+	}
+	title := strings.TrimSpace(finding.Title)
+	body := strings.TrimSpace(finding.Body)
+	hasLoc := finding.CodeLocation != (model.CodeLocation{})
+	return title != "" || (body != "" && hasLoc)
+}
+
 func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind, constraints ResponseConstraints) []string {
 	raw, rawFindings := mergedRawReviewBlocks(content)
 	var missing []string
 	_, hasFindingsKey := raw["findings"]
 	if !hasFindingsKey && len(rawFindings) == 0 && parsed.Findings == nil {
 		missing = append(missing, "findings")
+	}
+	if len(rawFindings) > len(parsed.Findings) {
+		missing = append(missing, "findings (must be valid finding objects)")
 	}
 	rawFindingsJSON, _ := json.Marshal(rawFindings)
 	missing = append(missing, missingFindingFields(parsed.Findings, rawFindingsJSON, kind, constraints)...)

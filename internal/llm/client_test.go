@@ -3399,6 +3399,59 @@ func TestParseReviewResponseDropsBareSuggestionWithoutAnchor(t *testing.T) {
 	}
 }
 
+func TestParseReviewResponseRejectsUnparsedRawFindingCandidates(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "unrelated array candidate",
+			content: `["note"]` + "\n" +
+				`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`,
+		},
+		{
+			name: "malformed finding item",
+			content: `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":"high","code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}]}` + "\n" +
+				`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseReviewResponse(tc.content, SchemaKindReview, ResponseConstraints{})
+			var invalid *InvalidResponseError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("err = %v, want InvalidResponseError", err)
+			}
+			found := false
+			for _, m := range invalid.MissingFields {
+				if strings.HasPrefix(m, "findings") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("missing fields = %v, want findings entry", invalid.MissingFields)
+			}
+		})
+	}
+}
+
+func TestParseReviewResponseIgnoresBareObjectThatParsedFallbackRejects(t *testing.T) {
+	content := `{"title":""}` + "\n" +
+		`{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}` + "\n" +
+		`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(resp.Findings), resp.Findings)
+	}
+	if resp.Findings[0].Title != "Fix" {
+		t.Fatalf("finding title = %q, want Fix", resp.Findings[0].Title)
+	}
+}
+
 func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix nil pointer","body":"b","confidence_score":0.5,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})

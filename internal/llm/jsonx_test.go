@@ -270,6 +270,22 @@ func TestLenientUnmarshalMergeAllFail(t *testing.T) {
 	}
 }
 
+func TestLenientUnmarshalMergeRejectsTypedNilPointer(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("LenientUnmarshalMerge panicked: %v", r)
+		}
+	}()
+	var got *mergePayload
+	err := LenientUnmarshalMerge(`{"name":"first"}`+"\n"+`{"count":7}`, got)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if err.Error() != "v must be a non-nil pointer" {
+		t.Fatalf("error = %q, want non-nil pointer error", err.Error())
+	}
+}
+
 func TestLenientUnmarshalMergeFallbackTypeAppendsSlice(t *testing.T) {
 	type container struct {
 		Items []mergeNested `json:"items"`
