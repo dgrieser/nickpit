@@ -868,6 +868,10 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 					}
 				}
 			}
+			formattedReasoningFindings := formatReasoningFindingsList(reasoningFindings)
+			if extractEnabled {
+				e.logBlockCtx(nudgeCtx, "Extracted reasoning findings sent to nudge:", formattedReasoningFindings)
+			}
 			nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
 				HasResponseFormat bool
 				QuestionsSnippet  string
@@ -875,7 +879,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			}{
 				HasResponseFormat: agent.schemaKind != llm.SchemaKindText,
 				QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
-				ReasoningFindings: formatReasoningFindingsList(reasoningFindings),
+				ReasoningFindings: formattedReasoningFindings,
 			})
 			if err != nil {
 				return agentResult{}, err
@@ -966,6 +970,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 }
 
 func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, parentName string, turnIdx int, req model.ReviewRequest) (string, agentResult, error) {
+	name := fmt.Sprintf("reasoning-extract:%s:collect:turn-%d", parentName, turnIdx)
 	system, err := renderPromptFile("agent_reasoning_collect_findings_system_prompt.tmpl", nil)
 	if err != nil {
 		return "", agentResult{}, err
@@ -979,14 +984,19 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 		return "", agentResult{}, err
 	}
 	result, err := e.runAgent(ctx, agentSpec{
-		name:       fmt.Sprintf("reasoning-extract:%s:collect:turn-%d", parentName, turnIdx),
+		name:       name,
 		role:       "reasoning_extract",
 		system:     system,
 		user:       user,
 		schemaKind: llm.SchemaKindText,
 		hasTools:   false,
 	}, reasoningExtractRequest(req))
-	return reasoningExtractOutput(result.contentMessages), result, err
+	out := reasoningExtractOutput(result.contentMessages)
+	if err == nil {
+		extractCtx := ctxWithAgent(ctx, agentTag{Role: "reasoning_extract", Name: name})
+		e.logBlockCtx(extractCtx, "Extracted reasoning findings:", out)
+	}
+	return out, result, err
 }
 
 func (e *Engine) runReasoningUpdateFindings(ctx context.Context, combinedList, findingsJSON, parentName string, req model.ReviewRequest) (string, agentResult, error) {
@@ -2519,6 +2529,12 @@ func (e *Engine) logfCtx(ctx context.Context, format string, args ...any) {
 func (e *Engine) logBlock(label, content string) {
 	if e.logger != nil {
 		e.logger.PrintBlock(label, content)
+	}
+}
+
+func (e *Engine) logBlockCtx(ctx context.Context, label, content string) {
+	if e.logger != nil {
+		e.logger.PrintBlock(agentLogPrefix(ctx)+label, content)
 	}
 }
 

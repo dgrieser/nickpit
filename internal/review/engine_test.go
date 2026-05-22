@@ -463,6 +463,55 @@ func TestRunAgent_ReasoningExtractorAugmentsNudges(t *testing.T) {
 	}
 }
 
+func TestRunAgent_ReasoningExtractorVerboseLogsFindingsWithContext(t *testing.T) {
+	llmClient := &reasoningExtractLLM{
+		reviewerReasoning: []string{"initial reasoning only"},
+		collectOutputs:    []string{"collected issue\nsecond collected issue"},
+		updateOutputs:     []string{"reduced issue"},
+	}
+	engine := nudgeTestEngine(llmClient)
+	var buf lockedTestBuffer
+	engine.SetLogger(logging.New(&buf, true, false))
+
+	_, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{
+		NudgeCount:          1,
+		ModelEmitsReasoning: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := buf.String()
+	for _, want := range []string{
+		"[reasoning_extract: reasoning-extract:reviewer:collect:turn-1] Extracted reasoning findings:",
+		"collected issue",
+		"second collected issue",
+		"[reviewer: reviewer - Nudge 1/1] Extracted reasoning findings sent to nudge:",
+		"- reduced issue",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("verbose log missing %q:\n%s", want, got)
+		}
+	}
+}
+
+type lockedTestBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedTestBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedTestBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestRunAgent_PerIterCollectInsideInitialReviewer(t *testing.T) {
 	llmClient := &multiIterReasoningExtractLLM{
 		reviewerReasoning: []string{
