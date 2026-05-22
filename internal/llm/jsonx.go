@@ -121,15 +121,14 @@ func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) err
 	elemType := rt.Elem()
 	accumulator := reflect.New(elemType)
 	accumulator.Elem().Set(reflect.ValueOf(v).Elem())
-	zeroVal := reflect.New(elemType).Elem().Interface()
 	merged := false
 
 	_, isMergeable := accumulator.Interface().(Mergeable)
 	for _, extracted := range candidates {
-		parsed, ok := tryParseCandidate(extracted, elemType)
+		parsed, decoded, ok := tryParseCandidate(extracted, elemType)
 		if ok {
 			if isMergeable {
-				keys := topLevelJSONKeys(extracted)
+				keys := topLevelJSONKeys(decoded)
 				claimed, err := accumulator.Interface().(Mergeable).MergeFrom(parsed.Interface(), keys)
 				if err != nil {
 					return err
@@ -138,7 +137,7 @@ func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) err
 					merged = true
 					continue
 				}
-			} else if !reflect.DeepEqual(parsed.Elem().Interface(), zeroVal) {
+			} else if !parsed.Elem().IsZero() {
 				mergeJSONValue(accumulator.Elem(), parsed.Elem())
 				merged = true
 				continue
@@ -166,10 +165,10 @@ func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) err
 // topLevelJSONKeys returns the set of top-level keys present in a JSON
 // object candidate. For arrays or non-object candidates the returned map
 // is empty (and non-nil so callers can index it without nil checks).
-func topLevelJSONKeys(extracted string) map[string]bool {
+func topLevelJSONKeys(decoded []byte) map[string]bool {
 	keys := make(map[string]bool)
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(extracted), &raw); err != nil {
+	if err := json.Unmarshal(decoded, &raw); err != nil {
 		return keys
 	}
 	for k := range raw {
@@ -178,28 +177,36 @@ func topLevelJSONKeys(extracted string) map[string]bool {
 	return keys
 }
 
-func tryParseCandidate(extracted string, elemType reflect.Type) (reflect.Value, bool) {
-	fresh := reflect.New(elemType)
-	if err := json.Unmarshal([]byte(extracted), fresh.Interface()); err == nil {
-		return fresh, true
+func tryParseCandidate(extracted string, elemType reflect.Type) (reflect.Value, []byte, bool) {
+	parsed, decoded, ok := decodeJSONCandidate(extracted, func() any {
+		return reflect.New(elemType).Interface()
+	})
+	if ok {
+		return reflect.ValueOf(parsed), decoded, true
 	}
-	fresh = reflect.New(elemType)
-	if err := json.Unmarshal(RepairJSON([]byte(extracted)), fresh.Interface()); err == nil {
-		return fresh, true
-	}
-	return reflect.Value{}, false
+	return reflect.Value{}, nil, false
 }
 
 func tryParseFallback(extracted string, alloc func() any) (any, bool) {
-	parsed := alloc()
-	if err := json.Unmarshal([]byte(extracted), parsed); err == nil {
-		return parsed, true
-	}
-	parsed = alloc()
-	if err := json.Unmarshal(RepairJSON([]byte(extracted)), parsed); err == nil {
+	parsed, _, ok := decodeJSONCandidate(extracted, alloc)
+	if ok {
 		return parsed, true
 	}
 	return nil, false
+}
+
+func decodeJSONCandidate(extracted string, alloc func() any) (any, []byte, bool) {
+	decoded := []byte(extracted)
+	parsed := alloc()
+	if err := json.Unmarshal(decoded, parsed); err == nil {
+		return parsed, decoded, true
+	}
+	decoded = RepairJSON(decoded)
+	parsed = alloc()
+	if err := json.Unmarshal(decoded, parsed); err == nil {
+		return parsed, decoded, true
+	}
+	return nil, nil, false
 }
 
 var rawMessageType = reflect.TypeOf(json.RawMessage(nil))

@@ -298,9 +298,9 @@ func TestLenientUnmarshalMergeFallbackTypeAppendsSlice(t *testing.T) {
 }
 
 type mergeableRecorder struct {
-	Sum         int              `json:"sum"`
-	Tag         string           `json:"tag"`
-	Calls       int              `json:"-"`
+	Sum         int               `json:"sum"`
+	Tag         string            `json:"tag"`
+	Calls       int               `json:"-"`
 	SeenKeysAll []map[string]bool `json:"-"`
 }
 
@@ -355,6 +355,23 @@ func TestLenientUnmarshalMergeMergeableReceivesPresentKeys(t *testing.T) {
 	}
 	if got.SeenKeysAll[1]["sum"] || !got.SeenKeysAll[1]["tag"] {
 		t.Fatalf("second call keys = %v", got.SeenKeysAll[1])
+	}
+}
+
+func TestLenientUnmarshalMergeMergeableReceivesPresentKeysFromRepairedCandidate(t *testing.T) {
+	var got mergeableRecorder
+	content := `{"sum":3,}` + "\n" + `{"tag":"x"}`
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got.Sum != 3 {
+		t.Fatalf("Sum = %d, want repaired candidate to contribute", got.Sum)
+	}
+	if len(got.SeenKeysAll) != 2 {
+		t.Fatalf("SeenKeysAll = %v", got.SeenKeysAll)
+	}
+	if !got.SeenKeysAll[0]["sum"] {
+		t.Fatalf("first call keys = %v, want sum from repaired JSON", got.SeenKeysAll[0])
 	}
 }
 

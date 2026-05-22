@@ -1868,6 +1868,8 @@ func (r *ReviewResponse) MergeFrom(other any, presentKeys map[string]bool) (bool
 	if presentKeys["findings"] {
 		if len(src.Findings) > 0 {
 			r.Findings = append(r.Findings, src.Findings...)
+		} else if src.Findings != nil && r.Findings == nil {
+			r.Findings = []model.Finding{}
 		}
 		claimed = true
 	}
@@ -1996,10 +1998,11 @@ func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 		candidates = []string{StripCodeFences(trimmed)}
 	}
 	for _, c := range candidates {
-		var asMap map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(c), &asMap); err != nil {
+		parsed, _, ok := decodeJSONCandidate(c, func() any { return new(map[string]json.RawMessage) })
+		if !ok {
 			continue
 		}
+		asMap := *parsed.(*map[string]json.RawMessage)
 		for k, val := range asMap {
 			top[k] = val
 		}
@@ -2039,8 +2042,8 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 		candidates = []string{StripCodeFences(trimmed)}
 	}
 	for _, c := range candidates {
-		var asMap map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(c), &asMap); err == nil {
+		if parsed, decoded, ok := decodeJSONCandidate(c, func() any { return new(map[string]json.RawMessage) }); ok {
+			asMap := *parsed.(*map[string]json.RawMessage)
 			_, hasFindings := asMap["findings"]
 			_, hasTitle := asMap["title"]
 			_, hasLoc := asMap["code_location"]
@@ -2056,7 +2059,7 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 				continue
 			}
 			if hasTitle || hasLoc {
-				findings = append(findings, json.RawMessage(c))
+				findings = append(findings, json.RawMessage(decoded))
 				continue
 			}
 			for k, v := range asMap {
@@ -2064,8 +2067,8 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 			}
 			continue
 		}
-		var asArr []json.RawMessage
-		if err := json.Unmarshal([]byte(c), &asArr); err == nil {
+		if parsed, _, ok := decodeJSONCandidate(c, func() any { return new([]json.RawMessage) }); ok {
+			asArr := *parsed.(*[]json.RawMessage)
 			findings = append(findings, asArr...)
 		}
 	}

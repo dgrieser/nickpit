@@ -3271,6 +3271,58 @@ func TestParseReviewResponseMergesMultipleBlocks(t *testing.T) {
 	}
 }
 
+func TestParseReviewResponseAcceptsRepairedRequiredFieldValidation(t *testing.T) {
+	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5,}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(resp.Findings))
+	}
+}
+
+func TestParseReviewResponseMergesRepairedLaterBlock(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e1","overall_confidence_score":0.5}` +
+		"\n```\n\n```json\n" +
+		`{"overall_confidence_score":0.7,}` +
+		"\n```"
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.OverallConfidenceScore != 0.7 {
+		t.Fatalf("OverallConfidenceScore = %v, want repaired later block value", resp.OverallConfidenceScore)
+	}
+}
+
+func TestParseReviewResponsePreservesExplicitEmptyFindingsAcrossBlocks(t *testing.T) {
+	content := `{"findings":[]}` + "\n" +
+		`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings == nil {
+		t.Fatalf("Findings = nil, want explicit empty slice preserved")
+	}
+	if len(resp.Findings) != 0 {
+		t.Fatalf("findings = %d, want 0", len(resp.Findings))
+	}
+}
+
+func TestParseVerifyResponseAcceptsRepairedRequiredFieldValidation(t *testing.T) {
+	content := `{"id":"11111111-1111-4111-8111-111111111111","valid":true,"priority":1,"confidence_score":0.8,"remarks":"ok",}`
+	resp, err := parseVerifyResponse(content)
+	if err != nil {
+		t.Fatalf("parseVerifyResponse: %v", err)
+	}
+	if resp.Verification == nil || resp.Verification.Priority != 1 {
+		t.Fatalf("verification = %+v", resp.Verification)
+	}
+}
+
 func TestParseReviewResponseHarvestsBareFinding(t *testing.T) {
 	content := "```json\n" +
 		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
