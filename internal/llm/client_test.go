@@ -3246,6 +3246,107 @@ func TestParseReviewResponseAcceptsStringSuggestionShorthand(t *testing.T) {
 	}
 }
 
+func TestParseReviewResponseMergesMultipleBlocks(t *testing.T) {
+	content := "First block:\n```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e1","overall_confidence_score":0.5}` +
+		"\n```\n\nSecond block:\n```json\n" +
+		`{"findings":[{"title":"F2","body":"b2","confidence_score":0.6,"priority":2,"code_location":{"file_path":"b.go","line_range":{"start":3,"end":4}}}],"overall_confidence_score":0.7}` +
+		"\n```\n"
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2: %+v", len(resp.Findings), resp.Findings)
+	}
+	titles := []string{resp.Findings[0].Title, resp.Findings[1].Title}
+	if titles[0] != "F1" || titles[1] != "F2" {
+		t.Fatalf("titles = %v", titles)
+	}
+	if resp.OverallCorrectness != "patch is correct" {
+		t.Fatalf("OverallCorrectness = %q, want first-block value preserved", resp.OverallCorrectness)
+	}
+	if resp.OverallConfidenceScore != 0.7 {
+		t.Fatalf("OverallConfidenceScore = %v, want last-non-zero 0.7", resp.OverallConfidenceScore)
+	}
+}
+
+func TestParseReviewResponseHarvestsBareFinding(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```\n\nExtra finding noticed in prose:\n" +
+		`{"title":"F2","body":"b2","confidence_score":0.4,"priority":2,"code_location":{"file_path":"b.go","line_range":{"start":7,"end":8}}}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2: %+v", len(resp.Findings), resp.Findings)
+	}
+	if resp.Findings[1].Title != "F2" {
+		t.Fatalf("Findings[1].Title = %q, want F2", resp.Findings[1].Title)
+	}
+}
+
+func TestParseReviewResponseHarvestsFindingsArray(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```\n\nAdditional findings:\n" +
+		`[{"title":"F2","body":"b2","confidence_score":0.4,"priority":2,"code_location":{"file_path":"b.go","line_range":{"start":7,"end":8}}},{"title":"F3","body":"b3","confidence_score":0.3,"priority":3,"code_location":{"file_path":"c.go","line_range":{"start":9,"end":10}}}]`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 3 {
+		t.Fatalf("findings = %d, want 3: %+v", len(resp.Findings), resp.Findings)
+	}
+	if resp.Findings[2].Title != "F3" {
+		t.Fatalf("Findings[2].Title = %q, want F3", resp.Findings[2].Title)
+	}
+}
+
+func TestParseReviewResponseAttachesBareSuggestionToLastFinding(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```\n\nAlso suggest:\n" +
+		`{"body":"Add a regression test","line_range":{"start":5,"end":5}}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(resp.Findings), resp.Findings)
+	}
+	suggestions := resp.Findings[0].Suggestions
+	if len(suggestions) != 1 {
+		t.Fatalf("Suggestions = %+v, want one attached", suggestions)
+	}
+	if suggestions[0].Body != "Add a regression test" {
+		t.Fatalf("Suggestion.Body = %q", suggestions[0].Body)
+	}
+	if suggestions[0].LineRange.Start != 5 || suggestions[0].LineRange.End != 5 {
+		t.Fatalf("Suggestion.LineRange = %+v, want 5..5", suggestions[0].LineRange)
+	}
+}
+
+func TestParseReviewResponseDropsBareSuggestionWithoutAnchor(t *testing.T) {
+	content := "Stray suggestion appearing first:\n" +
+		`{"body":"Add a regression test","line_range":{"start":5,"end":5}}` +
+		"\n\n```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```"
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(resp.Findings), resp.Findings)
+	}
+	if len(resp.Findings[0].Suggestions) != 0 {
+		t.Fatalf("Suggestions = %+v, want none (no anchor before snippet)", resp.Findings[0].Suggestions)
+	}
+}
+
 func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix nil pointer","body":"b","confidence_score":0.5,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})

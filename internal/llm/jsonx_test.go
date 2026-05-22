@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -173,5 +174,152 @@ func TestLenientUnmarshalReturnsErrorOnGarbage(t *testing.T) {
 	var v any
 	if err := LenientUnmarshal("absolutely no json at all", &v); err == nil {
 		t.Fatalf("expected error for non-JSON content")
+	}
+}
+
+type mergePayload struct {
+	Items   []string          `json:"items"`
+	Name    string            `json:"name"`
+	Count   int               `json:"count"`
+	Nested  *mergeNested      `json:"nested,omitempty"`
+	Tags    map[string]string `json:"tags,omitempty"`
+	RawData json.RawMessage   `json:"raw,omitempty"`
+}
+
+type mergeNested struct {
+	Detail string `json:"detail"`
+	Level  int    `json:"level"`
+}
+
+func TestLenientUnmarshalMergeSingleBlock(t *testing.T) {
+	var got mergePayload
+	if err := LenientUnmarshalMerge(`{"items":["a","b"],"name":"x","count":3}`, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := mergePayload{Items: []string{"a", "b"}, Name: "x", Count: 3}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+func TestLenientUnmarshalMergeConcatSlices(t *testing.T) {
+	content := "prose\n```json\n" + `{"items":["a","b"],"name":"first"}` + "\n```\n" +
+		"more prose\n```json\n" + `{"items":["c"],"count":7}` + "\n```"
+	var got mergePayload
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := mergePayload{Items: []string{"a", "b", "c"}, Name: "first", Count: 7}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+func TestLenientUnmarshalMergeScalarLastNonZeroWins(t *testing.T) {
+	content := `{"name":"first","count":3}` + "\n\n" + `{"count":9}`
+	var got mergePayload
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got.Name != "first" {
+		t.Fatalf("Name = %q want %q (later zero must not blank earlier)", got.Name, "first")
+	}
+	if got.Count != 9 {
+		t.Fatalf("Count = %d want 9 (later non-zero wins)", got.Count)
+	}
+}
+
+func TestLenientUnmarshalMergeMapUnion(t *testing.T) {
+	content := `{"tags":{"a":"1","b":"2"}}` + "\n" + `{"tags":{"b":"99","c":"3"}}`
+	var got mergePayload
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := map[string]string{"a": "1", "b": "99", "c": "3"}
+	if !reflect.DeepEqual(got.Tags, want) {
+		t.Fatalf("Tags = %+v want %+v", got.Tags, want)
+	}
+}
+
+func TestLenientUnmarshalMergeNestedStruct(t *testing.T) {
+	content := `{"name":"x"}` + "\n" + `{"nested":{"detail":"d","level":2}}`
+	var got mergePayload
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if got.Nested == nil || got.Nested.Detail != "d" || got.Nested.Level != 2 {
+		t.Fatalf("Nested = %+v", got.Nested)
+	}
+}
+
+func TestLenientUnmarshalMergeRawMessageScalar(t *testing.T) {
+	content := `{"raw":{"k":1}}` + "\n" + `{"raw":{"k":2}}`
+	var got mergePayload
+	if err := LenientUnmarshalMerge(content, &got); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if string(got.RawData) != `{"k":2}` {
+		t.Fatalf("RawData = %s want last-wins scalar", string(got.RawData))
+	}
+}
+
+func TestLenientUnmarshalMergeAllFail(t *testing.T) {
+	var got mergePayload
+	if err := LenientUnmarshalMerge("absolutely no json at all", &got); err == nil {
+		t.Fatalf("expected error")
+	}
+}
+
+func TestLenientUnmarshalMergeFallbackTypeAppendsSlice(t *testing.T) {
+	type container struct {
+		Items []mergeNested `json:"items"`
+	}
+	fb := FallbackType{
+		NewInstance: func() any { return new(mergeNested) },
+		Attach: func(into, parsed any) bool {
+			n := parsed.(*mergeNested)
+			if n.Detail == "" {
+				return false
+			}
+			c := into.(*container)
+			c.Items = append(c.Items, *n)
+			return true
+		},
+	}
+	content := `{"items":[{"detail":"a","level":1}]}` + "\n" + `{"detail":"b","level":2}`
+	var got container
+	if err := LenientUnmarshalMerge(content, &got, fb); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := container{Items: []mergeNested{{Detail: "a", Level: 1}, {Detail: "b", Level: 2}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}
+
+func TestLenientUnmarshalMergeFallbackReturnsFalseFallsThrough(t *testing.T) {
+	type container struct {
+		Items []mergeNested `json:"items"`
+		Tags  []string      `json:"tags"`
+	}
+	rejecting := FallbackType{
+		NewInstance: func() any { return new(mergeNested) },
+		Attach:      func(into, parsed any) bool { return false },
+	}
+	accepting := FallbackType{
+		NewInstance: func() any { return new(mergeNested) },
+		Attach: func(into, parsed any) bool {
+			c := into.(*container)
+			c.Items = append(c.Items, *parsed.(*mergeNested))
+			return true
+		},
+	}
+	content := `{"items":[]}` + "\n" + `{"detail":"a","level":1}`
+	var got container
+	if err := LenientUnmarshalMerge(content, &got, rejecting, accepting); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Detail != "a" {
+		t.Fatalf("expected second fallback to claim, got %+v", got)
 	}
 }

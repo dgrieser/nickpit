@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"unicode"
 )
@@ -49,6 +50,172 @@ func LenientUnmarshal(content string, v any) error {
 	return json.Unmarshal([]byte(trimmed), v)
 }
 
+// FallbackType lets a caller of LenientUnmarshalMerge declare additional
+// shapes to try when a JSON candidate parses successfully into *v but yields
+// the zero value (i.e. no fields overlapped), or fails to parse into *v at
+// all. NewInstance returns a fresh non-nil pointer to a value of the
+// fallback type. Attach receives the accumulator (the same pointer the
+// caller passed as v) and the parsed fallback instance; it returns true if
+// the parsed value carried meaningful content and was attached.
+type FallbackType struct {
+	NewInstance func() any
+	Attach      func(into any, parsed any) bool
+}
+
+// LenientUnmarshalMerge behaves like LenientUnmarshal when the input
+// contains a single JSON candidate. When multiple candidates are found,
+// each candidate that parses into a fresh *v-typed value and is not the
+// zero value is merged into an accumulator: slice fields concatenate,
+// scalar fields use last-non-zero-wins, pointer/interface fields use
+// last-non-nil-wins, maps union with last-wins on key collisions, and
+// nested structs recurse. Candidates that parse to a zero *v (no field
+// overlap) or fail to parse into *v are tried against each fallback in
+// order; the first whose Attach returns true claims the candidate.
+//
+// Custom UnmarshalJSON implementations on element types run per candidate
+// during unmarshal, so the merge layer always sees post-unmarshal values.
+//
+// If no candidate parses (primary or fallback) and the repaired full
+// content also fails, the strict-parse error from the trimmed input is
+// returned.
+func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) error {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return errors.New("empty content")
+	}
+	if err := json.Unmarshal([]byte(trimmed), v); err == nil {
+		return nil
+	}
+	// Run candidate extraction directly on the trimmed input. StripCodeFences
+	// is unsafe here: if content has prose or another block after the closing
+	// fence, the strip would discard it. Fence characters do not affect
+	// balanced-brace scanning, so candidates inside fences are still found.
+	candidates := extractJSONCandidates(trimmed)
+	if len(candidates) <= 1 {
+		return LenientUnmarshal(content, v)
+	}
+
+	rt := reflect.TypeOf(v)
+	if rt == nil || rt.Kind() != reflect.Pointer {
+		return errors.New("v must be a non-nil pointer")
+	}
+	elemType := rt.Elem()
+	accumulator := reflect.New(elemType)
+	accumulator.Elem().Set(reflect.ValueOf(v).Elem())
+	zeroVal := reflect.New(elemType).Elem().Interface()
+	merged := false
+
+	for _, extracted := range candidates {
+		parsed, ok := tryParseCandidate(extracted, elemType)
+		if ok && !reflect.DeepEqual(parsed.Elem().Interface(), zeroVal) {
+			mergeJSONValue(accumulator.Elem(), parsed.Elem())
+			merged = true
+			continue
+		}
+		for _, fb := range fallbacks {
+			fbParsed, ok := tryParseFallback(extracted, fb.NewInstance)
+			if !ok {
+				continue
+			}
+			if fb.Attach(accumulator.Interface(), fbParsed) {
+				merged = true
+				break
+			}
+		}
+	}
+
+	if merged {
+		reflect.ValueOf(v).Elem().Set(accumulator.Elem())
+		return nil
+	}
+	return LenientUnmarshal(content, v)
+}
+
+func tryParseCandidate(extracted string, elemType reflect.Type) (reflect.Value, bool) {
+	fresh := reflect.New(elemType)
+	if err := json.Unmarshal([]byte(extracted), fresh.Interface()); err == nil {
+		return fresh, true
+	}
+	fresh = reflect.New(elemType)
+	if err := json.Unmarshal(RepairJSON([]byte(extracted)), fresh.Interface()); err == nil {
+		return fresh, true
+	}
+	return reflect.Value{}, false
+}
+
+func tryParseFallback(extracted string, alloc func() any) (any, bool) {
+	parsed := alloc()
+	if err := json.Unmarshal([]byte(extracted), parsed); err == nil {
+		return parsed, true
+	}
+	parsed = alloc()
+	if err := json.Unmarshal(RepairJSON([]byte(extracted)), parsed); err == nil {
+		return parsed, true
+	}
+	return nil, false
+}
+
+var rawMessageType = reflect.TypeOf(json.RawMessage(nil))
+
+func mergeJSONValue(dst, src reflect.Value) {
+	if !dst.IsValid() || !src.IsValid() {
+		return
+	}
+	if dst.Type() == rawMessageType {
+		if src.Len() > 0 {
+			dst.Set(src)
+		}
+		return
+	}
+	switch dst.Kind() {
+	case reflect.Struct:
+		for i := 0; i < dst.NumField(); i++ {
+			if !dst.Field(i).CanSet() {
+				continue
+			}
+			mergeJSONValue(dst.Field(i), src.Field(i))
+		}
+	case reflect.Pointer:
+		if src.IsNil() {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(src)
+			return
+		}
+		mergeJSONValue(dst.Elem(), src.Elem())
+	case reflect.Slice:
+		if src.IsNil() || src.Len() == 0 {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(src)
+			return
+		}
+		dst.Set(reflect.AppendSlice(dst, src))
+	case reflect.Map:
+		if src.IsNil() || src.Len() == 0 {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(reflect.MakeMap(dst.Type()))
+		}
+		for _, key := range src.MapKeys() {
+			dst.SetMapIndex(key, src.MapIndex(key))
+		}
+	case reflect.Interface:
+		if src.IsNil() {
+			return
+		}
+		dst.Set(src)
+	default:
+		if src.IsZero() {
+			return
+		}
+		dst.Set(src)
+	}
+}
+
 // StripCodeFences removes leading and trailing markdown code fences such as
 // ```json, ```javascript, or plain ``` from content. The inner payload is
 // returned trimmed of surrounding whitespace.
@@ -89,8 +256,20 @@ func isLanguageTag(s string) bool {
 // subsequent candidates are tried. Returns false if no balanced object or
 // array is found.
 func ExtractJSONObject(content string) (string, bool) {
-	for _, extracted := range extractJSONCandidates(content) {
-		return extracted, true
+	for pos := 0; pos < len(content); pos++ {
+		c := content[pos]
+		if c != '{' && c != '[' {
+			continue
+		}
+		var close byte
+		if c == '{' {
+			close = '}'
+		} else {
+			close = ']'
+		}
+		if extracted, _, ok := scanBalanced(content, pos, c, close); ok {
+			return extracted, true
+		}
 	}
 	return "", false
 }
