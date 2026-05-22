@@ -1838,6 +1838,7 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
 	}
+	normalizeFindingSuggestions(parsed.Findings)
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 	}
@@ -1850,6 +1851,16 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 	}
 	overwrittenIDs := model.EnsureFindingIDs(parsed.Findings)
 	return &parsed, overwrittenIDs, nil
+}
+
+func normalizeFindingSuggestions(findings []model.Finding) {
+	for i := range findings {
+		for j := range findings[i].Suggestions {
+			if findings[i].Suggestions[j].LineRange == (model.LineRange{}) {
+				findings[i].Suggestions[j].LineRange = findings[i].CodeLocation.LineRange
+			}
+		}
+	}
 }
 
 func parseVerifyResponse(content string) (*ReviewResponse, error) {

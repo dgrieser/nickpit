@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -281,6 +282,26 @@ type LineRange struct {
 type Suggestion struct {
 	Body      string    `json:"body"`
 	LineRange LineRange `json:"line_range"`
+}
+
+func (s *Suggestion) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var body string
+		if err := json.Unmarshal(trimmed, &body); err != nil {
+			return err
+		}
+		s.Body = body
+		s.LineRange = LineRange{}
+		return nil
+	}
+	type suggestion Suggestion
+	var parsed suggestion
+	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+		return err
+	}
+	*s = Suggestion(parsed)
+	return nil
 }
 
 type TokenUsage struct {
