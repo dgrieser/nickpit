@@ -870,7 +870,11 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			}
 			formattedReasoningFindings := formatReasoningFindingsList(reasoningFindings)
 			if extractEnabled {
-				e.logBlockCtx(nudgeCtx, "Extracted reasoning findings sent to nudge:", formattedReasoningFindings)
+				if formattedReasoningFindings != "" {
+					e.logBlockCtx(nudgeCtx, "Extracted reasoning findings sent to nudge:", formattedReasoningFindings)
+				} else {
+					e.logfCtx(nudgeCtx, "No extracted reasoning findings to send to nudge")
+				}
 			}
 			nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
 				HasResponseFormat bool
@@ -994,7 +998,11 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 	out := reasoningExtractOutput(result.contentMessages)
 	if err == nil {
 		extractCtx := ctxWithAgent(ctx, agentTag{Role: "reasoning_extract", Name: name})
-		e.logBlockCtx(extractCtx, "Extracted reasoning findings:", out)
+		if out != "" {
+			e.logBlockCtx(extractCtx, "Extracted reasoning findings:", out)
+		} else {
+			e.logfCtx(extractCtx, "No reasoning findings extracted")
+		}
 	}
 	return out, result, err
 }
@@ -1039,16 +1047,15 @@ func reasoningExtractOutput(messages []string) string {
 	return out
 }
 
+var reasoningBulletPrefix = regexp.MustCompile(`^(?:[-*+]\s*|\d+[.)]\s+)`)
+
 func formatReasoningFindingsList(findings string) string {
 	lines := strings.Split(findings, "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(reasoningBulletPrefix.ReplaceAllString(line, ""))
 		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "- ") {
-			out = append(out, line)
 			continue
 		}
 		out = append(out, "- "+line)

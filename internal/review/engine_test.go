@@ -618,6 +618,31 @@ func TestFormatReasoningFindingsList(t *testing.T) {
 	}
 }
 
+func TestFormatReasoningFindingsListNormalizesBullets(t *testing.T) {
+	input := strings.Join([]string{
+		"* asterisk bullet",
+		"+ plus bullet",
+		"-no space after dash",
+		"1. numbered dot",
+		"12) numbered paren",
+		"  * indented asterisk",
+		"-",
+		"plain line",
+	}, "\n")
+	want := strings.Join([]string{
+		"- asterisk bullet",
+		"- plus bullet",
+		"- no space after dash",
+		"- numbered dot",
+		"- numbered paren",
+		"- indented asterisk",
+		"- plain line",
+	}, "\n")
+	if got := formatReasoningFindingsList(input); got != want {
+		t.Fatalf("formatted findings = %q, want %q", got, want)
+	}
+}
+
 func nudgeTestEngine(llmClient llm.Client) *Engine {
 	return &Engine{
 		llm:       llmClient,
