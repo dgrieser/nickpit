@@ -78,6 +78,7 @@ type multiAgentLLM struct {
 	mu             sync.Mutex
 	context        int
 	vectorCalls    map[string]int
+	verifyCalls    int
 	mergeTools     int
 	mergePayload   map[string]any
 	mergeSchema    []byte
@@ -85,8 +86,10 @@ type multiAgentLLM struct {
 	vectorContext  map[string]string
 	vectorSystem   map[string]string
 	vectorNudge    map[string]string
+	events         []string
 	contextFailErr error
 	vectorFailErr  map[string]error
+	verifyInvalid  map[string]bool
 	mergeFailErr   error
 }
 
@@ -104,6 +107,26 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if s.vectorNudge == nil {
 		s.vectorNudge = make(map[string]string)
+	}
+	if req.SchemaKind == llm.SchemaKindVerify {
+		s.events = append(s.events, "verify")
+		s.verifyCalls++
+		valid := true
+		for title := range s.verifyInvalid {
+			for _, msg := range req.Messages {
+				if strings.Contains(msg.Content, title) {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				break
+			}
+		}
+		return &llm.ReviewResponse{
+			Verification: &model.FindingVerification{Valid: valid, Priority: 2, ConfidenceScore: 0.9, Remarks: "verified"},
+			TokensUsed:   model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		}, nil
 	}
 	system := ""
 	if len(req.Messages) > 0 {
@@ -160,6 +183,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		}, nil
 	}
 	s.mergeTools = len(req.Tools)
+	s.events = append(s.events, "merge")
 	s.mergeSchema = append([]byte(nil), req.Schema...)
 	if len(req.Messages) > 1 {
 		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
@@ -1412,6 +1436,15 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if result.TotalToolCalls != 7 {
 		t.Fatalf("tool calls = %d, want context + one per vector", result.TotalToolCalls)
 	}
+	if llmClient.verifyCalls != len(reviewVectors) {
+		t.Fatalf("verify calls = %d, want one per vector finding", llmClient.verifyCalls)
+	}
+	if result.VerifyTokensUsed.TotalTokens != len(reviewVectors)*2 {
+		t.Fatalf("verify tokens = %d, want %d", result.VerifyTokensUsed.TotalTokens, len(reviewVectors)*2)
+	}
+	if got := llmClient.events[len(llmClient.events)-1]; got != "merge" {
+		t.Fatalf("last event = %q, want merge after verification", got)
+	}
 	if len(trimmed.SupplementalContext) == 0 {
 		t.Fatal("context was not attached")
 	}
@@ -1458,6 +1491,65 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 		if !strings.Contains(contextNote, "## Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
 			t.Fatalf("%s prompt missing context agent markdown note: %q", vector.name, contextNote)
 		}
+	}
+}
+
+func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
+	llmClient := &multiAgentLLM{
+		verifyInvalid: map[string]bool{"Fix Security": true},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetMultiAgentReview(true)
+
+	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		RepoRoot:          ".",
+		MaxContextTokens:  1000,
+		MaxToolCalls:      1,
+		VerifyConcurrency: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if llmClient.verifyCalls != len(reviewVectors) {
+		t.Fatalf("verify calls = %d, want %d", llmClient.verifyCalls, len(reviewVectors))
+	}
+	for i, event := range llmClient.events {
+		if event == "merge" && i != len(llmClient.events)-1 {
+			t.Fatalf("merge event at %d before verification complete: %#v", i, llmClient.events)
+		}
+	}
+	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
+	if !ok {
+		t.Fatalf("merge payload vector_reviews = %#v", llmClient.mergePayload["vector_reviews"])
+	}
+	var mergedFindingCount int
+	var sawSecurity bool
+	for _, raw := range vectorReviews {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("vector review entry = %#v", raw)
+		}
+		findings, _ := entry["findings"].([]any)
+		mergedFindingCount += len(findings)
+		for _, rawFinding := range findings {
+			finding, ok := rawFinding.(map[string]any)
+			if !ok {
+				t.Fatalf("finding = %#v", rawFinding)
+			}
+			if finding["title"] == "Fix Security" {
+				sawSecurity = true
+			}
+			if _, ok := finding["verification"].(map[string]any); !ok {
+				t.Fatalf("finding missing verification in merge input: %#v", finding)
+			}
+		}
+	}
+	if mergedFindingCount != len(reviewVectors)-1 {
+		t.Fatalf("merge input findings = %d, want %d", mergedFindingCount, len(reviewVectors)-1)
+	}
+	if sawSecurity {
+		t.Fatal("invalid Security finding reached merge input")
 	}
 }
 

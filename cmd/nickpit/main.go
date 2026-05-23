@@ -709,6 +709,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		defer cleanup()
 	}
 	req.RepoRoot = repoRoot
+	req.VerifyConcurrency = a.verifyConcurrency
 
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
@@ -724,31 +725,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return err
 	}
 	a.logProgress("Result", reviewResultSummary(result))
-
-	if len(result.Findings) > 0 && trimmedCtx != nil {
-		verifyOpts := review.VerifyOptions{
-			Concurrency:              a.verifyConcurrency,
-			UseJSONSchema:            req.UseJSONSchema,
-			MaxToolCalls:             req.MaxToolCalls,
-			MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
-			MaxOutputRetries:         req.MaxOutputRetries,
-			MaxReasoningSeconds:      req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
-			DisableParallelToolCalls: req.DisableParallelToolCalls,
-			RepoRoot:                 req.RepoRoot,
-		}
-		verifications, verifyUsage, verifyWarnings, verifyErr := engine.VerifyAll(ctx, trimmedCtx, result.Findings, verifyOpts)
-		if verifyErr != nil {
-			a.logProgress("Verify", fmt.Sprintf("status=ERROR, error=%v", verifyErr))
-			return verifyErr
-		}
-		for i := range result.Findings {
-			result.Findings[i].Verification = verifications[i]
-		}
-		result.VerifyTokensUsed = verifyUsage
-		result.Warnings = append(result.Warnings, verifyWarnings...)
-		result.Findings = review.DropInvalidFindings(result.Findings)
-	}
 
 	if len(result.Findings) > 0 && trimmedCtx != nil {
 		finalizeOpts := review.FinalizeOptions{

@@ -44,6 +44,7 @@ type ReviewRequest struct {
 	MaxOutputRetries         int
 	MaxReasoningSeconds      int
 	MaxReasoningLoopRepeats  int
+	VerifyConcurrency        int
 	NudgeCount               int
 	DisableParallelToolCalls bool
 	DisableReasoningExtract  bool

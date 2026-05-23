@@ -429,6 +429,11 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if err != nil {
 		return nil, nil, err
 	}
+	verifyUsage, verifyWarnings, verifiedMergeInputs, err := e.verifyVectorFindings(ctx, enriched, vectorResults, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	warnings = append(warnings, verifyWarnings...)
 
 	mergeConstraints := llm.ResponseConstraints{}
 	var mergeSchema []byte
@@ -451,6 +456,10 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		e.logf("All vector reviewers failed; skipping merge agent and emitting empty result")
 		warnings = append(warnings, "All vector reviewers failed; skipped merge agent and returning empty findings")
 		mergeResult = synthesizedMergeFromVectors(vectorResults, nil)
+	} else if len(verifiedMergeInputs) == 0 {
+		e.logf("No verified findings remained; skipping merge agent and emitting empty result")
+		warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
+		mergeResult = emptyVerifiedMergeResult()
 	} else {
 		mergeResult, mergeErr = e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchema, mergeConstraints, req)
 		if mergeErr != nil {
@@ -462,6 +471,9 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 			mergeResult.run.TokensUsed = partialMergeTokens
 			mergeResult.run.ToolCalls = partialMergeToolCalls
 		}
+	}
+	if mergeResult.resp != nil {
+		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
 	allRuns = append(allRuns, contextResult.run)
@@ -506,9 +518,87 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		AgentRuns:              allRuns,
 		Warnings:               warnings,
 		TokensUsed:             totalUsage,
+		VerifyTokensUsed:       verifyUsage,
 		TotalToolCalls:         toolCalls,
 		ReasoningEffort:        effectiveReasoningEffort,
 	}, enriched, nil
+}
+
+func (e *Engine) verifyVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) (model.TokenUsage, []string, []model.Finding, error) {
+	findings := make([]model.Finding, 0)
+	type findingRef struct {
+		vectorIdx  int
+		findingIdx int
+	}
+	refs := make([]findingRef, 0)
+	for vectorIdx, result := range vectorResults {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
+			continue
+		}
+		for findingIdx, finding := range result.resp.Findings {
+			findings = append(findings, finding)
+			refs = append(refs, findingRef{vectorIdx: vectorIdx, findingIdx: findingIdx})
+		}
+	}
+	if len(findings) == 0 {
+		return model.TokenUsage{}, nil, nil, nil
+	}
+	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, verifyOptionsFromReviewRequest(req))
+	if err != nil {
+		return usage, warnings, nil, err
+	}
+	if len(verifications) != len(refs) {
+		return usage, warnings, nil, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifications), len(refs))
+	}
+	validByVector := make(map[int][]model.Finding, len(vectorResults))
+	invalidByVector := make(map[int]map[int]struct{}, len(vectorResults))
+	for i, verification := range verifications {
+		ref := refs[i]
+		if verification == nil {
+			return usage, warnings, nil, fmt.Errorf("review: verifier returned no result for finding #%d %q", i+1, findings[i].Title)
+		}
+		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
+		v := *verification
+		model.EnsureVerificationID(&v, finding.ID)
+		finding.Verification = &v
+		if !v.Valid {
+			if invalidByVector[ref.vectorIdx] == nil {
+				invalidByVector[ref.vectorIdx] = make(map[int]struct{})
+			}
+			invalidByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
+			continue
+		}
+		validByVector[ref.vectorIdx] = append(validByVector[ref.vectorIdx], finding)
+	}
+	verifiedMergeInputs := make([]model.Finding, 0, len(findings))
+	for vectorIdx := range vectorResults {
+		if vectorResults[vectorIdx].run.Status == model.AgentRunStatusFailed || vectorResults[vectorIdx].resp == nil {
+			continue
+		}
+		if len(vectorResults[vectorIdx].resp.Findings) == 0 {
+			continue
+		}
+		vectorResults[vectorIdx].resp.Findings = validByVector[vectorIdx]
+		verifiedMergeInputs = append(verifiedMergeInputs, vectorResults[vectorIdx].resp.Findings...)
+		if len(invalidByVector[vectorIdx]) > 0 {
+			e.logf("Dropped invalid verified findings before merge: reviewer=%s count=%d", vectorResults[vectorIdx].run.Name, len(invalidByVector[vectorIdx]))
+		}
+	}
+	return usage, warnings, verifiedMergeInputs, nil
+}
+
+func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
+	return VerifyOptions{
+		Concurrency:              req.VerifyConcurrency,
+		UseJSONSchema:            req.UseJSONSchema,
+		MaxToolCalls:             req.MaxToolCalls,
+		MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
+		MaxOutputRetries:         req.MaxOutputRetries,
+		MaxReasoningSeconds:      req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls: req.DisableParallelToolCalls,
+		RepoRoot:                 req.RepoRoot,
+	}
 }
 
 // allVectorsFailed reports whether every per-vector reviewer returned a
@@ -1296,6 +1386,22 @@ func synthesizedMergeFromVectors(vectorResults []agentResult, mergeErr error) ag
 			Role:   "merge",
 			Status: status,
 			Error:  errStr,
+		},
+	}
+}
+
+func emptyVerifiedMergeResult() agentResult {
+	return agentResult{
+		resp: &llm.ReviewResponse{
+			Findings:               nil,
+			OverallCorrectness:     "patch is correct",
+			OverallExplanation:     "No verified findings remained after verification.",
+			OverallConfidenceScore: 1,
+		},
+		run: model.AgentRun{
+			Name:   "Merge Findings",
+			Role:   "merge",
+			Status: model.AgentRunStatusSkipped,
 		},
 	}
 }
