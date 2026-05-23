@@ -23,7 +23,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 						ConfidenceScore: 0.7,
 						Priority:        intPtr(1),
 						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-						Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
 					},
 				},
@@ -43,7 +43,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 				ConfidenceScore: 0.7,
 				Priority:        intPtr(1),
 				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 			},
 		},
 		OverallCorrectness:     "patch is correct",
@@ -95,7 +95,7 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 						ConfidenceScore: 0.7,
 						Priority:        intPtr(1),
 						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-						Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
 						// no Suggestions echoed back by the model
 					},
@@ -116,7 +116,7 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 				Priority:        intPtr(1),
 				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Suggestions:     inputSuggestions,
-				Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 			},
 		},
 		OverallCorrectness:     "patch is correct",
@@ -144,7 +144,7 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 
 func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
 	const findingID = "11111111-1111-4111-8111-111111111111"
-	inputVerification := &model.FindingVerification{ID: findingID, Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"}
+	inputVerification := &model.FindingVerification{ID: findingID, Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
@@ -193,7 +193,7 @@ func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
 }
 
 func TestFinalizeKeepsLLMVerificationWhenProvided(t *testing.T) {
-	llmVerification := &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.9, Remarks: "refined"}
+	llmVerification := &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "refined"}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
@@ -221,7 +221,7 @@ func TestFinalizeKeepsLLMVerificationWhenProvided(t *testing.T) {
 				ConfidenceScore: 0.7,
 				Priority:        intPtr(1),
 				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.5, Remarks: "stale"},
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.5, Remarks: "stale"},
 			},
 		},
 		OverallCorrectness: "patch is correct",
@@ -252,7 +252,7 @@ func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 						Priority:        intPtr(1),
 						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 						Suggestions:     llmSuggestions,
-						Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "refined"},
 					},
 				},
@@ -272,7 +272,7 @@ func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 				Priority:        intPtr(1),
 				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 				Suggestions:     []model.Suggestion{{Body: "stale", LineRange: model.LineRange{Start: 99, End: 99}}},
-				Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 			},
 		},
 		OverallCorrectness: "patch is correct",
@@ -302,7 +302,7 @@ func TestFinalizeMergesSuggestionsWithCollidingLocationByTitle(t *testing.T) {
 						ConfidenceScore: 0.6,
 						Priority:        intPtr(2),
 						CodeLocation:    loc,
-						Verification:    &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
 						Finalization:    &model.FindingFinalization{Title: "Issue B", Body: "b", Priority: 2, ConfidenceScore: 0.6, Remarks: "keep"},
 					},
 					{
@@ -311,7 +311,7 @@ func TestFinalizeMergesSuggestionsWithCollidingLocationByTitle(t *testing.T) {
 						ConfidenceScore: 0.6,
 						Priority:        intPtr(2),
 						CodeLocation:    loc,
-						Verification:    &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
 						Finalization:    &model.FindingFinalization{Title: "Issue A", Body: "a", Priority: 2, ConfidenceScore: 0.6, Remarks: "keep"},
 					},
 				},
@@ -322,8 +322,8 @@ func TestFinalizeMergesSuggestionsWithCollidingLocationByTitle(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
-			{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: loc, Suggestions: suggA, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
-			{Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: loc, Suggestions: suggB, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+			{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: loc, Suggestions: suggA, Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+			{Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: loc, Suggestions: suggB, Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
 		},
 	}
 
@@ -349,12 +349,12 @@ func TestFinalizePriorityFloorSurvivesReorder(t *testing.T) {
 				Findings: []model.Finding{
 					{
 						Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB,
-						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
+						Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
 						Finalization: &model.FindingFinalization{Title: "Issue B", Body: "b", Priority: 0, ConfidenceScore: 0.6, Remarks: "escalate"},
 					},
 					{
 						Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
-						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
+						Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"},
 						Finalization: &model.FindingFinalization{Title: "Issue A", Body: "a", Priority: 2, ConfidenceScore: 0.6, Remarks: "keep"},
 					},
 				},
@@ -365,8 +365,8 @@ func TestFinalizePriorityFloorSurvivesReorder(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
-			{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
-			{Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+			{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA, Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+			{Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB, Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
 		},
 	}
 
@@ -401,7 +401,7 @@ func TestFinalizeDropsHallucinatedFindingsWithoutInputMatch(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
-			{Title: "Real", Body: "r", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "real.go", LineRange: model.LineRange{Start: 1, End: 1}}, Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+			{Title: "Real", Body: "r", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "real.go", LineRange: model.LineRange{Start: 1, End: 1}}, Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
 		},
 	}
 
@@ -424,7 +424,7 @@ func TestFinalizeWeightedConfidenceStandardAverage(t *testing.T) {
 				Findings: []model.Finding{
 					{
 						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
-						Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "ok"},
+						Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "ok"},
 						// LLM emits an arbitrary value; code must overwrite.
 						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.123, Remarks: "keep"},
 					},
@@ -437,7 +437,7 @@ func TestFinalizeWeightedConfidenceStandardAverage(t *testing.T) {
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
 			{Title: "Issue", Body: "b", ConfidenceScore: 0.6, Priority: intPtr(1), CodeLocation: loc,
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "ok"}},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "ok"}},
 		},
 	}
 
@@ -460,7 +460,7 @@ func TestFinalizeWeightedConfidenceRoundsToTwoDecimals(t *testing.T) {
 				Findings: []model.Finding{
 					{
 						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
-						Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.79, Remarks: "ok"},
+						Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.79, Remarks: "ok"},
 						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.123, Remarks: "keep"},
 					},
 				},
@@ -472,7 +472,7 @@ func TestFinalizeWeightedConfidenceRoundsToTwoDecimals(t *testing.T) {
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
 			{Title: "Issue", Body: "b", ConfidenceScore: 0.51, Priority: intPtr(1), CodeLocation: loc,
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.79, Remarks: "ok"}},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.79, Remarks: "ok"}},
 		},
 	}
 
@@ -495,7 +495,7 @@ func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
 				Findings: []model.Finding{
 					{
 						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
-						Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+						Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
 						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.9, Remarks: "keep"},
 					},
 				},
@@ -507,7 +507,7 @@ func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
 			{Title: "Issue", Body: "b", ConfidenceScore: 0.4, Priority: intPtr(1), CodeLocation: loc,
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"}},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"}},
 		},
 	}
 
@@ -564,12 +564,12 @@ func TestFinalizeWeightedConfidenceSurvivesReorder(t *testing.T) {
 				Findings: []model.Finding{
 					{
 						Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB,
-						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.5, Remarks: "ok"},
+						Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.5, Remarks: "ok"},
 						Finalization: &model.FindingFinalization{Title: "Issue B", Body: "b", Priority: 2, ConfidenceScore: 0.99, Remarks: "x"},
 					},
 					{
 						Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
-						Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.9, Remarks: "ok"},
+						Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "ok"},
 						Finalization: &model.FindingFinalization{Title: "Issue A", Body: "a", Priority: 2, ConfidenceScore: 0.99, Remarks: "x"},
 					},
 				},
@@ -581,9 +581,9 @@ func TestFinalizeWeightedConfidenceSurvivesReorder(t *testing.T) {
 	in := &model.ReviewResult{
 		Findings: []model.Finding{
 			{Title: "Issue A", Body: "a", ConfidenceScore: 0.8, Priority: intPtr(2), CodeLocation: locA,
-				Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.9, Remarks: "ok"}},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "ok"}},
 			{Title: "Issue B", Body: "b", ConfidenceScore: 0.4, Priority: intPtr(2), CodeLocation: locB,
-				Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.5, Remarks: "ok"}},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.5, Remarks: "ok"}},
 		},
 	}
 
@@ -623,7 +623,7 @@ func TestFinalizeWeightedConfidenceSkipsWhenNoInputMatch(t *testing.T) {
 		Findings: []model.Finding{
 			{Title: "Real", Body: "r", ConfidenceScore: 0.7, Priority: intPtr(2),
 				CodeLocation: model.CodeLocation{FilePath: "real.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification: &model.FindingVerification{Valid: true, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.7, Remarks: "ok"}},
 		},
 	}
 
@@ -688,20 +688,86 @@ func TestFinalizeEarlySkipsOnEmptyFindings(t *testing.T) {
 	}
 }
 
-// Regression: when all input findings are P2 / P3, the finalizer must be
-// constrained so it cannot flip overall_correctness to "patch is incorrect".
-func TestFinalizeRefusesPatchIncorrectWithoutCriticalFindings(t *testing.T) {
-	if cs := finalizeConstraintsFor([]model.Finding{
-		{Priority: intPtr(2)},
-		{Priority: intPtr(3)},
-	}).AllowedCorrectness; len(cs) != 1 || cs[0] != "patch is correct" {
-		t.Fatalf("constraints = %#v, want [patch is correct]", cs)
+// Covers the three regimes of finalizeConstraintsFor based on the priority
+// floor = min(finding.priority, verification.priority): P0 → must be
+// "patch is incorrect", P1-only → unconstrained, no critical → must be
+// "patch is correct".
+func TestFinalizeConstraintsForPriorityFloor(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []model.Finding
+		want []string // nil => unconstrained
+	}{
+		{
+			name: "all P2/P3 → patch is correct",
+			in: []model.Finding{
+				{Priority: intPtr(2)},
+				{Priority: intPtr(3)},
+			},
+			want: []string{"patch is correct"},
+		},
+		{
+			name: "P1 reviewer only → unconstrained",
+			in: []model.Finding{
+				{Priority: intPtr(2)},
+				{Priority: intPtr(1)},
+			},
+			want: nil,
+		},
+		{
+			name: "P0 reviewer → patch is incorrect",
+			in: []model.Finding{
+				{Priority: intPtr(0)},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P3 reviewer, P0 verifier → patch is incorrect (floor)",
+			in: []model.Finding{
+				{Priority: intPtr(3), Verification: &model.FindingVerification{Priority: 0}},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P0 reviewer, P3 verifier → patch is incorrect (floor)",
+			in: []model.Finding{
+				{Priority: intPtr(0), Verification: &model.FindingVerification{Priority: 3}},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P1 reviewer, P0 verifier → patch is incorrect",
+			in: []model.Finding{
+				{Priority: intPtr(1), Verification: &model.FindingVerification{Priority: 0}},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P2 reviewer, P1 verifier → unconstrained (P1 floor)",
+			in: []model.Finding{
+				{Priority: intPtr(2), Verification: &model.FindingVerification{Priority: 1}},
+			},
+			want: nil,
+		},
 	}
-	if cs := finalizeConstraintsFor([]model.Finding{
-		{Priority: intPtr(2)},
-		{Priority: intPtr(1)},
-	}).AllowedCorrectness; len(cs) != 0 {
-		t.Fatalf("constraints = %#v, want unconstrained (P1 present)", cs)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := finalizeConstraintsFor(tc.in).AllowedCorrectness
+			if len(tc.want) == 0 {
+				if len(got) != 0 {
+					t.Fatalf("AllowedCorrectness = %#v, want unconstrained", got)
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("AllowedCorrectness = %#v, want %#v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("AllowedCorrectness = %#v, want %#v", got, tc.want)
+				}
+			}
+		})
 	}
 }
 
@@ -731,7 +797,7 @@ func TestFinalizePreservesInputIDWhenLLMDropsIt(t *testing.T) {
 			ConfidenceScore: 0.7,
 			Priority:        intPtr(1),
 			CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-			Verification:    &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+			Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 		}},
 		OverallCorrectness:     "patch is correct",
 		OverallExplanation:     "ok",

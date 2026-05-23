@@ -78,6 +78,7 @@ type multiAgentLLM struct {
 	mu             sync.Mutex
 	context        int
 	vectorCalls    map[string]int
+	verifyCalls    int
 	mergeTools     int
 	mergePayload   map[string]any
 	mergeSchema    []byte
@@ -85,8 +86,10 @@ type multiAgentLLM struct {
 	vectorContext  map[string]string
 	vectorSystem   map[string]string
 	vectorNudge    map[string]string
+	events         []string
 	contextFailErr error
 	vectorFailErr  map[string]error
+	verifyInvalid  map[string]bool
 	mergeFailErr   error
 }
 
@@ -104,6 +107,30 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if s.vectorNudge == nil {
 		s.vectorNudge = make(map[string]string)
+	}
+	if req.SchemaKind == llm.SchemaKindVerify {
+		s.events = append(s.events, "verify")
+		s.verifyCalls++
+		valid := true
+		for title := range s.verifyInvalid {
+			for _, msg := range req.Messages {
+				if strings.Contains(msg.Content, title) {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				break
+			}
+		}
+		verdict := model.VerdictConfirmed
+		if !valid {
+			verdict = model.VerdictRefuted
+		}
+		return &llm.ReviewResponse{
+			Verification: &model.FindingVerification{Verdict: verdict, Priority: 2, ConfidenceScore: 0.9, Remarks: "verified"},
+			TokensUsed:   model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		}, nil
 	}
 	system := ""
 	if len(req.Messages) > 0 {
@@ -160,6 +187,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		}, nil
 	}
 	s.mergeTools = len(req.Tools)
+	s.events = append(s.events, "merge")
 	s.mergeSchema = append([]byte(nil), req.Schema...)
 	if len(req.Messages) > 1 {
 		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
@@ -917,253 +945,10 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 	return nil, errors.New("unexpected FindCallees call")
 }
 
-func TestEngineReusesEffectiveReasoningEffort(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call-1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-				RawResponse:     "inspecting",
-				ReasoningEffort: "low",
-				TokensUsed:      model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.8,
-				ReasoningEffort:        "low",
-				TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{
-		Model:           "model",
-		ReasoningEffort: "high",
-	})
 
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:              model.ModeLocal,
-		RepoRoot:          ".",
-		MaxContextTokens:  10000,
-		PriorityThreshold: "p3",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("llm calls = %d, want 2", len(llmClient.reqs))
-	}
-	if llmClient.reqs[0].ReasoningEffort != "high" {
-		t.Fatalf("first reasoning effort = %q", llmClient.reqs[0].ReasoningEffort)
-	}
-	if llmClient.reqs[1].ReasoningEffort != "low" {
-		t.Fatalf("second reasoning effort = %q", llmClient.reqs[1].ReasoningEffort)
-	}
-	if result.ReasoningEffort != "low" {
-		t.Fatalf("result reasoning effort = %q", result.ReasoningEffort)
-	}
-	if result.TokensUsed.TotalTokens != 7 {
-		t.Fatalf("total tokens = %d", result.TokensUsed.TotalTokens)
-	}
-}
 
-func TestEnginePriorityFilter(t *testing.T) {
-	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:              model.ModeLocal,
-		MaxContextTokens:  1000,
-		PriorityThreshold: "p1",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Findings) != 1 {
-		t.Fatalf("findings = %d", len(result.Findings))
-	}
-}
 
-func TestEngineAssignsFindingIDs(t *testing.T) {
-	engine := NewEngine(stubSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:              model.ModeLocal,
-		MaxContextTokens:  1000,
-		PriorityThreshold: "p3",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Findings) != 2 {
-		t.Fatalf("findings = %d, want 2", len(result.Findings))
-	}
-	seen := map[string]bool{}
-	for _, finding := range result.Findings {
-		if _, err := uuid.Parse(finding.ID); err != nil {
-			t.Fatalf("finding ID %q is not a UUID: %v", finding.ID, err)
-		}
-		if seen[finding.ID] {
-			t.Fatalf("duplicate finding ID %q", finding.ID)
-		}
-		seen[finding.ID] = true
-	}
-}
 
-func TestEnginePreservesExistingFindingID(t *testing.T) {
-	const existingID = "11111111-1111-4111-8111-111111111111"
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{{
-			Findings: []model.Finding{{
-				ID:              existingID,
-				Title:           "x",
-				Body:            "y",
-				ConfidenceScore: 0.7,
-				Priority:        intPtr(1),
-				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-			}},
-			OverallCorrectness:     "patch is incorrect",
-			OverallExplanation:     "summary",
-			OverallConfidenceScore: 0.8,
-		}},
-	}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:              model.ModeLocal,
-		MaxContextTokens:  1000,
-		PriorityThreshold: "p3",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := result.Findings[0].ID; got != existingID {
-		t.Fatalf("id = %q, want %q", got, existingID)
-	}
-}
-
-func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
-	llmClient := &capturingLLM{}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 1 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-
-	req := llmClient.reqs[0]
-	if len(req.Messages) != 2 {
-		t.Fatalf("messages = %d", len(req.Messages))
-	}
-	if req.Messages[0].Content == req.Messages[1].Content {
-		t.Fatal("system and user prompts should differ")
-	}
-	if req.Messages[0].Content == "" || req.Messages[1].Content == "" {
-		t.Fatal("system and user prompts should both be populated")
-	}
-	if want := "You are acting as a senior engineer performing a thorough code review for a proposed code change made by another engineer."; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt = %q", req.Messages[0].Content)
-	}
-	if want := "`inspect_file` tool"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing tool instructions: %q", req.Messages[0].Content)
-	}
-	if want := "`list_files` tool"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing list-files instructions: %q", req.Messages[0].Content)
-	}
-	if want := "`find_callers` tool"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing callers instructions: %q", req.Messages[0].Content)
-	}
-	if want := "`find_callees` tool"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing callees instructions: %q", req.Messages[0].Content)
-	}
-	if want := "call multiple tools in parallel"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing parallel guidance: %q", req.Messages[0].Content)
-	}
-	if want := "generate one or more `suggestions` entries"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing suggestion instructions: %q", req.Messages[0].Content)
-	}
-	if want := "Make sure to output the findings in the following JSON format:"; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing example JSON instructions: %q", req.Messages[0].Content)
-	}
-	if want := "\"overall_correctness\": \"patch is correct\""; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing rendered example JSON: %q", req.Messages[0].Content)
-	}
-	if want := "\"title\": \"Example title\""; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing example finding JSON: %q", req.Messages[0].Content)
-	}
-	if strings.Contains(req.Messages[0].Content, "[P1] Example title") {
-		t.Fatalf("system prompt should not include priority prefix in example title: %q", req.Messages[0].Content)
-	}
-	if want := "\"suggestions\""; !strings.Contains(req.Messages[0].Content, want) {
-		t.Fatalf("system prompt missing example suggestion JSON: %q", req.Messages[0].Content)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
-		t.Fatalf("user prompt should be valid json: %v\n%s", err, req.Messages[1].Content)
-	}
-	repository, ok := payload["repository"].(map[string]any)
-	if !ok {
-		t.Fatalf("user prompt missing repository object: %#v", payload)
-	}
-	if repository["full_name"] != "repo" {
-		t.Fatalf("repository.full_name = %#v", repository["full_name"])
-	}
-	if payload["title"] != "title" {
-		t.Fatalf("title = %#v", payload["title"])
-	}
-	if _, ok := payload["changed_files"]; !ok {
-		t.Fatalf("user prompt missing changed_files: %#v", payload)
-	}
-	styleGuides, ok := payload["style_guides"].([]any)
-	if !ok || len(styleGuides) != 1 {
-		t.Fatalf("user prompt missing Go style guide: %#v", payload["style_guides"])
-	}
-	goStyleGuide := styleGuides[0].(map[string]any)
-	if goStyleGuide["language"] != "go" {
-		t.Fatalf("style guide language = %#v", goStyleGuide["language"])
-	}
-	if content, _ := goStyleGuide["content"].(string); !strings.Contains(content, "# Go Style Guide") {
-		t.Fatalf("style guide content = %.80q", content)
-	}
-	if _, ok := goStyleGuide["title"]; ok {
-		t.Fatalf("style guide title should not be serialized: %#v", goStyleGuide)
-	}
-	if !strings.Contains(req.Messages[0].Content, "When reviewing findings, check the provided styleguides:") {
-		t.Fatalf("system prompt missing styleguide reminder: %q", req.Messages[0].Content)
-	}
-	if !strings.Contains(req.Messages[0].Content, "- Go Style Guide") {
-		t.Fatalf("system prompt missing Go styleguide title: %q", req.Messages[0].Content)
-	}
-	for _, unwanted := range []string{"mode", "checkout_root", "diff"} {
-		if _, exists := payload[unwanted]; exists {
-			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])
-		}
-	}
-	if len(req.Tools) != 5 {
-		t.Fatalf("tools = %d", len(req.Tools))
-	}
-	if req.Tools[0].Name != "inspect_file" {
-		t.Fatalf("tool name = %q", req.Tools[0].Name)
-	}
-	if req.Tools[1].Name != "list_files" {
-		t.Fatalf("tool name = %q", req.Tools[1].Name)
-	}
-	if req.Tools[2].Name != "search" {
-		t.Fatalf("tool name = %q", req.Tools[2].Name)
-	}
-	if req.Tools[3].Name != "find_callers" {
-		t.Fatalf("tool name = %q", req.Tools[3].Name)
-	}
-	if req.Tools[4].Name != "find_callees" {
-		t.Fatalf("tool name = %q", req.Tools[4].Name)
-	}
-	if !req.ParallelToolCalls {
-		t.Fatal("parallel tool calls should be enabled by default")
-	}
-}
 
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
@@ -1181,29 +966,6 @@ func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	}
 }
 
-func TestEngineOmitsStyleGuideToolchainReminderWhenNoContext(t *testing.T) {
-	llmClient := &capturingLLM{}
-	engine := NewEngine(textSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetToolchainCapture(nil)
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) == 0 {
-		t.Fatal("no requests captured")
-	}
-	system := llmClient.reqs[0].Messages[0].Content
-	if strings.Contains(system, "check the provided styleguides:") {
-		t.Fatalf("system prompt unexpectedly contains styleguide reminder: %q", system)
-	}
-	if strings.Contains(system, "provided `toolchain_versions`") {
-		t.Fatalf("system prompt unexpectedly contains toolchain reminder: %q", system)
-	}
-}
 
 func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 	definitions := reviewerToolDefinitions()
@@ -1368,31 +1130,10 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 	}
 }
 
-func TestEngineCanDisableParallelToolCallsAndGuidance(t *testing.T) {
-	llmClient := &capturingLLM{}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:                     model.ModeLocal,
-		MaxContextTokens:         1000,
-		DisableParallelToolCalls: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := llmClient.reqs[0]
-	if req.ParallelToolCalls {
-		t.Fatal("parallel tool calls should be disabled")
-	}
-	if strings.Contains(req.Messages[0].Content, "call all required tools in the same turn rather than serializing them") {
-		t.Fatalf("system prompt should omit parallel guidance: %q", req.Messages[0].Content)
-	}
-}
 
 func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, trimmed, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1411,6 +1152,15 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	}
 	if result.TotalToolCalls != 7 {
 		t.Fatalf("tool calls = %d, want context + one per vector", result.TotalToolCalls)
+	}
+	if llmClient.verifyCalls != len(reviewVectors) {
+		t.Fatalf("verify calls = %d, want one per vector finding", llmClient.verifyCalls)
+	}
+	if result.VerifyTokensUsed.TotalTokens != len(reviewVectors)*2 {
+		t.Fatalf("verify tokens = %d, want %d", result.VerifyTokensUsed.TotalTokens, len(reviewVectors)*2)
+	}
+	if got := llmClient.events[len(llmClient.events)-1]; got != "merge" {
+		t.Fatalf("last event = %q, want merge after verification", got)
 	}
 	if len(trimmed.SupplementalContext) == 0 {
 		t.Fatal("context was not attached")
@@ -1461,10 +1211,67 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	}
 }
 
+func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
+	llmClient := &multiAgentLLM{
+		verifyInvalid: map[string]bool{"Fix Security": true},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:              model.ModeLocal,
+		RepoRoot:          ".",
+		MaxContextTokens:  1000,
+		MaxToolCalls:      1,
+		VerifyConcurrency: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if llmClient.verifyCalls != len(reviewVectors) {
+		t.Fatalf("verify calls = %d, want %d", llmClient.verifyCalls, len(reviewVectors))
+	}
+	for i, event := range llmClient.events {
+		if event == "merge" && i != len(llmClient.events)-1 {
+			t.Fatalf("merge event at %d before verification complete: %#v", i, llmClient.events)
+		}
+	}
+	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
+	if !ok {
+		t.Fatalf("merge payload vector_reviews = %#v", llmClient.mergePayload["vector_reviews"])
+	}
+	var mergedFindingCount int
+	var sawSecurity bool
+	for _, raw := range vectorReviews {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("vector review entry = %#v", raw)
+		}
+		findings, _ := entry["findings"].([]any)
+		mergedFindingCount += len(findings)
+		for _, rawFinding := range findings {
+			finding, ok := rawFinding.(map[string]any)
+			if !ok {
+				t.Fatalf("finding = %#v", rawFinding)
+			}
+			if finding["title"] == "Fix Security" {
+				sawSecurity = true
+			}
+			if _, ok := finding["verification"].(map[string]any); !ok {
+				t.Fatalf("finding missing verification in merge input: %#v", finding)
+			}
+		}
+	}
+	if mergedFindingCount != len(reviewVectors)-1 {
+		t.Fatalf("merge input findings = %d, want %d", mergedFindingCount, len(reviewVectors)-1)
+	}
+	if sawSecurity {
+		t.Fatal("invalid Security finding reached merge input")
+	}
+}
+
 func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1497,7 +1304,6 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 		vectorFailErr: map[string]error{"Security": errors.New("security upstream fail")},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1546,7 +1352,6 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 func TestMultiAgentToleratesContextFailure(t *testing.T) {
 	llmClient := &multiAgentLLM{contextFailErr: errors.New("context upstream fail")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1576,7 +1381,6 @@ func TestMultiAgentToleratesContextFailure(t *testing.T) {
 func TestMultiAgentToleratesMergeFailure(t *testing.T) {
 	llmClient := &multiAgentLLM{mergeFailErr: errors.New("merge upstream fail")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1625,7 +1429,6 @@ func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
 		},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1718,7 +1521,6 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 func TestEngineMergeSchemaHonorsPriorityThreshold(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:              model.ModeLocal,
@@ -1759,827 +1561,21 @@ func schemaFindingProperty(t *testing.T, schema []byte, property string) map[str
 	return out
 }
 
-func TestEngineDoesNotUseAPISchemaByDefault(t *testing.T) {
-	llmClient := &capturingLLM{}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 1 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	if len(llmClient.reqs[0].Schema) != 0 {
-		t.Fatalf("schema should be empty by default, got %s", string(llmClient.reqs[0].Schema))
-	}
-}
 
-func TestEngineExecutesInspectFileToolCalls(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				Findings: []model.Finding{
-					{Title: "error", Body: "high", ConfidenceScore: 0.9, Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 2, End: 2}}},
-				},
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-				TokensUsed:             model.TokenUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10},
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	if result.TotalToolCalls != 1 {
-		t.Fatalf("tool calls = %d", result.TotalToolCalls)
-	}
-	if got := result.TokensUsed.TotalTokens; got != 10 {
-		t.Fatalf("total tokens = %d", got)
-	}
 
-	req := llmClient.reqs[1]
-	if len(req.Messages) != 5 {
-		t.Fatalf("messages = %d", len(req.Messages))
-	}
-	if req.Messages[2].Role != "assistant" {
-		t.Fatalf("assistant role = %q", req.Messages[2].Role)
-	}
-	if len(req.Messages[2].ToolCalls) != 1 || req.Messages[2].ToolCalls[0].Name != "inspect_file" {
-		t.Fatalf("assistant tool calls = %#v", req.Messages[2].ToolCalls)
-	}
-	if req.Messages[3].Role != "tool" {
-		t.Fatalf("tool role = %q", req.Messages[3].Role)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(req.Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v\n%s", err, req.Messages[3].Content)
-	}
-	if payload["path"] != "extra.go" || payload["content"] != "package extra" || payload["language"] != "go" {
-		t.Fatalf("tool payload = %#v", payload)
-	}
-	if req.Messages[4].Role != "user" {
-		t.Fatalf("follow-up role = %q", req.Messages[4].Role)
-	}
-	if want := "You used the following tools up to now:"; !strings.Contains(req.Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
-	}
-	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; result=[lines=1]"; !strings.Contains(req.Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
-	}
-	if want := "Continue calling tools, if the provided context is insufficient."; !strings.Contains(req.Messages[4].Content, want) {
-		t.Fatalf("follow-up missing continue instruction: %q", req.Messages[4].Content)
-	}
-	if want := "If you have enough context for the code review, stop calling tools and return the requested JSON format."; !strings.Contains(req.Messages[4].Content, want) {
-		t.Fatalf("follow-up missing stop instruction: %q", req.Messages[4].Content)
-	}
-}
 
-func TestEngineDropsInvalidToolCallsFromHistory(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_empty_name", Name: "", Arguments: `{"path":"extra.go"}`},
-					{ID: "call_bad_json", Name: "inspect_file", Arguments: `no json here`},
-					{ID: "call_unknown", Name: "unknown_tool", Arguments: `{"path":"extra.go"}`},
-					{ID: "call_missing_required", Name: "search", Arguments: `{"path":"."}`},
-					{ID: "call_valid", Name: "inspect_file", Arguments: `{"path":"extra.go"}}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     10,
-		MaxOutputRetries: defaultMaxOutputRetries,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.TotalToolCalls != 1 {
-		t.Fatalf("tool calls = %d", result.TotalToolCalls)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	req := llmClient.reqs[1]
-	if len(req.Messages) != 5 {
-		t.Fatalf("messages = %d", len(req.Messages))
-	}
-	assistantMessage := req.Messages[2]
-	if len(assistantMessage.ToolCalls) != 1 {
-		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
-	}
-	if assistantMessage.ToolCalls[0].ID != "call_valid" {
-		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
-	}
-	if assistantMessage.ToolCalls[0].Arguments != `{"path":"extra.go"}` {
-		t.Fatalf("assistant tool call arguments = %q", assistantMessage.ToolCalls[0].Arguments)
-	}
-	if req.Messages[3].Role != "tool" || req.Messages[3].ToolCallID != "call_valid" {
-		t.Fatalf("tool message = %#v", req.Messages[3])
-	}
-	synthetic := req.Messages[4].Content
-	for _, forbidden := range []string{"call_empty_name", "call_bad_json", "call_unknown", "call_missing_required", "unsupported tool", "unknown_tool"} {
-		if strings.Contains(synthetic, forbidden) {
-			t.Fatalf("synthetic follow-up mentions dropped call %q: %s", forbidden, synthetic)
-		}
-	}
-	if !strings.Contains(synthetic, "call_valid") {
-		t.Fatalf("synthetic follow-up missing valid call: %s", synthetic)
-	}
-}
 
-func TestEngineRetriesInvalidOnlyToolCallsWithoutHistory(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_unknown", Name: "unknown_tool", Arguments: `{"path":"extra.go"}`},
-				},
-				RawResponse: "bad tool call",
-				TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-				TokensUsed:             model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     10,
-		MaxOutputRetries: defaultMaxOutputRetries,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.TotalToolCalls != 0 {
-		t.Fatalf("tool calls = %d", result.TotalToolCalls)
-	}
-	if result.TokensUsed.TotalTokens != 5 {
-		t.Fatalf("total tokens = %d", result.TokensUsed.TotalTokens)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	if len(llmClient.reqs[1].Messages) != len(llmClient.reqs[0].Messages)+1 {
-		t.Fatalf("retry should preserve regular assistant history: first=%d second=%d", len(llmClient.reqs[0].Messages), len(llmClient.reqs[1].Messages))
-	}
-	last := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1]
-	if last.Role != "assistant" || last.Content != "bad tool call" || len(last.ToolCalls) != 0 {
-		t.Fatalf("retry assistant history = %#v", last)
-	}
-}
 
-func TestEngineProvidesNoToolsMessagesWithoutSyntheticFollowup(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				RawResponse: "I'll inspect extra.go first.",
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
 
-	req := llmClient.reqs[1]
-	if len(req.Messages) < 5 || !strings.Contains(req.Messages[4].Content, "You used the following tools up to now") {
-		t.Fatalf("normal messages should include synthetic follow-up: %#v", req.Messages)
-	}
-	noTools := req.NoToolsMessages
-	if len(noTools) == 0 {
-		t.Fatal("expected no-tools messages")
-	}
-	if strings.Contains(noTools[0].Content, "`inspect_file` tool") {
-		t.Fatalf("no-tools system prompt should omit tool instructions: %q", noTools[0].Content)
-	}
-	if !strings.Contains(noTools[0].Content, "OUTPUT FORMAT") {
-		t.Fatalf("no-tools system prompt missing review instructions: %q", noTools[0].Content)
-	}
 
-	foundAssistantContent := false
-	foundConvertedToolResult := false
-	for _, msg := range noTools {
-		if strings.Contains(msg.Content, "You called the following tools already") {
-			t.Fatalf("no-tools messages should omit synthetic follow-up: %#v", noTools)
-		}
-		if msg.Role == "tool" {
-			t.Fatalf("no-tools messages should convert tool roles: %#v", msg)
-		}
-		if len(msg.ToolCalls) > 0 {
-			t.Fatalf("no-tools messages should strip assistant tool calls: %#v", msg)
-		}
-		if msg.Role == "assistant" && msg.Content == "I'll inspect extra.go first." {
-			foundAssistantContent = true
-		}
-		if msg.Role == "user" && strings.Contains(msg.Content, `"path":"extra.go"`) {
-			foundConvertedToolResult = true
-		}
-	}
-	if !foundAssistantContent {
-		t.Fatalf("no-tools messages missing assistant content: %#v", noTools)
-	}
-	if !foundConvertedToolResult {
-		t.Fatalf("no-tools messages missing converted tool result: %#v", noTools)
-	}
-}
 
-func TestEnginePreservesAssistantContentWithToolCalls(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				RawResponse: "I'll inspect the extra file before deciding.",
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	assistantMessage := llmClient.reqs[1].Messages[2]
-	if assistantMessage.Role != "assistant" {
-		t.Fatalf("assistant role = %q", assistantMessage.Role)
-	}
-	if assistantMessage.Content != "I'll inspect the extra file before deciding." {
-		t.Fatalf("assistant content = %q", assistantMessage.Content)
-	}
-	if len(assistantMessage.ToolCalls) != 1 || assistantMessage.ToolCalls[0].Name != "inspect_file" {
-		t.Fatalf("assistant tool calls = %#v", assistantMessage.ToolCalls)
-	}
-}
-
-func TestEnginePreservesAssistantContentWhenToolLimitFinalizes(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				RawResponse: "I'll inspect extra.go first.",
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				RawResponse: "I still want to inspect main.go before finalizing.",
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(llmClient.reqs) != 3 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	finalReq := llmClient.reqs[2]
-	if len(finalReq.Tools) != 0 {
-		t.Fatalf("final call should have no tools, got %d", len(finalReq.Tools))
-	}
-	if len(finalReq.Messages) < 5 {
-		t.Fatalf("final messages = %d", len(finalReq.Messages))
-	}
-	if finalReq.Messages[2].Role != "assistant" || finalReq.Messages[2].Content != "I'll inspect extra.go first." {
-		t.Fatalf("first assistant message = %#v", finalReq.Messages[2])
-	}
-	lastMessage := finalReq.Messages[len(finalReq.Messages)-1]
-	if lastMessage.Role != "assistant" {
-		t.Fatalf("last message role = %q", lastMessage.Role)
-	}
-	if lastMessage.Content != "I still want to inspect main.go before finalizing." {
-		t.Fatalf("last assistant content = %q", lastMessage.Content)
-	}
-	if len(lastMessage.ToolCalls) != 0 {
-		t.Fatalf("last assistant message should not include tool calls, got %#v", lastMessage.ToolCalls)
-	}
-}
-
-func TestEngineExecutesInspectFileToolCallsWithLineRange(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go","line_start":4,"line_end":8}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req := llmClient.reqs[1]
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(req.Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v\n%s", err, req.Messages[3].Content)
-	}
-	if payload["path"] != "extra.go" || payload["content"] != "package extra" || payload["language"] != "go" {
-		t.Fatalf("tool payload = %#v", payload)
-	}
-	if payload["start_line"] != float64(1) || payload["end_line"] != float64(2) {
-		t.Fatalf("tool payload line range = %#v", payload)
-	}
-	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\", line_start=4, line_end=8]; result=[lines=1]"; !strings.Contains(req.Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", req.Messages[4].Content)
-	}
-}
-
-func TestEngineUsesAPISchemaWhenEnabled(t *testing.T) {
-	llmClient := &capturingLLM{}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		UseJSONSchema:    true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 1 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	if string(llmClient.reqs[0].Schema) != string(llm.FindingsSchema) {
-		t.Fatalf("schema = %s", string(llmClient.reqs[0].Schema))
-	}
-	if strings.Contains(llmClient.reqs[0].Messages[0].Content, "Example JSON output:") {
-		t.Fatalf("system prompt should omit example snippet when API schema is enabled: %q", llmClient.reqs[0].Messages[0].Content)
-	}
-}
-
-func TestEngineReturnsToolErrorsToModel(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, nil, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["status"] != "error" {
-		t.Fatalf("tool error status = %#v", payload["status"])
-	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("tool error payload = %#v", payload)
-	}
-	if errorPayload["code"] != "retrieval_unavailable" {
-		t.Fatalf("tool error code = %#v", errorPayload["code"])
-	}
-	message, _ := errorPayload["message"].(string)
-	if !strings.HasPrefix(message, "retrieval is unavailable") {
-		t.Fatalf("tool error payload = %#v", payload)
-	}
-	if llmClient.reqs[1].Messages[4].Role != "user" {
-		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
-	}
-	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"extra.go\"]; error=\"retrieval is unavailable"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
-	}
-	if want := "Please retry the last tool call."; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up missing retry instruction: %q", llmClient.reqs[1].Messages[4].Content)
-	}
-	if strings.Contains(llmClient.reqs[1].Messages[4].Content, "If you need more context, continue calling tools.") {
-		t.Fatalf("follow-up should not include regular continuation instructions after retryable error: %q", llmClient.reqs[1].Messages[4].Content)
-	}
-}
-
-func TestEngineStopsAtToolRoundLimit(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`},
-				},
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 3 {
-		t.Fatalf("expected 3 LLM calls, got %d", len(llmClient.reqs))
-	}
-	if len(llmClient.reqs[2].Tools) != 0 {
-		t.Fatalf("final call should have no tools, got %d", len(llmClient.reqs[2].Tools))
-	}
-	if result.OverallCorrectness != "patch is correct" {
-		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
-	}
-	if result.TotalToolCalls != 1 {
-		t.Fatalf("tool calls = %d", result.TotalToolCalls)
-	}
-}
-
-func TestEngineCountsParallelToolCallsIndividuallyForLimit(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"main.go"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("expected 2 LLM calls, got %d", len(llmClient.reqs))
-	}
-	if len(llmClient.reqs[1].Tools) != 0 {
-		t.Fatalf("final call should have no tools, got %d", len(llmClient.reqs[1].Tools))
-	}
-	if result.TotalToolCalls != 0 {
-		t.Fatalf("tool calls = %d", result.TotalToolCalls)
-	}
-	if len(retrievalEngine.paths) != 0 {
-		t.Fatalf("retrieval should not run when batch exceeds limit: %#v", retrievalEngine.paths)
-	}
-}
-
-func TestEngineStopsAtDuplicateToolCallLimit(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"./extra.go"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:                  model.ModeLocal,
-		MaxContextTokens:      1000,
-		MaxToolCalls:          3,
-		MaxDuplicateToolCalls: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 3 {
-		t.Fatalf("expected 3 LLM calls, got %d", len(llmClient.reqs))
-	}
-	if len(llmClient.reqs[2].Tools) != 0 {
-		t.Fatalf("final call should have no tools, got %d", len(llmClient.reqs[2].Tools))
-	}
-	if result.OverallCorrectness != "patch is correct" {
-		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
-	}
-	if result.TotalToolCalls != 2 {
-		t.Fatalf("tool calls = %d", result.TotalToolCalls)
-	}
-	if len(result.AgentRuns) != 1 {
-		t.Fatalf("agent runs = %d", len(result.AgentRuns))
-	}
-	if result.AgentRuns[0].DuplicateToolCalls != 1 {
-		t.Fatalf("duplicate tool calls = %d", result.AgentRuns[0].DuplicateToolCalls)
-	}
-	if len(retrievalEngine.paths) != 1 {
-		t.Fatalf("retrieval calls = %d", len(retrievalEngine.paths))
-	}
-}
-
-func TestEngineReturnsErrorForDuplicateFileRequests(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"./extra.go"}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 {
-		t.Fatalf("retrieval calls = %d", len(retrievalEngine.paths))
-	}
-	if retrievalEngine.paths[0] != "extra.go" {
-		t.Fatalf("retrieval path = %q", retrievalEngine.paths[0])
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[2].Messages[5].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["status"] != "error" {
-		t.Fatalf("duplicate tool payload = %#v", payload)
-	}
-	if payload["path"] != "extra.go" {
-		t.Fatalf("duplicate tool path = %#v", payload["path"])
-	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("duplicate tool error payload = %#v", payload)
-	}
-	if errorPayload["code"] != "already_requested" {
-		t.Fatalf("duplicate tool error code = %#v", errorPayload["code"])
-	}
-	if errorPayload["message"] != "file contents were already provided for this review" {
-		t.Fatalf("duplicate tool error message = %#v", errorPayload["message"])
-	}
-	if _, ok := payload["content"]; ok {
-		t.Fatalf("duplicate tool payload should omit content: %#v", payload)
-	}
-	if _, ok := payload["language"]; ok {
-		t.Fatalf("duplicate tool payload should omit language: %#v", payload)
-	}
-	if llmClient.reqs[2].Messages[6].Role != "user" {
-		t.Fatalf("duplicate follow-up role = %q", llmClient.reqs[2].Messages[6].Role)
-	}
-	if want := "1. inspect_file: tool_call_id=\"call_1\", arguments=[path=\"./extra.go\"]; result=[lines=1]"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("duplicate follow-up missing first tool call = %q", llmClient.reqs[2].Messages[6].Content)
-	}
-	if want := "2. inspect_file: tool_call_id=\"call_2\", arguments=[path=\"extra.go\"]; error=\"file contents were already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("duplicate follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
-	}
-	if want := "Continue calling tools, if the provided context is insufficient."; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("duplicate follow-up missing regular continuation instructions: %q", llmClient.reqs[2].Messages[6].Content)
-	}
-	if strings.Contains(llmClient.reqs[2].Messages[6].Content, "Please retry the last tool call.") {
-		t.Fatalf("duplicate follow-up should not request retry: %q", llmClient.reqs[2].Messages[6].Content)
-	}
-}
-
-func TestEngineReturnsErrorForAlreadyCoveredFileRangeRequests(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go","line_start":1,"line_end":10}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"extra.go","line_start":2,"line_end":3}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[2].Messages[5].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["status"] != "error" {
-		t.Fatalf("duplicate range tool payload = %#v", payload)
-	}
-	errorPayload, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("duplicate range error payload = %#v", payload)
-	}
-	if errorPayload["code"] != "already_requested" {
-		t.Fatalf("duplicate range error code = %#v", errorPayload["code"])
-	}
-	if errorPayload["message"] != "file contents were already provided for this review" {
-		t.Fatalf("duplicate range error message = %#v", errorPayload["message"])
-	}
-	if want := "2. inspect_file: tool_call_id=\"call_2\", arguments=[path=\"extra.go\", line_start=2, line_end=3]; error=\"file contents were already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("duplicate range follow-up = %q", llmClient.reqs[2].Messages[6].Content)
-	}
-}
-
-func TestEngineExecutesInspectListFilesToolCalls(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list:pkg:1" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["path"] != "pkg" {
-		t.Fatalf("list payload path = %#v", payload["path"])
-	}
-	if payload["depth"] != float64(1) {
-		t.Fatalf("list payload depth = %#v", payload["depth"])
-	}
-	files, ok := payload["files"].([]any)
-	if !ok || len(files) != 2 {
-		t.Fatalf("list payload files = %#v", payload["files"])
-	}
-	if llmClient.reqs[1].Messages[4].Role != "user" {
-		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
-	}
-	if want := "1. list_files: tool_call_id=\"call_1\", arguments=[path=\"pkg\", depth=1]; result=[files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
-	}
-}
 
 type blockingRetrieval struct {
 	started chan string
@@ -2703,715 +1699,22 @@ func TestEngineDedupesDuplicateToolCallsWithinParallelRound(t *testing.T) {
 	}
 }
 
-func TestEngineReturnsErrorForDuplicateListFilesRequests(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "list_files", Arguments: `{"path":"./pkg","depth":1}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list:pkg:1" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-	if want := "2. list_files: tool_call_id=\"call_2\", arguments=[path=\"./pkg\", depth=1]; error=\"tool result was already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
-	}
-}
 
-func TestEngineAllowsEmptyPathForListFilesToolCalls(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "list_files", Arguments: `{}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "list::1" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
 
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["path"] != "" {
-		t.Fatalf("list payload path = %#v", payload["path"])
-	}
-	if payload["depth"] != float64(1) {
-		t.Fatalf("list payload depth = %#v", payload["depth"])
-	}
-	if llmClient.reqs[1].Messages[4].Role != "user" {
-		t.Fatalf("follow-up role = %q", llmClient.reqs[1].Messages[4].Role)
-	}
-	if want := "1. list_files: tool_call_id=\"call_1\", arguments=[path=\".\", depth=1]; result=[files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
-	}
-}
 
-func TestEngineExecutesCallersToolCalls(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "find_callers", Arguments: `{"symbol":"Run","path":"pkg","depth":2}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:2" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
 
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["symbol"] != "Run" || payload["path"] != "pkg" || payload["mode"] != "callers" {
-		t.Fatalf("callers payload = %#v", payload)
-	}
-	if want := "1. find_callers: tool_call_id=\"call_1\", arguments=[path=\"pkg\", symbol=\"Run\", depth=2]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
-	}
-}
 
-func TestEngineReturnsErrorForDuplicateFindCallersRequests(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "find_callers", Arguments: `{"symbol":"Run","path":"pkg","depth":2}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "find_callers", Arguments: `{"symbol":"Run","path":"./pkg","depth":2}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:2" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-	if want := "2. find_callers: tool_call_id=\"call_2\", arguments=[path=\"./pkg\", symbol=\"Run\", depth=2]; error=\"tool result was already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
-	}
-}
 
-func TestEngineAllowsEmptyPathForCalleesToolCalls(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "find_callees", Arguments: `{"symbol":"Run"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callees::Run:10" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
 
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["symbol"] != "Run" || payload["path"] != "" || payload["mode"] != "callees" {
-		t.Fatalf("callees payload = %#v", payload)
-	}
-	if want := "1. find_callees: tool_call_id=\"call_1\", arguments=[path=\".\", symbol=\"Run\", depth=10]; result=[lines=2, files=2]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
-	}
-}
 
-func TestEnginePrintsToolCallsWhenEnabled(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	var buf bytes.Buffer
-	logger := logging.New(&buf, false, false)
-	logger.SetShowProgress(true)
-	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
-	engine.SetLogger(logger)
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	got := buf.String()
-	if !strings.Contains(got, "Tool: list_files(path=\"pkg\", depth=1) → result=[files=2]") {
-		t.Fatalf("tool call banner missing: %q", got)
-	}
-	if strings.Contains(got, `"files": [`) || strings.Contains(got, "pkg/a.go") {
-		t.Fatalf("tool call output should omit content payloads: %q", got)
-	}
-}
 
-func TestEngineLogsReasoningProgressForEachLLMCall(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
-				},
-				Reasoned: true,
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-				Reasoned:               true,
-			},
-		},
-	}
-	var buf bytes.Buffer
-	logger := logging.New(&buf, false, false)
-	logger.SetShowProgress(true)
-	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
-	engine.SetLogger(logger)
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := buf.String()
-	for _, want := range []string{
-		"Reasoning: [reviewer #1: repo@] #1\n",
-		"Reasoning: [reviewer #1: repo@] #1 Done ",
-		"Reasoning: [reviewer #1: repo@] #2\n",
-		"Reasoning: [reviewer #1: repo@] #2 Done ",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("reasoning progress %q missing: %q", want, got)
-		}
-	}
-}
-
-func TestEngineUsesFreshReasoningSectionForEachLLMCall(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
-				},
-				Reasoned: true,
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-				Reasoned:               true,
-			},
-		},
-	}
-	var buf bytes.Buffer
-	logger := logging.New(&buf, false, false)
-	logger.SetShowReasoning(true)
-	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
-	engine.SetLogger(logger)
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("requests = %d, want 2", len(llmClient.reqs))
-	}
-	if llmClient.reqs[0].ReasoningSink == nil || llmClient.reqs[1].ReasoningSink == nil {
-		t.Fatalf("reasoning sinks should be set for each request: %#v %#v", llmClient.reqs[0].ReasoningSink, llmClient.reqs[1].ReasoningSink)
-	}
-	if llmClient.reqs[0].ReasoningSink == llmClient.reqs[1].ReasoningSink {
-		t.Fatal("reasoning sink should not be reused across LLM calls")
-	}
-	got := buf.String()
-	for _, want := range []string{
-		"Reasoning for reviewer #1: repo@ #1...\n",
-		"Reasoning for reviewer #1: repo@ #2...\n",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("per-call reasoning banner %q missing: %q", want, got)
-		}
-	}
-}
-
-func TestEnginePrintsOptimizedSearchReplacementWhenEnabled(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	var buf bytes.Buffer
-	logger := logging.New(&buf, false, false)
-	logger.SetShowProgress(true)
-	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
-	engine.SetLogger(logger)
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := buf.String()
-	if !strings.Contains(got, "Tool: find_callers(instead_of=\"search\", path=\"pkg\", symbol=\"Run\", depth=10) → result=[lines=2, files=2]") {
-		t.Fatalf("optimized tool call banner missing: %q", got)
-	}
-}
-
-func TestEngineDoesNotPrintToolCallsByDefault(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "list_files", Arguments: `{"path":"pkg","depth":1}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	var buf bytes.Buffer
-	logger := logging.New(&buf, false, false)
-	engine := NewEngine(stubSource{}, llmClient, &countingRetrieval{}, config.Profile{Model: "test"})
-	engine.SetLogger(logger)
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if got := buf.String(); strings.Contains(got, "Tool call:") {
-		t.Fatalf("tool calls should be hidden by default: %q", got)
-	}
-}
-
-func TestEngineExecutesSearchToolCalls(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"","query":"ttlExtenders","context_lines":5,"max_results":20,"case_sensitive":false}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantPaths := []string{"search::ttlExtenders:5:20:false"}
-	if !reflect.DeepEqual(retrievalEngine.paths, wantPaths) {
-		t.Fatalf("retrieval paths = %#v, want %#v", retrievalEngine.paths, wantPaths)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["query"] != "ttlExtenders" {
-		t.Fatalf("search payload query = %#v", payload["query"])
-	}
-	if payload["context_lines"] != float64(5) {
-		t.Fatalf("search payload context_lines = %#v", payload["context_lines"])
-	}
-	if payload["max_results"] != float64(20) {
-		t.Fatalf("search payload max_results = %#v", payload["max_results"])
-	}
-	if payload["case_sensitive"] != false {
-		t.Fatalf("search payload case_sensitive = %#v", payload["case_sensitive"])
-	}
-	if payload["result_count"] != float64(1) {
-		t.Fatalf("search payload result_count = %#v", payload["result_count"])
-	}
-	results, ok := payload["results"].([]any)
-	if !ok || len(results) != 1 {
-		t.Fatalf("search payload results = %#v", payload["results"])
-	}
-	firstResult, ok := results[0].(map[string]any)
-	if !ok {
-		t.Fatalf("search payload first result = %#v", results[0])
-	}
-	if firstResult["language"] != "go" {
-		t.Fatalf("search payload result language = %#v", firstResult["language"])
-	}
-	if firstResult["content"] != "before\nttlExtenders\nafter" {
-		t.Fatalf("search payload result content = %#v", firstResult["content"])
-	}
-	if want := "1. search: tool_call_id=\"call_1\", arguments=[path=\".\", query=\"ttlExtenders\", context_lines=5, max_results=20, case_sensitive=false]; result=[files=1, result_count=1]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
-	}
-}
-
-func TestEngineRewritesSearchFunctionQueryToFindCallers(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:10" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["mode"] != "callers" || payload["symbol"] != "Run" || payload["path"] != "pkg" {
-		t.Fatalf("tool payload = %#v", payload)
-	}
-}
-
-func TestEngineRewritesSearchMethodQueryToFindCallers(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Close()"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Close:10" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("tool payload should be valid json: %v", err)
-	}
-	if payload["mode"] != "callers" || payload["symbol"] != "Close" || payload["path"] != "pkg" {
-		t.Fatalf("tool payload = %#v", payload)
-	}
-}
-
-func TestEngineDedupesOptimizedSearchAgainstFindCallers(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "find_callers", Arguments: `{"path":"./pkg","symbol":"Run","depth":10}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "callers:pkg:Run:10" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-	if want := "1. search (replaced by find_callers): tool_call_id=\"call_1\", arguments=[path=\"pkg\", query=\"Run(\", context_lines=0, max_results=0, case_sensitive=false]"; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
-	}
-	if want := "2. find_callers: tool_call_id=\"call_2\", arguments=[path=\"./pkg\", symbol=\"Run\", depth=10]; error=\"tool result was already provided for this review\""; !strings.Contains(llmClient.reqs[2].Messages[6].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[2].Messages[6].Content)
-	}
-}
-
-func TestEngineReportsZeroSearchResultsExplicitly(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"missing"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if want := "1. search: tool_call_id=\"call_1\", arguments=[path=\"pkg\", query=\"missing\", context_lines=0, max_results=0, case_sensitive=false]; result=[result_count=0]"; !strings.Contains(llmClient.reqs[1].Messages[4].Content, want) {
-		t.Fatalf("follow-up content = %q", llmClient.reqs[1].Messages[4].Content)
-	}
-}
-
-func TestEngineCanDisableSearchToolOptimization(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"Run("}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-	engine.SetSearchToolOptimization(false)
-
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "search:pkg:Run(:0:0:false" {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-}
-
-func TestEngineTreatsZeroToolRoundsAsUnlimited(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-				},
-			},
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_2", Name: "list_files", Arguments: `{"path":"pkg"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     0,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.OverallCorrectness != "patch is correct" {
-		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
-	}
-	if result.TotalToolCalls != 2 {
-		t.Fatalf("tool calls = %d", result.TotalToolCalls)
-	}
-	if len(retrievalEngine.paths) != 2 {
-		t.Fatalf("retrieval paths = %#v", retrievalEngine.paths)
-	}
-}
 
 func pathOrDefault(path, fallback string) string {
 	if path == "" {
@@ -3633,424 +1936,14 @@ func updatePayloadParts(content string) (string, string) {
 	return strings.TrimSpace(list), strings.TrimSpace(findings)
 }
 
-func TestEngineRetriesOnInvalidJSONResponse(t *testing.T) {
-	llmClient := &scriptedLLM{
-		results: []scriptedLLMResult{
-			{
-				err: &llm.InvalidResponseError{
-					RawContent: "Sure! Here it is:\n\n{not valid json}",
-					Reason:     "could not parse JSON: unexpected token",
-				},
-			},
-			{
-				resp: &llm.ReviewResponse{
-					OverallCorrectness:     "patch is incorrect",
-					OverallExplanation:     "fixed",
-					OverallConfidenceScore: 0.7,
-				},
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxOutputRetries: defaultMaxOutputRetries,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.OverallCorrectness != "patch is incorrect" {
-		t.Fatalf("overall_correctness = %q", result.OverallCorrectness)
-	}
-	if len(llmClient.reqs) != 2 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	if len(llmClient.reqs[1].Tools) == 0 {
-		t.Fatal("normal JSON retry should keep tools")
-	}
-	if !llmClient.reqs[1].ParallelToolCalls {
-		t.Fatal("normal JSON retry should keep parallel tool calls enabled")
-	}
-	retryMessages := llmClient.reqs[1].Messages
-	if len(retryMessages) < 4 {
-		t.Fatalf("retry messages = %d, want at least 4", len(retryMessages))
-	}
-	assistantMsg := retryMessages[len(retryMessages)-2]
-	if assistantMsg.Role != "assistant" {
-		t.Fatalf("retry assistant role = %q", assistantMsg.Role)
-	}
-	if !strings.Contains(assistantMsg.Content, "{not valid json}") {
-		t.Fatalf("retry assistant content = %q", assistantMsg.Content)
-	}
-	userMsg := retryMessages[len(retryMessages)-1]
-	if userMsg.Role != "user" {
-		t.Fatalf("retry user role = %q", userMsg.Role)
-	}
-	if !strings.Contains(userMsg.Content, "could not be parsed") {
-		t.Fatalf("retry user content missing reason: %q", userMsg.Content)
-	}
-	if !strings.Contains(userMsg.Content, "ONLY a JSON object") {
-		t.Fatalf("retry user content missing instruction: %q", userMsg.Content)
-	}
-}
 
-func TestEngineRetriesToolsOmittedInvalidJSONWithoutTools(t *testing.T) {
-	llmClient := &scriptedLLM{
-		results: []scriptedLLMResult{
-			{
-				resp: &llm.ReviewResponse{
-					RawResponse: "I'll inspect extra.go first.",
-					ToolCalls: []llm.ToolCall{
-						{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
-					},
-					ReasoningEffort: "medium",
-				},
-			},
-			{
-				err: &llm.InvalidResponseError{
-					RawContent:      "not json",
-					Reason:          "could not parse JSON: unexpected token",
-					ReasoningEffort: "low",
-					ToolsOmitted:    true,
-				},
-			},
-			{
-				resp: &llm.ReviewResponse{
-					OverallCorrectness:     "patch is correct",
-					OverallExplanation:     "fixed",
-					OverallConfidenceScore: 0.7,
-					ReasoningEffort:        "low",
-				},
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test", ReasoningEffort: "high"})
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxOutputRetries: defaultMaxOutputRetries,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.ReasoningEffort != "low" {
-		t.Fatalf("result reasoning effort = %q", result.ReasoningEffort)
-	}
-	if len(llmClient.reqs) != 3 {
-		t.Fatalf("requests = %d", len(llmClient.reqs))
-	}
-	retryReq := llmClient.reqs[2]
-	if len(retryReq.Tools) != 0 {
-		t.Fatalf("JSON repair request should have no tools, got %d", len(retryReq.Tools))
-	}
-	if retryReq.ParallelToolCalls {
-		t.Fatal("JSON repair request should disable parallel tool calls")
-	}
-	if retryReq.ReasoningEffort != "low" {
-		t.Fatalf("JSON repair reasoning effort = %q", retryReq.ReasoningEffort)
-	}
-	if strings.Contains(retryReq.Messages[0].Content, "`inspect_file` tool") {
-		t.Fatalf("system prompt should omit tool instructions: %q", retryReq.Messages[0].Content)
-	}
-	if !strings.Contains(retryReq.Messages[0].Content, "OUTPUT FORMAT") {
-		t.Fatalf("system prompt missing review instructions: %q", retryReq.Messages[0].Content)
-	}
 
-	foundToolResult := false
-	for _, msg := range retryReq.Messages {
-		if msg.Role == "tool" {
-			t.Fatalf("JSON repair request should convert tool messages to user messages: %#v", msg)
-		}
-		if len(msg.ToolCalls) > 0 {
-			t.Fatalf("JSON repair request should strip assistant tool calls: %#v", msg)
-		}
-		if msg.Role == "user" && strings.Contains(msg.Content, `"path":"extra.go"`) {
-			foundToolResult = true
-		}
-	}
-	if !foundToolResult {
-		t.Fatalf("JSON repair request missing converted tool result: %#v", retryReq.Messages)
-	}
-	if got := retryReq.Messages[len(retryReq.Messages)-2]; got.Role != "assistant" || got.Content != "not json" {
-		t.Fatalf("repair raw response message = %#v", got)
-	}
-	feedback := retryReq.Messages[len(retryReq.Messages)-1]
-	if feedback.Role != "user" {
-		t.Fatalf("repair feedback role = %q", feedback.Role)
-	}
-	if !strings.Contains(feedback.Content, "could not be parsed") || !strings.Contains(feedback.Content, "ONLY a JSON object") {
-		t.Fatalf("repair feedback content = %q", feedback.Content)
-	}
-}
 
-func TestEngineFailsAfterMaxJSONRetries(t *testing.T) {
-	results := make([]scriptedLLMResult, 0, defaultMaxOutputRetries+1)
-	for i := 0; i <= defaultMaxOutputRetries; i++ {
-		results = append(results, scriptedLLMResult{
-			err: &llm.InvalidResponseError{
-				RawContent: "still bad",
-				Reason:     "could not parse JSON",
-			},
-		})
-	}
-	llmClient := &scriptedLLM{results: results}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxOutputRetries: defaultMaxOutputRetries,
-	})
-	if err == nil {
-		t.Fatal("expected error after exhausting retries")
-	}
-	if !errors.Is(err, llm.ErrInvalidJSON) {
-		t.Fatalf("expected ErrInvalidJSON, got %v", err)
-	}
-	if len(llmClient.reqs) != defaultMaxOutputRetries+1 {
-		t.Fatalf("requests = %d, want %d", len(llmClient.reqs), defaultMaxOutputRetries+1)
-	}
-}
 
-func TestEngineTreatsZeroMaxOutputRetriesAsUnlimited(t *testing.T) {
-	results := make([]scriptedLLMResult, 0, defaultMaxOutputRetries+2)
-	for i := 0; i <= defaultMaxOutputRetries; i++ {
-		results = append(results, scriptedLLMResult{
-			err: &llm.InvalidResponseError{
-				RawContent: "still bad",
-				Reason:     "could not parse JSON",
-			},
-		})
-	}
-	results = append(results, scriptedLLMResult{
-		resp: &llm.ReviewResponse{
-			OverallCorrectness:     "patch is correct",
-			OverallExplanation:     "recovered",
-			OverallConfidenceScore: 0.7,
-		},
-	})
-	llmClient := &scriptedLLM{results: results}
-	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	result, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxOutputRetries: 0,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.OverallExplanation != "recovered" {
-		t.Fatalf("overall explanation = %q", result.OverallExplanation)
-	}
-	if len(llmClient.reqs) != defaultMaxOutputRetries+2 {
-		t.Fatalf("requests = %d, want %d", len(llmClient.reqs), defaultMaxOutputRetries+2)
-	}
-}
 
-func TestEngineParsesLenientToolArguments(t *testing.T) {
-	retrievalEngine := &countingRetrieval{}
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{
-						ID:   "call_1",
-						Name: "inspect_file",
-						// Trailing comma + single quotes + prose wrapper — LenientUnmarshal should recover this.
-						Arguments: "Sure: {'path': 'main.go',}",
-					},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "ok",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "main.go" {
-		t.Fatalf("expected lenient tool arguments to be parsed, got %#v", retrievalEngine.paths)
-	}
-}
 
-func TestEngineMergesRegexAndLiteralSearchResults(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"foo.*bar"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{
-		hasCustomResults: true,
-		literalResults: []retrieval.SearchResult{
-			{Path: "pkg/a.go", StartLine: 1, EndLine: 1, Language: "go", Content: "foo.*bar literal hit"},
-		},
-		regexResults: []retrieval.SearchResult{
-			{Path: "pkg/a.go", StartLine: 5, EndLine: 5, Language: "go", Content: "fooXbar regex hit"},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
 
-	if _, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	}); err != nil {
-		t.Fatal(err)
-	}
 
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("payload json: %v", err)
-	}
-	if payload["result_count"] != float64(2) {
-		t.Fatalf("result_count = %#v", payload["result_count"])
-	}
-	results := payload["results"].([]any)
-	if len(results) != 2 {
-		t.Fatalf("results len = %d", len(results))
-	}
-	if got := results[0].(map[string]any)["start_line"]; got != float64(1) {
-		t.Fatalf("first result start_line = %#v", got)
-	}
-	if got := results[1].(map[string]any)["start_line"]; got != float64(5) {
-		t.Fatalf("second result start_line = %#v", got)
-	}
-}
-
-func TestEngineDedupesOverlappingRegexAndLiteralHits(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"user(Name)?"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	hit := retrieval.SearchResult{Path: "pkg/a.go", StartLine: 7, EndLine: 9, Language: "go", Content: "userName"}
-	retrievalEngine := &countingRetrieval{
-		hasCustomResults: true,
-		literalResults:   []retrieval.SearchResult{hit},
-		regexResults:     []retrieval.SearchResult{hit},
-	}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	if _, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("payload json: %v", err)
-	}
-	if payload["result_count"] != float64(1) {
-		t.Fatalf("result_count = %#v (regex+literal hits should dedup)", payload["result_count"])
-	}
-}
-
-func TestEngineFallsBackToLiteralWhenRegexInvalid(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"foo[bar"}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	if _, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if len(retrievalEngine.paths) != 1 {
-		t.Fatalf("regex compile must fail and skip SearchRegex; paths = %#v", retrievalEngine.paths)
-	}
-	if !strings.HasPrefix(retrievalEngine.paths[0], "search:") {
-		t.Fatalf("expected literal search path, got %q", retrievalEngine.paths[0])
-	}
-}
-
-func TestEngineMergeTruncatesToMaxResults(t *testing.T) {
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				ToolCalls: []llm.ToolCall{
-					{ID: "call_1", Name: "search", Arguments: `{"path":"pkg","query":"x.*","max_results":2}`},
-				},
-			},
-			{
-				OverallCorrectness:     "patch is correct",
-				OverallExplanation:     "summary",
-				OverallConfidenceScore: 0.5,
-			},
-		},
-	}
-	retrievalEngine := &countingRetrieval{
-		hasCustomResults: true,
-		literalResults: []retrieval.SearchResult{
-			{Path: "pkg/a.go", StartLine: 1, EndLine: 1, Language: "go", Content: "a"},
-			{Path: "pkg/a.go", StartLine: 2, EndLine: 2, Language: "go", Content: "b"},
-		},
-		regexResults: []retrieval.SearchResult{
-			{Path: "pkg/a.go", StartLine: 3, EndLine: 3, Language: "go", Content: "c"},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, retrievalEngine, config.Profile{Model: "test"})
-
-	if _, err := engine.Run(context.Background(), model.ReviewRequest{
-		Mode:             model.ModeLocal,
-		MaxContextTokens: 1000,
-		MaxToolCalls:     1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[1].Messages[3].Content), &payload); err != nil {
-		t.Fatalf("payload json: %v", err)
-	}
-	if payload["result_count"] != float64(2) {
-		t.Fatalf("result_count = %#v, want 2 (merged set capped at max_results)", payload["result_count"])
-	}
-}
 
 func schemaStringSlice(value any) []string {
 	items, ok := value.([]any)
@@ -4065,4 +1958,75 @@ func schemaStringSlice(value any) []string {
 		}
 	}
 	return result
+}
+
+func TestShouldDropFinding(t *testing.T) {
+	cases := []struct {
+		name       string
+		verdict    string
+		confidence float64
+		policy     string
+		threshold  float64
+		wantDrop   bool
+		wantReason string
+	}{
+		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, "refuted-only", 0.8, false, "kept"},
+		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, "refuted-and-unverified", 0.8, false, "kept"},
+		{"refuted above floor drops", model.VerdictRefuted, 0.85, "refuted-only", 0.8, true, model.VerdictRefuted},
+		{"refuted at floor drops", model.VerdictRefuted, 0.80, "refuted-only", 0.8, true, model.VerdictRefuted},
+		{"refuted below floor kept", model.VerdictRefuted, 0.79, "refuted-only", 0.8, false, "below_confidence"},
+		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", 0.8, false, "kept"},
+		{"unverified above floor drops (both)", model.VerdictUnverified, 0.9, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
+		{"unverified below floor kept (both)", model.VerdictUnverified, 0.5, "refuted-and-unverified", 0.8, false, "below_confidence"},
+		{"refuted policy=none kept", model.VerdictRefuted, 0.99, "none", 0.8, false, "kept"},
+		{"missing verdict treated as unverified (refuted-only)", "", 0.99, "refuted-only", 0.8, false, "kept"},
+		{"missing verdict treated as unverified (both)", "", 0.99, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
+		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", 0.8, true, model.VerdictRefuted},
+		{"threshold zero drops anything refuted", model.VerdictRefuted, 0.0, "refuted-only", 0.0, true, model.VerdictRefuted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &model.FindingVerification{Verdict: tc.verdict, ConfidenceScore: tc.confidence}
+			drop, reason := shouldDropFinding(v, tc.policy, tc.threshold)
+			if drop != tc.wantDrop {
+				t.Fatalf("drop = %v, want %v", drop, tc.wantDrop)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestShouldDropFindingNilVerification(t *testing.T) {
+	drop, reason := shouldDropFinding(nil, "refuted-and-unverified", 0.0)
+	if drop || reason != "kept" {
+		t.Fatalf("nil verification: drop=%v reason=%q", drop, reason)
+	}
+}
+
+func TestNormalizeDropPolicyFallback(t *testing.T) {
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY"} {
+		if got := normalizeDropPolicy(p); got != "refuted-only" {
+			t.Fatalf("normalizeDropPolicy(%q) = %q, want refuted-only", p, got)
+		}
+	}
+	for _, p := range []string{"none", "refuted-only", "refuted-and-unverified"} {
+		if got := normalizeDropPolicy(p); got != p {
+			t.Fatalf("normalizeDropPolicy(%q) = %q, want passthrough", p, got)
+		}
+	}
+}
+
+func TestValidateDropPolicy(t *testing.T) {
+	for _, p := range []string{"none", "refuted-only", "refuted-and-unverified"} {
+		if err := ValidateDropPolicy(p); err != nil {
+			t.Fatalf("ValidateDropPolicy(%q) = %v, want nil", p, err)
+		}
+	}
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY", "refuted_only"} {
+		if err := ValidateDropPolicy(p); err == nil {
+			t.Fatalf("ValidateDropPolicy(%q) = nil, want error", p)
+		}
+	}
 }

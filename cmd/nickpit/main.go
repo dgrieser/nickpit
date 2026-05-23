@@ -72,7 +72,8 @@ type app struct {
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
 	verifyConcurrency             int
-	hideInvalid                   bool
+	verifyDropPolicy              string
+	verifyDropConfidence          float64
 	skipModelCheck                bool
 	logger                        *logging.Logger
 }
@@ -100,6 +101,9 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			if err := review.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
+				return err
+			}
 			if cli.workDir == "" {
 				return nil
 			}
@@ -146,7 +150,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
-	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
+	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
+	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 
 	root.AddCommand(cli.newCheckCmd())
@@ -709,11 +714,13 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		defer cleanup()
 	}
 	req.RepoRoot = repoRoot
+	req.VerifyConcurrency = a.verifyConcurrency
+	req.VerifyDropPolicy = a.verifyDropPolicy
+	req.VerifyDropConfidence = a.verifyDropConfidence
 
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
-	engine.SetMultiAgentReview(true)
 	result, trimmedCtx, err := engine.RunWithContext(ctx, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
@@ -724,31 +731,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return err
 	}
 	a.logProgress("Result", reviewResultSummary(result))
-
-	if len(result.Findings) > 0 && trimmedCtx != nil {
-		verifyOpts := review.VerifyOptions{
-			Concurrency:              a.verifyConcurrency,
-			UseJSONSchema:            req.UseJSONSchema,
-			MaxToolCalls:             req.MaxToolCalls,
-			MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
-			MaxOutputRetries:         req.MaxOutputRetries,
-			MaxReasoningSeconds:      req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
-			DisableParallelToolCalls: req.DisableParallelToolCalls,
-			RepoRoot:                 req.RepoRoot,
-		}
-		verifications, verifyUsage, verifyWarnings, verifyErr := engine.VerifyAll(ctx, trimmedCtx, result.Findings, verifyOpts)
-		if verifyErr != nil {
-			a.logProgress("Verify", fmt.Sprintf("status=ERROR, error=%v", verifyErr))
-			return verifyErr
-		}
-		for i := range result.Findings {
-			result.Findings[i].Verification = verifications[i]
-		}
-		result.VerifyTokensUsed = verifyUsage
-		result.Warnings = append(result.Warnings, verifyWarnings...)
-		result.Findings = review.DropInvalidFindings(result.Findings)
-	}
 
 	if len(result.Findings) > 0 && trimmedCtx != nil {
 		finalizeOpts := review.FinalizeOptions{
@@ -780,7 +762,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
 	} else {
-		formatter = output.NewTerminalFormatter(os.Stdout, true).WithHideInvalid(a.hideInvalid)
+		formatter = output.NewTerminalFormatter(os.Stdout, true)
 	}
 	if err := formatter.FormatFindings(result); err != nil {
 		return err

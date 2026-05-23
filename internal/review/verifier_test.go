@@ -44,7 +44,7 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 	}
 	if len(s.responses) == 0 {
 		return &llm.ReviewResponse{
-			Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.5, Remarks: "ok"},
+			Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.5, Remarks: "ok"},
 			TokensUsed:   model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 		}, nil
 	}
@@ -69,11 +69,11 @@ func TestVerifyAllAttachesByIndex(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{
 			{
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "real bug"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "real bug"},
 				TokensUsed:   model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
 			},
 			{
-				Verification: &model.FindingVerification{Valid: false, Priority: 3, ConfidenceScore: 0.85, Remarks: "not reachable"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 3, ConfidenceScore: 0.85, Remarks: "not reachable"},
 				TokensUsed:   model.TokenUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3},
 			},
 		},
@@ -91,10 +91,10 @@ func TestVerifyAllAttachesByIndex(t *testing.T) {
 	if len(verifications) != 2 {
 		t.Fatalf("verifications = %d, want 2", len(verifications))
 	}
-	if !verifications[0].Valid || verifications[0].Remarks != "real bug" {
+	if verifications[0].Verdict != model.VerdictConfirmed || verifications[0].Remarks != "real bug" {
 		t.Fatalf("verifications[0] = %#v", verifications[0])
 	}
-	if verifications[1].Valid || verifications[1].Remarks != "not reachable" {
+	if verifications[1].Verdict != model.VerdictRefuted || verifications[1].Remarks != "not reachable" {
 		t.Fatalf("verifications[1] = %#v", verifications[1])
 	}
 	if usage.TotalTokens != 6 {
@@ -169,7 +169,7 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 				},
 			},
 			{
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "confirmed"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "confirmed"},
 				TokensUsed: model.TokenUsage{
 					PromptTokens:     3,
 					CompletionTokens: 2,
@@ -238,7 +238,7 @@ func TestVerifyRetriesMissingVerification(t *testing.T) {
 				TokensUsed:  model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 			},
 			{
-				Verification: &model.FindingVerification{Valid: false, Priority: 3, ConfidenceScore: 0.9, Remarks: "not valid"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 3, ConfidenceScore: 0.9, Remarks: "not valid"},
 				TokensUsed:   model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
 			},
 		},
@@ -259,7 +259,7 @@ func TestVerifyRetriesMissingVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
-	if verification == nil || verification.Valid || verification.Remarks != "not valid" {
+	if verification == nil || verification.Verdict != model.VerdictRefuted || verification.Remarks != "not valid" {
 		t.Fatalf("verification = %#v", verification)
 	}
 	if usage.TotalTokens != 5 {
@@ -347,7 +347,7 @@ func TestVerifyFallsBackVerificationIDToFindingID(t *testing.T) {
 	const findingID = "11111111-1111-4111-8111-111111111111"
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{{
-			Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+			Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
 		}},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
@@ -372,7 +372,7 @@ func TestVerifyPreservesValidVerificationIDFromLLM(t *testing.T) {
 	const llmID = "22222222-2222-4222-8222-222222222222"
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{{
-			Verification: &model.FindingVerification{ID: llmID, Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+			Verification: &model.FindingVerification{ID: llmID, Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
 		}},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})

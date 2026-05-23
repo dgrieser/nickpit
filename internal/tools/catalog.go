@@ -13,6 +13,7 @@ type catalogEntry struct {
 	Name               string
 	APIDescription     string
 	ListingDescription string
+	Note               string // optional
 	Parameters         []CatalogParameter
 }
 
@@ -62,6 +63,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder",
 		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches.",
+		Note:               "Prefer `find_callers` over `search` when locating a function by name — `find_callers` resolves the symbol and returns its caller hierarchy and method bodies in one call.",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
@@ -72,14 +74,15 @@ var catalogDefinition = []catalogEntry{
 	},
 	{
 		Name:               "find_callers",
-		APIDescription:     "Resolve function by symbol name and return caller hierarchy and method bodies",
-		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function across Go, Python, and Node.js/TypeScript code.",
+		APIDescription:     "Resolve function by symbol name and return caller hierarchy including method bodies",
+		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function.",
+		Note:               "Use this to retrieve a function's call context — resolves the symbol, walks the caller hierarchy, and returns method bodies, avoiding multiple `search` + `view` round-trips.",
 		Parameters:         callHierarchyParameters(),
 	},
 	{
 		Name:               "find_callees",
-		APIDescription:     "Resolve function by symbol name and return its callee hierarchy and method bodies",
-		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls across Go, Python, and Node.js/TypeScript code.",
+		APIDescription:     "Resolve function by symbol name and return its callee hierarchy including method bodies",
+		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls.",
 		Parameters:         callHierarchyParameters(),
 	},
 }
@@ -114,7 +117,7 @@ func Definitions(names ...string) ([]llm.ToolDefinition, error) {
 	for _, entry := range entries {
 		definitions = append(definitions, llm.ToolDefinition{
 			Name:        entry.Name,
-			Description: entry.APIDescription,
+			Description: entry.apiDescription(),
 			Parameters:  entry.parametersJSON(),
 		})
 	}
@@ -128,7 +131,8 @@ func InstructionsListing(names ...string) (string, error) {
 	}
 	var builder strings.Builder
 	for _, entry := range entries {
-		fmt.Fprintf(&builder, "- `%s` tool %s\n", entry.Name, entry.ListingDescription)
+		builder.WriteString(entry.listingLine())
+		builder.WriteByte('\n')
 	}
 	return strings.TrimRight(builder.String(), "\n"), nil
 }
@@ -197,6 +201,21 @@ func lookupEntry(name string) (catalogEntry, bool) {
 		}
 	}
 	return catalogEntry{}, false
+}
+
+func (entry catalogEntry) apiDescription() string {
+	if entry.Note == "" {
+		return entry.APIDescription
+	}
+	return fmt.Sprintf("%s\n\nNOTE: %s", entry.APIDescription, entry.Note)
+}
+
+func (entry catalogEntry) listingLine() string {
+	line := fmt.Sprintf("- `%s` tool %s", entry.Name, entry.ListingDescription)
+	if entry.Note != "" {
+		line += fmt.Sprintf("\n  NOTE: %s", entry.Note)
+	}
+	return line
 }
 
 func (entry catalogEntry) parametersJSON() json.RawMessage {

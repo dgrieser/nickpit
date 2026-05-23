@@ -44,6 +44,9 @@ type ReviewRequest struct {
 	MaxOutputRetries         int
 	MaxReasoningSeconds      int
 	MaxReasoningLoopRepeats  int
+	VerifyConcurrency        int
+	VerifyDropPolicy         string
+	VerifyDropConfidence     float64
 	NudgeCount               int
 	DisableParallelToolCalls bool
 	DisableReasoningExtract  bool
@@ -238,9 +241,15 @@ func newUniqueUUID(seen map[string]struct{}) string {
 	}
 }
 
+const (
+	VerdictConfirmed  = "confirmed"
+	VerdictRefuted    = "refuted"
+	VerdictUnverified = "unverified"
+)
+
 type FindingVerification struct {
 	ID              string  `json:"id"`
-	Valid           bool    `json:"valid"`
+	Verdict         string  `json:"verdict"`
 	Priority        int     `json:"priority"`
 	ConfidenceScore float64 `json:"confidence_score"`
 	Remarks         string  `json:"remarks"`
@@ -249,7 +258,7 @@ type FindingVerification struct {
 // MergeFrom implements the merge-aware contract used by jsonx.Mergeable.
 // Multi-block verify refinements overwrite only the fields a candidate
 // actually emitted, so a partial later block (e.g. only "remarks") does
-// not blank earlier ID/Valid/Priority/ConfidenceScore.
+// not blank earlier ID/Verdict/Priority/ConfidenceScore.
 func (v *FindingVerification) MergeFrom(other any, presentKeys map[string]bool) (bool, error) {
 	src, ok := other.(*FindingVerification)
 	if !ok || src == nil {
@@ -260,8 +269,8 @@ func (v *FindingVerification) MergeFrom(other any, presentKeys map[string]bool) 
 		v.ID = src.ID
 		claimed = true
 	}
-	if presentKeys["valid"] {
-		v.Valid = src.Valid
+	if presentKeys["verdict"] {
+		v.Verdict = src.Verdict
 		claimed = true
 	}
 	if presentKeys["priority"] {

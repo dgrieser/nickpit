@@ -310,33 +310,38 @@ func roundConfidenceScore(score float64) float64 {
 }
 
 // finalizeConstraintsFor returns the constraints to apply to the finalizer
-// based on the verified findings. If no input finding is P0 or P1, the
-// finalizer cannot flip overall_correctness to "patch is incorrect" — that
-// outcome must be driven by at least one critical finding.
+// based on the verified findings. Three regimes, computed from the priority
+// floor = min(finding.priority, verification.priority):
+//   - any P0 floor: AllowedCorrectness = ["patch is incorrect"]. The schema
+//     forces the finalizer's hand because a critical finding by definition
+//     blocks the patch.
+//   - any P1 floor, no P0: unconstrained. The prompt asks the finalizer to
+//     default to "patch is incorrect" but lets it claim "patch is correct"
+//     with strong justification — schema cannot judge justification quality.
+//   - no P0/P1 floor: AllowedCorrectness = ["patch is correct"]. Without a
+//     critical finding the finalizer cannot fabricate a blocker.
 func finalizeConstraintsFor(in []model.Finding) llm.ResponseConstraints {
-	hasCritical := false
+	hasP0, hasP1 := false, false
 	for _, f := range in {
-		if model.PriorityRank(f.Priority) < 2 {
-			hasCritical = true
-			break
+		floor := model.PriorityRank(f.Priority)
+		if f.Verification != nil && f.Verification.Priority < floor {
+			floor = f.Verification.Priority
+		}
+		switch floor {
+		case 0:
+			hasP0 = true
+		case 1:
+			hasP1 = true
 		}
 	}
-	if hasCritical {
+	switch {
+	case hasP0:
+		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is incorrect"}}
+	case hasP1:
 		return llm.ResponseConstraints{}
+	default:
+		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is correct"}}
 	}
-	return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is correct"}}
-}
-
-// DropInvalidFindings removes findings the verifier marked as invalid.
-func DropInvalidFindings(findings []model.Finding) []model.Finding {
-	out := make([]model.Finding, 0, len(findings))
-	for _, f := range findings {
-		if f.Verification != nil && !f.Verification.Valid {
-			continue
-		}
-		out = append(out, f)
-	}
-	return out
 }
 
 func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {

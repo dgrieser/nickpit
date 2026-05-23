@@ -59,7 +59,6 @@ func (s *recordingMultiAgentLLM) Review(_ context.Context, req *llm.ReviewReques
 func TestEngineIncludesToolchainVersionsInContextPayload(t *testing.T) {
 	llmClient := &recordingMultiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 	engine.SetToolchainCapture(func(_ context.Context, repoRoot string, _ *model.ReviewContext) []model.ToolchainVersion {
 		if repoRoot != "/some/repo" {
 			t.Errorf("repoRoot passed to capture = %q", repoRoot)

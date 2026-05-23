@@ -30,7 +30,6 @@ type Engine struct {
 	trimmer                *Trimmer
 	logger                 *logging.Logger
 	searchToolOptimization bool
-	multiAgentReview       bool
 	toolchainCapture       func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion
 }
 
@@ -96,10 +95,6 @@ func (e *Engine) SetSearchToolOptimization(enabled bool) {
 	e.searchToolOptimization = enabled
 }
 
-func (e *Engine) SetMultiAgentReview(enabled bool) {
-	e.multiAgentReview = enabled
-}
-
 func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, error) {
 	result, _, err := e.RunWithContext(ctx, req)
 	return result, err
@@ -154,13 +149,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		return nil, nil, fmt.Errorf("review: trim context: %w", err)
 	}
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
-	var result *model.ReviewResult
-	var enrichedCtx *model.ReviewContext
-	if e.multiAgentReview {
-		result, enrichedCtx, err = e.runMultiAgentReview(ctx, trimmed, req)
-	} else {
-		result, enrichedCtx, err = e.runSingleAgentReview(ctx, trimmed, req)
-	}
+	result, enrichedCtx, err := e.runMultiAgentReview(ctx, trimmed, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -249,73 +238,6 @@ type contextAgentResult struct {
 	toolMessages       []llm.Message
 	toolCallHistory    []toolCallHistoryEntry
 	duplicateToolCalls int
-}
-
-func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
-	systemTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
-	if err != nil {
-		return nil, nil, err
-	}
-	payload := model.PromptPayloadFromContext(reviewCtx)
-	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
-	if err != nil {
-		return nil, nil, err
-	}
-	agentRole := "reviewer"
-	systemPrompt, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, true, agentRole, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	noToolsSystem, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, false, agentRole, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	userPrompt, err := llm.RenderJSON(payload)
-	if err != nil {
-		return nil, nil, fmt.Errorf("review: rendering review prompt json: %w", err)
-	}
-	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
-	var schema []byte
-	if req.UseJSONSchema {
-		schema = llm.FindingsSchema
-	}
-	run, err := e.runAgent(ctx, agentSpec{
-		name:          fmt.Sprintf("#1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef),
-		role:          agentRole,
-		system:        systemPrompt,
-		noToolsSystem: noToolsSystem,
-		user:          userPrompt,
-		schema:        schema,
-		schemaKind:    llm.SchemaKindReview,
-		hasTools:      true,
-	}, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	filtered := filterByPriority(run.resp.Findings, req.PriorityThreshold)
-	if overwrote := model.EnsureFindingIDs(filtered); overwrote > 0 {
-		e.logf("Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
-	}
-	e.logf(
-		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-		len(run.resp.Findings),
-		len(filtered),
-		req.PriorityThreshold,
-		run.run.ToolCalls,
-		run.run.TokensUsed.PromptTokens,
-		run.run.TokensUsed.CompletionTokens,
-		run.run.TokensUsed.TotalTokens,
-	)
-	return &model.ReviewResult{
-		Findings:               filtered,
-		OverallCorrectness:     run.resp.OverallCorrectness,
-		OverallExplanation:     run.resp.OverallExplanation,
-		OverallConfidenceScore: run.resp.OverallConfidenceScore,
-		AgentRuns:              []model.AgentRun{run.run},
-		TokensUsed:             run.run.TokensUsed,
-		TotalToolCalls:         run.run.ToolCalls,
-		ReasoningEffort:        run.reasoningEffort,
-	}, reviewCtx, nil
 }
 
 type reviewVector struct {
@@ -429,6 +351,12 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if err != nil {
 		return nil, nil, err
 	}
+	verifyUsage, verifyWarnings, verifiedMergeInputs, err := e.verifyAndFilterVectorFindings(ctx, enriched, vectorResults, req)
+	warnings = append(warnings, verifyWarnings...)
+	if err != nil {
+		e.logf("Verifier failed before merge: tokens=%d warnings=%d error=%v", verifyUsage.TotalTokens, len(verifyWarnings), err)
+		return nil, nil, err
+	}
 
 	mergeConstraints := llm.ResponseConstraints{}
 	var mergeSchema []byte
@@ -451,6 +379,10 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		e.logf("All vector reviewers failed; skipping merge agent and emitting empty result")
 		warnings = append(warnings, "All vector reviewers failed; skipped merge agent and returning empty findings")
 		mergeResult = synthesizedMergeFromVectors(vectorResults, nil)
+	} else if len(verifiedMergeInputs) == 0 {
+		e.logf("No verified findings remained; skipping merge agent and emitting empty result")
+		warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
+		mergeResult = emptyVerifiedMergeResult()
 	} else {
 		mergeResult, mergeErr = e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchema, mergeConstraints, req)
 		if mergeErr != nil {
@@ -462,6 +394,9 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 			mergeResult.run.TokensUsed = partialMergeTokens
 			mergeResult.run.ToolCalls = partialMergeToolCalls
 		}
+	}
+	if mergeResult.resp != nil {
+		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
 	allRuns = append(allRuns, contextResult.run)
@@ -506,9 +441,189 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		AgentRuns:              allRuns,
 		Warnings:               warnings,
 		TokensUsed:             totalUsage,
+		VerifyTokensUsed:       verifyUsage,
 		TotalToolCalls:         toolCalls,
 		ReasoningEffort:        effectiveReasoningEffort,
 	}, enriched, nil
+}
+
+// verifyAndFilterVectorFindings runs the verifier on every finding from
+// `vectorResults` and replaces each vector's `resp.Findings` in place with the
+// subset that survives the drop policy. The mutation is intentional: the merge
+// agent reads vectorResults downstream and must see only verified findings.
+// Returns aggregated token usage, soft warnings, the flat list of kept
+// findings (with verification attached), and any fatal error. On error,
+// callers should still propagate the returned usage/warnings — they hold the
+// partial-run telemetry up to the failure point.
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) (model.TokenUsage, []string, []model.Finding, error) {
+	findings := make([]model.Finding, 0)
+	type findingRef struct {
+		vectorIdx  int
+		findingIdx int
+	}
+	refs := make([]findingRef, 0)
+	for vectorIdx, result := range vectorResults {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
+			continue
+		}
+		for findingIdx, finding := range result.resp.Findings {
+			findings = append(findings, finding)
+			refs = append(refs, findingRef{vectorIdx: vectorIdx, findingIdx: findingIdx})
+		}
+	}
+	if len(findings) == 0 {
+		return model.TokenUsage{}, nil, nil, nil
+	}
+	opts := verifyOptionsFromReviewRequest(req)
+	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
+	if err != nil {
+		return usage, warnings, nil, err
+	}
+	if len(verifications) != len(refs) {
+		return usage, warnings, nil, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifications), len(refs))
+	}
+	type dropCounts struct {
+		refuted         int
+		unverified      int
+		belowConfidence int
+	}
+	keptByVector := make(map[int][]model.Finding, len(vectorResults))
+	droppedIdxByVector := make(map[int]map[int]struct{}, len(vectorResults))
+	dropsByVector := make(map[int]dropCounts, len(vectorResults))
+	for i, verification := range verifications {
+		ref := refs[i]
+		if verification == nil {
+			return usage, warnings, nil, fmt.Errorf("review: verifier returned no result for finding #%d %q", i+1, findings[i].Title)
+		}
+		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
+		v := *verification
+		model.EnsureVerificationID(&v, finding.ID)
+		finding.Verification = &v
+		drop, reason := shouldDropFinding(&v, opts.DropPolicy, opts.DropConfidence)
+		if drop {
+			if droppedIdxByVector[ref.vectorIdx] == nil {
+				droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
+			}
+			droppedIdxByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
+			counts := dropsByVector[ref.vectorIdx]
+			switch reason {
+			case "refuted":
+				counts.refuted++
+			case "unverified":
+				counts.unverified++
+			}
+			dropsByVector[ref.vectorIdx] = counts
+			continue
+		}
+		if reason == "below_confidence" {
+			counts := dropsByVector[ref.vectorIdx]
+			counts.belowConfidence++
+			dropsByVector[ref.vectorIdx] = counts
+		}
+		keptByVector[ref.vectorIdx] = append(keptByVector[ref.vectorIdx], finding)
+	}
+	verifiedMergeInputs := make([]model.Finding, 0, len(findings))
+	for vectorIdx := range vectorResults {
+		if vectorResults[vectorIdx].run.Status == model.AgentRunStatusFailed || vectorResults[vectorIdx].resp == nil {
+			continue
+		}
+		if len(vectorResults[vectorIdx].resp.Findings) == 0 {
+			continue
+		}
+		vectorResults[vectorIdx].resp.Findings = keptByVector[vectorIdx]
+		verifiedMergeInputs = append(verifiedMergeInputs, vectorResults[vectorIdx].resp.Findings...)
+		dropped := len(droppedIdxByVector[vectorIdx])
+		counts := dropsByVector[vectorIdx]
+		if dropped > 0 || counts.belowConfidence > 0 {
+			e.logf("Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d below_confidence_kept=%d kept=%d policy=%s threshold=%.2f",
+				vectorResults[vectorIdx].run.Name,
+				dropped,
+				counts.refuted,
+				counts.unverified,
+				counts.belowConfidence,
+				len(keptByVector[vectorIdx]),
+				normalizeDropPolicy(opts.DropPolicy),
+				opts.DropConfidence,
+			)
+		}
+	}
+	return usage, warnings, verifiedMergeInputs, nil
+}
+
+// shouldDropFinding returns whether the verifier's verdict is severe enough to
+// drop a finding before merge, plus a label describing why (or why not).
+//
+// Labels:
+//   - "refuted" / "unverified": verdict reason for dropping
+//   - "below_confidence": verdict would drop but confidence_score is under the floor; kept
+//   - "kept": verdict does not warrant dropping (e.g. "confirmed", or policy="none")
+func shouldDropFinding(v *model.FindingVerification, policy string, threshold float64) (bool, string) {
+	if v == nil {
+		return false, "kept"
+	}
+	policy = normalizeDropPolicy(policy)
+	if policy == "none" {
+		return false, "kept"
+	}
+	verdict := v.Verdict
+	if verdict == "" {
+		// Treat missing verdict as unverified so we never drop on schema gaps.
+		verdict = model.VerdictUnverified
+	}
+	switch policy {
+	case "refuted-only":
+		if verdict != model.VerdictRefuted {
+			return false, "kept"
+		}
+	case "refuted-and-unverified":
+		if verdict == model.VerdictConfirmed {
+			return false, "kept"
+		}
+	default:
+		return false, "kept"
+	}
+	if v.ConfidenceScore < threshold {
+		return false, "below_confidence"
+	}
+	return true, verdict
+}
+
+// ValidDropPolicies lists the accepted values for --verify-drop-policy.
+var ValidDropPolicies = []string{"none", "refuted-only", "refuted-and-unverified"}
+
+// ValidateDropPolicy returns an error when policy is not one of the supported values.
+func ValidateDropPolicy(policy string) error {
+	for _, v := range ValidDropPolicies {
+		if v == policy {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid verify-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
+}
+
+func normalizeDropPolicy(policy string) string {
+	switch policy {
+	case "none", "refuted-only", "refuted-and-unverified":
+		return policy
+	default:
+		return "refuted-only"
+	}
+}
+
+func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
+	return VerifyOptions{
+		Concurrency:              req.VerifyConcurrency,
+		UseJSONSchema:            req.UseJSONSchema,
+		MaxToolCalls:             req.MaxToolCalls,
+		MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
+		MaxOutputRetries:         req.MaxOutputRetries,
+		MaxReasoningSeconds:      req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls: req.DisableParallelToolCalls,
+		RepoRoot:                 req.RepoRoot,
+		DropPolicy:               req.VerifyDropPolicy,
+		DropConfidence:           req.VerifyDropConfidence,
+	}
 }
 
 // allVectorsFailed reports whether every per-vector reviewer returned a
@@ -1296,6 +1411,22 @@ func synthesizedMergeFromVectors(vectorResults []agentResult, mergeErr error) ag
 			Role:   "merge",
 			Status: status,
 			Error:  errStr,
+		},
+	}
+}
+
+func emptyVerifiedMergeResult() agentResult {
+	return agentResult{
+		resp: &llm.ReviewResponse{
+			Findings:               nil,
+			OverallCorrectness:     "patch is correct",
+			OverallExplanation:     "No verified findings remained after verification.",
+			OverallConfidenceScore: 1,
+		},
+		run: model.AgentRun{
+			Name:   "Merge Findings",
+			Role:   "merge",
+			Status: model.AgentRunStatusSkipped,
 		},
 	}
 }
