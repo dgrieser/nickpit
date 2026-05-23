@@ -63,7 +63,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder",
 		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches.",
-		Note:               "Prefer `find_callers` over `search` when locating a function by name",
+		Note:               "Prefer `find_callers` over `search` when locating a function by name.",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
@@ -76,7 +76,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "find_callers",
 		APIDescription:     "Resolve function by symbol name and return caller hierarchy including method bodies",
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function.",
-		Note:               "Prefer this over `search` when locating a function by name",
+		Note:               "Prefer this over `search` when locating a function by name.",
 		Parameters:         callHierarchyParameters(),
 	},
 	{
@@ -207,7 +207,7 @@ func (entry catalogEntry) apiDescription() string {
 	if entry.Note == "" {
 		return entry.APIDescription
 	}
-	return fmt.Sprintf("%s\n\nNOTE: %s", entry.APIDescription, entry.Note)
+	return fmt.Sprintf("%s\nNOTE: %s", entry.APIDescription, entry.Note)
 }
 
 func (entry catalogEntry) listingLine() string {
