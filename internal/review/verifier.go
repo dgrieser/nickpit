@@ -55,6 +55,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	}
 	systemSnippet := verifyOutputSchemaSnippetFor(req.UseJSONSchema)
 	exampleSnippet := llm.VerifyExamplePromptSnippet()
+	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		kind:                     "verify",
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
@@ -66,24 +67,34 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
+	styleGuides, err := e.styleGuidesFor(req.ReviewCtx)
+	if err != nil {
+		return nil, usage, err
+	}
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentKind, styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0)
+	if err != nil {
+		return nil, usage, err
+	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
-		OutputSchemaSnippet      string
-		PrioritySnippet          string
-		ParallelToolCallGuidance bool
-		HasTools                 bool
-		ToolInstructions         string
+		OutputSchemaSnippet        string
+		PrioritySnippet            string
+		ParallelToolCallGuidance   bool
+		HasTools                   bool
+		ToolInstructions           string
+		StyleGuideToolchainSnippet string
 	}{
-		OutputSchemaSnippet:      systemSnippet,
-		PrioritySnippet:          prioritySnippet,
-		ParallelToolCallGuidance: !req.DisableParallelToolCalls,
-		HasTools:                 true,
-		ToolInstructions:         toolInstructions,
+		OutputSchemaSnippet:        systemSnippet,
+		PrioritySnippet:            prioritySnippet,
+		ParallelToolCallGuidance:   !req.DisableParallelToolCalls,
+		HasTools:                   true,
+		ToolInstructions:           toolInstructions,
+		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 	})
 	if err != nil {
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding)
+	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, styleGuides)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -100,31 +111,32 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 
 	for attempt := 0; ; attempt++ {
 		loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
-			AgentName:               "Verify Findings",
-			AgentKind:               "verify",
-			Messages:                messages,
-			Tools:                   reviewerToolDefinitions(),
-			Schema:                  schema,
-			SchemaKind:              llm.SchemaKindVerify,
-			Model:                   e.config.Model,
-			MaxTokens:               e.config.MaxTokens,
-			Temperature:             e.config.Temperature,
-			TopP:                    e.config.TopP,
-			ExtraBody:               e.config.ExtraBody,
-			ParallelToolCalls:       !req.DisableParallelToolCalls,
-			ReasoningEffort:         e.config.ReasoningEffort,
-			RepoRoot:                req.RepoRoot,
-			MaxToolCalls:            req.MaxToolCalls,
-			MaxDuplicateToolCalls:   req.MaxDuplicateToolCalls,
-			MaxOutputRetries:        req.MaxOutputRetries,
-			MaxReasoningSeconds:     req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats: req.MaxReasoningLoopRepeats,
-			Section:                 req.Section,
-			NoToolsSystem:           systemTemplate,
-			NoToolsSchemaSnippet:    systemSnippet,
-			JSONRetryExampleSnippet: exampleSnippet,
+			AgentName:                         "Verify Findings",
+			AgentKind:                         agentKind,
+			Messages:                          messages,
+			Tools:                             reviewerToolDefinitions(),
+			Schema:                            schema,
+			SchemaKind:                        llm.SchemaKindVerify,
+			Model:                             e.config.Model,
+			MaxTokens:                         e.config.MaxTokens,
+			Temperature:                       e.config.Temperature,
+			TopP:                              e.config.TopP,
+			ExtraBody:                         e.config.ExtraBody,
+			ParallelToolCalls:                 !req.DisableParallelToolCalls,
+			ReasoningEffort:                   e.config.ReasoningEffort,
+			RepoRoot:                          req.RepoRoot,
+			MaxToolCalls:                      req.MaxToolCalls,
+			MaxDuplicateToolCalls:             req.MaxDuplicateToolCalls,
+			MaxOutputRetries:                  req.MaxOutputRetries,
+			MaxReasoningSeconds:               req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:           req.MaxReasoningLoopRepeats,
+			Section:                           req.Section,
+			NoToolsSystem:                     systemTemplate,
+			NoToolsSchemaSnippet:              systemSnippet,
+			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
+			JSONRetryExampleSnippet:           exampleSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(systemTemplate, messages, systemSnippet)
+				return noToolsMessages(systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
 			},
 		})
 		if err != nil {
@@ -231,13 +243,9 @@ func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {
 	return llm.VerifyExamplePromptSnippet()
 }
 
-func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding) (string, error) {
+func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, styleGuides []model.StyleGuide) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
-	var err error
-	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
-	if err != nil {
-		return "", err
-	}
+	payload.StyleGuides = styleGuides
 	base, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("verify: marshalling review payload: %w", err)

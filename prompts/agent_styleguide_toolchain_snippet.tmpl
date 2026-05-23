@@ -1,0 +1,6 @@
+{{if or .StyleGuideTitles .HasToolchainVersions}}
+{{if .StyleGuideTitles}}When {{if eq .AgentRole "verify"}}validating{{else if eq .AgentRole "reviewer"}}reviewing{{end}} findings, check the provided styleguides:
+{{range .StyleGuideTitles}}- {{.}}
+{{end}}{{end}}{{if .HasToolchainVersions}}{{if .StyleGuideTitles}}
+{{end}}Also check the provided `toolchain_versions` before making language-version or runtime-version assumptions.{{end}}
+{{end}}

@@ -40,6 +40,20 @@ func (stubSource) ResolveContext(context.Context, model.ReviewRequest) (*model.R
 	}, nil
 }
 
+type textSource struct{}
+
+func (textSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "README.txt", Status: model.FileModified, Additions: 1},
+		},
+		Diff: "diff --git a/README.txt b/README.txt\n@@ -1 +1 @@\n-old\n+new\n",
+	}, nil
+}
+
 type stubLLM struct{}
 
 func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -1114,6 +1128,15 @@ func TestEngineSplitsSystemAndUserPrompts(t *testing.T) {
 	if content, _ := goStyleGuide["content"].(string); !strings.Contains(content, "# Go Style Guide") {
 		t.Fatalf("style guide content = %.80q", content)
 	}
+	if _, ok := goStyleGuide["title"]; ok {
+		t.Fatalf("style guide title should not be serialized: %#v", goStyleGuide)
+	}
+	if !strings.Contains(req.Messages[0].Content, "When reviewing findings, check the provided styleguides:") {
+		t.Fatalf("system prompt missing styleguide reminder: %q", req.Messages[0].Content)
+	}
+	if !strings.Contains(req.Messages[0].Content, "- Go Style Guide") {
+		t.Fatalf("system prompt missing Go styleguide title: %q", req.Messages[0].Content)
+	}
 	for _, unwanted := range []string{"mode", "checkout_root", "diff"} {
 		if _, exists := payload[unwanted]; exists {
 			t.Fatalf("user prompt unexpectedly contains %q: %#v", unwanted, payload[unwanted])
@@ -1155,6 +1178,30 @@ func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 		if definitions[i].Description == "" {
 			t.Fatalf("tool[%d] missing description", i)
 		}
+	}
+}
+
+func TestEngineOmitsStyleGuideToolchainReminderWhenNoContext(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(textSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetToolchainCapture(nil)
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.reqs) == 0 {
+		t.Fatal("no requests captured")
+	}
+	system := llmClient.reqs[0].Messages[0].Content
+	if strings.Contains(system, "check the provided styleguides:") {
+		t.Fatalf("system prompt unexpectedly contains styleguide reminder: %q", system)
+	}
+	if strings.Contains(system, "provided `toolchain_versions`") {
+		t.Fatalf("system prompt unexpectedly contains toolchain reminder: %q", system)
 	}
 }
 
@@ -1400,6 +1447,12 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 		}
 		if !strings.Contains(system, "## FOCUS ON ") {
 			t.Fatalf("%s prompt missing focus snippet", vector.name)
+		}
+		if !strings.Contains(system, "- Go Style Guide") {
+			t.Fatalf("%s prompt missing styleguide reminder: %q", vector.name, system)
+		}
+		if !strings.Contains(system, "provided `toolchain_versions`") {
+			t.Fatalf("%s prompt missing toolchain reminder: %q", vector.name, system)
 		}
 		contextNote := llmClient.vectorContext[vector.name]
 		if !strings.Contains(contextNote, "## Notes") || !strings.Contains(contextNote, "## Assumed Patch Purpose") {
@@ -1648,7 +1701,7 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false)
+		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "reviewer", nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -177,8 +177,8 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	return result, enrichedCtx, nil
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
-	finalMessages, err := noToolsMessages(systemTemplate, messages, systemSnippet)
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+	finalMessages, err := noToolsMessages(systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
 	if err != nil {
 		return nil, err
 	}
@@ -256,16 +256,17 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 	if err != nil {
 		return nil, nil, err
 	}
-	systemPrompt, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, true)
-	if err != nil {
-		return nil, nil, err
-	}
-	noToolsSystem, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, false)
-	if err != nil {
-		return nil, nil, err
-	}
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	agentRole := "reviewer"
+	systemPrompt, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, true, agentRole, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	noToolsSystem, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, false, agentRole, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -280,7 +281,7 @@ func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.Revi
 	}
 	run, err := e.runAgent(ctx, agentSpec{
 		name:          fmt.Sprintf("#1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef),
-		role:          "reviewer",
+		role:          agentRole,
 		system:        systemPrompt,
 		noToolsSystem: noToolsSystem,
 		user:          userPrompt,
@@ -424,7 +425,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		schema = llm.FindingsSchema
 	}
 	contextMessages := contextAgentMarkdownMessages(contextResult.contentMessages)
-	vectorResults, err := e.runVectorAgents(ctx, baseTemplate, enrichedPrompt, contextMessages, schema, req)
+	vectorResults, err := e.runVectorAgents(ctx, baseTemplate, enrichedPrompt, contextMessages, schema, req, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -549,7 +550,7 @@ func appendAgentRunWarnings(warnings []string, runs []model.AgentRun, contextErr
 	return warnings
 }
 
-func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, contextMessages []llm.Message, schema []byte, req model.ReviewRequest) ([]agentResult, error) {
+func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, contextMessages []llm.Message, schema []byte, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) ([]agentResult, error) {
 	results := make([]agentResult, len(reviewVectors))
 	errs := make([]error, len(reviewVectors))
 	var wg sync.WaitGroup
@@ -562,12 +563,13 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 				errs[idx] = err
 				return
 			}
-			system, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, true)
+			agentRole := "reviewer"
+			system, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, true, agentRole, styleGuides, hasToolchainVersions)
 			if err != nil {
 				errs[idx] = err
 				return
 			}
-			noToolsSystem, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, false)
+			noToolsSystem, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, false, agentRole, styleGuides, hasToolchainVersions)
 			if err != nil {
 				errs[idx] = err
 				return
@@ -578,7 +580,7 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 			}
 			result, err := e.runAgent(ctx, agentSpec{
 				name:             vector.name,
-				role:             "reviewer",
+				role:             agentRole,
 				system:           system,
 				noToolsSystem:    noToolsSystem,
 				user:             userPrompt,
@@ -1071,12 +1073,12 @@ func reasoningFindingsJSON(findings []model.Finding) (string, error) {
 	})
 }
 
-func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
+func (e *Engine) renderReviewSystemWithQuestions(template, focusName, questionsSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
 	focusSnippet, err := e.renderReviewerFocusSnippet(focusName, questionsSnippet)
 	if err != nil {
 		return "", err
 	}
-	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools)
+	return e.renderReviewSystemWithFocus(template, focusSnippet, req, hasTools, agentRole, styleGuides, hasToolchainVersions)
 }
 
 func (e *Engine) renderReviewerQuestionsSnippet(questionsName string) (string, error) {
@@ -1110,7 +1112,7 @@ func (e *Engine) renderReviewerFocusSnippet(focusName, questionsSnippet string) 
 	return rendered, nil
 }
 
-func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool) (string, error) {
+func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
 	toolInstructions := ""
 	if hasTools {
 		var err error
@@ -1127,6 +1129,10 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 	if err != nil {
 		return "", err
 	}
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentRole, styleGuides, hasToolchainVersions)
+	if err != nil {
+		return "", err
+	}
 	systemPrompt, err := llm.RenderPrompt(template, struct {
 		OutputSchemaSnippet        string
 		FindingInstructionsSnippet string
@@ -1136,6 +1142,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		HasTools                   bool
 		FocusSnippet               string
 		ToolInstructions           string
+		StyleGuideToolchainSnippet string
 	}{
 		OutputSchemaSnippet:        outputSchemaSnippet,
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
@@ -1145,6 +1152,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		HasTools:                   hasTools,
 		FocusSnippet:               strings.TrimSpace(focusSnippet),
 		ToolInstructions:           toolInstructions,
+		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering review system prompt: %w", err)
@@ -1500,7 +1508,7 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 	return llm.FindingsExamplePromptSnippet()
 }
 
-func noToolsMessages(systemTemplate string, messages []llm.Message, snippet string) ([]llm.Message, error) {
+func noToolsMessages(systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string) ([]llm.Message, error) {
 	commonSnippets, err := agentCommonSystemPromptSnippets("review", snippet)
 	if err != nil {
 		return nil, err
@@ -1513,12 +1521,14 @@ func noToolsMessages(systemTemplate string, messages []llm.Message, snippet stri
 		ParallelToolCallGuidance   bool
 		HasTools                   bool
 		ToolInstructions           string
+		StyleGuideToolchainSnippet string
 	}{
 		OutputSchemaSnippet:        snippet,
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		HasTools:                   false,
+		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)
@@ -1650,9 +1660,54 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 		guides = append(guides, model.StyleGuide{
 			Language: language,
 			Content:  content,
+			Title:    styleGuideTitle(content),
 		})
 	}
 	return guides, nil
+}
+
+func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
+	agentRole = strings.TrimSpace(agentRole)
+	if agentRole != "reviewer" && agentRole != "verify" {
+		return "", nil
+	}
+	titles := make([]string, 0, len(guides))
+	for _, guide := range guides {
+		title := strings.TrimSpace(guide.Title)
+		if title != "" {
+			titles = append(titles, title)
+		}
+	}
+	if len(titles) == 0 && !hasToolchainVersions {
+		return "", nil
+	}
+	template, err := e.loadPrompt("agent_styleguide_toolchain_snippet.tmpl")
+	if err != nil {
+		return "", err
+	}
+	rendered, err := llm.RenderPrompt(template, struct {
+		AgentRole            string
+		StyleGuideTitles     []string
+		HasToolchainVersions bool
+	}{
+		AgentRole:            agentRole,
+		StyleGuideTitles:     titles,
+		HasToolchainVersions: hasToolchainVersions,
+	})
+	if err != nil {
+		return "", fmt.Errorf("review: rendering styleguide/toolchain prompt: %w", err)
+	}
+	return strings.TrimSpace(rendered), nil
+}
+
+func styleGuideTitle(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		}
+	}
+	return ""
 }
 
 func changedLanguages(ctx *model.ReviewContext) []string {
