@@ -543,15 +543,22 @@ func (e *Engine) verifyVectorFindings(ctx context.Context, reviewCtx *model.Revi
 	if len(findings) == 0 {
 		return model.TokenUsage{}, nil, nil, nil
 	}
-	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, verifyOptionsFromReviewRequest(req))
+	opts := verifyOptionsFromReviewRequest(req)
+	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
 	if err != nil {
 		return usage, warnings, nil, err
 	}
 	if len(verifications) != len(refs) {
 		return usage, warnings, nil, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifications), len(refs))
 	}
-	validByVector := make(map[int][]model.Finding, len(vectorResults))
-	invalidByVector := make(map[int]map[int]struct{}, len(vectorResults))
+	type dropCounts struct {
+		refuted         int
+		unverified      int
+		belowConfidence int
+	}
+	keptByVector := make(map[int][]model.Finding, len(vectorResults))
+	droppedIdxByVector := make(map[int]map[int]struct{}, len(vectorResults))
+	dropsByVector := make(map[int]dropCounts, len(vectorResults))
 	for i, verification := range verifications {
 		ref := refs[i]
 		if verification == nil {
@@ -561,14 +568,28 @@ func (e *Engine) verifyVectorFindings(ctx context.Context, reviewCtx *model.Revi
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
 		finding.Verification = &v
-		if !v.Valid {
-			if invalidByVector[ref.vectorIdx] == nil {
-				invalidByVector[ref.vectorIdx] = make(map[int]struct{})
+		drop, reason := shouldDropFinding(&v, opts.DropPolicy, opts.DropConfidence)
+		if drop {
+			if droppedIdxByVector[ref.vectorIdx] == nil {
+				droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
 			}
-			invalidByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
+			droppedIdxByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
+			counts := dropsByVector[ref.vectorIdx]
+			switch reason {
+			case "refuted":
+				counts.refuted++
+			case "unverified":
+				counts.unverified++
+			}
+			dropsByVector[ref.vectorIdx] = counts
 			continue
 		}
-		validByVector[ref.vectorIdx] = append(validByVector[ref.vectorIdx], finding)
+		if reason == "below_confidence" {
+			counts := dropsByVector[ref.vectorIdx]
+			counts.belowConfidence++
+			dropsByVector[ref.vectorIdx] = counts
+		}
+		keptByVector[ref.vectorIdx] = append(keptByVector[ref.vectorIdx], finding)
 	}
 	verifiedMergeInputs := make([]model.Finding, 0, len(findings))
 	for vectorIdx := range vectorResults {
@@ -578,13 +599,71 @@ func (e *Engine) verifyVectorFindings(ctx context.Context, reviewCtx *model.Revi
 		if len(vectorResults[vectorIdx].resp.Findings) == 0 {
 			continue
 		}
-		vectorResults[vectorIdx].resp.Findings = validByVector[vectorIdx]
+		vectorResults[vectorIdx].resp.Findings = keptByVector[vectorIdx]
 		verifiedMergeInputs = append(verifiedMergeInputs, vectorResults[vectorIdx].resp.Findings...)
-		if len(invalidByVector[vectorIdx]) > 0 {
-			e.logf("Dropped invalid verified findings before merge: reviewer=%s count=%d", vectorResults[vectorIdx].run.Name, len(invalidByVector[vectorIdx]))
+		dropped := len(droppedIdxByVector[vectorIdx])
+		counts := dropsByVector[vectorIdx]
+		if dropped > 0 || counts.belowConfidence > 0 {
+			e.logf("Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d below_confidence_kept=%d kept=%d policy=%s threshold=%.2f",
+				vectorResults[vectorIdx].run.Name,
+				dropped,
+				counts.refuted,
+				counts.unverified,
+				counts.belowConfidence,
+				len(keptByVector[vectorIdx]),
+				normalizeDropPolicy(opts.DropPolicy),
+				opts.DropConfidence,
+			)
 		}
 	}
 	return usage, warnings, verifiedMergeInputs, nil
+}
+
+// shouldDropFinding returns whether the verifier's verdict is severe enough to
+// drop a finding before merge, plus a label describing why (or why not).
+//
+// Labels:
+//   - "refuted" / "unverified": verdict reason for dropping
+//   - "below_confidence": verdict would drop but confidence_score is under the floor; kept
+//   - "kept": verdict does not warrant dropping (e.g. "confirmed", or policy="none")
+func shouldDropFinding(v *model.FindingVerification, policy string, threshold float64) (bool, string) {
+	if v == nil {
+		return false, "kept"
+	}
+	policy = normalizeDropPolicy(policy)
+	if policy == "none" {
+		return false, "kept"
+	}
+	verdict := v.Verdict
+	if verdict == "" {
+		// Treat missing verdict as unverified so we never drop on schema gaps.
+		verdict = model.VerdictUnverified
+	}
+	switch policy {
+	case "refuted-only":
+		if verdict != model.VerdictRefuted {
+			return false, "kept"
+		}
+	case "refuted-and-unverified":
+		if verdict == model.VerdictConfirmed {
+			return false, "kept"
+		}
+	default:
+		return false, "kept"
+	}
+	if v.ConfidenceScore < threshold {
+		return false, "below_confidence"
+	}
+	return true, verdict
+}
+
+func normalizeDropPolicy(policy string) string {
+	switch policy {
+	case "none", "refuted-only", "refuted-and-unverified":
+		return policy
+	default:
+		return "refuted-only"
+	}
 }
 
 func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
@@ -598,6 +677,8 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: req.DisableParallelToolCalls,
 		RepoRoot:                 req.RepoRoot,
+		DropPolicy:               req.VerifyDropPolicy,
+		DropConfidence:           req.VerifyDropConfidence,
 	}
 }
 

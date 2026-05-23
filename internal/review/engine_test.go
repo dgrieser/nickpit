@@ -123,8 +123,12 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				break
 			}
 		}
+		verdict := model.VerdictConfirmed
+		if !valid {
+			verdict = model.VerdictRefuted
+		}
 		return &llm.ReviewResponse{
-			Verification: &model.FindingVerification{Valid: valid, Priority: 2, ConfidenceScore: 0.9, Remarks: "verified"},
+			Verification: &model.FindingVerification{Verdict: verdict, Priority: 2, ConfidenceScore: 0.9, Remarks: "verified"},
 			TokensUsed:   model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
 		}, nil
 	}
@@ -4157,4 +4161,62 @@ func schemaStringSlice(value any) []string {
 		}
 	}
 	return result
+}
+
+func TestShouldDropFinding(t *testing.T) {
+	cases := []struct {
+		name       string
+		verdict    string
+		confidence float64
+		policy     string
+		threshold  float64
+		wantDrop   bool
+		wantReason string
+	}{
+		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, "refuted-only", 0.8, false, "kept"},
+		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, "refuted-and-unverified", 0.8, false, "kept"},
+		{"refuted above floor drops", model.VerdictRefuted, 0.85, "refuted-only", 0.8, true, model.VerdictRefuted},
+		{"refuted at floor drops", model.VerdictRefuted, 0.80, "refuted-only", 0.8, true, model.VerdictRefuted},
+		{"refuted below floor kept", model.VerdictRefuted, 0.79, "refuted-only", 0.8, false, "below_confidence"},
+		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", 0.8, false, "kept"},
+		{"unverified above floor drops (both)", model.VerdictUnverified, 0.9, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
+		{"unverified below floor kept (both)", model.VerdictUnverified, 0.5, "refuted-and-unverified", 0.8, false, "below_confidence"},
+		{"refuted policy=none kept", model.VerdictRefuted, 0.99, "none", 0.8, false, "kept"},
+		{"missing verdict treated as unverified (refuted-only)", "", 0.99, "refuted-only", 0.8, false, "kept"},
+		{"missing verdict treated as unverified (both)", "", 0.99, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
+		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", 0.8, true, model.VerdictRefuted},
+		{"threshold zero drops anything refuted", model.VerdictRefuted, 0.0, "refuted-only", 0.0, true, model.VerdictRefuted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &model.FindingVerification{Verdict: tc.verdict, ConfidenceScore: tc.confidence}
+			drop, reason := shouldDropFinding(v, tc.policy, tc.threshold)
+			if drop != tc.wantDrop {
+				t.Fatalf("drop = %v, want %v", drop, tc.wantDrop)
+			}
+			if reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestShouldDropFindingNilVerification(t *testing.T) {
+	drop, reason := shouldDropFinding(nil, "refuted-and-unverified", 0.0)
+	if drop || reason != "kept" {
+		t.Fatalf("nil verification: drop=%v reason=%q", drop, reason)
+	}
+}
+
+func TestNormalizeDropPolicyFallback(t *testing.T) {
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY"} {
+		if got := normalizeDropPolicy(p); got != "refuted-only" {
+			t.Fatalf("normalizeDropPolicy(%q) = %q, want refuted-only", p, got)
+		}
+	}
+	for _, p := range []string{"none", "refuted-only", "refuted-and-unverified"} {
+		if got := normalizeDropPolicy(p); got != p {
+			t.Fatalf("normalizeDropPolicy(%q) = %q, want passthrough", p, got)
+		}
+	}
 }

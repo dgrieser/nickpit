@@ -38,6 +38,8 @@ type VerifyOptions struct {
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	RepoRoot                 string
+	DropPolicy               string
+	DropConfidence           float64
 }
 
 func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {

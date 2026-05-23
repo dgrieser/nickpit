@@ -327,18 +327,6 @@ func finalizeConstraintsFor(in []model.Finding) llm.ResponseConstraints {
 	return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is correct"}}
 }
 
-// DropInvalidFindings removes findings the verifier marked as invalid.
-func DropInvalidFindings(findings []model.Finding) []model.Finding {
-	out := make([]model.Finding, 0, len(findings))
-	for _, f := range findings {
-		if f.Verification != nil && !f.Verification.Valid {
-			continue
-		}
-		out = append(out, f)
-	}
-	return out
-}
-
 func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {
 	if useJSONSchema {
 		return ""

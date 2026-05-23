@@ -35,16 +35,20 @@ func (f *TerminalFormatter) WithHideInvalid(hide bool) *TerminalFormatter {
 func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 	counts := map[int]int{}
 	verifiedCount := 0
-	validCount := 0
-	invalidCount := 0
+	confirmedCount := 0
+	refutedCount := 0
+	unverifiedCount := 0
 	for _, finding := range result.Findings {
 		counts[model.PriorityRank(finding.Priority)]++
 		if finding.Verification != nil {
 			verifiedCount++
-			if finding.Verification.Valid {
-				validCount++
-			} else {
-				invalidCount++
+			switch finding.Verification.Verdict {
+			case model.VerdictConfirmed:
+				confirmedCount++
+			case model.VerdictRefuted:
+				refutedCount++
+			default:
+				unverifiedCount++
 			}
 		}
 	}
@@ -52,7 +56,7 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		len(result.Findings), counts[0], counts[1], counts[2], counts[3],
 	)
 	if verifiedCount > 0 {
-		header += fmt.Sprintf(" · verified: %d valid, %d invalid", validCount, invalidCount)
+		header += fmt.Sprintf(" · verified: %d confirmed, %d refuted, %d unverified", confirmedCount, refutedCount, unverifiedCount)
 	}
 	if _, err := fmt.Fprintf(f.w, "%s\n\n", header); err != nil {
 		return err
@@ -76,8 +80,8 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		if ri != rj {
 			return ri < rj
 		}
-		invI := result.Findings[i].Verification != nil && !result.Findings[i].Verification.Valid
-		invJ := result.Findings[j].Verification != nil && !result.Findings[j].Verification.Valid
+		invI := result.Findings[i].Verification != nil && result.Findings[i].Verification.Verdict == model.VerdictRefuted
+		invJ := result.Findings[j].Verification != nil && result.Findings[j].Verification.Verdict == model.VerdictRefuted
 		if invI != invJ {
 			return !invI
 		}
@@ -92,7 +96,7 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		return ci > cj
 	})
 	for _, finding := range result.Findings {
-		if f.hideInvalid && finding.Verification != nil && !finding.Verification.Valid {
+		if f.hideInvalid && finding.Verification != nil && finding.Verification.Verdict == model.VerdictRefuted {
 			continue
 		}
 		header := fmt.Sprintf("%s %s:%d-%d",
@@ -157,18 +161,23 @@ func (f *TerminalFormatter) renderVerification(v *model.FindingVerification, ori
 	if v == nil {
 		return ""
 	}
-	glyphValid := "✓ verified"
-	glyphInvalid := "✗ invalid"
+	glyphConfirmed := "✓ confirmed"
+	glyphRefuted := "✗ refuted"
+	glyphUnverified := "? unverified"
 	if !f.useANSI {
-		glyphValid = "[ok] verified"
-		glyphInvalid = "[bad] invalid"
+		glyphConfirmed = "[ok] confirmed"
+		glyphRefuted = "[bad] refuted"
+		glyphUnverified = "[??] unverified"
 	}
 	var b strings.Builder
 	b.WriteString("  ")
-	if v.Valid {
-		b.WriteString(f.colorVerifyValid(glyphValid))
-	} else {
-		b.WriteString(f.colorVerifyInvalid(glyphInvalid, v.ConfidenceScore))
+	switch v.Verdict {
+	case model.VerdictConfirmed:
+		b.WriteString(f.colorVerifyValid(glyphConfirmed))
+	case model.VerdictRefuted:
+		b.WriteString(f.colorVerifyInvalid(glyphRefuted, v.ConfidenceScore))
+	default:
+		b.WriteString(f.colorVerifyInvalid(glyphUnverified, v.ConfidenceScore))
 	}
 	b.WriteString(fmt.Sprintf("  conf %.2f", v.ConfidenceScore))
 	if v.Priority != originalRank {

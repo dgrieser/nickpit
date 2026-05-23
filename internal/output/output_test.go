@@ -82,12 +82,12 @@ func TestTerminalFormatterRendersVerification(t *testing.T) {
 			{
 				Title: "Real bug", Body: "B1", ConfidenceScore: 0.8, Priority: intPtr(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.92, Remarks: "confirmed"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.92, Remarks: "confirmed"},
 			},
 			{
 				Title: "Stylistic", Body: "B2", ConfidenceScore: 0.7, Priority: intPtr(2),
 				CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}},
-				Verification: &model.FindingVerification{Valid: false, Priority: 3, ConfidenceScore: 0.88, Remarks: "not reachable"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 3, ConfidenceScore: 0.88, Remarks: "not reachable"},
 			},
 		},
 		OverallCorrectness:     "patch is incorrect",
@@ -98,14 +98,14 @@ func TestTerminalFormatterRendersVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "verified: 1 valid, 1 invalid") {
+	if !strings.Contains(out, "verified: 1 confirmed, 1 refuted, 0 unverified") {
 		t.Fatalf("missing header tally:\n%s", out)
 	}
-	if !strings.Contains(out, "[ok] verified") {
-		t.Fatalf("missing valid glyph:\n%s", out)
+	if !strings.Contains(out, "[ok] confirmed") {
+		t.Fatalf("missing confirmed glyph:\n%s", out)
 	}
-	if !strings.Contains(out, "[bad] invalid") {
-		t.Fatalf("missing invalid glyph:\n%s", out)
+	if !strings.Contains(out, "[bad] refuted") {
+		t.Fatalf("missing refuted glyph:\n%s", out)
 	}
 	if !strings.Contains(out, "P2→P3") {
 		t.Fatalf("missing priority arrow:\n%s", out)
@@ -123,7 +123,7 @@ func TestTerminalFormatterRendersFinalizationPriorityChange(t *testing.T) {
 			{
 				Title: "Bug", Body: "B", ConfidenceScore: 0.8, Priority: intPtr(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
 				Finalization: &model.FindingFinalization{Title: "Bug", Body: "B", Priority: 2, ConfidenceScore: 0.7, Remarks: "downgraded"},
 			},
 		},
@@ -151,7 +151,7 @@ func TestTerminalFormatterRendersFinalizationPriorityUnchanged(t *testing.T) {
 			{
 				Title: "Bug", Body: "B", ConfidenceScore: 0.8, Priority: intPtr(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "ok"},
 				Finalization: &model.FindingFinalization{Title: "Bug", Body: "B", Priority: 1, ConfidenceScore: 0.85, Remarks: "kept"},
 			},
 		},
@@ -176,12 +176,12 @@ func TestTerminalFormatterHideInvalid(t *testing.T) {
 			{
 				Title: "Real bug", Body: "B1", ConfidenceScore: 0.8, Priority: intPtr(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.92, Remarks: "ok"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.92, Remarks: "ok"},
 			},
 			{
 				Title: "Should be hidden", Body: "B2", ConfidenceScore: 0.7, Priority: intPtr(2),
 				CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}},
-				Verification: &model.FindingVerification{Valid: false, Priority: 3, ConfidenceScore: 0.88, Remarks: "no"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 3, ConfidenceScore: 0.88, Remarks: "no"},
 			},
 		},
 		OverallCorrectness: "patch is correct",
@@ -264,7 +264,7 @@ func TestJSONFormatterIncludesVerification(t *testing.T) {
 			{
 				Title: "x", Body: "y", Priority: intPtr(1),
 				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.5, Remarks: "ok"},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.5, Remarks: "ok"},
 			},
 		},
 	})
@@ -284,8 +284,8 @@ func TestJSONFormatterIncludesVerification(t *testing.T) {
 	if !ok {
 		t.Fatalf("verification missing: %#v", first)
 	}
-	if v["valid"] != true {
-		t.Fatalf("verification.valid = %#v", v["valid"])
+	if v["verdict"] != "confirmed" {
+		t.Fatalf("verification.verdict = %#v", v["verdict"])
 	}
 	if v["remarks"] != "ok" {
 		t.Fatalf("verification.remarks = %#v", v["remarks"])

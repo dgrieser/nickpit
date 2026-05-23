@@ -22,7 +22,7 @@ func TestVerifySchemaRequiresAllFields(t *testing.T) {
 			required = append(required, s)
 		}
 	}
-	for _, field := range []string{"id", "valid", "priority", "confidence_score", "remarks"} {
+	for _, field := range []string{"id", "verdict", "priority", "confidence_score", "remarks"} {
 		if !slices.Contains(required, field) {
 			t.Fatalf("required missing %q: %v", field, required)
 		}
@@ -37,13 +37,16 @@ func TestVerifySchemaStripsExamples(t *testing.T) {
 
 func TestVerifyExamplePromptSnippetIncludesAllFields(t *testing.T) {
 	snippet := VerifyExamplePromptSnippet()
-	for _, required := range []string{`"id"`, `"valid"`, `"priority"`, `"confidence_score"`, `"remarks"`} {
+	for _, required := range []string{`"id"`, `"verdict"`, `"priority"`, `"confidence_score"`, `"remarks"`} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}
 	}
 	if !strings.Contains(snippet, `"id": "<uuid-v4>"`) {
 		t.Fatalf("snippet should use UUID placeholder: %s", snippet)
+	}
+	if !strings.Contains(snippet, `"verdict": "confirmed"`) {
+		t.Fatalf("snippet should default verdict example to confirmed: %s", snippet)
 	}
 }
 
@@ -55,7 +58,7 @@ func TestVerifyExamplePromptSnippetIsJSON(t *testing.T) {
 }
 
 func TestParseVerifyResponseRequiresFields(t *testing.T) {
-	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 1}`
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "confirmed", "priority": 1}`
 	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err == nil {
 		t.Fatalf("expected InvalidResponseError")
@@ -70,7 +73,7 @@ func TestParseVerifyResponseRequiresFields(t *testing.T) {
 }
 
 func TestParseVerifyResponseHappyPath(t *testing.T) {
-	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": false, "priority": 2, "confidence_score": 0.81, "remarks": "not reachable"}`
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "refuted", "priority": 2, "confidence_score": 0.81, "remarks": "not reachable"}`
 	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
@@ -81,8 +84,8 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 	if resp.Verification.ID != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("id = %q", resp.Verification.ID)
 	}
-	if resp.Verification.Valid {
-		t.Fatalf("valid should be false")
+	if resp.Verification.Verdict != "refuted" {
+		t.Fatalf("verdict = %q, want refuted", resp.Verification.Verdict)
 	}
 	if resp.Verification.Priority != 2 {
 		t.Fatalf("priority = %d", resp.Verification.Priority)
@@ -97,7 +100,7 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 
 func TestParseVerifyResponseSkipsMarkdownBeforeJSON(t *testing.T) {
 	content := "# Verify Findings\n\n[P1] Finding summary\n\n```json\n" +
-		`{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 1, "confidence_score": 0.91, "remarks": "confirmed"}` +
+		`{"id": "11111111-1111-4111-8111-111111111111", "verdict": "confirmed", "priority": 1, "confidence_score": 0.91, "remarks": "confirmed"}` +
 		"\n```\n"
 	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err != nil {
@@ -113,9 +116,9 @@ func TestParseVerifyResponseSkipsMarkdownBeforeJSON(t *testing.T) {
 
 func TestParseVerifyResponseMergesMultipleBlocksLastFieldsWin(t *testing.T) {
 	content := "First draft:\n```json\n" +
-		`{"id":"11111111-1111-4111-8111-111111111111","valid":true,"priority":2,"confidence_score":0.91,"remarks":"draft"}` +
+		`{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":2,"confidence_score":0.91,"remarks":"draft"}` +
 		"\n```\n\nFinal:\n```json\n" +
-		`{"id":"11111111-1111-4111-8111-111111111111","valid":false,"priority":0,"confidence_score":0.1,"remarks":"reconsidered"}` +
+		`{"id":"11111111-1111-4111-8111-111111111111","verdict":"refuted","priority":0,"confidence_score":0.1,"remarks":"reconsidered"}` +
 		"\n```\n"
 	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err != nil {
@@ -124,8 +127,8 @@ func TestParseVerifyResponseMergesMultipleBlocksLastFieldsWin(t *testing.T) {
 	if resp.Verification == nil {
 		t.Fatalf("verification nil")
 	}
-	if resp.Verification.Valid != false {
-		t.Fatalf("Valid = %v, want false (last block must overwrite true)", resp.Verification.Valid)
+	if resp.Verification.Verdict != "refuted" {
+		t.Fatalf("Verdict = %q, want refuted (last block must overwrite confirmed)", resp.Verification.Verdict)
 	}
 	if resp.Verification.Priority != 0 {
 		t.Fatalf("Priority = %d, want 0 (last block must overwrite 2)", resp.Verification.Priority)
@@ -140,7 +143,7 @@ func TestParseVerifyResponseMergesMultipleBlocksLastFieldsWin(t *testing.T) {
 
 func TestParseVerifyResponsePartialSecondBlockPreservesEarlierFields(t *testing.T) {
 	content := "```json\n" +
-		`{"id":"11111111-1111-4111-8111-111111111111","valid":true,"priority":2,"confidence_score":0.91,"remarks":"first"}` +
+		`{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":2,"confidence_score":0.91,"remarks":"first"}` +
 		"\n```\n\nAddendum:\n```json\n" +
 		`{"remarks":"actually, see line 42"}` +
 		"\n```\n"
@@ -154,8 +157,8 @@ func TestParseVerifyResponsePartialSecondBlockPreservesEarlierFields(t *testing.
 	if resp.Verification.ID != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("ID = %q, partial block must not blank earlier ID", resp.Verification.ID)
 	}
-	if resp.Verification.Valid != true {
-		t.Fatalf("Valid = %v, partial block must not blank earlier value", resp.Verification.Valid)
+	if resp.Verification.Verdict != "confirmed" {
+		t.Fatalf("Verdict = %q, partial block must not blank earlier value", resp.Verification.Verdict)
 	}
 	if resp.Verification.Priority != 2 {
 		t.Fatalf("Priority = %d, partial block must not blank earlier value", resp.Verification.Priority)
@@ -170,7 +173,7 @@ func TestParseVerifyResponsePartialSecondBlockPreservesEarlierFields(t *testing.
 
 func TestParseVerifyResponseMissingFieldsDetectionAcrossBlocks(t *testing.T) {
 	content := "```json\n" +
-		`{"id":"11111111-1111-4111-8111-111111111111","valid":true,"priority":2}` +
+		`{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":2}` +
 		"\n```\n\nMore:\n```json\n" +
 		`{"confidence_score":0.91,"remarks":"ok"}` +
 		"\n```\n"
@@ -185,7 +188,7 @@ func TestParseVerifyResponseMissingFieldsDetectionAcrossBlocks(t *testing.T) {
 
 func TestParseVerifyResponseRejectsMalformedTypedBlockAcrossBlocks(t *testing.T) {
 	content := "```json\n" +
-		`{"id":"11111111-1111-4111-8111-111111111111","valid":true,"priority":"high"}` +
+		`{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":"high"}` +
 		"\n```\n\nMore:\n```json\n" +
 		`{"confidence_score":0.91,"remarks":"ok"}` +
 		"\n```\n"
@@ -194,7 +197,7 @@ func TestParseVerifyResponseRejectsMalformedTypedBlockAcrossBlocks(t *testing.T)
 	if !asErr(err, &invalid) {
 		t.Fatalf("expected InvalidResponseError, got %v", err)
 	}
-	for _, want := range []string{"id", "valid", "priority"} {
+	for _, want := range []string{"id", "verdict", "priority"} {
 		if !slices.Contains(invalid.MissingFields, want) {
 			t.Fatalf("missing fields = %v, want %q", invalid.MissingFields, want)
 		}
@@ -202,7 +205,7 @@ func TestParseVerifyResponseRejectsMalformedTypedBlockAcrossBlocks(t *testing.T)
 }
 
 func TestParseVerifyResponseRejectsOutOfRangePriority(t *testing.T) {
-	content := `{"id": "11111111-1111-4111-8111-111111111111", "valid": true, "priority": 9, "confidence_score": 0.5, "remarks": "x"}`
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "confirmed", "priority": 9, "confidence_score": 0.5, "remarks": "x"}`
 	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !asErr(err, &invalid) {

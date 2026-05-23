@@ -2015,7 +2015,7 @@ func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 func missingVerifyFields(content string) []string {
 	raw := mergedRawVerifyBlocks(content)
 	var missing []string
-	for _, field := range []string{"id", "valid", "priority", "confidence_score", "remarks"} {
+	for _, field := range []string{"id", "verdict", "priority", "confidence_score", "remarks"} {
 		if _, ok := raw[field]; !ok {
 			missing = append(missing, field)
 		}
@@ -2176,7 +2176,7 @@ func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, fin
 	var missing []string
 	if _, ok := rawItem["verification"]; ok {
 		prefix := fmt.Sprintf("findings[%d].verification", i)
-		missing = append(missing, missingNestedFields(prefix, rawItem["verification"], []string{"id", "valid", "priority", "confidence_score", "remarks"})...)
+		missing = append(missing, missingNestedFields(prefix, rawItem["verification"], []string{"id", "verdict", "priority", "confidence_score", "remarks"})...)
 		var verificationFields map[string]json.RawMessage
 		_ = json.Unmarshal(rawItem["verification"], &verificationFields)
 		if rawID, ok := verificationFields["id"]; ok && !rawUUIDIsValid(rawID) {

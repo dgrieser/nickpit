@@ -72,6 +72,8 @@ type app struct {
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
 	verifyConcurrency             int
+	verifyDropPolicy              string
+	verifyDropConfidence          float64
 	hideInvalid                   bool
 	skipModelCheck                bool
 	logger                        *logging.Logger
@@ -146,6 +148,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
+	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
+	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 
@@ -710,6 +714,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	req.RepoRoot = repoRoot
 	req.VerifyConcurrency = a.verifyConcurrency
+	req.VerifyDropPolicy = a.verifyDropPolicy
+	req.VerifyDropConfidence = a.verifyDropConfidence
 
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
