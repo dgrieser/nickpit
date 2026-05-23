@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -244,6 +245,39 @@ type FindingVerification struct {
 	Remarks         string  `json:"remarks"`
 }
 
+// MergeFrom implements the merge-aware contract used by jsonx.Mergeable.
+// Multi-block verify refinements overwrite only the fields a candidate
+// actually emitted, so a partial later block (e.g. only "remarks") does
+// not blank earlier ID/Valid/Priority/ConfidenceScore.
+func (v *FindingVerification) MergeFrom(other any, presentKeys map[string]bool) (bool, error) {
+	src, ok := other.(*FindingVerification)
+	if !ok || src == nil {
+		return false, nil
+	}
+	claimed := false
+	if presentKeys["id"] {
+		v.ID = src.ID
+		claimed = true
+	}
+	if presentKeys["valid"] {
+		v.Valid = src.Valid
+		claimed = true
+	}
+	if presentKeys["priority"] {
+		v.Priority = src.Priority
+		claimed = true
+	}
+	if presentKeys["confidence_score"] {
+		v.ConfidenceScore = src.ConfidenceScore
+		claimed = true
+	}
+	if presentKeys["remarks"] {
+		v.Remarks = src.Remarks
+		claimed = true
+	}
+	return claimed, nil
+}
+
 // Verification.ID mirrors parent Finding.ID by design; uniqueness is enforced
 // upstream by EnsureFindingIDs.
 func EnsureVerificationID(v *FindingVerification, fallback string) {
@@ -281,6 +315,26 @@ type LineRange struct {
 type Suggestion struct {
 	Body      string    `json:"body"`
 	LineRange LineRange `json:"line_range"`
+}
+
+func (s *Suggestion) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var body string
+		if err := json.Unmarshal(trimmed, &body); err != nil {
+			return err
+		}
+		s.Body = body
+		s.LineRange = LineRange{}
+		return nil
+	}
+	type suggestion Suggestion
+	var parsed suggestion
+	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+		return err
+	}
+	*s = Suggestion(parsed)
+	return nil
 }
 
 type TokenUsage struct {

@@ -452,6 +452,41 @@ func TestFinalizeWeightedConfidenceStandardAverage(t *testing.T) {
 	}
 }
 
+func TestFinalizeWeightedConfidenceRoundsToTwoDecimals(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
+						Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.79, Remarks: "ok"},
+						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.123, Remarks: "keep"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue", Body: "b", ConfidenceScore: 0.51, Priority: intPtr(1), CodeLocation: loc,
+				Verification: &model.FindingVerification{Valid: true, Priority: 1, ConfidenceScore: 0.79, Remarks: "ok"}},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	// 0.6*0.79 + 0.4*0.51 = 0.678, divergence 0.28 < 0.3 -> round to 0.68.
+	got := out.Findings[0].Finalization.ConfidenceScore
+	if math.Abs(got-0.68) > 1e-9 {
+		t.Fatalf("confidence = %v, want 0.68", got)
+	}
+}
+
 func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
 	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	llmClient := &capturingLLM{

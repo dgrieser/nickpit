@@ -3228,6 +3228,230 @@ func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 	}
 }
 
+func TestParseReviewResponseAcceptsStringSuggestionShorthand(t *testing.T) {
+	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":7,"end":9}},"suggestions":["Add a regression test."]}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 || len(resp.Findings[0].Suggestions) != 1 {
+		t.Fatalf("findings = %+v", resp.Findings)
+	}
+	suggestion := resp.Findings[0].Suggestions[0]
+	if suggestion.Body != "Add a regression test." {
+		t.Fatalf("suggestion body = %q", suggestion.Body)
+	}
+	if suggestion.LineRange.Start != 7 || suggestion.LineRange.End != 9 {
+		t.Fatalf("suggestion line range = %+v, want finding location", suggestion.LineRange)
+	}
+}
+
+func TestParseReviewResponseMergesMultipleBlocks(t *testing.T) {
+	content := "First block:\n```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e1","overall_confidence_score":0.5}` +
+		"\n```\n\nSecond block:\n```json\n" +
+		`{"findings":[{"title":"F2","body":"b2","confidence_score":0.6,"priority":2,"code_location":{"file_path":"b.go","line_range":{"start":3,"end":4}}}],"overall_confidence_score":0.7}` +
+		"\n```\n"
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2: %+v", len(resp.Findings), resp.Findings)
+	}
+	titles := []string{resp.Findings[0].Title, resp.Findings[1].Title}
+	if titles[0] != "F1" || titles[1] != "F2" {
+		t.Fatalf("titles = %v", titles)
+	}
+	if resp.OverallCorrectness != "patch is correct" {
+		t.Fatalf("OverallCorrectness = %q, want first-block value preserved", resp.OverallCorrectness)
+	}
+	if resp.OverallConfidenceScore != 0.7 {
+		t.Fatalf("OverallConfidenceScore = %v, want last-non-zero 0.7", resp.OverallConfidenceScore)
+	}
+}
+
+func TestParseReviewResponseAcceptsRepairedRequiredFieldValidation(t *testing.T) {
+	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5,}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(resp.Findings))
+	}
+}
+
+func TestParseReviewResponseMergesRepairedLaterBlock(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e1","overall_confidence_score":0.5}` +
+		"\n```\n\n```json\n" +
+		`{"overall_confidence_score":0.7,}` +
+		"\n```"
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.OverallConfidenceScore != 0.7 {
+		t.Fatalf("OverallConfidenceScore = %v, want repaired later block value", resp.OverallConfidenceScore)
+	}
+}
+
+func TestParseReviewResponsePreservesExplicitEmptyFindingsAcrossBlocks(t *testing.T) {
+	content := `{"findings":[]}` + "\n" +
+		`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings == nil {
+		t.Fatalf("Findings = nil, want explicit empty slice preserved")
+	}
+	if len(resp.Findings) != 0 {
+		t.Fatalf("findings = %d, want 0", len(resp.Findings))
+	}
+}
+
+func TestParseVerifyResponseAcceptsRepairedRequiredFieldValidation(t *testing.T) {
+	content := `{"id":"11111111-1111-4111-8111-111111111111","valid":true,"priority":1,"confidence_score":0.8,"remarks":"ok",}`
+	resp, err := parseVerifyResponse(content)
+	if err != nil {
+		t.Fatalf("parseVerifyResponse: %v", err)
+	}
+	if resp.Verification == nil || resp.Verification.Priority != 1 {
+		t.Fatalf("verification = %+v", resp.Verification)
+	}
+}
+
+func TestParseReviewResponseHarvestsBareFinding(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```\n\nExtra finding noticed in prose:\n" +
+		`{"title":"F2","body":"b2","confidence_score":0.4,"priority":2,"code_location":{"file_path":"b.go","line_range":{"start":7,"end":8}}}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2: %+v", len(resp.Findings), resp.Findings)
+	}
+	if resp.Findings[1].Title != "F2" {
+		t.Fatalf("Findings[1].Title = %q, want F2", resp.Findings[1].Title)
+	}
+}
+
+func TestParseReviewResponseHarvestsFindingsArray(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```\n\nAdditional findings:\n" +
+		`[{"title":"F2","body":"b2","confidence_score":0.4,"priority":2,"code_location":{"file_path":"b.go","line_range":{"start":7,"end":8}}},{"title":"F3","body":"b3","confidence_score":0.3,"priority":3,"code_location":{"file_path":"c.go","line_range":{"start":9,"end":10}}}]`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 3 {
+		t.Fatalf("findings = %d, want 3: %+v", len(resp.Findings), resp.Findings)
+	}
+	if resp.Findings[2].Title != "F3" {
+		t.Fatalf("Findings[2].Title = %q, want F3", resp.Findings[2].Title)
+	}
+}
+
+func TestParseReviewResponseAttachesBareSuggestionToLastFinding(t *testing.T) {
+	content := "```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```\n\nAlso suggest:\n" +
+		`{"body":"Add a regression test","line_range":{"start":5,"end":5}}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(resp.Findings), resp.Findings)
+	}
+	suggestions := resp.Findings[0].Suggestions
+	if len(suggestions) != 1 {
+		t.Fatalf("Suggestions = %+v, want one attached", suggestions)
+	}
+	if suggestions[0].Body != "Add a regression test" {
+		t.Fatalf("Suggestion.Body = %q", suggestions[0].Body)
+	}
+	if suggestions[0].LineRange.Start != 5 || suggestions[0].LineRange.End != 5 {
+		t.Fatalf("Suggestion.LineRange = %+v, want 5..5", suggestions[0].LineRange)
+	}
+}
+
+func TestParseReviewResponseDropsBareSuggestionWithoutAnchor(t *testing.T) {
+	content := "Stray suggestion appearing first:\n" +
+		`{"body":"Add a regression test","line_range":{"start":5,"end":5}}` +
+		"\n\n```json\n" +
+		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}` +
+		"\n```"
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(resp.Findings), resp.Findings)
+	}
+	if len(resp.Findings[0].Suggestions) != 0 {
+		t.Fatalf("Suggestions = %+v, want none (no anchor before snippet)", resp.Findings[0].Suggestions)
+	}
+}
+
+func TestParseReviewResponseRejectsUnparsedRawFindingCandidates(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "unrelated array candidate",
+			content: `["note"]` + "\n" +
+				`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`,
+		},
+		{
+			name: "malformed finding item",
+			content: `{"findings":[{"title":"Fix","body":"b","confidence_score":0.5,"priority":"high","code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}]}` + "\n" +
+				`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseReviewResponse(tc.content, SchemaKindReview, ResponseConstraints{})
+			var invalid *InvalidResponseError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("err = %v, want InvalidResponseError", err)
+			}
+			found := false
+			for _, m := range invalid.MissingFields {
+				if strings.HasPrefix(m, "findings") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("missing fields = %v, want findings entry", invalid.MissingFields)
+			}
+		})
+	}
+}
+
+func TestParseReviewResponseIgnoresBareObjectThatParsedFallbackRejects(t *testing.T) {
+	content := `{"title":""}` + "\n" +
+		`{"title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}` + "\n" +
+		`{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1: %+v", len(resp.Findings), resp.Findings)
+	}
+	if resp.Findings[0].Title != "Fix" {
+		t.Fatalf("finding title = %q, want Fix", resp.Findings[0].Title)
+	}
+}
+
 func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix nil pointer","body":"b","confidence_score":0.5,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})

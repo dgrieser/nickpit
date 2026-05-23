@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
@@ -80,5 +81,79 @@ func TestEnsureFindingIDReportsOnlyNonEmptyInvalidOverwrite(t *testing.T) {
 	valid := Finding{ID: "11111111-1111-4111-8111-111111111111"}
 	if overwrote := EnsureFindingID(&valid); overwrote {
 		t.Fatal("valid ID should not report overwrite")
+	}
+}
+
+func TestSuggestionUnmarshalAcceptsStringShorthand(t *testing.T) {
+	var got Suggestion
+	if err := json.Unmarshal([]byte(`"Add a regression test."`), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Body != "Add a regression test." {
+		t.Fatalf("body = %q", got.Body)
+	}
+	if got.LineRange != (LineRange{}) {
+		t.Fatalf("line range = %+v, want zero", got.LineRange)
+	}
+}
+
+func TestSuggestionUnmarshalAcceptsObject(t *testing.T) {
+	var got Suggestion
+	if err := json.Unmarshal([]byte(`{"body":"fix","line_range":{"start":3,"end":5}}`), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := Suggestion{Body: "fix", LineRange: LineRange{Start: 3, End: 5}}
+	if got != want {
+		t.Fatalf("suggestion = %+v, want %+v", got, want)
+	}
+}
+
+func TestFindingVerificationMergeFromKeyAware(t *testing.T) {
+	dst := FindingVerification{
+		ID:              "id-1",
+		Valid:           true,
+		Priority:        2,
+		ConfidenceScore: 0.9,
+		Remarks:         "first",
+	}
+	src := FindingVerification{
+		ID:              "id-2",
+		Valid:           false,
+		Priority:        0,
+		ConfidenceScore: 0.0,
+		Remarks:         "second",
+	}
+	keys := map[string]bool{"valid": true, "priority": true, "confidence_score": true}
+	claimed, err := dst.MergeFrom(&src, keys)
+	if err != nil {
+		t.Fatalf("MergeFrom: %v", err)
+	}
+	if !claimed {
+		t.Fatalf("expected claimed=true")
+	}
+	want := FindingVerification{
+		ID:              "id-1", // not in keys → preserved
+		Valid:           false,  // in keys → overwritten with src zero value
+		Priority:        0,      // in keys → overwritten with src zero value
+		ConfidenceScore: 0.0,    // in keys → overwritten with src zero value
+		Remarks:         "first", // not in keys → preserved
+	}
+	if dst != want {
+		t.Fatalf("dst = %+v, want %+v", dst, want)
+	}
+}
+
+func TestFindingVerificationMergeFromNoKeysReturnsUnclaimed(t *testing.T) {
+	dst := FindingVerification{ID: "keep"}
+	src := FindingVerification{ID: "discard"}
+	claimed, err := dst.MergeFrom(&src, map[string]bool{})
+	if err != nil {
+		t.Fatalf("MergeFrom: %v", err)
+	}
+	if claimed {
+		t.Fatalf("expected claimed=false for empty keys")
+	}
+	if dst.ID != "keep" {
+		t.Fatalf("dst mutated: %+v", dst)
 	}
 }

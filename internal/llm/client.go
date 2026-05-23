@@ -1832,12 +1832,13 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 		return resp, 0, err
 	}
 	var parsed ReviewResponse
-	if err := LenientUnmarshal(content, &parsed); err != nil {
+	if err := LenientUnmarshalMerge(content, &parsed, reviewResponseFallbackTypes()...); err != nil {
 		return nil, 0, &InvalidResponseError{
 			RawContent: content,
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
 	}
+	normalizeFindingSuggestions(parsed.Findings)
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
 	}
@@ -1852,9 +1853,113 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 	return &parsed, overwrittenIDs, nil
 }
 
+// MergeFrom implements jsonx.Mergeable for ReviewResponse. Multi-block
+// LLM outputs are merged by appending findings and overwriting overall_*
+// fields only when the candidate emitted them. Wrapper-set fields
+// (tool_calls, tokens_used, raw_response, reasoning_effort, Reasoned,
+// ToolsOmitted) are populated by the llm package after parsing — never by
+// the model — so they are intentionally skipped here.
+func (r *ReviewResponse) MergeFrom(other any, presentKeys map[string]bool) (bool, error) {
+	src, ok := other.(*ReviewResponse)
+	if !ok || src == nil {
+		return false, nil
+	}
+	claimed := false
+	if presentKeys["findings"] {
+		if len(src.Findings) > 0 {
+			r.Findings = append(r.Findings, src.Findings...)
+		} else if src.Findings != nil && r.Findings == nil {
+			r.Findings = []model.Finding{}
+		}
+		claimed = true
+	}
+	if presentKeys["overall_correctness"] {
+		r.OverallCorrectness = src.OverallCorrectness
+		claimed = true
+	}
+	if presentKeys["overall_explanation"] {
+		r.OverallExplanation = src.OverallExplanation
+		claimed = true
+	}
+	if presentKeys["overall_confidence_score"] {
+		r.OverallConfidenceScore = src.OverallConfidenceScore
+		claimed = true
+	}
+	if presentKeys["verification"] {
+		r.Verification = src.Verification
+		claimed = true
+	}
+	return claimed, nil
+}
+
+// reviewResponseFallbackTypes returns the fallback shapes used when the LLM
+// emits inner snippets next to a full ReviewResponse: a bare findings array,
+// a bare Finding object, or a bare Suggestion. Fallback order matters — a
+// `{"body":"x"}` candidate could parse as both Finding and Suggestion, so
+// Finding is tried first and accepts only objects that look like findings
+// (title set, or body set with a code location). Suggestion claims the
+// remainder and attaches to the most recently appended Finding.
+func reviewResponseFallbackTypes() []FallbackType {
+	return []FallbackType{
+		{
+			NewInstance: func() any { return new([]model.Finding) },
+			Attach: func(into, parsed any) bool {
+				fs := *parsed.(*[]model.Finding)
+				if len(fs) == 0 {
+					return false
+				}
+				rr := into.(*ReviewResponse)
+				rr.Findings = append(rr.Findings, fs...)
+				return true
+			},
+		},
+		{
+			NewInstance: func() any { return new(model.Finding) },
+			Attach: func(into, parsed any) bool {
+				f := parsed.(*model.Finding)
+				title := strings.TrimSpace(f.Title)
+				body := strings.TrimSpace(f.Body)
+				hasLoc := f.CodeLocation != (model.CodeLocation{})
+				if title == "" && !(body != "" && hasLoc) {
+					return false
+				}
+				rr := into.(*ReviewResponse)
+				rr.Findings = append(rr.Findings, *f)
+				return true
+			},
+		},
+		{
+			NewInstance: func() any { return new(model.Suggestion) },
+			Attach: func(into, parsed any) bool {
+				s := parsed.(*model.Suggestion)
+				if strings.TrimSpace(s.Body) == "" {
+					return false
+				}
+				rr := into.(*ReviewResponse)
+				if len(rr.Findings) == 0 {
+					return false
+				}
+				last := &rr.Findings[len(rr.Findings)-1]
+				last.Suggestions = append(last.Suggestions, *s)
+				return true
+			},
+		},
+	}
+}
+
+func normalizeFindingSuggestions(findings []model.Finding) {
+	for i := range findings {
+		for j := range findings[i].Suggestions {
+			if findings[i].Suggestions[j].LineRange == (model.LineRange{}) {
+				findings[i].Suggestions[j].LineRange = findings[i].CodeLocation.LineRange
+			}
+		}
+	}
+}
+
 func parseVerifyResponse(content string) (*ReviewResponse, error) {
 	var verification model.FindingVerification
-	if err := LenientUnmarshal(content, &verification); err != nil {
+	if err := LenientUnmarshalMerge(content, &verification); err != nil {
 		return nil, &InvalidResponseError{
 			RawContent: content,
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
@@ -1877,9 +1982,38 @@ func parseVerifyResponse(content string) (*ReviewResponse, error) {
 	return &ReviewResponse{Verification: &verification}, nil
 }
 
+// mergedRawVerifyBlocks reconstructs the merged raw view of the verify
+// response candidates that were valid enough to merge into a typed
+// FindingVerification. Malformed typed candidates must not satisfy required
+// field checks just because their raw keys were present.
+func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
+	top := make(map[string]json.RawMessage)
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return top
+	}
+	candidates := extractJSONCandidates(trimmed)
+	if len(candidates) == 0 {
+		candidates = []string{StripCodeFences(trimmed)}
+	}
+	for _, c := range candidates {
+		_, decoded, ok := decodeJSONCandidate(c, func() any { return new(model.FindingVerification) })
+		if !ok {
+			continue
+		}
+		var asMap map[string]json.RawMessage
+		if err := json.Unmarshal(decoded, &asMap); err != nil {
+			continue
+		}
+		for k, val := range asMap {
+			top[k] = val
+		}
+	}
+	return top
+}
+
 func missingVerifyFields(content string) []string {
-	var raw map[string]json.RawMessage
-	_ = LenientUnmarshal(content, &raw)
+	raw := mergedRawVerifyBlocks(content)
 	var missing []string
 	for _, field := range []string{"id", "valid", "priority", "confidence_score", "remarks"} {
 		if _, ok := raw[field]; !ok {
@@ -1892,14 +2026,78 @@ func missingVerifyFields(content string) []string {
 	return missing
 }
 
+// mergedRawReviewBlocks reconstructs the merged raw view of a review response
+// the same way LenientUnmarshalMerge merges parsed values: top-level scalar
+// keys union with last-wins, "findings" arrays concatenate across blocks,
+// and bare Finding-shaped objects outside any top-level wrapper are harvested
+// as additional raw findings when they match the parsed fallback predicate.
+// Bare Suggestion candidates are ignored — they have no anchor in the raw
+// view, matching the parsed-side fallback that requires a preceding Finding.
+func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, findings []json.RawMessage) {
+	top = make(map[string]json.RawMessage)
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return top, findings
+	}
+	candidates := extractJSONCandidates(trimmed)
+	if len(candidates) == 0 {
+		candidates = []string{StripCodeFences(trimmed)}
+	}
+	for _, c := range candidates {
+		if parsed, decoded, ok := decodeJSONCandidate(c, func() any { return new(map[string]json.RawMessage) }); ok {
+			asMap := *parsed.(*map[string]json.RawMessage)
+			_, hasFindings := asMap["findings"]
+			if hasFindings {
+				var items []json.RawMessage
+				if json.Unmarshal(asMap["findings"], &items) == nil {
+					findings = append(findings, items...)
+				}
+				delete(asMap, "findings")
+				for k, v := range asMap {
+					top[k] = v
+				}
+				continue
+			}
+			if rawCandidateIsBareFinding(decoded) {
+				findings = append(findings, json.RawMessage(decoded))
+				continue
+			}
+			for k, v := range asMap {
+				top[k] = v
+			}
+			continue
+		}
+		if parsed, _, ok := decodeJSONCandidate(c, func() any { return new([]json.RawMessage) }); ok {
+			asArr := *parsed.(*[]json.RawMessage)
+			findings = append(findings, asArr...)
+		}
+	}
+	return top, findings
+}
+
+func rawCandidateIsBareFinding(decoded []byte) bool {
+	var finding model.Finding
+	if err := json.Unmarshal(decoded, &finding); err != nil {
+		return false
+	}
+	title := strings.TrimSpace(finding.Title)
+	body := strings.TrimSpace(finding.Body)
+	hasLoc := finding.CodeLocation != (model.CodeLocation{})
+	return title != "" || (body != "" && hasLoc)
+}
+
 func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind, constraints ResponseConstraints) []string {
-	var raw map[string]json.RawMessage
-	_ = LenientUnmarshal(content, &raw)
+	raw, rawFindings := mergedRawReviewBlocks(content)
 	var missing []string
-	if _, ok := raw["findings"]; !ok && parsed.Findings == nil {
+	_, hasFindingsKey := raw["findings"]
+	if !hasFindingsKey && len(rawFindings) == 0 && parsed.Findings == nil {
 		missing = append(missing, "findings")
 	}
-	missing = append(missing, missingFindingFields(parsed.Findings, raw["findings"], kind, constraints)...)
+	if len(rawFindings) > len(parsed.Findings) {
+		missing = append(missing, "findings (must be valid finding objects)")
+	}
+	rawFindingsJSON, _ := json.Marshal(rawFindings)
+	missing = append(missing, missingFindingFields(parsed.Findings, rawFindingsJSON, kind, constraints)...)
 	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
 		missing = append(missing, "overall_correctness")
 	} else {

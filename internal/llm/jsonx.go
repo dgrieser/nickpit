@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"unicode"
 )
@@ -31,8 +32,7 @@ func LenientUnmarshal(content string, v any) error {
 		}
 	}
 
-	extracted, ok := ExtractJSONObject(stripped)
-	if ok {
+	for _, extracted := range extractJSONCandidates(stripped) {
 		if err := json.Unmarshal([]byte(extracted), v); err == nil {
 			return nil
 		}
@@ -48,6 +48,226 @@ func LenientUnmarshal(content string, v any) error {
 	}
 
 	return json.Unmarshal([]byte(trimmed), v)
+}
+
+// Mergeable lets a target type define its own merge semantics for
+// LenientUnmarshalMerge. When the target's pointer implements this
+// interface, the merger calls MergeFrom for each successfully parsed
+// candidate instead of using the generic reflection-based merge.
+//
+// other is a *T pointing at the freshly-decoded candidate (same concrete
+// type as the accumulator). presentKeys is the set of top-level JSON keys
+// the candidate actually emitted — types should use it to distinguish
+// "field omitted" from "field set to its zero value". When the candidate
+// is a top-level JSON array (not an object), presentKeys is empty.
+//
+// Return value: claimed=true when the candidate contributed at least one
+// field to the accumulator. claimed=false signals "no relevant keys" so
+// LenientUnmarshalMerge falls through to its FallbackType list. err is
+// returned to the caller of LenientUnmarshalMerge unchanged.
+type Mergeable interface {
+	MergeFrom(other any, presentKeys map[string]bool) (claimed bool, err error)
+}
+
+// FallbackType lets a caller of LenientUnmarshalMerge declare additional
+// shapes to try when a JSON candidate parses successfully into *v but yields
+// the zero value (i.e. no fields overlapped), or fails to parse into *v at
+// all. NewInstance returns a fresh non-nil pointer to a value of the
+// fallback type. Attach receives the accumulator (the same pointer the
+// caller passed as v) and the parsed fallback instance; it returns true if
+// the parsed value carried meaningful content and was attached.
+type FallbackType struct {
+	NewInstance func() any
+	Attach      func(into any, parsed any) bool
+}
+
+// LenientUnmarshalMerge behaves like LenientUnmarshal when the input
+// contains a single JSON candidate. When multiple candidates are found,
+// each candidate that parses into a fresh *v-typed value and is not the
+// zero value is merged into an accumulator: slice fields concatenate,
+// scalar fields use last-non-zero-wins, pointer/interface fields use
+// last-non-nil-wins, maps union with last-wins on key collisions, and
+// nested structs recurse. Candidates that parse to a zero *v (no field
+// overlap) or fail to parse into *v are tried against each fallback in
+// order; the first whose Attach returns true claims the candidate.
+//
+// Custom UnmarshalJSON implementations on element types run per candidate
+// during unmarshal, so the merge layer always sees post-unmarshal values.
+//
+// If no candidate parses (primary or fallback) and the repaired full
+// content also fails, the strict-parse error from the trimmed input is
+// returned.
+func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) error {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return errors.New("empty content")
+	}
+	rt := reflect.TypeOf(v)
+	if rt == nil || rt.Kind() != reflect.Pointer || reflect.ValueOf(v).IsNil() {
+		return errors.New("v must be a non-nil pointer")
+	}
+	if err := json.Unmarshal([]byte(trimmed), v); err == nil {
+		return nil
+	}
+	// Run candidate extraction directly on the trimmed input. StripCodeFences
+	// is unsafe here: if content has prose or another block after the closing
+	// fence, the strip would discard it. Fence characters do not affect
+	// balanced-brace scanning, so candidates inside fences are still found.
+	candidates := extractJSONCandidates(trimmed)
+	if len(candidates) <= 1 {
+		return LenientUnmarshal(content, v)
+	}
+
+	elemType := rt.Elem()
+	accumulator := reflect.New(elemType)
+	accumulator.Elem().Set(reflect.ValueOf(v).Elem())
+	merged := false
+
+	_, isMergeable := accumulator.Interface().(Mergeable)
+	for _, extracted := range candidates {
+		parsed, decoded, ok := tryParseCandidate(extracted, elemType)
+		if ok {
+			if isMergeable {
+				keys := topLevelJSONKeys(decoded)
+				claimed, err := accumulator.Interface().(Mergeable).MergeFrom(parsed.Interface(), keys)
+				if err != nil {
+					return err
+				}
+				if claimed {
+					merged = true
+					continue
+				}
+			} else if !parsed.Elem().IsZero() {
+				mergeJSONValue(accumulator.Elem(), parsed.Elem())
+				merged = true
+				continue
+			}
+		}
+		for _, fb := range fallbacks {
+			fbParsed, ok := tryParseFallback(extracted, fb.NewInstance)
+			if !ok {
+				continue
+			}
+			if fb.Attach(accumulator.Interface(), fbParsed) {
+				merged = true
+				break
+			}
+		}
+	}
+
+	if merged {
+		reflect.ValueOf(v).Elem().Set(accumulator.Elem())
+		return nil
+	}
+	return LenientUnmarshal(content, v)
+}
+
+// topLevelJSONKeys returns the set of top-level keys present in a JSON
+// object candidate. For arrays or non-object candidates the returned map
+// is empty (and non-nil so callers can index it without nil checks).
+func topLevelJSONKeys(decoded []byte) map[string]bool {
+	keys := make(map[string]bool)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(decoded, &raw); err != nil {
+		return keys
+	}
+	for k := range raw {
+		keys[k] = true
+	}
+	return keys
+}
+
+func tryParseCandidate(extracted string, elemType reflect.Type) (reflect.Value, []byte, bool) {
+	parsed, decoded, ok := decodeJSONCandidate(extracted, func() any {
+		return reflect.New(elemType).Interface()
+	})
+	if ok {
+		return reflect.ValueOf(parsed), decoded, true
+	}
+	return reflect.Value{}, nil, false
+}
+
+func tryParseFallback(extracted string, alloc func() any) (any, bool) {
+	parsed, _, ok := decodeJSONCandidate(extracted, alloc)
+	if ok {
+		return parsed, true
+	}
+	return nil, false
+}
+
+func decodeJSONCandidate(extracted string, alloc func() any) (any, []byte, bool) {
+	decoded := []byte(extracted)
+	parsed := alloc()
+	if err := json.Unmarshal(decoded, parsed); err == nil {
+		return parsed, decoded, true
+	}
+	decoded = RepairJSON(decoded)
+	parsed = alloc()
+	if err := json.Unmarshal(decoded, parsed); err == nil {
+		return parsed, decoded, true
+	}
+	return nil, nil, false
+}
+
+var rawMessageType = reflect.TypeOf(json.RawMessage(nil))
+
+func mergeJSONValue(dst, src reflect.Value) {
+	if !dst.IsValid() || !src.IsValid() {
+		return
+	}
+	if dst.Type() == rawMessageType {
+		if src.Len() > 0 {
+			dst.Set(src)
+		}
+		return
+	}
+	switch dst.Kind() {
+	case reflect.Struct:
+		for i := 0; i < dst.NumField(); i++ {
+			if !dst.Field(i).CanSet() {
+				continue
+			}
+			mergeJSONValue(dst.Field(i), src.Field(i))
+		}
+	case reflect.Pointer:
+		if src.IsNil() {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(src)
+			return
+		}
+		mergeJSONValue(dst.Elem(), src.Elem())
+	case reflect.Slice:
+		if src.IsNil() || src.Len() == 0 {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(src)
+			return
+		}
+		dst.Set(reflect.AppendSlice(dst, src))
+	case reflect.Map:
+		if src.IsNil() || src.Len() == 0 {
+			return
+		}
+		if dst.IsNil() {
+			dst.Set(reflect.MakeMap(dst.Type()))
+		}
+		for _, key := range src.MapKeys() {
+			dst.SetMapIndex(key, src.MapIndex(key))
+		}
+	case reflect.Interface:
+		if src.IsNil() {
+			return
+		}
+		dst.Set(src)
+	default:
+		if src.IsZero() {
+			return
+		}
+		dst.Set(src)
+	}
 }
 
 // StripCodeFences removes leading and trailing markdown code fences such as
@@ -101,14 +321,35 @@ func ExtractJSONObject(content string) (string, bool) {
 		} else {
 			close = ']'
 		}
-		if extracted, ok := scanBalanced(content, pos, c, close); ok {
+		if extracted, _, ok := scanBalanced(content, pos, c, close); ok {
 			return extracted, true
 		}
 	}
 	return "", false
 }
 
-func scanBalanced(content string, start int, open, close byte) (string, bool) {
+func extractJSONCandidates(content string) []string {
+	var candidates []string
+	for pos := 0; pos < len(content); pos++ {
+		c := content[pos]
+		if c != '{' && c != '[' {
+			continue
+		}
+		var close byte
+		if c == '{' {
+			close = '}'
+		} else {
+			close = ']'
+		}
+		if extracted, end, ok := scanBalanced(content, pos, c, close); ok {
+			candidates = append(candidates, extracted)
+			pos = end
+		}
+	}
+	return candidates
+}
+
+func scanBalanced(content string, start int, open, close byte) (string, int, bool) {
 	depth := 0
 	inString := false
 	escape := false
@@ -136,11 +377,11 @@ func scanBalanced(content string, start int, open, close byte) (string, bool) {
 		case close:
 			depth--
 			if depth == 0 {
-				return content[start : i+1], true
+				return content[start : i+1], i, true
 			}
 		}
 	}
-	return "", false
+	return "", 0, false
 }
 
 // RepairJSON applies best-effort fixes to common malformations produced by

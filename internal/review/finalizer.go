@@ -275,9 +275,10 @@ func enforcePriorityFloor(out, in []model.Finding) {
 
 // applyWeightedConfidence overwrites finalization.confidence_score with a
 // deterministic weighted average of the review confidence and the verifier's
-// confidence. Moved out of the LLM prompt because LLMs are unreliable at
-// arithmetic. If verification is missing, the review confidence is used as-is.
-// Hallucinated findings with no input match are skipped (no value applied).
+// confidence, rounded to two decimals. Moved out of the LLM prompt because LLMs
+// are unreliable at arithmetic. If verification is missing, the review
+// confidence is used as-is. Hallucinated findings with no input match are
+// skipped (no value applied).
 func applyWeightedConfidence(out, in []model.Finding) {
 	for i := range out {
 		if out[i].Finalization == nil {
@@ -289,7 +290,7 @@ func applyWeightedConfidence(out, in []model.Finding) {
 		}
 		review := orig.ConfidenceScore
 		if orig.Verification == nil {
-			out[i].Finalization.ConfidenceScore = review
+			out[i].Finalization.ConfidenceScore = roundConfidenceScore(review)
 			continue
 		}
 		verify := orig.Verification.ConfidenceScore
@@ -300,8 +301,12 @@ func applyWeightedConfidence(out, in []model.Finding) {
 				score = lower
 			}
 		}
-		out[i].Finalization.ConfidenceScore = score
+		out[i].Finalization.ConfidenceScore = roundConfidenceScore(score)
 	}
+}
+
+func roundConfidenceScore(score float64) float64 {
+	return math.Round(score*100) / 100
 }
 
 // finalizeConstraintsFor returns the constraints to apply to the finalizer

@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -224,6 +225,7 @@ func TestTerminalFormatterRendersWarnings(t *testing.T) {
 }
 
 func TestTerminalFormatterWarningsColored(t *testing.T) {
+	withoutNoColor(t)
 	var buf bytes.Buffer
 	formatter := NewTerminalFormatter(&buf, true)
 	err := formatter.FormatFindings(&model.ReviewResult{
@@ -237,6 +239,21 @@ func TestTerminalFormatterWarningsColored(t *testing.T) {
 	if !strings.Contains(out, "\x1b[33mWarnings:\x1b[0m") {
 		t.Fatalf("expected ANSI-yellow Warnings header:\n%q", out)
 	}
+}
+
+func withoutNoColor(t *testing.T) {
+	t.Helper()
+	prev, ok := os.LookupEnv("NO_COLOR")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv("NO_COLOR", prev)
+			return
+		}
+		_ = os.Unsetenv("NO_COLOR")
+	})
 }
 
 func TestJSONFormatterIncludesVerification(t *testing.T) {
