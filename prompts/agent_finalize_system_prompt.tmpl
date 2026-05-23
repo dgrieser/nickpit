@@ -23,6 +23,13 @@ Your job:
 
 {{.PrioritySnippet}}
 
+Overall correctness rules:
+- if ANY finding has priority 0, `overall_correctness` MUST be `"patch is incorrect"`
+- if ANY finding has priority 1 AND none are priority 0, `overall_correctness` SHOULD be `"patch is incorrect"` in most cases, otherwise:
+  - `overall_explanation` MUST cite the concrete evidence justifying your decision
+  - vague justification, e.g. "low impact", "edge case", "unlikely" are NOT acceptable
+- if NO finding has priority 0 and NO finding has priority 1, `overall_correctness` MUST be `"patch is correct"`
+
 ## OUTPUT FORMAT
 {{if .OutputSchemaSnippet}}
 Output `finalization` and updated `overall_correctness`, `overall_explanation`, and `overall_confidence_score` in the following JSON format:

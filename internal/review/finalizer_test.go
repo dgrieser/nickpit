@@ -688,20 +688,86 @@ func TestFinalizeEarlySkipsOnEmptyFindings(t *testing.T) {
 	}
 }
 
-// Regression: when all input findings are P2 / P3, the finalizer must be
-// constrained so it cannot flip overall_correctness to "patch is incorrect".
-func TestFinalizeRefusesPatchIncorrectWithoutCriticalFindings(t *testing.T) {
-	if cs := finalizeConstraintsFor([]model.Finding{
-		{Priority: intPtr(2)},
-		{Priority: intPtr(3)},
-	}).AllowedCorrectness; len(cs) != 1 || cs[0] != "patch is correct" {
-		t.Fatalf("constraints = %#v, want [patch is correct]", cs)
+// Covers the three regimes of finalizeConstraintsFor based on the priority
+// floor = min(finding.priority, verification.priority): P0 → must be
+// "patch is incorrect", P1-only → unconstrained, no critical → must be
+// "patch is correct".
+func TestFinalizeConstraintsForPriorityFloor(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []model.Finding
+		want []string // nil => unconstrained
+	}{
+		{
+			name: "all P2/P3 → patch is correct",
+			in: []model.Finding{
+				{Priority: intPtr(2)},
+				{Priority: intPtr(3)},
+			},
+			want: []string{"patch is correct"},
+		},
+		{
+			name: "P1 reviewer only → unconstrained",
+			in: []model.Finding{
+				{Priority: intPtr(2)},
+				{Priority: intPtr(1)},
+			},
+			want: nil,
+		},
+		{
+			name: "P0 reviewer → patch is incorrect",
+			in: []model.Finding{
+				{Priority: intPtr(0)},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P3 reviewer, P0 verifier → patch is incorrect (floor)",
+			in: []model.Finding{
+				{Priority: intPtr(3), Verification: &model.FindingVerification{Priority: 0}},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P0 reviewer, P3 verifier → patch is incorrect (floor)",
+			in: []model.Finding{
+				{Priority: intPtr(0), Verification: &model.FindingVerification{Priority: 3}},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P1 reviewer, P0 verifier → patch is incorrect",
+			in: []model.Finding{
+				{Priority: intPtr(1), Verification: &model.FindingVerification{Priority: 0}},
+			},
+			want: []string{"patch is incorrect"},
+		},
+		{
+			name: "P2 reviewer, P1 verifier → unconstrained (P1 floor)",
+			in: []model.Finding{
+				{Priority: intPtr(2), Verification: &model.FindingVerification{Priority: 1}},
+			},
+			want: nil,
+		},
 	}
-	if cs := finalizeConstraintsFor([]model.Finding{
-		{Priority: intPtr(2)},
-		{Priority: intPtr(1)},
-	}).AllowedCorrectness; len(cs) != 0 {
-		t.Fatalf("constraints = %#v, want unconstrained (P1 present)", cs)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := finalizeConstraintsFor(tc.in).AllowedCorrectness
+			if len(tc.want) == 0 {
+				if len(got) != 0 {
+					t.Fatalf("AllowedCorrectness = %#v, want unconstrained", got)
+				}
+				return
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("AllowedCorrectness = %#v, want %#v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("AllowedCorrectness = %#v, want %#v", got, tc.want)
+				}
+			}
+		})
 	}
 }
 
