@@ -74,7 +74,6 @@ type app struct {
 	verifyConcurrency             int
 	verifyDropPolicy              string
 	verifyDropConfidence          float64
-	hideInvalid                   bool
 	skipModelCheck                bool
 	logger                        *logging.Logger
 }
@@ -102,6 +101,9 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			if err := review.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
+				return err
+			}
 			if cli.workDir == "" {
 				return nil
 			}
@@ -150,7 +152,6 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
-	root.PersistentFlags().BoolVar(&cli.hideInvalid, "hide-invalid", false, "Hide findings the verifier marked as invalid (terminal output only)")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 
 	root.AddCommand(cli.newCheckCmd())
@@ -720,7 +721,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
-	engine.SetMultiAgentReview(true)
 	result, trimmedCtx, err := engine.RunWithContext(ctx, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
@@ -762,7 +762,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
 	} else {
-		formatter = output.NewTerminalFormatter(os.Stdout, true).WithHideInvalid(a.hideInvalid)
+		formatter = output.NewTerminalFormatter(os.Stdout, true)
 	}
 	if err := formatter.FormatFindings(result); err != nil {
 		return err

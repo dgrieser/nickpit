@@ -168,36 +168,6 @@ func TestTerminalFormatterRendersFinalizationPriorityUnchanged(t *testing.T) {
 	}
 }
 
-func TestTerminalFormatterHideInvalid(t *testing.T) {
-	var buf bytes.Buffer
-	formatter := NewTerminalFormatter(&buf, false).WithHideInvalid(true)
-	err := formatter.FormatFindings(&model.ReviewResult{
-		Findings: []model.Finding{
-			{
-				Title: "Real bug", Body: "B1", ConfidenceScore: 0.8, Priority: intPtr(1),
-				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.92, Remarks: "ok"},
-			},
-			{
-				Title: "Should be hidden", Body: "B2", ConfidenceScore: 0.7, Priority: intPtr(2),
-				CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}},
-				Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 3, ConfidenceScore: 0.88, Remarks: "no"},
-			},
-		},
-		OverallCorrectness: "patch is correct",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := buf.String()
-	if strings.Contains(out, "Should be hidden") {
-		t.Fatalf("invalid finding leaked:\n%s", out)
-	}
-	if !strings.Contains(out, "Real bug") {
-		t.Fatalf("valid finding missing:\n%s", out)
-	}
-}
-
 func TestTerminalFormatterRendersWarnings(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewTerminalFormatter(&buf, false)

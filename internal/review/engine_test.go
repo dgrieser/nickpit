@@ -1420,7 +1420,6 @@ func TestEngineCanDisableParallelToolCallsAndGuidance(t *testing.T) {
 func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, trimmed, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1503,7 +1502,6 @@ func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
 		verifyInvalid: map[string]bool{"Fix Security": true},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:              model.ModeLocal,
@@ -1560,7 +1558,6 @@ func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
 func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1593,7 +1590,6 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 		vectorFailErr: map[string]error{"Security": errors.New("security upstream fail")},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1642,7 +1638,6 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 func TestMultiAgentToleratesContextFailure(t *testing.T) {
 	llmClient := &multiAgentLLM{contextFailErr: errors.New("context upstream fail")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1672,7 +1667,6 @@ func TestMultiAgentToleratesContextFailure(t *testing.T) {
 func TestMultiAgentToleratesMergeFailure(t *testing.T) {
 	llmClient := &multiAgentLLM{mergeFailErr: errors.New("merge upstream fail")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1721,7 +1715,6 @@ func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
 		},
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
@@ -1814,7 +1807,6 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 func TestEngineMergeSchemaHonorsPriorityThreshold(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	engine.SetMultiAgentReview(true)
 
 	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
 		Mode:              model.ModeLocal,
@@ -4217,6 +4209,19 @@ func TestNormalizeDropPolicyFallback(t *testing.T) {
 	for _, p := range []string{"none", "refuted-only", "refuted-and-unverified"} {
 		if got := normalizeDropPolicy(p); got != p {
 			t.Fatalf("normalizeDropPolicy(%q) = %q, want passthrough", p, got)
+		}
+	}
+}
+
+func TestValidateDropPolicy(t *testing.T) {
+	for _, p := range []string{"none", "refuted-only", "refuted-and-unverified"} {
+		if err := ValidateDropPolicy(p); err != nil {
+			t.Fatalf("ValidateDropPolicy(%q) = %v, want nil", p, err)
+		}
+	}
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY", "refuted_only"} {
+		if err := ValidateDropPolicy(p); err == nil {
+			t.Fatalf("ValidateDropPolicy(%q) = nil, want error", p)
 		}
 	}
 }

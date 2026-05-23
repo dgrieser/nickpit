@@ -15,9 +15,8 @@ type Formatter interface {
 }
 
 type TerminalFormatter struct {
-	w           io.Writer
-	useANSI     bool
-	hideInvalid bool
+	w       io.Writer
+	useANSI bool
 }
 
 func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
@@ -25,11 +24,6 @@ func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
 		useANSI = false
 	}
 	return &TerminalFormatter{w: w, useANSI: useANSI}
-}
-
-func (f *TerminalFormatter) WithHideInvalid(hide bool) *TerminalFormatter {
-	f.hideInvalid = hide
-	return f
 }
 
 func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
@@ -96,9 +90,6 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		return ci > cj
 	})
 	for _, finding := range result.Findings {
-		if f.hideInvalid && finding.Verification != nil && finding.Verification.Verdict == model.VerdictRefuted {
-			continue
-		}
 		header := fmt.Sprintf("%s %s:%d-%d",
 			f.colorize(priorityLabel(finding.Priority), model.PriorityRank(finding.Priority)),
 			finding.CodeLocation.FilePath,

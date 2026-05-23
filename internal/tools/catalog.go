@@ -63,7 +63,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder",
 		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches.",
-		Note:               "Prefer `find_callers` for functions, instead of `search`",
+		Note:               "Prefer `find_callers` over `search` when locating a function by name — `find_callers` resolves the symbol and returns its caller hierarchy and method bodies in one call.",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
@@ -76,7 +76,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "find_callers",
 		APIDescription:     "Resolve function by symbol name and return caller hierarchy including method bodies",
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function.",
-		Note:               "This tool is great for retrieving context for functions",
+		Note:               "Use this to retrieve a function's call context — resolves the symbol, walks the caller hierarchy, and returns method bodies, avoiding multiple `search` + `view` round-trips.",
 		Parameters:         callHierarchyParameters(),
 	},
 	{

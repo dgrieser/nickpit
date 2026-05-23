@@ -30,7 +30,6 @@ type Engine struct {
 	trimmer                *Trimmer
 	logger                 *logging.Logger
 	searchToolOptimization bool
-	multiAgentReview       bool
 	toolchainCapture       func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion
 }
 
@@ -96,10 +95,6 @@ func (e *Engine) SetSearchToolOptimization(enabled bool) {
 	e.searchToolOptimization = enabled
 }
 
-func (e *Engine) SetMultiAgentReview(enabled bool) {
-	e.multiAgentReview = enabled
-}
-
 func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, error) {
 	result, _, err := e.RunWithContext(ctx, req)
 	return result, err
@@ -154,13 +149,7 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 		return nil, nil, fmt.Errorf("review: trim context: %w", err)
 	}
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
-	var result *model.ReviewResult
-	var enrichedCtx *model.ReviewContext
-	if e.multiAgentReview {
-		result, enrichedCtx, err = e.runMultiAgentReview(ctx, trimmed, req)
-	} else {
-		result, enrichedCtx, err = e.runSingleAgentReview(ctx, trimmed, req)
-	}
+	result, enrichedCtx, err := e.runMultiAgentReview(ctx, trimmed, req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -249,73 +238,6 @@ type contextAgentResult struct {
 	toolMessages       []llm.Message
 	toolCallHistory    []toolCallHistoryEntry
 	duplicateToolCalls int
-}
-
-func (e *Engine) runSingleAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
-	systemTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
-	if err != nil {
-		return nil, nil, err
-	}
-	payload := model.PromptPayloadFromContext(reviewCtx)
-	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
-	if err != nil {
-		return nil, nil, err
-	}
-	agentRole := "reviewer"
-	systemPrompt, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, true, agentRole, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	noToolsSystem, err := e.renderReviewSystemWithFocus(systemTemplate, "", req, false, agentRole, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	userPrompt, err := llm.RenderJSON(payload)
-	if err != nil {
-		return nil, nil, fmt.Errorf("review: rendering review prompt json: %w", err)
-	}
-	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
-	var schema []byte
-	if req.UseJSONSchema {
-		schema = llm.FindingsSchema
-	}
-	run, err := e.runAgent(ctx, agentSpec{
-		name:          fmt.Sprintf("#1: %s@%s", reviewCtx.Repository.FullName, reviewCtx.Repository.HeadRef),
-		role:          agentRole,
-		system:        systemPrompt,
-		noToolsSystem: noToolsSystem,
-		user:          userPrompt,
-		schema:        schema,
-		schemaKind:    llm.SchemaKindReview,
-		hasTools:      true,
-	}, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	filtered := filterByPriority(run.resp.Findings, req.PriorityThreshold)
-	if overwrote := model.EnsureFindingIDs(filtered); overwrote > 0 {
-		e.logf("Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
-	}
-	e.logf(
-		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
-		len(run.resp.Findings),
-		len(filtered),
-		req.PriorityThreshold,
-		run.run.ToolCalls,
-		run.run.TokensUsed.PromptTokens,
-		run.run.TokensUsed.CompletionTokens,
-		run.run.TokensUsed.TotalTokens,
-	)
-	return &model.ReviewResult{
-		Findings:               filtered,
-		OverallCorrectness:     run.resp.OverallCorrectness,
-		OverallExplanation:     run.resp.OverallExplanation,
-		OverallConfidenceScore: run.resp.OverallConfidenceScore,
-		AgentRuns:              []model.AgentRun{run.run},
-		TokensUsed:             run.run.TokensUsed,
-		TotalToolCalls:         run.run.ToolCalls,
-		ReasoningEffort:        run.reasoningEffort,
-	}, reviewCtx, nil
 }
 
 type reviewVector struct {
@@ -429,11 +351,12 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if err != nil {
 		return nil, nil, err
 	}
-	verifyUsage, verifyWarnings, verifiedMergeInputs, err := e.verifyVectorFindings(ctx, enriched, vectorResults, req)
+	verifyUsage, verifyWarnings, verifiedMergeInputs, err := e.verifyAndFilterVectorFindings(ctx, enriched, vectorResults, req)
+	warnings = append(warnings, verifyWarnings...)
 	if err != nil {
+		e.logf("Verifier failed before merge: tokens=%d warnings=%d error=%v", verifyUsage.TotalTokens, len(verifyWarnings), err)
 		return nil, nil, err
 	}
-	warnings = append(warnings, verifyWarnings...)
 
 	mergeConstraints := llm.ResponseConstraints{}
 	var mergeSchema []byte
@@ -524,7 +447,15 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}, enriched, nil
 }
 
-func (e *Engine) verifyVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) (model.TokenUsage, []string, []model.Finding, error) {
+// verifyAndFilterVectorFindings runs the verifier on every finding from
+// `vectorResults` and replaces each vector's `resp.Findings` in place with the
+// subset that survives the drop policy. The mutation is intentional: the merge
+// agent reads vectorResults downstream and must see only verified findings.
+// Returns aggregated token usage, soft warnings, the flat list of kept
+// findings (with verification attached), and any fatal error. On error,
+// callers should still propagate the returned usage/warnings — they hold the
+// partial-run telemetry up to the failure point.
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) (model.TokenUsage, []string, []model.Finding, error) {
 	findings := make([]model.Finding, 0)
 	type findingRef struct {
 		vectorIdx  int
@@ -655,6 +586,19 @@ func shouldDropFinding(v *model.FindingVerification, policy string, threshold fl
 		return false, "below_confidence"
 	}
 	return true, verdict
+}
+
+// ValidDropPolicies lists the accepted values for --verify-drop-policy.
+var ValidDropPolicies = []string{"none", "refuted-only", "refuted-and-unverified"}
+
+// ValidateDropPolicy returns an error when policy is not one of the supported values.
+func ValidateDropPolicy(policy string) error {
+	for _, v := range ValidDropPolicies {
+		if v == policy {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid verify-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
 }
 
 func normalizeDropPolicy(policy string) string {
