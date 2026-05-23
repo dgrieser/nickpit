@@ -55,6 +55,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	}
 	systemSnippet := verifyOutputSchemaSnippetFor(req.UseJSONSchema)
 	exampleSnippet := llm.VerifyExamplePromptSnippet()
+	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		kind:                     "verify",
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
@@ -70,7 +71,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("validating", styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0)
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentKind, styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -111,7 +112,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	for attempt := 0; ; attempt++ {
 		loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
 			AgentName:                         "Verify Findings",
-			AgentKind:                         "verify",
+			AgentKind:                         agentKind,
 			Messages:                          messages,
 			Tools:                             reviewerToolDefinitions(),
 			Schema:                            schema,

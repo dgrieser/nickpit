@@ -1701,7 +1701,7 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "")
+		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "reviewer", nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}
