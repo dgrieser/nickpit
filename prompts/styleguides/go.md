@@ -71,6 +71,28 @@ the need:
 - `clear` for clearing maps or zeroing slice contents.
 - `min` and `max` for simple ordered comparisons.
 
+### Map Iteration Semantics
+
+Deleting map entries while ranging over the same map is allowed in Go. Do not
+flag code like this as a bug by itself:
+
+```go
+for key := range values {
+    delete(values, key)
+}
+```
+
+Only flag map mutation during iteration when there is a concrete Go issue, for
+example:
+
+- unsynchronized concurrent map access
+- inserting or updating entries while depending on deterministic iteration
+- deleting entries changes required business behavior
+- callbacks are invoked while holding a lock and can re-enter the same lock
+
+Do not apply generic "modifying a collection while iterating" rules from other
+languages to Go map deletion.
+
 ## Error Handling
 
 ### Explicit Error Checking
