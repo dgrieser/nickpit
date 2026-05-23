@@ -53,7 +53,7 @@ var catalogDefinition = []catalogEntry{
 	{
 		Name:               "list_files",
 		APIDescription:     "List files of repo-relative folder",
-		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively).",
+		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively)",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative folder path; omit or pass an empty string to list the repo root", Example: `"<repo-relative folder>"`},
 			{Name: "depth", Type: "integer", Description: "Optional traversal depth for nested folders; defaults to 1", Example: "int", Minimum: intPtr(1)},
