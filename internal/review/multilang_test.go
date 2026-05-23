@@ -155,6 +155,7 @@ func (styleGuideDiffSource) ResolveContext(context.Context, model.ReviewRequest)
 			{Path: "web/index.html", Status: model.FileModified, Additions: 1},
 			{Path: "web/styles.css", Status: model.FileModified, Additions: 1},
 			{Path: "src/Program.cs", Status: model.FileModified, Additions: 1},
+			{Path: "charts/app/Chart.yaml", Status: model.FileModified, Additions: 1},
 		},
 	}, nil
 }
@@ -176,7 +177,7 @@ func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
 		t.Fatal(err)
 	}
 	styleGuides := payload["style_guides"].([]any)
-	if len(styleGuides) != 4 {
+	if len(styleGuides) != 5 {
 		t.Fatalf("style guides = %#v", payload["style_guides"])
 	}
 	contentsByLanguage := make(map[string]string)
@@ -189,6 +190,7 @@ func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
 		"typescript": "# TypeScript Style Guide",
 		"html":       "# HTML & CSS Style Guide",
 		"csharp":     "# C# Style Guide",
+		"helm":       "# Helm Style Guide",
 	} {
 		if !strings.Contains(contentsByLanguage[language], want) {
 			t.Fatalf("%s style guide content = %.80q", language, contentsByLanguage[language])

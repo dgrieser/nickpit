@@ -309,6 +309,38 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if content, _ := goStyleGuide["content"].(string); !strings.Contains(content, "# Go Style Guide") {
 		t.Fatalf("style guide content = %.80q", content)
 	}
+	system := llmClient.requests[0].Messages[0].Content
+	if !strings.Contains(system, "When validating findings, check the provided styleguides:") {
+		t.Fatalf("verify system prompt missing styleguide reminder: %q", system)
+	}
+	if !strings.Contains(system, "- Go Style Guide") {
+		t.Fatalf("verify system prompt missing Go styleguide title: %q", system)
+	}
+}
+
+func TestVerifyIncludesToolchainReminder(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	reviewCtx := sampleReviewCtx()
+	reviewCtx.ToolchainVersions = []model.ToolchainVersion{{Language: "go", Source: "go.mod", Field: "go", Version: "1.22"}}
+	finding := model.Finding{
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+	}
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	if len(llmClient.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(llmClient.requests))
+	}
+	system := llmClient.requests[0].Messages[0].Content
+	if !strings.Contains(system, "provided `toolchain_versions`") {
+		t.Fatalf("verify system prompt missing toolchain reminder: %q", system)
+	}
 }
 
 func TestVerifyFallsBackVerificationIDToFindingID(t *testing.T) {

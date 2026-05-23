@@ -22,6 +22,7 @@ style_guide_order:
   - csharp
   - sql
   - shell
+  - helm
 
 style_guide_extension_overrides:
   javascript:

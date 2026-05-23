@@ -14,35 +14,36 @@ import (
 )
 
 type agentLoopRequest struct {
-	AgentName                  string
-	AgentKind                  string
-	Messages                   []llm.Message
-	Tools                      []llm.ToolDefinition
-	Schema                     []byte
-	SchemaKind                 llm.SchemaKind
-	Constraints                llm.ResponseConstraints
-	Model                      string
-	MaxTokens                  *int
-	Temperature                *float64
-	TopP                       *float64
-	ExtraBody                  map[string]any
-	ReasoningEffort            string
-	ReasoningSink              llm.ReasoningSink
-	RepoRoot                   string
-	MaxToolCalls               int
-	MaxDuplicateToolCalls      int
-	MaxOutputRetries           int
-	MaxReasoningSeconds        int
-	MaxReasoningLoopRepeats    int
-	ParallelToolCalls          bool
-	State                      *agentLoopState
-	Section                    *logging.ReasoningSection
-	NoToolsMessages            func([]llm.Message) ([]llm.Message, error)
-	NoToolsSystem              string
-	NoToolsSchemaSnippet       string
-	JSONRetryExampleSnippet    string
-	JSONRetryProgressAgentName string
-	OnReasoningTrace           func(agentName string, iterIdx int, reasoning string)
+	AgentName                         string
+	AgentKind                         string
+	Messages                          []llm.Message
+	Tools                             []llm.ToolDefinition
+	Schema                            []byte
+	SchemaKind                        llm.SchemaKind
+	Constraints                       llm.ResponseConstraints
+	Model                             string
+	MaxTokens                         *int
+	Temperature                       *float64
+	TopP                              *float64
+	ExtraBody                         map[string]any
+	ReasoningEffort                   string
+	ReasoningSink                     llm.ReasoningSink
+	RepoRoot                          string
+	MaxToolCalls                      int
+	MaxDuplicateToolCalls             int
+	MaxOutputRetries                  int
+	MaxReasoningSeconds               int
+	MaxReasoningLoopRepeats           int
+	ParallelToolCalls                 bool
+	State                             *agentLoopState
+	Section                           *logging.ReasoningSection
+	NoToolsMessages                   func([]llm.Message) ([]llm.Message, error)
+	NoToolsSystem                     string
+	NoToolsSchemaSnippet              string
+	NoToolsStyleGuideToolchainSnippet string
+	JSONRetryExampleSnippet           string
+	JSONRetryProgressAgentName        string
+	OnReasoningTrace                  func(agentName string, iterIdx int, reasoning string)
 }
 
 type agentLoopResult struct {
@@ -262,7 +263,7 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 		}
 		noToolsReq.Messages = finalMessages
 	}
-	return e.reviewWithoutTools(ctx, &noToolsReq, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.MaxOutputRetries, req.Section)
+	return e.reviewWithoutTools(ctx, &noToolsReq, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.MaxOutputRetries, req.Section)
 }
 
 func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {
