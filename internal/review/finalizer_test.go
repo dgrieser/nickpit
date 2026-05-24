@@ -529,7 +529,7 @@ func TestFinalizeRetriesWhenSameCountOutputMisidentifiesFinding(t *testing.T) {
 		t.Fatalf("requests = %d, want retry", len(llmClient.reqs))
 	}
 	retryMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content
-	for _, want := range []string{"matched 1", "omitted 1", "ignored/unmatched item(s)"} {
+	for _, want := range []string{"matched 1", "omitted 1", "ignored/unmatched item"} {
 		if !strings.Contains(retryMessage, want) {
 			t.Fatalf("retry feedback missing %q: %q", want, retryMessage)
 		}

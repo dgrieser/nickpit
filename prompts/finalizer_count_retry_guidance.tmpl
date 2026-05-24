@@ -1,2 +1,2 @@
-The `findings` array must include exactly {{.Expected}} item(s); the previous response included {{.Got}}.
-Every finalizer finding must match a distinct input finding by `id` or `code_location`; the previous response matched {{.Matched}}, omitted {{.Omitted}}, and included {{.Ignored}} ignored/unmatched item(s).
+The `findings` array must include exactly {{.Expected}} item{{if ne .Expected 1}}s{{end}}; the previous response included {{.Got}}.
+Every finalizer finding must match a distinct input finding by `id` or `code_location`; the previous response matched {{.Matched}}, omitted {{.Omitted}}, and included {{.Ignored}} ignored/unmatched item{{if ne .Ignored 1}}s{{end}}.

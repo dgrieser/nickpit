@@ -207,7 +207,7 @@ func (entry catalogEntry) apiDescription() string {
 	if entry.Note == "" {
 		return entry.APIDescription
 	}
-	return fmt.Sprintf("%s\nNOTE: %s", entry.APIDescription, entry.Note)
+	return fmt.Sprintf("%s; NOTE: %s", entry.APIDescription, entry.Note)
 }
 
 func (entry catalogEntry) listingLine() string {
