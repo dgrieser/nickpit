@@ -163,6 +163,118 @@ func TestCheckerReasoningSnippetIncludesLoopDetectedGuidance(t *testing.T) {
 	}
 }
 
+func TestEffortDiscoveryRetriesReasoningLoopWithSameEffort(t *testing.T) {
+	client := &scriptedClient{
+		responses: []scriptedResponse{
+			{err: &llm.ReasoningLoopDetectedError{ReasoningEffort: "high"}},
+			{resp: &llm.ReviewResponse{RawResponse: finalSentinel, ReasoningEffort: "high"}},
+		},
+	}
+	result := runSequential(client, config.Profile{
+		Model:                      "model",
+		ReasoningEffort:            "high",
+		MaxOutputRetries:           1,
+		MaxReasoningSeconds:        12,
+		MaxReasoningLoopRepeats:    3,
+		MaxOutputRetriesConfigured: true,
+	})
+	if result.ConfiguredNoTools().Status != StatusOK {
+		t.Fatalf("configured no-tools status = %s error=%s", result.ConfiguredNoTools().Status, result.ConfiguredNoTools().Error)
+	}
+	if len(client.reqs) < 2 {
+		t.Fatalf("requests = %d, want retry", len(client.reqs))
+	}
+	if client.reqs[0].ReasoningEffort != "high" || client.reqs[1].ReasoningEffort != "high" {
+		t.Fatalf("reasoning efforts = %q, %q; want same effort high", client.reqs[0].ReasoningEffort, client.reqs[1].ReasoningEffort)
+	}
+	if !client.reqs[0].DisableReasoningEffortFallback || !client.reqs[1].DisableReasoningEffortFallback {
+		t.Fatal("effort discovery requests must disable reasoning-effort fallback")
+	}
+	if client.reqs[0].MaxReasoning != 12*time.Second || client.reqs[0].MaxReasoningLoopRepeats != 3 {
+		t.Fatalf("timeout settings = %s/%d, want 12s/3", client.reqs[0].MaxReasoning, client.reqs[0].MaxReasoningLoopRepeats)
+	}
+}
+
+func TestCapabilityProbesAllowReviewLikeFallback(t *testing.T) {
+	client := &scriptedClient{
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
+	}
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	if result.ConfiguredTools().Status != StatusOK {
+		t.Fatalf("tools status = %s error=%s", result.ConfiguredTools().Status, result.ConfiguredTools().Error)
+	}
+	var effortDiscovery, capability *llm.ReviewRequest
+	for _, req := range client.reqs {
+		if len(req.Tools) == 0 && req.SchemaKind == llm.SchemaKindText && effortDiscovery == nil {
+			effortDiscovery = req
+		}
+		if len(req.Tools) > 0 {
+			capability = req
+			break
+		}
+	}
+	if effortDiscovery == nil || !effortDiscovery.DisableReasoningEffortFallback {
+		t.Fatalf("effort discovery DisableReasoningEffortFallback = %v, want true", effortDiscovery != nil && effortDiscovery.DisableReasoningEffortFallback)
+	}
+	if capability == nil || capability.DisableReasoningEffortFallback {
+		t.Fatalf("capability DisableReasoningEffortFallback = %v, want false", capability != nil && capability.DisableReasoningEffortFallback)
+	}
+}
+
+func TestJSONCapabilityProbeRetriesWrongShape(t *testing.T) {
+	client := &scriptedClient{
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: `{"check":"wrong"}`}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
+	}
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", MaxOutputRetries: 1, MaxOutputRetriesConfigured: true})
+	if result.ConfiguredJSONOutput().Status != StatusOK {
+		t.Fatalf("json output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
+	}
+	jsonRequests := 0
+	var retryReq *llm.ReviewRequest
+	for _, req := range client.reqs {
+		if req.SchemaKind == llm.SchemaKindJSON && len(req.Schema) == 0 {
+			jsonRequests++
+			retryReq = req
+		}
+	}
+	if jsonRequests != 2 {
+		t.Fatalf("json output requests = %d, want initial + retry", jsonRequests)
+	}
+	if retryReq == nil || !strings.Contains(retryReq.Messages[len(retryReq.Messages)-1].Content, "previous response did not match") {
+		t.Fatalf("retry request missing feedback: %#v", retryReq)
+	}
+}
+
+func TestJSONCapabilityProbeFailsAfterRetryExhausted(t *testing.T) {
+	client := &scriptedClient{
+		responses: successfulEffortDiscoveryResponses(
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: `{"check":"wrong"}`}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: `{"check":"still_wrong"}`}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
+	}
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", MaxOutputRetries: 1, MaxOutputRetriesConfigured: true})
+	if result.ConfiguredJSONOutput().Status != StatusFailed {
+		t.Fatalf("json output status = %s, want failed", result.ConfiguredJSONOutput().Status)
+	}
+	if !strings.Contains(result.ConfiguredJSONOutput().Error, "response does not match JSON probe shape") {
+		t.Fatalf("json output error = %q", result.ConfiguredJSONOutput().Error)
+	}
+}
+
 func TestResultSummaryIncludesCompatibility(t *testing.T) {
 	result := Result{
 		Probes: []ProbeResult{

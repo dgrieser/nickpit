@@ -3,6 +3,7 @@ package modelcheck
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -51,6 +52,19 @@ const jsonProbeExample = `{
   "status": "ok",
   "confidence_score": 0.9
 }`
+
+const jsonProbeRetryFeedback = `The previous response did not match the required JSON probe shape.
+
+Return only this JSON object shape, with no prose and no markdown fences:
+
+` + jsonProbeExample
+
+type probeRetryMode int
+
+const (
+	probeRetryReviewLike probeRetryMode = iota
+	probeRetrySameEffort
+)
 
 var jsonProbeSchema = json.RawMessage(`{
   "type": "object",
@@ -193,6 +207,23 @@ func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *
 	return resp, err
 }
 
+func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection, probe ProbeResult, mode probeRetryMode) (*llm.ReviewResponse, error) {
+	if mode != probeRetrySameEffort {
+		return c.reviewProbe(ctx, req, sec, probe)
+	}
+	maxRetries := c.profile.MaxOutputRetries
+	for attempt := 0; ; attempt++ {
+		resp, err := c.reviewProbe(ctx, req, sec, probe)
+		if err == nil {
+			return resp, nil
+		}
+		if !sameEffortRetryable(err) || attempt >= maxRetries {
+			return resp, err
+		}
+		c.logProgress("ModelCheck", fmt.Sprintf("probe=%s, effort=%s, retry=%d, reason=%q", probe.Name, probe.ReasoningEffort, attempt+1, err.Error()))
+	}
+}
+
 func (c *Checker) Run(ctx context.Context) Result {
 	configured := strings.ToLower(strings.TrimSpace(c.profile.ReasoningEffort))
 	if configured == "" {
@@ -296,11 +327,11 @@ func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeRe
 	req := c.baseRequest(effort, []llm.Message{
 		{Role: "system", Content: mustRenderCheckPrompt("check_no_tools_system.tmpl", struct{ ReasoningSnippet string }{rs})},
 		{Role: "user", Content: mustRenderCheckPrompt("check_no_tools_user.tmpl", struct{ Sentinel string }{finalSentinel})},
-	}, nil)
+	}, nil, probeRetrySameEffort)
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
-	resp, err := c.reviewProbe(ctx, req, sec, probe)
+	resp, err := c.reviewProbeWithMode(ctx, req, sec, probe, probeRetrySameEffort)
 	if err != nil {
 		probe = classifyProbeError(probe, err)
 		return probe
@@ -339,7 +370,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 	}
 	allowedTools := toolSet(tools)
 	for round := 0; round < 8; round++ {
-		req := c.baseRequest(effort, messages, tools)
+		req := c.baseRequest(effort, messages, tools, probeRetryReviewLike)
 		if sec != nil {
 			req.ReasoningSink = sec
 		}
@@ -349,6 +380,9 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 			return probe
 		}
 		probe.Reasoned = probe.Reasoned || resp.Reasoned
+		if resp.ReasoningEffort != "" {
+			probe.ReasoningEffort = resp.ReasoningEffort
+		}
 		if len(resp.ToolCalls) == 0 {
 			if listed && strings.Contains(resp.RawResponse, finalSentinel) {
 				probe.Status = StatusOK
@@ -383,10 +417,11 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 	sec := c.openSection(probeLabel("configured_json_output", effort))
 	defer sec.End()
 	rs := checkReasoningSnippet()
-	req := c.baseRequest(effort, []llm.Message{
+	messages := []llm.Message{
 		{Role: "system", Content: mustRenderCheckPrompt("check_json_output_system.tmpl", struct{ ReasoningSnippet string }{rs})},
 		{Role: "user", Content: mustRenderCheckPrompt("check_json_output_user.tmpl", struct{ OutputSchemaSnippet string }{jsonProbeExample})},
-	}, nil)
+	}
+	req := c.baseRequest(effort, messages, nil, probeRetryReviewLike)
 	req.SchemaKind = llm.SchemaKindJSON
 	if sec != nil {
 		req.ReasoningSink = sec
@@ -397,10 +432,14 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 		return probe
 	}
 	probe.Reasoned = resp.Reasoned
+	if resp.ReasoningEffort != "" {
+		probe.ReasoningEffort = resp.ReasoningEffort
+	}
 	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
-		probe.Status = StatusFailed
-		probe.Error = err.Error()
-		return probe
+		resp, probe = c.retryJSONProbe(ctx, sec, probe, req, resp, err)
+		if probe.Status != "" {
+			return probe
+		}
 	}
 	probe.Status = StatusOK
 	return probe
@@ -413,10 +452,11 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 	sec := c.openSection(probeLabel("configured_json_schema", effort))
 	defer sec.End()
 	rs := checkReasoningSnippet()
-	req := c.baseRequest(effort, []llm.Message{
+	messages := []llm.Message{
 		{Role: "system", Content: mustRenderCheckPrompt("check_json_schema_system.tmpl", struct{ ReasoningSnippet string }{rs})},
 		{Role: "user", Content: mustRenderCheckPrompt("check_json_schema_user.tmpl", struct{ OutputSchemaSnippet string }{jsonProbeExample})},
-	}, nil)
+	}
+	req := c.baseRequest(effort, messages, nil, probeRetryReviewLike)
 	req.Schema = jsonProbeSchema
 	req.SchemaKind = llm.SchemaKindJSON
 	if sec != nil {
@@ -428,32 +468,77 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 		return probe
 	}
 	probe.Reasoned = resp.Reasoned
+	if resp.ReasoningEffort != "" {
+		probe.ReasoningEffort = resp.ReasoningEffort
+	}
 	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
-		probe.Status = StatusFailed
-		probe.Error = err.Error()
-		return probe
+		resp, probe = c.retryJSONProbe(ctx, sec, probe, req, resp, err)
+		if probe.Status != "" {
+			return probe
+		}
 	}
 	probe.Status = StatusOK
 	return probe
 }
 
-func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm.ToolDefinition) *llm.ReviewRequest {
+func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSection, probe ProbeResult, req *llm.ReviewRequest, resp *llm.ReviewResponse, validationErr error) (*llm.ReviewResponse, ProbeResult) {
+	for attempt := 0; attempt < c.profile.MaxOutputRetries; attempt++ {
+		messages := append([]llm.Message(nil), req.Messages...)
+		if resp != nil && strings.TrimSpace(resp.RawResponse) != "" {
+			messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
+		}
+		messages = append(messages, llm.Message{Role: "user", Content: jsonProbeRetryFeedback})
+		retryReq := *req
+		retryReq.Messages = messages
+		retryResp, err := c.reviewProbe(ctx, &retryReq, sec, probe)
+		if err != nil {
+			probe = classifyProbeError(probe, err)
+			return retryResp, probe
+		}
+		probe.Reasoned = probe.Reasoned || retryResp.Reasoned
+		if retryResp.ReasoningEffort != "" {
+			probe.ReasoningEffort = retryResp.ReasoningEffort
+		}
+		if err := validateJSONProbeResponse(retryResp.RawResponse); err != nil {
+			validationErr = err
+			resp = retryResp
+			c.logProgress("ModelCheck", fmt.Sprintf("probe=%s, effort=%s, json_retry=%d, error=%q", probe.Name, probe.ReasoningEffort, attempt+1, err.Error()))
+			continue
+		}
+		probe.Status = ""
+		return retryResp, probe
+	}
+	probe.Status = StatusFailed
+	probe.Error = validationErr.Error()
+	return resp, probe
+}
+
+func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm.ToolDefinition, mode probeRetryMode) *llm.ReviewRequest {
 	maxReasoning := time.Duration(c.profile.MaxReasoningSeconds) * time.Second
 	return &llm.ReviewRequest{
-		Messages:                append([]llm.Message(nil), messages...),
-		Tools:                   tools,
-		SchemaKind:              llm.SchemaKindText,
-		Model:                   c.profile.Model,
-		MaxTokens:               c.profile.MaxTokens,
-		Temperature:             c.profile.Temperature,
-		TopP:                    c.profile.TopP,
-		ExtraBody:               c.profile.ExtraBody,
-		ParallelToolCalls:       true,
-		ReasoningEffort:         effort,
-		MaxReasoning:            maxReasoning,
-		MaxReasoningLoopRepeats: c.profile.MaxReasoningLoopRepeats,
-		SingleAttempt:           true,
+		Messages:                       append([]llm.Message(nil), messages...),
+		Tools:                          tools,
+		SchemaKind:                     llm.SchemaKindText,
+		Model:                          c.profile.Model,
+		MaxTokens:                      c.profile.MaxTokens,
+		Temperature:                    c.profile.Temperature,
+		TopP:                           c.profile.TopP,
+		ExtraBody:                      c.profile.ExtraBody,
+		ParallelToolCalls:              true,
+		ReasoningEffort:                effort,
+		MaxReasoning:                   maxReasoning,
+		MaxReasoningLoopRepeats:        c.profile.MaxReasoningLoopRepeats,
+		DisableReasoningEffortFallback: mode == probeRetrySameEffort,
 	}
+}
+
+func sameEffortRetryable(err error) bool {
+	var loopErr *llm.ReasoningLoopDetectedError
+	if errors.As(err, &loopErr) {
+		return true
+	}
+	var budgetErr *llm.ReasoningBudgetExhaustedError
+	return errors.As(err, &budgetErr)
 }
 
 func classifyProbeError(probe ProbeResult, err error) ProbeResult {

@@ -106,25 +106,25 @@ type ResponseConstraints struct {
 }
 
 type ReviewRequest struct {
-	SystemPrompt            string
-	UserContent             string
-	Messages                []Message
-	NoToolsMessages         []Message
-	Tools                   []ToolDefinition
-	Schema                  json.RawMessage
-	SchemaKind              SchemaKind
-	Constraints             ResponseConstraints
-	Model                   string
-	MaxTokens               *int
-	Temperature             *float64
-	TopP                    *float64
-	ExtraBody               map[string]any
-	ParallelToolCalls       bool
-	ReasoningEffort         string
-	MaxReasoning            time.Duration
-	MaxReasoningLoopRepeats int
-	ReasoningSink           ReasoningSink
-	SingleAttempt           bool
+	SystemPrompt                   string
+	UserContent                    string
+	Messages                       []Message
+	NoToolsMessages                []Message
+	Tools                          []ToolDefinition
+	Schema                         json.RawMessage
+	SchemaKind                     SchemaKind
+	Constraints                    ResponseConstraints
+	Model                          string
+	MaxTokens                      *int
+	Temperature                    *float64
+	TopP                           *float64
+	ExtraBody                      map[string]any
+	ParallelToolCalls              bool
+	ReasoningEffort                string
+	MaxReasoning                   time.Duration
+	MaxReasoningLoopRepeats        int
+	ReasoningSink                  ReasoningSink
+	DisableReasoningEffortFallback bool
 }
 
 type Message struct {
@@ -551,7 +551,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 
 	originalEffort := req.ReasoningEffort
 	efforts := []string{originalEffort}
-	if !req.SingleAttempt {
+	if !req.DisableReasoningEffortFallback {
 		for _, effort := range fallbackReasoningEfforts(originalEffort) {
 			if attemptReasoningEffortAllowed(effort, c.allowedEfforts) {
 				efforts = append(efforts, effort)
