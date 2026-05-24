@@ -43,11 +43,13 @@ var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "l
 // model output so callers can append it to the conversation when asking the
 // model to retry.
 type InvalidResponseError struct {
-	RawContent      string
-	Reason          string
-	MissingFields   []string
-	ReasoningEffort string
-	ToolsOmitted    bool
+	RawContent            string
+	Reason                string
+	MissingFields         []string
+	ReasoningEffort       string
+	ToolsOmitted          bool
+	RetryGuidanceTemplate string
+	RetryGuidanceData     any
 }
 
 func (e *InvalidResponseError) Error() string {

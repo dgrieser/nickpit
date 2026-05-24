@@ -44,6 +44,7 @@ type agentLoopRequest struct {
 	JSONRetryExampleSnippet           string
 	JSONRetryProgressAgentName        string
 	OnReasoningTrace                  func(agentName string, iterIdx int, reasoning string)
+	ValidateResponse                  func(*llm.ReviewResponse) *llm.InvalidResponseError
 }
 
 type agentLoopResult struct {
@@ -168,6 +169,29 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 		result.contentMessages = appendResponseContent(result.contentMessages, resp)
 		result.resp = resp
+		if req.ValidateResponse != nil {
+			if invalidResp := req.ValidateResponse(resp); invalidResp != nil {
+				if outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
+					if invalidResp.ReasoningEffort != "" {
+						result.reasoningEffort = invalidResp.ReasoningEffort
+						llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+					}
+					state.jsonRetries++
+					e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
+					if strings.TrimSpace(invalidResp.RawContent) != "" {
+						messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+					}
+					feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
+					if err != nil {
+						return result, err
+					}
+					messages = append(messages, llm.Message{Role: "user", Content: feedback})
+					syntheticFollowup = nil
+					continue
+				}
+				e.logfCtx(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+			}
+		}
 
 		originalToolCalls := len(resp.ToolCalls)
 		resp.ToolCalls, _ = filterAgentToolCalls(resp.ToolCalls, req.Tools)
@@ -263,7 +287,7 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 		}
 		noToolsReq.Messages = finalMessages
 	}
-	return e.reviewWithoutTools(ctx, &noToolsReq, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.MaxOutputRetries, req.Section)
+	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.MaxOutputRetries, req.Section)
 }
 
 func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {

@@ -59,7 +59,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	exampleSnippet := llm.VerifyExamplePromptSnippet()
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
-		kind:                     "verify",
+		agentRole:                agentKind,
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
 	})
 	if err != nil {
@@ -138,7 +138,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           exampleSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
 			},
 		})
 		if err != nil {

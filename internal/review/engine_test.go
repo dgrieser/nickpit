@@ -82,6 +82,7 @@ type multiAgentLLM struct {
 	mergeTools     int
 	mergePayload   map[string]any
 	mergeSchema    []byte
+	mergeRequests  []*llm.ReviewRequest
 	contextSystem  string
 	vectorContext  map[string]string
 	vectorSystem   map[string]string
@@ -90,6 +91,8 @@ type multiAgentLLM struct {
 	contextFailErr error
 	vectorFailErr  map[string]error
 	verifyInvalid  map[string]bool
+	vectorFindings map[string]int
+	mergeResponses []*llm.ReviewResponse
 	mergeFailErr   error
 }
 
@@ -172,14 +175,26 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				ToolCalls: []llm.ToolCall{{ID: "tool_" + name, Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
 			}, nil
 		}
-		return &llm.ReviewResponse{
-			Findings: []model.Finding{{
-				Title:           "Fix " + name,
+		count := 1
+		if s.vectorFindings != nil && s.vectorFindings[name] > 0 {
+			count = s.vectorFindings[name]
+		}
+		findings := make([]model.Finding, 0, count)
+		for i := 0; i < count; i++ {
+			title := "Fix " + name
+			if i > 0 {
+				title = fmt.Sprintf("Fix %s %d", name, i+1)
+			}
+			findings = append(findings, model.Finding{
+				Title:           title,
 				Body:            "body",
 				ConfidenceScore: 0.9,
 				Priority:        intPtr(2),
-				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-			}},
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: i + 1, End: i + 1}},
+			})
+		}
+		return &llm.ReviewResponse{
+			Findings:               findings,
 			OverallCorrectness:     "patch is incorrect",
 			OverallExplanation:     name,
 			OverallConfidenceScore: 0.9,
@@ -189,11 +204,19 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	s.mergeTools = len(req.Tools)
 	s.events = append(s.events, "merge")
 	s.mergeSchema = append([]byte(nil), req.Schema...)
+	cloned := *req
+	cloned.Messages = cloneTestMessages(req.Messages)
+	s.mergeRequests = append(s.mergeRequests, &cloned)
 	if len(req.Messages) > 1 {
 		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
 	}
 	if s.mergeFailErr != nil {
 		return nil, s.mergeFailErr
+	}
+	if len(s.mergeResponses) > 0 {
+		resp := s.mergeResponses[0]
+		s.mergeResponses = s.mergeResponses[1:]
+		return resp, nil
 	}
 	return &llm.ReviewResponse{
 		Findings: []model.Finding{{
@@ -945,11 +968,6 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 	return nil, errors.New("unexpected FindCallees call")
 }
 
-
-
-
-
-
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
 	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees"}
@@ -965,7 +983,6 @@ func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 		}
 	}
 }
-
 
 func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 	definitions := reviewerToolDefinitions()
@@ -1013,7 +1030,7 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 
 func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	engine := NewEngine(stubSource{}, &capturingLLM{}, nil, config.Profile{})
-	rendered, err := engine.renderToolInstructions(toolInstructionsConfig{kind: "review", parallelToolCallGuidance: true})
+	rendered, err := engine.renderToolInstructions(toolInstructionsConfig{agentRole: "reviewer", parallelToolCallGuidance: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1094,7 +1111,7 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 		},
 	}
 
-	retry, err := engine.renderSyntheticToolFollowup(errorHistory, "review")
+	retry, err := engine.renderSyntheticToolFollowup(errorHistory, "reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1110,7 +1127,7 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 		t.Fatalf("context follow-up = %q", contextRendered)
 	}
 
-	reviewRendered, err := engine.renderSyntheticToolFollowup(optimizedHistory, "review")
+	reviewRendered, err := engine.renderSyntheticToolFollowup(optimizedHistory, "reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1129,7 +1146,6 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 		t.Fatalf("verify follow-up = %q", verifyRendered)
 	}
 }
-
 
 func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	llmClient := &multiAgentLLM{}
@@ -1266,6 +1282,156 @@ func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
 	}
 	if sawSecurity {
 		t.Fatal("invalid Security finding reached merge input")
+	}
+}
+
+func TestMultiAgentMergeValidationRetriesWhenBelowLargestReviewerCount(t *testing.T) {
+	llmClient := &multiAgentLLM{
+		vectorFindings: map[string]int{"Code Quality": 3},
+		mergeResponses: []*llm.ReviewResponse{
+			{
+				Findings:           []model.Finding{mergeTestFinding("Fix Code Quality", 1)},
+				OverallCorrectness: "patch is incorrect",
+			},
+			{
+				Findings: []model.Finding{
+					mergeTestFinding("Fix Code Quality", 1),
+					mergeTestFinding("Fix Code Quality 2", 2),
+					mergeTestFinding("Fix Code Quality 3", 3),
+				},
+				OverallCorrectness:     "patch is incorrect",
+				OverallExplanation:     "merged",
+				OverallConfidenceScore: 0.9,
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+		MaxOutputRetries: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.mergeRequests) != 2 {
+		t.Fatalf("merge requests = %d, want retry", len(llmClient.mergeRequests))
+	}
+	retryMessage := llmClient.mergeRequests[1].Messages[len(llmClient.mergeRequests[1].Messages)-1].Content
+	if !strings.Contains(retryMessage, "3") {
+		t.Fatalf("retry message missing merge count nudge: %q", retryMessage)
+	}
+	if len(result.Findings) != 3 {
+		t.Fatalf("findings = %d, want retry merge output with 3 findings", len(result.Findings))
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "Merge validation warning") {
+			t.Fatalf("unexpected merge validation warning after successful retry: %#v", result.Warnings)
+		}
+	}
+}
+
+func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
+	ghost := model.Finding{
+		Title:           "Ghost",
+		Body:            "new",
+		ConfidenceScore: 0.8,
+		Priority:        intPtr(2),
+		CodeLocation:    model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 99, End: 99}},
+	}
+	llmClient := &multiAgentLLM{
+		mergeResponses: []*llm.ReviewResponse{
+			{Findings: []model.Finding{ghost}, OverallCorrectness: "patch is incorrect"},
+			{Findings: []model.Finding{ghost}, OverallCorrectness: "patch is incorrect"},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+		MaxOutputRetries: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.mergeRequests) != 2 {
+		t.Fatalf("merge requests = %d, want initial + retry", len(llmClient.mergeRequests))
+	}
+	foundWarning := false
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "Merge validation warning") && strings.Contains(warning, "unmatched_finding") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("warnings = %#v, want nonfatal merge validation warning", result.Warnings)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Title != "Ghost" {
+		t.Fatalf("merge output should be accepted after exhausted retry, got %#v", result.Findings)
+	}
+}
+
+func TestMergeValidationAllowsDuplicatesAndNoUpperBound(t *testing.T) {
+	input := mergeTestFinding("Fix Code Quality", 1)
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{input}},
+		run:  model.AgentRun{Status: model.AgentRunStatusOK},
+	}}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{input, input, input}}
+
+	if invalid := validateMergeResponse(resp, vectorResults); invalid != nil {
+		t.Fatalf("validateMergeResponse returned %v, want nil for duplicate/high-count output", invalid)
+	}
+}
+
+func TestMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
+	input := mergeTestFinding("Fix Code Quality", 10)
+	input.ID = "11111111-1111-4111-8111-111111111111"
+	input.CodeLocation.LineRange.End = 20
+	merged := input
+	merged.CodeLocation.LineRange = model.LineRange{Start: 12, End: 12}
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{input}},
+		run:  model.AgentRun{Status: model.AgentRunStatusOK},
+	}}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
+
+	if invalid := validateMergeResponse(resp, vectorResults); invalid != nil {
+		t.Fatalf("validateMergeResponse returned %v, want nil for preserved ID with refined location", invalid)
+	}
+}
+
+func TestNoToolsMessagesUsesAgentRoleForCommonSnippets(t *testing.T) {
+	messages := []llm.Message{{Role: "system", Content: "old"}}
+	reviewerMessages, err := noToolsMessages("reviewer", "{{.FindingInstructionsSnippet}}", messages, "", "")
+	if err != nil {
+		t.Fatalf("reviewer noToolsMessages returned err: %v", err)
+	}
+	verifyMessages, err := noToolsMessages("verify", "{{.FindingInstructionsSnippet}}", messages, "", "")
+	if err != nil {
+		t.Fatalf("verify noToolsMessages returned err: %v", err)
+	}
+	if !strings.Contains(reviewerMessages[0].Content, "suggestions") {
+		t.Fatalf("reviewer no-tools prompt missing reviewer snippet: %q", reviewerMessages[0].Content)
+	}
+	if strings.Contains(verifyMessages[0].Content, "suggestions") {
+		t.Fatalf("verify no-tools prompt used reviewer snippet: %q", verifyMessages[0].Content)
+	}
+}
+
+func mergeTestFinding(title string, line int) model.Finding {
+	return model.Finding{
+		Title:           title,
+		Body:            "body",
+		ConfidenceScore: 0.9,
+		Priority:        intPtr(2),
+		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
 	}
 }
 
@@ -1561,22 +1727,6 @@ func schemaFindingProperty(t *testing.T, schema []byte, property string) map[str
 	return out
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 type blockingRetrieval struct {
 	started chan string
 	release chan struct{}
@@ -1698,23 +1848,6 @@ func TestEngineDedupesDuplicateToolCallsWithinParallelRound(t *testing.T) {
 		t.Fatalf("duplicate error code = %#v", errorPayload["code"])
 	}
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 func pathOrDefault(path, fallback string) string {
 	if path == "" {
@@ -1935,15 +2068,6 @@ func updatePayloadParts(content string) (string, string) {
 	list, findings, _ := strings.Cut(rest, findingsStart)
 	return strings.TrimSpace(list), strings.TrimSpace(findings)
 }
-
-
-
-
-
-
-
-
-
 
 func schemaStringSlice(value any) []string {
 	items, ok := value.([]any)

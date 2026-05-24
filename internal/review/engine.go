@@ -166,8 +166,8 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	return result, enrichedCtx, nil
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
-	finalMessages, err := noToolsMessages(systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+	finalMessages, err := noToolsMessages(agentRole, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +219,9 @@ type agentSpec struct {
 	schemaKind       llm.SchemaKind
 	constraints      llm.ResponseConstraints
 	hasTools         bool
+	// validateResponse returns the typed error so retry guidance metadata can
+	// be rendered after otherwise valid JSON is parsed.
+	validateResponse func(*llm.ReviewResponse) *llm.InvalidResponseError
 }
 
 type agentResult struct {
@@ -396,6 +399,9 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		}
 	}
 	if mergeResult.resp != nil {
+		if invalid := validateMergeResponse(mergeResult.resp, vectorResults); invalid != nil {
+			warnings = append(warnings, fmt.Sprintf("Merge validation warning: %s", invalid.Reason))
+		}
 		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
@@ -760,7 +766,90 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		schemaKind:    llm.SchemaKindMerge,
 		constraints:   constraints,
 		hasTools:      false,
+		validateResponse: func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+			return validateMergeResponse(resp, vectorResults)
+		},
 	}, req)
+}
+
+func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult) *llm.InvalidResponseError {
+	if resp == nil {
+		return &llm.InvalidResponseError{
+			Reason:        "merge returned no response",
+			MissingFields: []string{"findings"},
+		}
+	}
+	minCount := largestVectorFindingCount(vectorResults)
+	inputFindings := flattenVectorFindings(vectorResults)
+	var problems []string
+	countMismatch := len(resp.Findings) < minCount
+	if countMismatch {
+		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), minCount))
+	}
+	unmatched := 0
+	for i, finding := range resp.Findings {
+		if findMergeInputMatch(finding, inputFindings) == nil {
+			unmatched++
+			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return &llm.InvalidResponseError{
+		RawContent:            resp.RawResponse,
+		Reason:                "merge_validation_failed: " + strings.Join(problems, "; "),
+		MissingFields:         []string{"findings"},
+		ReasoningEffort:       resp.ReasoningEffort,
+		RetryGuidanceTemplate: "merge_validation_retry_guidance.tmpl",
+		RetryGuidanceData: struct {
+			CountMismatch bool
+			GotCount      int
+			MinCount      int
+			Unmatched     int
+		}{
+			CountMismatch: countMismatch,
+			GotCount:      len(resp.Findings),
+			MinCount:      minCount,
+			Unmatched:     unmatched,
+		},
+	}
+}
+
+func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {
+	id := strings.TrimSpace(target.ID)
+	if id != "" {
+		for i := range in {
+			if in[i].ID == id {
+				return &in[i]
+			}
+		}
+	}
+	return findInputMatch(target, in)
+}
+
+func largestVectorFindingCount(vectorResults []agentResult) int {
+	largest := 0
+	for _, result := range vectorResults {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
+			continue
+		}
+		if count := len(result.resp.Findings); count > largest {
+			largest = count
+		}
+	}
+	return largest
+}
+
+func flattenVectorFindings(vectorResults []agentResult) []model.Finding {
+	var findings []model.Finding
+	for _, result := range vectorResults {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
+			continue
+		}
+		findings = append(findings, result.resp.Findings...)
+	}
+	return findings
 }
 
 func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (contextAgentResult, error) {
@@ -780,7 +869,7 @@ func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model
 
 func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (string, error) {
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
-		kind:                     "context",
+		agentRole:                "context",
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
 	})
 	if err != nil {
@@ -848,6 +937,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		NoToolsSchemaSnippet:       reviewSnippet,
 		JSONRetryExampleSnippet:    exampleSnippetFor(agent.schemaKind),
 		JSONRetryProgressAgentName: agent.name,
+		ValidateResponse:           agent.validateResponse,
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			if !agent.hasTools {
 				return append([]llm.Message(nil), messages...), nil
@@ -1232,7 +1322,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 	if hasTools {
 		var err error
 		toolInstructions, err = e.renderToolInstructions(toolInstructionsConfig{
-			kind:                     "review",
+			agentRole:                agentRole,
 			parallelToolCallGuidance: !req.DisableParallelToolCalls,
 		})
 		if err != nil {
@@ -1240,7 +1330,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		}
 	}
 	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
-	commonSnippets, err := agentCommonSystemPromptSnippets("review", outputSchemaSnippet)
+	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, outputSchemaSnippet)
 	if err != nil {
 		return "", err
 	}
@@ -1276,7 +1366,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 }
 
 type toolInstructionsConfig struct {
-	kind                     string
+	agentRole                string
 	parallelToolCallGuidance bool
 	toolNames                []string
 }
@@ -1287,11 +1377,11 @@ func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, 
 		return "", err
 	}
 	rendered, err := llm.RenderPrompt(template, struct {
-		Kind                     string
+		AgentRole                string
 		ParallelToolCallGuidance bool
 		ToolListing              string
 	}{
-		Kind:                     config.kind,
+		AgentRole:                config.agentRole,
 		ParallelToolCallGuidance: config.parallelToolCallGuidance,
 		ToolListing:              toolInstructionsListing(config.toolNames...),
 	})
@@ -1639,8 +1729,8 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 	return llm.FindingsExamplePromptSnippet()
 }
 
-func noToolsMessages(systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string) ([]llm.Message, error) {
-	commonSnippets, err := agentCommonSystemPromptSnippets("review", snippet)
+func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string) ([]llm.Message, error) {
+	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, snippet)
 	if err != nil {
 		return nil, err
 	}
@@ -1689,13 +1779,23 @@ func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exam
 	if exampleSnippet == "" {
 		exampleSnippet = llm.FindingsExamplePromptSnippet()
 	}
+	guidance := ""
+	if invalid.RetryGuidanceTemplate != "" {
+		renderedGuidance, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+		if err != nil {
+			return "", fmt.Errorf("review: rendering JSON retry guidance prompt: %w", err)
+		}
+		guidance = strings.TrimSpace(renderedGuidance)
+	}
 	rendered, err := renderPromptFile("helper_json_snippet.tmpl", struct {
 		Reason         string
 		MissingFields  string
+		Guidance       string
 		ExampleSnippet string
 	}{
 		Reason:         invalid.Reason,
 		MissingFields:  strings.Join(invalid.MissingFields, ", "),
+		Guidance:       guidance,
 		ExampleSnippet: strings.TrimSpace(exampleSnippet),
 	})
 	if err != nil {
@@ -1717,18 +1817,18 @@ func renderPromptFile(name string, data any) (string, error) {
 	return llm.RenderPrompt(tmpl, data)
 }
 
-func agentCommonSystemPromptSnippet(kind string, snippet string, outputSchemaSnippet string) (string, error) {
+func agentCommonSystemPromptSnippet(agentRole string, snippet string, outputSchemaSnippet string) (string, error) {
 	rendered, err := renderPromptFile("agent_common_system_prompt_snippet.tmpl", struct {
-		Kind                string
+		AgentRole           string
 		Snippet             string
 		OutputSchemaSnippet string
 	}{
-		Kind:                kind,
+		AgentRole:           agentRole,
 		Snippet:             snippet,
 		OutputSchemaSnippet: outputSchemaSnippet,
 	})
 	if err != nil {
-		return "", fmt.Errorf("review: rendering common system prompt snippet %q for %s: %w", snippet, kind, err)
+		return "", fmt.Errorf("review: rendering common system prompt snippet %q for %s: %w", snippet, agentRole, err)
 	}
 	return rendered, nil
 }
@@ -1739,12 +1839,12 @@ type agentCommonSystemPromptSnippetSet struct {
 	outputFormat        string
 }
 
-func agentCommonSystemPromptSnippets(kind string, outputSchemaSnippet string) (agentCommonSystemPromptSnippetSet, error) {
-	findingInstructions, err := agentCommonSystemPromptSnippet(kind, "findings", "")
+func agentCommonSystemPromptSnippets(agentRole string, outputSchemaSnippet string) (agentCommonSystemPromptSnippetSet, error) {
+	findingInstructions, err := agentCommonSystemPromptSnippet(agentRole, "findings", "")
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
-	priority, err := agentCommonSystemPromptSnippet(kind, "priority", "")
+	priority, err := agentCommonSystemPromptSnippet(agentRole, "priority", "")
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
@@ -1752,7 +1852,7 @@ func agentCommonSystemPromptSnippets(kind string, outputSchemaSnippet string) (a
 	if outputSchemaSnippet == "" {
 		outputFormatSnippet = "response_format"
 	}
-	outputFormat, err := agentCommonSystemPromptSnippet(kind, outputFormatSnippet, outputSchemaSnippet)
+	outputFormat, err := agentCommonSystemPromptSnippet(agentRole, outputFormatSnippet, outputSchemaSnippet)
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
@@ -2383,7 +2483,7 @@ func agentLoopKind(role string) string {
 	case "context":
 		return "context"
 	case "reviewer":
-		return "review"
+		return "reviewer"
 	case "verify":
 		return "verify"
 	default:
@@ -2391,7 +2491,7 @@ func agentLoopKind(role string) string {
 	}
 }
 
-func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, kind string) (string, error) {
+func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, agentRole string) (string, error) {
 	items := make([]syntheticToolFollowupEntry, 0, len(history))
 	for i, entry := range history {
 		items = append(items, syntheticToolFollowupEntryFromHistory(i+1, entry))
@@ -2403,11 +2503,11 @@ func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, kin
 	rendered, err := renderPromptFile("helper_tools_snippet.tmpl", struct {
 		History       []syntheticToolFollowupEntry
 		RetryLastTool bool
-		Kind          string
+		AgentRole     string
 	}{
 		History:       items,
 		RetryLastTool: lastResult.IsError && lastResult.Code != "already_requested",
-		Kind:          kind,
+		AgentRole:     agentRole,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering tool follow-up prompt: %w", err)
