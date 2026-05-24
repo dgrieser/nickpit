@@ -95,7 +95,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		schemaKind:       llm.SchemaKindFinalize,
 		constraints:      constraints,
 		hasTools:         false,
-		validateResponse: finalizerCountValidator(len(in.Findings)),
+		validateResponse: finalizerOutputValidator(in.Findings),
 	}, req)
 	if err != nil {
 		// Preserve partial AgentRun (tokens, tool calls accumulated before
@@ -122,13 +122,15 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	return out, result.run, nil
 }
 
-func finalizerCountValidator(expected int) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewResponse) *llm.InvalidResponseError {
 	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
-		got := 0
+		expected := len(inputFindings)
+		var finalizerFindings []model.Finding
 		if resp != nil {
-			got = len(resp.Findings)
+			finalizerFindings = resp.Findings
 		}
-		if got == expected {
+		stats := finalizerOutputStats(inputFindings, finalizerFindings, nil)
+		if stats.FinalizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0 {
 			return nil
 		}
 		raw := ""
@@ -139,16 +141,22 @@ func finalizerCountValidator(expected int) func(*llm.ReviewResponse) *llm.Invali
 		}
 		return &llm.InvalidResponseError{
 			RawContent:            raw,
-			Reason:                fmt.Sprintf("finalizer_count_mismatch got=%d expected=%d", got, expected),
+			Reason:                fmt.Sprintf("finalizer_output_mismatch got=%d expected=%d matched=%d omitted=%d ignored=%d", stats.FinalizerFindings, expected, stats.Matched, stats.Omitted, stats.Ignored),
 			MissingFields:         []string{"findings"},
 			ReasoningEffort:       reasoningEffort,
 			RetryGuidanceTemplate: "finalizer_count_retry_guidance.tmpl",
 			RetryGuidanceData: struct {
 				Expected int
 				Got      int
+				Matched  int
+				Omitted  int
+				Ignored  int
 			}{
 				Expected: expected,
-				Got:      got,
+				Got:      stats.FinalizerFindings,
+				Matched:  stats.Matched,
+				Omitted:  stats.Omitted,
+				Ignored:  stats.Ignored,
 			},
 		}
 	}
@@ -212,6 +220,12 @@ type finalizerApplyStats struct {
 // reorder, or relocate findings; unmatched output is ignored, and omitted
 // input findings receive conservative synthesized finalization.
 func applyFinalizerOutput(inOut, finalizer []model.Finding) finalizerApplyStats {
+	return finalizerOutputStats(inOut, finalizer, func(inIdx, outIdx int) {
+		applyFinalizedFinding(&inOut[inIdx], finalizer[outIdx])
+	})
+}
+
+func finalizerOutputStats(inOut, finalizer []model.Finding, onMatch func(inIdx, outIdx int)) finalizerApplyStats {
 	stats := finalizerApplyStats{FinalizerFindings: len(finalizer)}
 	matchedInput := make([]bool, len(inOut))
 	usedOutput := make([]bool, len(finalizer))
@@ -223,7 +237,9 @@ func applyFinalizerOutput(inOut, finalizer []model.Finding) finalizerApplyStats 
 		usedOutput[outIdx] = true
 		matchedInput[inIdx] = true
 		stats.Matched++
-		applyFinalizedFinding(&inOut[inIdx], finalizer[outIdx])
+		if onMatch != nil {
+			onMatch(inIdx, outIdx)
+		}
 	}
 	for i := range finalizer {
 		if !usedOutput[i] {
@@ -290,6 +306,7 @@ func applyFinalizedFinding(dst *model.Finding, src model.Finding) {
 
 func synthesizedFinalization(finding model.Finding) *model.FindingFinalization {
 	priority := model.PriorityRank(finding.Priority)
+	// Verifier-driven escalation is intentional; it mirrors the finalizer floor.
 	if finding.Verification != nil && finding.Verification.Priority < priority {
 		priority = finding.Verification.Priority
 	}

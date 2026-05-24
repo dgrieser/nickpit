@@ -475,6 +475,67 @@ func TestFinalizeRetriesWhenFindingCountDiffers(t *testing.T) {
 	}
 }
 
+func TestFinalizeRetriesWhenSameCountOutputMisidentifiesFinding(t *testing.T) {
+	const idA = "11111111-1111-4111-8111-111111111111"
+	const idB = "22222222-2222-4222-8222-222222222222"
+	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						ID: idA, Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
+						Finalization: &model.FindingFinalization{Title: "Final A", Body: "a", Priority: 2, Remarks: "first"},
+					},
+					{
+						ID: idA, Title: "Issue A duplicate", Body: "a", Priority: intPtr(2), CodeLocation: locA,
+						Finalization: &model.FindingFinalization{Title: "Duplicate A", Body: "a", Priority: 2, Remarks: "duplicate"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+			{
+				Findings: []model.Finding{
+					{
+						ID: idA, Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
+						Finalization: &model.FindingFinalization{Title: "Final A", Body: "a", Priority: 2, Remarks: "retry"},
+					},
+					{
+						ID: idB, Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB,
+						Finalization: &model.FindingFinalization{Title: "Final B", Body: "b", Priority: 2, Remarks: "retry"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{ID: idA, Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA},
+			{ID: idB, Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d, want retry", len(llmClient.reqs))
+	}
+	retryMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content
+	for _, want := range []string{"matched 1", "omitted 1", "ignored/unmatched item(s)"} {
+		if !strings.Contains(retryMessage, want) {
+			t.Fatalf("retry feedback missing %q: %q", want, retryMessage)
+		}
+	}
+	if out.Findings[0].Finalization.Title != "Final A" || out.Findings[1].Finalization.Title != "Final B" {
+		t.Fatalf("finalizations = %#v %#v, want retry output", out.Findings[0].Finalization, out.Findings[1].Finalization)
+	}
+}
+
 func TestFinalizePreservesInputsWhenCountRetryExhausted(t *testing.T) {
 	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}

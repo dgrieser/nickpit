@@ -166,8 +166,8 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	return result, enrichedCtx, nil
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
-	finalMessages, err := noToolsMessages(systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+	finalMessages, err := noToolsMessages(agentRole, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +219,8 @@ type agentSpec struct {
 	schemaKind       llm.SchemaKind
 	constraints      llm.ResponseConstraints
 	hasTools         bool
+	// validateResponse returns the typed error so retry guidance metadata can
+	// be rendered after otherwise valid JSON is parsed.
 	validateResponse func(*llm.ReviewResponse) *llm.InvalidResponseError
 }
 
@@ -755,23 +757,19 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
 	}
 	return e.runAgent(ctx, agentSpec{
-		name:             "Merge Findings",
-		role:             "merge",
-		system:           system,
-		noToolsSystem:    system,
-		user:             mergeUser,
-		schema:           schema,
-		schemaKind:       llm.SchemaKindMerge,
-		constraints:      constraints,
-		hasTools:         false,
-		validateResponse: mergeResponseValidator(vectorResults),
+		name:          "Merge Findings",
+		role:          "merge",
+		system:        system,
+		noToolsSystem: system,
+		user:          mergeUser,
+		schema:        schema,
+		schemaKind:    llm.SchemaKindMerge,
+		constraints:   constraints,
+		hasTools:      false,
+		validateResponse: func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+			return validateMergeResponse(resp, vectorResults)
+		},
 	}, req)
-}
-
-func mergeResponseValidator(vectorResults []agentResult) func(*llm.ReviewResponse) *llm.InvalidResponseError {
-	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
-		return validateMergeResponse(resp, vectorResults)
-	}
 }
 
 func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult) *llm.InvalidResponseError {
@@ -785,12 +783,12 @@ func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult
 	inputFindings := flattenVectorFindings(vectorResults)
 	var problems []string
 	countMismatch := len(resp.Findings) < minCount
-	if len(resp.Findings) < minCount {
+	if countMismatch {
 		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), minCount))
 	}
 	unmatched := 0
 	for i, finding := range resp.Findings {
-		if findInputMatch(finding, inputFindings) == nil {
+		if findMergeInputMatch(finding, inputFindings) == nil {
 			unmatched++
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
 		}
@@ -816,6 +814,18 @@ func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult
 			Unmatched:     unmatched,
 		},
 	}
+}
+
+func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {
+	id := strings.TrimSpace(target.ID)
+	if id != "" {
+		for i := range in {
+			if in[i].ID == id {
+				return &in[i]
+			}
+		}
+	}
+	return findInputMatch(target, in)
 }
 
 func largestVectorFindingCount(vectorResults []agentResult) int {
@@ -1320,7 +1330,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		}
 	}
 	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
-	commonSnippets, err := agentCommonSystemPromptSnippets("reviewer", outputSchemaSnippet)
+	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, outputSchemaSnippet)
 	if err != nil {
 		return "", err
 	}
@@ -1719,8 +1729,8 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 	return llm.FindingsExamplePromptSnippet()
 }
 
-func noToolsMessages(systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string) ([]llm.Message, error) {
-	commonSnippets, err := agentCommonSystemPromptSnippets("reviewer", snippet)
+func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string) ([]llm.Message, error) {
+	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, snippet)
 	if err != nil {
 		return nil, err
 	}

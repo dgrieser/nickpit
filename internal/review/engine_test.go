@@ -1390,6 +1390,41 @@ func TestMergeValidationAllowsDuplicatesAndNoUpperBound(t *testing.T) {
 	}
 }
 
+func TestMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
+	input := mergeTestFinding("Fix Code Quality", 10)
+	input.ID = "11111111-1111-4111-8111-111111111111"
+	input.CodeLocation.LineRange.End = 20
+	merged := input
+	merged.CodeLocation.LineRange = model.LineRange{Start: 12, End: 12}
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{input}},
+		run:  model.AgentRun{Status: model.AgentRunStatusOK},
+	}}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
+
+	if invalid := validateMergeResponse(resp, vectorResults); invalid != nil {
+		t.Fatalf("validateMergeResponse returned %v, want nil for preserved ID with refined location", invalid)
+	}
+}
+
+func TestNoToolsMessagesUsesAgentRoleForCommonSnippets(t *testing.T) {
+	messages := []llm.Message{{Role: "system", Content: "old"}}
+	reviewerMessages, err := noToolsMessages("reviewer", "{{.FindingInstructionsSnippet}}", messages, "", "")
+	if err != nil {
+		t.Fatalf("reviewer noToolsMessages returned err: %v", err)
+	}
+	verifyMessages, err := noToolsMessages("verify", "{{.FindingInstructionsSnippet}}", messages, "", "")
+	if err != nil {
+		t.Fatalf("verify noToolsMessages returned err: %v", err)
+	}
+	if !strings.Contains(reviewerMessages[0].Content, "suggestions") {
+		t.Fatalf("reviewer no-tools prompt missing reviewer snippet: %q", reviewerMessages[0].Content)
+	}
+	if strings.Contains(verifyMessages[0].Content, "suggestions") {
+		t.Fatalf("verify no-tools prompt used reviewer snippet: %q", verifyMessages[0].Content)
+	}
+}
+
 func mergeTestFinding(title string, line int) model.Finding {
 	return model.Finding{
 		Title:           title,

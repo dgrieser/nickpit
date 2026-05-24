@@ -287,7 +287,7 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 		}
 		noToolsReq.Messages = finalMessages
 	}
-	return e.reviewWithoutTools(ctx, &noToolsReq, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.MaxOutputRetries, req.Section)
+	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.MaxOutputRetries, req.Section)
 }
 
 func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {
