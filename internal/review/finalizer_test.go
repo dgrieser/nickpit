@@ -385,15 +385,18 @@ func TestFinalizePriorityFloorSurvivesReorder(t *testing.T) {
 }
 
 func TestFinalizeDropsHallucinatedFindingsWithoutInputMatch(t *testing.T) {
+	hallucinated := model.Finding{
+		Title: "Hallucinated", Body: "x", Priority: intPtr(0), CodeLocation: model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 9, End: 9}},
+		Finalization: &model.FindingFinalization{Title: "Hallucinated", Body: "x", Priority: 0, ConfidenceScore: 0.5, Remarks: "new"},
+	}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
-				Findings: []model.Finding{
-					{
-						Title: "Hallucinated", Body: "x", Priority: intPtr(0), CodeLocation: model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 9, End: 9}},
-						Finalization: &model.FindingFinalization{Title: "Hallucinated", Body: "x", Priority: 0, ConfidenceScore: 0.5, Remarks: "new"},
-					},
-				},
+				Findings:           []model.Finding{hallucinated},
+				OverallCorrectness: "patch is correct",
+			},
+			{
+				Findings:           []model.Finding{hallucinated},
 				OverallCorrectness: "patch is correct",
 			},
 		},
@@ -405,7 +408,7 @@ func TestFinalizeDropsHallucinatedFindingsWithoutInputMatch(t *testing.T) {
 		},
 	}
 
-	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{MaxOutputRetries: 1})
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
@@ -761,16 +764,19 @@ func TestFinalizeWeightedConfidenceSurvivesReorder(t *testing.T) {
 }
 
 func TestFinalizeWeightedConfidenceSkipsWhenNoInputMatch(t *testing.T) {
+	hallucinated := model.Finding{
+		Title: "Hallucinated", Body: "x", Priority: intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 9, End: 9}},
+		Finalization: &model.FindingFinalization{Title: "Hallucinated", Body: "x", Priority: 1, ConfidenceScore: 0.42, Remarks: "new"},
+	}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
-				Findings: []model.Finding{
-					{
-						Title: "Hallucinated", Body: "x", Priority: intPtr(1),
-						CodeLocation: model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 9, End: 9}},
-						Finalization: &model.FindingFinalization{Title: "Hallucinated", Body: "x", Priority: 1, ConfidenceScore: 0.42, Remarks: "new"},
-					},
-				},
+				Findings:           []model.Finding{hallucinated},
+				OverallCorrectness: "patch is correct",
+			},
+			{
+				Findings:           []model.Finding{hallucinated},
 				OverallCorrectness: "patch is correct",
 			},
 		},
@@ -784,7 +790,7 @@ func TestFinalizeWeightedConfidenceSkipsWhenNoInputMatch(t *testing.T) {
 		},
 	}
 
-	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{MaxOutputRetries: 1})
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}

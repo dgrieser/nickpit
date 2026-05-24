@@ -251,7 +251,7 @@ func finalizerOutputStats(inOut, finalizer []model.Finding, onMatch func(inIdx, 
 			continue
 		}
 		stats.Omitted++
-		if inOut[i].Finalization == nil {
+		if onMatch != nil && inOut[i].Finalization == nil {
 			inOut[i].Finalization = synthesizedFinalization(inOut[i])
 		}
 	}
