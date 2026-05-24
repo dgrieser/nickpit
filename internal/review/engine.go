@@ -784,22 +784,37 @@ func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult
 	minCount := largestVectorFindingCount(vectorResults)
 	inputFindings := flattenVectorFindings(vectorResults)
 	var problems []string
+	countMismatch := len(resp.Findings) < minCount
 	if len(resp.Findings) < minCount {
-		problems = append(problems, fmt.Sprintf("merge returned %d findings, expected at least %d because one verified reviewer produced %d findings", len(resp.Findings), minCount, minCount))
+		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), minCount))
 	}
+	unmatched := 0
 	for i, finding := range resp.Findings {
 		if findInputMatch(finding, inputFindings) == nil {
-			problems = append(problems, fmt.Sprintf("findings[%d] does not match any input vector finding", i))
+			unmatched++
+			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
 		}
 	}
 	if len(problems) == 0 {
 		return nil
 	}
 	return &llm.InvalidResponseError{
-		RawContent:      resp.RawResponse,
-		Reason:          "merge validation failed: " + strings.Join(problems, "; "),
-		MissingFields:   []string{"findings (preserve at least the largest reviewer count and do not introduce new findings)"},
-		ReasoningEffort: resp.ReasoningEffort,
+		RawContent:            resp.RawResponse,
+		Reason:                "merge_validation_failed: " + strings.Join(problems, "; "),
+		MissingFields:         []string{"findings"},
+		ReasoningEffort:       resp.ReasoningEffort,
+		RetryGuidanceTemplate: "merge_validation_retry_guidance.tmpl",
+		RetryGuidanceData: struct {
+			CountMismatch bool
+			GotCount      int
+			MinCount      int
+			Unmatched     int
+		}{
+			CountMismatch: countMismatch,
+			GotCount:      len(resp.Findings),
+			MinCount:      minCount,
+			Unmatched:     unmatched,
+		},
 	}
 }
 
@@ -1754,13 +1769,23 @@ func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exam
 	if exampleSnippet == "" {
 		exampleSnippet = llm.FindingsExamplePromptSnippet()
 	}
+	guidance := ""
+	if invalid.RetryGuidanceTemplate != "" {
+		renderedGuidance, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+		if err != nil {
+			return "", fmt.Errorf("review: rendering JSON retry guidance prompt: %w", err)
+		}
+		guidance = strings.TrimSpace(renderedGuidance)
+	}
 	rendered, err := renderPromptFile("helper_json_snippet.tmpl", struct {
 		Reason         string
 		MissingFields  string
+		Guidance       string
 		ExampleSnippet string
 	}{
 		Reason:         invalid.Reason,
 		MissingFields:  strings.Join(invalid.MissingFields, ", "),
+		Guidance:       guidance,
 		ExampleSnippet: strings.TrimSpace(exampleSnippet),
 	})
 	if err != nil {

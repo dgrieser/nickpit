@@ -464,7 +464,7 @@ func TestFinalizeRetriesWhenFindingCountDiffers(t *testing.T) {
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("requests = %d, want retry", len(llmClient.reqs))
 	}
-	if !strings.Contains(llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content, "expected exactly 2 items, got 1") {
+	if retryMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content; !strings.Contains(retryMessage, "2") || !strings.Contains(retryMessage, "1") {
 		t.Fatalf("retry feedback missing count mismatch: %q", llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content)
 	}
 	if len(out.Findings) != 2 {

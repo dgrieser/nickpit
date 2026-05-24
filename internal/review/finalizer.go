@@ -138,10 +138,18 @@ func finalizerCountValidator(expected int) func(*llm.ReviewResponse) *llm.Invali
 			reasoningEffort = resp.ReasoningEffort
 		}
 		return &llm.InvalidResponseError{
-			RawContent:      raw,
-			Reason:          fmt.Sprintf("finalizer returned %d findings, expected %d", got, expected),
-			MissingFields:   []string{fmt.Sprintf("findings (expected exactly %d items, got %d)", expected, got)},
-			ReasoningEffort: reasoningEffort,
+			RawContent:            raw,
+			Reason:                fmt.Sprintf("finalizer_count_mismatch got=%d expected=%d", got, expected),
+			MissingFields:         []string{"findings"},
+			ReasoningEffort:       reasoningEffort,
+			RetryGuidanceTemplate: "finalizer_count_retry_guidance.tmpl",
+			RetryGuidanceData: struct {
+				Expected int
+				Got      int
+			}{
+				Expected: expected,
+				Got:      got,
+			},
 		}
 	}
 }

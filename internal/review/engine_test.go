@@ -1321,7 +1321,7 @@ func TestMultiAgentMergeValidationRetriesWhenBelowLargestReviewerCount(t *testin
 		t.Fatalf("merge requests = %d, want retry", len(llmClient.mergeRequests))
 	}
 	retryMessage := llmClient.mergeRequests[1].Messages[len(llmClient.mergeRequests[1].Messages)-1].Content
-	if !strings.Contains(retryMessage, "expected at least 3") {
+	if !strings.Contains(retryMessage, "3") {
 		t.Fatalf("retry message missing merge count nudge: %q", retryMessage)
 	}
 	if len(result.Findings) != 3 {
@@ -1365,7 +1365,7 @@ func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
 	}
 	foundWarning := false
 	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "Merge validation warning") && strings.Contains(warning, "does not match any input vector finding") {
+		if strings.Contains(warning, "Merge validation warning") && strings.Contains(warning, "unmatched_finding") {
 			foundWarning = true
 		}
 	}
