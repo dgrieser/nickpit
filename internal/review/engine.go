@@ -219,6 +219,7 @@ type agentSpec struct {
 	schemaKind       llm.SchemaKind
 	constraints      llm.ResponseConstraints
 	hasTools         bool
+	validateResponse func(*llm.ReviewResponse) *llm.InvalidResponseError
 }
 
 type agentResult struct {
@@ -848,6 +849,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		NoToolsSchemaSnippet:       reviewSnippet,
 		JSONRetryExampleSnippet:    exampleSnippetFor(agent.schemaKind),
 		JSONRetryProgressAgentName: agent.name,
+		ValidateResponse:           agent.validateResponse,
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			if !agent.hasTools {
 				return append([]llm.Message(nil), messages...), nil

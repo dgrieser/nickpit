@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -85,15 +86,16 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	}
 	e.logProgress("Finalize", fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
-		name:          "Finalize Review",
-		role:          "finalize",
-		system:        system,
-		noToolsSystem: system,
-		user:          userPrompt,
-		schema:        schema,
-		schemaKind:    llm.SchemaKindFinalize,
-		constraints:   constraints,
-		hasTools:      false,
+		name:             "Finalize Review",
+		role:             "finalize",
+		system:           system,
+		noToolsSystem:    system,
+		user:             userPrompt,
+		schema:           schema,
+		schemaKind:       llm.SchemaKindFinalize,
+		constraints:      constraints,
+		hasTools:         false,
+		validateResponse: finalizerCountValidator(len(in.Findings)),
 	}, req)
 	if err != nil {
 		// Preserve partial AgentRun (tokens, tool calls accumulated before
@@ -105,7 +107,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
 	}
-	out.Findings = dropUnmatchedFindings(result.resp.Findings, in.Findings)
+	stats := applyFinalizerOutput(out.Findings, result.resp.Findings)
 	out.OverallCorrectness = result.resp.OverallCorrectness
 	out.OverallExplanation = result.resp.OverallExplanation
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
@@ -113,8 +115,35 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	mergeInputVerification(out.Findings, in.Findings)
 	enforcePriorityFloor(out.Findings, in.Findings)
 	applyWeightedConfidence(out.Findings, in.Findings)
-	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
+	if stats.Omitted > 0 || stats.Ignored > 0 || stats.FinalizerFindings != len(in.Findings) {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("Finalizer output mismatch: findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d; preserved input findings", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
+	}
+	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored, len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
 	return out, result.run, nil
+}
+
+func finalizerCountValidator(expected int) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+		got := 0
+		if resp != nil {
+			got = len(resp.Findings)
+		}
+		if got == expected {
+			return nil
+		}
+		raw := ""
+		reasoningEffort := ""
+		if resp != nil {
+			raw = resp.RawResponse
+			reasoningEffort = resp.ReasoningEffort
+		}
+		return &llm.InvalidResponseError{
+			RawContent:      raw,
+			Reason:          fmt.Sprintf("finalizer returned %d findings, expected %d", got, expected),
+			MissingFields:   []string{fmt.Sprintf("findings (expected exactly %d items, got %d)", expected, got)},
+			ReasoningEffort: reasoningEffort,
+		}
+	}
 }
 
 func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult) (string, error) {
@@ -163,22 +192,105 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 	return user, nil
 }
 
-// dropUnmatchedFindings removes finalizer-output findings whose code_location
-// or ID has no input match. The finalize prompt forbids new findings; this is the
-// in-code defence so hallucinated entries cannot bypass priority floor and
-// weighted-confidence (which both skip on no-match) and ship with arbitrary
-// LLM values.
-func dropUnmatchedFindings(out, in []model.Finding) []model.Finding {
-	kept := make([]model.Finding, 0, len(out))
-	for i := range out {
-		match := findInputMatch(out[i], in)
-		if match == nil {
+type finalizerApplyStats struct {
+	FinalizerFindings int
+	Matched           int
+	Omitted           int
+	Ignored           int
+}
+
+// applyFinalizerOutput copies finalization-only data from finalizer output
+// onto input-owned findings. The finalizer is not allowed to add, remove,
+// reorder, or relocate findings; unmatched output is ignored, and omitted
+// input findings receive conservative synthesized finalization.
+func applyFinalizerOutput(inOut, finalizer []model.Finding) finalizerApplyStats {
+	stats := finalizerApplyStats{FinalizerFindings: len(finalizer)}
+	matchedInput := make([]bool, len(inOut))
+	usedOutput := make([]bool, len(finalizer))
+	for outIdx := range finalizer {
+		inIdx := findFinalizerInputIndex(finalizer[outIdx], inOut, matchedInput)
+		if inIdx < 0 {
 			continue
 		}
-		out[i].ID = match.ID
-		kept = append(kept, out[i])
+		usedOutput[outIdx] = true
+		matchedInput[inIdx] = true
+		stats.Matched++
+		applyFinalizedFinding(&inOut[inIdx], finalizer[outIdx])
 	}
-	return kept
+	for i := range finalizer {
+		if !usedOutput[i] {
+			stats.Ignored++
+		}
+	}
+	for i := range inOut {
+		if matchedInput[i] {
+			continue
+		}
+		stats.Omitted++
+		if inOut[i].Finalization == nil {
+			inOut[i].Finalization = synthesizedFinalization(inOut[i])
+		}
+	}
+	return stats
+}
+
+func findFinalizerInputIndex(target model.Finding, in []model.Finding, matched []bool) int {
+	id := strings.TrimSpace(target.ID)
+	if id != "" {
+		for i := range in {
+			if matched[i] {
+				continue
+			}
+			if in[i].ID == id {
+				return i
+			}
+		}
+	}
+	var locMatches []int
+	for i := range in {
+		if matched[i] {
+			continue
+		}
+		if in[i].CodeLocation == target.CodeLocation {
+			locMatches = append(locMatches, i)
+		}
+	}
+	if len(locMatches) == 1 {
+		return locMatches[0]
+	}
+	for _, i := range locMatches {
+		if in[i].Title == target.Title {
+			return i
+		}
+	}
+	return -1
+}
+
+func applyFinalizedFinding(dst *model.Finding, src model.Finding) {
+	if src.Finalization != nil {
+		finalization := *src.Finalization
+		dst.Finalization = &finalization
+	}
+	if len(src.Suggestions) > 0 {
+		dst.Suggestions = append([]model.Suggestion(nil), src.Suggestions...)
+	}
+	if src.Verification != nil {
+		verification := *src.Verification
+		dst.Verification = &verification
+	}
+}
+
+func synthesizedFinalization(finding model.Finding) *model.FindingFinalization {
+	priority := model.PriorityRank(finding.Priority)
+	if finding.Verification != nil && finding.Verification.Priority < priority {
+		priority = finding.Verification.Priority
+	}
+	return &model.FindingFinalization{
+		Title:    finding.Title,
+		Body:     finding.Body,
+		Priority: priority,
+		Remarks:  "Finalizer omitted or misidentified this finding; preserved original finding.",
+	}
 }
 
 // mergeInputSuggestions defends against the finalizer LLM dropping `suggestions`

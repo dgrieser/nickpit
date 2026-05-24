@@ -331,11 +331,11 @@ func TestFinalizeMergesSuggestionsWithCollidingLocationByTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	if out.Findings[0].Title != "Issue B" || out.Findings[0].Suggestions[0].Body != "fix B" {
-		t.Fatalf("findings[0] = %+v, want title=Issue B suggestion=fix B", out.Findings[0])
+	if out.Findings[0].Title != "Issue A" || out.Findings[0].Suggestions[0].Body != "fix A" {
+		t.Fatalf("findings[0] = %+v, want title=Issue A suggestion=fix A", out.Findings[0])
 	}
-	if out.Findings[1].Title != "Issue A" || out.Findings[1].Suggestions[0].Body != "fix A" {
-		t.Fatalf("findings[1] = %+v, want title=Issue A suggestion=fix A", out.Findings[1])
+	if out.Findings[1].Title != "Issue B" || out.Findings[1].Suggestions[0].Body != "fix B" {
+		t.Fatalf("findings[1] = %+v, want title=Issue B suggestion=fix B", out.Findings[1])
 	}
 }
 
@@ -374,13 +374,13 @@ func TestFinalizePriorityFloorSurvivesReorder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	// Index 0 of out is Issue B (LLM reordered). Index-based matching would have
-	// taken Issue A's floor. With code_location matching, floor for B is P2.
-	if out.Findings[0].Title != "Issue B" || out.Findings[0].Finalization.Priority != 2 {
-		t.Fatalf("findings[0] = %+v, want title=Issue B priority=2 (clamped)", out.Findings[0])
+	// Output preserves input order. Matching still uses code_location so B's
+	// attempted escalation is clamped against B's own floor.
+	if out.Findings[0].Title != "Issue A" || out.Findings[0].Finalization.Priority != 2 {
+		t.Fatalf("findings[0] = %+v, want title=Issue A priority=2", out.Findings[0])
 	}
-	if out.Findings[1].Title != "Issue A" || out.Findings[1].Finalization.Priority != 2 {
-		t.Fatalf("findings[1] = %+v, want title=Issue A priority=2", out.Findings[1])
+	if out.Findings[1].Title != "Issue B" || out.Findings[1].Finalization.Priority != 2 {
+		t.Fatalf("findings[1] = %+v, want title=Issue B priority=2 (clamped)", out.Findings[1])
 	}
 }
 
@@ -409,10 +409,106 @@ func TestFinalizeDropsHallucinatedFindingsWithoutInputMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	// Prompt forbids new findings; in-code defence drops them so arbitrary
-	// LLM priority/confidence cannot ship as a real finding.
-	if len(out.Findings) != 0 {
-		t.Fatalf("findings = %d, want 0 (hallucinated finding dropped)", len(out.Findings))
+	// Prompt forbids new findings; in-code defence ignores hallucinations
+	// without allowing the finalizer to delete real input findings.
+	if len(out.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1 preserved input finding", len(out.Findings))
+	}
+	if out.Findings[0].Title != "Real" {
+		t.Fatalf("title = %q, want preserved input title", out.Findings[0].Title)
+	}
+	if out.Findings[0].Finalization == nil {
+		t.Fatal("expected synthesized finalization for omitted input finding")
+	}
+}
+
+func TestFinalizeRetriesWhenFindingCountDiffers(t *testing.T) {
+	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{{
+					Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
+					Finalization: &model.FindingFinalization{Title: "Issue A", Body: "a", Priority: 2, Remarks: "first"},
+				}},
+				OverallCorrectness: "patch is correct",
+			},
+			{
+				Findings: []model.Finding{
+					{
+						Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA,
+						Finalization: &model.FindingFinalization{Title: "Final A", Body: "a", Priority: 2, Remarks: "retry"},
+					},
+					{
+						Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB,
+						Finalization: &model.FindingFinalization{Title: "Final B", Body: "b", Priority: 2, Remarks: "retry"},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA},
+			{Title: "Issue B", Body: "b", Priority: intPtr(2), CodeLocation: locB},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d, want retry", len(llmClient.reqs))
+	}
+	if !strings.Contains(llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content, "expected exactly 2 items, got 1") {
+		t.Fatalf("retry feedback missing count mismatch: %q", llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content)
+	}
+	if len(out.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2", len(out.Findings))
+	}
+	if out.Findings[0].Finalization.Title != "Final A" || out.Findings[1].Finalization.Title != "Final B" {
+		t.Fatalf("finalizations = %#v %#v, want retry output", out.Findings[0].Finalization, out.Findings[1].Finalization)
+	}
+}
+
+func TestFinalizePreservesInputsWhenCountRetryExhausted(t *testing.T) {
+	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{Findings: nil, OverallCorrectness: "patch is correct"},
+			{Findings: nil, OverallCorrectness: "patch is correct"},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{Title: "Issue A", Body: "a", Priority: intPtr(2), CodeLocation: locA},
+			{Title: "Issue B", Body: "b", Priority: intPtr(1), CodeLocation: locB},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d, want initial + one retry", len(llmClient.reqs))
+	}
+	if len(out.Findings) != 2 {
+		t.Fatalf("findings = %d, want preserved input findings", len(out.Findings))
+	}
+	for i := range out.Findings {
+		if out.Findings[i].Finalization == nil {
+			t.Fatalf("findings[%d] missing synthesized finalization", i)
+		}
+	}
+	if len(out.Warnings) == 0 || !strings.Contains(out.Warnings[len(out.Warnings)-1], "Finalizer output mismatch") {
+		t.Fatalf("warnings = %#v, want finalizer mismatch warning", out.Warnings)
 	}
 }
 
@@ -591,15 +687,15 @@ func TestFinalizeWeightedConfidenceSurvivesReorder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	// Index 0 = Issue B: 0.6*0.5 + 0.4*0.4 = 0.46, divergence 0.1 < 0.3 → 0.46.
-	gotB := out.Findings[0].Finalization.ConfidenceScore
-	if math.Abs(gotB-0.46) > 1e-9 {
-		t.Fatalf("B confidence = %v, want 0.46", gotB)
-	}
-	// Index 1 = Issue A: 0.6*0.9 + 0.4*0.8 = 0.86, divergence 0.1 < 0.3 → 0.86.
-	gotA := out.Findings[1].Finalization.ConfidenceScore
+	// Output preserves input order. Issue A: 0.6*0.9 + 0.4*0.8 = 0.86.
+	gotA := out.Findings[0].Finalization.ConfidenceScore
 	if math.Abs(gotA-0.86) > 1e-9 {
 		t.Fatalf("A confidence = %v, want 0.86", gotA)
+	}
+	// Issue B: 0.6*0.5 + 0.4*0.4 = 0.46.
+	gotB := out.Findings[1].Finalization.ConfidenceScore
+	if math.Abs(gotB-0.46) > 1e-9 {
+		t.Fatalf("B confidence = %v, want 0.46", gotB)
 	}
 }
 
@@ -631,14 +727,20 @@ func TestFinalizeWeightedConfidenceSkipsWhenNoInputMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	// Hallucinated finding has no input match → dropped, real finding has no
-	// finalization (because the LLM only returned the hallucination) → also dropped.
-	if len(out.Findings) != 0 {
-		t.Fatalf("findings = %d, want 0 (hallucinated dropped)", len(out.Findings))
+	// Hallucinated finding has no input match → ignored. Real input finding is
+	// preserved and receives synthesized finalization.
+	if len(out.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1 preserved input finding", len(out.Findings))
+	}
+	if out.Findings[0].Title != "Real" {
+		t.Fatalf("title = %q, want Real", out.Findings[0].Title)
+	}
+	if out.Findings[0].Finalization == nil {
+		t.Fatal("expected synthesized finalization")
 	}
 }
 
-func TestDropUnmatchedFindingsRestampsSwappedIDLocation(t *testing.T) {
+func TestApplyFinalizerOutputMatchesByIDAndPreservesInputLocation(t *testing.T) {
 	const idA = "11111111-1111-4111-8111-111111111111"
 	const idB = "22222222-2222-4222-8222-222222222222"
 	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
@@ -647,19 +749,25 @@ func TestDropUnmatchedFindingsRestampsSwappedIDLocation(t *testing.T) {
 		{ID: idA, Title: "Issue A", CodeLocation: locA},
 		{ID: idB, Title: "Issue B", CodeLocation: locB},
 	}
-	out := []model.Finding{
-		{ID: idA, Title: "Issue B", CodeLocation: locB},
+	finalizer := []model.Finding{
+		{
+			ID: idA, Title: "Issue A refined", CodeLocation: locB,
+			Finalization: &model.FindingFinalization{Title: "Final A", Body: "body", Priority: 2, Remarks: "matched by id"},
+		},
 	}
 
-	got := dropUnmatchedFindings(out, in)
-	if len(got) != 1 {
-		t.Fatalf("findings = %d, want 1 location match", len(got))
+	stats := applyFinalizerOutput(in, finalizer)
+	if stats.Matched != 1 || stats.Omitted != 1 || stats.Ignored != 0 {
+		t.Fatalf("stats = %+v, want matched=1 omitted=1 ignored=0", stats)
 	}
-	if got[0].ID != idB {
-		t.Fatalf("id = %q, want restamped to location match %q", got[0].ID, idB)
+	if in[0].CodeLocation != locA {
+		t.Fatalf("location = %#v, want preserved input location %#v", in[0].CodeLocation, locA)
 	}
-	if got[0].CodeLocation != locB {
-		t.Fatalf("location = %#v, want %#v", got[0].CodeLocation, locB)
+	if in[0].Finalization == nil || in[0].Finalization.Title != "Final A" {
+		t.Fatalf("finalization = %#v, want applied by id", in[0].Finalization)
+	}
+	if in[1].Finalization == nil || !strings.Contains(in[1].Finalization.Remarks, "omitted") {
+		t.Fatalf("second finalization = %#v, want synthesized omitted finalization", in[1].Finalization)
 	}
 }
 
