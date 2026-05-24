@@ -397,6 +397,9 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		}
 	}
 	if mergeResult.resp != nil {
+		if invalid := validateMergeResponse(mergeResult.resp, vectorResults); invalid != nil {
+			warnings = append(warnings, fmt.Sprintf("Merge validation warning: %s", invalid.Reason))
+		}
 		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
@@ -752,16 +755,76 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
 	}
 	return e.runAgent(ctx, agentSpec{
-		name:          "Merge Findings",
-		role:          "merge",
-		system:        system,
-		noToolsSystem: system,
-		user:          mergeUser,
-		schema:        schema,
-		schemaKind:    llm.SchemaKindMerge,
-		constraints:   constraints,
-		hasTools:      false,
+		name:             "Merge Findings",
+		role:             "merge",
+		system:           system,
+		noToolsSystem:    system,
+		user:             mergeUser,
+		schema:           schema,
+		schemaKind:       llm.SchemaKindMerge,
+		constraints:      constraints,
+		hasTools:         false,
+		validateResponse: mergeResponseValidator(vectorResults),
 	}, req)
+}
+
+func mergeResponseValidator(vectorResults []agentResult) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+		return validateMergeResponse(resp, vectorResults)
+	}
+}
+
+func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult) *llm.InvalidResponseError {
+	if resp == nil {
+		return &llm.InvalidResponseError{
+			Reason:        "merge returned no response",
+			MissingFields: []string{"findings"},
+		}
+	}
+	minCount := largestVectorFindingCount(vectorResults)
+	inputFindings := flattenVectorFindings(vectorResults)
+	var problems []string
+	if len(resp.Findings) < minCount {
+		problems = append(problems, fmt.Sprintf("merge returned %d findings, expected at least %d because one verified reviewer produced %d findings", len(resp.Findings), minCount, minCount))
+	}
+	for i, finding := range resp.Findings {
+		if findInputMatch(finding, inputFindings) == nil {
+			problems = append(problems, fmt.Sprintf("findings[%d] does not match any input vector finding", i))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return &llm.InvalidResponseError{
+		RawContent:      resp.RawResponse,
+		Reason:          "merge validation failed: " + strings.Join(problems, "; "),
+		MissingFields:   []string{"findings (preserve at least the largest reviewer count and do not introduce new findings)"},
+		ReasoningEffort: resp.ReasoningEffort,
+	}
+}
+
+func largestVectorFindingCount(vectorResults []agentResult) int {
+	largest := 0
+	for _, result := range vectorResults {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
+			continue
+		}
+		if count := len(result.resp.Findings); count > largest {
+			largest = count
+		}
+	}
+	return largest
+}
+
+func flattenVectorFindings(vectorResults []agentResult) []model.Finding {
+	var findings []model.Finding
+	for _, result := range vectorResults {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
+			continue
+		}
+		findings = append(findings, result.resp.Findings...)
+	}
+	return findings
 }
 
 func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (contextAgentResult, error) {
