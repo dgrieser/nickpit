@@ -4,12 +4,12 @@ You used the following tools up to now:
 
 {{if .RetryLastTool}}
 Please retry the last tool call.
-{{else if eq .Kind "context"}}
+{{else if eq .AgentRole "context"}}
 If you have enough context for a useful code review, stop calling tools and return the summary of what you believe the patch is intended to do.
 Otherwise, continue calling tools to gather more context.
-{{else if eq .Kind "review"}}
+{{else if eq .AgentRole "reviewer"}}
 Continue calling tools, if the provided context is insufficient.
 If you have enough context for the code review, stop calling tools and return the requested JSON format.
-{{else if eq .Kind "verify"}}
+{{else if eq .AgentRole "verify"}}
 Only make additional tool calls, if the provided context is really insufficient.
 If you have enough context for the verification, stop calling tools and return the requested JSON format.{{end}}

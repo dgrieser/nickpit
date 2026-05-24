@@ -859,7 +859,7 @@ func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model
 
 func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (string, error) {
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
-		kind:                     "context",
+		agentRole:                "context",
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
 	})
 	if err != nil {
@@ -1312,7 +1312,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 	if hasTools {
 		var err error
 		toolInstructions, err = e.renderToolInstructions(toolInstructionsConfig{
-			kind:                     "review",
+			agentRole:                agentRole,
 			parallelToolCallGuidance: !req.DisableParallelToolCalls,
 		})
 		if err != nil {
@@ -1320,7 +1320,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		}
 	}
 	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema)
-	commonSnippets, err := agentCommonSystemPromptSnippets("review", outputSchemaSnippet)
+	commonSnippets, err := agentCommonSystemPromptSnippets("reviewer", outputSchemaSnippet)
 	if err != nil {
 		return "", err
 	}
@@ -1356,7 +1356,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 }
 
 type toolInstructionsConfig struct {
-	kind                     string
+	agentRole                string
 	parallelToolCallGuidance bool
 	toolNames                []string
 }
@@ -1367,11 +1367,11 @@ func (e *Engine) renderToolInstructions(config toolInstructionsConfig) (string, 
 		return "", err
 	}
 	rendered, err := llm.RenderPrompt(template, struct {
-		Kind                     string
+		AgentRole                string
 		ParallelToolCallGuidance bool
 		ToolListing              string
 	}{
-		Kind:                     config.kind,
+		AgentRole:                config.agentRole,
 		ParallelToolCallGuidance: config.parallelToolCallGuidance,
 		ToolListing:              toolInstructionsListing(config.toolNames...),
 	})
@@ -1720,7 +1720,7 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 }
 
 func noToolsMessages(systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string) ([]llm.Message, error) {
-	commonSnippets, err := agentCommonSystemPromptSnippets("review", snippet)
+	commonSnippets, err := agentCommonSystemPromptSnippets("reviewer", snippet)
 	if err != nil {
 		return nil, err
 	}
@@ -1807,18 +1807,18 @@ func renderPromptFile(name string, data any) (string, error) {
 	return llm.RenderPrompt(tmpl, data)
 }
 
-func agentCommonSystemPromptSnippet(kind string, snippet string, outputSchemaSnippet string) (string, error) {
+func agentCommonSystemPromptSnippet(agentRole string, snippet string, outputSchemaSnippet string) (string, error) {
 	rendered, err := renderPromptFile("agent_common_system_prompt_snippet.tmpl", struct {
-		Kind                string
+		AgentRole           string
 		Snippet             string
 		OutputSchemaSnippet string
 	}{
-		Kind:                kind,
+		AgentRole:           agentRole,
 		Snippet:             snippet,
 		OutputSchemaSnippet: outputSchemaSnippet,
 	})
 	if err != nil {
-		return "", fmt.Errorf("review: rendering common system prompt snippet %q for %s: %w", snippet, kind, err)
+		return "", fmt.Errorf("review: rendering common system prompt snippet %q for %s: %w", snippet, agentRole, err)
 	}
 	return rendered, nil
 }
@@ -1829,12 +1829,12 @@ type agentCommonSystemPromptSnippetSet struct {
 	outputFormat        string
 }
 
-func agentCommonSystemPromptSnippets(kind string, outputSchemaSnippet string) (agentCommonSystemPromptSnippetSet, error) {
-	findingInstructions, err := agentCommonSystemPromptSnippet(kind, "findings", "")
+func agentCommonSystemPromptSnippets(agentRole string, outputSchemaSnippet string) (agentCommonSystemPromptSnippetSet, error) {
+	findingInstructions, err := agentCommonSystemPromptSnippet(agentRole, "findings", "")
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
-	priority, err := agentCommonSystemPromptSnippet(kind, "priority", "")
+	priority, err := agentCommonSystemPromptSnippet(agentRole, "priority", "")
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
@@ -1842,7 +1842,7 @@ func agentCommonSystemPromptSnippets(kind string, outputSchemaSnippet string) (a
 	if outputSchemaSnippet == "" {
 		outputFormatSnippet = "response_format"
 	}
-	outputFormat, err := agentCommonSystemPromptSnippet(kind, outputFormatSnippet, outputSchemaSnippet)
+	outputFormat, err := agentCommonSystemPromptSnippet(agentRole, outputFormatSnippet, outputSchemaSnippet)
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
@@ -2473,7 +2473,7 @@ func agentLoopKind(role string) string {
 	case "context":
 		return "context"
 	case "reviewer":
-		return "review"
+		return "reviewer"
 	case "verify":
 		return "verify"
 	default:
@@ -2481,7 +2481,7 @@ func agentLoopKind(role string) string {
 	}
 }
 
-func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, kind string) (string, error) {
+func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, agentRole string) (string, error) {
 	items := make([]syntheticToolFollowupEntry, 0, len(history))
 	for i, entry := range history {
 		items = append(items, syntheticToolFollowupEntryFromHistory(i+1, entry))
@@ -2493,11 +2493,11 @@ func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, kin
 	rendered, err := renderPromptFile("helper_tools_snippet.tmpl", struct {
 		History       []syntheticToolFollowupEntry
 		RetryLastTool bool
-		Kind          string
+		AgentRole     string
 	}{
 		History:       items,
 		RetryLastTool: lastResult.IsError && lastResult.Code != "already_requested",
-		Kind:          kind,
+		AgentRole:     agentRole,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering tool follow-up prompt: %w", err)

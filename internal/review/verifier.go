@@ -59,7 +59,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	exampleSnippet := llm.VerifyExamplePromptSnippet()
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
-		kind:                     "verify",
+		agentRole:                agentKind,
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
 	})
 	if err != nil {

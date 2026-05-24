@@ -1030,7 +1030,7 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 
 func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	engine := NewEngine(stubSource{}, &capturingLLM{}, nil, config.Profile{})
-	rendered, err := engine.renderToolInstructions(toolInstructionsConfig{kind: "review", parallelToolCallGuidance: true})
+	rendered, err := engine.renderToolInstructions(toolInstructionsConfig{agentRole: "reviewer", parallelToolCallGuidance: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1111,7 +1111,7 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 		},
 	}
 
-	retry, err := engine.renderSyntheticToolFollowup(errorHistory, "review")
+	retry, err := engine.renderSyntheticToolFollowup(errorHistory, "reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1127,7 +1127,7 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 		t.Fatalf("context follow-up = %q", contextRendered)
 	}
 
-	reviewRendered, err := engine.renderSyntheticToolFollowup(optimizedHistory, "review")
+	reviewRendered, err := engine.renderSyntheticToolFollowup(optimizedHistory, "reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}

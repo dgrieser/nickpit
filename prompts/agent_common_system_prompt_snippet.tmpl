@@ -1,6 +1,6 @@
 {{if eq .Snippet "findings"}}
-For each finding{{if eq .Kind "merge"}}, merged or not{{else if eq .Kind "finalize"}} you keep{{end}}:
-{{if eq .Kind "merge"}}- output `id` for every finding; preserve one source `id` when keeping or merging input findings
+For each finding{{if eq .AgentRole "merge"}}, merged or not{{else if eq .AgentRole "finalize"}} you keep{{end}}:
+{{if eq .AgentRole "merge"}}- output `id` for every finding; preserve one source `id` when keeping or merging input findings
 - DO NOT generate a fresh UUID
 - NEVER copy the `<uuid-v4>` placeholder
 {{end}}
@@ -10,7 +10,7 @@ For each finding{{if eq .Kind "merge"}}, merged or not{{else if eq .Kind "finali
 - keep the body to ONE paragraph, matter-of-fact, and EXPLICIT about the scenario where it fails
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
-{{if eq .Kind "review"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
+{{if eq .AgentRole "reviewer"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
 {{end}}{{end}}
 {{if eq .Snippet "priority"}}
 ### PRIORITY
