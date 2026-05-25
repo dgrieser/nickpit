@@ -366,9 +366,9 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if req.UseJSONSchema {
 		mergeConstraints = mergeConstraintsForRequest(req)
 		if hasResponseConstraints(mergeConstraints) {
-			mergeSchema = llm.FindingsWithIDSchemaWithConstraints(mergeConstraints)
+			mergeSchema = llm.MergeSchemaWithConstraints(mergeConstraints)
 		} else {
-			mergeSchema = llm.FindingsWithIDSchema
+			mergeSchema = llm.MergeSchema
 		}
 	}
 	var (
@@ -402,6 +402,8 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		if invalid := validateMergeResponse(mergeResult.resp, vectorResults); invalid != nil {
 			warnings = append(warnings, fmt.Sprintf("Merge validation warning: %s", invalid.Reason))
 		}
+		// Last-resort repair after retry exhaustion or synthesized/direct responses.
+		// Normal merge schema/parser paths require `verification`.
 		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
@@ -1721,7 +1723,7 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 		return llm.VerifyExamplePromptSnippet()
 	}
 	if kind == llm.SchemaKindMerge {
-		return llm.FindingsWithIDExamplePromptSnippet()
+		return llm.MergeExamplePromptSnippet()
 	}
 	if kind == llm.SchemaKindFinalize {
 		return llm.FinalizeExamplePromptSnippet()
@@ -2018,7 +2020,7 @@ func mergeOutputSchemaSnippetFor(useJSONSchema bool) string {
 	if useJSONSchema {
 		return ""
 	}
-	return llm.FindingsWithIDExamplePromptSnippet()
+	return llm.MergeExamplePromptSnippet()
 }
 
 func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {

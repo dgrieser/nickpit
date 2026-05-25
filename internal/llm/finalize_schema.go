@@ -2,9 +2,9 @@ package llm
 
 import "encoding/json"
 
-// finalizeSchemaDefinition extends the findings schema with per-finding
-// verifier input and finalizer output. The finalizer preserves `verification`
-// and records its own decision in `finalization`.
+// finalizeSchemaDefinition extends the findings schema with required
+// per-finding verifier input and finalizer output. The finalizer preserves
+// `verification` and records its own decision in `finalization`.
 var finalizeSchemaDefinition = buildFinalizeSchemaDefinition()
 
 // confidence_score is intentionally omitted: it is computed deterministically
@@ -25,7 +25,7 @@ func buildFinalizeSchemaDefinition() map[string]any {
 	return extendFindingsForFinalize(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any))
 }
 
-func extendFindingsForFinalize(root map[string]any) map[string]any {
+func extendFindingsForVerification(root map[string]any) map[string]any {
 	properties, ok := root["properties"].(map[string]any)
 	if !ok {
 		panic("llm: findings schema missing properties")
@@ -43,16 +43,44 @@ func extendFindingsForFinalize(root map[string]any) map[string]any {
 		panic("llm: findings schema findings.items.properties malformed")
 	}
 	itemProps["verification"] = deepCopySchema(verifySchemaDefinition)
+	required, ok := items["required"].([]string)
+	if !ok {
+		panic("llm: findings schema findings.items.required is not []string")
+	}
+	items["required"] = appendRequired(required, "verification")
+	return root
+}
+
+func extendFindingsForFinalize(root map[string]any) map[string]any {
+	root = extendFindingsForVerification(root)
+	properties := root["properties"].(map[string]any)
+	findings := properties["findings"].(map[string]any)
+	items := findings["items"].(map[string]any)
+	itemProps := items["properties"].(map[string]any)
 	itemProps["finalization"] = deepCopySchema(finalizationSchemaDefinition)
 	required, ok := items["required"].([]string)
 	if !ok {
 		panic("llm: findings schema findings.items.required is not []string")
 	}
-	// `verification` is not required: the finalize prompt does not instruct the
-	// LLM to echo it. It is repopulated from input post-parse (see
-	// mergeInputVerification in internal/review/finalizer.go).
-	items["required"] = append(append([]string{}, required...), "finalization")
+	items["required"] = appendRequired(required, "finalization")
 	return root
+}
+
+func appendRequired(required []string, fields ...string) []string {
+	out := append([]string{}, required...)
+	for _, field := range fields {
+		found := false
+		for _, existing := range out {
+			if existing == field {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, field)
+		}
+	}
+	return out
 }
 
 func deepCopySchema(v any) any {

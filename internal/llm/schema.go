@@ -80,8 +80,6 @@ var findingsWithIDSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, tr
 
 var FindingsSchema = mustMarshalCleanSchema(findingsSchemaDefinition)
 
-var FindingsWithIDSchema = mustMarshalCleanSchema(findingsWithIDSchemaDefinition)
-
 // FindingsSchemaWithConstraints returns a findings schema narrowed by the given constraints.
 func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	min, max := 0, 3
@@ -94,23 +92,8 @@ func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, false))
 }
 
-func FindingsWithIDSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
-	min, max := 0, 3
-	if c.MinPriority != nil {
-		min = *c.MinPriority
-	}
-	if c.MaxPriority != nil {
-		max = *c.MaxPriority
-	}
-	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true))
-}
-
 func FindingsExamplePromptSnippet() string {
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsSchemaDefinition)))
-}
-
-func FindingsWithIDExamplePromptSnippet() string {
-	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsWithIDSchemaDefinition)))
 }
 
 func mustMarshalJSON(v any) json.RawMessage {

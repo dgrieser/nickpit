@@ -16,6 +16,7 @@ Your job:
      - either copy them from the current `finding.title` and `finding.body`
      - or refine them based on `verification.remarks`
    - copy `suggestions` verbatim from the input finding into the output if any are present; DO NOT invent new suggestions or drop existing ones
+   - copy `verification` verbatim from the input finding into the output; finalization must NEVER drop verification
    - output the same top-level `id` as the input finding; do not invent IDs
    - explain what you did in `finalization.remarks`
 2. Update `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review
@@ -41,6 +42,7 @@ Output `finalization` and updated `overall_correctness`, `overall_explanation`, 
 - DO NOT wrap the JSON in markdown fences or extra prose
 - produce JSON only and match the schema EXACTLY
 - every output finding includes the same top-level `id` as the input finding
+- every output finding includes `verification` copied verbatim from the input finding
 - `finalization.priority` is an integer 0-3
 - `finalization.title` and `finalization.body` contain the final title and body you want downstream output to use
 - `finalization.remarks` is a short paragraph explaining what you did

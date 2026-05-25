@@ -225,6 +225,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 			ConfidenceScore: 0.95,
 			Priority:        intPtr(1),
 			CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+			Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "confirmed"},
 		}},
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "merged",
@@ -1432,6 +1433,7 @@ func mergeTestFinding(title string, line int) model.Finding {
 		ConfidenceScore: 0.9,
 		Priority:        intPtr(2),
 		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
+		Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "confirmed"},
 	}
 }
 

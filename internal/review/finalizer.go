@@ -112,6 +112,8 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	out.OverallExplanation = result.resp.OverallExplanation
 	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
 	mergeInputSuggestions(out.Findings, in.Findings)
+	// Last-resort repair after retry exhaustion or direct non-parser callers.
+	// Normal schema/parser paths require `verification` in the finalizer output.
 	mergeInputVerification(out.Findings, in.Findings)
 	enforcePriorityFloor(out.Findings, in.Findings)
 	applyWeightedConfidence(out.Findings, in.Findings)
@@ -139,13 +141,15 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 			raw = resp.RawResponse
 			reasoningEffort = resp.ReasoningEffort
 		}
-		return &llm.InvalidResponseError{
-			RawContent:            raw,
-			Reason:                fmt.Sprintf("finalizer_output_mismatch got=%d expected=%d matched=%d omitted=%d ignored=%d", stats.FinalizerFindings, expected, stats.Matched, stats.Omitted, stats.Ignored),
-			MissingFields:         []string{"findings"},
-			ReasoningEffort:       reasoningEffort,
-			RetryGuidanceTemplate: "finalizer_count_retry_guidance.tmpl",
-			RetryGuidanceData: struct {
+		invalid := &llm.InvalidResponseError{
+			RawContent:      raw,
+			Reason:          fmt.Sprintf("finalizer_output_mismatch got=%d expected=%d matched=%d omitted=%d ignored=%d", stats.FinalizerFindings, expected, stats.Matched, stats.Omitted, stats.Ignored),
+			MissingFields:   []string{"findings"},
+			ReasoningEffort: reasoningEffort,
+		}
+		if stats.FinalizerFindings != expected || stats.Matched != expected || stats.Omitted != 0 || stats.Ignored != 0 {
+			invalid.RetryGuidanceTemplate = "finalizer_count_retry_guidance.tmpl"
+			invalid.RetryGuidanceData = struct {
 				Expected int
 				Got      int
 				Matched  int
@@ -157,8 +161,9 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 				Matched:  stats.Matched,
 				Omitted:  stats.Omitted,
 				Ignored:  stats.Ignored,
-			},
+			}
 		}
+		return invalid
 	}
 }
 
@@ -335,11 +340,10 @@ func mergeInputSuggestions(out, in []model.Finding) {
 	}
 }
 
-// mergeInputVerification restores `verification` from the matching input
-// finding when the finalizer LLM does not echo it. The finalize prompt does
-// not instruct the LLM to repeat verification, so the schema does not require
-// it; downstream consumers still want the verifier verdict on each finding.
-// LLM-emitted verification wins when present.
+// mergeInputVerification is a last-resort repair for responses that survive
+// retry exhaustion or direct non-parser tests despite dropping `verification`.
+// Normal merge/finalize schema and parser paths require `verification`, so this
+// should not run on valid model output. LLM-emitted verification wins when present.
 func mergeInputVerification(out, in []model.Finding) {
 	for i := range out {
 		if out[i].Verification != nil {
