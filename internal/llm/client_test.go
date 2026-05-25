@@ -2943,6 +2943,66 @@ func TestClientReviewRetriesNetworkErrorWhileReadingStream(t *testing.T) {
 	}
 }
 
+func TestClientReviewRetriesPeerInternalStreamErrorWithPartialContent(t *testing.T) {
+	attempts := 0
+	var logBuf bytes.Buffer
+
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.SetLogger(logging.New(&logBuf, false, false))
+	client.retrier.InitialBackoff = 4 * time.Nanosecond
+	client.retrier.MaxBackoff = 4 * time.Nanosecond
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+
+		var body io.ReadCloser
+		if attempts == 1 {
+			body = &errorAfterReader{
+				reader: bytes.NewReader([]byte(sseChunk(t, map[string]any{
+					"id":      "chunk-1",
+					"object":  "chat.completion.chunk",
+					"created": 1,
+					"model":   "model",
+					"choices": []map[string]any{
+						{
+							"index": 0,
+							"delta": map[string]any{
+								"content": `{"findings":[`,
+							},
+						},
+					},
+				}))),
+				err: errors.New("stream error: stream ID 57; INTERNAL_ERROR; received from peer"),
+			}
+		} else {
+			body = io.NopCloser(strings.NewReader(validReviewStream(t)))
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	if _, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d", attempts)
+	}
+	if !strings.Contains(logBuf.String(), "LLM stream hit a network error, retrying...") {
+		t.Fatalf("retry notice missing: %q", logBuf.String())
+	}
+}
+
 func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	attempts := 0
 	var logBuf bytes.Buffer

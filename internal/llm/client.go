@@ -1172,7 +1172,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				if isReasoningOnlyPeerInternalStreamError(readErr) {
 					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 				}
-				if readErr.retryable && attempt < c.retrier.MaxRetries {
+				if retryableStreamReadError(readErr) && attempt < c.retrier.MaxRetries {
 					if c.logger != nil {
 						c.logger.PrintStatusLine("LLM stream hit a network error, retrying...")
 					}
@@ -1633,6 +1633,19 @@ func isReasoningOnlyPeerInternalStreamError(err *streamReadError) bool {
 	}
 	if !err.partial.reasoned || err.partial.sawContent || err.partial.sawToolCalls {
 		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "stream error:") &&
+		strings.Contains(message, "INTERNAL_ERROR") &&
+		strings.Contains(message, "received from peer")
+}
+
+func retryableStreamReadError(err *streamReadError) bool {
+	if err == nil {
+		return false
+	}
+	if err.retryable {
+		return true
 	}
 	message := err.Error()
 	return strings.Contains(message, "stream error:") &&
