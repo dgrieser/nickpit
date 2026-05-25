@@ -25,11 +25,11 @@ Your job:
 {{.PrioritySnippet}}
 
 Overall correctness rules:
-- if ANY input finding has priority 0, `overall_correctness` MUST be `"patch is incorrect"` (even if you downgrade it via `finalization.priority`)
-- if ANY input finding has priority 1 AND none have priority 0, `overall_correctness` SHOULD be `"patch is incorrect"` in most cases, otherwise:
+- if ANY input finding has priority floor 0, `overall_correctness` MUST be `"patch is incorrect"` (even if you downgrade it via `finalization.priority`)
+- if ANY input finding has priority floor 1 AND none have floor 0, `overall_correctness` SHOULD be `"patch is incorrect"` in most cases, otherwise:
   - `overall_explanation` MUST cite the concrete evidence justifying your decision
   - vague justification, e.g. "low impact", "edge case", "unlikely" are NOT acceptable
-- if NO input finding has priority 0 and NO input finding has priority 1, `overall_correctness` MUST be `"patch is correct"`
+- if NO input finding has priority floor 0 and NO input finding has priority floor 1, `overall_correctness` MUST be `"patch is correct"`
 
 ## OUTPUT FORMAT
 {{if .OutputSchemaSnippet}}
