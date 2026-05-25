@@ -3617,17 +3617,52 @@ func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
 	}
 }
 
-func TestParseFinalizeResponseAcceptsMissingVerification(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
-	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
+func TestParseMergeResponseRequiresVerification(t *testing.T) {
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content, SchemaKindMerge, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	found := false
+	for _, m := range invalid.MissingFields {
+		if m == "findings[0].verification" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing fields = %v, want findings[0].verification", invalid.MissingFields)
+	}
+}
+
+func TestParseMergeResponseAcceptsVerification(t *testing.T) {
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindMerge, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
 	}
-	if resp.Findings[0].Verification != nil {
-		t.Fatalf("verification = %#v, want nil for omitted optional verification", resp.Findings[0].Verification)
+	if resp.Findings[0].Verification == nil {
+		t.Fatal("verification nil")
 	}
-	if resp.Findings[0].Finalization == nil {
-		t.Fatal("finalization nil")
+}
+
+func TestParseFinalizeResponseRequiresVerification(t *testing.T) {
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	found := false
+	for _, m := range invalid.MissingFields {
+		if m == "findings[0].verification" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing fields = %v, want findings[0].verification", invalid.MissingFields)
 	}
 }
 

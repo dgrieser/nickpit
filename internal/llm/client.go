@@ -2171,6 +2171,9 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage,
 				missing = append(missing, fmt.Sprintf("findings[%d].id (must be UUID)", i))
 			}
 		}
+		if kind == SchemaKindMerge || kind == SchemaKindFinalize {
+			missing = append(missing, missingVerificationFindingFields(i, rawItem)...)
+		}
 		if kind == SchemaKindFinalize {
 			missing = append(missing, missingFinalizeFindingFields(i, rawItem, finding)...)
 		}
@@ -2187,17 +2190,24 @@ func rawUUIDIsValid(raw json.RawMessage) bool {
 	return err == nil
 }
 
+func missingVerificationFindingFields(i int, rawItem map[string]json.RawMessage) []string {
+	var missing []string
+	rawVerification, ok := rawItem["verification"]
+	if !ok {
+		return append(missing, fmt.Sprintf("findings[%d].verification", i))
+	}
+	prefix := fmt.Sprintf("findings[%d].verification", i)
+	missing = append(missing, missingNestedFields(prefix, rawVerification, []string{"id", "verdict", "priority", "confidence_score", "remarks"})...)
+	var verificationFields map[string]json.RawMessage
+	_ = json.Unmarshal(rawVerification, &verificationFields)
+	if rawID, ok := verificationFields["id"]; ok && !rawUUIDIsValid(rawID) {
+		missing = append(missing, prefix+".id (must be UUID)")
+	}
+	return missing
+}
+
 func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, finding model.Finding) []string {
 	var missing []string
-	if _, ok := rawItem["verification"]; ok {
-		prefix := fmt.Sprintf("findings[%d].verification", i)
-		missing = append(missing, missingNestedFields(prefix, rawItem["verification"], []string{"id", "verdict", "priority", "confidence_score", "remarks"})...)
-		var verificationFields map[string]json.RawMessage
-		_ = json.Unmarshal(rawItem["verification"], &verificationFields)
-		if rawID, ok := verificationFields["id"]; ok && !rawUUIDIsValid(rawID) {
-			missing = append(missing, prefix+".id (must be UUID)")
-		}
-	}
 	if _, ok := rawItem["finalization"]; !ok || finding.Finalization == nil {
 		missing = append(missing, fmt.Sprintf("findings[%d].finalization", i))
 	} else {

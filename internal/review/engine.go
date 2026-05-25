@@ -366,9 +366,9 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if req.UseJSONSchema {
 		mergeConstraints = mergeConstraintsForRequest(req)
 		if hasResponseConstraints(mergeConstraints) {
-			mergeSchema = llm.FindingsWithIDSchemaWithConstraints(mergeConstraints)
+			mergeSchema = llm.MergeSchemaWithConstraints(mergeConstraints)
 		} else {
-			mergeSchema = llm.FindingsWithIDSchema
+			mergeSchema = llm.MergeSchema
 		}
 	}
 	var (
@@ -792,14 +792,23 @@ func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult
 			unmatched++
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
 		}
+		if finding.Verification == nil {
+			problems = append(problems, fmt.Sprintf("missing_verification index=%d", i))
+		}
 	}
 	if len(problems) == 0 {
 		return nil
 	}
+	missingFields := []string{"findings"}
+	for i, finding := range resp.Findings {
+		if finding.Verification == nil {
+			missingFields = append(missingFields, fmt.Sprintf("findings[%d].verification", i))
+		}
+	}
 	return &llm.InvalidResponseError{
 		RawContent:            resp.RawResponse,
 		Reason:                "merge_validation_failed: " + strings.Join(problems, "; "),
-		MissingFields:         []string{"findings"},
+		MissingFields:         missingFields,
 		ReasoningEffort:       resp.ReasoningEffort,
 		RetryGuidanceTemplate: "merge_validation_retry_guidance.tmpl",
 		RetryGuidanceData: struct {
@@ -1721,7 +1730,7 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 		return llm.VerifyExamplePromptSnippet()
 	}
 	if kind == llm.SchemaKindMerge {
-		return llm.FindingsWithIDExamplePromptSnippet()
+		return llm.MergeExamplePromptSnippet()
 	}
 	if kind == llm.SchemaKindFinalize {
 		return llm.FinalizeExamplePromptSnippet()
@@ -2018,7 +2027,7 @@ func mergeOutputSchemaSnippetFor(useJSONSchema bool) string {
 	if useJSONSchema {
 		return ""
 	}
-	return llm.FindingsWithIDExamplePromptSnippet()
+	return llm.MergeExamplePromptSnippet()
 }
 
 func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {

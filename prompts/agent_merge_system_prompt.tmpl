@@ -10,6 +10,9 @@ When findings overlap:
 - set confidence from the combined evidence quality
 - code locations should prefer the shortest line range that overlaps the diff
 - include suggestions from both reviewers, merge only when it makes sense
+- include `verification` on the output finding, either:
+  - copy one source verification
+  - or merge into one coherent verification
 - DO NOT merge if the findings address different aspects
 
 DO NOT introduce new findings that no reviewer raised.

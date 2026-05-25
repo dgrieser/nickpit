@@ -142,7 +142,7 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 	}
 }
 
-func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
+func TestFinalizeRetriesWhenLLMDropsVerification(t *testing.T) {
 	const findingID = "11111111-1111-4111-8111-111111111111"
 	inputVerification := &model.FindingVerification{ID: findingID, Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"}
 	llmClient := &capturingLLM{
@@ -160,6 +160,22 @@ func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
 					},
 				},
 				OverallCorrectness: "patch is correct",
+			},
+			{
+				Findings: []model.Finding{
+					{
+						Title:           "Fix issue",
+						Body:            "body",
+						ConfidenceScore: 0.7,
+						Priority:        intPtr(1),
+						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+						Verification:    inputVerification,
+						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
+					},
+				},
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "ok",
+				OverallConfidenceScore: 0.7,
 			},
 		},
 	}
@@ -179,13 +195,20 @@ func TestFinalizePreservesInputVerificationWhenLLMDropsIt(t *testing.T) {
 		OverallCorrectness: "patch is correct",
 	}
 
-	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{MaxOutputRetries: 1})
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d, want retry after missing verification", len(llmClient.reqs))
+	}
+	retryMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content
+	if !strings.Contains(retryMessage, "findings[0].verification") {
+		t.Fatalf("retry feedback missing verification field: %q", retryMessage)
+	}
 	got := out.Findings[0].Verification
 	if got == nil {
-		t.Fatalf("verification was dropped; want it restored from input")
+		t.Fatalf("verification was dropped")
 	}
 	if *got != *inputVerification {
 		t.Fatalf("verification = %+v, want %+v", *got, *inputVerification)
@@ -684,31 +707,20 @@ func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
 
 func TestFinalizeWeightedConfidenceFallsBackWhenNoVerification(t *testing.T) {
 	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				Findings: []model.Finding{
-					{
-						Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
-						Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.0, Remarks: "keep"},
-					},
-				},
-				OverallCorrectness: "patch is correct",
-			},
+	out := []model.Finding{
+		{
+			Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
+			Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.0, Remarks: "keep"},
 		},
 	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	in := &model.ReviewResult{
-		Findings: []model.Finding{
-			{Title: "Issue", Body: "b", ConfidenceScore: 0.65, Priority: intPtr(1), CodeLocation: loc},
+	in := []model.Finding{
+		{
+			Title: "Issue", Body: "b", ConfidenceScore: 0.65, Priority: intPtr(1), CodeLocation: loc,
 		},
 	}
 
-	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
-	if err != nil {
-		t.Fatalf("Finalize returned err: %v", err)
-	}
-	got := out.Findings[0].Finalization.ConfidenceScore
+	applyWeightedConfidence(out, in)
+	got := out[0].Finalization.ConfidenceScore
 	if math.Abs(got-0.65) > 1e-9 {
 		t.Fatalf("confidence = %v, want 0.65 (review fallback)", got)
 	}
@@ -956,6 +968,7 @@ func TestFinalizePreservesInputIDWhenLLMDropsIt(t *testing.T) {
 				ConfidenceScore: 0.7,
 				Priority:        intPtr(1),
 				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 				Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
 			}},
 			OverallCorrectness:     "patch is correct",

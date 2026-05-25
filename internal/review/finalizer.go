@@ -130,7 +130,8 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 			finalizerFindings = resp.Findings
 		}
 		stats := finalizerOutputStats(inputFindings, finalizerFindings, nil)
-		if stats.FinalizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0 {
+		missingVerification := missingFindingVerificationFields(finalizerFindings)
+		if stats.FinalizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0 && len(missingVerification) == 0 {
 			return nil
 		}
 		raw := ""
@@ -139,13 +140,15 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 			raw = resp.RawResponse
 			reasoningEffort = resp.ReasoningEffort
 		}
-		return &llm.InvalidResponseError{
-			RawContent:            raw,
-			Reason:                fmt.Sprintf("finalizer_output_mismatch got=%d expected=%d matched=%d omitted=%d ignored=%d", stats.FinalizerFindings, expected, stats.Matched, stats.Omitted, stats.Ignored),
-			MissingFields:         []string{"findings"},
-			ReasoningEffort:       reasoningEffort,
-			RetryGuidanceTemplate: "finalizer_count_retry_guidance.tmpl",
-			RetryGuidanceData: struct {
+		invalid := &llm.InvalidResponseError{
+			RawContent:      raw,
+			Reason:          fmt.Sprintf("finalizer_output_mismatch got=%d expected=%d matched=%d omitted=%d ignored=%d missing_verification=%d", stats.FinalizerFindings, expected, stats.Matched, stats.Omitted, stats.Ignored, len(missingVerification)),
+			MissingFields:   append([]string{"findings"}, missingVerification...),
+			ReasoningEffort: reasoningEffort,
+		}
+		if stats.FinalizerFindings != expected || stats.Matched != expected || stats.Omitted != 0 || stats.Ignored != 0 {
+			invalid.RetryGuidanceTemplate = "finalizer_count_retry_guidance.tmpl"
+			invalid.RetryGuidanceData = struct {
 				Expected int
 				Got      int
 				Matched  int
@@ -157,9 +160,20 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 				Matched:  stats.Matched,
 				Omitted:  stats.Omitted,
 				Ignored:  stats.Ignored,
-			},
+			}
+		}
+		return invalid
+	}
+}
+
+func missingFindingVerificationFields(findings []model.Finding) []string {
+	var missing []string
+	for i, finding := range findings {
+		if finding.Verification == nil {
+			missing = append(missing, fmt.Sprintf("findings[%d].verification", i))
 		}
 	}
+	return missing
 }
 
 func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult) (string, error) {
