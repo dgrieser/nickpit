@@ -3,7 +3,7 @@ For each finding{{if eq .AgentRole "merge"}}, merged or not{{else if eq .AgentRo
 {{if eq .AgentRole "merge"}}- output `id` for every finding; preserve one source `id` when keeping or merging input findings
 - DO NOT generate a fresh UUID
 - NEVER copy the `<uuid-v4>` placeholder
-- output `verification` for every finding, copy verbatim or merge
+- output `verification` for every finding; keep `verification.id` equal to the output finding `id`
 {{end}}
 - use ONE distinct issue per finding
 - make the title imperative and less than 80 characters

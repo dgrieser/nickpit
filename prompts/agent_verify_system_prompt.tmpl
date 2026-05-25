@@ -8,7 +8,7 @@ Your job:
 - determine whether the assigned `priority` is correct
 - be skeptical, but distinguish "I have evidence this is wrong" (`refuted`) from "I could not confirm it" (`unverified`)
 - re-read the diff yourself
-- use tools to confirm or refute the claim before you trust it
+{{if .HasTools}}- use tools to confirm or refute the claim before you trust it{{else}}- use the provided context to confirm or refute the claim{{end}}
 
 {{.StyleGuideToolchainSnippet}}
 
