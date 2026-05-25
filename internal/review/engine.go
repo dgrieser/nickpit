@@ -402,6 +402,8 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		if invalid := validateMergeResponse(mergeResult.resp, vectorResults); invalid != nil {
 			warnings = append(warnings, fmt.Sprintf("Merge validation warning: %s", invalid.Reason))
 		}
+		// Last-resort repair after retry exhaustion or synthesized/direct responses.
+		// Normal merge schema/parser paths require `verification`.
 		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
 	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
@@ -792,23 +794,14 @@ func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult
 			unmatched++
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
 		}
-		if finding.Verification == nil {
-			problems = append(problems, fmt.Sprintf("missing_verification index=%d", i))
-		}
 	}
 	if len(problems) == 0 {
 		return nil
 	}
-	missingFields := []string{"findings"}
-	for i, finding := range resp.Findings {
-		if finding.Verification == nil {
-			missingFields = append(missingFields, fmt.Sprintf("findings[%d].verification", i))
-		}
-	}
 	return &llm.InvalidResponseError{
 		RawContent:            resp.RawResponse,
 		Reason:                "merge_validation_failed: " + strings.Join(problems, "; "),
-		MissingFields:         missingFields,
+		MissingFields:         []string{"findings"},
 		ReasoningEffort:       resp.ReasoningEffort,
 		RetryGuidanceTemplate: "merge_validation_retry_guidance.tmpl",
 		RetryGuidanceData: struct {

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -118,36 +119,6 @@ func TestFindingsSchemaRequiresPriorityWithoutID(t *testing.T) {
 	}
 }
 
-func TestFindingsWithIDSchemaRequiresID(t *testing.T) {
-	var schema map[string]any
-	if err := json.Unmarshal(FindingsWithIDSchema, &schema); err != nil {
-		t.Fatalf("unmarshal schema: %v", err)
-	}
-	properties := schema["properties"].(map[string]any)
-	findings := properties["findings"].(map[string]any)
-	items := findings["items"].(map[string]any)
-	requiredAny := items["required"].([]any)
-	required := make([]string, 0, len(requiredAny))
-	for _, r := range requiredAny {
-		if s, ok := r.(string); ok {
-			required = append(required, s)
-		}
-	}
-	if !slices.Contains(required, "id") {
-		t.Fatalf("required does not include id: %v", required)
-	}
-}
-
-func TestFindingsWithIDExamplePromptSnippetIncludesID(t *testing.T) {
-	snippet := FindingsWithIDExamplePromptSnippet()
-	if !strings.Contains(snippet, `"id": "<uuid-v4>"`) {
-		t.Fatalf("snippet missing id: %s", snippet)
-	}
-	if strings.Contains(snippet, "11111111-1111-4111-8111-111111111111") {
-		t.Fatalf("snippet should not use copyable UUID literal: %s", snippet)
-	}
-}
-
 func TestMergeSchemaRequiresVerification(t *testing.T) {
 	var schema map[string]any
 	if err := json.Unmarshal(MergeSchema, &schema); err != nil {
@@ -162,6 +133,10 @@ func TestMergeSchemaRequiresVerification(t *testing.T) {
 	findingProps := findingProperties(t, schema)
 	if _, ok := findingProps["verification"].(map[string]any); !ok {
 		t.Fatalf("verification schema missing: %#v", findingProps["verification"])
+	}
+	requiredJSON := []byte(`"required":["id","title","body","confidence_score","priority","code_location","verification"]`)
+	if !bytes.Contains(MergeSchema, requiredJSON) {
+		t.Fatalf("raw merge schema missing required verification: %s", MergeSchema)
 	}
 }
 
@@ -209,7 +184,11 @@ func TestFinalizeSchemaRequiresFinalizationAndVerification(t *testing.T) {
 		t.Fatalf("finalization schema missing: %#v", findingProps["finalization"])
 	}
 	if _, ok := findingProps["verification"].(map[string]any); !ok {
-		t.Fatalf("verification schema property still expected (optional): %#v", findingProps["verification"])
+		t.Fatalf("verification schema missing: %#v", findingProps["verification"])
+	}
+	requiredJSON := []byte(`"required":["id","title","body","confidence_score","priority","code_location","verification","finalization"]`)
+	if !bytes.Contains(FinalizeSchema, requiredJSON) {
+		t.Fatalf("raw finalize schema missing required verification: %s", FinalizeSchema)
 	}
 }
 

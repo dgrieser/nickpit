@@ -2172,7 +2172,7 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage,
 			}
 		}
 		if kind == SchemaKindMerge || kind == SchemaKindFinalize {
-			missing = append(missing, missingVerificationFindingFields(i, rawItem)...)
+			missing = append(missing, verificationFieldErrors(i, rawItem)...)
 		}
 		if kind == SchemaKindFinalize {
 			missing = append(missing, missingFinalizeFindingFields(i, rawItem, finding)...)
@@ -2190,7 +2190,7 @@ func rawUUIDIsValid(raw json.RawMessage) bool {
 	return err == nil
 }
 
-func missingVerificationFindingFields(i int, rawItem map[string]json.RawMessage) []string {
+func verificationFieldErrors(i int, rawItem map[string]json.RawMessage) []string {
 	var missing []string
 	rawVerification, ok := rawItem["verification"]
 	if !ok {
