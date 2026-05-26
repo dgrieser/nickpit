@@ -2009,6 +2009,56 @@ func TestClientReviewTreatsReasoningOnlyPeerInternalStreamErrorAsBudgetExhausted
 	}
 }
 
+func TestClientReviewTreatsLiteLLMRepeatedChunkErrorAsReasoningLoop(t *testing.T) {
+	var efforts []string
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+
+		var body io.ReadCloser
+		if len(efforts) == 1 {
+			body = &errorAfterReader{
+				reader: bytes.NewReader(nil),
+				err:    errors.New("error, litellm.MidStreamFallbackError: litellm.InternalServerError: The model is repeating the same chunk = \n\n\n\n.. Received Model Group=Qwen3.5-122B-A10B-FP8\nAvailable Model Group Fallbacks=None"),
+			}
+		} else {
+			body = io.NopCloser(strings.NewReader(validReviewStream(t)))
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
 func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 	var attempts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

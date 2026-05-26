@@ -39,7 +39,15 @@ const (
 	// while reducing false positives from normal long reasoning.
 	loopFuzzyMarkerThreshold = 0.68
 	loopFuzzyStrictThreshold = 0.82
+
+	// Repeated-rune detection catches degenerate streams like 96 consecutive
+	// newlines that never form meaningful repeated lines or fuzzy windows.
+	loopRepeatedRuneWindowSize = 96
+	loopRepeatedRuneMinCount   = 64
+	loopRepeatedRuneMinRate    = 0.90
 )
+
+const liteLLMRepeatedChunkMarker = "The model is repeating the same chunk = "
 
 // loopFuzzyWindowSizes are measured in completed reasoning lines. Each window
 // is compared only with the immediately preceding same-sized window. Multiple
@@ -68,6 +76,7 @@ type reasoningLoopDetector struct {
 	repeatedContent   string
 	lines             []string
 	currentLine       strings.Builder
+	recentRunes       []rune
 	fuzzyRepeats      map[int]int
 	fuzzyLastMatchEnd map[int]int
 }
@@ -102,21 +111,92 @@ func (d *reasoningLoopDetector) onDelta(delta string) {
 	if d.detected {
 		return
 	}
-	for {
-		idx := strings.IndexByte(delta, '\n')
-		if idx == -1 {
-			d.currentLine.WriteString(delta)
-			break
-		}
-		d.currentLine.WriteString(delta[:idx])
-		line := d.currentLine.String()
-		d.currentLine.Reset()
-		d.lines = append(d.lines, line)
-		if d.checkLoopLocked() {
+	for _, r := range delta {
+		if d.observeRepeatedRuneLocked(r) {
 			return
 		}
-		delta = delta[idx+1:]
+		if r == '\n' {
+			line := d.currentLine.String()
+			d.currentLine.Reset()
+			d.lines = append(d.lines, line)
+			if d.checkLoopLocked() {
+				return
+			}
+			continue
+		}
+		d.currentLine.WriteRune(r)
 	}
+}
+
+func (d *reasoningLoopDetector) detectRepeatedChunkError(err error) bool {
+	chunk, ok := repeatedChunkFromError(err)
+	if !ok {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.detected {
+		return true
+	}
+	d.trigger(chunk, len(d.lines))
+	return true
+}
+
+func (d *reasoningLoopDetector) observeRepeatedRuneLocked(r rune) bool {
+	if r == ' ' || r == '-' {
+		return false
+	}
+	d.recentRunes = append(d.recentRunes, r)
+	if len(d.recentRunes) > loopRepeatedRuneWindowSize {
+		copy(d.recentRunes, d.recentRunes[len(d.recentRunes)-loopRepeatedRuneWindowSize:])
+		d.recentRunes = d.recentRunes[:loopRepeatedRuneWindowSize]
+	}
+	if len(d.recentRunes) < loopRepeatedRuneMinCount {
+		return false
+	}
+	counts := make(map[rune]int, len(d.recentRunes))
+	maxCount := 0
+	for _, recent := range d.recentRunes {
+		counts[recent]++
+		if counts[recent] > maxCount {
+			maxCount = counts[recent]
+		}
+	}
+	if maxCount < loopRepeatedRuneMinCount {
+		return false
+	}
+	if float64(maxCount)/float64(len(d.recentRunes)) < loopRepeatedRuneMinRate {
+		return false
+	}
+	d.trigger(string(d.recentRunes), len(d.lines))
+	return true
+}
+
+func repeatedChunkFromError(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	message := err.Error()
+	start := strings.Index(message, liteLLMRepeatedChunkMarker)
+	if start < 0 {
+		return "", false
+	}
+	chunk := message[start+len(liteLLMRepeatedChunkMarker):]
+	for _, marker := range []string{"Received Model Group=", "Available Model Group Fallbacks="} {
+		if idx := strings.Index(chunk, marker); idx >= 0 {
+			chunk = chunk[:idx]
+		}
+	}
+	chunk = strings.TrimSuffix(chunk, ".. ")
+	chunk = strings.TrimSuffix(chunk, "..")
+	chunk = strings.Trim(chunk, " \t\r")
+	chunk = strings.ReplaceAll(chunk, `\n`, "\n")
+	chunk = strings.ReplaceAll(chunk, `\r`, "\r")
+	chunk = strings.ReplaceAll(chunk, `\t`, "\t")
+	if chunk == "" {
+		return "", false
+	}
+	return chunk, true
 }
 
 func (d *reasoningLoopDetector) checkLoopLocked() bool {

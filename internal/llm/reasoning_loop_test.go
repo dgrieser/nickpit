@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -20,6 +21,55 @@ func TestReasoningLoopDetectorRepeatedLine(t *testing.T) {
 	}
 	if !*canceled {
 		t.Fatal("expected detector to cancel stream")
+	}
+}
+
+func TestReasoningLoopDetectorRepeatedRuneRate(t *testing.T) {
+	d, canceled := newTestReasoningLoopDetector()
+	for range loopRepeatedRuneMinCount - 1 {
+		d.onDelta("\n")
+	}
+	if d.Detected() {
+		t.Fatal("repeated rune loop detected before threshold")
+	}
+	d.onDelta("\n")
+	if !d.Detected() {
+		t.Fatal("expected repeated rune loop")
+	}
+	if !*canceled {
+		t.Fatal("expected detector to cancel stream")
+	}
+	err := d.MakeError()
+	if strings.Count(err.RepeatedContent, "\n") != loopRepeatedRuneMinCount {
+		t.Fatalf("repeated content = %q, want %d newlines", err.RepeatedContent, loopRepeatedRuneMinCount)
+	}
+}
+
+func TestReasoningLoopDetectorIgnoresRepeatedSpaceAndHyphen(t *testing.T) {
+	for _, repeated := range []string{" ", "-"} {
+		t.Run(fmt.Sprintf("%q", repeated), func(t *testing.T) {
+			d, _ := newTestReasoningLoopDetector()
+			for range loopRepeatedRuneWindowSize * 2 {
+				d.onDelta(repeated)
+			}
+			if d.Detected() {
+				t.Fatalf("detected repeated rune loop for %q", repeated)
+			}
+		})
+	}
+}
+
+func TestReasoningLoopDetectorProviderRepeatedChunkError(t *testing.T) {
+	d, canceled := newTestReasoningLoopDetector()
+	err := errors.New("error, litellm.MidStreamFallbackError: litellm.InternalServerError: The model is repeating the same chunk = \n\n\n.. Received Model Group=Qwen3.5-122B-A10B-FP8")
+	if !d.detectRepeatedChunkError(err) {
+		t.Fatal("expected provider repeated chunk error to trigger loop detector")
+	}
+	if !*canceled {
+		t.Fatal("expected detector to cancel stream")
+	}
+	if got := strings.Count(d.MakeError().RepeatedContent, "\n"); got != 3 {
+		t.Fatalf("repeated content newline count = %d, want 3", got)
 	}
 }
 
