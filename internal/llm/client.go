@@ -1274,6 +1274,9 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 			if detector != nil && detector.Detected() {
 				return nil, detector.MakeError()
 			}
+			if detector != nil && detector.detectRepeatedChunkError(err) {
+				return nil, detector.MakeError()
+			}
 			return nil, &streamReadError{
 				err:       fmt.Errorf("llm: reading stream: %w", err),
 				retryable: isRetryableNetworkError(err),

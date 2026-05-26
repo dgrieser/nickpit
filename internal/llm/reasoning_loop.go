@@ -39,7 +39,15 @@ const (
 	// while reducing false positives from normal long reasoning.
 	loopFuzzyMarkerThreshold = 0.68
 	loopFuzzyStrictThreshold = 0.82
+
+	// Repeated-rune detection catches degenerate streams like 96 consecutive
+	// newlines that never form meaningful repeated lines or fuzzy windows.
+	loopRepeatedRuneWindowSize = 96
+	loopRepeatedRuneMinCount   = 64
+	loopRepeatedRuneMinRate    = 0.90
 )
+
+const liteLLMRepeatedChunkMarker = "The model is repeating the same chunk = "
 
 // loopFuzzyWindowSizes are measured in completed reasoning lines. Each window
 // is compared only with the immediately preceding same-sized window. Multiple
@@ -68,6 +76,11 @@ type reasoningLoopDetector struct {
 	repeatedContent   string
 	lines             []string
 	currentLine       strings.Builder
+	recentRunes       []rune
+	recentRuneStart   int
+	runeCounts        map[rune]int
+	runeCountBuckets  [loopRepeatedRuneWindowSize + 1]int
+	maxRuneCount      int
 	fuzzyRepeats      map[int]int
 	fuzzyLastMatchEnd map[int]int
 }
@@ -76,6 +89,7 @@ func newReasoningLoopDetector(cancel context.CancelFunc, maxRepeats int) *reason
 	return &reasoningLoopDetector{
 		cancel:            cancel,
 		maxRepeats:        maxRepeats,
+		runeCounts:        make(map[rune]int, loopRepeatedRuneWindowSize),
 		fuzzyRepeats:      make(map[int]int, len(loopFuzzyWindowSizes)),
 		fuzzyLastMatchEnd: make(map[int]int, len(loopFuzzyWindowSizes)),
 	}
@@ -102,21 +116,154 @@ func (d *reasoningLoopDetector) onDelta(delta string) {
 	if d.detected {
 		return
 	}
-	for {
-		idx := strings.IndexByte(delta, '\n')
-		if idx == -1 {
-			d.currentLine.WriteString(delta)
-			break
-		}
-		d.currentLine.WriteString(delta[:idx])
-		line := d.currentLine.String()
-		d.currentLine.Reset()
-		d.lines = append(d.lines, line)
-		if d.checkLoopLocked() {
+	for _, r := range delta {
+		if d.observeRepeatedRuneLocked(r) {
 			return
 		}
-		delta = delta[idx+1:]
+		if r == '\n' {
+			line := d.currentLine.String()
+			d.currentLine.Reset()
+			d.lines = append(d.lines, line)
+			if d.checkLoopLocked() {
+				return
+			}
+			continue
+		}
+		d.currentLine.WriteRune(r)
 	}
+}
+
+func (d *reasoningLoopDetector) detectRepeatedChunkError(err error) bool {
+	chunk, ok := repeatedChunkFromError(err)
+	if !ok {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.detected {
+		return true
+	}
+	if d.currentLine.Len() > 0 {
+		d.lines = append(d.lines, d.currentLine.String())
+		d.currentLine.Reset()
+	}
+	d.trigger(chunk, len(d.lines))
+	return true
+}
+
+func (d *reasoningLoopDetector) observeRepeatedRuneLocked(r rune) bool {
+	if ignoredRepeatedRune(r) {
+		return false
+	}
+	d.appendRecentRuneLocked(r)
+	if len(d.recentRunes) < loopRepeatedRuneMinCount {
+		return false
+	}
+	if d.maxRuneCount < loopRepeatedRuneMinCount {
+		return false
+	}
+	if float64(d.maxRuneCount)/float64(len(d.recentRunes)) < loopRepeatedRuneMinRate {
+		return false
+	}
+	d.trigger(d.recentRunesStringLocked(), len(d.lines))
+	return true
+}
+
+func ignoredRepeatedRune(r rune) bool {
+	// Ignore common formatting-only runs that can be benign in markdown output
+	// or ASCII tables. Newlines are intentionally not ignored.
+	switch r {
+	case ' ', '-', '=', '*', '>', '_', '|':
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *reasoningLoopDetector) appendRecentRuneLocked(r rune) {
+	if len(d.recentRunes) < loopRepeatedRuneWindowSize {
+		d.recentRunes = append(d.recentRunes, r)
+		d.incrementRuneCountLocked(r)
+		return
+	}
+
+	evicted := d.recentRunes[d.recentRuneStart]
+	d.decrementRuneCountLocked(evicted)
+	d.recentRunes[d.recentRuneStart] = r
+	d.recentRuneStart = (d.recentRuneStart + 1) % loopRepeatedRuneWindowSize
+	d.incrementRuneCountLocked(r)
+}
+
+func (d *reasoningLoopDetector) incrementRuneCountLocked(r rune) {
+	if d.runeCounts == nil {
+		d.runeCounts = make(map[rune]int, loopRepeatedRuneWindowSize)
+	}
+	oldCount := d.runeCounts[r]
+	if oldCount > 0 {
+		d.runeCountBuckets[oldCount]--
+	}
+	newCount := oldCount + 1
+	d.runeCounts[r] = newCount
+	d.runeCountBuckets[newCount]++
+	if newCount > d.maxRuneCount {
+		d.maxRuneCount = newCount
+	}
+}
+
+func (d *reasoningLoopDetector) decrementRuneCountLocked(r rune) {
+	oldCount := d.runeCounts[r]
+	if oldCount == 0 {
+		return
+	}
+	d.runeCountBuckets[oldCount]--
+	newCount := oldCount - 1
+	if newCount == 0 {
+		delete(d.runeCounts, r)
+	} else {
+		d.runeCounts[r] = newCount
+		d.runeCountBuckets[newCount]++
+	}
+	if oldCount == d.maxRuneCount && d.runeCountBuckets[oldCount] == 0 {
+		for d.maxRuneCount > 0 && d.runeCountBuckets[d.maxRuneCount] == 0 {
+			d.maxRuneCount--
+		}
+	}
+}
+
+func (d *reasoningLoopDetector) recentRunesStringLocked() string {
+	if len(d.recentRunes) < loopRepeatedRuneWindowSize || d.recentRuneStart == 0 {
+		return string(d.recentRunes)
+	}
+	ordered := make([]rune, 0, len(d.recentRunes))
+	ordered = append(ordered, d.recentRunes[d.recentRuneStart:]...)
+	ordered = append(ordered, d.recentRunes[:d.recentRuneStart]...)
+	return string(ordered)
+}
+
+func repeatedChunkFromError(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	message := err.Error()
+	start := strings.Index(message, liteLLMRepeatedChunkMarker)
+	if start < 0 {
+		return "", false
+	}
+	chunk := message[start+len(liteLLMRepeatedChunkMarker):]
+	end := len(chunk)
+	for _, marker := range []string{"Received Model Group=", "Available Model Group Fallbacks="} {
+		if idx := strings.Index(chunk, marker); idx >= 0 {
+			end = min(end, idx)
+		}
+	}
+	chunk = strings.TrimRight(chunk[:end], ". \t\r")
+	chunk = strings.ReplaceAll(chunk, `\n`, "\n")
+	chunk = strings.ReplaceAll(chunk, `\r`, "\r")
+	chunk = strings.ReplaceAll(chunk, `\t`, "\t")
+	if chunk == "" {
+		return "", false
+	}
+	return chunk, true
 }
 
 func (d *reasoningLoopDetector) checkLoopLocked() bool {
