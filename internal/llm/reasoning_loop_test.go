@@ -45,8 +45,8 @@ func TestReasoningLoopDetectorRepeatedRuneRate(t *testing.T) {
 	}
 }
 
-func TestReasoningLoopDetectorIgnoresRepeatedSpaceAndHyphen(t *testing.T) {
-	for _, repeated := range []string{" ", "-"} {
+func TestReasoningLoopDetectorIgnoresFormattingRunes(t *testing.T) {
+	for _, repeated := range []string{" ", "-", "=", "*", ">", "_", "|"} {
 		t.Run(fmt.Sprintf("%q", repeated), func(t *testing.T) {
 			d, _ := newTestReasoningLoopDetector()
 			for range loopRepeatedRuneWindowSize * 2 {
@@ -70,6 +70,80 @@ func TestReasoningLoopDetectorProviderRepeatedChunkError(t *testing.T) {
 	}
 	if got := strings.Count(d.MakeError().RepeatedContent, "\n"); got != 3 {
 		t.Fatalf("repeated content newline count = %d, want 3", got)
+	}
+}
+
+func TestReasoningLoopDetectorProviderRepeatedChunkErrorIncludesPartialLine(t *testing.T) {
+	d, _ := newTestReasoningLoopDetector()
+	d.onDelta("completed reasoning\npartial reasoning before provider error")
+	err := errors.New("error, litellm.InternalServerError: The model is repeating the same chunk = repeated chunk.. Received Model Group=Qwen3.5")
+	if !d.detectRepeatedChunkError(err) {
+		t.Fatal("expected provider repeated chunk error to trigger loop detector")
+	}
+	if got, want := d.MakeError().LoopStartContent, "completed reasoning\npartial reasoning before provider error"; got != want {
+		t.Fatalf("loop start content = %q, want %q", got, want)
+	}
+}
+
+func TestRepeatedChunkFromError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+		ok   bool
+	}{
+		{
+			name: "missing received model group suffix",
+			err:  errors.New("error: The model is repeating the same chunk = truncated repeated chunk"),
+			want: "truncated repeated chunk",
+			ok:   true,
+		},
+		{
+			name: "escaped newline",
+			err:  errors.New(`error: The model is repeating the same chunk = first\nsecond.. Received Model Group=Qwen3.5`),
+			want: "first\nsecond",
+			ok:   true,
+		},
+		{
+			name: "empty after trim",
+			err:  errors.New("error: The model is repeating the same chunk = ... Received Model Group=Qwen3.5"),
+			ok:   false,
+		},
+		{
+			name: "ellipsis trim",
+			err:  errors.New("error: The model is repeating the same chunk = \n\n\n... Received Model Group=Qwen3.5"),
+			want: "\n\n\n",
+			ok:   true,
+		},
+		{
+			name: "dots with trailing tab trim",
+			err:  errors.New("error: The model is repeating the same chunk = \n.. \tReceived Model Group=Qwen3.5"),
+			want: "\n",
+			ok:   true,
+		},
+		{
+			name: "available marker before received marker",
+			err:  errors.New("error: The model is repeating the same chunk = repeated chunk.. Available Model Group Fallbacks=None Received Model Group=Qwen3.5"),
+			want: "repeated chunk",
+			ok:   true,
+		},
+		{
+			name: "no marker",
+			err:  errors.New("error: provider failed"),
+			ok:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := repeatedChunkFromError(tt.err)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Fatalf("chunk = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

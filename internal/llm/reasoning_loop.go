@@ -77,6 +77,10 @@ type reasoningLoopDetector struct {
 	lines             []string
 	currentLine       strings.Builder
 	recentRunes       []rune
+	recentRuneStart   int
+	runeCounts        map[rune]int
+	runeCountBuckets  [loopRepeatedRuneWindowSize + 1]int
+	maxRuneCount      int
 	fuzzyRepeats      map[int]int
 	fuzzyLastMatchEnd map[int]int
 }
@@ -85,6 +89,7 @@ func newReasoningLoopDetector(cancel context.CancelFunc, maxRepeats int) *reason
 	return &reasoningLoopDetector{
 		cancel:            cancel,
 		maxRepeats:        maxRepeats,
+		runeCounts:        make(map[rune]int, loopRepeatedRuneWindowSize),
 		fuzzyRepeats:      make(map[int]int, len(loopFuzzyWindowSizes)),
 		fuzzyLastMatchEnd: make(map[int]int, len(loopFuzzyWindowSizes)),
 	}
@@ -138,38 +143,101 @@ func (d *reasoningLoopDetector) detectRepeatedChunkError(err error) bool {
 	if d.detected {
 		return true
 	}
+	if d.currentLine.Len() > 0 {
+		d.lines = append(d.lines, d.currentLine.String())
+		d.currentLine.Reset()
+	}
 	d.trigger(chunk, len(d.lines))
 	return true
 }
 
 func (d *reasoningLoopDetector) observeRepeatedRuneLocked(r rune) bool {
-	if r == ' ' || r == '-' {
+	if ignoredRepeatedRune(r) {
 		return false
 	}
-	d.recentRunes = append(d.recentRunes, r)
-	if len(d.recentRunes) > loopRepeatedRuneWindowSize {
-		copy(d.recentRunes, d.recentRunes[len(d.recentRunes)-loopRepeatedRuneWindowSize:])
-		d.recentRunes = d.recentRunes[:loopRepeatedRuneWindowSize]
-	}
+	d.appendRecentRuneLocked(r)
 	if len(d.recentRunes) < loopRepeatedRuneMinCount {
 		return false
 	}
-	counts := make(map[rune]int, len(d.recentRunes))
-	maxCount := 0
-	for _, recent := range d.recentRunes {
-		counts[recent]++
-		if counts[recent] > maxCount {
-			maxCount = counts[recent]
+	if d.maxRuneCount < loopRepeatedRuneMinCount {
+		return false
+	}
+	if float64(d.maxRuneCount)/float64(len(d.recentRunes)) < loopRepeatedRuneMinRate {
+		return false
+	}
+	d.trigger(d.recentRunesStringLocked(), len(d.lines))
+	return true
+}
+
+func ignoredRepeatedRune(r rune) bool {
+	// Ignore common formatting-only runs that can be benign in markdown output
+	// or ASCII tables. Newlines are intentionally not ignored.
+	switch r {
+	case ' ', '-', '=', '*', '>', '_', '|':
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *reasoningLoopDetector) appendRecentRuneLocked(r rune) {
+	if len(d.recentRunes) < loopRepeatedRuneWindowSize {
+		d.recentRunes = append(d.recentRunes, r)
+		d.incrementRuneCountLocked(r)
+		return
+	}
+
+	evicted := d.recentRunes[d.recentRuneStart]
+	d.decrementRuneCountLocked(evicted)
+	d.recentRunes[d.recentRuneStart] = r
+	d.recentRuneStart = (d.recentRuneStart + 1) % loopRepeatedRuneWindowSize
+	d.incrementRuneCountLocked(r)
+}
+
+func (d *reasoningLoopDetector) incrementRuneCountLocked(r rune) {
+	if d.runeCounts == nil {
+		d.runeCounts = make(map[rune]int, loopRepeatedRuneWindowSize)
+	}
+	oldCount := d.runeCounts[r]
+	if oldCount > 0 {
+		d.runeCountBuckets[oldCount]--
+	}
+	newCount := oldCount + 1
+	d.runeCounts[r] = newCount
+	d.runeCountBuckets[newCount]++
+	if newCount > d.maxRuneCount {
+		d.maxRuneCount = newCount
+	}
+}
+
+func (d *reasoningLoopDetector) decrementRuneCountLocked(r rune) {
+	oldCount := d.runeCounts[r]
+	if oldCount == 0 {
+		return
+	}
+	d.runeCountBuckets[oldCount]--
+	newCount := oldCount - 1
+	if newCount == 0 {
+		delete(d.runeCounts, r)
+	} else {
+		d.runeCounts[r] = newCount
+		d.runeCountBuckets[newCount]++
+	}
+	if oldCount == d.maxRuneCount && d.runeCountBuckets[oldCount] == 0 {
+		for d.maxRuneCount > 0 && d.runeCountBuckets[d.maxRuneCount] == 0 {
+			d.maxRuneCount--
 		}
 	}
-	if maxCount < loopRepeatedRuneMinCount {
-		return false
+}
+
+func (d *reasoningLoopDetector) recentRunesStringLocked() string {
+	if len(d.recentRunes) < loopRepeatedRuneWindowSize || d.recentRuneStart == 0 {
+		return string(d.recentRunes)
 	}
-	if float64(maxCount)/float64(len(d.recentRunes)) < loopRepeatedRuneMinRate {
-		return false
-	}
-	d.trigger(string(d.recentRunes), len(d.lines))
-	return true
+	ordered := make([]rune, 0, len(d.recentRunes))
+	ordered = append(ordered, d.recentRunes[d.recentRuneStart:]...)
+	ordered = append(ordered, d.recentRunes[:d.recentRuneStart]...)
+	return string(ordered)
 }
 
 func repeatedChunkFromError(err error) (string, bool) {
@@ -182,14 +250,13 @@ func repeatedChunkFromError(err error) (string, bool) {
 		return "", false
 	}
 	chunk := message[start+len(liteLLMRepeatedChunkMarker):]
+	end := len(chunk)
 	for _, marker := range []string{"Received Model Group=", "Available Model Group Fallbacks="} {
 		if idx := strings.Index(chunk, marker); idx >= 0 {
-			chunk = chunk[:idx]
+			end = min(end, idx)
 		}
 	}
-	chunk = strings.TrimSuffix(chunk, ".. ")
-	chunk = strings.TrimSuffix(chunk, "..")
-	chunk = strings.Trim(chunk, " \t\r")
+	chunk = strings.TrimRight(chunk[:end], ". \t\r")
 	chunk = strings.ReplaceAll(chunk, `\n`, "\n")
 	chunk = strings.ReplaceAll(chunk, `\r`, "\r")
 	chunk = strings.ReplaceAll(chunk, `\t`, "\t")
