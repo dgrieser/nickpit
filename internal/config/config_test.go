@@ -354,6 +354,69 @@ profiles:
 	}
 }
 
+func TestLoadConfigSupportedModels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    supported_models:
+      - model: test-model
+        compatible: true
+        response: true
+        tools: true
+        json_response: true
+        json_schema: false
+        reasoning:
+          traces: true
+          efforts: [high, medium]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.SupportedModels) != 1 {
+		t.Fatalf("supported models = %d, want 1", len(profile.SupportedModels))
+	}
+	got := profile.SupportedModels[0]
+	if got.Model != "test-model" || !got.Compatible || !got.Response || !got.Tools {
+		t.Fatalf("supported model = %#v", got)
+	}
+	if got.JSONResponse == nil || !*got.JSONResponse {
+		t.Fatalf("json response = %v, want true", got.JSONResponse)
+	}
+	if got.JSONSchema == nil || *got.JSONSchema {
+		t.Fatalf("json schema = %v, want false", got.JSONSchema)
+	}
+	if !got.Reasoning.Traces || strings.Join(got.Reasoning.Efforts, ",") != "high,medium" {
+		t.Fatalf("reasoning = %#v", got.Reasoning)
+	}
+}
+
+func TestCloneProfileCopiesSupportedModels(t *testing.T) {
+	jsonSchema := true
+	profile := Profile{SupportedModels: []ModelCapabilities{{
+		Model:      "model",
+		JSONSchema: &jsonSchema,
+		Reasoning:  ReasoningCapabilities{Efforts: []string{"high"}},
+	}}}
+	cloned := cloneProfile(profile)
+	cloned.SupportedModels[0].Reasoning.Efforts[0] = "low"
+	*cloned.SupportedModels[0].JSONSchema = false
+
+	if profile.SupportedModels[0].Reasoning.Efforts[0] != "high" {
+		t.Fatal("supported model efforts were not cloned")
+	}
+	if !*profile.SupportedModels[0].JSONSchema {
+		t.Fatal("supported model json schema pointer was not cloned")
+	}
+}
+
 func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
 	_, profile, err := Load("", Overrides{UseJSONSchema: true, Model: "test-model"})
 	if err != nil {

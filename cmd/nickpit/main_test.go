@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -241,6 +242,9 @@ func TestRootCmdHasCheckModel(t *testing.T) {
 	if check == nil || check.Use != "model" {
 		t.Fatalf("check model command missing: %#v", check)
 	}
+	if check.Flags().Lookup("refresh") == nil {
+		t.Fatal("check model refresh flag missing")
+	}
 }
 
 func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
@@ -375,6 +379,64 @@ func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
 	}
 	if !source.called {
 		t.Fatal("source should run when model check is skipped")
+	}
+}
+
+func TestRunReviewUsesProfileSupportedModelCapabilities(t *testing.T) {
+	wantErr := errors.New("source called")
+	source := &recordingSource{err: wantErr}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         "http://127.0.0.1:1",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+		SupportedModels: []config.ModelCapabilities{compatibleCapability("model")},
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want source error", err)
+	}
+	if !source.called {
+		t.Fatal("source should run when profile capabilities satisfy model check")
+	}
+}
+
+func TestRunReviewUsesCachedModelCapabilities(t *testing.T) {
+	cacheDir := t.TempDir()
+	t.Setenv("NICKPIT_CACHE_DIR", cacheDir)
+	if err := modelcheck.WriteCachedCapability(filepath.Join(cacheDir, "model-capabilities.json"), "http://127.0.0.1:1", compatibleCapability("model"), time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := errors.New("source called")
+	source := &recordingSource{err: wantErr}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         "http://127.0.0.1:1/",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want source error", err)
+	}
+	if !source.called {
+		t.Fatal("source should run when cached capabilities satisfy model check")
+	}
+}
+
+func compatibleCapability(modelName string) config.ModelCapabilities {
+	jsonResponse := true
+	jsonSchema := true
+	return config.ModelCapabilities{
+		Model:        modelName,
+		Compatible:   true,
+		Response:     true,
+		Tools:        true,
+		JSONResponse: &jsonResponse,
+		JSONSchema:   &jsonSchema,
+		Reasoning: config.ReasoningCapabilities{
+			Traces:  true,
+			Efforts: []string{"high"},
+		},
 	}
 }
 
