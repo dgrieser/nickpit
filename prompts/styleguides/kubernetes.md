@@ -115,6 +115,16 @@ example.com/cleanup-external-db
 cache.example.com/redis-finalizer
 ```
 
+### Object Names and `client.ObjectKey`
+
+Kubernetes `metadata.name` and `metadata.namespace` values should be treated as Kubernetes object names, not arbitrary strings.
+
+For Object Names and Namespaces:
+- underscores are not valid in normal Kubernetes names
+- names are lowercase DNS-style values using letters, digits, `-`, and for some names `.`
+
+When code uses `sigs.k8s.io/controller-runtime/pkg/client.ObjectKey`, assume `Namespace` and `Name` came from Kubernetes object identity unless there is evidence otherwise.
+
 ### Label & Annotation Keys
 
 ```
