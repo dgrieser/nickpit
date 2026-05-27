@@ -2030,7 +2030,34 @@ type styleGuideDetector struct {
 }
 
 var styleGuideDetectors = []styleGuideDetector{
+	sqlStyleGuideDetector,
+	bashStyleGuideDetector,
+	htmlCSSStyleGuideDetector,
 	kubernetesStyleGuideDetector,
+}
+
+var sqlStyleGuideDetector = styleGuideDetector{
+	Language:  "sql",
+	ProbePath: isSQLProbePath,
+	Applies: func(signal styleGuideSignal) bool {
+		return isSQLPath(signal.Path) || isSQLContent(signal.Content)
+	},
+}
+
+var bashStyleGuideDetector = styleGuideDetector{
+	Language:  "shell",
+	ProbePath: isBashProbePath,
+	Applies: func(signal styleGuideSignal) bool {
+		return isBashContent(signal.Content)
+	},
+}
+
+var htmlCSSStyleGuideDetector = styleGuideDetector{
+	Language:  "html",
+	ProbePath: isHTMLCSSProbePath,
+	Applies: func(signal styleGuideSignal) bool {
+		return isHTMLCSSPath(signal.Path) || isHTMLCSSContent(signal.Content)
+	},
 }
 
 var kubernetesStyleGuideDetector = styleGuideDetector{
@@ -2058,7 +2085,163 @@ func styleGuideProbePath(path string) bool {
 	return false
 }
 
-const maxKubernetesProbeBytes = 1 << 20
+const maxStyleGuideProbeBytes = 1 << 20
+
+var sqlStatementPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?is)\bselect\b.+\bfrom\b`),
+	regexp.MustCompile(`(?is)\binsert\s+into\b`),
+	regexp.MustCompile(`(?is)\bupdate\b.+\bset\b`),
+	regexp.MustCompile(`(?is)\bdelete\s+from\b`),
+	regexp.MustCompile(`(?is)\bcreate\s+(?:table|index)\b`),
+	regexp.MustCompile(`(?is)\balter\s+table\b`),
+	regexp.MustCompile(`(?is)\bexplain(?:\s+analyze)?\b`),
+	regexp.MustCompile(`(?is)\bwith\b.+\bselect\b`),
+}
+
+var bashMarkers = []string{
+	"shellcheck",
+	"set -Eeuo pipefail",
+	"set -euo pipefail",
+	"[[",
+	"declare -a",
+	"declare -A",
+	"BASH_SOURCE",
+}
+
+var htmlTagPattern = regexp.MustCompile(`(?is)<[a-z][a-z0-9:-]*(?:\s+[^<>]*)?>`)
+var cssRulePattern = regexp.MustCompile(`(?is)(?:^|\n)\s*[.#]?[a-z][a-z0-9_-]*(?:\s+[.#]?[a-z][a-z0-9_-]*)?\s*\{[^{}]*:[^{}]*\}`)
+var bashRequiredParamPattern = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}`)
+
+func isSQLPath(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".sql")
+}
+
+func isSQLProbePath(path string) bool {
+	normalized := strings.ToLower(filepath.ToSlash(path))
+	ext := filepath.Ext(normalized)
+	switch ext {
+	case ".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".cs", ".java", ".kt", ".rb", ".php", ".sql":
+		return true
+	}
+	for _, segment := range strings.Split(normalized, "/") {
+		switch segment {
+		case "migrations", "migration", "db", "database", "queries", "schema":
+			return true
+		}
+	}
+	return false
+}
+
+func isSQLContent(content string) bool {
+	content = normalizeDiffContent(content)
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	for _, pattern := range sqlStatementPatterns {
+		if pattern.MatchString(content) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBashProbePath(path string) bool {
+	normalized := strings.ToLower(filepath.ToSlash(path))
+	ext := filepath.Ext(normalized)
+	switch ext {
+	case ".sh", ".bash", ".zsh", ".ksh", ".yaml", ".yml":
+		return true
+	}
+	if ext != "" {
+		return false
+	}
+	if strings.HasPrefix(normalized, ".git/hooks/") || strings.Contains(normalized, "/.git/hooks/") {
+		return true
+	}
+	segments := strings.Split(normalized, "/")
+	for _, segment := range segments {
+		switch segment {
+		case "scripts", "bin", "ci":
+			return true
+		}
+	}
+	return strings.HasPrefix(normalized, ".github/scripts/") || strings.Contains(normalized, "/.github/scripts/")
+}
+
+func isBashContent(content string) bool {
+	content = normalizeDiffContent(content)
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	firstLine := trimmed
+	if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+		firstLine = firstLine[:idx]
+	}
+	if strings.HasPrefix(firstLine, "#!") &&
+		(strings.Contains(firstLine, "bash") || strings.Contains(firstLine, "/sh") || strings.Contains(firstLine, "env sh")) {
+		return true
+	}
+	lower := strings.ToLower(content)
+	for _, marker := range bashMarkers {
+		if strings.Contains(lower, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	if bashRequiredParamPattern.MatchString(content) {
+		return true
+	}
+	return strings.Contains(content, "trap ") && (strings.Contains(content, " ERR") || strings.Contains(content, " EXIT"))
+}
+
+func isHTMLCSSPath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".jsx", ".tsx", ".vue", ".svelte", ".astro", ".razor", ".cshtml", ".html", ".htm", ".css", ".scss", ".sass":
+		return true
+	}
+	return false
+}
+
+func isHTMLCSSProbePath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".astro", ".razor", ".cshtml", ".html", ".htm", ".css", ".scss", ".sass":
+		return true
+	}
+	return false
+}
+
+func isHTMLCSSContent(content string) bool {
+	content = normalizeDiffContent(content)
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	return strings.Contains(content, "<style") ||
+		strings.Contains(content, "aria-") ||
+		strings.Contains(content, "styled.") ||
+		strings.Contains(content, "css`") ||
+		strings.Contains(content, "@media") ||
+		strings.Contains(content, "--") && strings.Contains(content, ":") ||
+		htmlTagPattern.MatchString(content) ||
+		cssRulePattern.MatchString(content)
+}
+
+func normalizeDiffContent(content string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line[0] == '+' || line[0] == '-' || line[0] == ' ' {
+			line = strings.TrimSpace(line[1:])
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
 
 var kubernetesGoIndicators = []string{
 	"+kubebuilder:",
@@ -2245,7 +2428,7 @@ func readReviewFile(root, path string) string {
 		return ""
 	}
 	info, err := os.Stat(fullPath)
-	if err != nil || info.IsDir() || info.Size() > maxKubernetesProbeBytes {
+	if err != nil || info.IsDir() || info.Size() > maxStyleGuideProbeBytes {
 		return ""
 	}
 	data, err := os.ReadFile(fullPath)

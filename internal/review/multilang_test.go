@@ -387,6 +387,163 @@ func TestStyleGuideDetectorDedupeKeepsOneKubernetesGuide(t *testing.T) {
 	}
 }
 
+func TestStyleGuideDetectorAddsSQLFromEmbeddedQuery(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "internal/store/users.go", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "internal/store/users.go",
+				Language: "go",
+				Content:  "+const userQuery = `SELECT id, email FROM users WHERE active = true`\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go Style Guide") {
+		t.Fatalf("go style guide content = %.80q", content)
+	}
+	if content := contentsByLanguage["sql"]; !strings.Contains(content, "# SQL Optimization Patterns") {
+		t.Fatalf("sql style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorDoesNotAddSQLForGenericSelectText(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "internal/ui/copy.go", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "internal/ui/copy.go",
+				Language: "go",
+				Content:  "+const label = \"Select a color before continuing\"\n",
+			},
+		},
+	})
+	if _, ok := contentsByLanguage["sql"]; ok {
+		t.Fatalf("sql style guide should not be included: %#v", contentsByLanguage)
+	}
+}
+
+func TestStyleGuideDetectorAddsBashFromExtensionlessScript(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "scripts/deploy", Status: model.FileModified, Additions: 2},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "scripts/deploy",
+				Language: "text",
+				Content:  "+#!/usr/bin/env bash\n+set -Eeuo pipefail\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["shell"]; !strings.Contains(content, "# Bash Style Guide") {
+		t.Fatalf("bash style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorAddsBashFromWorkflowRunStep(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: ".github/workflows/deploy.yml", Status: model.FileModified, Additions: 2},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: ".github/workflows/deploy.yml",
+				Language: "yaml",
+				Content:  "+      run: |\n+        set -Eeuo pipefail\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["shell"]; !strings.Contains(content, "# Bash Style Guide") {
+		t.Fatalf("bash style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorAddsHTMLCSSForTSX(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "web/Button.tsx", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "web/Button.tsx",
+				Language: "nodejs",
+				Content:  "+export function Button() { return <button aria-label=\"Save\">Save</button> }\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["typescript"]; !strings.Contains(content, "# TypeScript Style Guide") {
+		t.Fatalf("typescript style guide content = %.80q", content)
+	}
+	if content := contentsByLanguage["html"]; !strings.Contains(content, "# HTML & CSS Style Guide") {
+		t.Fatalf("html/css style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorAddsHTMLCSSForCSSInTS(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "web/theme.ts", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "web/theme.ts",
+				Language: "nodejs",
+				Content:  "+export const button = css`@media (min-width: 40rem) { color: var(--accent); }`\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["typescript"]; !strings.Contains(content, "# TypeScript Style Guide") {
+		t.Fatalf("typescript style guide content = %.80q", content)
+	}
+	if content := contentsByLanguage["html"]; !strings.Contains(content, "# HTML & CSS Style Guide") {
+		t.Fatalf("html/css style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorDedupesHTMLCSSGuide(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "web/index.html", Status: model.FileModified, Additions: 1},
+			{Path: "web/styles.css", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "web/index.html", Language: "html", Content: "+<main aria-label=\"Dashboard\"></main>\n"},
+			{FilePath: "web/styles.css", Language: "css", Content: "+.button { color: red; }\n"},
+		},
+	})
+	if len(contentsByLanguage) != 1 {
+		t.Fatalf("style guides = %#v", contentsByLanguage)
+	}
+	if content := contentsByLanguage["html"]; !strings.Contains(content, "# HTML & CSS Style Guide") {
+		t.Fatalf("html/css style guide content = %.80q", content)
+	}
+}
+
 func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) map[string]string {
 	t.Helper()
 	llmClient := &capturingLLM{}
