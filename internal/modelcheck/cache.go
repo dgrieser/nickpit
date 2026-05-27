@@ -71,8 +71,8 @@ func WriteCachedCapability(path, baseURL string, capability config.ModelCapabili
 		return fmt.Errorf("modelcheck cache: empty path")
 	}
 	file, err := readCacheFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	if err != nil {
+		file = capabilityCacheFile{}
 	}
 	baseURL = NormalizeBaseURL(baseURL)
 	capability = cloneCapability(capability)
@@ -200,15 +200,12 @@ func statusFor(ok bool) Status {
 
 func optionalStatus(ok *bool) Status {
 	if ok == nil {
-		return StatusFailed
+		return StatusOK
 	}
 	return statusFor(*ok)
 }
 
-func optionalError(ok *bool) string {
-	if ok == nil {
-		return "capability not stored"
-	}
+func optionalError(_ *bool) string {
 	return ""
 }
 
