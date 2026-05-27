@@ -19,6 +19,9 @@ func TestEmbeddedMappingsLoad(t *testing.T) {
 	if loaded.ctxExt[".tsx"] != "typescript" {
 		t.Fatalf(".tsx style guide language = %q", loaded.ctxExt[".tsx"])
 	}
+	if loaded.context.StyleGuides["kubernetes"] != "styleguides/kubernetes.md" {
+		t.Fatalf("kubernetes style guide = %q", loaded.context.StyleGuides["kubernetes"])
+	}
 	if len(loaded.files.GeneratedSuffixes) == 0 {
 		t.Fatal("generated suffixes empty")
 	}

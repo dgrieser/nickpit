@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -1954,9 +1956,24 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 			language = hunk.Language
 		}
 		addLanguage(seen, language)
+		if isKubernetesPath(hunk.FilePath) || isKubernetesContent(hunk.FilePath, hunk.Content) {
+			addLanguage(seen, "kubernetes")
+		}
 	}
 	for _, file := range ctx.ChangedFiles {
 		addLanguage(seen, styleGuideLanguageForPath(file.Path))
+		if isKubernetesPath(file.Path) {
+			addLanguage(seen, "kubernetes")
+			continue
+		}
+		if file.Status != model.FileDeleted && isKubernetesProbePath(file.Path) && isKubernetesContent(file.Path, readReviewFile(ctx.CheckoutRoot, file.Path)) {
+			addLanguage(seen, "kubernetes")
+		}
+	}
+	for _, supplemental := range ctx.SupplementalContext {
+		if isKubernetesPath(supplemental.Path) || isKubernetesContent(supplemental.Path, supplemental.Content) {
+			addLanguage(seen, "kubernetes")
+		}
 	}
 
 	languages := make([]string, 0, len(seen))
@@ -1984,6 +2001,203 @@ func addLanguage(seen map[string]struct{}, language string) {
 
 func styleGuideLanguageForPath(path string) string {
 	return mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
+}
+
+const maxKubernetesProbeBytes = 1 << 20
+
+var kubernetesGoIndicators = []string{
+	"+kubebuilder:",
+	"+k8s:",
+	"sigs.k8s.io/controller-runtime",
+	"k8s.io/apimachinery",
+	"k8s.io/api/",
+	"k8s.io/client-go",
+	"metav1.TypeMeta",
+}
+
+var kubernetesPathSegments = map[string]struct{}{
+	"k8s":        {},
+	"kubernetes": {},
+	"manifests":  {},
+}
+
+var kubernetesConfigSegments = map[string]struct{}{
+	"crd":            {},
+	"rbac":           {},
+	"default":        {},
+	"manager":        {},
+	"webhook":        {},
+	"prometheus":     {},
+	"network-policy": {},
+	"samples":        {},
+}
+
+var kubernetesResourceBasenames = map[string]struct{}{
+	"clusterrole":           {},
+	"clusterrolebinding":    {},
+	"configmap":             {},
+	"cronjob":               {},
+	"daemonset":             {},
+	"deployment":            {},
+	"hpa":                   {},
+	"ingress":               {},
+	"job":                   {},
+	"namespace":             {},
+	"networkpolicy":         {},
+	"persistentvolumeclaim": {},
+	"pod":                   {},
+	"pvc":                   {},
+	"role":                  {},
+	"rolebinding":           {},
+	"secret":                {},
+	"service":               {},
+	"serviceaccount":        {},
+	"statefulset":           {},
+}
+
+func isKubernetesPath(path string) bool {
+	normalized := strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(normalized)
+	if base == "kustomization.yaml" || base == "kustomization.yml" {
+		return true
+	}
+	if strings.HasSuffix(base, ".k8s.yaml") || strings.HasSuffix(base, ".k8s.yml") ||
+		strings.HasSuffix(base, ".kubernetes.yaml") || strings.HasSuffix(base, ".kubernetes.yml") {
+		return true
+	}
+	segments := strings.Split(normalized, "/")
+	for _, segment := range segments {
+		if _, ok := kubernetesPathSegments[segment]; ok {
+			return true
+		}
+	}
+	for i := 0; i < len(segments)-1; i++ {
+		if segments[i] == "config" {
+			if _, ok := kubernetesConfigSegments[segments[i+1]]; ok {
+				return true
+			}
+		}
+		if (segments[i] == "deploy" || segments[i] == "deployments") && isKubernetesResourceFilename(base) {
+			return true
+		}
+	}
+	return isKubernetesGoPath(normalized, base)
+}
+
+func isKubernetesGoPath(path, base string) bool {
+	if !strings.HasSuffix(base, ".go") {
+		return false
+	}
+	segments := strings.Split(path, "/")
+	if strings.HasSuffix(base, "_webhook.go") || strings.HasSuffix(base, "_controller.go") {
+		for i, segment := range segments {
+			if segment == "internal" && i+1 < len(segments) && segments[i+1] == "controller" {
+				return true
+			}
+			if segment == "controllers" {
+				return true
+			}
+		}
+	}
+	for i, segment := range segments {
+		if segment == "api" && i+1 < len(segments) && strings.HasPrefix(segments[i+1], "v") &&
+			(strings.HasSuffix(base, "_types.go") || strings.HasSuffix(base, "_webhook.go")) {
+			return true
+		}
+	}
+	return false
+}
+
+func isKubernetesResourceFilename(base string) bool {
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	if _, ok := kubernetesResourceBasenames[name]; ok {
+		return true
+	}
+	for _, part := range strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-' || r == '_' || r == '.'
+	}) {
+		if _, ok := kubernetesResourceBasenames[part]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isKubernetesProbePath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".go" || ext == ".yaml" || ext == ".yml"
+}
+
+func isKubernetesContent(path, content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".go" {
+		for _, indicator := range kubernetesGoIndicators {
+			if strings.Contains(content, indicator) {
+				return true
+			}
+		}
+		return false
+	}
+	if ext == ".yaml" || ext == ".yml" || ext == ".tpl" || ext == ".txt" || ext == "" {
+		return hasKubernetesYAMLMarkers(content)
+	}
+	return false
+}
+
+func hasKubernetesYAMLMarkers(content string) bool {
+	hasAPIVersion := false
+	hasKind := false
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line[0] == '+' || line[0] == '-' || line[0] == ' ' {
+			line = strings.TrimSpace(line[1:])
+		}
+		switch {
+		case strings.HasPrefix(line, "apiVersion:"):
+			hasAPIVersion = true
+		case strings.HasPrefix(line, "kind:"):
+			hasKind = true
+		}
+		if hasAPIVersion && hasKind {
+			return true
+		}
+	}
+	return false
+}
+
+func readReviewFile(root, path string) string {
+	if root == "" || path == "" {
+		return ""
+	}
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(clean) || clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
+		return ""
+	}
+	fullPath := filepath.Join(root, clean)
+	rel, err := filepath.Rel(root, fullPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	lstat, err := os.Lstat(fullPath)
+	if err != nil || lstat.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil || info.IsDir() || info.Size() > maxKubernetesProbeBytes {
+		return ""
+	}
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func filterByPriority(findings []model.Finding, threshold string) []model.Finding {

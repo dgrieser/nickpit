@@ -200,3 +200,140 @@ func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
 		t.Fatalf("HTML/CSS guide should be included once: %#v", contentsByLanguage)
 	}
 }
+
+type kubernetesStyleGuideDiffSource struct {
+	ctx *model.ReviewContext
+}
+
+func (s kubernetesStyleGuideDiffSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return s.ctx, nil
+}
+
+func TestEngineAddsKubernetesStyleGuideForPathSignals(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "k8s/deployment.yaml", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "k8s/deployment.yaml", Language: "yaml", Content: "-old\n+new\n"},
+		},
+	})
+	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("kubernetes style guide content = %.80q", content)
+	}
+}
+
+func TestEngineAddsKubernetesStyleGuideForYAMLHunkContent(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "config/app.yaml", Status: model.FileModified, Additions: 2},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "config/app.yaml",
+				Language: "yaml",
+				Content:  "+apiVersion: apps/v1\n+kind: Deployment\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("kubernetes style guide content = %.80q", content)
+	}
+}
+
+func TestEngineAddsKubernetesStyleGuideForGoOperatorSignals(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "internal/controller/redis_controller.go", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "internal/controller/redis_controller.go",
+				Language: "go",
+				Content:  "+import \"sigs.k8s.io/controller-runtime/pkg/client\"\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go Style Guide") {
+		t.Fatalf("go style guide content = %.80q", content)
+	}
+	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("kubernetes style guide content = %.80q", content)
+	}
+}
+
+func TestEngineAddsHelmAndKubernetesStyleGuidesForManifestTemplates(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "charts/app/templates/deployment.yaml", Status: model.FileModified, Additions: 2},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "charts/app/templates/deployment.yaml",
+				Language: "helm",
+				Content:  "+apiVersion: apps/v1\n+kind: Deployment\n",
+			},
+		},
+	})
+	if content := contentsByLanguage["helm"]; !strings.Contains(content, "# Helm Style Guide") {
+		t.Fatalf("helm style guide content = %.80q", content)
+	}
+	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("kubernetes style guide content = %.80q", content)
+	}
+}
+
+func TestEngineDoesNotAddKubernetesStyleGuideForGenericYAML(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "config/settings.yaml", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "config/settings.yaml", Language: "yaml", Content: "+debug: true\n"},
+		},
+	})
+	if _, ok := contentsByLanguage["kubernetes"]; ok {
+		t.Fatalf("kubernetes style guide should not be included: %#v", contentsByLanguage)
+	}
+}
+
+func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) map[string]string {
+	t.Helper()
+	llmClient := &capturingLLM{}
+	engine := NewEngine(kubernetesStyleGuideDiffSource{ctx: reviewCtx}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, err := engine.Run(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+		t.Fatal(err)
+	}
+	contentsByLanguage := make(map[string]string)
+	styleGuides, _ := payload["style_guides"].([]any)
+	for _, item := range styleGuides {
+		styleGuide := item.(map[string]any)
+		contentsByLanguage[styleGuide["language"].(string)] = styleGuide["content"].(string)
+	}
+	return contentsByLanguage
+}

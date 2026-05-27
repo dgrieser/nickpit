@@ -10,6 +10,7 @@ style_guides:
   sql: styleguides/sql.md
   shell: styleguides/bash.md
   helm: styleguides/helm.md
+  kubernetes: styleguides/kubernetes.md
 
 style_guide_order:
   - go
@@ -23,6 +24,7 @@ style_guide_order:
   - sql
   - shell
   - helm
+  - kubernetes
 
 style_guide_extension_overrides:
   javascript:

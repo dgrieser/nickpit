@@ -318,6 +318,49 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	}
 }
 
+func TestVerifyIncludesKubernetesStyleGuide(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	reviewCtx := sampleReviewCtx()
+	reviewCtx.ChangedFiles = []model.ChangedFile{
+		{Path: "k8s/deployment.yaml", Status: model.FileModified, Additions: 1},
+	}
+	reviewCtx.DiffHunks = []model.DiffHunk{
+		{FilePath: "k8s/deployment.yaml", Language: "yaml", Content: "+apiVersion: apps/v1\n+kind: Deployment\n"},
+	}
+	finding := model.Finding{
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "k8s/deployment.yaml", LineRange: model.LineRange{Start: 1, End: 1}},
+	}
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal user prompt: %v", err)
+	}
+	styleGuides := payload["style_guides"].([]any)
+	if len(styleGuides) != 1 {
+		t.Fatalf("style guides = %#v", payload["style_guides"])
+	}
+	kubernetesStyleGuide := styleGuides[0].(map[string]any)
+	if kubernetesStyleGuide["language"] != "kubernetes" {
+		t.Fatalf("style guide language = %#v", kubernetesStyleGuide["language"])
+	}
+	if content, _ := kubernetesStyleGuide["content"].(string); !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("style guide content = %.80q", content)
+	}
+	system := llmClient.requests[0].Messages[0].Content
+	if !strings.Contains(system, "- Kubernetes Style Guide") {
+		t.Fatalf("verify system prompt missing Kubernetes styleguide title: %q", system)
+	}
+}
+
 func TestVerifyIncludesToolchainReminder(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
