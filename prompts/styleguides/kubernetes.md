@@ -56,6 +56,26 @@ make docker-build  # Build operator image
 
 ## Naming Conventions
 
+### Character Rules by Name Class
+
+Kubernetes uses several distinct name classes, each with its own allowed character set. Use the table below to pick the right rule for the field you're naming.
+
+| Name class | Used for | Allowed characters | Disallowed | Start/end | Max length |
+|---|---|---|---|---|---|
+| **DNS Subdomain** (RFC 1123) | API groups, most `metadata.name` values (e.g., Pods, Deployments, CRs), CRD `spec.group` | lowercase `a–z`, digits `0–9`, `-`, `.` | uppercase `A–Z`, `_`, whitespace, all other punctuation (`/`, `:`, `@`, `+`, `*`, etc.), unicode | must start AND end with alphanumeric (`[a-z0-9]`) | 253 |
+| **DNS Label** (RFC 1123) | `metadata.namespace`, Service names, label *values* that must be DNS-safe, container names | lowercase `a–z`, digits `0–9`, `-` | uppercase, `_`, `.`, whitespace, all other punctuation, unicode | must start AND end with alphanumeric | 63 |
+| **DNS Label** (RFC 1035, stricter) | older Service names, some legacy fields | lowercase `a–z`, digits `0–9`, `-` | same as above PLUS cannot start with a digit | must start with `[a-z]`, end with alphanumeric | 63 |
+| **Qualified Name** (label/annotation key, finalizer) | label keys, annotation keys, finalizer names, CRD `categories` prefix | name part: `a–z`, `A–Z`, `0–9`, `-`, `_`, `.` ; optional prefix part: DNS Subdomain followed by `/` | name part: whitespace, `/` (except as prefix separator), `:`, all other punctuation | name part must start AND end with alphanumeric | name ≤ 63; prefix ≤ 253; total ≤ 317 |
+| **Label Value** | `metadata.labels` values | `a–z`, `A–Z`, `0–9`, `-`, `_`, `.` (or empty string) | whitespace, `/`, `:`, all other punctuation, unicode | if non-empty: alphanumeric at both ends | 63 |
+| **Annotation Value** | `metadata.annotations` values | any valid UTF-8 string (incl. whitespace, JSON, base64) | none per key | n/a | total across all annotations ≤ 256 KiB |
+| **C-Identifier** | env var names, ConfigMap/Secret keys (when used as env vars) | `A–Z`, `a–z`, `0–9`, `_` | `-`, `.`, `/`, whitespace, all other punctuation | must start with `[A-Za-z_]` (not a digit) | no hard limit |
+| **ConfigMap / Secret data key** | `data` / `stringData` keys | `a–z`, `A–Z`, `0–9`, `-`, `_`, `.` | `/`, whitespace, `:`, all other punctuation | any alphanumeric | 253 |
+| **Path Segment Name** | `metadata.name` for objects exposed in URL paths | DNS Subdomain set MINUS `.` and `..` as full name | same as DNS Subdomain plus the literal names `.` and `..` | as DNS Subdomain | 253 |
+
+> ⚠️ Underscore `_` is **never** valid in a DNS Subdomain or DNS Label name — that rules it out for `metadata.name`, `metadata.namespace`, API group, and Service name. Underscore IS valid in label/annotation keys (name part), label values, and ConfigMap/Secret data keys.
+
+> ⚠️ Uppercase letters are **never** valid in DNS Subdomain or DNS Label names. They ARE valid in label keys (name part), label values, qualified names, and C-identifiers.
+
 ### API Group, Kind, Resource
 
 | Element | Rule | Example |
@@ -107,25 +127,13 @@ const (
 )
 ```
 
-### Finalizer Names
+### `client.ObjectKey` in Go Code
 
-```
-// Format: <domain>/<name>  — must be a qualified name
-example.com/cleanup-external-db
-cache.example.com/redis-finalizer
-```
+When code uses `sigs.k8s.io/controller-runtime/pkg/client.ObjectKey`, assume `Namespace` and `Name` came from Kubernetes object identity (DNS Subdomain / DNS Label rules above) unless there is evidence otherwise.
 
-### Object Names and `client.ObjectKey`
+### Label & Annotation Key Examples
 
-Kubernetes `metadata.name` and `metadata.namespace` values should be treated as Kubernetes object names, not arbitrary strings.
-
-For Object Names and Namespaces:
-- underscores are not valid in normal Kubernetes names
-- names are lowercase DNS-style values using letters, digits, `-`, and for some names `.`
-
-When code uses `sigs.k8s.io/controller-runtime/pkg/client.ObjectKey`, assume `Namespace` and `Name` came from Kubernetes object identity unless there is evidence otherwise.
-
-### Label & Annotation Keys
+Use the Qualified Name rules from the character table above. Conventional prefixes:
 
 ```
 # Labels (user-facing, for selection)
