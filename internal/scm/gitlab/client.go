@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,10 +9,15 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const defaultBaseURL = "https://gitlab.com/api/v4"
+
+var apiVersionPathRegex = regexp.MustCompile(`/api/v\d+(/|$)`)
 
 type Client struct {
 	baseURL    string
@@ -20,16 +26,31 @@ type Client struct {
 }
 
 func NewClient(baseURL, token string) *Client {
-	if baseURL == "" {
-		baseURL = "https://gitlab.com/api/v4"
-	}
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: NormalizeBaseURL(baseURL),
 		token:   token,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+// NormalizeBaseURL canonicalizes a user-supplied GitLab base URL: prepends
+// https:// when no scheme is present and appends /api/v4 when no API version
+// segment is in the path. Empty input returns the gitlab.com default.
+func NormalizeBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultBaseURL
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	raw = strings.TrimRight(raw, "/")
+	if !apiVersionPathRegex.MatchString(raw) {
+		raw += "/api/v4"
+	}
+	return raw
 }
 
 func (c *Client) Get(ctx context.Context, path string, out any) error {
@@ -94,7 +115,37 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 	if err != nil {
 		return nil, nil, err
 	}
+	if !looksLikeJSON(resp.Header.Get("Content-Type"), body) {
+		return nil, nil, gitLabNonJSONError(req.URL.String(), resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
 	return body, resp, nil
+}
+
+func looksLikeJSON(contentType string, body []byte) bool {
+	if strings.Contains(strings.ToLower(contentType), "json") {
+		return true
+	}
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	if len(trimmed) == 0 {
+		return true
+	}
+	return trimmed[0] == '{' || trimmed[0] == '['
+}
+
+func gitLabNonJSONError(requestURL string, status int, contentType string, body []byte) error {
+	snippet := strings.TrimSpace(string(body))
+	if len(snippet) > 200 {
+		snippet = snippet[:200] + "…"
+	}
+	ct := contentType
+	if ct == "" {
+		ct = "<empty>"
+	}
+	return fmt.Errorf(
+		"gitlab: GET %s: status %d returned non-JSON body (content-type=%s): %s "+
+			"(check --gitlab-base-url; it must point at the GitLab API root, e.g. https://gitlab.example.com/api/v4)",
+		requestURL, status, ct, snippet,
+	)
 }
 
 func escapeProject(project string) string {
