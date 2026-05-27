@@ -39,8 +39,6 @@ type StyleGuideMappings struct {
 	Detectors                    []StyleGuideDetector `yaml:"detectors"`
 }
 
-type ContextMappings = StyleGuideMappings
-
 type StyleGuideDetector struct {
 	Language   string     `yaml:"language"`
 	ProbePaths PatternSet `yaml:"probe_paths"`
@@ -185,9 +183,9 @@ func StyleGuideDetectorLanguages(path, content string) []string {
 	return out
 }
 
-func Context() ContextMappings {
+func Context() StyleGuideMappings {
 	m := mustLoadMappings()
-	return ContextMappings{
+	return StyleGuideMappings{
 		StyleGuides:                  cloneStringMap(m.styleGuides.StyleGuides),
 		StyleGuideOrder:              append([]string(nil), m.styleGuides.StyleGuideOrder...),
 		StyleGuideExtensionOverrides: cloneStringSliceMap(m.styleGuides.StyleGuideExtensionOverrides),
@@ -609,6 +607,26 @@ func cloneStringSliceMap(in map[string][]string) map[string][]string {
 
 func cloneStyleGuideDetectors(in []StyleGuideDetector) []StyleGuideDetector {
 	out := make([]StyleGuideDetector, len(in))
-	copy(out, in)
+	for i, detector := range in {
+		out[i] = StyleGuideDetector{
+			Language:   detector.Language,
+			ProbePaths: clonePatternSet(detector.ProbePaths),
+			MatchAny:   clonePatternSet(detector.MatchAny),
+			MatchAll:   clonePatternSet(detector.MatchAll),
+		}
+	}
 	return out
+}
+
+func clonePatternSet(in PatternSet) PatternSet {
+	return PatternSet{
+		Extensions:       append([]string(nil), in.Extensions...),
+		Basenames:        append([]string(nil), in.Basenames...),
+		BasenameSuffixes: append([]string(nil), in.BasenameSuffixes...),
+		PathSegments:     append([]string(nil), in.PathSegments...),
+		PathPrefixes:     append([]string(nil), in.PathPrefixes...),
+		PathContains:     append([]string(nil), in.PathContains...),
+		ContentContains:  append([]string(nil), in.ContentContains...),
+		ContentRegex:     append([]string(nil), in.ContentRegex...),
+	}
 }

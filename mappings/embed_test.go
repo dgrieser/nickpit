@@ -108,3 +108,17 @@ func TestConfigDrivenStyleGuideDetectorLanguages(t *testing.T) {
 		t.Fatalf("detector languages = %#v", languages)
 	}
 }
+
+func TestContextReturnsIsolatedDetectorSlices(t *testing.T) {
+	first := Context()
+	if len(first.Detectors) == 0 || len(first.Detectors[0].MatchAny.Extensions) == 0 {
+		t.Fatalf("detectors missing match_any extensions: %#v", first.Detectors)
+	}
+	original := first.Detectors[0].MatchAny.Extensions[0]
+	first.Detectors[0].MatchAny.Extensions[0] = ".mutated"
+
+	second := Context()
+	if got := second.Detectors[0].MatchAny.Extensions[0]; got != original {
+		t.Fatalf("detector extension mutated shared config: got %q want %q", got, original)
+	}
+}

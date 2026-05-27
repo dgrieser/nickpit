@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -1960,10 +1960,11 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 	}
 	for _, file := range ctx.ChangedFiles {
 		addLanguage(seen, styleGuideLanguageForPath(file.Path))
-		addDetectorLanguages(seen, file.Path, "")
+		content := ""
 		if file.Status != model.FileDeleted && mappings.StyleGuideDetectorProbePath(file.Path) {
-			addDetectorLanguages(seen, file.Path, readReviewFile(ctx.CheckoutRoot, file.Path))
+			content = readReviewFile(ctx.CheckoutRoot, file.Path)
 		}
+		addDetectorLanguages(seen, file.Path, content)
 	}
 	for _, supplemental := range ctx.SupplementalContext {
 		addDetectorLanguages(seen, supplemental.Path, supplemental.Content)
@@ -2017,16 +2018,17 @@ func readReviewFile(root, path string) string {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return ""
 	}
-	lstat, err := os.Lstat(fullPath)
-	if err != nil || lstat.Mode()&os.ModeSymlink != 0 {
+	file, err := openReviewFileNoFollow(fullPath)
+	if err != nil {
 		return ""
 	}
-	info, err := os.Stat(fullPath)
+	defer file.Close()
+	info, err := file.Stat()
 	if err != nil || info.IsDir() || info.Size() > maxStyleGuideProbeBytes {
 		return ""
 	}
-	data, err := os.ReadFile(fullPath)
-	if err != nil {
+	data, err := io.ReadAll(io.LimitReader(file, maxStyleGuideProbeBytes+1))
+	if err != nil || len(data) > maxStyleGuideProbeBytes {
 		return ""
 	}
 	return string(data)

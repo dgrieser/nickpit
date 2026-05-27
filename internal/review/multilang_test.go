@@ -273,6 +273,27 @@ func TestEngineAddsKubernetesStyleGuideForGoOperatorSignals(t *testing.T) {
 	}
 }
 
+func TestEngineDoesNotAddKubernetesStyleGuideForGenericVersionedAPIPath(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "api/v1/users.go", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "api/v1/users.go",
+				Language: "go",
+				Content:  "+type User struct { ID string }\n",
+			},
+		},
+	})
+	if _, ok := contentsByLanguage["kubernetes"]; ok {
+		t.Fatalf("kubernetes style guide should not be included: %#v", contentsByLanguage)
+	}
+}
+
 func TestEngineAddsHelmAndKubernetesStyleGuidesForManifestTemplates(t *testing.T) {
 	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
 		Mode:       model.ModeLocal,
@@ -495,6 +516,27 @@ func TestStyleGuideDetectorAddsHTMLCSSForTSX(t *testing.T) {
 	}
 	if content := contentsByLanguage["html"]; !strings.Contains(content, "# HTML & CSS Style Guide") {
 		t.Fatalf("html/css style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorDoesNotAddHTMLCSSForGoTypeParameter(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "internal/set/set.go", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{
+				FilePath: "internal/set/set.go",
+				Language: "go",
+				Content:  "+func NewSet[T comparable](values ...T) map[T]struct{} { return nil }\n",
+			},
+		},
+	})
+	if _, ok := contentsByLanguage["html"]; ok {
+		t.Fatalf("html/css style guide should not be included: %#v", contentsByLanguage)
 	}
 }
 
