@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -1954,9 +1956,18 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 			language = hunk.Language
 		}
 		addLanguage(seen, language)
+		addDetectorLanguages(seen, hunk.FilePath, hunk.Content)
 	}
 	for _, file := range ctx.ChangedFiles {
 		addLanguage(seen, styleGuideLanguageForPath(file.Path))
+		content := ""
+		if file.Status != model.FileDeleted && mappings.StyleGuideDetectorProbePath(file.Path) {
+			content = readReviewFile(ctx.CheckoutRoot, file.Path)
+		}
+		addDetectorLanguages(seen, file.Path, content)
+	}
+	for _, supplemental := range ctx.SupplementalContext {
+		addDetectorLanguages(seen, supplemental.Path, supplemental.Content)
 	}
 
 	languages := make([]string, 0, len(seen))
@@ -1984,6 +1995,43 @@ func addLanguage(seen map[string]struct{}, language string) {
 
 func styleGuideLanguageForPath(path string) string {
 	return mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
+}
+
+func addDetectorLanguages(seen map[string]struct{}, path, content string) {
+	for _, language := range mappings.StyleGuideDetectorLanguages(path, content) {
+		addLanguage(seen, language)
+	}
+}
+
+const maxStyleGuideProbeBytes = 1 << 20
+
+func readReviewFile(root, path string) string {
+	if root == "" || path == "" {
+		return ""
+	}
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(clean) || clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
+		return ""
+	}
+	fullPath := filepath.Join(root, clean)
+	rel, err := filepath.Rel(root, fullPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	file, err := openReviewFileNoFollow(fullPath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.IsDir() || info.Size() > maxStyleGuideProbeBytes {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxStyleGuideProbeBytes+1))
+	if err != nil || len(data) > maxStyleGuideProbeBytes {
+		return ""
+	}
+	return string(data)
 }
 
 func filterByPriority(findings []model.Finding, threshold string) []model.Finding {
