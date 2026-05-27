@@ -87,7 +87,8 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, nil, fmt.Errorf("gitlab: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, nil, gitLabStatusError(req.URL.String(), resp.StatusCode, body)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -98,6 +99,17 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 
 func escapeProject(project string) string {
 	return url.PathEscape(project)
+}
+
+func gitLabStatusError(requestURL string, status int, body []byte) error {
+	message := fmt.Sprintf("gitlab: GET %s: status %d", requestURL, status)
+	if text := strings.TrimSpace(string(body)); text != "" {
+		message += ": " + text
+	}
+	if status == http.StatusNotFound {
+		message += " (check --repo, --id, --gitlab-base-url, and token project access)"
+	}
+	return fmt.Errorf("%s", message)
 }
 
 func withPage(path string, page int) string {

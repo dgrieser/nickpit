@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/testutil"
@@ -77,5 +78,29 @@ func TestFetchMRCheckout(t *testing.T) {
 	}
 	if spec.HeadSHA != "abc123" {
 		t.Fatalf("head sha = %q", spec.HeadSHA)
+	}
+}
+
+func TestFetchMRErrorIncludesRequestHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"404 Project Not Found"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	_, err := client.FetchMR(context.Background(), "group/project", 456, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"gitlab: GET " + server.URL + "/projects/group%2Fproject/merge_requests/456: status 404",
+		`{"message":"404 Project Not Found"}`,
+		"check --repo, --id, --gitlab-base-url, and token project access",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("error %q does not contain %q", got, want)
+		}
 	}
 }
