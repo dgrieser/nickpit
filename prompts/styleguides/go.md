@@ -794,3 +794,19 @@ go test -race ./...
 # Build
 go build ./...
 ```
+
+### Security
+
+Weak hashes are only security-relevant when the hash is used for a security
+property such as authentication, authorization, integrity, signatures, password
+storage, or collision resistance against attacker-controlled input.
+
+### Races
+
+Separate true data races from lifecycle, shutdown, or ordering races. Only call
+something a data race after confirming unsynchronized shared-memory access with
+at least one write.
+
+Check a library's concurrency contract before assuming concurrent method calls
+are unsafe. Some Go types are explicitly safe for concurrent use, while others
+require caller-side synchronization.
