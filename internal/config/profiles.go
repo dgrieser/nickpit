@@ -26,6 +26,9 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.APIKey != "" {
 		base.APIKey = override.APIKey
 	}
+	if override.SupportedModels != nil {
+		base.SupportedModels = cloneSupportedModels(override.SupportedModels)
+	}
 	if override.MaxTokens != nil {
 		base.MaxTokens = override.MaxTokens
 	}

@@ -49,6 +49,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("model", yamlScalar(profile.Model)),
 		yamlEntry("base_url", yamlScalar(profile.BaseURL)),
 		yamlEntry("api_key", yamlScalar(profile.APIKey)),
+		yamlEntry("supported_models", supportedModelsNode(profile.SupportedModels)),
 		yamlEntry("max_context_tokens", yamlInt(profile.MaxContextTokens)),
 		yamlEntry("max_tool_calls", yamlInt(profile.MaxToolCalls)),
 		yamlEntry("max_duplicate_tool_calls", yamlInt(profile.MaxDuplicateToolCalls)),
@@ -63,6 +64,38 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("gitlab_base_url", yamlScalar(profile.GitLabBaseURL)),
 	}
 	return yamlMapping(entries...)
+}
+
+func supportedModelsNode(models []ModelCapabilities) *yaml.Node {
+	seq := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, model := range models {
+		entries := []yamlNodeEntry{
+			yamlEntry("model", yamlScalar(model.Model)),
+			yamlEntry("compatible", yamlBool(model.Compatible)),
+			yamlEntry("response", yamlBool(model.Response)),
+			yamlEntry("tools", yamlBool(model.Tools)),
+		}
+		if model.JSONResponse != nil {
+			entries = append(entries, yamlEntry("json_response", yamlBool(*model.JSONResponse)))
+		}
+		if model.JSONSchema != nil {
+			entries = append(entries, yamlEntry("json_schema", yamlBool(*model.JSONSchema)))
+		}
+		entries = append(entries, yamlEntry("reasoning", yamlMapping(
+			yamlEntry("traces", yamlBool(model.Reasoning.Traces)),
+			yamlEntry("efforts", stringSliceNode(model.Reasoning.Efforts)),
+		)))
+		seq.Content = append(seq.Content, yamlMapping(entries...))
+	}
+	return seq
+}
+
+func stringSliceNode(values []string) *yaml.Node {
+	seq := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, value := range values {
+		seq.Content = append(seq.Content, yamlScalar(value))
+	}
+	return seq
 }
 
 func exampleProfile(profile Profile) Profile {
@@ -158,5 +191,13 @@ func yamlInt(value int) *yaml.Node {
 		Kind:  yaml.ScalarNode,
 		Tag:   "!!int",
 		Value: fmt.Sprintf("%d", value),
+	}
+}
+
+func yamlBool(value bool) *yaml.Node {
+	return &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!bool",
+		Value: fmt.Sprintf("%t", value),
 	}
 }

@@ -37,36 +37,52 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                              string         `yaml:"model"`
-	BaseURL                            string         `yaml:"base_url"`
-	APIKey                             string         `yaml:"api_key"`
-	MaxTokens                          *int           `yaml:"max_tokens"`
-	Temperature                        *float64       `yaml:"temperature"`
-	TopP                               *float64       `yaml:"top_p"`
-	ExtraBody                          map[string]any `yaml:"extra_body"`
-	UseJSONSchema                      bool           `yaml:"use_json_schema"`
-	MaxContextTokens                   int            `yaml:"max_context_tokens"`
-	MaxToolCalls                       int            `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls              int            `yaml:"max_duplicate_tool_calls"`
-	MaxOutputRetries                   int            `yaml:"max_output_retries"`
-	MaxReasoningSeconds                int            `yaml:"max_reasoning_seconds"`
-	MaxReasoningLoopRepeats            int            `yaml:"max_reasoning_loop_repeats"`
-	MaxRateLimitDelaySeconds           int            `yaml:"max_rate_limit_delay_seconds"`
-	NudgeCount                         int            `yaml:"nudge_count"`
-	ReasoningEffort                    string         `yaml:"reasoning_effort"`
-	Workdir                            string         `yaml:"workdir"`
-	GitHubToken                        string         `yaml:"github_token"`
-	GitLabToken                        string         `yaml:"gitlab_token"`
-	GitLabBaseURL                      string         `yaml:"gitlab_base_url"`
-	MaxContextTokensConfigured         bool           `yaml:"-"`
-	APIKeyConfigured                   bool           `yaml:"-"`
-	MaxToolCallsConfigured             bool           `yaml:"-"`
-	MaxDuplicateToolCallsConfigured    bool           `yaml:"-"`
-	MaxOutputRetriesConfigured         bool           `yaml:"-"`
-	MaxReasoningSecondsConfigured      bool           `yaml:"-"`
-	MaxReasoningLoopRepeatsConfigured  bool           `yaml:"-"`
-	MaxRateLimitDelaySecondsConfigured bool           `yaml:"-"`
-	NudgeCountConfigured               bool           `yaml:"-"`
+	Model                              string              `yaml:"model"`
+	BaseURL                            string              `yaml:"base_url"`
+	APIKey                             string              `yaml:"api_key"`
+	SupportedModels                    []ModelCapabilities `yaml:"supported_models"`
+	MaxTokens                          *int                `yaml:"max_tokens"`
+	Temperature                        *float64            `yaml:"temperature"`
+	TopP                               *float64            `yaml:"top_p"`
+	ExtraBody                          map[string]any      `yaml:"extra_body"`
+	UseJSONSchema                      bool                `yaml:"use_json_schema"`
+	MaxContextTokens                   int                 `yaml:"max_context_tokens"`
+	MaxToolCalls                       int                 `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls              int                 `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries                   int                 `yaml:"max_output_retries"`
+	MaxReasoningSeconds                int                 `yaml:"max_reasoning_seconds"`
+	MaxReasoningLoopRepeats            int                 `yaml:"max_reasoning_loop_repeats"`
+	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
+	NudgeCount                         int                 `yaml:"nudge_count"`
+	ReasoningEffort                    string              `yaml:"reasoning_effort"`
+	Workdir                            string              `yaml:"workdir"`
+	GitHubToken                        string              `yaml:"github_token"`
+	GitLabToken                        string              `yaml:"gitlab_token"`
+	GitLabBaseURL                      string              `yaml:"gitlab_base_url"`
+	MaxContextTokensConfigured         bool                `yaml:"-"`
+	APIKeyConfigured                   bool                `yaml:"-"`
+	MaxToolCallsConfigured             bool                `yaml:"-"`
+	MaxDuplicateToolCallsConfigured    bool                `yaml:"-"`
+	MaxOutputRetriesConfigured         bool                `yaml:"-"`
+	MaxReasoningSecondsConfigured      bool                `yaml:"-"`
+	MaxReasoningLoopRepeatsConfigured  bool                `yaml:"-"`
+	MaxRateLimitDelaySecondsConfigured bool                `yaml:"-"`
+	NudgeCountConfigured               bool                `yaml:"-"`
+}
+
+type ModelCapabilities struct {
+	Model        string                `json:"model" yaml:"model"`
+	Compatible   bool                  `json:"compatible" yaml:"compatible"`
+	Response     bool                  `json:"response" yaml:"response"`
+	Reasoning    ReasoningCapabilities `json:"reasoning" yaml:"reasoning"`
+	Tools        bool                  `json:"tools" yaml:"tools"`
+	JSONSchema   *bool                 `json:"json_schema,omitempty" yaml:"json_schema,omitempty"`
+	JSONResponse *bool                 `json:"json_response,omitempty" yaml:"json_response,omitempty"`
+}
+
+type ReasoningCapabilities struct {
+	Traces  bool     `json:"traces" yaml:"traces"`
+	Efforts []string `json:"efforts" yaml:"efforts"`
 }
 
 type Overrides struct {
@@ -179,7 +195,28 @@ func cloneProfile(profile Profile) Profile {
 		profile.TopP = &value
 	}
 	profile.ExtraBody = cloneMap(profile.ExtraBody)
+	profile.SupportedModels = cloneSupportedModels(profile.SupportedModels)
 	return profile
+}
+
+func cloneSupportedModels(models []ModelCapabilities) []ModelCapabilities {
+	if models == nil {
+		return nil
+	}
+	cloned := make([]ModelCapabilities, len(models))
+	for i, model := range models {
+		cloned[i] = model
+		cloned[i].Reasoning.Efforts = append([]string(nil), model.Reasoning.Efforts...)
+		if model.JSONSchema != nil {
+			value := *model.JSONSchema
+			cloned[i].JSONSchema = &value
+		}
+		if model.JSONResponse != nil {
+			value := *model.JSONResponse
+			cloned[i].JSONResponse = &value
+		}
+	}
+	return cloned
 }
 
 func cloneMap(value map[string]any) map[string]any {

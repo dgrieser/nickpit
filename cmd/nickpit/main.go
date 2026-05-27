@@ -75,6 +75,7 @@ type app struct {
 	verifyDropPolicy              string
 	verifyDropConfidence          float64
 	skipModelCheck                bool
+	refreshModelCheck             bool
 	logger                        *logging.Logger
 }
 
@@ -627,10 +628,10 @@ func (a *app) newCheckCmd() *cobra.Command {
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-			checker := modelcheck.New(client, profile)
-			checker.SetLogger(logger)
-			checker.SetParallel(!a.disableParallelToolCalls)
-			result := checker.Run(cmd.Context())
+			result, err := a.resolveModelCapabilities(cmd.Context(), client, profile, a.refreshModelCheck)
+			if err != nil {
+				return err
+			}
 			a.logProgress("ModelCheck", modelCheckSummary(result))
 			if a.jsonOutput {
 				if err := writeJSON(struct {
@@ -646,6 +647,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 			return validatePreReviewModelCheck(result)
 		},
 	}
+	modelCmd.Flags().BoolVar(&a.refreshModelCheck, "refresh", false, "Refresh stored model capabilities by running live probes")
 	cmd.AddCommand(modelCmd)
 	return cmd
 }
@@ -691,10 +693,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	if !a.skipModelCheck {
-		checker := modelcheck.New(client, profile)
-		checker.SetLogger(logger)
-		checker.SetParallel(!a.disableParallelToolCalls)
-		checkResult := checker.Run(ctx)
+		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, false)
+		if err != nil {
+			return err
+		}
 		if err := validatePreReviewModelCheck(checkResult); err != nil {
 			return err
 		}
@@ -774,6 +776,48 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
+}
+
+func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {
+	if !refresh {
+		if capability, ok := modelcheck.FindProfileCapability(profile); ok {
+			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
+			a.logProgress("ModelCheck", "source=profile")
+			return result, nil
+		}
+		cachePath, err := modelcheck.DefaultCachePath()
+		if err != nil {
+			a.logf("Model capability cache unavailable: %v", err)
+		} else {
+			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, profile.Model)
+			if err == nil && ok {
+				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
+				a.logProgress("ModelCheck", "source=cache")
+				return result, nil
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				a.logf("Model capability cache ignored: %v", err)
+			}
+		}
+	}
+
+	checker := modelcheck.New(client, profile)
+	checker.SetLogger(a.logger)
+	checker.SetParallel(!a.disableParallelToolCalls)
+	result := checker.Run(ctx)
+	if err := validatePreReviewModelCheck(result); err != nil {
+		return result, nil
+	}
+	capability := modelcheck.CapabilityFromResult(result)
+	cachePath, err := modelcheck.DefaultCachePath()
+	if err != nil {
+		a.logf("Model capability cache unavailable: %v", err)
+		return result, nil
+	}
+	if err := modelcheck.WriteCachedCapability(cachePath, profile.BaseURL, capability, time.Now()); err != nil {
+		a.logf("Model capability cache write failed: %v", err)
+	}
+	return result, nil
 }
 
 // reviewProducedNothing reports whether the review pipeline collapsed: every
