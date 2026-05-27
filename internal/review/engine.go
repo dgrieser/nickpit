@@ -1956,24 +1956,36 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 			language = hunk.Language
 		}
 		addLanguage(seen, language)
-		if isKubernetesPath(hunk.FilePath) || isKubernetesContent(hunk.FilePath, hunk.Content) {
-			addLanguage(seen, "kubernetes")
-		}
+		applyStyleGuideDetectors(seen, styleGuideSignal{
+			Path:     hunk.FilePath,
+			Language: language,
+			Content:  hunk.Content,
+			Source:   "hunk",
+		})
 	}
 	for _, file := range ctx.ChangedFiles {
 		addLanguage(seen, styleGuideLanguageForPath(file.Path))
-		if isKubernetesPath(file.Path) {
-			addLanguage(seen, "kubernetes")
-			continue
-		}
-		if file.Status != model.FileDeleted && isKubernetesProbePath(file.Path) && isKubernetesContent(file.Path, readReviewFile(ctx.CheckoutRoot, file.Path)) {
-			addLanguage(seen, "kubernetes")
+		applyStyleGuideDetectors(seen, styleGuideSignal{
+			Path:   file.Path,
+			Status: file.Status,
+			Source: "changed_file",
+		})
+		if file.Status != model.FileDeleted && styleGuideProbePath(file.Path) {
+			applyStyleGuideDetectors(seen, styleGuideSignal{
+				Path:    file.Path,
+				Status:  file.Status,
+				Content: readReviewFile(ctx.CheckoutRoot, file.Path),
+				Source:  "changed_file_content",
+			})
 		}
 	}
 	for _, supplemental := range ctx.SupplementalContext {
-		if isKubernetesPath(supplemental.Path) || isKubernetesContent(supplemental.Path, supplemental.Content) {
-			addLanguage(seen, "kubernetes")
-		}
+		applyStyleGuideDetectors(seen, styleGuideSignal{
+			Path:     supplemental.Path,
+			Language: supplemental.Language,
+			Content:  supplemental.Content,
+			Source:   "supplemental",
+		})
 	}
 
 	languages := make([]string, 0, len(seen))
@@ -2001,6 +2013,49 @@ func addLanguage(seen map[string]struct{}, language string) {
 
 func styleGuideLanguageForPath(path string) string {
 	return mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
+}
+
+type styleGuideSignal struct {
+	Path     string
+	Language string
+	Status   model.FileStatus
+	Content  string
+	Source   string
+}
+
+type styleGuideDetector struct {
+	Language  string
+	ProbePath func(string) bool
+	Applies   func(styleGuideSignal) bool
+}
+
+var styleGuideDetectors = []styleGuideDetector{
+	kubernetesStyleGuideDetector,
+}
+
+var kubernetesStyleGuideDetector = styleGuideDetector{
+	Language:  "kubernetes",
+	ProbePath: isKubernetesProbePath,
+	Applies: func(signal styleGuideSignal) bool {
+		return isKubernetesPath(signal.Path) || isKubernetesContent(signal.Path, signal.Content)
+	},
+}
+
+func applyStyleGuideDetectors(seen map[string]struct{}, signal styleGuideSignal) {
+	for _, detector := range styleGuideDetectors {
+		if detector.Applies != nil && detector.Applies(signal) {
+			addLanguage(seen, detector.Language)
+		}
+	}
+}
+
+func styleGuideProbePath(path string) bool {
+	for _, detector := range styleGuideDetectors {
+		if detector.ProbePath != nil && detector.ProbePath(path) {
+			return true
+		}
+	}
+	return false
 }
 
 const maxKubernetesProbeBytes = 1 << 20

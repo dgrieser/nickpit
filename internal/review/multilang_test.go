@@ -3,6 +3,8 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -312,6 +314,79 @@ func TestEngineDoesNotAddKubernetesStyleGuideForGenericYAML(t *testing.T) {
 	}
 }
 
+func TestStyleGuideDetectorAddsKubernetesFromSupplementalContext(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "README.md", Status: model.FileModified, Additions: 1},
+		},
+		Diff: "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
+		SupplementalContext: []model.SupplementalFile{
+			{
+				Path:     "notes/rendered.yaml",
+				Language: "yaml",
+				Content:  "apiVersion: batch/v1\nkind: CronJob\n",
+				Kind:     "context_tool_result",
+			},
+		},
+	})
+	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("kubernetes style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorAddsKubernetesFromChangedFileContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config", "app.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("apiVersion: v1\nkind: Service\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:         model.ModeLocal,
+		CheckoutRoot: root,
+		Repository:   model.RepositoryInfo{FullName: "repo"},
+		Title:        "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "config/app.yaml", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "config/app.yaml", Language: "yaml", Content: "+metadata:\n+  name: app\n"},
+		},
+	})
+	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("kubernetes style guide content = %.80q", content)
+	}
+}
+
+func TestStyleGuideDetectorDedupeKeepsOneKubernetesGuide(t *testing.T) {
+	contentsByLanguage := styleGuideContentsForContext(t, &model.ReviewContext{
+		Mode:       model.ModeLocal,
+		Repository: model.RepositoryInfo{FullName: "repo"},
+		Title:      "title",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "k8s/deployment.yaml", Status: model.FileModified, Additions: 1},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "k8s/deployment.yaml", Language: "yaml", Content: "+apiVersion: apps/v1\n+kind: Deployment\n"},
+		},
+		SupplementalContext: []model.SupplementalFile{
+			{Path: "rendered/service.yaml", Language: "yaml", Content: "apiVersion: v1\nkind: Service\n"},
+		},
+	})
+	if len(contentsByLanguage) != 1 {
+		t.Fatalf("style guides = %#v", contentsByLanguage)
+	}
+	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
+		t.Fatalf("kubernetes style guide content = %.80q", content)
+	}
+}
+
 func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) map[string]string {
 	t.Helper()
 	llmClient := &capturingLLM{}
@@ -319,6 +394,7 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 
 	_, err := engine.Run(context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
+		RepoRoot:         reviewCtx.CheckoutRoot,
 		MaxContextTokens: 1000,
 	})
 	if err != nil {
