@@ -4,7 +4,7 @@
 - Add suggestion agent to format suggestions for gitlab/github
 - Add simplifier agent to shorten text on findings
 - Add reasoning summary agent to use for progress printing (e.g. "Reasoned about A, B and C", short)
-
+- Ability to compile and run tests to verify functionality/compile
 
 - Logging: Change to "[agent: <agent_name>]"
 - Logging: Put turns into bracket, e.g. "[agent: <agent_name>, turn: <round>]"
