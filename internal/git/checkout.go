@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
 )
@@ -102,13 +103,45 @@ func (m *CheckoutManager) prepareWorktree(ctx context.Context, spec model.Checko
 }
 
 func (m *CheckoutManager) fetchRevision(ctx context.Context, repoRoot string, spec model.CheckoutSpec, opts CheckoutOptions) error {
-	args := append(m.authArgs(spec.Provider, opts.Token), "fetch", "--depth", "1", spec.CloneURL)
-	ref := spec.HeadRef
-	if ref == "" {
-		ref = spec.HeadSHA
+	runner := m.newRunner(repoRoot)
+	auth := m.authArgs(spec.Provider, opts.Token)
+
+	if spec.HeadRef == "" {
+		return m.fetchTarget(ctx, runner, auth, spec.CloneURL, spec.HeadSHA)
 	}
-	args = append(args, ref)
-	_, err := m.newRunner(repoRoot).Run(ctx, args...)
+
+	present, err := m.remoteHasRef(ctx, runner, auth, spec.CloneURL, spec.HeadRef)
+	if err != nil {
+		return err
+	}
+	if present {
+		return m.fetchTarget(ctx, runner, auth, spec.CloneURL, spec.HeadRef)
+	}
+	if spec.HeadSHA == "" {
+		return fmt.Errorf("git: ref %q not found on remote %s and no head_sha to fall back to", spec.HeadRef, spec.CloneURL)
+	}
+	if err := m.fetchTarget(ctx, runner, auth, spec.CloneURL, spec.HeadSHA); err != nil {
+		return fmt.Errorf("git: ref %q missing on %s; fallback fetch of head_sha %q failed: %w", spec.HeadRef, spec.CloneURL, spec.HeadSHA, err)
+	}
+	return nil
+}
+
+func (m *CheckoutManager) remoteHasRef(ctx context.Context, runner Runner, auth []string, cloneURL, ref string) (bool, error) {
+	args := make([]string, 0, len(auth)+3)
+	args = append(args, auth...)
+	args = append(args, "ls-remote", cloneURL, ref)
+	out, err := runner.Run(ctx, args...)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+func (m *CheckoutManager) fetchTarget(ctx context.Context, runner Runner, auth []string, cloneURL, target string) error {
+	args := make([]string, 0, len(auth)+5)
+	args = append(args, auth...)
+	args = append(args, "fetch", "--depth", "1", cloneURL, target)
+	_, err := runner.Run(ctx, args...)
 	return err
 }
 
