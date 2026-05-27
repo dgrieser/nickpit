@@ -95,13 +95,15 @@ basenames:
     - makefile
     - gnumakefile
 
-helm:
-  language: helm
-  basename_matches:
-    - chart.yaml
-    - values.yaml
-  basename_suffixes:
-    - .tpl
-  path_segments:
-    - charts
-    - templates
+path_rules:
+  - language: helm
+    match_any:
+      basenames:
+        - chart.yaml
+        - chart.lock
+        - values.yaml
+      basename_suffixes:
+        - .tpl
+      path_segments:
+        - charts
+        - templates
