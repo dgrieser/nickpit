@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -991,13 +992,41 @@ func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.
 		minCount = len(finalFindings.Findings)
 		inputFindings = append(inputFindings, finalFindings.Findings...)
 	}
+	incomingCount := 0
 	if incoming.response != nil {
+		incomingCount = len(incoming.response.Findings)
 		inputFindings = append(inputFindings, incoming.response.Findings...)
 	}
-	return validateMergeResponseForInputs(resp, minCount, "Final findings", inputFindings)
+	return validateMergeResponse(resp, mergeValidationInputs{
+		minCount:      minCount,
+		protectedName: "Final findings",
+		inputFindings: inputFindings,
+		accumulator:   finalFindings,
+		incomingCount: incomingCount,
+	})
 }
 
 func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, protectedName string, inputFindings []model.Finding) *llm.InvalidResponseError {
+	return validateMergeResponse(resp, mergeValidationInputs{
+		minCount:      minCount,
+		protectedName: protectedName,
+		inputFindings: inputFindings,
+	})
+}
+
+type mergeValidationInputs struct {
+	minCount      int
+	protectedName string
+	inputFindings []model.Finding
+	// Pairwise-only. Both must be set to enable the merge_mismatch check that
+	// detects responses where count did not grow enough to absorb the incoming
+	// reviewer and none of the accumulator findings were modified — i.e. the
+	// merge step silently dropped the incoming reviewer's contribution.
+	accumulator   *llm.ReviewResponse
+	incomingCount int
+}
+
+func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *llm.InvalidResponseError {
 	if resp == nil {
 		return &llm.InvalidResponseError{
 			Reason:        "merge returned no response",
@@ -1005,15 +1034,29 @@ func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, prot
 		}
 	}
 	var problems []string
-	countMismatch := len(resp.Findings) < minCount
+	countMismatch := len(resp.Findings) < in.minCount
 	if countMismatch {
-		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), minCount))
+		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), in.minCount))
 	}
 	unmatched := 0
 	for i, finding := range resp.Findings {
-		if findMergeInputMatch(finding, inputFindings) == nil {
+		if findMergeInputMatch(finding, in.inputFindings) == nil {
 			unmatched++
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
+		}
+	}
+	mergeMismatch := false
+	changed, required, growth := 0, 0, 0
+	if in.accumulator != nil && in.incomingCount > 0 {
+		finalCount := len(in.accumulator.Findings)
+		growth = max(len(resp.Findings)-finalCount, 0)
+		required = in.incomingCount - growth
+		if required > 0 {
+			changed = pairwiseMergeChangedCount(resp.Findings, in.accumulator.Findings)
+			if changed < required {
+				mergeMismatch = true
+				problems = append(problems, fmt.Sprintf("merge_mismatch changed=%d required=%d incoming=%d growth=%d", changed, required, in.incomingCount, growth))
+			}
 		}
 	}
 	if len(problems) == 0 {
@@ -1031,14 +1074,71 @@ func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, prot
 			MinCount      int
 			Unmatched     int
 			ProtectedName string
+			MergeMismatch bool
+			Changed       int
+			Required      int
+			IncomingCount int
+			Growth        int
 		}{
 			CountMismatch: countMismatch,
 			GotCount:      len(resp.Findings),
-			MinCount:      minCount,
+			MinCount:      in.minCount,
 			Unmatched:     unmatched,
-			ProtectedName: protectedName,
+			ProtectedName: in.protectedName,
+			MergeMismatch: mergeMismatch,
+			Changed:       changed,
+			Required:      required,
+			IncomingCount: in.incomingCount,
+			Growth:        growth,
 		},
 	}
+}
+
+// pairwiseMergeChangedCount counts output findings that match an accumulator
+// finding (by ID or code location) but differ materially from it. Output
+// findings without an accumulator match are skipped here — they are either
+// added from the incoming reviewer or unmatched (which the unmatched check
+// already flags).
+func pairwiseMergeChangedCount(out, accumulator []model.Finding) int {
+	changed := 0
+	for i := range out {
+		match := findMergeInputMatch(out[i], accumulator)
+		if match == nil {
+			continue
+		}
+		if !findingMaterialEqual(out[i], *match) {
+			changed++
+		}
+	}
+	return changed
+}
+
+// findingMaterialEqual compares the parts of a finding that a merge step would
+// rewrite when folding in new information. ID is intentionally ignored because
+// a merge that only reassigns an ID without touching content is not a merge.
+func findingMaterialEqual(a, b model.Finding) bool {
+	if a.Title != b.Title || a.Body != b.Body {
+		return false
+	}
+	if a.ConfidenceScore != b.ConfidenceScore {
+		return false
+	}
+	if model.PriorityRank(a.Priority) != model.PriorityRank(b.Priority) {
+		return false
+	}
+	if a.CodeLocation != b.CodeLocation {
+		return false
+	}
+	if !reflect.DeepEqual(a.Suggestions, b.Suggestions) {
+		return false
+	}
+	if !reflect.DeepEqual(a.Verification, b.Verification) {
+		return false
+	}
+	if !reflect.DeepEqual(a.Finalization, b.Finalization) {
+		return false
+	}
+	return true
 }
 
 func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {

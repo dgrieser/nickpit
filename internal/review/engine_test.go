@@ -1711,6 +1711,111 @@ func TestMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
 	}
 }
 
+func TestPairwiseMergeRejectsUnchangedAccumulator(t *testing.T) {
+	a := mergeTestFinding("Fix A", 1)
+	b := mergeTestFinding("Fix B", 10)
+	c := mergeTestFinding("Fix C", 20)
+
+	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer 2",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
+	}
+	// Same count as accumulator (no growth) and identical content — incoming was dropped.
+	resp := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
+
+	invalid := validatePairwiseMergeResponse(resp, accumulator, incoming)
+	if invalid == nil {
+		t.Fatalf("expected merge_mismatch error, got nil")
+	}
+	if !strings.Contains(invalid.Reason, "merge_mismatch") {
+		t.Fatalf("expected merge_mismatch in reason, got %q", invalid.Reason)
+	}
+	if invalid.RetryGuidanceTemplate != "merge_validation_retry_guidance.tmpl" {
+		t.Fatalf("expected retry guidance template, got %q", invalid.RetryGuidanceTemplate)
+	}
+}
+
+func TestPairwiseMergeAcceptsModifiedAccumulator(t *testing.T) {
+	a := mergeTestFinding("Fix A", 1)
+	b := mergeTestFinding("Fix B", 10)
+	c := mergeTestFinding("Fix C", 20)
+
+	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer 2",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
+	}
+	// Same count, but accumulator finding `a` was modified (body refined from incoming).
+	modifiedA := a
+	modifiedA.Body = "refined body merged from reviewer 2"
+	resp := &llm.ReviewResponse{Findings: []model.Finding{modifiedA, b}}
+
+	if invalid := validatePairwiseMergeResponse(resp, accumulator, incoming); invalid != nil {
+		t.Fatalf("expected nil for modified accumulator, got %v", invalid)
+	}
+}
+
+func TestPairwiseMergeAcceptsAppendedIncoming(t *testing.T) {
+	a := mergeTestFinding("Fix A", 1)
+	b := mergeTestFinding("Fix B", 10)
+	c := mergeTestFinding("Fix C", 20)
+
+	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer 2",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
+	}
+	// Count grew by len(incoming) — no accumulator modifications required.
+	resp := &llm.ReviewResponse{Findings: []model.Finding{a, b, c}}
+
+	if invalid := validatePairwiseMergeResponse(resp, accumulator, incoming); invalid != nil {
+		t.Fatalf("expected nil when incoming was appended, got %v", invalid)
+	}
+}
+
+func TestPairwiseMergePartialGrowthRequiresRemainingChanges(t *testing.T) {
+	a := mergeTestFinding("Fix A", 1)
+	b := mergeTestFinding("Fix B", 10)
+	c := mergeTestFinding("Fix C", 20)
+	d := mergeTestFinding("Fix D", 30)
+
+	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer 2",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: []model.Finding{c, d}},
+	}
+	// Count grew by 1 of 2 incoming. Accumulator untouched → still 1 modification short.
+	resp := &llm.ReviewResponse{Findings: []model.Finding{a, b, c}}
+
+	invalid := validatePairwiseMergeResponse(resp, accumulator, incoming)
+	if invalid == nil {
+		t.Fatalf("expected merge_mismatch for partial growth without modifications")
+	}
+	if !strings.Contains(invalid.Reason, "merge_mismatch") {
+		t.Fatalf("expected merge_mismatch in reason, got %q", invalid.Reason)
+	}
+}
+
+func TestPairwiseMergeMismatchSkippedWhenIncomingEmpty(t *testing.T) {
+	a := mergeTestFinding("Fix A", 1)
+	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a}}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer 2",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: nil},
+	}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{a}}
+
+	if invalid := validatePairwiseMergeResponse(resp, accumulator, incoming); invalid != nil {
+		t.Fatalf("expected nil when incoming has no findings, got %v", invalid)
+	}
+}
+
 func TestNoToolsMessagesUsesAgentRoleForCommonSnippets(t *testing.T) {
 	messages := []llm.Message{{Role: "system", Content: "old"}}
 	reviewerMessages, err := noToolsMessages("reviewer", "{{.FindingInstructionsSnippet}}", messages, "", "")
