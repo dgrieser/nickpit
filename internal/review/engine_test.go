@@ -75,26 +75,30 @@ type capturingLLM struct {
 	resps []*llm.ReviewResponse
 }
 
+var uuidRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+
 type multiAgentLLM struct {
-	mu             sync.Mutex
-	context        int
-	vectorCalls    map[string]int
-	verifyCalls    int
-	mergeTools     int
-	mergePayload   map[string]any
-	mergeSchema    []byte
-	mergeRequests  []*llm.ReviewRequest
-	contextSystem  string
-	vectorContext  map[string]string
-	vectorSystem   map[string]string
-	vectorNudge    map[string]string
-	events         []string
-	contextFailErr error
-	vectorFailErr  map[string]error
-	verifyInvalid  map[string]bool
-	vectorFindings map[string]int
-	mergeResponses []*llm.ReviewResponse
-	mergeFailErr   error
+	mu              sync.Mutex
+	context         int
+	vectorCalls     map[string]int
+	verifyCalls     int
+	mergeTools      int
+	mergePayload    map[string]any
+	mergeSchema     []byte
+	mergeRequests   []*llm.ReviewRequest
+	contextSystem   string
+	vectorContext   map[string]string
+	vectorSystem    map[string]string
+	vectorNudge     map[string]string
+	events          []string
+	contextFailErr  error
+	vectorFailErr   map[string]error
+	verifyInvalid   map[string]bool
+	vectorFindings  map[string]int
+	dedupeResponses []*llm.ReviewResponse
+	dedupeFailErr   error
+	mergeResponses  []*llm.ReviewResponse
+	mergeFailErr    error
 }
 
 func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -209,6 +213,24 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	cloned.Messages = cloneTestMessages(req.Messages)
 	s.mergeRequests = append(s.mergeRequests, &cloned)
 	if len(req.Messages) > 1 {
+		if strings.Contains(req.Messages[1].Content, `"review_findings"`) {
+			if s.dedupeFailErr != nil {
+				return nil, s.dedupeFailErr
+			}
+			if len(s.dedupeResponses) > 0 {
+				resp := s.dedupeResponses[0]
+				s.dedupeResponses = s.dedupeResponses[1:]
+				return resp, nil
+			}
+			findings := testPayloadFindingIDsFromJSON(req.Messages[1].Content)
+			return &llm.ReviewResponse{
+				Findings:               findings,
+				OverallCorrectness:     "patch is incorrect",
+				OverallExplanation:     "deduped",
+				OverallConfidenceScore: 0.95,
+				TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
+			}, nil
+		}
 		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
 	}
 	if s.mergeFailErr != nil {
@@ -256,6 +278,31 @@ func testPayloadFindings(payload map[string]any) []model.Finding {
 	data, _ := json.Marshal(raw)
 	var findings []model.Finding
 	_ = json.Unmarshal(data, &findings)
+	return findings
+}
+
+func testPayloadFindingsFromJSON(data []byte) []model.Finding {
+	var payload struct {
+		Findings []model.Finding `json:"findings"`
+	}
+	_ = json.Unmarshal(data, &payload)
+	return payload.Findings
+}
+
+func testPayloadFindingIDsFromJSON(data string) []model.Finding {
+	matches := uuidRe.FindAllString(data, -1)
+	seen := make(map[string]struct{}, len(matches))
+	findings := make([]model.Finding, 0, len(matches))
+	for _, id := range matches {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		findings = append(findings, model.Finding{
+			ID:           id,
+			Verification: &model.FindingVerification{ID: id, Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "verified"},
+		})
+	}
 	return findings
 }
 
@@ -1348,15 +1395,16 @@ func TestMultiAgentMergeValidationRetriesWhenBelowLargestReviewerCount(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	pairwiseRequests := pairwiseMergeRequests(t, llmClient.mergeRequests)
 	expectedMergeRequests := len(reviewVectors)
-	if len(llmClient.mergeRequests) != expectedMergeRequests {
-		t.Fatalf("merge requests = %d, want retry plus %d pairwise merge steps", len(llmClient.mergeRequests), len(reviewVectors)-1)
+	if len(pairwiseRequests) != expectedMergeRequests {
+		t.Fatalf("merge requests = %d, want retry plus %d pairwise merge steps", len(pairwiseRequests), len(reviewVectors)-1)
 	}
-	retryMessage := llmClient.mergeRequests[1].Messages[len(llmClient.mergeRequests[1].Messages)-1].Content
+	retryMessage := pairwiseRequests[1].Messages[len(pairwiseRequests[1].Messages)-1].Content
 	if !strings.Contains(retryMessage, "Final findings") || !strings.Contains(retryMessage, "3") {
 		t.Fatalf("retry message missing merge count nudge: %q", retryMessage)
 	}
-	expectedFindings := 3 + (len(reviewVectors) - 2)
+	expectedFindings := 3 + (len(reviewVectors) - 1)
 	if len(result.Findings) != expectedFindings {
 		t.Fatalf("findings = %d, want retry output plus remaining vectors (%d)", len(result.Findings), expectedFindings)
 	}
@@ -1386,10 +1434,11 @@ func TestMultiAgentPairwiseMergeStartsWithLargestReviewers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(llmClient.mergeRequests) != len(reviewVectors)-1 {
-		t.Fatalf("merge requests = %d, want one per incoming reviewer", len(llmClient.mergeRequests))
+	pairwiseRequests := pairwiseMergeRequests(t, llmClient.mergeRequests)
+	if len(pairwiseRequests) != len(reviewVectors)-1 {
+		t.Fatalf("merge requests = %d, want one per incoming reviewer", len(pairwiseRequests))
 	}
-	firstPayload := mergePayloadFromRequest(t, llmClient.mergeRequests[0])
+	firstPayload := mergePayloadFromRequest(t, pairwiseRequests[0])
 	finalFindings := firstPayload["final_findings"].(map[string]any)
 	incoming := firstPayload["incoming_review"].(map[string]any)
 	if finalFindings["name"] != "Final findings" {
@@ -1405,7 +1454,7 @@ func TestMultiAgentPairwiseMergeStartsWithLargestReviewers(t *testing.T) {
 		t.Fatalf("first incoming count = %d, want 3", len(incoming["findings"].([]any)))
 	}
 
-	secondPayload := mergePayloadFromRequest(t, llmClient.mergeRequests[1])
+	secondPayload := mergePayloadFromRequest(t, pairwiseRequests[1])
 	secondIncoming := secondPayload["incoming_review"].(map[string]any)
 	if secondIncoming["name"] != "Code Quality" {
 		t.Fatalf("second incoming reviewer = %#v, want Code Quality", secondIncoming["name"])
@@ -1422,6 +1471,18 @@ func mergePayloadFromRequest(t *testing.T, req *llm.ReviewRequest) map[string]an
 		t.Fatalf("merge payload unmarshal: %v", err)
 	}
 	return payload
+}
+
+func pairwiseMergeRequests(t *testing.T, requests []*llm.ReviewRequest) []*llm.ReviewRequest {
+	t.Helper()
+	var out []*llm.ReviewRequest
+	for _, req := range requests {
+		payload := mergePayloadFromRequest(t, req)
+		if _, ok := payload["final_findings"]; ok {
+			out = append(out, req)
+		}
+	}
+	return out
 }
 
 func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
@@ -1450,9 +1511,10 @@ func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pairwiseRequests := pairwiseMergeRequests(t, llmClient.mergeRequests)
 	expectedMergeRequests := len(reviewVectors)
-	if len(llmClient.mergeRequests) != expectedMergeRequests {
-		t.Fatalf("merge requests = %d, want failed retry plus %d pairwise merge steps", len(llmClient.mergeRequests), len(reviewVectors)-1)
+	if len(pairwiseRequests) != expectedMergeRequests {
+		t.Fatalf("merge requests = %d, want failed retry plus %d pairwise merge steps", len(pairwiseRequests), len(reviewVectors)-1)
 	}
 	foundWarning := false
 	for _, warning := range result.Warnings {
@@ -1711,6 +1773,106 @@ func TestMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
 	}
 }
 
+func TestDedupeAgentAcceptsDedupedReviewerFindings(t *testing.T) {
+	a := mergeTestFindingWithID("Fix duplicated issue", 1)
+	b := mergeTestFindingWithID("Fix duplicated issue", 1)
+	llmClient := &multiAgentLLM{
+		dedupeResponses: []*llm.ReviewResponse{{
+			Findings:               []model.Finding{a},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "deduped",
+			OverallConfidenceScore: 0.9,
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	input := agentResult{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}},
+		run:  model.AgentRun{Name: "Testing", Role: "reviewer"},
+	}
+
+	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if run.Status != model.AgentRunStatusOK {
+		t.Fatalf("dedupe status = %q, want ok: %s", run.Status, run.Error)
+	}
+	if resp == nil || len(resp.Findings) != 1 || resp.Findings[0].ID != a.ID {
+		t.Fatalf("dedupe findings = %#v, want one preserved input finding", resp)
+	}
+}
+
+func TestDedupeAgentRejectsUnknownIDsAndFallsBack(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 2)
+	unknown := mergeTestFindingWithID("Fix A", 1)
+	llmClient := &multiAgentLLM{
+		dedupeResponses: []*llm.ReviewResponse{
+			{Findings: []model.Finding{unknown}},
+			{Findings: []model.Finding{unknown}},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	input := agentResult{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}},
+		run:  model.AgentRun{Name: "Testing", Role: "reviewer"},
+	}
+
+	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
+
+	if resp != nil {
+		t.Fatalf("dedupe resp = %#v, want fallback/no replacement", resp)
+	}
+	if run.Status != model.AgentRunStatusPartial {
+		t.Fatalf("dedupe status = %q, want partial", run.Status)
+	}
+	if !strings.Contains(run.Error, "unknown_ids") {
+		t.Fatalf("dedupe error = %q, want unknown_ids", run.Error)
+	}
+}
+
+func TestDedupeValidationRejectsTooMuchDrop(t *testing.T) {
+	var input []model.Finding
+	for i := 0; i < 10; i++ {
+		input = append(input, mergeTestFindingWithID(fmt.Sprintf("Fix %d", i), i+1))
+	}
+	resp := &llm.ReviewResponse{Findings: append([]model.Finding(nil), input[:4]...)}
+
+	invalid := validateDedupeResponse(resp, &llm.ReviewResponse{Findings: input})
+
+	if invalid == nil {
+		t.Fatal("expected count_too_low, got nil")
+	}
+	if !strings.Contains(invalid.Reason, "count_too_low") {
+		t.Fatalf("dedupe reason = %q, want count_too_low", invalid.Reason)
+	}
+}
+
+func TestDedupeValidationAllowsSmallListDropToOne(t *testing.T) {
+	input := []model.Finding{
+		mergeTestFindingWithID("Fix A", 1),
+		mergeTestFindingWithID("Fix A duplicate", 1),
+		mergeTestFindingWithID("Fix A duplicate again", 1),
+	}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{input[0]}}
+
+	if invalid := validateDedupeResponse(resp, &llm.ReviewResponse{Findings: input}); invalid != nil {
+		t.Fatalf("validateDedupeResponse returned %v, want nil", invalid)
+	}
+}
+
+func TestDedupeValidationRejectsDuplicateOutputIDs(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	resp := &llm.ReviewResponse{Findings: []model.Finding{a, a}}
+
+	invalid := validateDedupeResponse(resp, &llm.ReviewResponse{Findings: []model.Finding{a}})
+
+	if invalid == nil {
+		t.Fatal("expected duplicate_ids, got nil")
+	}
+	if !strings.Contains(invalid.Reason, "duplicate_ids") {
+		t.Fatalf("dedupe reason = %q, want duplicate_ids", invalid.Reason)
+	}
+}
+
 func TestPairwiseMergeRejectsUnchangedAccumulator(t *testing.T) {
 	a := mergeTestFindingWithID("Fix A", 1)
 	b := mergeTestFindingWithID("Fix B", 10)
@@ -1848,6 +2010,7 @@ func mergeTestFinding(title string, line int) model.Finding {
 func mergeTestFindingWithID(title string, line int) model.Finding {
 	f := mergeTestFinding(title, line)
 	f.ID = uuid.NewString()
+	f.Verification.ID = f.ID
 	return f
 }
 

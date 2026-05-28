@@ -364,6 +364,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		e.logf("Verifier failed before merge: tokens=%d warnings=%d error=%v", verifyUsage.TotalTokens, len(verifyWarnings), err)
 		return nil, nil, err
 	}
+	dedupeRuns := e.runDedupeAgents(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchemaForDedupe(req), mergeConstraintsForDedupe(req), req)
 	mergeInputs := pairwiseMergeInputs(vectorResults)
 	verifiedMergeInputs := flattenPairwiseMergeInputs(mergeInputs)
 
@@ -402,7 +403,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if len(mergeRuns) == 0 {
 		mergeRuns = []model.AgentRun{mergeResult.run}
 	}
-	allRuns := make([]model.AgentRun, 0, 1+len(vectorResults)+len(mergeRuns))
+	allRuns := make([]model.AgentRun, 0, 1+len(vectorResults)+len(dedupeRuns)+len(mergeRuns))
 	allRuns = append(allRuns, contextResult.run)
 	totalUsage := contextResult.run.TokensUsed
 	toolCalls := contextResult.run.ToolCalls
@@ -414,6 +415,11 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		if result.reasoningEffort != "" {
 			effectiveReasoningEffort = result.reasoningEffort
 		}
+	}
+	for _, run := range dedupeRuns {
+		allRuns = append(allRuns, run)
+		totalUsage = addTokenUsage(totalUsage, run.TokensUsed)
+		toolCalls += run.ToolCalls
 	}
 	for _, run := range mergeRuns {
 		allRuns = append(allRuns, run)
@@ -480,6 +486,9 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	if len(findings) == 0 {
 		return model.TokenUsage{}, nil, nil
 	}
+	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
+		e.logf("Review generated replacement IDs before verification: count=%d", overwrote)
+	}
 	opts := verifyOptionsFromReviewRequest(req)
 	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
 	if err != nil {
@@ -502,6 +511,9 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			return usage, warnings, fmt.Errorf("review: verifier returned no result for finding #%d %q", i+1, findings[i].Title)
 		}
 		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
+		if finding.ID == "" {
+			finding.ID = findings[i].ID
+		}
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
 		finding.Verification = &v
@@ -730,6 +742,140 @@ type pairwiseMergeInput struct {
 	role     string
 	index    int
 	response *llm.ReviewResponse
+}
+
+func mergeSchemaForDedupe(req model.ReviewRequest) []byte {
+	if !req.UseJSONSchema {
+		return nil
+	}
+	constraints := mergeConstraintsForRequest(req)
+	if hasResponseConstraints(constraints) {
+		return llm.MergeSchemaWithConstraints(constraints)
+	}
+	return llm.MergeSchema
+}
+
+func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints {
+	if !req.UseJSONSchema {
+		return llm.ResponseConstraints{}
+	}
+	return mergeConstraintsForRequest(req)
+}
+
+func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) []model.AgentRun {
+	runs := make([]model.AgentRun, len(vectorResults))
+	var wg sync.WaitGroup
+	for i := range vectorResults {
+		result := vectorResults[i]
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil || len(result.resp.Findings) < 2 {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, input agentResult) {
+			defer wg.Done()
+			resp, run := e.runDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req)
+			runs[idx] = run
+			if resp != nil {
+				vectorResults[idx].resp = resp
+			}
+		}(i, result)
+	}
+	wg.Wait()
+
+	out := make([]model.AgentRun, 0, len(runs))
+	for _, run := range runs {
+		if run.Name == "" {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out
+}
+
+func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (*llm.ReviewResponse, model.AgentRun) {
+	result, err := e.callDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req)
+	run := result.run
+	if err != nil {
+		run = markDedupeRun(run, model.AgentRunStatusFailed, err)
+		return nil, run
+	}
+	if result.resp == nil {
+		err := fmt.Errorf("dedupe agent returned no response")
+		run = markDedupeRun(run, model.AgentRunStatusFailed, err)
+		return nil, run
+	}
+	if invalid := validateDedupeResponse(result.resp, input.resp); invalid != nil {
+		run = markDedupeRun(run, model.AgentRunStatusPartial, invalid)
+		return nil, run
+	}
+	return cloneReviewResponse(result.resp), run
+}
+
+func (e *Engine) callDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
+	systemTemplate, err := e.loadPrompt("agent_dedupe_system_prompt.tmpl")
+	if err != nil {
+		return agentResult{}, err
+	}
+	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", mergeOutputSchemaSnippetFor(req.UseJSONSchema))
+	if err != nil {
+		return agentResult{}, err
+	}
+	system, err := llm.RenderPrompt(systemTemplate, struct {
+		FindingInstructionsSnippet string
+		PrioritySnippet            string
+		OutputFormatSnippet        string
+	}{
+		FindingInstructionsSnippet: commonSnippets.findingInstructions,
+		PrioritySnippet:            commonSnippets.priority,
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+	})
+	if err != nil {
+		return agentResult{}, fmt.Errorf("review: rendering dedupe system prompt: %w", err)
+	}
+	dedupeUser, err := llm.RenderJSON(map[string]any{
+		"context_agent_notes": contextNotes,
+		"review_findings": map[string]any{
+			"name":                     input.run.Name,
+			"role":                     input.run.Role,
+			"findings":                 input.resp.Findings,
+			"overall_correctness":      input.resp.OverallCorrectness,
+			"overall_explanation":      input.resp.OverallExplanation,
+			"overall_confidence_score": input.resp.OverallConfidenceScore,
+		},
+	})
+	if err != nil {
+		return agentResult{}, fmt.Errorf("review: rendering dedupe prompt json: %w", err)
+	}
+	return e.runAgent(ctx, agentSpec{
+		name:          "Dedupe Findings",
+		role:          "dedupe",
+		system:        system,
+		noToolsSystem: system,
+		user:          dedupeUser,
+		schema:        schema,
+		schemaKind:    llm.SchemaKindMerge,
+		constraints:   constraints,
+		hasTools:      false,
+		validateResponse: func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+			return validateDedupeResponse(resp, input.resp)
+		},
+	}, req)
+}
+
+func markDedupeRun(run model.AgentRun, status string, err error) model.AgentRun {
+	if run.Name == "" {
+		run.Name = "Dedupe Findings"
+	}
+	if run.Role == "" {
+		run.Role = "dedupe"
+	}
+	if run.Status == "" || run.Status == model.AgentRunStatusOK {
+		run.Status = status
+	}
+	if run.Error == "" && err != nil {
+		run.Error = err.Error()
+	}
+	return run
 }
 
 func (e *Engine) runPairwiseMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, []model.AgentRun) {
@@ -979,6 +1125,103 @@ func pairwiseMergePayload(input pairwiseMergeInput) map[string]any {
 		entry["overall_confidence_score"] = input.response.OverallConfidenceScore
 	}
 	return entry
+}
+
+func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse) *llm.InvalidResponseError {
+	if resp == nil {
+		return &llm.InvalidResponseError{
+			Reason:        "dedupe returned no response",
+			MissingFields: []string{"findings"},
+		}
+	}
+	inputCount := 0
+	inputIDs := map[string]struct{}{}
+	if input != nil {
+		inputCount = len(input.Findings)
+		for _, finding := range input.Findings {
+			id := strings.TrimSpace(finding.ID)
+			if id != "" {
+				inputIDs[id] = struct{}{}
+			}
+		}
+	}
+	minCount := dedupeMinCount(inputCount)
+	countTooLow := len(resp.Findings) < minCount
+	countTooHigh := len(resp.Findings) > inputCount
+	unknownIDs := 0
+	duplicateIDs := 0
+	verificationMismatch := 0
+	seen := map[string]struct{}{}
+	for _, finding := range resp.Findings {
+		id := strings.TrimSpace(finding.ID)
+		if id == "" {
+			unknownIDs++
+		} else {
+			if _, ok := inputIDs[id]; !ok {
+				unknownIDs++
+			}
+			if _, ok := seen[id]; ok {
+				duplicateIDs++
+			}
+			seen[id] = struct{}{}
+		}
+		if finding.Verification == nil || strings.TrimSpace(finding.Verification.ID) != id {
+			verificationMismatch++
+		}
+	}
+	if !countTooLow && !countTooHigh && unknownIDs == 0 && duplicateIDs == 0 && verificationMismatch == 0 {
+		return nil
+	}
+	var problems []string
+	if countTooLow {
+		problems = append(problems, fmt.Sprintf("count_too_low got=%d min=%d input=%d", len(resp.Findings), minCount, inputCount))
+	}
+	if countTooHigh {
+		problems = append(problems, fmt.Sprintf("count_too_high got=%d input=%d", len(resp.Findings), inputCount))
+	}
+	if unknownIDs > 0 {
+		problems = append(problems, fmt.Sprintf("unknown_ids count=%d", unknownIDs))
+	}
+	if duplicateIDs > 0 {
+		problems = append(problems, fmt.Sprintf("duplicate_ids count=%d", duplicateIDs))
+	}
+	if verificationMismatch > 0 {
+		problems = append(problems, fmt.Sprintf("verification_mismatch count=%d", verificationMismatch))
+	}
+	return &llm.InvalidResponseError{
+		RawContent:            resp.RawResponse,
+		Reason:                "dedupe_validation_failed: " + strings.Join(problems, "; "),
+		MissingFields:         []string{"findings"},
+		ReasoningEffort:       resp.ReasoningEffort,
+		RetryGuidanceTemplate: "dedupe_validation_retry_guidance.tmpl",
+		RetryGuidanceData: struct {
+			CountTooLow          bool
+			CountTooHigh         bool
+			InputCount           int
+			MinCount             int
+			UnknownIDs           int
+			DuplicateIDs         int
+			VerificationMismatch int
+		}{
+			CountTooLow:          countTooLow,
+			CountTooHigh:         countTooHigh,
+			InputCount:           inputCount,
+			MinCount:             minCount,
+			UnknownIDs:           unknownIDs,
+			DuplicateIDs:         duplicateIDs,
+			VerificationMismatch: verificationMismatch,
+		},
+	}
+}
+
+func dedupeMinCount(inputCount int) int {
+	if inputCount <= 0 {
+		return 0
+	}
+	if inputCount <= 3 {
+		return 1
+	}
+	return (inputCount + 1) / 2
 }
 
 func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput) *llm.InvalidResponseError {
