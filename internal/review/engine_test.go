@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -218,6 +219,19 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		s.mergeResponses = s.mergeResponses[1:]
 		return resp, nil
 	}
+	if finalRaw, ok := s.mergePayload["final_findings"].(map[string]any); ok {
+		findings := testPayloadFindings(finalRaw)
+		if incomingRaw, ok := s.mergePayload["incoming_review"].(map[string]any); ok {
+			findings = append(findings, testPayloadFindings(incomingRaw)...)
+		}
+		return &llm.ReviewResponse{
+			Findings:               findings,
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "merged",
+			OverallConfidenceScore: 0.95,
+			TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
+		}, nil
+	}
 	return &llm.ReviewResponse{
 		Findings: []model.Finding{{
 			Title:           "Fix merged issue",
@@ -232,6 +246,17 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		OverallConfidenceScore: 0.95,
 		TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
 	}, nil
+}
+
+func testPayloadFindings(payload map[string]any) []model.Finding {
+	raw, ok := payload["findings"]
+	if !ok {
+		return nil
+	}
+	data, _ := json.Marshal(raw)
+	var findings []model.Finding
+	_ = json.Unmarshal(data, &findings)
+	return findings
 }
 
 func vectorNameFromSystem(system string) string {
@@ -1161,13 +1186,16 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Findings) != 1 || result.Findings[0].Title != "Fix merged issue" {
-		t.Fatalf("merged findings = %#v", result.Findings)
+	if len(result.Findings) != len(reviewVectors) {
+		t.Fatalf("merged findings = %d, want %d", len(result.Findings), len(reviewVectors))
 	}
-	if len(result.AgentRuns) != 8 {
-		t.Fatalf("agent runs = %d, want context + 6 reviewers + merge", len(result.AgentRuns))
+	expectedMergeSteps := len(reviewVectors) - 1
+	expectedAgentRuns := 1 + len(reviewVectors) + expectedMergeSteps
+	if len(result.AgentRuns) != expectedAgentRuns {
+		t.Fatalf("agent runs = %d, want context + %d reviewers + %d merge steps", len(result.AgentRuns), len(reviewVectors), expectedMergeSteps)
 	}
-	if result.TotalToolCalls != 7 {
+	expectedToolCalls := 1 + len(reviewVectors)
+	if result.TotalToolCalls != expectedToolCalls {
 		t.Fatalf("tool calls = %d, want context + one per vector", result.TotalToolCalls)
 	}
 	if llmClient.verifyCalls != len(reviewVectors) {
@@ -1200,9 +1228,16 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if notes, _ := llmClient.mergePayload["context_agent_notes"].(string); !strings.Contains(notes, "## Notes") {
 		t.Fatalf("merge payload context_agent_notes = %#v", llmClient.mergePayload["context_agent_notes"])
 	}
-	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
-	if !ok || len(vectorReviews) != 6 {
-		t.Fatalf("merge payload vector_reviews = %#v", llmClient.mergePayload["vector_reviews"])
+	finalFindings, ok := llmClient.mergePayload["final_findings"].(map[string]any)
+	if !ok {
+		t.Fatalf("merge payload final_findings = %#v", llmClient.mergePayload["final_findings"])
+	}
+	if finalFindings["name"] != "Final findings" {
+		t.Fatalf("final_findings name = %#v", finalFindings["name"])
+	}
+	incoming, ok := llmClient.mergePayload["incoming_review"].(map[string]any)
+	if !ok || incoming["name"] == "" {
+		t.Fatalf("merge payload incoming_review = %#v", llmClient.mergePayload["incoming_review"])
 	}
 	for _, vector := range reviewVectors {
 		if llmClient.vectorCalls[vector.name] != 2 {
@@ -1247,21 +1282,16 @@ func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
 	if llmClient.verifyCalls != len(reviewVectors) {
 		t.Fatalf("verify calls = %d, want %d", llmClient.verifyCalls, len(reviewVectors))
 	}
-	for i, event := range llmClient.events {
-		if event == "merge" && i != len(llmClient.events)-1 {
-			t.Fatalf("merge event at %d before verification complete: %#v", i, llmClient.events)
-		}
-	}
-	vectorReviews, ok := llmClient.mergePayload["vector_reviews"].([]any)
-	if !ok {
-		t.Fatalf("merge payload vector_reviews = %#v", llmClient.mergePayload["vector_reviews"])
+	firstMerge := slices.Index(llmClient.events, "merge")
+	if firstMerge < len(reviewVectors) {
+		t.Fatalf("first merge event at %d before verification complete: %#v", firstMerge, llmClient.events)
 	}
 	var mergedFindingCount int
 	var sawSecurity bool
-	for _, raw := range vectorReviews {
-		entry, ok := raw.(map[string]any)
+	for _, key := range []string{"final_findings", "incoming_review"} {
+		entry, ok := llmClient.mergePayload[key].(map[string]any)
 		if !ok {
-			t.Fatalf("vector review entry = %#v", raw)
+			t.Fatalf("merge payload %s = %#v", key, llmClient.mergePayload[key])
 		}
 		findings, _ := entry["findings"].([]any)
 		mergedFindingCount += len(findings)
@@ -1279,7 +1309,7 @@ func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
 		}
 	}
 	if mergedFindingCount != len(reviewVectors)-1 {
-		t.Fatalf("merge input findings = %d, want %d", mergedFindingCount, len(reviewVectors)-1)
+		t.Fatalf("final merge input findings = %d, want %d", mergedFindingCount, len(reviewVectors)-1)
 	}
 	if sawSecurity {
 		t.Fatal("invalid Security finding reached merge input")
@@ -1318,21 +1348,80 @@ func TestMultiAgentMergeValidationRetriesWhenBelowLargestReviewerCount(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(llmClient.mergeRequests) != 2 {
-		t.Fatalf("merge requests = %d, want retry", len(llmClient.mergeRequests))
+	expectedMergeRequests := len(reviewVectors)
+	if len(llmClient.mergeRequests) != expectedMergeRequests {
+		t.Fatalf("merge requests = %d, want retry plus %d pairwise merge steps", len(llmClient.mergeRequests), len(reviewVectors)-1)
 	}
 	retryMessage := llmClient.mergeRequests[1].Messages[len(llmClient.mergeRequests[1].Messages)-1].Content
-	if !strings.Contains(retryMessage, "3") {
+	if !strings.Contains(retryMessage, "Final findings") || !strings.Contains(retryMessage, "3") {
 		t.Fatalf("retry message missing merge count nudge: %q", retryMessage)
 	}
-	if len(result.Findings) != 3 {
-		t.Fatalf("findings = %d, want retry merge output with 3 findings", len(result.Findings))
+	expectedFindings := 3 + (len(reviewVectors) - 2)
+	if len(result.Findings) != expectedFindings {
+		t.Fatalf("findings = %d, want retry output plus remaining vectors (%d)", len(result.Findings), expectedFindings)
 	}
 	for _, warning := range result.Warnings {
 		if strings.Contains(warning, "Merge validation warning") {
 			t.Fatalf("unexpected merge validation warning after successful retry: %#v", result.Warnings)
 		}
 	}
+}
+
+func TestMultiAgentPairwiseMergeStartsWithLargestReviewers(t *testing.T) {
+	llmClient := &multiAgentLLM{
+		vectorFindings: map[string]int{
+			"Code Quality": 2,
+			"Security":     4,
+			"Architecture": 3,
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llmClient.mergeRequests) != len(reviewVectors)-1 {
+		t.Fatalf("merge requests = %d, want one per incoming reviewer", len(llmClient.mergeRequests))
+	}
+	firstPayload := mergePayloadFromRequest(t, llmClient.mergeRequests[0])
+	finalFindings := firstPayload["final_findings"].(map[string]any)
+	incoming := firstPayload["incoming_review"].(map[string]any)
+	if finalFindings["name"] != "Final findings" {
+		t.Fatalf("final findings name = %#v", finalFindings["name"])
+	}
+	if len(finalFindings["findings"].([]any)) != 4 {
+		t.Fatalf("first final findings count = %d, want Security count 4", len(finalFindings["findings"].([]any)))
+	}
+	if incoming["name"] != "Architecture" {
+		t.Fatalf("first incoming reviewer = %#v, want Architecture", incoming["name"])
+	}
+	if len(incoming["findings"].([]any)) != 3 {
+		t.Fatalf("first incoming count = %d, want 3", len(incoming["findings"].([]any)))
+	}
+
+	secondPayload := mergePayloadFromRequest(t, llmClient.mergeRequests[1])
+	secondIncoming := secondPayload["incoming_review"].(map[string]any)
+	if secondIncoming["name"] != "Code Quality" {
+		t.Fatalf("second incoming reviewer = %#v, want Code Quality", secondIncoming["name"])
+	}
+}
+
+func mergePayloadFromRequest(t *testing.T, req *llm.ReviewRequest) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	if len(req.Messages) < 2 {
+		t.Fatalf("merge request messages = %d", len(req.Messages))
+	}
+	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
+		t.Fatalf("merge payload unmarshal: %v", err)
+	}
+	return payload
 }
 
 func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
@@ -1361,33 +1450,251 @@ func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(llmClient.mergeRequests) != 2 {
-		t.Fatalf("merge requests = %d, want initial + retry", len(llmClient.mergeRequests))
+	expectedMergeRequests := len(reviewVectors)
+	if len(llmClient.mergeRequests) != expectedMergeRequests {
+		t.Fatalf("merge requests = %d, want failed retry plus %d pairwise merge steps", len(llmClient.mergeRequests), len(reviewVectors)-1)
 	}
 	foundWarning := false
 	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "Merge validation warning") && strings.Contains(warning, "unmatched_finding") {
+		if strings.Contains(warning, "Merge Findings merge step partial result") && strings.Contains(warning, "unmatched_finding") {
 			foundWarning = true
 		}
 	}
 	if !foundWarning {
 		t.Fatalf("warnings = %#v, want nonfatal merge validation warning", result.Warnings)
 	}
-	if len(result.Findings) != 1 || result.Findings[0].Title != "Ghost" {
-		t.Fatalf("merge output should be accepted after exhausted retry, got %#v", result.Findings)
+	for _, finding := range result.Findings {
+		if finding.Title == "Ghost" {
+			t.Fatalf("fallback merge should not keep unmatched ghost finding: %#v", result.Findings)
+		}
+	}
+}
+
+func TestPairwiseMergeReturnedRunMatchesPartialStepStatus(t *testing.T) {
+	a := mergeTestFinding("Fix A", 1)
+	b := mergeTestFinding("Fix B", 2)
+	ghost := mergeTestFinding("Ghost", 99)
+	engine := NewEngine(stubSource{}, &multiAgentLLM{
+		mergeResponses: []*llm.ReviewResponse{
+			{
+				Findings:               []model.Finding{a, b},
+				OverallCorrectness:     "patch is incorrect",
+				OverallExplanation:     "merged",
+				OverallConfidenceScore: 0.9,
+			},
+			{
+				Findings:           []model.Finding{ghost},
+				OverallCorrectness: "patch is incorrect",
+			},
+			{
+				Findings:           []model.Finding{ghost},
+				OverallCorrectness: "patch is incorrect",
+			},
+		},
+	}, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer C", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix C", 3)}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runPairwiseMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
+
+	if len(runs) != len(inputs)-1 {
+		t.Fatalf("merge runs = %d, want %d", len(runs), len(inputs)-1)
+	}
+	if runs[len(runs)-1].Status != model.AgentRunStatusPartial {
+		t.Fatalf("last stored run status = %q, want partial", runs[len(runs)-1].Status)
+	}
+	if result.run.Status != model.AgentRunStatusPartial {
+		t.Fatalf("returned run status = %q, want partial", result.run.Status)
+	}
+	if !strings.Contains(result.run.Error, "unmatched_finding") {
+		t.Fatalf("returned run error = %q, want validation reason", result.run.Error)
+	}
+	for _, finding := range result.resp.Findings {
+		if finding.Title == "Ghost" {
+			t.Fatalf("fallback should discard invalid ghost response: %#v", result.resp.Findings)
+		}
+	}
+}
+
+func TestPairwiseMergeErrorMarksRunFailed(t *testing.T) {
+	engine := NewEngine(stubSource{}, &multiAgentLLM{
+		mergeFailErr: errors.New("merge upstream fail"),
+	}, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix A", 1)}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix B", 2)}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runPairwiseMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(runs) != 1 {
+		t.Fatalf("merge runs = %d, want 1", len(runs))
+	}
+	if runs[0].Status != model.AgentRunStatusFailed {
+		t.Fatalf("stored run status = %q, want failed", runs[0].Status)
+	}
+	if result.run.Status != model.AgentRunStatusFailed {
+		t.Fatalf("returned run status = %q, want failed", result.run.Status)
+	}
+	if !strings.Contains(result.run.Error, "merge upstream fail") {
+		t.Fatalf("returned run error = %q, want merge error", result.run.Error)
+	}
+	if len(result.resp.Findings) != len(inputs) {
+		t.Fatalf("fallback findings = %d, want accumulator plus incoming", len(result.resp.Findings))
+	}
+}
+
+func TestPairwiseMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.T) {
+	finding := mergeTestFinding("Fix A", 1)
+	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{{
+		name:     "Reviewer A",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: []model.Finding{finding}, OverallConfidenceScore: 0.9},
+	}}
+
+	result, runs := engine.runPairwiseMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(runs) != 1 {
+		t.Fatalf("merge runs = %d, want 1 skipped run", len(runs))
+	}
+	if runs[0].Status != model.AgentRunStatusSkipped {
+		t.Fatalf("merge status = %q, want skipped", runs[0].Status)
+	}
+	if len(result.resp.Findings) != 1 || result.resp.Findings[0].Title != finding.Title {
+		t.Fatalf("result findings = %#v, want single reviewer finding", result.resp.Findings)
+	}
+	if len(engine.llm.(*multiAgentLLM).mergeRequests) != 0 {
+		t.Fatalf("merge requests = %d, want none for single input", len(engine.llm.(*multiAgentLLM).mergeRequests))
+	}
+}
+
+func TestFallbackPairwiseMergeCapsPriorConfidence(t *testing.T) {
+	accumulator := &llm.ReviewResponse{
+		Findings:               []model.Finding{mergeTestFinding("Fix A", 1)},
+		OverallConfidenceScore: 0.8,
+	}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer B",
+		response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix B", 2)}},
+	}
+
+	result := fallbackPairwiseMerge(accumulator, incoming, errors.New("boom"))
+
+	if result.OverallConfidenceScore != 0.3 {
+		t.Fatalf("fallback confidence = %.2f, want 0.30", result.OverallConfidenceScore)
+	}
+	if accumulator.OverallConfidenceScore != 0.8 {
+		t.Fatalf("accumulator confidence mutated = %.2f, want 0.80", accumulator.OverallConfidenceScore)
+	}
+}
+
+func TestFallbackPairwiseMergeRemintsDuplicateFindingIDs(t *testing.T) {
+	sharedID := uuid.NewString()
+	accumulatorFinding := mergeTestFinding("Fix A", 1)
+	accumulatorFinding.ID = sharedID
+	incomingFinding := mergeTestFinding("Fix B", 2)
+	incomingFinding.ID = sharedID
+	accumulator := &llm.ReviewResponse{
+		Findings:               []model.Finding{accumulatorFinding},
+		OverallConfidenceScore: 0.8,
+	}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer B",
+		response: &llm.ReviewResponse{Findings: []model.Finding{incomingFinding}},
+	}
+
+	result := fallbackPairwiseMerge(accumulator, incoming, errors.New("boom"))
+
+	if len(result.Findings) != 2 {
+		t.Fatalf("fallback findings = %d, want 2", len(result.Findings))
+	}
+	if result.Findings[0].ID != sharedID {
+		t.Fatalf("accumulator ID = %q, want original shared ID", result.Findings[0].ID)
+	}
+	if result.Findings[1].ID == "" || result.Findings[1].ID == sharedID {
+		t.Fatalf("incoming ID = %q, want reminted unique ID", result.Findings[1].ID)
+	}
+	if incoming.response.Findings[0].ID != sharedID {
+		t.Fatalf("incoming response mutated = %q, want original shared ID", incoming.response.Findings[0].ID)
+	}
+}
+
+func TestFallbackPairwiseMergeDeepCopiesIncomingFindings(t *testing.T) {
+	priority := 2
+	incomingFinding := mergeTestFinding("Fix B", 2)
+	incomingFinding.Priority = &priority
+	incomingFinding.Suggestions = []model.Suggestion{{Body: "suggestion", LineRange: model.LineRange{Start: 2, End: 2}}}
+	incomingFinding.Finalization = &model.FindingFinalization{Title: "final", Body: "body", Priority: 2, ConfidenceScore: 0.8}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer B",
+		response: &llm.ReviewResponse{Findings: []model.Finding{incomingFinding}},
+	}
+
+	result := fallbackPairwiseMerge(&llm.ReviewResponse{}, incoming, errors.New("boom"))
+	result.Findings[0].Suggestions[0].Body = "changed"
+	*result.Findings[0].Priority = 1
+	result.Findings[0].Verification.Verdict = model.VerdictRefuted
+	result.Findings[0].Finalization.Title = "changed"
+
+	if incoming.response.Findings[0].Suggestions[0].Body != "suggestion" {
+		t.Fatalf("incoming suggestion mutated = %q", incoming.response.Findings[0].Suggestions[0].Body)
+	}
+	if *incoming.response.Findings[0].Priority != 2 {
+		t.Fatalf("incoming priority mutated = %d", *incoming.response.Findings[0].Priority)
+	}
+	if incoming.response.Findings[0].Verification.Verdict != model.VerdictConfirmed {
+		t.Fatalf("incoming verification mutated = %q", incoming.response.Findings[0].Verification.Verdict)
+	}
+	if incoming.response.Findings[0].Finalization.Title != "final" {
+		t.Fatalf("incoming finalization mutated = %q", incoming.response.Findings[0].Finalization.Title)
+	}
+}
+
+func TestCloneReviewResponseDeepCopiesMutableFindingFields(t *testing.T) {
+	priority := 2
+	original := &llm.ReviewResponse{
+		Findings: []model.Finding{{
+			Title:           "Fix A",
+			Body:            "body",
+			ConfidenceScore: 0.9,
+			Priority:        &priority,
+			CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+			Suggestions:     []model.Suggestion{{Body: "suggestion", LineRange: model.LineRange{Start: 1, End: 1}}},
+			Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "verified"},
+			Finalization:    &model.FindingFinalization{Title: "final", Body: "final body", Priority: 2, ConfidenceScore: 0.8, Remarks: "finalized"},
+		}},
+	}
+
+	clone := cloneReviewResponse(original)
+	*clone.Findings[0].Priority = 1
+	clone.Findings[0].Suggestions[0].Body = "changed"
+	clone.Findings[0].Verification.Verdict = model.VerdictRefuted
+	clone.Findings[0].Finalization.Title = "changed"
+
+	if *original.Findings[0].Priority != 2 {
+		t.Fatalf("original priority mutated = %d", *original.Findings[0].Priority)
+	}
+	if original.Findings[0].Suggestions[0].Body != "suggestion" {
+		t.Fatalf("original suggestion mutated = %q", original.Findings[0].Suggestions[0].Body)
+	}
+	if original.Findings[0].Verification.Verdict != model.VerdictConfirmed {
+		t.Fatalf("original verification mutated = %q", original.Findings[0].Verification.Verdict)
+	}
+	if original.Findings[0].Finalization.Title != "final" {
+		t.Fatalf("original finalization mutated = %q", original.Findings[0].Finalization.Title)
 	}
 }
 
 func TestMergeValidationAllowsDuplicatesAndNoUpperBound(t *testing.T) {
 	input := mergeTestFinding("Fix Code Quality", 1)
-	vectorResults := []agentResult{{
-		resp: &llm.ReviewResponse{Findings: []model.Finding{input}},
-		run:  model.AgentRun{Status: model.AgentRunStatusOK},
-	}}
 	resp := &llm.ReviewResponse{Findings: []model.Finding{input, input, input}}
 
-	if invalid := validateMergeResponse(resp, vectorResults); invalid != nil {
-		t.Fatalf("validateMergeResponse returned %v, want nil for duplicate/high-count output", invalid)
+	if invalid := validateMergeResponseForInputs(resp, 1, "Final findings", []model.Finding{input}); invalid != nil {
+		t.Fatalf("validateMergeResponseForInputs returned %v, want nil for duplicate/high-count output", invalid)
 	}
 }
 
@@ -1397,14 +1704,10 @@ func TestMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
 	input.CodeLocation.LineRange.End = 20
 	merged := input
 	merged.CodeLocation.LineRange = model.LineRange{Start: 12, End: 12}
-	vectorResults := []agentResult{{
-		resp: &llm.ReviewResponse{Findings: []model.Finding{input}},
-		run:  model.AgentRun{Status: model.AgentRunStatusOK},
-	}}
 	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
 
-	if invalid := validateMergeResponse(resp, vectorResults); invalid != nil {
-		t.Fatalf("validateMergeResponse returned %v, want nil for preserved ID with refined location", invalid)
+	if invalid := validateMergeResponseForInputs(resp, 1, "Final findings", []model.Finding{input}); invalid != nil {
+		t.Fatalf("validateMergeResponseForInputs returned %v, want nil for preserved ID with refined location", invalid)
 	}
 }
 
@@ -1503,8 +1806,9 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 	if !strings.Contains(securityRun.Error, "security upstream fail") {
 		t.Fatalf("Security run error = %q", securityRun.Error)
 	}
-	if successfulReviewers != 5 {
-		t.Fatalf("successful reviewer runs = %d, want 5", successfulReviewers)
+	expectedSuccessfulReviewers := len(reviewVectors) - 1
+	if successfulReviewers != expectedSuccessfulReviewers {
+		t.Fatalf("successful reviewer runs = %d, want %d", successfulReviewers, expectedSuccessfulReviewers)
 	}
 	foundWarning := false
 	for _, w := range result.Warnings {
@@ -1562,12 +1866,12 @@ func TestMultiAgentToleratesMergeFailure(t *testing.T) {
 	if len(result.Findings) == 0 {
 		t.Fatal("expected fallback findings from vector union")
 	}
-	if !strings.Contains(result.OverallExplanation, "Merge agent unavailable") {
+	if !strings.Contains(result.OverallExplanation, "Merge step unavailable") {
 		t.Fatalf("OverallExplanation = %q", result.OverallExplanation)
 	}
 	foundWarning := false
 	for _, w := range result.Warnings {
-		if strings.Contains(w, "Merge agent failed") && strings.Contains(w, "merge upstream fail") {
+		if strings.Contains(w, "Merge Findings merge step failed") && strings.Contains(w, "merge upstream fail") {
 			foundWarning = true
 		}
 	}
@@ -1613,11 +1917,11 @@ func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
 			failedReviewers++
 		}
 	}
-	if failedReviewers != 6 {
-		t.Fatalf("failed reviewer runs = %d, want 6", failedReviewers)
+	if failedReviewers != len(reviewVectors) {
+		t.Fatalf("failed reviewer runs = %d, want %d", failedReviewers, len(reviewVectors))
 	}
-	if len(result.Warnings) < 6 {
-		t.Fatalf("warnings = %d, want at least 6", len(result.Warnings))
+	if len(result.Warnings) < len(reviewVectors) {
+		t.Fatalf("warnings = %d, want at least %d", len(result.Warnings), len(reviewVectors))
 	}
 	// All-vectors-failed must short-circuit the merge LLM call to avoid
 	// hallucinated findings from an empty payload.

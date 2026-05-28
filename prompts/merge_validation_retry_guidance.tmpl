@@ -1,2 +1,2 @@
-{{if .CountMismatch}}The `findings` array must include at least {{.MinCount}} items because one verified reviewer produced {{.MinCount}} findings; the previous response included {{.GotCount}}.{{end}}{{if .Unmatched}}
+{{if .CountMismatch}}The `findings` array must include at least {{.MinCount}} items because `{{.ProtectedName}}` contained {{.MinCount}} findings before this merge step; the previous response included {{.GotCount}}. Copy findings from `{{.ProtectedName}}` unchanged if needed.{{end}}{{if .Unmatched}}
 Every finding must match an input vector finding by ID or code location. The previous response included {{.Unmatched}} unmatched finding(s). Do not introduce new findings.{{end}}
