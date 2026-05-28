@@ -1129,8 +1129,10 @@ func findingMaterialEqual(a, b model.Finding) bool {
 	if a.CodeLocation != b.CodeLocation {
 		return false
 	}
-	if !reflect.DeepEqual(a.Suggestions, b.Suggestions) {
-		return false
+	if len(a.Suggestions) != 0 || len(b.Suggestions) != 0 {
+		if !reflect.DeepEqual(a.Suggestions, b.Suggestions) {
+			return false
+		}
 	}
 	if !reflect.DeepEqual(a.Verification, b.Verification) {
 		return false
