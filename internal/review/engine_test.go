@@ -1547,6 +1547,31 @@ func TestPairwiseMergeErrorMarksRunFailed(t *testing.T) {
 	}
 }
 
+func TestPairwiseMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.T) {
+	finding := mergeTestFinding("Fix A", 1)
+	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{{
+		name:     "Reviewer A",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: []model.Finding{finding}, OverallConfidenceScore: 0.9},
+	}}
+
+	result, runs := engine.runPairwiseMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(runs) != 1 {
+		t.Fatalf("merge runs = %d, want 1 skipped run", len(runs))
+	}
+	if runs[0].Status != model.AgentRunStatusSkipped {
+		t.Fatalf("merge status = %q, want skipped", runs[0].Status)
+	}
+	if len(result.resp.Findings) != 1 || result.resp.Findings[0].Title != finding.Title {
+		t.Fatalf("result findings = %#v, want single reviewer finding", result.resp.Findings)
+	}
+	if len(engine.llm.(*multiAgentLLM).mergeRequests) != 0 {
+		t.Fatalf("merge requests = %d, want none for single input", len(engine.llm.(*multiAgentLLM).mergeRequests))
+	}
+}
+
 func TestFallbackPairwiseMergeCapsPriorConfidence(t *testing.T) {
 	accumulator := &llm.ReviewResponse{
 		Findings:               []model.Finding{mergeTestFinding("Fix A", 1)},
@@ -1564,6 +1589,37 @@ func TestFallbackPairwiseMergeCapsPriorConfidence(t *testing.T) {
 	}
 	if accumulator.OverallConfidenceScore != 0.8 {
 		t.Fatalf("accumulator confidence mutated = %.2f, want 0.80", accumulator.OverallConfidenceScore)
+	}
+}
+
+func TestFallbackPairwiseMergeRemintsDuplicateFindingIDs(t *testing.T) {
+	sharedID := uuid.NewString()
+	accumulatorFinding := mergeTestFinding("Fix A", 1)
+	accumulatorFinding.ID = sharedID
+	incomingFinding := mergeTestFinding("Fix B", 2)
+	incomingFinding.ID = sharedID
+	accumulator := &llm.ReviewResponse{
+		Findings:               []model.Finding{accumulatorFinding},
+		OverallConfidenceScore: 0.8,
+	}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer B",
+		response: &llm.ReviewResponse{Findings: []model.Finding{incomingFinding}},
+	}
+
+	result := fallbackPairwiseMerge(accumulator, incoming, errors.New("boom"))
+
+	if len(result.Findings) != 2 {
+		t.Fatalf("fallback findings = %d, want 2", len(result.Findings))
+	}
+	if result.Findings[0].ID != sharedID {
+		t.Fatalf("accumulator ID = %q, want original shared ID", result.Findings[0].ID)
+	}
+	if result.Findings[1].ID == "" || result.Findings[1].ID == sharedID {
+		t.Fatalf("incoming ID = %q, want reminted unique ID", result.Findings[1].ID)
+	}
+	if incoming.response.Findings[0].ID != sharedID {
+		t.Fatalf("incoming response mutated = %q, want original shared ID", incoming.response.Findings[0].ID)
 	}
 }
 

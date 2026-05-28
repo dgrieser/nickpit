@@ -394,7 +394,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		mergeResult, mergeRuns = e.runPairwiseMergeAgents(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), mergeInputs, mergeSchema, mergeConstraints, req)
 	}
 	if mergeResult.resp != nil {
-		// Last-resort repair after retry exhaustion or synthesized/direct responses.
+		// Last-resort repair after retry exhaustion or pairwise fallback responses.
 		// Normal merge schema/parser paths require `verification`.
 		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
@@ -780,7 +780,6 @@ func (e *Engine) runPairwiseMergeAgents(ctx context.Context, userPrompt string, 
 		last = agentResult{resp: accumulator, run: run, reasoningEffort: stepResult.reasoningEffort}
 		runs = append(runs, run)
 	}
-	last.resp = accumulator
 	return last, runs
 }
 
@@ -807,6 +806,7 @@ func fallbackPairwiseMerge(finalFindings *llm.ReviewResponse, incoming pairwiseM
 	}
 	if incoming.response != nil {
 		out.Findings = append(out.Findings, incoming.response.Findings...)
+		remintDuplicateFindingIDs(out.Findings)
 	}
 	out.OverallCorrectness = "patch is incorrect"
 	out.OverallExplanation = fmt.Sprintf("Merge step unavailable; kept Final findings and appended %s findings unchanged.", incoming.name)
@@ -825,6 +825,22 @@ func fallbackMergeConfidence(finalFindings *llm.ReviewResponse) float64 {
 		return finalFindings.OverallConfidenceScore
 	}
 	return 0.3
+}
+
+// remintDuplicateFindingIDs replaces colliding valid UUIDs in-place so that
+// downstream verification repair can address each finding by ID.
+func remintDuplicateFindingIDs(findings []model.Finding) {
+	seen := make(map[string]struct{}, len(findings))
+	for i := range findings {
+		if findings[i].ID == "" {
+			continue
+		}
+		if _, ok := seen[findings[i].ID]; ok {
+			findings[i].ID = ""
+			model.EnsureFindingID(&findings[i])
+		}
+		seen[findings[i].ID] = struct{}{}
+	}
 }
 
 func pairwiseMergeInputs(vectorResults []agentResult) []pairwiseMergeInput {
