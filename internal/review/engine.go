@@ -8,6 +8,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -375,6 +376,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	}
 	var (
 		mergeResult agentResult
+		mergeRuns   []model.AgentRun
 		mergeErr    error
 	)
 	if allVectorsFailed(vectorResults) {
@@ -389,15 +391,16 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
 		mergeResult = emptyVerifiedMergeResult()
 	} else {
-		mergeResult, mergeErr = e.runMergeAgent(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchema, mergeConstraints, req)
+		mergeResult, mergeRuns, mergeErr = e.runPairwiseMergeAgents(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchema, mergeConstraints, req)
 		if mergeErr != nil {
 			e.logf("Merge agent failed, falling back to deduped vector union: error=%v", mergeErr)
 			warnings = append(warnings, fmt.Sprintf("Merge agent failed: %v; falling back to deduped vector findings", mergeErr))
-			partialMergeTokens := mergeResult.run.TokensUsed
-			partialMergeToolCalls := mergeResult.run.ToolCalls
+			partialMergeTokens := sumRunTokens(mergeRuns)
+			partialMergeToolCalls := sumRunToolCalls(mergeRuns)
 			mergeResult = synthesizedMergeFromVectors(vectorResults, mergeErr)
 			mergeResult.run.TokensUsed = partialMergeTokens
 			mergeResult.run.ToolCalls = partialMergeToolCalls
+			mergeRuns = []model.AgentRun{mergeResult.run}
 		}
 	}
 	if mergeResult.resp != nil {
@@ -408,7 +411,10 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		// Normal merge schema/parser paths require `verification`.
 		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
 	}
-	allRuns := make([]model.AgentRun, 0, 2+len(vectorResults))
+	if len(mergeRuns) == 0 {
+		mergeRuns = []model.AgentRun{mergeResult.run}
+	}
+	allRuns := make([]model.AgentRun, 0, 1+len(vectorResults)+len(mergeRuns))
 	allRuns = append(allRuns, contextResult.run)
 	totalUsage := contextResult.run.TokensUsed
 	toolCalls := contextResult.run.ToolCalls
@@ -421,8 +427,11 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 			effectiveReasoningEffort = result.reasoningEffort
 		}
 	}
-	allRuns = append(allRuns, mergeResult.run)
-	totalUsage = addTokenUsage(totalUsage, mergeResult.run.TokensUsed)
+	for _, run := range mergeRuns {
+		allRuns = append(allRuns, run)
+		totalUsage = addTokenUsage(totalUsage, run.TokensUsed)
+		toolCalls += run.ToolCalls
+	}
 	if mergeResult.reasoningEffort != "" {
 		effectiveReasoningEffort = mergeResult.reasoningEffort
 	}
@@ -731,7 +740,123 @@ func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt s
 	return results, nil
 }
 
-func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
+type pairwiseMergeInput struct {
+	name     string
+	role     string
+	index    int
+	response *llm.ReviewResponse
+}
+
+func (e *Engine) runPairwiseMergeAgents(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, []model.AgentRun, error) {
+	inputs := pairwiseMergeInputs(vectorResults)
+	if len(inputs) == 0 {
+		result := emptyVerifiedMergeResult()
+		return result, []model.AgentRun{result.run}, nil
+	}
+	if len(inputs) == 1 {
+		result := agentResult{
+			resp: cloneReviewResponse(inputs[0].response),
+			run: model.AgentRun{
+				Name:   "Merge Findings",
+				Role:   "merge",
+				Status: model.AgentRunStatusSkipped,
+			},
+		}
+		return result, []model.AgentRun{result.run}, nil
+	}
+
+	accumulator := cloneReviewResponse(inputs[0].response)
+	var runs []model.AgentRun
+	var last agentResult
+	for i := 1; i < len(inputs); i++ {
+		stepResult, err := e.runMergeAgent(ctx, userPrompt, contextNotes, accumulator, inputs[i], schema, constraints, req)
+		if err != nil && stepResult.run.Status == "" {
+			stepResult.run = model.AgentRun{
+				Name:   "Merge Findings",
+				Role:   "merge",
+				Status: model.AgentRunStatusFailed,
+				Error:  err.Error(),
+			}
+		}
+		runs = append(runs, stepResult.run)
+		last = stepResult
+		if err != nil {
+			accumulator = fallbackPairwiseMerge(accumulator, inputs[i], err)
+			last.resp = accumulator
+			continue
+		}
+		if stepResult.resp == nil {
+			err := fmt.Errorf("merge step returned no response")
+			accumulator = fallbackPairwiseMerge(accumulator, inputs[i], err)
+			last.resp = accumulator
+			continue
+		}
+		if invalid := validatePairwiseMergeResponse(stepResult.resp, accumulator, inputs[i]); invalid != nil {
+			if len(runs) > 0 && runs[len(runs)-1].Status == model.AgentRunStatusOK {
+				runs[len(runs)-1].Status = model.AgentRunStatusPartial
+				runs[len(runs)-1].Error = invalid.Reason
+			}
+			accumulator = fallbackPairwiseMerge(accumulator, inputs[i], invalid)
+			last.resp = accumulator
+			continue
+		}
+		accumulator = cloneReviewResponse(stepResult.resp)
+	}
+	last.resp = accumulator
+	return last, runs, nil
+}
+
+func fallbackPairwiseMerge(finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput, mergeErr error) *llm.ReviewResponse {
+	out := cloneReviewResponse(finalFindings)
+	if out == nil {
+		out = &llm.ReviewResponse{}
+	}
+	if incoming.response != nil {
+		out.Findings = append(out.Findings, incoming.response.Findings...)
+	}
+	out.OverallCorrectness = "patch is incorrect"
+	out.OverallExplanation = fmt.Sprintf("Merge step unavailable; kept Final findings and appended %s findings unchanged.", incoming.name)
+	if mergeErr != nil {
+		out.OverallExplanation += " Error: " + mergeErr.Error()
+	}
+	out.OverallConfidenceScore = 0
+	return out
+}
+
+func pairwiseMergeInputs(vectorResults []agentResult) []pairwiseMergeInput {
+	inputs := make([]pairwiseMergeInput, 0, len(vectorResults))
+	for i, result := range vectorResults {
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil || len(result.resp.Findings) == 0 {
+			continue
+		}
+		inputs = append(inputs, pairwiseMergeInput{
+			name:     result.run.Name,
+			role:     result.run.Role,
+			index:    i,
+			response: result.resp,
+		})
+	}
+	sort.SliceStable(inputs, func(i, j int) bool {
+		left := len(inputs[i].response.Findings)
+		right := len(inputs[j].response.Findings)
+		if left != right {
+			return left > right
+		}
+		return inputs[i].index < inputs[j].index
+	})
+	return inputs
+}
+
+func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
+	if resp == nil {
+		return nil
+	}
+	clone := *resp
+	clone.Findings = append([]model.Finding(nil), resp.Findings...)
+	return &clone
+}
+
+func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_merge_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
@@ -755,7 +880,8 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 	mergeUser, err := llm.RenderJSON(map[string]any{
 		"review_context":      json.RawMessage(userPrompt),
 		"context_agent_notes": contextNotes,
-		"vector_reviews":      vectorReviewPayloads(vectorResults),
+		"final_findings":      finalFindingsPayload(finalFindings),
+		"incoming_review":     pairwiseMergePayload(incoming),
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
@@ -771,20 +897,63 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		constraints:   constraints,
 		hasTools:      false,
 		validateResponse: func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
-			return validateMergeResponse(resp, vectorResults)
+			return validatePairwiseMergeResponse(resp, finalFindings, incoming)
 		},
 	}, req)
 }
 
+func finalFindingsPayload(resp *llm.ReviewResponse) map[string]any {
+	entry := map[string]any{
+		"name": "Final findings",
+		"role": "merge_accumulator",
+	}
+	if resp != nil {
+		entry["findings"] = resp.Findings
+		entry["overall_correctness"] = resp.OverallCorrectness
+		entry["overall_explanation"] = resp.OverallExplanation
+		entry["overall_confidence_score"] = resp.OverallConfidenceScore
+	}
+	return entry
+}
+
+func pairwiseMergePayload(input pairwiseMergeInput) map[string]any {
+	entry := map[string]any{
+		"name": input.name,
+		"role": input.role,
+	}
+	if input.response != nil {
+		entry["findings"] = input.response.Findings
+		entry["overall_correctness"] = input.response.OverallCorrectness
+		entry["overall_explanation"] = input.response.OverallExplanation
+		entry["overall_confidence_score"] = input.response.OverallConfidenceScore
+	}
+	return entry
+}
+
 func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult) *llm.InvalidResponseError {
+	return validateMergeResponseForInputs(resp, largestVectorFindingCount(vectorResults), "largest reviewer", flattenVectorFindings(vectorResults))
+}
+
+func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput) *llm.InvalidResponseError {
+	var inputFindings []model.Finding
+	minCount := 0
+	if finalFindings != nil {
+		minCount = len(finalFindings.Findings)
+		inputFindings = append(inputFindings, finalFindings.Findings...)
+	}
+	if incoming.response != nil {
+		inputFindings = append(inputFindings, incoming.response.Findings...)
+	}
+	return validateMergeResponseForInputs(resp, minCount, "Final findings", inputFindings)
+}
+
+func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, protectedName string, inputFindings []model.Finding) *llm.InvalidResponseError {
 	if resp == nil {
 		return &llm.InvalidResponseError{
 			Reason:        "merge returned no response",
 			MissingFields: []string{"findings"},
 		}
 	}
-	minCount := largestVectorFindingCount(vectorResults)
-	inputFindings := flattenVectorFindings(vectorResults)
 	var problems []string
 	countMismatch := len(resp.Findings) < minCount
 	if countMismatch {
@@ -811,11 +980,13 @@ func validateMergeResponse(resp *llm.ReviewResponse, vectorResults []agentResult
 			GotCount      int
 			MinCount      int
 			Unmatched     int
+			ProtectedName string
 		}{
 			CountMismatch: countMismatch,
 			GotCount:      len(resp.Findings),
 			MinCount:      minCount,
 			Unmatched:     unmatched,
+			ProtectedName: protectedName,
 		},
 	}
 }
@@ -1523,6 +1694,22 @@ func emptyVerifiedMergeResult() agentResult {
 			Status: model.AgentRunStatusSkipped,
 		},
 	}
+}
+
+func sumRunTokens(runs []model.AgentRun) model.TokenUsage {
+	var total model.TokenUsage
+	for _, run := range runs {
+		total = addTokenUsage(total, run.TokensUsed)
+	}
+	return total
+}
+
+func sumRunToolCalls(runs []model.AgentRun) int {
+	total := 0
+	for _, run := range runs {
+		total += run.ToolCalls
+	}
+	return total
 }
 
 // remintDuplicateFindingIDs replaces colliding valid UUIDs in-place so that
