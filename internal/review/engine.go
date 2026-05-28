@@ -805,7 +805,8 @@ func fallbackPairwiseMerge(finalFindings *llm.ReviewResponse, incoming pairwiseM
 		out = &llm.ReviewResponse{}
 	}
 	if incoming.response != nil {
-		out.Findings = append(out.Findings, incoming.response.Findings...)
+		clonedIncoming := cloneReviewResponse(incoming.response)
+		out.Findings = append(out.Findings, clonedIncoming.Findings...)
 		remintDuplicateFindingIDs(out.Findings)
 	}
 	out.OverallCorrectness = "patch is incorrect"

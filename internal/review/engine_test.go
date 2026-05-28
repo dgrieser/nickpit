@@ -1623,6 +1623,37 @@ func TestFallbackPairwiseMergeRemintsDuplicateFindingIDs(t *testing.T) {
 	}
 }
 
+func TestFallbackPairwiseMergeDeepCopiesIncomingFindings(t *testing.T) {
+	priority := 2
+	incomingFinding := mergeTestFinding("Fix B", 2)
+	incomingFinding.Priority = &priority
+	incomingFinding.Suggestions = []model.Suggestion{{Body: "suggestion", LineRange: model.LineRange{Start: 2, End: 2}}}
+	incomingFinding.Finalization = &model.FindingFinalization{Title: "final", Body: "body", Priority: 2, ConfidenceScore: 0.8}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer B",
+		response: &llm.ReviewResponse{Findings: []model.Finding{incomingFinding}},
+	}
+
+	result := fallbackPairwiseMerge(&llm.ReviewResponse{}, incoming, errors.New("boom"))
+	result.Findings[0].Suggestions[0].Body = "changed"
+	*result.Findings[0].Priority = 1
+	result.Findings[0].Verification.Verdict = model.VerdictRefuted
+	result.Findings[0].Finalization.Title = "changed"
+
+	if incoming.response.Findings[0].Suggestions[0].Body != "suggestion" {
+		t.Fatalf("incoming suggestion mutated = %q", incoming.response.Findings[0].Suggestions[0].Body)
+	}
+	if *incoming.response.Findings[0].Priority != 2 {
+		t.Fatalf("incoming priority mutated = %d", *incoming.response.Findings[0].Priority)
+	}
+	if incoming.response.Findings[0].Verification.Verdict != model.VerdictConfirmed {
+		t.Fatalf("incoming verification mutated = %q", incoming.response.Findings[0].Verification.Verdict)
+	}
+	if incoming.response.Findings[0].Finalization.Title != "final" {
+		t.Fatalf("incoming finalization mutated = %q", incoming.response.Findings[0].Finalization.Title)
+	}
+}
+
 func TestCloneReviewResponseDeepCopiesMutableFindingFields(t *testing.T) {
 	priority := 2
 	original := &llm.ReviewResponse{
