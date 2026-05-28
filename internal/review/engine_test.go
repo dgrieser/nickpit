@@ -1712,9 +1712,9 @@ func TestMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
 }
 
 func TestPairwiseMergeRejectsUnchangedAccumulator(t *testing.T) {
-	a := mergeTestFinding("Fix A", 1)
-	b := mergeTestFinding("Fix B", 10)
-	c := mergeTestFinding("Fix C", 20)
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 10)
+	c := mergeTestFindingWithID("Fix C", 20)
 
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
@@ -1738,9 +1738,9 @@ func TestPairwiseMergeRejectsUnchangedAccumulator(t *testing.T) {
 }
 
 func TestPairwiseMergeAcceptsModifiedAccumulator(t *testing.T) {
-	a := mergeTestFinding("Fix A", 1)
-	b := mergeTestFinding("Fix B", 10)
-	c := mergeTestFinding("Fix C", 20)
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 10)
+	c := mergeTestFindingWithID("Fix C", 20)
 
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
@@ -1759,9 +1759,9 @@ func TestPairwiseMergeAcceptsModifiedAccumulator(t *testing.T) {
 }
 
 func TestPairwiseMergeAcceptsAppendedIncoming(t *testing.T) {
-	a := mergeTestFinding("Fix A", 1)
-	b := mergeTestFinding("Fix B", 10)
-	c := mergeTestFinding("Fix C", 20)
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 10)
+	c := mergeTestFindingWithID("Fix C", 20)
 
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
@@ -1778,10 +1778,10 @@ func TestPairwiseMergeAcceptsAppendedIncoming(t *testing.T) {
 }
 
 func TestPairwiseMergePartialGrowthRequiresRemainingChanges(t *testing.T) {
-	a := mergeTestFinding("Fix A", 1)
-	b := mergeTestFinding("Fix B", 10)
-	c := mergeTestFinding("Fix C", 20)
-	d := mergeTestFinding("Fix D", 30)
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 10)
+	c := mergeTestFindingWithID("Fix C", 20)
+	d := mergeTestFindingWithID("Fix D", 30)
 
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
@@ -1802,7 +1802,7 @@ func TestPairwiseMergePartialGrowthRequiresRemainingChanges(t *testing.T) {
 }
 
 func TestPairwiseMergeMismatchSkippedWhenIncomingEmpty(t *testing.T) {
-	a := mergeTestFinding("Fix A", 1)
+	a := mergeTestFindingWithID("Fix A", 1)
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a}}
 	incoming := pairwiseMergeInput{
 		name:     "Reviewer 2",
@@ -1843,6 +1843,12 @@ func mergeTestFinding(title string, line int) model.Finding {
 		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
 		Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "confirmed"},
 	}
+}
+
+func mergeTestFindingWithID(title string, line int) model.Finding {
+	f := mergeTestFinding(title, line)
+	f.ID = uuid.NewString()
+	return f
 }
 
 func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {

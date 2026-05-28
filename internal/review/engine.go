@@ -992,17 +992,17 @@ func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.
 		minCount = len(finalFindings.Findings)
 		inputFindings = append(inputFindings, finalFindings.Findings...)
 	}
-	incomingCount := 0
+	var incomingFindings []model.Finding
 	if incoming.response != nil {
-		incomingCount = len(incoming.response.Findings)
-		inputFindings = append(inputFindings, incoming.response.Findings...)
+		incomingFindings = incoming.response.Findings
+		inputFindings = append(inputFindings, incomingFindings...)
 	}
 	return validateMergeResponse(resp, mergeValidationInputs{
-		minCount:      minCount,
-		protectedName: "Final findings",
-		inputFindings: inputFindings,
-		accumulator:   finalFindings,
-		incomingCount: incomingCount,
+		minCount:         minCount,
+		protectedName:    "Final findings",
+		inputFindings:    inputFindings,
+		accumulator:      finalFindings,
+		incomingFindings: incomingFindings,
 	})
 }
 
@@ -1018,12 +1018,12 @@ type mergeValidationInputs struct {
 	minCount      int
 	protectedName string
 	inputFindings []model.Finding
-	// Pairwise-only. Both must be set to enable the merge_mismatch check that
-	// detects responses where count did not grow enough to absorb the incoming
-	// reviewer and none of the accumulator findings were modified — i.e. the
-	// merge step silently dropped the incoming reviewer's contribution.
-	accumulator   *llm.ReviewResponse
-	incomingCount int
+	// Pairwise-only. All three must be set to enable the merge_mismatch check
+	// that detects responses where count did not grow enough to absorb the
+	// incoming reviewer and none of the accumulator findings were modified —
+	// i.e. the merge step silently dropped the incoming reviewer's contribution.
+	accumulator      *llm.ReviewResponse
+	incomingFindings []model.Finding
 }
 
 func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *llm.InvalidResponseError {
@@ -1046,16 +1046,16 @@ func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *
 		}
 	}
 	mergeMismatch := false
-	changed, required, growth := 0, 0, 0
-	if in.accumulator != nil && in.incomingCount > 0 {
+	changed, required, growth, incomingCount := 0, 0, 0, len(in.incomingFindings)
+	if in.accumulator != nil && incomingCount > 0 {
 		finalCount := len(in.accumulator.Findings)
 		growth = max(len(resp.Findings)-finalCount, 0)
-		required = in.incomingCount - growth
+		required = incomingCount - growth
 		if required > 0 {
-			changed = pairwiseMergeChangedCount(resp.Findings, in.accumulator.Findings)
+			changed = pairwiseMergeChangedCount(resp.Findings, in.accumulator.Findings, in.incomingFindings)
 			if changed < required {
 				mergeMismatch = true
-				problems = append(problems, fmt.Sprintf("merge_mismatch changed=%d required=%d incoming=%d growth=%d", changed, required, in.incomingCount, growth))
+				problems = append(problems, fmt.Sprintf("merge_mismatch changed=%d required=%d incoming=%d growth=%d", changed, required, incomingCount, growth))
 			}
 		}
 	}
@@ -1088,20 +1088,37 @@ func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *
 			MergeMismatch: mergeMismatch,
 			Changed:       changed,
 			Required:      required,
-			IncomingCount: in.incomingCount,
+			IncomingCount: incomingCount,
 			Growth:        growth,
 		},
 	}
 }
 
-// pairwiseMergeChangedCount counts output findings that match an accumulator
-// finding (by ID or code location) but differ materially from it. Output
-// findings without an accumulator match are skipped here — they are either
-// added from the incoming reviewer or unmatched (which the unmatched check
-// already flags).
-func pairwiseMergeChangedCount(out, accumulator []model.Finding) int {
+// pairwiseMergeChangedCount returns how many output findings correspond to an
+// accumulator finding but differ materially from it. An output finding is
+// attributed to the accumulator side via findMergeInputMatch (ID first, then
+// code_location with title tiebreak); output findings whose ID matches an
+// incoming finding are treated as incoming-derived and skipped, so the count
+// reflects accumulator changes only. This handles both the production path
+// (parser mints UUIDs, so IDs match across steps) and degenerate cases where
+// IDs are missing (location/title fallback still attributes correctly).
+func pairwiseMergeChangedCount(out, accumulator, incoming []model.Finding) int {
+	incomingIDs := make(map[string]struct{}, len(incoming))
+	for i := range incoming {
+		id := strings.TrimSpace(incoming[i].ID)
+		if id == "" {
+			continue
+		}
+		incomingIDs[id] = struct{}{}
+	}
 	changed := 0
 	for i := range out {
+		id := strings.TrimSpace(out[i].ID)
+		if id != "" {
+			if _, ok := incomingIDs[id]; ok {
+				continue
+			}
+		}
 		match := findMergeInputMatch(out[i], accumulator)
 		if match == nil {
 			continue
