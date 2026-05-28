@@ -281,14 +281,6 @@ func testPayloadFindings(payload map[string]any) []model.Finding {
 	return findings
 }
 
-func testPayloadFindingsFromJSON(data []byte) []model.Finding {
-	var payload struct {
-		Findings []model.Finding `json:"findings"`
-	}
-	_ = json.Unmarshal(data, &payload)
-	return payload.Findings
-}
-
 func testPayloadFindingIDsFromJSON(data string) []model.Finding {
 	matches := uuidRe.FindAllString(data, -1)
 	seen := make(map[string]struct{}, len(matches))
@@ -308,11 +300,11 @@ func testPayloadFindingIDsFromJSON(data string) []model.Finding {
 
 func vectorNameFromSystem(system string) string {
 	marker := "## FOCUS ON "
-	idx := strings.Index(system, marker)
-	if idx < 0 {
+	_, rest, found := strings.Cut(system, marker)
+	if !found {
 		return ""
 	}
-	rest := strings.TrimSpace(system[idx+len(marker):])
+	rest = strings.TrimSpace(rest)
 	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
 		rest = rest[:nl]
 	}
@@ -322,8 +314,19 @@ func vectorNameFromSystem(system string) string {
 	case "BEST PRACTICES":
 		return "Best Practices"
 	default:
-		return strings.Title(strings.ToLower(strings.TrimSpace(rest)))
+		return titleCaseASCII(strings.ToLower(strings.TrimSpace(rest)))
 	}
+}
+
+// titleCaseASCII upper-cases the first letter of each whitespace-separated word.
+// It replaces the deprecated strings.Title for the ASCII focus names this test
+// helper handles, avoiding a golang.org/x/text dependency.
+func titleCaseASCII(s string) string {
+	words := strings.Fields(s)
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
 }
 
 func (s *capturingLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -1060,10 +1063,10 @@ func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 	definitions := reviewerToolDefinitions()
 	requiredByTool := map[string][]string{
-		"inspect_file": []string{"path"},
-		"search":       []string{"query"},
-		"find_callers": []string{"symbol"},
-		"find_callees": []string{"symbol"},
+		"inspect_file": {"path"},
+		"search":       {"query"},
+		"find_callers": {"symbol"},
+		"find_callees": {"symbol"},
 	}
 	for _, definition := range definitions {
 		var schema map[string]any
@@ -1755,8 +1758,12 @@ func TestMergeValidationAllowsDuplicatesAndNoUpperBound(t *testing.T) {
 	input := mergeTestFinding("Fix Code Quality", 1)
 	resp := &llm.ReviewResponse{Findings: []model.Finding{input, input, input}}
 
-	if invalid := validateMergeResponseForInputs(resp, 1, "Final findings", []model.Finding{input}); invalid != nil {
-		t.Fatalf("validateMergeResponseForInputs returned %v, want nil for duplicate/high-count output", invalid)
+	if invalid := validateMergeResponse(resp, mergeValidationInputs{
+		minCount:      1,
+		protectedName: "Final findings",
+		inputFindings: []model.Finding{input},
+	}); invalid != nil {
+		t.Fatalf("validateMergeResponse returned %v, want nil for duplicate/high-count output", invalid)
 	}
 }
 
@@ -1768,8 +1775,12 @@ func TestMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
 	merged.CodeLocation.LineRange = model.LineRange{Start: 12, End: 12}
 	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
 
-	if invalid := validateMergeResponseForInputs(resp, 1, "Final findings", []model.Finding{input}); invalid != nil {
-		t.Fatalf("validateMergeResponseForInputs returned %v, want nil for preserved ID with refined location", invalid)
+	if invalid := validateMergeResponse(resp, mergeValidationInputs{
+		minCount:      1,
+		protectedName: "Final findings",
+		inputFindings: []model.Finding{input},
+	}); invalid != nil {
+		t.Fatalf("validateMergeResponse returned %v, want nil for preserved ID with refined location", invalid)
 	}
 }
 
@@ -1790,7 +1801,7 @@ func TestDedupeAgentAcceptsDedupedReviewerFindings(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "reviewer"},
 	}
 
-	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	resp, run := engine.runDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
 
 	if run.Status != model.AgentRunStatusOK {
 		t.Fatalf("dedupe status = %q, want ok: %s", run.Status, run.Error)
@@ -1816,7 +1827,7 @@ func TestDedupeAgentRejectsUnknownIDsAndFallsBack(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "reviewer"},
 	}
 
-	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
+	resp, run := engine.runDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
 
 	if resp != nil {
 		t.Fatalf("dedupe resp = %#v, want fallback/no replacement", resp)
@@ -1831,7 +1842,7 @@ func TestDedupeAgentRejectsUnknownIDsAndFallsBack(t *testing.T) {
 
 func TestDedupeValidationRejectsTooMuchDrop(t *testing.T) {
 	var input []model.Finding
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		input = append(input, mergeTestFindingWithID(fmt.Sprintf("Fix %d", i), i+1))
 	}
 	resp := &llm.ReviewResponse{Findings: append([]model.Finding(nil), input[:4]...)}
@@ -1975,6 +1986,49 @@ func TestPairwiseMergeMismatchSkippedWhenIncomingEmpty(t *testing.T) {
 
 	if invalid := validatePairwiseMergeResponse(resp, accumulator, incoming); invalid != nil {
 		t.Fatalf("expected nil when incoming has no findings, got %v", invalid)
+	}
+}
+
+func TestPairwiseMergeAcceptsIncomingIDPreservingMerge(t *testing.T) {
+	// Accumulator finding A and incoming finding C describe the same code
+	// location but were minted with different IDs.
+	a := mergeTestFindingWithID("Fix shared issue", 1)
+	c := mergeTestFindingWithID("Fix shared issue (reviewer 2 wording)", 1)
+
+	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a}}
+	incoming := pairwiseMergeInput{
+		name:     "Reviewer 2",
+		role:     "reviewer",
+		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
+	}
+
+	// The merge folds A into the incoming finding: it keeps C's ID but
+	// materially refines A's content at A's location. An output-keyed scan would
+	// skip this as incoming-derived and falsely report merge_mismatch; the
+	// accumulator-keyed count must accept it.
+	merged := a
+	merged.ID = c.ID
+	mergedVerification := *a.Verification
+	mergedVerification.ID = c.ID
+	merged.Verification = &mergedVerification
+	merged.Body = "refined body merged from reviewer 2"
+	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
+
+	if invalid := validatePairwiseMergeResponse(resp, accumulator, incoming); invalid != nil {
+		t.Fatalf("expected nil for incoming-ID-preserving merge, got %v", invalid)
+	}
+}
+
+func TestFindingMaterialEqualIgnoresIDChanges(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := a
+	b.ID = uuid.NewString()
+	bVerification := *a.Verification
+	bVerification.ID = b.ID
+	b.Verification = &bVerification
+
+	if !findingMaterialEqual(a, b) {
+		t.Fatalf("findingMaterialEqual = false, want true when only finding ID and verification ID differ")
 	}
 }
 
@@ -2237,7 +2291,7 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, question := range strings.Split(questionsTemplate, "\n") {
+		for question := range strings.SplitSeq(questionsTemplate, "\n") {
 			question = strings.TrimSpace(question)
 			if question == "" {
 				continue

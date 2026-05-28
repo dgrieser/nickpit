@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -364,7 +365,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		e.logf("Verifier failed before merge: tokens=%d warnings=%d error=%v", verifyUsage.TotalTokens, len(verifyWarnings), err)
 		return nil, nil, err
 	}
-	dedupeRuns := e.runDedupeAgents(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchemaForDedupe(req), mergeConstraintsForDedupe(req), req)
+	dedupeRuns := e.runDedupeAgents(ctx, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchemaForDedupe(req), mergeConstraintsForDedupe(req), req)
 	mergeInputs := pairwiseMergeInputs(vectorResults)
 	verifiedMergeInputs := flattenPairwiseMergeInputs(mergeInputs)
 
@@ -511,9 +512,11 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			return usage, warnings, fmt.Errorf("review: verifier returned no result for finding #%d %q", i+1, findings[i].Title)
 		}
 		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
-		if finding.ID == "" {
-			finding.ID = findings[i].ID
-		}
+		// findings[i].ID holds the normalized ID after EnsureFindingIDs above,
+		// which may have replaced an invalid or duplicate reviewer ID. Always
+		// adopt it so corrected IDs survive into downstream dedupe/merge
+		// validation and stay in sync with Verification.ID.
+		finding.ID = findings[i].ID
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
 		finding.Verification = &v
@@ -609,10 +612,8 @@ var ValidDropPolicies = []string{"none", "refuted-only", "refuted-and-unverified
 
 // ValidateDropPolicy returns an error when policy is not one of the supported values.
 func ValidateDropPolicy(policy string) error {
-	for _, v := range ValidDropPolicies {
-		if v == policy {
-			return nil
-		}
+	if slices.Contains(ValidDropPolicies, policy) {
+		return nil
 	}
 	return fmt.Errorf("invalid verify-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
 }
@@ -762,7 +763,11 @@ func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints 
 	return mergeConstraintsForRequest(req)
 }
 
-func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) []model.AgentRun {
+// runDedupeAgents runs a per-reviewer dedupe pass concurrently. It intentionally
+// mutates vectorResults[idx].resp in place, but only when a dedupe agent returns
+// a valid response. A failed or invalid dedupe leaves that reviewer's original
+// findings intact and only records the dedupe run for telemetry.
+func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) []model.AgentRun {
 	runs := make([]model.AgentRun, len(vectorResults))
 	var wg sync.WaitGroup
 	for i := range vectorResults {
@@ -773,7 +778,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, context
 		wg.Add(1)
 		go func(idx int, input agentResult) {
 			defer wg.Done()
-			resp, run := e.runDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req)
+			resp, run := e.runDedupeAgent(ctx, contextNotes, input, schema, constraints, req)
 			runs[idx] = run
 			if resp != nil {
 				vectorResults[idx].resp = resp
@@ -792,8 +797,8 @@ func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, context
 	return out
 }
 
-func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (*llm.ReviewResponse, model.AgentRun) {
-	result, err := e.callDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req)
+func (e *Engine) runDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (*llm.ReviewResponse, model.AgentRun) {
+	result, err := e.callDedupeAgent(ctx, contextNotes, input, schema, constraints, req)
 	run := result.run
 	if err != nil {
 		run = markDedupeRun(run, model.AgentRunStatusFailed, err)
@@ -811,7 +816,7 @@ func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextN
 	return cloneReviewResponse(result.resp), run
 }
 
-func (e *Engine) callDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
+func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_dedupe_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
@@ -1249,22 +1254,15 @@ func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.
 	})
 }
 
-func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, protectedName string, inputFindings []model.Finding) *llm.InvalidResponseError {
-	return validateMergeResponse(resp, mergeValidationInputs{
-		minCount:      minCount,
-		protectedName: protectedName,
-		inputFindings: inputFindings,
-	})
-}
-
 type mergeValidationInputs struct {
 	minCount      int
 	protectedName string
 	inputFindings []model.Finding
-	// Pairwise-only. All three must be set to enable the merge_mismatch check
-	// that detects responses where count did not grow enough to absorb the
-	// incoming reviewer and none of the accumulator findings were modified —
-	// i.e. the merge step silently dropped the incoming reviewer's contribution.
+	// Pairwise-only. accumulator and incomingFindings must both be set to enable
+	// the merge_mismatch check that detects responses where count did not grow
+	// enough to absorb the incoming reviewer and none of the accumulator findings
+	// were modified — i.e. the merge step silently dropped the incoming
+	// reviewer's contribution.
 	accumulator      *llm.ReviewResponse
 	incomingFindings []model.Finding
 }
@@ -1295,7 +1293,7 @@ func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *
 		growth = max(len(resp.Findings)-finalCount, 0)
 		required = incomingCount - growth
 		if required > 0 {
-			changed = pairwiseMergeChangedCount(resp.Findings, in.accumulator.Findings, in.incomingFindings)
+			changed = pairwiseMergeChangedCount(resp.Findings, in.accumulator.Findings)
 			if changed < required {
 				mergeMismatch = true
 				problems = append(problems, fmt.Sprintf("merge_mismatch changed=%d required=%d incoming=%d growth=%d", changed, required, incomingCount, growth))
@@ -1337,36 +1335,30 @@ func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *
 	}
 }
 
-// pairwiseMergeChangedCount returns how many output findings correspond to an
-// accumulator finding but differ materially from it. An output finding is
-// attributed to the accumulator side via findMergeInputMatch (ID first, then
-// code_location with title tiebreak); output findings whose ID matches an
-// incoming finding are treated as incoming-derived and skipped, so the count
-// reflects accumulator changes only. This handles both the production path
-// (parser mints UUIDs, so IDs match across steps) and degenerate cases where
-// IDs are missing (location/title fallback still attributes correctly).
-func pairwiseMergeChangedCount(out, accumulator, incoming []model.Finding) int {
-	incomingIDs := make(map[string]struct{}, len(incoming))
-	for i := range incoming {
-		id := strings.TrimSpace(incoming[i].ID)
-		if id == "" {
-			continue
-		}
-		incomingIDs[id] = struct{}{}
-	}
+// pairwiseMergeChangedCount counts how many accumulator findings the merge
+// output failed to carry through unchanged. It iterates the accumulator (the
+// protected side), not the output, so it stays correct when a valid merge folds
+// an accumulator finding into the incoming reviewer's finding and keeps the
+// incoming ID: such a merge is invisible to an output-keyed scan, but here it
+// still registers because the accumulator finding either drops out of the
+// output entirely or surfaces as a materially different output finding.
+//
+// Each accumulator finding is attributed to an output finding via
+// findMergeInputMatch (ID first, then code_location with a title tiebreak),
+// which handles both the production path (parser mints UUIDs, so IDs match
+// across steps) and degenerate cases where IDs are missing (location/title
+// fallback still attributes correctly). An accumulator finding counts as
+// changed when no output finding matches it, or when the matched output finding
+// differs materially.
+func pairwiseMergeChangedCount(out, accumulator []model.Finding) int {
 	changed := 0
-	for i := range out {
-		id := strings.TrimSpace(out[i].ID)
-		if id != "" {
-			if _, ok := incomingIDs[id]; ok {
-				continue
-			}
-		}
-		match := findMergeInputMatch(out[i], accumulator)
+	for i := range accumulator {
+		match := findMergeInputMatch(accumulator[i], out)
 		if match == nil {
+			changed++
 			continue
 		}
-		if !findingMaterialEqual(out[i], *match) {
+		if !findingMaterialEqual(accumulator[i], *match) {
 			changed++
 		}
 	}
@@ -1374,8 +1366,10 @@ func pairwiseMergeChangedCount(out, accumulator, incoming []model.Finding) int {
 }
 
 // findingMaterialEqual compares the parts of a finding that a merge step would
-// rewrite when folding in new information. ID is intentionally ignored because
-// a merge that only reassigns an ID without touching content is not a merge.
+// rewrite when folding in new information. Finding ID and Verification.ID are
+// intentionally ignored: a merge that only reassigns an ID without touching
+// content is not a merge, and Verification.ID merely mirrors the parent finding
+// ID, which may legitimately change when a finding is folded into another.
 func findingMaterialEqual(a, b model.Finding) bool {
 	if a.Title != b.Title || a.Body != b.Body {
 		return false
@@ -1394,13 +1388,27 @@ func findingMaterialEqual(a, b model.Finding) bool {
 			return false
 		}
 	}
-	if !reflect.DeepEqual(a.Verification, b.Verification) {
+	if !verificationContentEqual(a.Verification, b.Verification) {
 		return false
 	}
 	if !reflect.DeepEqual(a.Finalization, b.Finalization) {
 		return false
 	}
 	return true
+}
+
+// verificationContentEqual compares only the content fields of two
+// verifications, ignoring Verification.ID. That ID mirrors the parent finding
+// ID and may legitimately change during a merge, so it must not make two
+// otherwise-identical verifications compare unequal.
+func verificationContentEqual(a, b *model.FindingVerification) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Verdict == b.Verdict &&
+		a.Priority == b.Priority &&
+		a.ConfidenceScore == b.ConfidenceScore &&
+		a.Remarks == b.Remarks
 }
 
 func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {
@@ -1553,9 +1561,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		if strings.TrimSpace(reasoning) == "" {
 			return
 		}
-		collectWG.Add(1)
-		go func() {
-			defer collectWG.Done()
+		collectWG.Go(func() {
 			list, result, err := e.runReasoningCollectFindings(ctx, reasoning, agentName, iterIdx, req)
 			addExtractorRun(result.run)
 			if err != nil {
@@ -1568,7 +1574,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			extractMu.Lock()
 			collectedLists = append(collectedLists, list)
 			extractMu.Unlock()
-		}()
+		})
 	}
 	if extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
@@ -2095,35 +2101,6 @@ func findingDedupKeys(finding model.Finding) (string, string) {
 	return idTitleKey, titleLocationKey
 }
 
-func vectorReviewPayloads(results []agentResult) []map[string]any {
-	out := make([]map[string]any, 0, len(results))
-	for _, result := range results {
-		entry := map[string]any{
-			"name": result.run.Name,
-			"role": result.run.Role,
-		}
-		if result.run.Status == model.AgentRunStatusFailed {
-			entry["status"] = model.AgentRunStatusFailed
-			if result.run.Error != "" {
-				entry["error"] = result.run.Error
-			}
-			out = append(out, entry)
-			continue
-		}
-		if result.resp != nil {
-			entry["findings"] = result.resp.Findings
-			entry["overall_correctness"] = result.resp.OverallCorrectness
-			entry["overall_explanation"] = result.resp.OverallExplanation
-			entry["overall_confidence_score"] = result.resp.OverallConfidenceScore
-		}
-		if result.run.Status != "" {
-			entry["status"] = result.run.Status
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
 func supplementalFromContextAgent(messages []llm.Message) []model.SupplementalFile {
 	out := make([]model.SupplementalFile, 0, len(messages))
 	for i, msg := range messages {
@@ -2369,14 +2346,6 @@ func agentCommonSystemPromptSnippets(agentRole string, outputSchemaSnippet strin
 	}, nil
 }
 
-func mustRenderPromptFile(name string, data any) string {
-	rendered, err := renderPromptFile(name, data)
-	if err != nil {
-		panic(fmt.Sprintf("review: rendering prompt %s: %v", name, err))
-	}
-	return rendered
-}
-
 func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
 	languages := changedLanguages(ctx)
 	guides := make([]model.StyleGuide, 0, len(languages))
@@ -2438,10 +2407,10 @@ func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []mod
 }
 
 func styleGuideTitle(content string) string {
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "# ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		if rest, ok := strings.CutPrefix(line, "# "); ok {
+			return strings.TrimSpace(rest)
 		}
 	}
 	return ""
@@ -3371,21 +3340,9 @@ func (e *Engine) logfCtx(ctx context.Context, format string, args ...any) {
 	e.logger.Printf("%s%s", agentLogPrefix(ctx), fmt.Sprintf(format, args...))
 }
 
-func (e *Engine) logBlock(label, content string) {
-	if e.logger != nil {
-		e.logger.PrintBlock(label, content)
-	}
-}
-
 func (e *Engine) logBlockCtx(ctx context.Context, label, content string) {
 	if e.logger != nil {
 		e.logger.PrintBlock(agentLogPrefix(ctx)+label, content)
-	}
-}
-
-func (e *Engine) logJSON(label string, value any) {
-	if e.logger != nil {
-		e.logger.PrintJSON(label, value)
 	}
 }
 

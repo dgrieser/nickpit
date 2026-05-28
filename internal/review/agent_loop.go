@@ -299,11 +299,6 @@ func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt
 	e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", req.JSONRetryProgressAgentName, attempt))
 }
 
-func validAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) []llm.ToolCall {
-	valid, _ := filterAgentToolCalls(toolCalls, tools)
-	return valid
-}
-
 func filterAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) ([]llm.ToolCall, int) {
 	if len(toolCalls) == 0 {
 		return nil, 0
