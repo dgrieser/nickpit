@@ -11,6 +11,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/google/uuid"
 )
 
 type scriptedVerifyLLM struct {
@@ -154,6 +155,53 @@ func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
 	verifyFinding := payload["finding"].(map[string]any)
 	if verifyFinding["id"] == "not-a-uuid" || strings.TrimSpace(verifyFinding["id"].(string)) == "" {
 		t.Fatalf("verify prompt finding id = %#v, want generated copy ID", verifyFinding["id"])
+	}
+}
+
+func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
+	// One reviewer emits an invalid non-empty ID and a pair of duplicate valid
+	// IDs. EnsureFindingIDs normalizes them before verification; the corrected
+	// IDs must survive onto the kept findings and stay in sync with their
+	// verifications.
+	dupID := uuid.NewString()
+	reviewerFindings := []model.Finding{
+		{ID: "not-a-uuid", Title: "invalid id", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{ID: dupID, Title: "dup one", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{ID: dupID, Title: "dup two", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
+	}
+
+	llmClient := &scriptedVerifyLLM{} // default verdict is confirmed, so nothing is dropped.
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: reviewerFindings},
+		run:  model.AgentRun{Name: "Reviewer 1", Role: "reviewer", Status: model.AgentRunStatusOK},
+	}}
+
+	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{})
+	if err != nil {
+		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
+	}
+
+	kept := vectorResults[0].resp.Findings
+	if len(kept) != len(reviewerFindings) {
+		t.Fatalf("kept findings = %d, want %d", len(kept), len(reviewerFindings))
+	}
+	seen := make(map[string]struct{}, len(kept))
+	for i, f := range kept {
+		if _, parseErr := uuid.Parse(f.ID); parseErr != nil {
+			t.Fatalf("kept[%d].ID = %q, want valid UUID", i, f.ID)
+		}
+		if _, dup := seen[f.ID]; dup {
+			t.Fatalf("kept[%d].ID = %q is duplicated across kept findings", i, f.ID)
+		}
+		seen[f.ID] = struct{}{}
+		if f.Verification == nil {
+			t.Fatalf("kept[%d].Verification = nil, want attached verification", i)
+		}
+		if f.Verification.ID != f.ID {
+			t.Fatalf("kept[%d].Verification.ID = %q, want %q (finding ID)", i, f.Verification.ID, f.ID)
+		}
 	}
 }
 

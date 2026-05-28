@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -363,6 +365,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		e.logf("Verifier failed before merge: tokens=%d warnings=%d error=%v", verifyUsage.TotalTokens, len(verifyWarnings), err)
 		return nil, nil, err
 	}
+	dedupeRuns := e.runDedupeAgents(ctx, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchemaForDedupe(req), mergeConstraintsForDedupe(req), req)
 	mergeInputs := pairwiseMergeInputs(vectorResults)
 	verifiedMergeInputs := flattenPairwiseMergeInputs(mergeInputs)
 
@@ -401,7 +404,7 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 	if len(mergeRuns) == 0 {
 		mergeRuns = []model.AgentRun{mergeResult.run}
 	}
-	allRuns := make([]model.AgentRun, 0, 1+len(vectorResults)+len(mergeRuns))
+	allRuns := make([]model.AgentRun, 0, 1+len(vectorResults)+len(dedupeRuns)+len(mergeRuns))
 	allRuns = append(allRuns, contextResult.run)
 	totalUsage := contextResult.run.TokensUsed
 	toolCalls := contextResult.run.ToolCalls
@@ -413,6 +416,11 @@ func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.Revie
 		if result.reasoningEffort != "" {
 			effectiveReasoningEffort = result.reasoningEffort
 		}
+	}
+	for _, run := range dedupeRuns {
+		allRuns = append(allRuns, run)
+		totalUsage = addTokenUsage(totalUsage, run.TokensUsed)
+		toolCalls += run.ToolCalls
 	}
 	for _, run := range mergeRuns {
 		allRuns = append(allRuns, run)
@@ -479,6 +487,9 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	if len(findings) == 0 {
 		return model.TokenUsage{}, nil, nil
 	}
+	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
+		e.logf("Review generated replacement IDs before verification: count=%d", overwrote)
+	}
 	opts := verifyOptionsFromReviewRequest(req)
 	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
 	if err != nil {
@@ -501,6 +512,11 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			return usage, warnings, fmt.Errorf("review: verifier returned no result for finding #%d %q", i+1, findings[i].Title)
 		}
 		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
+		// findings[i].ID holds the normalized ID after EnsureFindingIDs above,
+		// which may have replaced an invalid or duplicate reviewer ID. Always
+		// adopt it so corrected IDs survive into downstream dedupe/merge
+		// validation and stay in sync with Verification.ID.
+		finding.ID = findings[i].ID
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
 		finding.Verification = &v
@@ -596,10 +612,8 @@ var ValidDropPolicies = []string{"none", "refuted-only", "refuted-and-unverified
 
 // ValidateDropPolicy returns an error when policy is not one of the supported values.
 func ValidateDropPolicy(policy string) error {
-	for _, v := range ValidDropPolicies {
-		if v == policy {
-			return nil
-		}
+	if slices.Contains(ValidDropPolicies, policy) {
+		return nil
 	}
 	return fmt.Errorf("invalid verify-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
 }
@@ -729,6 +743,144 @@ type pairwiseMergeInput struct {
 	role     string
 	index    int
 	response *llm.ReviewResponse
+}
+
+func mergeSchemaForDedupe(req model.ReviewRequest) []byte {
+	if !req.UseJSONSchema {
+		return nil
+	}
+	constraints := mergeConstraintsForRequest(req)
+	if hasResponseConstraints(constraints) {
+		return llm.MergeSchemaWithConstraints(constraints)
+	}
+	return llm.MergeSchema
+}
+
+func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints {
+	if !req.UseJSONSchema {
+		return llm.ResponseConstraints{}
+	}
+	return mergeConstraintsForRequest(req)
+}
+
+// runDedupeAgents runs a per-reviewer dedupe pass concurrently. It intentionally
+// mutates vectorResults[idx].resp in place, but only when a dedupe agent returns
+// a valid response. A failed or invalid dedupe leaves that reviewer's original
+// findings intact and only records the dedupe run for telemetry.
+func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) []model.AgentRun {
+	runs := make([]model.AgentRun, len(vectorResults))
+	var wg sync.WaitGroup
+	for i := range vectorResults {
+		result := vectorResults[i]
+		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil || len(result.resp.Findings) < 2 {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, input agentResult) {
+			defer wg.Done()
+			resp, run := e.runDedupeAgent(ctx, contextNotes, input, schema, constraints, req)
+			runs[idx] = run
+			if resp != nil {
+				vectorResults[idx].resp = resp
+			}
+		}(i, result)
+	}
+	wg.Wait()
+
+	out := make([]model.AgentRun, 0, len(runs))
+	for _, run := range runs {
+		if run.Name == "" {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out
+}
+
+func (e *Engine) runDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (*llm.ReviewResponse, model.AgentRun) {
+	result, err := e.callDedupeAgent(ctx, contextNotes, input, schema, constraints, req)
+	run := result.run
+	if err != nil {
+		run = markDedupeRun(run, model.AgentRunStatusFailed, err)
+		return nil, run
+	}
+	if result.resp == nil {
+		err := fmt.Errorf("dedupe agent returned no response")
+		run = markDedupeRun(run, model.AgentRunStatusFailed, err)
+		return nil, run
+	}
+	if invalid := validateDedupeResponse(result.resp, input.resp); invalid != nil {
+		run = markDedupeRun(run, model.AgentRunStatusPartial, invalid)
+		return nil, run
+	}
+	return cloneReviewResponse(result.resp), run
+}
+
+func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
+	systemTemplate, err := e.loadPrompt("agent_dedupe_system_prompt.tmpl")
+	if err != nil {
+		return agentResult{}, err
+	}
+	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", mergeOutputSchemaSnippetFor(req.UseJSONSchema))
+	if err != nil {
+		return agentResult{}, err
+	}
+	system, err := llm.RenderPrompt(systemTemplate, struct {
+		FindingInstructionsSnippet string
+		PrioritySnippet            string
+		OutputFormatSnippet        string
+	}{
+		FindingInstructionsSnippet: commonSnippets.findingInstructions,
+		PrioritySnippet:            commonSnippets.priority,
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+	})
+	if err != nil {
+		return agentResult{}, fmt.Errorf("review: rendering dedupe system prompt: %w", err)
+	}
+	dedupeUser, err := llm.RenderJSON(map[string]any{
+		"context_agent_notes": contextNotes,
+		"review_findings": map[string]any{
+			"name":                     input.run.Name,
+			"role":                     input.run.Role,
+			"findings":                 input.resp.Findings,
+			"overall_correctness":      input.resp.OverallCorrectness,
+			"overall_explanation":      input.resp.OverallExplanation,
+			"overall_confidence_score": input.resp.OverallConfidenceScore,
+		},
+	})
+	if err != nil {
+		return agentResult{}, fmt.Errorf("review: rendering dedupe prompt json: %w", err)
+	}
+	return e.runAgent(ctx, agentSpec{
+		name:          "Dedupe Findings",
+		role:          "dedupe",
+		system:        system,
+		noToolsSystem: system,
+		user:          dedupeUser,
+		schema:        schema,
+		schemaKind:    llm.SchemaKindMerge,
+		constraints:   constraints,
+		hasTools:      false,
+		validateResponse: func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+			return validateDedupeResponse(resp, input.resp)
+		},
+	}, req)
+}
+
+func markDedupeRun(run model.AgentRun, status string, err error) model.AgentRun {
+	if run.Name == "" {
+		run.Name = "Dedupe Findings"
+	}
+	if run.Role == "" {
+		run.Role = "dedupe"
+	}
+	if run.Status == "" || run.Status == model.AgentRunStatusOK {
+		run.Status = status
+	}
+	if run.Error == "" && err != nil {
+		run.Error = err.Error()
+	}
+	return run
 }
 
 func (e *Engine) runPairwiseMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, []model.AgentRun) {
@@ -980,6 +1132,103 @@ func pairwiseMergePayload(input pairwiseMergeInput) map[string]any {
 	return entry
 }
 
+func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse) *llm.InvalidResponseError {
+	if resp == nil {
+		return &llm.InvalidResponseError{
+			Reason:        "dedupe returned no response",
+			MissingFields: []string{"findings"},
+		}
+	}
+	inputCount := 0
+	inputIDs := map[string]struct{}{}
+	if input != nil {
+		inputCount = len(input.Findings)
+		for _, finding := range input.Findings {
+			id := strings.TrimSpace(finding.ID)
+			if id != "" {
+				inputIDs[id] = struct{}{}
+			}
+		}
+	}
+	minCount := dedupeMinCount(inputCount)
+	countTooLow := len(resp.Findings) < minCount
+	countTooHigh := len(resp.Findings) > inputCount
+	unknownIDs := 0
+	duplicateIDs := 0
+	verificationMismatch := 0
+	seen := map[string]struct{}{}
+	for _, finding := range resp.Findings {
+		id := strings.TrimSpace(finding.ID)
+		if id == "" {
+			unknownIDs++
+		} else {
+			if _, ok := inputIDs[id]; !ok {
+				unknownIDs++
+			}
+			if _, ok := seen[id]; ok {
+				duplicateIDs++
+			}
+			seen[id] = struct{}{}
+		}
+		if finding.Verification == nil || strings.TrimSpace(finding.Verification.ID) != id {
+			verificationMismatch++
+		}
+	}
+	if !countTooLow && !countTooHigh && unknownIDs == 0 && duplicateIDs == 0 && verificationMismatch == 0 {
+		return nil
+	}
+	var problems []string
+	if countTooLow {
+		problems = append(problems, fmt.Sprintf("count_too_low got=%d min=%d input=%d", len(resp.Findings), minCount, inputCount))
+	}
+	if countTooHigh {
+		problems = append(problems, fmt.Sprintf("count_too_high got=%d input=%d", len(resp.Findings), inputCount))
+	}
+	if unknownIDs > 0 {
+		problems = append(problems, fmt.Sprintf("unknown_ids count=%d", unknownIDs))
+	}
+	if duplicateIDs > 0 {
+		problems = append(problems, fmt.Sprintf("duplicate_ids count=%d", duplicateIDs))
+	}
+	if verificationMismatch > 0 {
+		problems = append(problems, fmt.Sprintf("verification_mismatch count=%d", verificationMismatch))
+	}
+	return &llm.InvalidResponseError{
+		RawContent:            resp.RawResponse,
+		Reason:                "dedupe_validation_failed: " + strings.Join(problems, "; "),
+		MissingFields:         []string{"findings"},
+		ReasoningEffort:       resp.ReasoningEffort,
+		RetryGuidanceTemplate: "dedupe_validation_retry_guidance.tmpl",
+		RetryGuidanceData: struct {
+			CountTooLow          bool
+			CountTooHigh         bool
+			InputCount           int
+			MinCount             int
+			UnknownIDs           int
+			DuplicateIDs         int
+			VerificationMismatch int
+		}{
+			CountTooLow:          countTooLow,
+			CountTooHigh:         countTooHigh,
+			InputCount:           inputCount,
+			MinCount:             minCount,
+			UnknownIDs:           unknownIDs,
+			DuplicateIDs:         duplicateIDs,
+			VerificationMismatch: verificationMismatch,
+		},
+	}
+}
+
+func dedupeMinCount(inputCount int) int {
+	if inputCount <= 0 {
+		return 0
+	}
+	if inputCount <= 3 {
+		return 1
+	}
+	return (inputCount + 1) / 2
+}
+
 func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput) *llm.InvalidResponseError {
 	var inputFindings []model.Finding
 	minCount := 0
@@ -991,13 +1240,34 @@ func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.
 		minCount = len(finalFindings.Findings)
 		inputFindings = append(inputFindings, finalFindings.Findings...)
 	}
+	var incomingFindings []model.Finding
 	if incoming.response != nil {
-		inputFindings = append(inputFindings, incoming.response.Findings...)
+		incomingFindings = incoming.response.Findings
+		inputFindings = append(inputFindings, incomingFindings...)
 	}
-	return validateMergeResponseForInputs(resp, minCount, "Final findings", inputFindings)
+	return validateMergeResponse(resp, mergeValidationInputs{
+		minCount:         minCount,
+		protectedName:    "Final findings",
+		inputFindings:    inputFindings,
+		accumulator:      finalFindings,
+		incomingFindings: incomingFindings,
+	})
 }
 
-func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, protectedName string, inputFindings []model.Finding) *llm.InvalidResponseError {
+type mergeValidationInputs struct {
+	minCount      int
+	protectedName string
+	inputFindings []model.Finding
+	// Pairwise-only. accumulator and incomingFindings must both be set to enable
+	// the merge_mismatch check that detects responses where count did not grow
+	// enough to absorb the incoming reviewer and none of the accumulator findings
+	// were modified — i.e. the merge step silently dropped the incoming
+	// reviewer's contribution.
+	accumulator      *llm.ReviewResponse
+	incomingFindings []model.Finding
+}
+
+func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *llm.InvalidResponseError {
 	if resp == nil {
 		return &llm.InvalidResponseError{
 			Reason:        "merge returned no response",
@@ -1005,15 +1275,29 @@ func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, prot
 		}
 	}
 	var problems []string
-	countMismatch := len(resp.Findings) < minCount
+	countMismatch := len(resp.Findings) < in.minCount
 	if countMismatch {
-		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), minCount))
+		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), in.minCount))
 	}
 	unmatched := 0
 	for i, finding := range resp.Findings {
-		if findMergeInputMatch(finding, inputFindings) == nil {
+		if findMergeInputMatch(finding, in.inputFindings) == nil {
 			unmatched++
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
+		}
+	}
+	mergeMismatch := false
+	changed, required, growth, incomingCount := 0, 0, 0, len(in.incomingFindings)
+	if in.accumulator != nil && incomingCount > 0 {
+		finalCount := len(in.accumulator.Findings)
+		growth = max(len(resp.Findings)-finalCount, 0)
+		required = incomingCount - growth
+		if required > 0 {
+			changed = pairwiseMergeChangedCount(resp.Findings, in.accumulator.Findings)
+			if changed < required {
+				mergeMismatch = true
+				problems = append(problems, fmt.Sprintf("merge_mismatch changed=%d required=%d incoming=%d growth=%d", changed, required, incomingCount, growth))
+			}
 		}
 	}
 	if len(problems) == 0 {
@@ -1031,14 +1315,100 @@ func validateMergeResponseForInputs(resp *llm.ReviewResponse, minCount int, prot
 			MinCount      int
 			Unmatched     int
 			ProtectedName string
+			MergeMismatch bool
+			Changed       int
+			Required      int
+			IncomingCount int
+			Growth        int
 		}{
 			CountMismatch: countMismatch,
 			GotCount:      len(resp.Findings),
-			MinCount:      minCount,
+			MinCount:      in.minCount,
 			Unmatched:     unmatched,
-			ProtectedName: protectedName,
+			ProtectedName: in.protectedName,
+			MergeMismatch: mergeMismatch,
+			Changed:       changed,
+			Required:      required,
+			IncomingCount: incomingCount,
+			Growth:        growth,
 		},
 	}
+}
+
+// pairwiseMergeChangedCount counts how many accumulator findings the merge
+// output failed to carry through unchanged. It iterates the accumulator (the
+// protected side), not the output, so it stays correct when a valid merge folds
+// an accumulator finding into the incoming reviewer's finding and keeps the
+// incoming ID: such a merge is invisible to an output-keyed scan, but here it
+// still registers because the accumulator finding either drops out of the
+// output entirely or surfaces as a materially different output finding.
+//
+// Each accumulator finding is attributed to an output finding via
+// findMergeInputMatch (ID first, then code_location with a title tiebreak),
+// which handles both the production path (parser mints UUIDs, so IDs match
+// across steps) and degenerate cases where IDs are missing (location/title
+// fallback still attributes correctly). An accumulator finding counts as
+// changed when no output finding matches it, or when the matched output finding
+// differs materially.
+func pairwiseMergeChangedCount(out, accumulator []model.Finding) int {
+	changed := 0
+	for i := range accumulator {
+		match := findMergeInputMatch(accumulator[i], out)
+		if match == nil {
+			changed++
+			continue
+		}
+		if !findingMaterialEqual(accumulator[i], *match) {
+			changed++
+		}
+	}
+	return changed
+}
+
+// findingMaterialEqual compares the parts of a finding that a merge step would
+// rewrite when folding in new information. Finding ID and Verification.ID are
+// intentionally ignored: a merge that only reassigns an ID without touching
+// content is not a merge, and Verification.ID merely mirrors the parent finding
+// ID, which may legitimately change when a finding is folded into another.
+func findingMaterialEqual(a, b model.Finding) bool {
+	if a.Title != b.Title || a.Body != b.Body {
+		return false
+	}
+	if a.ConfidenceScore != b.ConfidenceScore {
+		return false
+	}
+	if model.PriorityRank(a.Priority) != model.PriorityRank(b.Priority) {
+		return false
+	}
+	if a.CodeLocation != b.CodeLocation {
+		return false
+	}
+	if len(a.Suggestions) != 0 || len(b.Suggestions) != 0 {
+		if !reflect.DeepEqual(a.Suggestions, b.Suggestions) {
+			return false
+		}
+	}
+	if !verificationContentEqual(a.Verification, b.Verification) {
+		return false
+	}
+	if !reflect.DeepEqual(a.Finalization, b.Finalization) {
+		return false
+	}
+	return true
+}
+
+// verificationContentEqual compares only the content fields of two
+// verifications, ignoring Verification.ID. That ID mirrors the parent finding
+// ID and may legitimately change during a merge, so it must not make two
+// otherwise-identical verifications compare unequal.
+func verificationContentEqual(a, b *model.FindingVerification) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Verdict == b.Verdict &&
+		a.Priority == b.Priority &&
+		a.ConfidenceScore == b.ConfidenceScore &&
+		a.Remarks == b.Remarks
 }
 
 func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {
@@ -1191,9 +1561,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		if strings.TrimSpace(reasoning) == "" {
 			return
 		}
-		collectWG.Add(1)
-		go func() {
-			defer collectWG.Done()
+		collectWG.Go(func() {
 			list, result, err := e.runReasoningCollectFindings(ctx, reasoning, agentName, iterIdx, req)
 			addExtractorRun(result.run)
 			if err != nil {
@@ -1206,7 +1574,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 			extractMu.Lock()
 			collectedLists = append(collectedLists, list)
 			extractMu.Unlock()
-		}()
+		})
 	}
 	if extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
@@ -1733,35 +2101,6 @@ func findingDedupKeys(finding model.Finding) (string, string) {
 	return idTitleKey, titleLocationKey
 }
 
-func vectorReviewPayloads(results []agentResult) []map[string]any {
-	out := make([]map[string]any, 0, len(results))
-	for _, result := range results {
-		entry := map[string]any{
-			"name": result.run.Name,
-			"role": result.run.Role,
-		}
-		if result.run.Status == model.AgentRunStatusFailed {
-			entry["status"] = model.AgentRunStatusFailed
-			if result.run.Error != "" {
-				entry["error"] = result.run.Error
-			}
-			out = append(out, entry)
-			continue
-		}
-		if result.resp != nil {
-			entry["findings"] = result.resp.Findings
-			entry["overall_correctness"] = result.resp.OverallCorrectness
-			entry["overall_explanation"] = result.resp.OverallExplanation
-			entry["overall_confidence_score"] = result.resp.OverallConfidenceScore
-		}
-		if result.run.Status != "" {
-			entry["status"] = result.run.Status
-		}
-		out = append(out, entry)
-	}
-	return out
-}
-
 func supplementalFromContextAgent(messages []llm.Message) []model.SupplementalFile {
 	out := make([]model.SupplementalFile, 0, len(messages))
 	for i, msg := range messages {
@@ -2007,14 +2346,6 @@ func agentCommonSystemPromptSnippets(agentRole string, outputSchemaSnippet strin
 	}, nil
 }
 
-func mustRenderPromptFile(name string, data any) string {
-	rendered, err := renderPromptFile(name, data)
-	if err != nil {
-		panic(fmt.Sprintf("review: rendering prompt %s: %v", name, err))
-	}
-	return rendered
-}
-
 func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
 	languages := changedLanguages(ctx)
 	guides := make([]model.StyleGuide, 0, len(languages))
@@ -2076,10 +2407,10 @@ func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []mod
 }
 
 func styleGuideTitle(content string) string {
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "# ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		if rest, ok := strings.CutPrefix(line, "# "); ok {
+			return strings.TrimSpace(rest)
 		}
 	}
 	return ""
@@ -3009,21 +3340,9 @@ func (e *Engine) logfCtx(ctx context.Context, format string, args ...any) {
 	e.logger.Printf("%s%s", agentLogPrefix(ctx), fmt.Sprintf(format, args...))
 }
 
-func (e *Engine) logBlock(label, content string) {
-	if e.logger != nil {
-		e.logger.PrintBlock(label, content)
-	}
-}
-
 func (e *Engine) logBlockCtx(ctx context.Context, label, content string) {
 	if e.logger != nil {
 		e.logger.PrintBlock(agentLogPrefix(ctx)+label, content)
-	}
-}
-
-func (e *Engine) logJSON(label string, value any) {
-	if e.logger != nil {
-		e.logger.PrintJSON(label, value)
 	}
 }
 
