@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 
 type CheckoutOptions struct {
 	Workdir string
-	Token     string
+	Token   string
 }
 
 type CheckoutManager struct {
@@ -41,6 +42,20 @@ func (m *CheckoutManager) Prepare(ctx context.Context, spec model.CheckoutSpec, 
 	if spec.HeadRef == "" && spec.HeadSHA == "" {
 		return "", nil, fmt.Errorf("git: missing head revision for %s", spec.Repo)
 	}
+	// CloneURL/HeadRef/HeadSHA come straight from SCM API responses and, for
+	// fork PRs/MRs, are attacker-controlled. Reject values that git would parse
+	// as options (leading "-") and non-network clone-URL schemes (ext::, file://)
+	// that can execute commands or read local files, before any value reaches
+	// the git command line.
+	if err := validateCloneURL(spec.CloneURL); err != nil {
+		return "", nil, err
+	}
+	if err := validateGitRef("head ref", spec.HeadRef); err != nil {
+		return "", nil, err
+	}
+	if err := validateGitRef("head sha", spec.HeadSHA); err != nil {
+		return "", nil, err
+	}
 	if opts.Workdir != "" {
 		return m.prepareWorktree(ctx, spec, opts)
 	}
@@ -54,7 +69,7 @@ func (m *CheckoutManager) prepareClone(ctx context.Context, spec model.CheckoutS
 	}
 	cleanup := func() { _ = m.removeAll(repoRoot) }
 
-	args := append(m.authArgs(spec.Provider, opts.Token), "clone", "--no-checkout", spec.CloneURL, repoRoot)
+	args := append(m.authArgs(spec.Provider, opts.Token), "clone", "--no-checkout", "--", spec.CloneURL, repoRoot)
 	if _, err := m.newRunner("").Run(ctx, args...); err != nil {
 		cleanup()
 		return "", nil, err
@@ -129,7 +144,7 @@ func (m *CheckoutManager) fetchRevision(ctx context.Context, repoRoot string, sp
 func (m *CheckoutManager) remoteHasRef(ctx context.Context, runner Runner, auth []string, cloneURL, ref string) (bool, error) {
 	args := make([]string, 0, len(auth)+3)
 	args = append(args, auth...)
-	args = append(args, "ls-remote", cloneURL, ref)
+	args = append(args, "ls-remote", "--", cloneURL, ref)
 	out, err := runner.Run(ctx, args...)
 	if err != nil {
 		return false, err
@@ -140,7 +155,7 @@ func (m *CheckoutManager) remoteHasRef(ctx context.Context, runner Runner, auth 
 func (m *CheckoutManager) fetchTarget(ctx context.Context, runner Runner, auth []string, cloneURL, target string) error {
 	args := make([]string, 0, len(auth)+5)
 	args = append(args, auth...)
-	args = append(args, "fetch", "--depth", "1", cloneURL, target)
+	args = append(args, "fetch", "--depth", "1", "--", cloneURL, target)
 	_, err := runner.Run(ctx, args...)
 	return err
 }
@@ -167,4 +182,42 @@ func (m *CheckoutManager) authArgs(provider model.ReviewMode, token string) []st
 	}
 	header := "http.extraHeader=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(creds))
 	return []string{"-c", header}
+}
+
+// validateGitRef rejects a ref/SHA that git would interpret as an option. Git
+// itself forbids branch names beginning with "-", so a legitimate ref never
+// trips this; an injected value like "--upload-pack=..." does. Empty is allowed
+// (the caller decides whether a value is required).
+func validateGitRef(field, value string) error {
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("git: refusing %s that starts with '-': %q", field, value)
+	}
+	return nil
+}
+
+// validateCloneURL rejects clone URLs that begin with "-" (option injection)
+// and the local/transport-helper schemes git supports that can run commands or
+// read local files (ext::, file://). Network transports (http/https/ssh/git)
+// and scp-like syntax (git@host:path, which has no URL scheme) are allowed.
+func validateCloneURL(raw string) error {
+	if strings.HasPrefix(raw, "-") {
+		return fmt.Errorf("git: refusing clone URL that starts with '-': %q", raw)
+	}
+	lower := strings.ToLower(raw)
+	if strings.HasPrefix(lower, "ext::") || strings.HasPrefix(lower, "file:") {
+		return fmt.Errorf("git: refusing non-network clone URL: %q", raw)
+	}
+	if parsed, err := url.Parse(raw); err == nil && parsed.Scheme != "" {
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https", "ssh", "git":
+		default:
+			return fmt.Errorf("git: unsupported clone URL scheme %q", parsed.Scheme)
+		}
+		// A host beginning with "-" (e.g. ssh://-oProxyCommand=.../repo) would
+		// be handed to the underlying transport (ssh) as an option, not a host.
+		if strings.HasPrefix(parsed.Hostname(), "-") {
+			return fmt.Errorf("git: refusing clone URL with host starting with '-': %q", raw)
+		}
+	}
+	return nil
 }

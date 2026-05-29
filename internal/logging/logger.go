@@ -9,9 +9,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
+
+	"github.com/dgrieser/nickpit/internal/textsan"
 )
 
 type Logger struct {
@@ -21,7 +22,6 @@ type Logger struct {
 	showReasoning bool
 	showProgress  bool
 	reasoning     *ReasoningRenderer
-	reasoningOnce sync.Once
 }
 
 // ReasoningSection is a handle to one labeled block in the ReasoningRenderer.
@@ -90,6 +90,15 @@ func (l *Logger) SetShowReasoning(enabled bool) {
 		return
 	}
 	l.showReasoning = enabled
+	// Construct the renderer eagerly here. SetShowReasoning is called during
+	// command setup, before any reviewer/verifier goroutine starts, so the
+	// l.reasoning field is written once before the concurrent readers
+	// (PrintProgress, PrintProgressToolCall, writeRaw) ever run. Lazy
+	// initialization under sync.Once raced with those unsynchronized readers,
+	// since Once only establishes happens-before for goroutines that call Do.
+	if enabled && l.reasoning == nil {
+		l.reasoning = newReasoningRenderer(l.w, l.useANSI)
+	}
 }
 
 func (l *Logger) SetShowProgress(enabled bool) {
@@ -115,10 +124,7 @@ func (l *Logger) OpenReasoningSection(label string) *ReasoningSection {
 		return nil
 	}
 	sec := l.NewReasoningTracker(label)
-	if l.showReasoning {
-		l.reasoningOnce.Do(func() {
-			l.reasoning = newReasoningRenderer(l.w, l.useANSI)
-		})
+	if l.showReasoning && l.reasoning != nil {
 		sec.id = l.reasoning.Begin(label)
 		sec.r = l.reasoning
 	}
@@ -735,9 +741,12 @@ func escapeJSONStringFragment(value string) string {
 	marshaled := marshalJSONString(value)
 	unquoted, err := strconv.Unquote(marshaled)
 	if err != nil {
-		return strings.TrimSuffix(strings.TrimPrefix(marshaled, `"`), `"`)
+		return textsan.StripControl(strings.TrimSuffix(strings.TrimPrefix(marshaled, `"`), `"`))
 	}
-	return unquoted
+	// strconv.Unquote decodes  back into a raw ESC byte; untrusted
+	// multi-line LLM/PR text reaches this display fragment, so strip control
+	// characters (newlines/tabs are kept for layout) before it is written raw.
+	return textsan.StripControl(unquoted)
 }
 
 func marshalJSONScalar(value any) string {

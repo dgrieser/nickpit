@@ -34,6 +34,40 @@ func TestTerminalFormatter(t *testing.T) {
 	testutil.AssertGolden(t, buf.String(), filepath.Join("..", "..", "testdata", "golden", "TestTerminalFormatter.txt"))
 }
 
+func TestTerminalFormatterStripsControlCharsFromUntrustedText(t *testing.T) {
+	var buf bytes.Buffer
+	// useANSI=false: the formatter emits no escape codes of its own, so any
+	// ESC byte in the output must have come from the (untrusted) finding text.
+	formatter := NewTerminalFormatter(&buf, false)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title: "Title\x1b[31mINJECT", Body: "Body\x1b[?1049hsteal",
+				ConfidenceScore: 0.8, Priority: intPtr(1),
+				CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "rem\x1b[2Jark"},
+			},
+		},
+		OverallCorrectness: "patch is correct",
+		OverallExplanation: "Expl\x1b[1;5manation",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// Primary security property: no ESC introducer survives, so the residual
+	// "[31m"/"[?1049h" text is inert printable characters.
+	if strings.ContainsRune(out, 0x1b) {
+		t.Fatalf("terminal output leaked ESC from untrusted text:\n%q", out)
+	}
+	// The visible content is preserved (only the control byte is dropped).
+	for _, want := range []string{"Title", "INJECT", "Body", "steal", "anation"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected preserved text %q in output:\n%q", want, out)
+		}
+	}
+}
+
 func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewJSONFormatter(&buf)
