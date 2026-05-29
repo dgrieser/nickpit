@@ -376,6 +376,7 @@ func TestCheckoutManagerRejectsHostileSpecValues(t *testing.T) {
 		{"ext clone url", model.CheckoutSpec{Repo: "r", CloneURL: "ext::sh -c 'touch /tmp/x'", HeadRef: "main"}},
 		{"file clone url", model.CheckoutSpec{Repo: "r", CloneURL: "file:///etc/passwd", HeadRef: "main"}},
 		{"unsupported scheme", model.CheckoutSpec{Repo: "r", CloneURL: "ftp://example.com/repo.git", HeadRef: "main"}},
+		{"dash host", model.CheckoutSpec{Repo: "r", CloneURL: "ssh://-oProxyCommand=x/repo.git", HeadRef: "main"}},
 		{"dash head ref", model.CheckoutSpec{Repo: "r", CloneURL: "https://example.com/r.git", HeadRef: "--upload-pack=x"}},
 		{"dash head sha", model.CheckoutSpec{Repo: "r", CloneURL: "https://example.com/r.git", HeadSHA: "-x"}},
 	}

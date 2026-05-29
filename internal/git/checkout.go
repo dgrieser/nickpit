@@ -213,6 +213,11 @@ func validateCloneURL(raw string) error {
 		default:
 			return fmt.Errorf("git: unsupported clone URL scheme %q", parsed.Scheme)
 		}
+		// A host beginning with "-" (e.g. ssh://-oProxyCommand=.../repo) would
+		// be handed to the underlying transport (ssh) as an option, not a host.
+		if strings.HasPrefix(parsed.Hostname(), "-") {
+			return fmt.Errorf("git: refusing clone URL with host starting with '-': %q", raw)
+		}
 	}
 	return nil
 }
