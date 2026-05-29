@@ -17,6 +17,11 @@ import (
 
 const defaultBaseURL = "https://gitlab.com/api/v4"
 
+// maxResponseBytes bounds how much of a success response body is buffered. The
+// GitLab API over TLS is trusted and paginates, so this is defense-in-depth set
+// well above any real API page.
+const maxResponseBytes = 64 << 20 // 64 MiB
+
 var apiVersionPathRegex = regexp.MustCompile(`/api/v\d+(/|$)`)
 
 type Client struct {
@@ -111,7 +116,7 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, nil, gitLabStatusError(req.URL.String(), resp.StatusCode, body)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, nil, err
 	}
