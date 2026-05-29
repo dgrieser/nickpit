@@ -101,33 +101,7 @@ func stringSliceNode(values []string) *yaml.Node {
 func exampleProfile(profile Profile) Profile {
 	profile = cloneProfile(profile)
 	profile.APIKey = canonicalEnvRef(profile.APIKey)
-	if profile.MaxContextTokens == 0 && !profile.MaxContextTokensConfigured {
-		profile.MaxContextTokens = DefaultMaxContextToken
-	}
-	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
-		profile.MaxToolCalls = MaxToolCalls
-	}
-	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
-		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
-	}
-	if profile.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
-		profile.MaxOutputRetries = DefaultMaxOutputRetries
-	}
-	if profile.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
-		profile.MaxReasoningSeconds = DefaultMaxReasoningSeconds
-	}
-	if profile.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
-		profile.MaxReasoningLoopRepeats = DefaultMaxReasoningLoopRepeats
-	}
-	if profile.MaxRateLimitDelaySeconds == 0 && !profile.MaxRateLimitDelaySecondsConfigured {
-		profile.MaxRateLimitDelaySeconds = DefaultMaxRateLimitDelaySeconds
-	}
-	if profile.NudgeCount == 0 && !profile.NudgeCountConfigured {
-		profile.NudgeCount = DefaultNudgeCount
-	}
-	if profile.ReasoningEffort == "" {
-		profile.ReasoningEffort = DefaultReasoningEffort
-	}
+	profile = applyProfileDefaults(profile)
 	if profile.GitHubToken == "" {
 		profile.GitHubToken = DefaultGitHubTokenRef
 	} else {

@@ -623,9 +623,6 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			}
 			return nil, err
 		}
-		if attemptIndex > 0 {
-			return nil, err
-		}
 		return nil, err
 	}
 	if lastBudgetReq != nil && len(lastBudgetReq.Tools) > 0 {
