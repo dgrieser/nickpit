@@ -17,11 +17,12 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// maxCallHierarchyDepth bounds traversal depth. Depth flows in from an
+// MaxCallHierarchyDepth bounds traversal depth. Depth flows in from an
 // LLM/CLI-supplied argument and only the low side was clamped, so a runaway
 // value could request an explosively large hierarchy on a dense graph. The
 // graph is the trusted local repo, so this is a generous safety ceiling.
-const maxCallHierarchyDepth = 50
+// Exported so the regex backends and the tool schema share one source of truth.
+const MaxCallHierarchyDepth = 50
 
 type graphCacheEntry struct {
 	mu    sync.Mutex
@@ -48,6 +49,11 @@ func BuildGraphCached(ctx context.Context, repoRoot string) (*Graph, error) {
 	defer entry.mu.Unlock()
 	if entry.graph != nil {
 		return entry.graph, nil
+	}
+	// If the context was cancelled while waiting for the lock, don't start the
+	// expensive type-check.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	graph, err := BuildGraph(ctx, repoRoot)
 	if err != nil {
@@ -195,8 +201,8 @@ func (g *Graph) Find(name, path string, depth int, reverse bool) (*Hierarchy, er
 	if depth <= 0 {
 		depth = 1
 	}
-	if depth > maxCallHierarchyDepth {
-		depth = maxCallHierarchyDepth
+	if depth > MaxCallHierarchyDepth {
+		depth = MaxCallHierarchyDepth
 	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"

@@ -49,8 +49,8 @@ func TestFindClampsExcessiveDepth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Depth != maxCallHierarchyDepth {
-		t.Fatalf("depth = %d, want clamp to %d", h.Depth, maxCallHierarchyDepth)
+	if h.Depth != MaxCallHierarchyDepth {
+		t.Fatalf("depth = %d, want clamp to %d", h.Depth, MaxCallHierarchyDepth)
 	}
 }
 

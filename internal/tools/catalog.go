@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 )
 
 type catalogEntry struct {
@@ -105,7 +106,7 @@ func callHierarchyParameters() []CatalogParameter {
 	return []CatalogParameter{
 		{Name: "symbol", Type: "string", Description: "Function name to inspect", Example: `"<function name>"`, Required: true},
 		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path containing the function; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
-		{Name: "depth", Type: "integer", Description: "Optional traversal depth for the call hierarchy; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(50)},
+		{Name: "depth", Type: "integer", Description: "Optional traversal depth for the call hierarchy; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(goparser.MaxCallHierarchyDepth)},
 	}
 }
 

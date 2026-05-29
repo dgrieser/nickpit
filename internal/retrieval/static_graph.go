@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
@@ -75,8 +76,8 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 	if depth <= 0 {
 		depth = 1
 	}
-	if depth > maxCallHierarchyDepth {
-		depth = maxCallHierarchyDepth
+	if depth > goparser.MaxCallHierarchyDepth {
+		depth = goparser.MaxCallHierarchyDepth
 	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"
@@ -193,11 +194,6 @@ func addEdge(edges map[string]map[string]struct{}, from, to string) {
 	}
 	edges[from][to] = struct{}{}
 }
-
-// maxCallHierarchyDepth bounds traversal depth for the regex/heuristic
-// language backends, mirroring the Go backend's ceiling. Depth comes from an
-// LLM/CLI argument and only the low side was clamped previously.
-const maxCallHierarchyDepth = 50
 
 func sortNodeIDs(ids []string, nodes map[string]staticNode) {
 	sort.Slice(ids, func(i, j int) bool {

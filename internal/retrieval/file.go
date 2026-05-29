@@ -59,7 +59,18 @@ func readFileCapped(path string, limit int) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	if len(data) > limit {
-		return data[:limit], true, nil
+		truncated := data[:limit]
+		// Cutting at a byte boundary can split a multi-byte UTF-8 rune; drop the
+		// (at most UTFMax-1) trailing bytes of an incomplete rune so the result
+		// stays valid UTF-8.
+		for i := 0; i < utf8.UTFMax-1 && len(truncated) > 0; i++ {
+			if r, size := utf8.DecodeLastRune(truncated); r == utf8.RuneError && size <= 1 {
+				truncated = truncated[:len(truncated)-1]
+				continue
+			}
+			break
+		}
+		return truncated, true, nil
 	}
 	return data, false, nil
 }

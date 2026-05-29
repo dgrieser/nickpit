@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestLocalEngineListFiles(t *testing.T) {
@@ -492,5 +493,27 @@ func TestLocalEngineGetFileCapsLargeFiles(t *testing.T) {
 	}
 	if len(got.Content) > maxRetrievedFileBytes {
 		t.Fatalf("content not capped: %d bytes > %d", len(got.Content), maxRetrievedFileBytes)
+	}
+}
+
+func TestReadFileCappedTrimsPartialRune(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.txt")
+	// "aa" + "€" (3-byte rune). Cap at 3 bytes cuts mid-rune.
+	if err := os.WriteFile(path, []byte("aa€"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, truncated, err := readFileCapped(path, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Fatal("expected truncated")
+	}
+	if !utf8.Valid(data) {
+		t.Fatalf("result is not valid UTF-8: %v", data)
+	}
+	if string(data) != "aa" {
+		t.Fatalf("got %q, want %q (partial rune dropped)", data, "aa")
 	}
 }
