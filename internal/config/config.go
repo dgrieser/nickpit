@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	DefaultProfileName              = "default"
-	DefaultFallbackProfileName      = "openrouter"
-	DefaultMaxContextToken          = 120000
-	MaxToolCalls                    = 0
+	DefaultProfileName         = "default"
+	DefaultFallbackProfileName = "openrouter"
+	DefaultMaxContextToken     = 120000
+	// DefaultMaxToolCalls is 0, meaning unlimited tool calls per agent.
+	DefaultMaxToolCalls             = 0
 	DefaultMaxDuplicateToolCalls    = 5
 	DefaultMaxOutputRetries         = 5
 	DefaultMaxReasoningSeconds      = 600
@@ -421,6 +422,41 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	return normalizeProfile(profile)
 }
 
+// applyProfileDefaults fills tunables that are unset (zero and not explicitly
+// configured) with their built-in defaults. It is the single source of truth
+// shared by normalizeProfile (runtime) and exampleProfile (the generated
+// .nickpit.yaml.example) so the two cannot drift.
+func applyProfileDefaults(profile Profile) Profile {
+	if profile.MaxContextTokens == 0 && !profile.MaxContextTokensConfigured {
+		profile.MaxContextTokens = DefaultMaxContextToken
+	}
+	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
+		profile.MaxToolCalls = DefaultMaxToolCalls
+	}
+	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
+		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
+	}
+	if profile.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
+		profile.MaxOutputRetries = DefaultMaxOutputRetries
+	}
+	if profile.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
+		profile.MaxReasoningSeconds = DefaultMaxReasoningSeconds
+	}
+	if profile.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
+		profile.MaxReasoningLoopRepeats = DefaultMaxReasoningLoopRepeats
+	}
+	if profile.MaxRateLimitDelaySeconds == 0 && !profile.MaxRateLimitDelaySecondsConfigured {
+		profile.MaxRateLimitDelaySeconds = DefaultMaxRateLimitDelaySeconds
+	}
+	if profile.NudgeCount == 0 && !profile.NudgeCountConfigured {
+		profile.NudgeCount = DefaultNudgeCount
+	}
+	if profile.ReasoningEffort == "" {
+		profile.ReasoningEffort = DefaultReasoningEffort
+	}
+	return profile
+}
+
 func normalizeProfile(profile Profile) (Profile, error) {
 	profile.APIKey = expandEnvReference(profile.APIKey)
 	profile.GitHubToken = expandEnvReference(profile.GitHubToken)
@@ -432,47 +468,21 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.BaseURL == "" {
 		return Profile{}, fmt.Errorf("config: no base URL specified; set base URL in profile or pass --base-url")
 	}
-	if profile.MaxContextTokens == 0 && !profile.MaxContextTokensConfigured {
-		profile.MaxContextTokens = DefaultMaxContextToken
-	}
-	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
-		profile.MaxToolCalls = MaxToolCalls
-	}
-	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
-		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
-	}
-	if profile.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
-		profile.MaxOutputRetries = DefaultMaxOutputRetries
-	}
+	profile = applyProfileDefaults(profile)
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
-	}
-	if profile.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
-		profile.MaxReasoningSeconds = DefaultMaxReasoningSeconds
 	}
 	if profile.MaxReasoningSeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
 	}
-	if profile.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
-		profile.MaxReasoningLoopRepeats = DefaultMaxReasoningLoopRepeats
-	}
 	if profile.MaxReasoningLoopRepeats < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_loop_repeats must be non-negative")
-	}
-	if profile.MaxRateLimitDelaySeconds == 0 && !profile.MaxRateLimitDelaySecondsConfigured {
-		profile.MaxRateLimitDelaySeconds = DefaultMaxRateLimitDelaySeconds
 	}
 	if profile.MaxRateLimitDelaySeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_rate_limit_delay_seconds must be non-negative")
 	}
-	if profile.NudgeCount == 0 && !profile.NudgeCountConfigured {
-		profile.NudgeCount = DefaultNudgeCount
-	}
 	if profile.NudgeCount < 0 {
 		return Profile{}, fmt.Errorf("config: nudge_count must be non-negative")
-	}
-	if profile.ReasoningEffort == "" {
-		profile.ReasoningEffort = DefaultReasoningEffort
 	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)

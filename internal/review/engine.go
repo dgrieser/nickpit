@@ -581,7 +581,7 @@ func shouldDropFinding(v *model.FindingVerification, policy string, threshold fl
 		return false, "kept"
 	}
 	policy = normalizeDropPolicy(policy)
-	if policy == "none" {
+	if policy == DropPolicyNone {
 		return false, "kept"
 	}
 	verdict := v.Verdict
@@ -590,11 +590,11 @@ func shouldDropFinding(v *model.FindingVerification, policy string, threshold fl
 		verdict = model.VerdictUnverified
 	}
 	switch policy {
-	case "refuted-only":
+	case DropPolicyRefutedOnly:
 		if verdict != model.VerdictRefuted {
 			return false, "kept"
 		}
-	case "refuted-and-unverified":
+	case DropPolicyRefutedAndUnverified:
 		if verdict == model.VerdictConfirmed {
 			return false, "kept"
 		}
@@ -607,8 +607,25 @@ func shouldDropFinding(v *model.FindingVerification, policy string, threshold fl
 	return true, verdict
 }
 
+// Drop policies for --verify-drop-policy. Defined as constants so the accepted
+// set, the normalization fallback, and the drop decision all reference the same
+// values and cannot drift.
+const (
+	DropPolicyNone                 = "none"
+	DropPolicyRefutedOnly          = "refuted-only"
+	DropPolicyRefutedAndUnverified = "refuted-and-unverified"
+)
+
+// Default tool-call arguments. defaultCallHierarchyDepth in particular must be
+// used both where the find_callers/find_callees dedup key is computed and where
+// the call is executed, otherwise the key would not match the executed depth.
+const (
+	defaultCallHierarchyDepth = 10
+	defaultSearchContextLines = 5
+)
+
 // ValidDropPolicies lists the accepted values for --verify-drop-policy.
-var ValidDropPolicies = []string{"none", "refuted-only", "refuted-and-unverified"}
+var ValidDropPolicies = []string{DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified}
 
 // ValidateDropPolicy returns an error when policy is not one of the supported values.
 func ValidateDropPolicy(policy string) error {
@@ -620,10 +637,10 @@ func ValidateDropPolicy(policy string) error {
 
 func normalizeDropPolicy(policy string) string {
 	switch policy {
-	case "none", "refuted-only", "refuted-and-unverified":
+	case DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified:
 		return policy
 	default:
-		return "refuted-only"
+		return DropPolicyRefutedOnly
 	}
 }
 
@@ -2626,7 +2643,7 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 			return uniqueKey
 		}
 		if args.Depth <= 0 {
-			args.Depth = 10
+			args.Depth = defaultCallHierarchyDepth
 		}
 		return callHierarchyDedupKey(toolCall.Name, normalizeToolPath(args.Path), strings.TrimSpace(args.Symbol), args.Depth)
 	case "search":
@@ -2639,7 +2656,7 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 		}
 		query := strings.TrimSpace(args.Query)
 		if matches := searchFunctionQueryPattern.FindStringSubmatch(query); len(matches) == 2 {
-			return callHierarchyDedupKey("find_callers", normalizeToolPath(args.Path), matches[1], 10)
+			return callHierarchyDedupKey("find_callers", normalizeToolPath(args.Path), matches[1], defaultCallHierarchyDepth)
 		}
 		return uniqueKey
 	default:
@@ -2794,21 +2811,21 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		return toolError(normalizeToolPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "query"))
 	}
 	if args.ContextLines < 0 {
-		args.ContextLines = 5
+		args.ContextLines = defaultSearchContextLines
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	if e.searchToolOptimization {
 		if matches := searchFunctionQueryPattern.FindStringSubmatch(args.Query); len(matches) == 2 {
 			symbol := matches[1]
-			key := callHierarchyDedupKey("find_callers", normalizedPath, symbol, 10)
+			key := callHierarchyDedupKey("find_callers", normalizedPath, symbol, defaultCallHierarchyDepth)
 			state.mu.Lock()
 			_, ok := state.seenToolCalls[key]
 			state.mu.Unlock()
 			if ok {
-				e.logfCtx(ctx, "Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
+				e.logfCtx(ctx, "Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
 				return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 			}
-			e.logfCtx(ctx, "Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, 10)
+			e.logfCtx(ctx, "Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
 			return e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
 				ID:   toolCall.ID,
 				Name: "find_callers",
@@ -2903,7 +2920,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		return toolError(normalizeToolPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
 	}
 	if args.Depth <= 0 {
-		args.Depth = 10
+		args.Depth = defaultCallHierarchyDepth
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	key := callHierarchyDedupKey(toolCall.Name, normalizedPath, args.Symbol, args.Depth)
@@ -3053,17 +3070,7 @@ type syntheticToolFollowupEntry struct {
 func syntheticToolFollowupEntryFromHistory(index int, entry toolCallHistoryEntry) syntheticToolFollowupEntry {
 	toolCall := entry.ToolCall
 	result := entry.Result
-	var args struct {
-		Path          string `json:"path"`
-		LineStart     int    `json:"line_start"`
-		LineEnd       int    `json:"line_end"`
-		Depth         int    `json:"depth"`
-		Symbol        string `json:"symbol"`
-		Query         string `json:"query"`
-		ContextLines  int    `json:"context_lines"`
-		MaxResults    int    `json:"max_results"`
-		CaseSensitive bool   `json:"case_sensitive"`
-	}
+	var args toolCallArgs
 	_ = llm.LenientUnmarshal(toolCall.Arguments, &args)
 	return syntheticToolFollowupEntry{
 		Index:       index,
@@ -3211,7 +3218,11 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 	}
 }
 
-func syntheticToolArguments(toolName string, args struct {
+// toolCallArgs is the union of arguments across the retrieval tools
+// (inspect_file, list_files, search, find_callers, find_callees). A single
+// named type replaces the 9-field anonymous struct that was previously
+// re-declared verbatim at several call sites.
+type toolCallArgs struct {
 	Path          string `json:"path"`
 	LineStart     int    `json:"line_start"`
 	LineEnd       int    `json:"line_end"`
@@ -3221,7 +3232,9 @@ func syntheticToolArguments(toolName string, args struct {
 	ContextLines  int    `json:"context_lines"`
 	MaxResults    int    `json:"max_results"`
 	CaseSensitive bool   `json:"case_sensitive"`
-}) string {
+}
+
+func syntheticToolArguments(toolName string, args toolCallArgs) string {
 	parts := make([]string, 0, 5)
 	switch toolName {
 	case "inspect_file":
@@ -3242,7 +3255,7 @@ func syntheticToolArguments(toolName string, args struct {
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("query=%q", args.Query))
 		if args.ContextLines < 0 {
-			args.ContextLines = 5
+			args.ContextLines = defaultSearchContextLines
 		}
 		parts = append(parts, fmt.Sprintf("context_lines=%d", args.ContextLines))
 		parts = append(parts, fmt.Sprintf("max_results=%d", args.MaxResults))
@@ -3251,7 +3264,7 @@ func syntheticToolArguments(toolName string, args struct {
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
 		if args.Depth <= 0 {
-			args.Depth = 10
+			args.Depth = defaultCallHierarchyDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	default:
@@ -3412,17 +3425,7 @@ func (e *Engine) logToolCall(toolCall llm.ToolCall, result string) {
 }
 
 func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
-	var args struct {
-		Path          string `json:"path"`
-		LineStart     int    `json:"line_start"`
-		LineEnd       int    `json:"line_end"`
-		Depth         int    `json:"depth"`
-		Symbol        string `json:"symbol"`
-		Query         string `json:"query"`
-		ContextLines  int    `json:"context_lines"`
-		MaxResults    int    `json:"max_results"`
-		CaseSensitive bool   `json:"case_sensitive"`
-	}
+	var args toolCallArgs
 	_ = llm.LenientUnmarshal(toolCall.Arguments, &args)
 	return syntheticToolArguments(toolCall.Name, args)
 }
@@ -3466,20 +3469,10 @@ func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {
 	if len(matches) != 2 {
 		return "", false
 	}
-	findArgs := syntheticToolArguments("find_callers", struct {
-		Path          string `json:"path"`
-		LineStart     int    `json:"line_start"`
-		LineEnd       int    `json:"line_end"`
-		Depth         int    `json:"depth"`
-		Symbol        string `json:"symbol"`
-		Query         string `json:"query"`
-		ContextLines  int    `json:"context_lines"`
-		MaxResults    int    `json:"max_results"`
-		CaseSensitive bool   `json:"case_sensitive"`
-	}{
+	findArgs := syntheticToolArguments("find_callers", toolCallArgs{
 		Path:   normalizedPath,
 		Symbol: matches[1],
-		Depth:  10,
+		Depth:  defaultCallHierarchyDepth,
 	})
 	return fmt.Sprintf(`find_callers(instead_of="search", %s)`, findArgs), true
 }
