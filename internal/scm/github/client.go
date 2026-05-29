@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// maxResponseBytes bounds how much of a response body is buffered. The GitHub
+// API over TLS is trusted and paginates, so this is defense-in-depth against a
+// misconfigured/compromised endpoint, set well above any real API page.
+const maxResponseBytes = 64 << 20 // 64 MiB
+
 type Client struct {
 	baseURL    string
 	token      string
@@ -47,7 +52,8 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	sliceValue := target.Elem()
 	nextPath := path
 	for nextPath != "" {
-		body, resp, err := c.do(ctx, nextPath)
+		current := nextPath
+		body, resp, err := c.do(ctx, current)
 		if err != nil {
 			return err
 		}
@@ -56,7 +62,13 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 			return err
 		}
 		sliceValue.Set(reflect.AppendSlice(sliceValue, page.Elem()))
-		nextPath = nextLink(resp.Header.Get("Link"))
+		next := nextLink(resp.Header.Get("Link"))
+		if next == current {
+			// Defend against a server/proxy returning a rel="next" link that
+			// points back to the page just fetched, which would loop forever.
+			break
+		}
+		nextPath = next
 	}
 	return nil
 }
@@ -78,7 +90,7 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 	if resp.StatusCode >= 300 {
 		return nil, nil, fmt.Errorf("github: status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, nil, err
 	}

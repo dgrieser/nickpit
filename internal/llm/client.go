@@ -1430,12 +1430,18 @@ func (t *capturingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return resp, nil
 }
 
+// maxCapturedBodyBytes bounds how much of a non-streaming/error response body
+// the capturing transport buffers. Streaming completion responses are returned
+// earlier without buffering, so this only caps the (small) error/metadata
+// bodies; it is defense-in-depth against a misbehaving upstream.
+const maxCapturedBodyBytes = 16 << 20 // 16 MiB
+
 func readAndRestoreBody(resp *http.Response) ([]byte, error) {
 	if resp.Body == nil {
 		return nil, nil
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCapturedBodyBytes))
 	if err != nil {
 		resp.Body.Close()
 		return nil, err

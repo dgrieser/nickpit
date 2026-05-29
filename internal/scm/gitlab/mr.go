@@ -37,6 +37,9 @@ type changesResponse struct {
 		Renamed bool   `json:"renamed_file"`
 		Diff    string `json:"diff"`
 	} `json:"changes"`
+	// Overflow is set by GitLab when the MR exceeds the diff size/file-count
+	// limits and the returned change set is truncated.
+	Overflow bool `json:"overflow"`
 }
 
 type discussionsResponse []struct {
@@ -122,6 +125,10 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		diff.WriteByte('\n')
 	}
 	hunks, _, _ := git.ParseUnifiedDiff(diff.String())
+	var omitted []string
+	if changes.Overflow {
+		omitted = append(omitted, "WARNING: GitLab reported this MR's diff as truncated (overflow); the review is based on a partial diff and may miss changes")
+	}
 	return &model.ReviewContext{
 		Mode:       model.ModeGitLab,
 		Identifier: iid,
@@ -131,13 +138,14 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 			HeadRef:  mr.SourceBranch,
 			URL:      mr.WebURL,
 		},
-		Title:        mr.Title,
-		Description:  mr.Description,
-		Commits:      normalizeMRCommits(commits),
-		ChangedFiles: changedFiles,
-		Diff:         diff.String(),
-		DiffHunks:    hunks,
-		Comments:     comments,
+		Title:           mr.Title,
+		Description:     mr.Description,
+		Commits:         normalizeMRCommits(commits),
+		ChangedFiles:    changedFiles,
+		Diff:            diff.String(),
+		DiffHunks:       hunks,
+		Comments:        comments,
+		OmittedSections: omitted,
 	}, nil
 }
 

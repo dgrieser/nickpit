@@ -50,6 +50,41 @@ func TestFetchMR(t *testing.T) {
 	}
 }
 
+func TestFetchMRSurfacesDiffOverflow(t *testing.T) {
+	fixtures := map[string][]byte{
+		"/api/v4/projects/group%2Fproject/merge_requests/456":         testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_metadata.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/commits": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_commits.json")),
+		"/api/v4/projects/group%2Fproject/merge_requests/456/changes": []byte(`{"overflow": true, "changes": [{"new_path": "a.go", "diff": "@@ -1 +1 @@\n-x\n+y\n"}]}`),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := fixtures[r.URL.EscapedPath()]
+		if !ok {
+			data, ok = fixtures[r.URL.Path]
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	ctx, err := client.FetchMR(context.Background(), "group/project", 456, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, note := range ctx.OmittedSections {
+		if strings.Contains(strings.ToLower(note), "truncated") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected diff-overflow warning in OmittedSections, got %#v", ctx.OmittedSections)
+	}
+}
+
 func TestFetchMRCheckout(t *testing.T) {
 	fixtures := map[string][]byte{
 		"/api/v4/projects/group%2Fproject/merge_requests/456": testutil.LoadFixture(t, filepath.Join("..", "..", "..", "testdata", "fixtures", "gitlab", "mr_metadata.json")),

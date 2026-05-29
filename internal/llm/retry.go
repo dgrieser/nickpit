@@ -93,13 +93,18 @@ func (r *Retrier) rateLimitMessageDelay(message string) (time.Duration, bool) {
 		now = r.now
 	}
 	current := now()
+	best := time.Duration(0)
+	found := false
 	for _, resetAt := range parseRateLimitResetTimes(message) {
 		delay := resetAt.Sub(current)
-		if delay > 0 && delay <= cap {
-			return delay, true
+		if delay > 0 && delay <= cap && (!found || delay < best) {
+			// A 429 may carry several reset windows (e.g. per-minute and
+			// per-day); retry at the soonest one rather than the first parsed.
+			best = delay
+			found = true
 		}
 	}
-	return 0, false
+	return best, found
 }
 
 func (r *Retrier) Wait(ctx context.Context, attempt int, resp *http.Response) error {
