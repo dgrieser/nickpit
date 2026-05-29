@@ -75,6 +75,9 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 	if depth <= 0 {
 		depth = 1
 	}
+	if depth > maxCallHierarchyDepth {
+		depth = maxCallHierarchyDepth
+	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"
 	if reverse {
@@ -113,9 +116,12 @@ func (g *staticGraph) expandNode(id string, depth int, reverse bool, seen map[st
 		if _, exists := seen[childID]; exists {
 			continue
 		}
-		nextSeen := copySeen(seen)
-		nextSeen[childID] = struct{}{}
-		out.Children = append(out.Children, g.expandNode(childID, depth-1, reverse, nextSeen))
+		// Mark on the current path, recurse, unmark on backtrack: same
+		// path-local cycle avoidance as the previous per-child map copy, without
+		// the O(path) allocation per child.
+		seen[childID] = struct{}{}
+		out.Children = append(out.Children, g.expandNode(childID, depth-1, reverse, seen))
+		delete(seen, childID)
 	}
 	return out
 }
@@ -188,13 +194,10 @@ func addEdge(edges map[string]map[string]struct{}, from, to string) {
 	edges[from][to] = struct{}{}
 }
 
-func copySeen(src map[string]struct{}) map[string]struct{} {
-	dst := make(map[string]struct{}, len(src)+1)
-	for key := range src {
-		dst[key] = struct{}{}
-	}
-	return dst
-}
+// maxCallHierarchyDepth bounds traversal depth for the regex/heuristic
+// language backends, mirroring the Go backend's ceiling. Depth comes from an
+// LLM/CLI argument and only the low side was clamped previously.
+const maxCallHierarchyDepth = 50
 
 func sortNodeIDs(ids []string, nodes map[string]staticNode) {
 	sort.Slice(ids, func(i, j int) bool {

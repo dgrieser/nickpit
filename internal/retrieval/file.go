@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,20 +23,45 @@ func NewLocalEngine() *LocalEngine {
 	return &LocalEngine{}
 }
 
+// maxRetrievedFileBytes bounds how much of a single file is read into memory
+// and surfaced to the model. A pathological input (e.g. a multi-MB minified
+// bundle) would otherwise be fully buffered and flood the LLM context.
+const maxRetrievedFileBytes = 5 << 20 // 5 MiB
+
 func (e *LocalEngine) GetFile(_ context.Context, repoRoot, path string) (*FileContent, error) {
 	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", path, err)
 	}
-	data, err := os.ReadFile(fullPath)
+	data, truncated, err := readFileCapped(fullPath, maxRetrievedFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", normalizedPath, err)
 	}
 	return &FileContent{
-		Path:     normalizedPath,
-		Content:  normalizeText(string(data)),
-		Language: detectLanguage(normalizedPath),
+		Path:      normalizedPath,
+		Content:   normalizeText(string(data)),
+		Language:  detectLanguage(normalizedPath),
+		Truncated: truncated,
 	}, nil
+}
+
+// readFileCapped reads up to limit bytes from path, reporting whether the file
+// was longer than the limit. It reads at most limit+1 bytes so truncation is
+// detected without buffering the whole file.
+func readFileCapped(path string, limit int) ([]byte, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) > limit {
+		return data[:limit], true, nil
+	}
+	return data, false, nil
 }
 
 func (e *LocalEngine) ListFiles(_ context.Context, repoRoot, path string, depth int) (*DirectoryListing, error) {

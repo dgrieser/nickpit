@@ -17,9 +17,10 @@ type Engine interface {
 }
 
 type FileContent struct {
-	Path     string `json:"path"`
-	Content  string `json:"content"`
-	Language string `json:"language"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Language  string `json:"language"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 type FileSlice struct {

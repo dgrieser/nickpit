@@ -150,7 +150,7 @@ func (goBackend) findSymbols(ctx context.Context, repoRoot, name string, scope l
 }
 
 func (goBackend) findCallers(ctx context.Context, repoRoot string, symbol *SymbolInfo, _ lookupScope, depth int) (*CallHierarchy, error) {
-	graph, err := goparser.BuildGraph(ctx, repoRoot)
+	graph, err := goparser.BuildGraphCached(ctx, repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("building go call graph: %w", err)
 	}
@@ -162,7 +162,7 @@ func (goBackend) findCallers(ctx context.Context, repoRoot string, symbol *Symbo
 }
 
 func (goBackend) findCallees(ctx context.Context, repoRoot string, symbol *SymbolInfo, _ lookupScope, depth int) (*CallHierarchy, error) {
-	graph, err := goparser.BuildGraph(ctx, repoRoot)
+	graph, err := goparser.BuildGraphCached(ctx, repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("building go call graph: %w", err)
 	}

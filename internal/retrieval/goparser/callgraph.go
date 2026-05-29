@@ -11,10 +11,51 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 	"golang.org/x/tools/go/packages"
 )
+
+// maxCallHierarchyDepth bounds traversal depth. Depth flows in from an
+// LLM/CLI-supplied argument and only the low side was clamped, so a runaway
+// value could request an explosively large hierarchy on a dense graph. The
+// graph is the trusted local repo, so this is a generous safety ceiling.
+const maxCallHierarchyDepth = 50
+
+type graphCacheEntry struct {
+	mu    sync.Mutex
+	graph *Graph
+}
+
+// graphCache memoizes the type-checked call graph per repository root. The
+// graph is immutable after construction and Find only reads it, so the cached
+// value is shared safely across the concurrent reviewer/verifier agents that
+// previously each triggered a full packages.Load("./...") type-check.
+var graphCache sync.Map // abs repoRoot -> *graphCacheEntry
+
+// BuildGraphCached returns the call graph for repoRoot, building it at most
+// once per root. Errors are not cached, so a transient build failure can be
+// retried on a later call.
+func BuildGraphCached(ctx context.Context, repoRoot string) (*Graph, error) {
+	key := repoRoot
+	if abs, err := filepath.Abs(repoRoot); err == nil {
+		key = abs
+	}
+	actual, _ := graphCache.LoadOrStore(key, &graphCacheEntry{})
+	entry := actual.(*graphCacheEntry)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.graph != nil {
+		return entry.graph, nil
+	}
+	graph, err := BuildGraph(ctx, repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	entry.graph = graph
+	return graph, nil
+}
 
 type Graph struct {
 	repoRoot   string
@@ -154,6 +195,9 @@ func (g *Graph) Find(name, path string, depth int, reverse bool) (*Hierarchy, er
 	if depth <= 0 {
 		depth = 1
 	}
+	if depth > maxCallHierarchyDepth {
+		depth = maxCallHierarchyDepth
+	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"
 	if reverse {
@@ -197,9 +241,12 @@ func (g *Graph) expand(id string, depth int, reverse bool, seen map[string]struc
 		if !ok {
 			continue
 		}
-		nextSeen := copySeen(seen)
-		nextSeen[childID] = struct{}{}
-		node.Children = g.expand(childID, depth-1, reverse, nextSeen)
+		// Mark the child as on the current path, recurse, then unmark on the way
+		// back up. This is the same path-local cycle avoidance the previous
+		// per-child map copy provided, without the O(path) allocation per child.
+		seen[childID] = struct{}{}
+		node.Children = g.expand(childID, depth-1, reverse, seen)
+		delete(seen, childID)
 		out = append(out, node)
 	}
 	return out
@@ -342,12 +389,4 @@ func addEdge(index map[string]map[string]struct{}, from, to string) {
 		index[from] = map[string]struct{}{}
 	}
 	index[from][to] = struct{}{}
-}
-
-func copySeen(in map[string]struct{}) map[string]struct{} {
-	out := make(map[string]struct{}, len(in))
-	for key := range in {
-		out[key] = struct{}{}
-	}
-	return out
 }

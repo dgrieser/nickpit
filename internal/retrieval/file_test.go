@@ -459,3 +459,38 @@ func TestLocalEngineSearchRegexSkipsBinaryAndIgnored(t *testing.T) {
 		t.Fatalf("search = %#v", got)
 	}
 }
+
+func TestLocalEngineGetFileCapsLargeFiles(t *testing.T) {
+	repoRoot := t.TempDir()
+	engine := NewLocalEngine()
+
+	small := []byte("package pkg\n\nfunc A() {}\n")
+	if err := os.WriteFile(filepath.Join(repoRoot, "small.go"), small, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := engine.GetFile(context.Background(), repoRoot, "small.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Truncated {
+		t.Fatalf("small file marked truncated")
+	}
+
+	big := make([]byte, maxRetrievedFileBytes+4096)
+	for i := range big {
+		big[i] = 'a'
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "big.txt"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = engine.GetFile(context.Background(), repoRoot, "big.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Truncated {
+		t.Fatalf("large file not marked truncated")
+	}
+	if len(got.Content) > maxRetrievedFileBytes {
+		t.Fatalf("content not capped: %d bytes > %d", len(got.Content), maxRetrievedFileBytes)
+	}
+}
