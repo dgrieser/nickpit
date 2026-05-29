@@ -132,11 +132,11 @@ func TestFindingVerificationMergeFromKeyAware(t *testing.T) {
 		t.Fatalf("expected claimed=true")
 	}
 	want := FindingVerification{
-		ID:              "id-1",             // not in keys → preserved
-		Verdict:         VerdictRefuted,     // in keys → overwritten with src value
-		Priority:        0,                  // in keys → overwritten with src zero value
-		ConfidenceScore: 0.0,                // in keys → overwritten with src zero value
-		Remarks:         "first",            // not in keys → preserved
+		ID:              "id-1",         // not in keys → preserved
+		Verdict:         VerdictRefuted, // in keys → overwritten with src value
+		Priority:        0,              // in keys → overwritten with src zero value
+		ConfidenceScore: 0.0,            // in keys → overwritten with src zero value
+		Remarks:         "first",        // not in keys → preserved
 	}
 	if dst != want {
 		t.Fatalf("dst = %+v, want %+v", dst, want)

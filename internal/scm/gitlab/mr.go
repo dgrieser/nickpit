@@ -19,6 +19,11 @@ type mrResponse struct {
 	TargetBranch    string `json:"target_branch"`
 	SourceProjectID int    `json:"source_project_id"`
 	TargetProjectID int    `json:"target_project_id"`
+	DiffRefs        struct {
+		BaseSHA  string `json:"base_sha"`
+		HeadSHA  string `json:"head_sha"`
+		StartSHA string `json:"start_sha"`
+	} `json:"diff_refs"`
 }
 
 type commitResponse struct {
@@ -184,6 +189,85 @@ func (c *Client) projectCloneURL(ctx context.Context, projectID int, fallbackPro
 		return "", err
 	}
 	return project.HTTPURLToRepo, nil
+}
+
+// DiffRefs holds the three commit SHAs GitLab requires in a diff-note position.
+type DiffRefs struct {
+	BaseSHA  string
+	HeadSHA  string
+	StartSHA string
+}
+
+// MRChange is one changed file plus its parsed hunks, used to anchor review
+// comments to diff lines.
+type MRChange struct {
+	NewPath string
+	OldPath string
+	NewFile bool
+	Deleted bool
+	Renamed bool
+	Hunks   []model.DiffHunk
+}
+
+// MRPositionInfo is the freshly-fetched diff state used when publishing review
+// comments back to an MR. It is fetched at post-time (not reused from the review
+// context) so the SHAs match the current diff and GitLab accepts the positions.
+type MRPositionInfo struct {
+	DiffRefs DiffRefs
+	Changes  []MRChange
+}
+
+// FetchMRPositionInfo fetches the MR's current diff_refs and per-file changes so
+// review findings can be anchored to exact diff positions.
+func (c *Client) FetchMRPositionInfo(ctx context.Context, project string, iid int) (*MRPositionInfo, error) {
+	escaped := escapeProject(project)
+	var mr mrResponse
+	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d", escaped, iid), &mr); err != nil {
+		return nil, err
+	}
+	var changes changesResponse
+	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/changes", escaped, iid), &changes); err != nil {
+		return nil, err
+	}
+	out := &MRPositionInfo{
+		DiffRefs: DiffRefs{
+			BaseSHA:  mr.DiffRefs.BaseSHA,
+			HeadSHA:  mr.DiffRefs.HeadSHA,
+			StartSHA: mr.DiffRefs.StartSHA,
+		},
+		Changes: make([]MRChange, 0, len(changes.Changes)),
+	}
+	for _, change := range changes.Changes {
+		newPath := change.NewPath
+		if newPath == "" {
+			newPath = change.OldPath
+		}
+		oldPath := change.OldPath
+		if oldPath == "" {
+			oldPath = newPath
+		}
+		// Re-create the minimal "diff --git" framing FetchMR uses so the parser
+		// attributes hunks to this file; parse per file so rename/old-path stays
+		// local to the change.
+		var framed strings.Builder
+		framed.WriteString("diff --git a/")
+		framed.WriteString(newPath)
+		framed.WriteString(" b/")
+		framed.WriteString(newPath)
+		framed.WriteByte('\n')
+		framed.WriteString(change.Diff)
+		framed.WriteByte('\n')
+		hunks, _, _ := git.ParseUnifiedDiff(framed.String())
+		out.Changes = append(out.Changes, MRChange{
+			NewPath: newPath,
+			OldPath: oldPath,
+			NewFile: change.NewFile,
+			Deleted: change.Deleted,
+			Renamed: change.Renamed,
+			Hunks:   hunks,
+		})
+	}
+	return out, nil
 }
 
 func normalizeMRCommits(in []commitResponse) []model.CommitSummary {

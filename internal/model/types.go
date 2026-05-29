@@ -54,6 +54,7 @@ type ReviewRequest struct {
 	UseJSONSchema            bool
 	PriorityThreshold        string
 	Offline                  bool
+	PostReview               bool
 	Submode                  string
 	ProfileName              string
 }
@@ -370,6 +371,14 @@ type ReviewSource interface {
 type RemoteCheckoutSource interface {
 	ReviewSource
 	ResolveCheckout(ctx context.Context, req ReviewRequest) (*CheckoutSpec, error)
+}
+
+// ReviewPublisher is an optional capability for review sources that can post the
+// finished review back to the origin (e.g. as GitLab MR comments). runReview
+// type-asserts the source to this interface and only publishes when PostReview
+// is set, so non-publishing sources (github, local) are unaffected.
+type ReviewPublisher interface {
+	PublishReview(ctx context.Context, req ReviewRequest, result *ReviewResult) error
 }
 
 type CheckoutSpec struct {

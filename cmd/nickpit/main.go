@@ -423,6 +423,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 func (a *app) newGitLabCmd() *cobra.Command {
 	var project string
 	var mr int
+	var publish bool
 	cmd := &cobra.Command{
 		Use:   "gitlab",
 		Short: "Review GitLab merge requests",
@@ -459,12 +460,14 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Offline:                 a.offline,
+				PostReview:              publish,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
 	mrCmd.Flags().StringVar(&project, "repo", "", "GitLab project group/name (inferred from git remote if omitted)")
 	mrCmd.Flags().IntVar(&mr, "id", 0, "Merge request IID")
+	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
 	_ = mrCmd.MarkFlagRequired("id")
 	cmd.AddCommand(mrCmd)
 	return cmd
@@ -776,6 +779,23 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	if err := formatter.FormatFindings(result); err != nil {
 		return err
+	}
+	// Publish the review back to the origin (GitLab MR) when requested. The
+	// review already succeeded and printed to stdout, so a publish failure is a
+	// warning, never a hard error. Only sources implementing ReviewPublisher
+	// (GitLab) act here; github/local are unaffected.
+	if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
+		if publisher, ok := source.(model.ReviewPublisher); ok {
+			a.logProgress("Publish", fmt.Sprintf("posting review to %s !%d", req.Repo, req.Identifier))
+			if err := publisher.PublishReview(ctx, req, result); err != nil {
+				a.logProgress("Publish", fmt.Sprintf("status=ERROR, error=%v", err))
+				result.Warnings = append(result.Warnings, fmt.Sprintf("Publish failed: %v", err))
+			} else {
+				a.logProgress("Publish", "done")
+			}
+		} else {
+			a.logProgress("Publish", "skipped (source does not support publishing)")
+		}
 	}
 	// Distinguish "review produced nothing because every reviewer crashed"
 	// from "review succeeded with some soft warnings" — only the former is a

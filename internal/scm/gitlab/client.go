@@ -66,6 +66,28 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 	return json.Unmarshal(body, out)
 }
 
+// Post sends a JSON body to path and, when out is non-nil, decodes the response
+// into it. GitLab returns the created note/discussion JSON; callers that do not
+// need it pass out=nil.
+func (c *Client) Post(ctx context.Context, path string, body any, out any) error {
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("gitlab: encoding request body: %w", err)
+		}
+		reader = bytes.NewReader(data)
+	}
+	respBody, _, err := c.doRequest(ctx, http.MethodPost, path, reader, "application/json")
+	if err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(respBody, out)
+}
+
 func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	target := reflect.ValueOf(out)
 	if target.Kind() != reflect.Pointer || target.Elem().Kind() != reflect.Slice {
@@ -100,12 +122,19 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	return c.doRequest(ctx, http.MethodGet, path, nil, "")
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path string, body io.Reader, contentType string) ([]byte, *http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return nil, nil, err
 	}
 	if c.token != "" {
 		req.Header.Set("PRIVATE-TOKEN", c.token)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -113,17 +142,17 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, nil, gitLabStatusError(req.URL.String(), resp.StatusCode, body)
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, nil, newAPIError(method, req.URL.String(), resp.StatusCode, errBody)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, nil, err
 	}
-	if !looksLikeJSON(resp.Header.Get("Content-Type"), body) {
-		return nil, nil, gitLabNonJSONError(req.URL.String(), resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	if !looksLikeJSON(resp.Header.Get("Content-Type"), respBody) {
+		return nil, nil, gitLabNonJSONError(method, req.URL.String(), resp.StatusCode, resp.Header.Get("Content-Type"), respBody)
 	}
-	return body, resp, nil
+	return respBody, resp, nil
 }
 
 func looksLikeJSON(contentType string, body []byte) bool {
@@ -137,7 +166,7 @@ func looksLikeJSON(contentType string, body []byte) bool {
 	return trimmed[0] == '{' || trimmed[0] == '['
 }
 
-func gitLabNonJSONError(requestURL string, status int, contentType string, body []byte) error {
+func gitLabNonJSONError(method, requestURL string, status int, contentType string, body []byte) error {
 	snippet := strings.TrimSpace(string(body))
 	if len(snippet) > 200 {
 		snippet = snippet[:200] + "…"
@@ -147,9 +176,9 @@ func gitLabNonJSONError(requestURL string, status int, contentType string, body 
 		ct = "<empty>"
 	}
 	return fmt.Errorf(
-		"gitlab: GET %s: status %d returned non-JSON body (content-type=%s): %s "+
+		"gitlab: %s %s: status %d returned non-JSON body (content-type=%s): %s "+
 			"(check --gitlab-base-url; it must point at the GitLab API root, e.g. https://gitlab.example.com/api/v4)",
-		requestURL, status, ct, snippet,
+		method, requestURL, status, ct, snippet,
 	)
 }
 
@@ -157,15 +186,29 @@ func escapeProject(project string) string {
 	return url.PathEscape(project)
 }
 
-func gitLabStatusError(requestURL string, status int, body []byte) error {
-	message := fmt.Sprintf("gitlab: GET %s: status %d", requestURL, status)
-	if text := strings.TrimSpace(string(body)); text != "" {
+// APIError is returned when the GitLab API responds with a >= 300 status. It
+// carries the HTTP status so callers (e.g. the review publisher) can branch on
+// specific codes such as 422 (position not in diff) via errors.As.
+type APIError struct {
+	Method string
+	URL    string
+	Status int
+	Body   string
+}
+
+func (e *APIError) Error() string {
+	message := fmt.Sprintf("gitlab: %s %s: status %d", e.Method, e.URL, e.Status)
+	if text := strings.TrimSpace(e.Body); text != "" {
 		message += ": " + text
 	}
-	if status == http.StatusNotFound {
+	if e.Status == http.StatusNotFound {
 		message += " (check --repo, --id, --gitlab-base-url, and token project access)"
 	}
-	return fmt.Errorf("%s", message)
+	return message
+}
+
+func newAPIError(method, requestURL string, status int, body []byte) *APIError {
+	return &APIError{Method: method, URL: requestURL, Status: status, Body: string(body)}
 }
 
 func withPage(path string, page int) string {
