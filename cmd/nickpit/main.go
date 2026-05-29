@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -80,7 +82,13 @@ type app struct {
 }
 
 func main() {
-	if err := newRootCmd().Execute(); err != nil {
+	// Cancel the command context on Ctrl-C / SIGTERM so in-flight,
+	// context-aware work (git via exec.CommandContext, the LLM stream) is
+	// interrupted and deferred cleanups — temp clones and `git worktree add`
+	// entries in the user's repo — actually run instead of being orphaned.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
@@ -479,19 +487,19 @@ func (a *app) newInspectCmd() *cobra.Command {
 	fileCmd := &cobra.Command{
 		Use:   "file",
 		Short: "Retrieve a file",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
 			}
 			if lineStart > 0 || lineEnd > 0 {
-				content, err := engine.GetFileSlice(context.Background(), repoRoot, path, lineStart, lineEnd)
+				content, err := engine.GetFileSlice(cmd.Context(), repoRoot, path, lineStart, lineEnd)
 				if err != nil {
 					return err
 				}
 				return a.writeInspectOutput(content)
 			}
-			content, err := engine.GetFile(context.Background(), repoRoot, path)
+			content, err := engine.GetFile(cmd.Context(), repoRoot, path)
 			if err != nil {
 				return err
 			}
@@ -506,12 +514,12 @@ func (a *app) newInspectCmd() *cobra.Command {
 	listFilesCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List files in a folder",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
 			}
-			listing, err := engine.ListFiles(context.Background(), repoRoot, path, depth)
+			listing, err := engine.ListFiles(cmd.Context(), repoRoot, path, depth)
 			if err != nil {
 				return err
 			}
@@ -524,12 +532,12 @@ func (a *app) newInspectCmd() *cobra.Command {
 	searchCmd := &cobra.Command{
 		Use:   "search",
 		Short: "Search recursively in a file or folder",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
 			}
-			results, err := engine.Search(context.Background(), repoRoot, path, query, contextLines, maxResults, caseSensitive)
+			results, err := engine.Search(cmd.Context(), repoRoot, path, query, contextLines, maxResults, caseSensitive)
 			if err != nil {
 				return err
 			}
@@ -548,12 +556,12 @@ func (a *app) newInspectCmd() *cobra.Command {
 	callersCmd := &cobra.Command{
 		Use:   "callers",
 		Short: "Retrieve callers",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
 			}
-			hierarchy, err := engine.FindCallers(context.Background(), repoRoot, retrieval.SymbolRef{Name: callersSymbol, Path: callersPath}, callersDepth)
+			hierarchy, err := engine.FindCallers(cmd.Context(), repoRoot, retrieval.SymbolRef{Name: callersSymbol, Path: callersPath}, callersDepth)
 			if err != nil {
 				return err
 			}
@@ -570,12 +578,12 @@ func (a *app) newInspectCmd() *cobra.Command {
 	calleesCmd := &cobra.Command{
 		Use:   "callees",
 		Short: "Retrieve callees",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			repoRoot, err := os.Getwd()
 			if err != nil {
 				return err
 			}
-			hierarchy, err := engine.FindCallees(context.Background(), repoRoot, retrieval.SymbolRef{Name: calleesSymbol, Path: calleesPath}, calleesDepth)
+			hierarchy, err := engine.FindCallees(cmd.Context(), repoRoot, retrieval.SymbolRef{Name: calleesSymbol, Path: calleesPath}, calleesDepth)
 			if err != nil {
 				return err
 			}

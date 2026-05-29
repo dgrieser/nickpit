@@ -328,7 +328,19 @@ func (t *reasoningTimeoutController) Expired() bool {
 }
 
 func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
-	transport := &capturingTransport{base: http.DefaultTransport}
+	// Clone the default transport and bound the time to receive response
+	// headers. The default already bounds dial (30s) and TLS handshake (10s),
+	// but leaves ResponseHeaderTimeout unset, so a server that accepts the
+	// connection and never sends the first byte would hang indefinitely (the
+	// reasoning-timeout controller only starts once streaming begins). The body
+	// itself stays unbounded so legitimate long completion streams are fine.
+	var base http.RoundTripper = http.DefaultTransport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		clone := dt.Clone()
+		clone.ResponseHeaderTimeout = 120 * time.Second
+		base = clone
+	}
+	transport := &capturingTransport{base: base}
 	httpClient := &http.Client{
 		Transport: transport,
 	}

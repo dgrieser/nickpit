@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/textsan"
 )
 
 type Formatter interface {
@@ -117,14 +118,16 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		if finding.Finalization != nil {
 			title, body, conf = finding.Finalization.Title, finding.Finalization.Body, finding.Finalization.ConfidenceScore
 		}
+		// Title/Body are LLM-generated and untrusted; strip control characters
+		// so embedded ANSI/escape sequences cannot manipulate the terminal.
 		if _, err := fmt.Fprintf(f.w, "%s\n%s\nConfidence: %.2f\n\n",
-			title, body, conf,
+			textsan.StripControl(title), textsan.StripControl(body), conf,
 		); err != nil {
 			return err
 		}
 	}
 	_, err := fmt.Fprintf(f.w, "Overall: %s\n%s\nConfidence: %.2f\nTokens: %d prompt / %d completion / %d total\n",
-		result.OverallCorrectness, result.OverallExplanation, result.OverallConfidenceScore,
+		textsan.StripControl(string(result.OverallCorrectness)), textsan.StripControl(result.OverallExplanation), result.OverallConfidenceScore,
 		result.TokensUsed.PromptTokens, result.TokensUsed.CompletionTokens, result.TokensUsed.TotalTokens)
 	return err
 }
@@ -143,7 +146,7 @@ func (f *TerminalFormatter) renderFinalization(v *model.FindingFinalization, pre
 	}
 	if remarks := strings.TrimSpace(v.Remarks); remarks != "" {
 		b.WriteString("\n  final remark: ")
-		b.WriteString(truncateRemark(remarks, 200))
+		b.WriteString(truncateRemark(textsan.StripControl(remarks), 200))
 	}
 	return b.String()
 }
@@ -177,7 +180,7 @@ func (f *TerminalFormatter) renderVerification(v *model.FindingVerification, ori
 	}
 	if remarks := strings.TrimSpace(v.Remarks); remarks != "" {
 		b.WriteString("\n  remark: ")
-		b.WriteString(truncateRemark(remarks, 200))
+		b.WriteString(truncateRemark(textsan.StripControl(remarks), 200))
 	}
 	return b.String()
 }

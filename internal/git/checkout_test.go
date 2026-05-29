@@ -325,6 +325,75 @@ func TestCheckoutManagerSkipsLsRemoteWhenHeadRefEmpty(t *testing.T) {
 	}
 }
 
+func TestCheckoutManagerInsertsEndOfOptionsSeparator(t *testing.T) {
+	factory := &stubRunnerFactory{errs: map[string]error{}, out: lsRemoteFound}
+	manager := NewCheckoutManager()
+	manager.newRunner = factory.runner
+
+	_, cleanup, err := manager.Prepare(context.Background(), model.CheckoutSpec{
+		Provider: model.ModeGitHub,
+		Repo:     "owner/repo",
+		CloneURL: "https://github.com/owner/repo.git",
+		HeadRef:  "feature",
+		HeadSHA:  "deadbeef",
+	}, CheckoutOptions{Token: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+
+	// clone, ls-remote and fetch must place "--" immediately before the
+	// remote-derived URL/refspec so an attacker-controlled value cannot be
+	// parsed as a git option.
+	assertSeparatorBeforeURL := func(name string, args []string) {
+		t.Helper()
+		sub := hasSubcommand(args, name)
+		if sub < 0 {
+			t.Fatalf("%s call not found in %#v", name, args)
+		}
+		sep := hasSubcommand(args, "--")
+		if sep < 0 {
+			t.Fatalf("%s call missing -- separator: %#v", name, args)
+		}
+		if sep <= sub {
+			t.Fatalf("%s -- separator not after subcommand: %#v", name, args)
+		}
+		if args[sep+1] != "https://github.com/owner/repo.git" {
+			t.Fatalf("%s URL not immediately after --: %#v", name, args)
+		}
+	}
+	assertSeparatorBeforeURL("clone", factory.calls[0].args)
+	assertSeparatorBeforeURL("ls-remote", factory.calls[1].args)
+	assertSeparatorBeforeURL("fetch", factory.calls[2].args)
+}
+
+func TestCheckoutManagerRejectsHostileSpecValues(t *testing.T) {
+	cases := []struct {
+		name string
+		spec model.CheckoutSpec
+	}{
+		{"dash clone url", model.CheckoutSpec{Repo: "r", CloneURL: "--upload-pack=touch /tmp/x", HeadRef: "main"}},
+		{"ext clone url", model.CheckoutSpec{Repo: "r", CloneURL: "ext::sh -c 'touch /tmp/x'", HeadRef: "main"}},
+		{"file clone url", model.CheckoutSpec{Repo: "r", CloneURL: "file:///etc/passwd", HeadRef: "main"}},
+		{"unsupported scheme", model.CheckoutSpec{Repo: "r", CloneURL: "ftp://example.com/repo.git", HeadRef: "main"}},
+		{"dash head ref", model.CheckoutSpec{Repo: "r", CloneURL: "https://example.com/r.git", HeadRef: "--upload-pack=x"}},
+		{"dash head sha", model.CheckoutSpec{Repo: "r", CloneURL: "https://example.com/r.git", HeadSHA: "-x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			factory := &stubRunnerFactory{errs: map[string]error{}}
+			manager := NewCheckoutManager()
+			manager.newRunner = factory.runner
+			if _, _, err := manager.Prepare(context.Background(), tc.spec, CheckoutOptions{Token: "secret"}); err == nil {
+				t.Fatal("expected validation error")
+			}
+			if len(factory.calls) != 0 {
+				t.Fatalf("git was invoked despite invalid spec: %#v", factory.calls)
+			}
+		})
+	}
+}
+
 func TestExecRunnerRedactsAuthHeadersInErrors(t *testing.T) {
 	runner := ExecRunner{}
 	_, err := runner.Run(context.Background(),
