@@ -2,6 +2,9 @@ package gitlab
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -137,6 +140,68 @@ func TestFetchMRErrorIncludesRequestHint(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("error %q does not contain %q", got, want)
 		}
+	}
+}
+
+func TestPost(t *testing.T) {
+	var gotMethod, gotContentType, gotToken string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotContentType = r.Header.Get("Content-Type")
+		gotToken = r.Header.Get("PRIVATE-TOKEN")
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id": 7}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	var out struct {
+		ID int `json:"id"`
+	}
+	if err := client.Post(context.Background(), "/projects/1/merge_requests/2/notes", map[string]string{"body": "hi"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("content-type = %q", gotContentType)
+	}
+	if gotToken != "token" {
+		t.Fatalf("token header = %q", gotToken)
+	}
+	if gotBody["body"] != "hi" {
+		t.Fatalf("request body = %#v", gotBody)
+	}
+	if out.ID != 7 {
+		t.Fatalf("decoded id = %d, want 7", out.ID)
+	}
+}
+
+func TestPostStatusError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"line not part of the diff"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	err := client.Post(context.Background(), "/projects/1/merge_requests/2/discussions", map[string]string{"body": "x"}, nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error is not *APIError: %v", err)
+	}
+	if apiErr.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", apiErr.Status)
+	}
+	if !strings.Contains(err.Error(), "gitlab: POST") {
+		t.Fatalf("error %q must report POST method", err.Error())
 	}
 }
 
