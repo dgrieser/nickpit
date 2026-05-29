@@ -15,11 +15,10 @@ import (
 )
 
 func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCalls []llm.ToolCall, state *toolRoundState) []llm.Message {
-	results := make([]llm.Message, 0, len(toolCalls))
 	if len(toolCalls) == 0 {
-		return results
+		return nil
 	}
-	results = make([]llm.Message, len(toolCalls))
+	results := make([]llm.Message, len(toolCalls))
 	groups := make(map[string][]int, len(toolCalls))
 	groupOrder := make([]string, 0, len(toolCalls))
 	for i, toolCall := range toolCalls {
@@ -274,7 +273,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 				Arguments: mustToolResultJSON(map[string]any{
 					"path":   normalizedPath,
 					"symbol": symbol,
-					"depth":  10,
+					"depth":  defaultCallHierarchyDepth,
 				}),
 			}, true, state)
 		}
