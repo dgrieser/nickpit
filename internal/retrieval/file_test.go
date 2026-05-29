@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestLocalEngineListFiles(t *testing.T) {
@@ -457,5 +458,62 @@ func TestLocalEngineSearchRegexSkipsBinaryAndIgnored(t *testing.T) {
 	}
 	if got.ResultCount != 1 || got.Results[0].Path != "pkg/a.go" {
 		t.Fatalf("search = %#v", got)
+	}
+}
+
+func TestLocalEngineGetFileCapsLargeFiles(t *testing.T) {
+	repoRoot := t.TempDir()
+	engine := NewLocalEngine()
+
+	small := []byte("package pkg\n\nfunc A() {}\n")
+	if err := os.WriteFile(filepath.Join(repoRoot, "small.go"), small, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := engine.GetFile(context.Background(), repoRoot, "small.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Truncated {
+		t.Fatalf("small file marked truncated")
+	}
+
+	big := make([]byte, maxRetrievedFileBytes+4096)
+	for i := range big {
+		big[i] = 'a'
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "big.txt"), big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = engine.GetFile(context.Background(), repoRoot, "big.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Truncated {
+		t.Fatalf("large file not marked truncated")
+	}
+	if len(got.Content) > maxRetrievedFileBytes {
+		t.Fatalf("content not capped: %d bytes > %d", len(got.Content), maxRetrievedFileBytes)
+	}
+}
+
+func TestReadFileCappedTrimsPartialRune(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.txt")
+	// "aa" + "€" (3-byte rune). Cap at 3 bytes cuts mid-rune.
+	if err := os.WriteFile(path, []byte("aa€"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, truncated, err := readFileCapped(path, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated {
+		t.Fatal("expected truncated")
+	}
+	if !utf8.Valid(data) {
+		t.Fatalf("result is not valid UTF-8: %v", data)
+	}
+	if string(data) != "aa" {
+		t.Fatalf("got %q, want %q (partial rune dropped)", data, "aa")
 	}
 }

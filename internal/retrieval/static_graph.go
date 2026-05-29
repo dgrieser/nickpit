@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
@@ -75,6 +76,9 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 	if depth <= 0 {
 		depth = 1
 	}
+	if depth > goparser.MaxCallHierarchyDepth {
+		depth = goparser.MaxCallHierarchyDepth
+	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"
 	if reverse {
@@ -113,9 +117,12 @@ func (g *staticGraph) expandNode(id string, depth int, reverse bool, seen map[st
 		if _, exists := seen[childID]; exists {
 			continue
 		}
-		nextSeen := copySeen(seen)
-		nextSeen[childID] = struct{}{}
-		out.Children = append(out.Children, g.expandNode(childID, depth-1, reverse, nextSeen))
+		// Mark on the current path, recurse, unmark on backtrack: same
+		// path-local cycle avoidance as the previous per-child map copy, without
+		// the O(path) allocation per child.
+		seen[childID] = struct{}{}
+		out.Children = append(out.Children, g.expandNode(childID, depth-1, reverse, seen))
+		delete(seen, childID)
 	}
 	return out
 }
@@ -186,14 +193,6 @@ func addEdge(edges map[string]map[string]struct{}, from, to string) {
 		edges[from] = map[string]struct{}{}
 	}
 	edges[from][to] = struct{}{}
-}
-
-func copySeen(src map[string]struct{}) map[string]struct{} {
-	dst := make(map[string]struct{}, len(src)+1)
-	for key := range src {
-		dst[key] = struct{}{}
-	}
-	return dst
 }
 
 func sortNodeIDs(ids []string, nodes map[string]staticNode) {

@@ -15,8 +15,12 @@ import (
 const defaultVerifyConcurrency = 4
 
 type VerifyRequest struct {
-	ReviewCtx                *model.ReviewContext
-	Finding                  model.Finding
+	ReviewCtx *model.ReviewContext
+	Finding   model.Finding
+	// StyleGuides, when non-nil, are reused instead of being recomputed from
+	// ReviewCtx. VerifyAll resolves them once and shares them across findings so
+	// the style-guide probe files are not stat+read once per finding.
+	StyleGuides              []model.StyleGuide
 	RepoRoot                 string
 	Section                  *logging.ReasoningSection
 	UseJSONSchema            bool
@@ -69,9 +73,12 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	styleGuides, err := e.styleGuidesFor(req.ReviewCtx)
-	if err != nil {
-		return nil, usage, err
+	styleGuides := req.StyleGuides
+	if styleGuides == nil {
+		styleGuides, err = e.styleGuidesFor(req.ReviewCtx)
+		if err != nil {
+			return nil, usage, err
+		}
 	}
 	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentKind, styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0)
 	if err != nil {
@@ -177,6 +184,18 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		concurrency = len(findings)
 	}
 
+	// Resolve style guides once: the result depends only on reviewCtx, which is
+	// constant across findings, so this avoids re-reading the style-guide probe
+	// files once per concurrent verifier. Normalize to a non-nil slice so Verify
+	// treats it as "provided" even when the repo has no matching guides.
+	sharedStyleGuides, err := e.styleGuidesFor(reviewCtx)
+	if err != nil {
+		return nil, model.TokenUsage{}, nil, err
+	}
+	if sharedStyleGuides == nil {
+		sharedStyleGuides = []model.StyleGuide{}
+	}
+
 	var (
 		mu        sync.Mutex
 		usageSum  model.TokenUsage
@@ -196,6 +215,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 			req := VerifyRequest{
 				ReviewCtx:                reviewCtx,
 				Finding:                  f,
+				StyleGuides:              sharedStyleGuides,
 				RepoRoot:                 opts.RepoRoot,
 				Section:                  sec,
 				UseJSONSchema:            opts.UseJSONSchema,

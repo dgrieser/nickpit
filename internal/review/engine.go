@@ -2723,11 +2723,16 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
-	payload := mustToolResultJSON(map[string]any{
+	result := map[string]any{
 		"path":     content.Path,
 		"language": content.Language,
 		"content":  content.Content,
-	})
+	}
+	if content.Truncated {
+		result["truncated"] = true
+		result["truncated_note"] = "file was too large and was truncated; request specific line ranges for the remainder"
+	}
+	payload := mustToolResultJSON(result)
 	state.mu.Lock()
 	state.seenFiles[normalizedPath] = *content
 	state.mu.Unlock()
