@@ -743,6 +743,12 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
 		return err
 	}
+	// RunWithContext returns a non-nil result whenever err is nil; guard the
+	// invariant explicitly so the downstream summary/finalize/format/publish
+	// path can never nil-panic if that contract ever changes.
+	if result == nil {
+		return fmt.Errorf("review: engine returned no result")
+	}
 	a.logProgress("Result", reviewResultSummary(result))
 
 	if len(result.Findings) > 0 && trimmedCtx != nil {

@@ -27,17 +27,18 @@ type postRecord struct {
 }
 
 type publishServer struct {
-	t          *testing.T
-	server     *httptest.Server
-	mu         sync.Mutex
-	noteBody   []byte // GET /notes payload (dedupe)
-	notePosts  []postRecord
-	discPosts  []postRecord
-	discStatus int // status for POST /discussions (0 -> 201)
+	t           *testing.T
+	server      *httptest.Server
+	mu          sync.Mutex
+	noteBody    []byte // GET /notes payload (dedupe)
+	changesJSON []byte // GET /changes payload (default mrChangesJSON)
+	notePosts   []postRecord
+	discPosts   []postRecord
+	discStatus  int // status for POST /discussions (0 -> 201)
 }
 
 func newPublishServer(t *testing.T) *publishServer {
-	ps := &publishServer{t: t, noteBody: []byte(emptyArrayJSON)}
+	ps := &publishServer{t: t, noteBody: []byte(emptyArrayJSON), changesJSON: []byte(mrChangesJSON)}
 	ps.server = httptest.NewServer(http.HandlerFunc(ps.handle))
 	t.Cleanup(ps.server.Close)
 	return ps
@@ -50,7 +51,10 @@ func (ps *publishServer) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == mrBase:
 		_, _ = w.Write([]byte(mrMetadataJSON))
 	case r.Method == http.MethodGet && path == mrBase+"/changes":
-		_, _ = w.Write([]byte(mrChangesJSON))
+		ps.mu.Lock()
+		changes := ps.changesJSON
+		ps.mu.Unlock()
+		_, _ = w.Write(changes)
 	case r.Method == http.MethodGet && path == mrBase+"/notes":
 		ps.mu.Lock()
 		body := ps.noteBody
@@ -195,5 +199,90 @@ func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	}
 	if !strings.Contains(ps.notePosts[0].body, findingMarker("finding-b")) {
 		t.Fatalf("expected only finding-b note, got %q", ps.notePosts[0].body)
+	}
+}
+
+// A non-422 error (e.g. 500) on the inline POST is a real failure: it must be
+// returned for that finding, not silently swallowed by the file:line fallback.
+func TestPublishFindingNon422Propagates(t *testing.T) {
+	ps := newPublishServer(t)
+	ps.discStatus = http.StatusInternalServerError
+	err := ps.adapter().PublishReview(context.Background(), req(), sampleResult())
+	if err == nil {
+		t.Fatal("expected the 500 on finding-a to propagate")
+	}
+	if !strings.Contains(err.Error(), "finding-a") {
+		t.Fatalf("error should name finding-a, got %v", err)
+	}
+	if len(ps.discPosts) != 0 {
+		t.Fatalf("500 discussion should not be recorded, got %d", len(ps.discPosts))
+	}
+	// finding-a errored without falling back; only summary + finding-b post.
+	if len(ps.notePosts) != 2 {
+		t.Fatalf("note posts = %d, want 2 (summary + finding-b)", len(ps.notePosts))
+	}
+	for _, n := range ps.notePosts {
+		if strings.Contains(n.body, findingMarker("finding-a")) {
+			t.Fatalf("finding-a must not fall back on a non-422 error: %q", n.body)
+		}
+	}
+}
+
+func TestPublishReviewMultiLineInline(t *testing.T) {
+	ps := newPublishServer(t)
+	// Hunk new-side: line1=" a" context, line2="+b", line3="+c".
+	ps.changesJSON = []byte(`{"changes":[{"new_path":"multi.go","old_path":"multi.go","diff":"@@ -1,1 +1,3 @@\n a\n+b\n+c"}]}`)
+	result := &model.ReviewResult{
+		OverallExplanation: "spanning finding",
+		Findings: []model.Finding{{
+			ID:           "finding-span",
+			Title:        "Multi-line issue",
+			Body:         "Spans two added lines.",
+			Priority:     intPtr(1),
+			CodeLocation: model.CodeLocation{FilePath: "multi.go", LineRange: model.LineRange{Start: 2, End: 3}},
+		}},
+	}
+	if err := ps.adapter().PublishReview(context.Background(), req(), result); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(ps.notePosts) != 1 {
+		t.Fatalf("note posts = %d, want 1 (summary only)", len(ps.notePosts))
+	}
+	if len(ps.discPosts) != 1 {
+		t.Fatalf("discussion posts = %d, want 1 (inline multi-line)", len(ps.discPosts))
+	}
+	pos := ps.discPosts[0].position
+	if pos["new_line"].(float64) != 3 {
+		t.Fatalf("anchor new_line = %v, want 3 (end of range)", pos["new_line"])
+	}
+	lr, ok := pos["line_range"].(map[string]any)
+	if !ok {
+		t.Fatalf("multi-line position missing line_range: %#v", pos)
+	}
+	start, _ := lr["start"].(map[string]any)
+	end, _ := lr["end"].(map[string]any)
+	if start["line_code"] == "" || end["line_code"] == "" {
+		t.Fatalf("line_range endpoints missing line_code: %#v", lr)
+	}
+	if start["new_line"].(float64) != 2 || end["new_line"].(float64) != 3 {
+		t.Fatalf("line_range new_line span = %v..%v, want 2..3", start["new_line"], end["new_line"])
+	}
+}
+
+func TestSanitizeForPublish(t *testing.T) {
+	// C0/ESC/BEL control bytes (terminal-escape vectors) are stripped.
+	if got := sanitizeForPublish("a\x00\x1b\x07b"); got != "ab" {
+		t.Fatalf("control strip = %q, want %q", got, "ab")
+	}
+	// An injected nickpit marker in untrusted text is defused so it cannot
+	// poison re-run dedupe.
+	got := sanitizeForPublish("evil " + summaryMarker + " text")
+	if strings.Contains(got, markerOpen) {
+		t.Fatalf("marker token not defused: %q", got)
+	}
+	markers := map[string]struct{}{}
+	collectMarkers(got, markers)
+	if len(markers) != 0 {
+		t.Fatalf("defused text still yielded markers: %v", markers)
 	}
 }

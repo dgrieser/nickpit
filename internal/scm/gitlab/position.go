@@ -50,11 +50,18 @@ func locateLine(change MRChange, newLine int) (lineLoc, bool) {
 	for _, hunk := range change.Hunks {
 		oldCursor := hunk.OldStart
 		newCursor := hunk.NewStart
-		for _, raw := range strings.Split(strings.TrimSuffix(hunk.Content, "\n"), "\n") {
-			if raw == "" {
-				continue
+		// TrimRight (not TrimSuffix) drops the trailing blank produced by the
+		// per-file "diff + \n" framing so it is not mistaken for a context line.
+		for raw := range strings.SplitSeq(strings.TrimRight(hunk.Content, "\n"), "\n") {
+			// A hunk-body line carries a leading marker (' ', '+', '-', '\'). A
+			// genuinely empty interior line has none; treat it as a blank context
+			// line so the cursors stay in sync — skipping it would desync the
+			// new-side number for every line that follows.
+			marker := byte(' ')
+			if raw != "" {
+				marker = raw[0]
 			}
-			switch raw[0] {
+			switch marker {
 			case '+':
 				if newCursor == newLine {
 					return lineLoc{oldLine: oldCursor, newLine: newCursor, added: true}, true
@@ -64,7 +71,7 @@ func locateLine(change MRChange, newLine int) (lineLoc, bool) {
 				oldCursor++
 			case '\\':
 				// "\ No newline at end of file": no line on either side.
-			default: // ' ' context (and any unexpected prefix treated as context)
+			default: // ' ' context, an empty line, or any unexpected prefix
 				if newCursor == newLine {
 					return lineLoc{oldLine: oldCursor, newLine: newCursor}, true
 				}

@@ -8,12 +8,28 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/textsan"
 )
 
-const summaryMarker = "<!-- nickpit:summary -->"
+// markerOpen is the token collectMarkers scans for; both the real markers below
+// and any injected lookalike in untrusted text begin with it.
+const markerOpen = "<!-- nickpit:"
+
+const summaryMarker = markerOpen + "summary -->"
 
 func findingMarker(id string) string {
-	return "<!-- nickpit:finding:" + id + " -->"
+	return markerOpen + "finding:" + id + " -->"
+}
+
+// sanitizeForPublish prepares untrusted, LLM-generated text for posting as
+// GitLab markdown. It strips terminal control characters (consistent with the
+// terminal formatter) and defuses any embedded nickpit marker so untrusted
+// content cannot inject a lookalike that poisons re-run dedupe: the marker's
+// leading "<" is HTML-escaped, which GitLab renders as a literal "<" while
+// breaking collectMarkers' scan for markerOpen.
+func sanitizeForPublish(s string) string {
+	s = textsan.StripControl(s)
+	return strings.ReplaceAll(s, markerOpen, "&lt;"+strings.TrimPrefix(markerOpen, "<"))
 }
 
 // PublishReview posts the review back to the merge request: one summary note and
@@ -81,7 +97,7 @@ func (a *Adapter) publishFinding(ctx context.Context, notesPath, discussionsPath
 			}
 		}
 	}
-	prefix := fmt.Sprintf("`%s:%d`", finding.CodeLocation.FilePath, finding.CodeLocation.LineRange.Start)
+	prefix := fmt.Sprintf("`%s:%d`", sanitizeForPublish(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
 	return a.client.Post(ctx, notesPath, map[string]string{"body": findingBody(finding, prefix)}, nil)
 }
 
@@ -121,10 +137,9 @@ func (a *Adapter) existingMarkers(ctx context.Context, project string, iid int) 
 }
 
 func collectMarkers(body string, out map[string]struct{}) {
-	const open = "<!-- nickpit:"
 	rest := body
 	for {
-		i := strings.Index(rest, open)
+		i := strings.Index(rest, markerOpen)
 		if i < 0 {
 			return
 		}
@@ -142,12 +157,12 @@ func summaryBody(result *model.ReviewResult) string {
 	var b strings.Builder
 	b.WriteString(summaryMarker)
 	b.WriteString("\n\n")
-	correctness := strings.TrimSpace(result.OverallCorrectness)
+	correctness := sanitizeForPublish(strings.TrimSpace(result.OverallCorrectness))
 	if correctness == "" {
 		correctness = "review complete"
 	}
 	fmt.Fprintf(&b, "**Overall: %s** · confidence %.2f\n", correctness, result.OverallConfidenceScore)
-	if explanation := strings.TrimSpace(result.OverallExplanation); explanation != "" {
+	if explanation := sanitizeForPublish(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
 		b.WriteString("\n")
 		b.WriteString(explanation)
 		b.WriteString("\n")
@@ -169,9 +184,9 @@ func findingBody(finding model.Finding, locationPrefix string) string {
 	}
 	fmt.Fprintf(&b, "**P%d** · confidence %.2f\n\n", rank, confidence)
 	if title != "" {
-		fmt.Fprintf(&b, "### %s\n\n", title)
+		fmt.Fprintf(&b, "### %s\n\n", sanitizeForPublish(title))
 	}
-	b.WriteString(body)
+	b.WriteString(sanitizeForPublish(body))
 	if len(finding.Suggestions) > 0 {
 		b.WriteString("\n\n**Suggestions**\n")
 		for _, suggestion := range finding.Suggestions {
@@ -179,7 +194,7 @@ func findingBody(finding model.Finding, locationPrefix string) string {
 			if text == "" {
 				continue
 			}
-			fmt.Fprintf(&b, "\n- %s", text)
+			fmt.Fprintf(&b, "\n- %s", sanitizeForPublish(text))
 		}
 	}
 	return b.String()
