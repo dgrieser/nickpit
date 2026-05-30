@@ -23,6 +23,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/toolchain"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 )
@@ -106,15 +107,53 @@ func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.Revie
 }
 
 func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
+	trimmed, err := e.resolveAndTrimContext(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	result, enrichedCtx, err := e.runMultiAgentReview(ctx, trimmed, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	e.applyResultMetadata(result, req, trimmed)
+	return result, enrichedCtx, nil
+}
+
+// RunSpecPipeline executes an already-built pipeline. When the pipeline needs a
+// source it resolves and trims the review context as RunWithContext does;
+// otherwise (e.g. a merge/finalize-from-file workflow) it runs against a minimal
+// synthetic context so no git/PR resolution is required.
+func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
+	var reviewCtx *model.ReviewContext
+	if p.NeedsSource() {
+		c, err := e.resolveAndTrimContext(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
+		reviewCtx = c
+	} else {
+		reviewCtx = &model.ReviewContext{Mode: req.Mode, CheckoutRoot: req.RepoRoot, Identifier: req.Identifier}
+	}
+	result, enrichedCtx, err := p.Run(ctx, reviewCtx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	e.applyResultMetadata(result, req, reviewCtx)
+	return result, enrichedCtx, nil
+}
+
+// resolveAndTrimContext resolves the review source, captures toolchain versions,
+// optionally inlines full files, and trims to the context budget.
+func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
 	e.logf("Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
 	reviewCtx, err := e.source.ResolveContext(ctx, req)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	e.logProgress("Review", reviewContextSummary(reviewCtx, req))
 	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
-		return nil, nil, ErrEmptyDiff
+		return nil, ErrEmptyDiff
 	}
 	reviewCtx.CheckoutRoot = req.RepoRoot
 	reviewCtx.Identifier = req.Identifier
@@ -151,13 +190,13 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 
 	trimmed, err := trimmer.Trim(reviewCtx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("review: trim context: %w", err)
+		return nil, fmt.Errorf("review: trim context: %w", err)
 	}
 	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
-	result, enrichedCtx, err := e.runMultiAgentReview(ctx, trimmed, req)
-	if err != nil {
-		return nil, nil, err
-	}
+	return trimmed, nil
+}
+
+func (e *Engine) applyResultMetadata(result *model.ReviewResult, req model.ReviewRequest, reviewCtx *model.ReviewContext) {
 	result.Mode = string(req.Mode)
 	if req.Submode != "" {
 		result.Mode = result.Mode + ":" + req.Submode
@@ -166,9 +205,10 @@ func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*
 	result.Repo = req.Repo
 	result.Identifier = req.Identifier
 	result.BaseURL = e.config.BaseURL
-	result.BaseRef = reviewCtx.Repository.BaseRef
-	result.HeadRef = reviewCtx.Repository.HeadRef
-	return result, enrichedCtx, nil
+	if reviewCtx != nil {
+		result.BaseRef = reviewCtx.Repository.BaseRef
+		result.HeadRef = reviewCtx.Repository.HeadRef
+	}
 }
 
 func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
@@ -249,6 +289,9 @@ type contextAgentResult struct {
 }
 
 type reviewVector struct {
+	// id is the stable, portable identifier used in workflow specs
+	// (e.g. "security" for the "review:security" step). name is the display name.
+	id            string
 	name          string
 	focusFile     string
 	questionsFile string
@@ -257,26 +300,31 @@ type reviewVector struct {
 
 var reviewVectors = []reviewVector{
 	{
+		id:            "codequality",
 		name:          "Code Quality",
 		focusFile:     "agent_review_codequality_system_prompt.tmpl",
 		questionsFile: "agent_review_codequality_questions.tmpl",
 	},
 	{
+		id:            "security",
 		name:          "Security",
 		focusFile:     "agent_review_security_system_prompt.tmpl",
 		questionsFile: "agent_review_security_questions.tmpl",
 	},
 	{
+		id:            "architecture",
 		name:          "Architecture",
 		focusFile:     "agent_review_architecture_system_prompt.tmpl",
 		questionsFile: "agent_review_architecture_questions.tmpl",
 	},
 	{
+		id:            "performance",
 		name:          "Performance",
 		focusFile:     "agent_review_performance_system_prompt.tmpl",
 		questionsFile: "agent_review_performance_questions.tmpl",
 	},
 	{
+		id:            "testing",
 		name:          "Testing",
 		focusFile:     "agent_review_testing_system_prompt.tmpl",
 		questionsFile: "agent_review_testing_questions.tmpl",
@@ -286,179 +334,48 @@ var reviewVectors = []reviewVector{
 		},
 	},
 	{
+		id:            "bestpractices",
 		name:          "Best Practices",
 		focusFile:     "agent_review_bestpractices_system_prompt.tmpl",
 		questionsFile: "agent_review_bestpractices_questions.tmpl",
 	},
 }
 
+// reviewVectorByID returns the reviewVector with the given workflow id.
+func reviewVectorByID(id string) (reviewVector, bool) {
+	for _, v := range reviewVectors {
+		if v.id == id {
+			return v, true
+		}
+	}
+	return reviewVector{}, false
+}
+
 func intPtr(v int) *int { return &v }
 
+// withConfig returns a shallow copy of the engine whose profile is replaced.
+// All reference fields (llm client, retrieval, logger, source, trimmer) are
+// shared; only the value-type config differs. Used to apply per-step model
+// parameter overrides without mutating the shared engine or racing concurrent
+// steps, since the clone's config is read-only for the lifetime of a step.
+func (e *Engine) withConfig(profile config.Profile) *Engine {
+	clone := *e
+	clone.config = profile
+	return &clone
+}
+
+// runMultiAgentReview executes the default review workflow (collect → vector
+// reviewers → verify → dedupe → merge) through the spec-driven pipeline. The
+// finalize step is intentionally excluded here; callers (cmd) apply Finalize
+// afterward, preserving the historical RunWithContext contract of returning the
+// pre-finalize result. This is the single code path: the same executor runs both
+// this default spec and any user-supplied spec.
 func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
-	baseTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
+	pipeline, err := e.BuildPipeline(workflow.DefaultReviewSpec())
 	if err != nil {
 		return nil, nil, err
 	}
-	contextTemplate, err := e.loadPrompt("agent_context_system_prompt.tmpl")
-	if err != nil {
-		return nil, nil, err
-	}
-	contextSystem, err := e.renderContextSystem(contextTemplate, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	payload := model.PromptPayloadFromContext(reviewCtx)
-	payload.StyleGuides, err = e.styleGuidesFor(reviewCtx)
-	if err != nil {
-		return nil, nil, err
-	}
-	userPrompt, err := llm.RenderJSON(payload)
-	if err != nil {
-		return nil, nil, fmt.Errorf("review: rendering review prompt json: %w", err)
-	}
-	e.logf("Rendered review context JSON: lines=%d chars=%d", lineCount(userPrompt), len(userPrompt))
-
-	var warnings []string
-	contextResult, contextErr := e.runContextAgent(ctx, agentSpec{
-		name:          "Collect Context",
-		role:          "context",
-		system:        contextSystem,
-		noToolsSystem: contextSystem,
-		user:          userPrompt,
-		schemaKind:    llm.SchemaKindText,
-		hasTools:      true,
-	}, req)
-	if contextErr != nil {
-		e.logf("Context agent failed, continuing with degraded context: error=%v", contextErr)
-		warnings = append(warnings, fmt.Sprintf("Context agent failed: %v; continuing with degraded context", contextErr))
-		contextResult.run.Status = model.AgentRunStatusFailed
-		contextResult.run.Error = contextErr.Error()
-	}
-
-	enriched, err := model.CloneContext(reviewCtx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("review: cloning context: %w", err)
-	}
-	enriched.SupplementalContext = append(enriched.SupplementalContext, supplementalFromContextAgent(contextResult.toolMessages)...)
-	payload = model.PromptPayloadFromContext(enriched)
-	payload.StyleGuides, err = e.styleGuidesFor(enriched)
-	if err != nil {
-		return nil, nil, err
-	}
-	enrichedPrompt, err := llm.RenderJSON(payload)
-	if err != nil {
-		return nil, nil, fmt.Errorf("review: rendering enriched review prompt json: %w", err)
-	}
-
-	var schema []byte
-	if req.UseJSONSchema {
-		schema = llm.FindingsSchema
-	}
-	contextMessages := contextAgentMarkdownMessages(contextResult.contentMessages)
-	vectorResults, err := e.runVectorAgents(ctx, baseTemplate, enrichedPrompt, contextMessages, schema, req, payload.StyleGuides, len(payload.ToolchainVersions) > 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	verifyUsage, verifyWarnings, err := e.verifyAndFilterVectorFindings(ctx, enriched, vectorResults, req)
-	warnings = append(warnings, verifyWarnings...)
-	if err != nil {
-		e.logf("Verifier failed before merge: tokens=%d warnings=%d error=%v", verifyUsage.TotalTokens, len(verifyWarnings), err)
-		return nil, nil, err
-	}
-	dedupeRuns := e.runDedupeAgents(ctx, contextAgentMarkdownContent(contextResult.contentMessages), vectorResults, mergeSchemaForDedupe(req), mergeConstraintsForDedupe(req), req)
-	mergeInputs := pairwiseMergeInputs(vectorResults)
-	verifiedMergeInputs := flattenPairwiseMergeInputs(mergeInputs)
-
-	mergeConstraints := llm.ResponseConstraints{}
-	var mergeSchema []byte
-	if req.UseJSONSchema {
-		mergeConstraints = mergeConstraintsForRequest(req)
-		if hasResponseConstraints(mergeConstraints) {
-			mergeSchema = llm.MergeSchemaWithConstraints(mergeConstraints)
-		} else {
-			mergeSchema = llm.MergeSchema
-		}
-	}
-	var (
-		mergeResult agentResult
-		mergeRuns   []model.AgentRun
-	)
-	if allVectorsFailed(vectorResults) {
-		// Every vector reviewer failed; calling merge on an all-failed payload
-		// risks hallucinated findings. Emit an empty verified result instead.
-		e.logf("All vector reviewers failed; skipping merge agent and emitting empty result")
-		warnings = append(warnings, "All vector reviewers failed; skipped merge agent and returning empty findings")
-		mergeResult = emptyVerifiedMergeResult()
-	} else if len(mergeInputs) == 0 {
-		e.logf("No verified findings remained; skipping merge agent and emitting empty result")
-		warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
-		mergeResult = emptyVerifiedMergeResult()
-	} else {
-		mergeResult, mergeRuns = e.runPairwiseMergeAgents(ctx, enrichedPrompt, contextAgentMarkdownContent(contextResult.contentMessages), mergeInputs, mergeSchema, mergeConstraints, req)
-	}
-	if mergeResult.resp != nil {
-		// Last-resort repair after retry exhaustion or pairwise fallback responses.
-		// Normal merge schema/parser paths require `verification`.
-		mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
-	}
-	if len(mergeRuns) == 0 {
-		mergeRuns = []model.AgentRun{mergeResult.run}
-	}
-	allRuns := make([]model.AgentRun, 0, 1+len(vectorResults)+len(dedupeRuns)+len(mergeRuns))
-	allRuns = append(allRuns, contextResult.run)
-	totalUsage := contextResult.run.TokensUsed
-	toolCalls := contextResult.run.ToolCalls
-	effectiveReasoningEffort := contextResult.reasoningEffort
-	for _, result := range vectorResults {
-		allRuns = append(allRuns, result.run)
-		totalUsage = addTokenUsage(totalUsage, result.run.TokensUsed)
-		toolCalls += result.run.ToolCalls
-		if result.reasoningEffort != "" {
-			effectiveReasoningEffort = result.reasoningEffort
-		}
-	}
-	for _, run := range dedupeRuns {
-		allRuns = append(allRuns, run)
-		totalUsage = addTokenUsage(totalUsage, run.TokensUsed)
-		toolCalls += run.ToolCalls
-	}
-	for _, run := range mergeRuns {
-		allRuns = append(allRuns, run)
-		totalUsage = addTokenUsage(totalUsage, run.TokensUsed)
-		toolCalls += run.ToolCalls
-	}
-	if mergeResult.reasoningEffort != "" {
-		effectiveReasoningEffort = mergeResult.reasoningEffort
-	}
-	warnings = appendAgentRunWarnings(warnings, allRuns, contextErr)
-
-	filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
-	if overwrote := model.EnsureFindingIDs(filtered); overwrote > 0 {
-		e.logf("Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
-	}
-	e.logf(
-		"Review complete: findings=%d filtered=%d threshold=%s tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d warnings=%d",
-		len(mergeResult.resp.Findings),
-		len(filtered),
-		req.PriorityThreshold,
-		toolCalls,
-		totalUsage.PromptTokens,
-		totalUsage.CompletionTokens,
-		totalUsage.TotalTokens,
-		len(warnings),
-	)
-	return &model.ReviewResult{
-		Findings:               filtered,
-		OverallCorrectness:     mergeResult.resp.OverallCorrectness,
-		OverallExplanation:     mergeResult.resp.OverallExplanation,
-		OverallConfidenceScore: mergeResult.resp.OverallConfidenceScore,
-		AgentRuns:              allRuns,
-		Warnings:               warnings,
-		TokensUsed:             totalUsage,
-		VerifyTokensUsed:       verifyUsage,
-		TotalToolCalls:         toolCalls,
-		ReasoningEffort:        effectiveReasoningEffort,
-	}, enriched, nil
+	return pipeline.Run(ctx, reviewCtx, req)
 }
 
 // verifyAndFilterVectorFindings runs the verifier on every finding from
@@ -697,62 +614,6 @@ func appendAgentRunWarnings(warnings []string, runs []model.AgentRun, contextErr
 		}
 	}
 	return warnings
-}
-
-func (e *Engine) runVectorAgents(ctx context.Context, baseTemplate, userPrompt string, contextMessages []llm.Message, schema []byte, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) ([]agentResult, error) {
-	results := make([]agentResult, len(reviewVectors))
-	errs := make([]error, len(reviewVectors))
-	var wg sync.WaitGroup
-	for i, vector := range reviewVectors {
-		wg.Add(1)
-		go func(idx int, vector reviewVector) {
-			defer wg.Done()
-			questionsSnippet, err := e.renderReviewerQuestionsSnippet(vector.questionsFile)
-			if err != nil {
-				errs[idx] = err
-				return
-			}
-			agentRole := "reviewer"
-			system, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, true, agentRole, styleGuides, hasToolchainVersions)
-			if err != nil {
-				errs[idx] = err
-				return
-			}
-			noToolsSystem, err := e.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, req, false, agentRole, styleGuides, hasToolchainVersions)
-			if err != nil {
-				errs[idx] = err
-				return
-			}
-			agentSchema := schema
-			if req.UseJSONSchema && (vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil || len(vector.constraints.AllowedCorrectness) > 0) {
-				agentSchema = llm.FindingsSchemaWithConstraints(vector.constraints)
-			}
-			result, err := e.runAgent(ctx, agentSpec{
-				name:             vector.name,
-				role:             agentRole,
-				system:           system,
-				noToolsSystem:    noToolsSystem,
-				user:             userPrompt,
-				extraMessages:    contextMessages,
-				questionsSnippet: questionsSnippet,
-				schema:           agentSchema,
-				schemaKind:       llm.SchemaKindReview,
-				constraints:      vector.constraints,
-				hasTools:         true,
-			}, req)
-			results[idx] = result
-			errs[idx] = err
-		}(i, vector)
-	}
-	wg.Wait()
-	for i, err := range errs {
-		if err == nil {
-			continue
-		}
-		e.logf("Vector reviewer failed, continuing with others: vector=%s error=%v", reviewVectors[i].name, err)
-		results[i] = failedVectorResult(reviewVectors[i], err)
-	}
-	return results, nil
 }
 
 type pairwiseMergeInput struct {
@@ -1474,132 +1335,25 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (
 	return systemPrompt, nil
 }
 
+// runAgent executes one agent. Reviewer agents run their full initial pass plus
+// any nudge rounds through a shared reviewerSession (see reviewer_session.go);
+// every other role is a single-turn agent loop. The reviewer session machinery
+// is the single implementation shared with the spec-driven standalone
+// nudge/reasoning-extract steps — there is no parallel reviewer code path.
 func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
-	noToolsSystem := agent.noToolsSystem
-	if noToolsSystem == "" {
-		noToolsSystem = agent.system
+	if agent.role == "reviewer" {
+		s := e.newReviewerSession(agent, req, false)
+		if err := e.reviewerInitial(ctx, s, req); err != nil {
+			return s.partialResult(req), err
+		}
+		if err := e.reviewerNudges(ctx, s, req); err != nil {
+			return agentResult{}, err
+		}
+		return s.result(req), nil
 	}
-	messages := []llm.Message{
-		{Role: "system", Content: agent.system},
-		{Role: "user", Content: agent.user},
-	}
-	messages = append(messages, agent.extraMessages...)
-	label := fmt.Sprintf("%s: %s", agent.role, agent.name)
-	if agent.role == "reviewer" && strings.HasPrefix(agent.name, "#") {
-		label = "reviewer " + agent.name
-	}
-	sec := e.logger.NewReasoningTracker(label)
+
+	loopReq, sec := e.buildAgentLoopRequest(agent, req)
 	defer sec.End()
-
-	tools := []llm.ToolDefinition(nil)
-	if agent.hasTools {
-		tools = reviewerToolDefinitions()
-	}
-	reviewSnippet := outputSchemaSnippetFor(agent.schemaKind, req.UseJSONSchema)
-	if agent.schemaKind == llm.SchemaKindText {
-		reviewSnippet = ""
-	}
-	loopReq := agentLoopRequest{
-		AgentName:                  agent.name,
-		AgentKind:                  agentLoopKind(agent.role),
-		Messages:                   messages,
-		Tools:                      tools,
-		Schema:                     agent.schema,
-		SchemaKind:                 agent.schemaKind,
-		Constraints:                agent.constraints,
-		Model:                      e.config.Model,
-		MaxTokens:                  e.config.MaxTokens,
-		Temperature:                e.config.Temperature,
-		TopP:                       e.config.TopP,
-		ExtraBody:                  e.config.ExtraBody,
-		ParallelToolCalls:          !req.DisableParallelToolCalls,
-		ReasoningEffort:            e.config.ReasoningEffort,
-		RepoRoot:                   req.RepoRoot,
-		MaxToolCalls:               req.MaxToolCalls,
-		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
-		MaxOutputRetries:           req.MaxOutputRetries,
-		MaxReasoningSeconds:        req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:    req.MaxReasoningLoopRepeats,
-		Section:                    sec,
-		NoToolsSystem:              noToolsSystem,
-		NoToolsSchemaSnippet:       reviewSnippet,
-		JSONRetryExampleSnippet:    exampleSnippetFor(agent.schemaKind),
-		JSONRetryProgressAgentName: agent.name,
-		ValidateResponse:           agent.validateResponse,
-		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-			if !agent.hasTools {
-				return append([]llm.Message(nil), messages...), nil
-			}
-			return noToolsMessagesFromRendered(noToolsSystem, messages)
-		},
-	}
-	extractEnabled := agent.role == "reviewer" && req.NudgeCount > 0 && !req.DisableReasoningExtract && req.ModelEmitsReasoning
-	var (
-		extractMu           sync.Mutex
-		collectWG           sync.WaitGroup
-		collectedLists      []string
-		extractorTokens     model.TokenUsage
-		extractorToolCalls  int
-		extractorDuplicates int
-	)
-	addExtractorRun := func(run model.AgentRun) {
-		extractMu.Lock()
-		defer extractMu.Unlock()
-		extractorTokens = addTokenUsage(extractorTokens, run.TokensUsed)
-		extractorToolCalls += run.ToolCalls
-		extractorDuplicates += run.DuplicateToolCalls
-	}
-	extractorTotals := func() (model.TokenUsage, int, int) {
-		extractMu.Lock()
-		defer extractMu.Unlock()
-		return extractorTokens, extractorToolCalls, extractorDuplicates
-	}
-	totalTokensWithExtractors := func(base model.TokenUsage) model.TokenUsage {
-		tokens, _, _ := extractorTotals()
-		return addTokenUsage(base, tokens)
-	}
-	totalToolCallsWithExtractors := func(base int) int {
-		_, toolCalls, _ := extractorTotals()
-		return base + toolCalls
-	}
-	totalDuplicatesWithExtractors := func(base int) int {
-		_, _, duplicates := extractorTotals()
-		return base + duplicates
-	}
-	combinedCollectedList := func() string {
-		extractMu.Lock()
-		defer extractMu.Unlock()
-		return strings.TrimSpace(strings.Join(collectedLists, "\n"))
-	}
-	waitCollect := func() {
-		collectWG.Wait()
-	}
-	launchCollect := func(agentName string, iterIdx int, reasoning string) {
-		if strings.TrimSpace(reasoning) == "" {
-			return
-		}
-		collectWG.Go(func() {
-			list, result, err := e.runReasoningCollectFindings(ctx, reasoning, agentName, iterIdx, req)
-			addExtractorRun(result.run)
-			if err != nil {
-				e.logf("Reasoning collect findings failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
-				return
-			}
-			if strings.TrimSpace(list) == "" {
-				return
-			}
-			extractMu.Lock()
-			collectedLists = append(collectedLists, list)
-			extractMu.Unlock()
-		})
-	}
-	if extractEnabled {
-		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
-			launchCollect(agentName, iterIdx, reasoning)
-		}
-		defer waitCollect()
-	}
-
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
 	if err != nil {
 		return partialAgentResult(agent, req, loopResult), err
@@ -1607,161 +1361,22 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	if loopResult.resp == nil {
 		return partialAgentResult(agent, req, loopResult), fmt.Errorf("agent %s returned no response", agent.name)
 	}
-	totalFindings := append([]model.Finding(nil), loopResult.resp.Findings...)
-	totalTokens := loopResult.tokensUsed
-	totalToolCalls := loopResult.toolCalls
-	totalDuplicates := loopResult.duplicateToolCalls
-	latestResp := loopResult.resp
-	latestReasoningEffort := loopResult.reasoningEffort
-	historyMessages := messagesWithFinalResponse(loopResult.messages, loopResult.resp)
-	contentMessages := append([]string(nil), loopResult.contentMessages...)
-	toolMessages := append([]llm.Message(nil), loopResult.toolMessages...)
-	toolCallHistory := append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
-
-	if agent.role == "reviewer" && req.NudgeCount > 0 {
-		// One shared agentLoopState across all nudge rounds: tool-call, duplicate,
-		// and JSON-retry budgets are pooled for the entire nudge phase rather than
-		// reset per round. Intentional — prevents a chatty model from multiplying
-		// its budget by NudgeCount.
-		nudgeState := newAgentLoopState()
-		// Reset reasoning effort to the configured baseline at the start of the
-		// nudge phase. Intentional: a back-off triggered during the initial round
-		// (e.g. JSON repair forcing high → low) should not permanently degrade
-		// the nudges. Subsequent rounds still carry their own back-offs forward
-		// via the sub.reasoningEffort update below.
-		nudgeReasoningEffort := e.config.ReasoningEffort
-		var nudgeErr error
-		// UpdateFindings inputs: combinedCollectedList (frozen after initial
-		// run) + totalFindings (append-only via appendNewFindings). Cache the
-		// delta keyed by len(totalFindings); recompute only when findings grew.
-		cachedUpdateDelta := ""
-		cachedUpdateFindingsLen := -1
-		for i := 0; i < req.NudgeCount; i++ {
-			nudgeName := fmt.Sprintf("%s - Nudge %d/%d", agent.name, i+1, req.NudgeCount)
-			nudgeCtx := ctxWithAgent(ctx, agentTag{Role: agent.role, Name: nudgeName})
-			e.logfCtx(nudgeCtx, "Nudge round: round=%d/%d", i+1, req.NudgeCount)
-			waitCollect()
-			reasoningFindings := ""
-			if combined := combinedCollectedList(); combined != "" {
-				if cachedUpdateFindingsLen == len(totalFindings) {
-					reasoningFindings = cachedUpdateDelta
-				} else {
-					findingsJSON, err := reasoningFindingsJSON(totalFindings)
-					if err != nil {
-						return agentResult{}, err
-					}
-					delta, result, err := e.runReasoningUpdateFindings(nudgeCtx, combined, findingsJSON, agent.name, req)
-					addExtractorRun(result.run)
-					if err != nil {
-						e.logfCtx(nudgeCtx, "Reasoning update findings failed, using standard nudge: round=%d/%d error=%v", i+1, req.NudgeCount, err)
-					} else {
-						reasoningFindings = delta
-						cachedUpdateDelta = delta
-						cachedUpdateFindingsLen = len(totalFindings)
-					}
-				}
-			}
-			formattedReasoningFindings := formatReasoningFindingsList(reasoningFindings)
-			if extractEnabled {
-				if formattedReasoningFindings != "" {
-					e.logBlockCtx(nudgeCtx, "Extracted reasoning findings sent to nudge:", formattedReasoningFindings)
-				} else {
-					e.logfCtx(nudgeCtx, "No extracted reasoning findings to send to nudge")
-				}
-			}
-			nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
-				HasResponseFormat bool
-				QuestionsSnippet  string
-				ReasoningFindings string
-			}{
-				HasResponseFormat: agent.schemaKind != llm.SchemaKindText,
-				QuestionsSnippet:  strings.TrimSpace(agent.questionsSnippet),
-				ReasoningFindings: formattedReasoningFindings,
-			})
-			if err != nil {
-				return agentResult{}, err
-			}
-			nudged := append(append([]llm.Message(nil), historyMessages...), llm.Message{Role: "user", Content: nudgeText})
-			nudgeReq := loopReq
-			nudgeReq.AgentName = nudgeName
-			nudgeReq.JSONRetryProgressAgentName = nudgeName
-			nudgeReq.Messages = nudged
-			nudgeReq.ReasoningEffort = nudgeReasoningEffort
-			nudgeReq.State = nudgeState
-			nudgeReq.OnReasoningTrace = nil
-			sub, err := e.runAgentLoop(nudgeCtx, nudgeReq)
-			if err != nil {
-				nudgeErr = fmt.Errorf("nudge %d: %w", i+1, err)
-				e.logfCtx(nudgeCtx, "Nudge failed, keeping prior findings: round=%d/%d error=%v", i+1, req.NudgeCount, err)
-				break
-			}
-			if sub.resp == nil {
-				nudgeErr = fmt.Errorf("nudge %d: agent %s returned no response", i+1, agent.name)
-				e.logfCtx(nudgeCtx, "Nudge returned no response, keeping prior findings: round=%d/%d", i+1, req.NudgeCount)
-				break
-			}
-			prevFindings := len(totalFindings)
-			totalFindings = appendNewFindings(totalFindings, sub.resp.Findings)
-			e.logfCtx(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", i+1, req.NudgeCount, len(sub.resp.Findings), len(totalFindings)-prevFindings, len(totalFindings))
-			totalTokens = addTokenUsage(totalTokens, sub.tokensUsed)
-			totalToolCalls += sub.toolCalls
-			totalDuplicates += sub.duplicateToolCalls
-			latestResp = sub.resp
-			latestReasoningEffort = sub.reasoningEffort
-			if sub.reasoningEffort != "" {
-				nudgeReasoningEffort = sub.reasoningEffort
-			}
-			historyMessages = messagesWithFinalResponse(sub.messages, sub.resp)
-			contentMessages = append(contentMessages, sub.contentMessages...)
-			toolMessages = append(toolMessages, sub.toolMessages...)
-			toolCallHistory = append(toolCallHistory, sub.toolCallHistory...)
-		}
-		// Findings are the merged set across all nudge rounds, but RawResponse
-		// is only the last round's raw payload. Do not re-parse RawResponse and
-		// expect to recover the merged findings — use Findings directly.
-		latest := *latestResp
-		latest.Findings = totalFindings
-		latestResp = &latest
-		if nudgeErr != nil {
-			run := model.AgentRun{
-				Name:                  agent.name,
-				Role:                  agent.role,
-				Findings:              len(latestResp.Findings),
-				MaxToolCalls:          req.MaxToolCalls,
-				MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
-				ToolCalls:             totalToolCallsWithExtractors(totalToolCalls),
-				DuplicateToolCalls:    totalDuplicatesWithExtractors(totalDuplicates),
-				TokensUsed:            totalTokensWithExtractors(totalTokens),
-				Status:                model.AgentRunStatusPartial,
-				Error:                 nudgeErr.Error(),
-			}
-			return agentResult{
-				resp:               latestResp,
-				reasoningEffort:    latestReasoningEffort,
-				contentMessages:    contentMessages,
-				toolMessages:       toolMessages,
-				toolCallHistory:    toolCallHistory,
-				duplicateToolCalls: totalDuplicatesWithExtractors(totalDuplicates),
-				run:                run,
-			}, nil
-		}
-	}
 	return agentResult{
-		resp:               latestResp,
-		reasoningEffort:    latestReasoningEffort,
-		contentMessages:    contentMessages,
-		toolMessages:       toolMessages,
-		toolCallHistory:    toolCallHistory,
-		duplicateToolCalls: totalDuplicatesWithExtractors(totalDuplicates),
+		resp:               loopResult.resp,
+		reasoningEffort:    loopResult.reasoningEffort,
+		contentMessages:    loopResult.contentMessages,
+		toolMessages:       loopResult.toolMessages,
+		toolCallHistory:    loopResult.toolCallHistory,
+		duplicateToolCalls: loopResult.duplicateToolCalls,
 		run: model.AgentRun{
 			Name:                  agent.name,
 			Role:                  agent.role,
-			Findings:              len(latestResp.Findings),
+			Findings:              len(loopResult.resp.Findings),
 			MaxToolCalls:          req.MaxToolCalls,
 			MaxDuplicateToolCalls: req.MaxDuplicateToolCalls,
-			ToolCalls:             totalToolCallsWithExtractors(totalToolCalls),
-			DuplicateToolCalls:    totalDuplicatesWithExtractors(totalDuplicates),
-			TokensUsed:            totalTokensWithExtractors(totalTokens),
+			ToolCalls:             loopResult.toolCalls,
+			DuplicateToolCalls:    loopResult.duplicateToolCalls,
+			TokensUsed:            loopResult.tokensUsed,
 		},
 	}, nil
 }

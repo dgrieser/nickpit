@@ -25,6 +25,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/spf13/cobra"
 )
 
@@ -78,6 +79,9 @@ type app struct {
 	verifyDropConfidence          float64
 	skipModelCheck                bool
 	refreshModelCheck             bool
+	specPath                      string
+	stepName                      string
+	findingsFiles                 []string
 	logger                        *logging.Logger
 }
 
@@ -162,6 +166,9 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
+	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the default review pipeline")
+	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, review:security); mutually exclusive with --spec")
+	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
 	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newLocalCmd())
@@ -719,6 +726,21 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		a.logProgress("ModelCheck", "skipped")
 	}
 
+	req.VerifyConcurrency = a.verifyConcurrency
+	req.VerifyDropPolicy = a.verifyDropPolicy
+	req.VerifyDropConfidence = a.verifyDropConfidence
+
+	engine := review.NewEngine(source, client, retrievalEngine, profile)
+	engine.SetLogger(logger)
+	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
+
+	// A workflow spec or single-step run takes a separate path: it may skip
+	// source/repo resolution entirely (e.g. merge/finalize from a findings file)
+	// and runs the finalize step inside the pipeline rather than afterward.
+	if a.specPath != "" || a.stepName != "" {
+		return a.runWorkflow(ctx, engine, source, profile, req)
+	}
+
 	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
 	if err != nil {
 		return err
@@ -727,13 +749,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		defer cleanup()
 	}
 	req.RepoRoot = repoRoot
-	req.VerifyConcurrency = a.verifyConcurrency
-	req.VerifyDropPolicy = a.verifyDropPolicy
-	req.VerifyDropConfidence = a.verifyDropConfidence
-
-	engine := review.NewEngine(source, client, retrievalEngine, profile)
-	engine.SetLogger(logger)
-	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	result, trimmedCtx, err := engine.RunWithContext(ctx, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
@@ -777,6 +792,13 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		}
 	}
 
+	return a.emitResult(ctx, source, req, result)
+}
+
+// emitResult formats the result to stdout, optionally publishes it back to the
+// origin, and reports the "all reviewers errored" CI failure. Shared by the
+// default review path and the workflow path.
+func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
 	var formatter output.Formatter
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
@@ -810,6 +832,76 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
+}
+
+// runWorkflow executes a user-supplied spec (--spec) or a single step (--step)
+// through the pipeline. Source/repo resolution is skipped when no step needs a
+// source (e.g. a merge/finalize-from-file run). Finalize, when present in the
+// spec, runs inside the pipeline rather than afterward.
+func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) error {
+	spec, err := a.resolveSpec()
+	if err != nil {
+		return err
+	}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		return err
+	}
+	if pipeline.NeedsSource() {
+		repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
+		if err != nil {
+			return err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		req.RepoRoot = repoRoot
+	} else if cwd, err := os.Getwd(); err == nil {
+		req.RepoRoot = cwd
+	}
+
+	result, _, err := engine.RunSpecPipeline(ctx, pipeline, req)
+	if err != nil {
+		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
+		return err
+	}
+	if result == nil {
+		return fmt.Errorf("review: engine returned no result")
+	}
+	a.logProgress("Result", reviewResultSummary(result))
+	return a.emitResult(ctx, source, req, result)
+}
+
+// resolveSpec builds the workflow spec from --spec or --step, applying any
+// top-level --findings injection.
+func (a *app) resolveSpec() (workflow.Spec, error) {
+	if a.specPath != "" && a.stepName != "" {
+		return workflow.Spec{}, fmt.Errorf("--spec and --step are mutually exclusive")
+	}
+	if a.stepName != "" {
+		return workflow.SingleStepSpec(a.stepName, a.findingsFiles), nil
+	}
+	spec, err := workflow.Load(a.specPath)
+	if err != nil {
+		return workflow.Spec{}, err
+	}
+	seedFindings(&spec, a.findingsFiles)
+	return spec, nil
+}
+
+// seedFindings attaches top-level --findings to the first plain step that does
+// not already declare findings_from, so `--spec w.yaml --findings f.json` works.
+func seedFindings(spec *workflow.Spec, findings []string) {
+	if len(findings) == 0 {
+		return
+	}
+	for i := range spec.Steps {
+		if spec.Steps[i].IsParallel() || len(spec.Steps[i].FindingsFrom) > 0 {
+			continue
+		}
+		spec.Steps[i].FindingsFrom = findings
+		return
+	}
 }
 
 func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {

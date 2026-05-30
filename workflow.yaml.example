@@ -1,0 +1,106 @@
+# NickPit workflow spec — a portable, file-driven definition of the review
+# pipeline. Run with: nickpit local branch --spec workflow.yaml
+#
+# The steps below reproduce the default review exactly. Anything a step does not
+# override inherits the active profile / CLI flags, so a spec with no `config`
+# blocks behaves identically to a plain `nickpit local branch`.
+#
+# Step types:
+#   collect-context           gather supplemental context (needs a source)
+#   review:<vector>           one reviewer; vectors: codequality, security,
+#                             architecture, performance, testing, bestpractices
+#   reasoning-extract:<vector> extract issues from a reviewer's reasoning trace
+#   nudge:<vector>            one extra "look again" round for a reviewer
+#   verify                    verify findings and drop by policy
+#   dedupe                    de-duplicate findings per reviewer
+#   merge                     merge reviewers' findings into one set
+#   finalize                  finalize priorities/confidence/wording
+#
+# A `parallel:` group runs its children concurrently (with a barrier after).
+version: 1
+# profile: default          # optional; same as --profile
+
+steps:
+  - collect-context
+  - parallel:
+      - review:codequality
+      - review:security
+      - review:architecture
+      - review:performance
+      - review:testing
+      - review:bestpractices
+  - verify
+  - dedupe
+  - merge
+  - finalize
+
+# ---------------------------------------------------------------------------
+# Per-step overrides: every model parameter and budget can be set per step.
+# Unset = inherit from the active profile / CLI flags. (base_url / api_key are
+# profile-level only — the LLM client is created once per run.)
+#
+# steps:
+#   - type: collect-context
+#     config:
+#       model: gpt-5-mini
+#       reasoning_effort: low
+#       max_tool_calls: 40
+#   - parallel:
+#       - type: review:security
+#         config:
+#           model: claude-opus-4-8
+#           nudge_count: 5
+#           max_reasoning_loop_repeats: 3
+#           max_output_retries: 8
+#       - type: review:performance
+#         config:
+#           model: gpt-5-mini
+#   - type: verify
+#     config:
+#       verify_concurrency: 8
+#       verify_drop_policy: refuted-and-unverified
+#       verify_drop_confidence: 0.6
+#   - type: merge
+#     config:
+#       model: claude-opus-4-8
+#       reasoning_effort: max
+#   - type: finalize
+#
+# Overridable config keys:
+#   model, temperature, top_p, max_tokens, extra_body, reasoning_effort,
+#   max_context_tokens, max_tool_calls, max_duplicate_tool_calls,
+#   max_output_retries, max_reasoning_seconds, max_reasoning_loop_repeats,
+#   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
+#   use_json_schema, verify_concurrency, verify_drop_policy,
+#   verify_drop_confidence, priority_threshold
+
+# ---------------------------------------------------------------------------
+# Manual nudge / reasoning-extract (set the reviewer's nudge_count to 0 so it
+# only does its initial pass, then drive extra rounds yourself):
+#
+# steps:
+#   - collect-context
+#   - type: review:security
+#     config: { nudge_count: 0 }
+#   - reasoning-extract:security
+#   - nudge:security
+#   - verify
+#   - merge
+#   - finalize
+
+# ---------------------------------------------------------------------------
+# Findings injection: feed previously-emitted findings JSON back into a step.
+# The format is unchanged — it is exactly what NickPit emits with --json.
+# One file = one merge group; pass several to merge across them. A single file
+# into merge is a passthrough (nothing to merge against).
+#
+# steps:
+#   - type: merge
+#     findings_from:
+#       - reviewer_a.json
+#       - reviewer_b.json
+#   - finalize
+#
+# Or from the CLI, run a single step on imported findings:
+#   nickpit local branch --step merge --findings a.json --findings b.json --json
+#   nickpit local branch --step finalize --findings merged.json --json
