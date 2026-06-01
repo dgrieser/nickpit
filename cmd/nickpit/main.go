@@ -25,6 +25,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/spf13/cobra"
 )
 
@@ -78,6 +79,9 @@ type app struct {
 	verifyDropConfidence          float64
 	skipModelCheck                bool
 	refreshModelCheck             bool
+	specPath                      string
+	stepName                      string
+	findingsFiles                 []string
 	logger                        *logging.Logger
 }
 
@@ -162,6 +166,9 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
+	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the default review pipeline")
+	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, review:security); mutually exclusive with --spec")
+	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
 	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newLocalCmd())
@@ -332,7 +339,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profileName, profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
@@ -387,7 +394,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 					return fmt.Errorf("--repo is required (could not infer from git remote)")
 				}
 			}
-			profileName, profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
@@ -438,7 +445,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 					return fmt.Errorf("--repo is required (could not infer from git remote)")
 				}
 			}
-			profileName, profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
@@ -669,7 +676,26 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
 
-	if profile.APIKey == "" {
+	// Resolve the workflow spec (its profile was already applied by the caller
+	// via loadProfileForSpec, before the source adapter and request were built).
+	var spec *workflow.Spec
+	if a.specPath != "" || a.stepName != "" {
+		resolved, err := a.resolveSpec()
+		if err != nil {
+			return err
+		}
+		spec = &resolved
+	}
+
+	// Source-less workflows (e.g. --step merge / --step finalize on imported
+	// findings) operate on injected findings and commonly make no LLM call at
+	// all — a single-input merge is a passthrough, finalize on empty findings is
+	// a no-op. Defer the credential requirement and the model probe for them: the
+	// client is still built, so any LLM call that does happen fails at call time
+	// if credentials are missing, exactly as --skip-model-check behaves.
+	needsLLMSetup := spec == nil || spec.NeedsSource()
+
+	if needsLLMSetup && profile.APIKey == "" {
 		if profile.APIKeyConfigured {
 			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
 		}
@@ -703,7 +729,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-	if !a.skipModelCheck {
+	if needsLLMSetup && !a.skipModelCheck {
 		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, false)
 		if err != nil {
 			return err
@@ -719,6 +745,21 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		a.logProgress("ModelCheck", "skipped")
 	}
 
+	req.VerifyConcurrency = a.verifyConcurrency
+	req.VerifyDropPolicy = a.verifyDropPolicy
+	req.VerifyDropConfidence = a.verifyDropConfidence
+
+	engine := review.NewEngine(source, client, retrievalEngine, profile)
+	engine.SetLogger(logger)
+	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
+
+	// A workflow spec or single-step run takes a separate path: it may skip
+	// source/repo resolution entirely (e.g. merge/finalize from a findings file)
+	// and runs the finalize step inside the pipeline rather than afterward.
+	if spec != nil {
+		return a.runWorkflow(ctx, engine, source, *spec, profile, req)
+	}
+
 	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
 	if err != nil {
 		return err
@@ -727,13 +768,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		defer cleanup()
 	}
 	req.RepoRoot = repoRoot
-	req.VerifyConcurrency = a.verifyConcurrency
-	req.VerifyDropPolicy = a.verifyDropPolicy
-	req.VerifyDropConfidence = a.verifyDropConfidence
-
-	engine := review.NewEngine(source, client, retrievalEngine, profile)
-	engine.SetLogger(logger)
-	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	result, trimmedCtx, err := engine.RunWithContext(ctx, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
@@ -777,6 +811,13 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		}
 	}
 
+	return a.emitResult(ctx, source, req, result)
+}
+
+// emitResult formats the result to stdout, optionally publishes it back to the
+// origin, and reports the "all reviewers errored" CI failure. Shared by the
+// default review path and the workflow path.
+func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
 	var formatter output.Formatter
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
@@ -810,6 +851,130 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
+}
+
+// runWorkflow executes a user-supplied spec (--spec) or a single step (--step)
+// through the pipeline. Source/repo resolution is skipped when no step needs a
+// source (e.g. a merge/finalize-from-file run). Finalize, when present in the
+// spec, runs inside the pipeline rather than afterward.
+func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source model.ReviewSource, spec workflow.Spec, profile config.Profile, req model.ReviewRequest) error {
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		return err
+	}
+	if pipeline.NeedsSource() {
+		repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
+		if err != nil {
+			return err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+		req.RepoRoot = repoRoot
+	} else if cwd, err := os.Getwd(); err == nil {
+		req.RepoRoot = cwd
+	}
+
+	result, _, err := engine.RunSpecPipeline(ctx, pipeline, req)
+	if err != nil {
+		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
+		return err
+	}
+	if result == nil {
+		return fmt.Errorf("review: engine returned no result")
+	}
+	a.logProgress("Result", reviewResultSummary(result))
+	return a.emitResult(ctx, source, req, result)
+}
+
+// resolveSpec builds the workflow spec from --spec or --step, applying any
+// top-level --findings injection.
+func (a *app) resolveSpec() (workflow.Spec, error) {
+	if a.specPath != "" && a.stepName != "" {
+		return workflow.Spec{}, fmt.Errorf("--spec and --step are mutually exclusive")
+	}
+	if a.stepName != "" {
+		return workflow.SingleStepSpec(a.stepName, a.findingsFiles), nil
+	}
+	spec, err := workflow.Load(a.specPath)
+	if err != nil {
+		return workflow.Spec{}, err
+	}
+	if err := seedFindings(&spec, a.findingsFiles); err != nil {
+		return workflow.Spec{}, err
+	}
+	return spec, nil
+}
+
+// seedFindings attaches top-level --findings to the first step that actually
+// consumes findings (verify/dedupe/merge/finalize) and does not already declare
+// findings_from, so `--spec w.yaml --findings f.json` lands where it is read
+// instead of being silently dropped on a collect-context/review step. Returns an
+// error when findings are supplied but no step would consume them.
+func seedFindings(spec *workflow.Spec, findings []string) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	for i := range spec.Steps {
+		entry := &spec.Steps[i]
+		if entry.IsParallel() {
+			for j := range entry.Parallel {
+				sub := &entry.Parallel[j]
+				if len(sub.FindingsFrom) == 0 && workflow.StepConsumesFindings(sub.Type) {
+					sub.FindingsFrom = findings
+					return nil
+				}
+			}
+			continue
+		}
+		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) {
+			entry.FindingsFrom = findings
+			return nil
+		}
+	}
+	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize step to consume them; add findings_from to a specific step")
+}
+
+// loadProfileNamed loads a profile by name (e.g. a spec's `profile:` field),
+// applying the same CLI overrides as loadProfile.
+func (a *app) loadProfileNamed(name string) (string, config.Profile, error) {
+	saved := a.profile
+	a.profile = name
+	defer func() { a.profile = saved }()
+	return a.loadProfile()
+}
+
+// loadProfileForSpec loads the effective profile for a review command, honoring
+// a workflow spec's `profile:` field. It must be used instead of loadProfile by
+// commands that build a review source and request, so a spec-selected profile
+// drives the SCM adapter (token/base URL), the request budgets, and the workdir
+// — not just the LLM client. CLI flags still override the spec profile.
+func (a *app) loadProfileForSpec() (string, config.Profile, error) {
+	name, profile, err := a.loadProfile()
+	if err != nil {
+		return "", config.Profile{}, err
+	}
+	specProfile, err := a.specProfile()
+	if err != nil {
+		return "", config.Profile{}, err
+	}
+	if specProfile != "" && specProfile != name {
+		return a.loadProfileNamed(specProfile)
+	}
+	return name, profile, nil
+}
+
+// specProfile returns the `profile:` declared by a --spec file, or "" when no
+// spec is given, the spec declares none, or a single --step is used.
+func (a *app) specProfile() (string, error) {
+	if a.specPath == "" || a.stepName != "" {
+		return "", nil
+	}
+	spec, err := workflow.Load(a.specPath)
+	if err != nil {
+		return "", err
+	}
+	return spec.Profile, nil
 }
 
 func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {

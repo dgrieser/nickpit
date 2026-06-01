@@ -95,6 +95,21 @@ Reasoning calls are capped with `--max-reasoning-seconds` or `max_reasoning_seco
 
 Reviews run a context agent first, then six specialist reviewers in parallel: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Their findings are merged by a final no-tools agent before the verifier runs. Tool-call limits apply independently to each context, reviewer, and verifier agent. JSON output includes `total_tool_calls` at the root plus an `agent_runs` summary with each agent's token usage, tool usage, duplicate tool calls, and configured tool-call limits.
 
+### Workflows
+
+The review pipeline is driven by a portable workflow spec. By default `nickpit local`/`github`/`gitlab` run the built-in workflow (collect context → six reviewers in parallel → verify → dedupe → merge → finalize). You can supply your own spec or run a single step instead, on any of those commands:
+
+```bash
+# Run a custom workflow spec (YAML)
+nickpit local branch --spec workflow.yaml
+
+# Run a single step on imported findings (no review needed)
+nickpit local branch --step merge --findings reviewer_a.json --findings reviewer_b.json --json
+nickpit local branch --step finalize --findings merged.json --json
+```
+
+See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, reasoning_effort, max_tool_calls, max_output_retries, max_reasoning_loop_repeats, nudge_count, verify_*, …) — anything unset inherits the active profile/flags. Reviewers are addressed per vector (`review:security`, `review:performance`, …), and `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group). Steps that only consume injected findings (e.g. `merge`, `finalize`) run without a git/PR source.
+
 ### Filtering by Priority
 
 Review output filtering uses `--priority-threshold` with `p0` through `p3`, where `p0` is highest priority and `p3` is lowest.
