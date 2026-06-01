@@ -31,6 +31,41 @@ To install somewhere other than `/usr/local/bin`, override `PREFIX`:
 make install PREFIX=$HOME/.local
 ```
 
+### Docker
+
+Images are published to `ghcr.io/dgrieser/nickpit` (multi-arch: `amd64`, `arm64`,
+`arm/v7`). The image is **rootless** and **distroless** — it runs as a non-root user
+by default and supports an arbitrary runtime UID, so you can map it to your host user
+to operate on mounted repositories and config.
+
+```bash
+# Review a host-mounted repo as your own user (rootless).
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -e OPENROUTER_API_KEY -e GITHUB_TOKEN -e GITLAB_TOKEN \
+  -v "$PWD:/work" -w /work \
+  ghcr.io/dgrieser/nickpit:latest local branch
+
+# Review a remote PR/MR (no mount needed); pass the SCM token via env.
+docker run --rm \
+  --user "$(id -u):$(id -g)" \
+  -e OPENROUTER_API_KEY -e GITHUB_TOKEN \
+  ghcr.io/dgrieser/nickpit:latest github pr --repo owner/repo --id 123
+```
+
+Notes:
+- `--user "$(id -u):$(id -g)"` makes the container read mounts and write temp files as
+  your host user. The image trusts mounted repositories (`git safe.directory=*`), so git
+  does not reject a repo owned by a different UID.
+- Pass auth via env: `OPENROUTER_API_KEY`, plus `GITHUB_TOKEN` / `GITLAB_TOKEN` for remote
+  reviews. The bare `-e NAME` form forwards the value from your shell.
+- Provide config by mounting `.nickpit.yaml` into `/work`, or with an absolute
+  `--config /work/.nickpit.yaml`. When running as an arbitrary UID, prefer an absolute
+  `--config` path over `~` expansion (the image `HOME` is not readable by a foreign UID).
+- Clones/worktrees are written under `/tmp`. For large repos use `--tmpfs /tmp:rw,size=1g`.
+- Only **HTTPS** clone URLs are supported in the container (use a token); SSH clone URLs
+  are not, as no `ssh` client is bundled.
+
 ## Configuration
 
 NickPit loads configuration in this order:
