@@ -340,6 +340,12 @@ func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req mod
 // result assembles the reviewer's agentResult from the accumulated session
 // state, folding in the reasoning-extractor telemetry.
 func (s *reviewerSession) result(req model.ReviewRequest) agentResult {
+	// Defensive: a session whose initial pass failed never set latestResp.
+	// Callers (the review step) avoid this by not exposing failed sessions, but
+	// guard against a nil dereference regardless.
+	if s.latestResp == nil {
+		return s.partialResult(req)
+	}
 	tokens, toolCalls, duplicates := s.extractorTotals()
 	latest := *s.latestResp
 	latest.Findings = s.totalFindings

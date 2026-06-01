@@ -160,11 +160,14 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 		if err := sc.Engine.reviewerInitial(ctx, session, sc.Req); err != nil {
 			// Preserve the partial telemetry (tokens/tool calls) of the failed
 			// initial pass instead of discarding it with a bare failed result.
+			// Store NO session: the initial pass never populated it, so a later
+			// nudge/reasoning-extract step must reject the failed group rather
+			// than dereference a nil response.
 			sc.Engine.logf("Vector reviewer failed, continuing with others: vector=%s error=%v", vector.name, err)
 			res := session.partialResult(sc.Req)
 			res.run.Status = model.AgentRunStatusFailed
 			res.run.Error = err.Error()
-			st.setGroup(vectorID, res, session)
+			st.setGroup(vectorID, res, nil)
 			return nil
 		}
 		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req); err != nil {
@@ -182,20 +185,35 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 	}
 }
 
+// sessionForStep returns the open reviewer session for a vector, distinguishing
+// "no preceding review" from "the review ran but failed" (which leaves no
+// session) so standalone nudge/extract steps fail cleanly instead of operating
+// on an unpopulated session.
+func sessionForStep(st *PipelineState, stepType, vectorID string) (*reviewerSession, error) {
+	g := st.group(vectorID)
+	if g == nil {
+		return nil, fmt.Errorf("workflow: %s%s requires a preceding review:%s step", stepType, vectorID, vectorID)
+	}
+	if g.session == nil {
+		return nil, fmt.Errorf("workflow: %s%s cannot run because review:%s did not complete successfully", stepType, vectorID, vectorID)
+	}
+	return g.session, nil
+}
+
 // extractStepFunc runs the standalone reasoning-extract step for a vector,
 // storing the computed delta on the session for the next nudge step.
 func (e *Engine) extractStepFunc(vectorID string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		g := st.group(vectorID)
-		if g == nil || g.session == nil {
-			return fmt.Errorf("workflow: reasoning-extract:%s requires a preceding review:%s step", vectorID, vectorID)
-		}
-		delta, err := sc.Engine.reviewerComputeExtractDelta(ctx, g.session, sc.Req)
+		sess, err := sessionForStep(st, "reasoning-extract:", vectorID)
 		if err != nil {
 			return err
 		}
-		g.session.pendingDelta = delta
-		g.session.pendingDeltaSet = true
+		delta, err := sc.Engine.reviewerComputeExtractDelta(ctx, sess, sc.Req)
+		if err != nil {
+			return err
+		}
+		sess.pendingDelta = delta
+		sess.pendingDeltaSet = true
 		return nil
 	}
 }
@@ -204,11 +222,10 @@ func (e *Engine) extractStepFunc(vectorID string) stepFunc {
 // delta a preceding reasoning-extract step produced.
 func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		g := st.group(vectorID)
-		if g == nil || g.session == nil {
-			return fmt.Errorf("workflow: nudge:%s requires a preceding review:%s step", vectorID, vectorID)
+		sess, err := sessionForStep(st, "nudge:", vectorID)
+		if err != nil {
+			return err
 		}
-		sess := g.session
 		delta := ""
 		if sess.pendingDeltaSet {
 			delta = sess.pendingDelta

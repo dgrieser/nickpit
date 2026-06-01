@@ -339,7 +339,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profileName, profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
@@ -394,7 +394,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 					return fmt.Errorf("--repo is required (could not infer from git remote)")
 				}
 			}
-			profileName, profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
@@ -445,7 +445,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 					return fmt.Errorf("--repo is required (could not infer from git remote)")
 				}
 			}
-			profileName, profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
@@ -676,21 +676,13 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
 
-	// Resolve a workflow spec up front so a spec-declared profile is honored
-	// before the LLM client, engine, and request budgets are built from it.
+	// Resolve the workflow spec (its profile was already applied by the caller
+	// via loadProfileForSpec, before the source adapter and request were built).
 	var spec *workflow.Spec
 	if a.specPath != "" || a.stepName != "" {
 		resolved, err := a.resolveSpec()
 		if err != nil {
 			return err
-		}
-		if resolved.Profile != "" && resolved.Profile != profileName {
-			pn, pf, err := a.loadProfileNamed(resolved.Profile)
-			if err != nil {
-				return err
-			}
-			profileName, profile = pn, pf
-			req = applyProfileBudgets(req, profile)
 		}
 		spec = &resolved
 	}
@@ -952,22 +944,37 @@ func (a *app) loadProfileNamed(name string) (string, config.Profile, error) {
 	return a.loadProfile()
 }
 
-// applyProfileBudgets resets the profile-derived request fields from profile.
-// Used when a workflow spec selects a different profile after the request was
-// already built from the invoking command's profile.
-func applyProfileBudgets(req model.ReviewRequest, profile config.Profile) model.ReviewRequest {
-	req.MaxContextTokens = profile.MaxContextTokens
-	req.MaxToolCalls = profile.MaxToolCalls
-	req.MaxDuplicateToolCalls = profile.MaxDuplicateToolCalls
-	req.MaxOutputRetries = profile.MaxOutputRetries
-	req.MaxReasoningSeconds = profile.MaxReasoningSeconds
-	req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
-	req.NudgeCount = profile.NudgeCount
-	req.UseJSONSchema = profile.UseJSONSchema
-	if profile.Workdir != "" {
-		req.Workdir = profile.Workdir
+// loadProfileForSpec loads the effective profile for a review command, honoring
+// a workflow spec's `profile:` field. It must be used instead of loadProfile by
+// commands that build a review source and request, so a spec-selected profile
+// drives the SCM adapter (token/base URL), the request budgets, and the workdir
+// — not just the LLM client. CLI flags still override the spec profile.
+func (a *app) loadProfileForSpec() (string, config.Profile, error) {
+	name, profile, err := a.loadProfile()
+	if err != nil {
+		return "", config.Profile{}, err
 	}
-	return req
+	specProfile, err := a.specProfile()
+	if err != nil {
+		return "", config.Profile{}, err
+	}
+	if specProfile != "" && specProfile != name {
+		return a.loadProfileNamed(specProfile)
+	}
+	return name, profile, nil
+}
+
+// specProfile returns the `profile:` declared by a --spec file, or "" when no
+// spec is given, the spec declares none, or a single --step is used.
+func (a *app) specProfile() (string, error) {
+	if a.specPath == "" || a.stepName != "" {
+		return "", nil
+	}
+	spec, err := workflow.Load(a.specPath)
+	if err != nil {
+		return "", err
+	}
+	return spec.Profile, nil
 }
 
 func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {

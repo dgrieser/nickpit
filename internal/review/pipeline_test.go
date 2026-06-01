@@ -3,8 +3,10 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -247,6 +249,42 @@ func TestWorkflowStandaloneNudgeStep(t *testing.T) {
 	}
 	if len(result.Findings) == 0 {
 		t.Fatal("expected at least one finding from the security reviewer")
+	}
+}
+
+// When the initial reviewer fails, a following standalone nudge step must error
+// cleanly (the failed review left no session) rather than panic on a nil
+// response.
+func TestWorkflowNudgeAfterFailedReviewErrorsNoPanic(t *testing.T) {
+	client := &multiAgentLLM{
+		vectorFailErr: map[string]error{"Security": errors.New("security upstream fail")},
+	}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+
+	zero := 0
+	spec := workflow.Spec{
+		Version: workflow.SpecVersion,
+		Steps: []workflow.StepEntry{
+			{Type: workflow.StepReviewPrefix + "security", Config: &workflow.StepOverride{NudgeCount: &zero}},
+			{Type: workflow.StepNudgePrefix + "security"},
+		},
+	}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err == nil {
+		t.Fatal("expected error from nudge after failed review")
+	}
+	if !strings.Contains(err.Error(), "did not complete successfully") {
+		t.Fatalf("error = %q, want a clear 'review did not complete' message", err.Error())
 	}
 }
 
