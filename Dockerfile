@@ -24,7 +24,8 @@ RUN set -eu; mkdir -p /bundle; \
     done | sort -u | while read -r lib; do \
         [ -e "$lib" ] && cp --parents "$lib" /bundle || true; \
     done; \
-    cp --parents -r /usr/share/git-core /bundle 2>/dev/null || true
+    cp --parents -r /usr/share/git-core /bundle 2>/dev/null || true; \
+    install -d -m 1777 /bundle/work
 
 # ---- Runtime: distroless base, rootless (nonroot = UID 65532) ------------
 # base-debian12 (not static) is required because the bundled git needs glibc and
@@ -40,5 +41,9 @@ ENV GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0=safe.directory \
     GIT_CONFIG_VALUE_0=* \
     GIT_EXEC_PATH=/usr/lib/git-core
+# /work ships from the bundle at mode 1777 (world-writable + sticky, like /tmp).
+# WORKDIR would otherwise auto-create it as root:root 0755, blocking the default
+# nonroot user (and any `--user <uid>`) from writing it when no volume is mounted.
+# A `-v host:/work` mount shadows it with host ownership.
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/nickpit"]
