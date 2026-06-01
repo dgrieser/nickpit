@@ -68,11 +68,13 @@ steps:
 #
 # Overridable config keys:
 #   model, temperature, top_p, max_tokens, extra_body, reasoning_effort,
-#   max_context_tokens, max_tool_calls, max_duplicate_tool_calls,
+#   max_tool_calls, max_duplicate_tool_calls,
 #   max_output_retries, max_reasoning_seconds, max_reasoning_loop_repeats,
 #   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
 #   use_json_schema, verify_concurrency, verify_drop_policy,
 #   verify_drop_confidence, priority_threshold
+# (max_context_tokens is profile/CLI-level only — the context is trimmed once,
+#  before any step runs.)
 
 # ---------------------------------------------------------------------------
 # Manual nudge / reasoning-extract (set the reviewer's nudge_count to 0 so it

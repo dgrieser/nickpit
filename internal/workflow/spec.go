@@ -89,7 +89,10 @@ type StepOverride struct {
 	ReasoningEffort *string        `yaml:"reasoning_effort"`
 
 	// Budgets / loop detection / retries (apply to the step's review request).
-	MaxContextTokens        *int `yaml:"max_context_tokens"`
+	// max_context_tokens is intentionally not per-step overridable: the review
+	// context is resolved and trimmed once, before any step runs, so a per-step
+	// value could not affect the prompt size. Set it on the profile / via
+	// --max-context-tokens instead.
 	MaxToolCalls            *int `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls   *int `yaml:"max_duplicate_tool_calls"`
 	MaxOutputRetries        *int `yaml:"max_output_retries"`
@@ -109,7 +112,7 @@ type StepOverride struct {
 
 var stepOverrideKeys = []string{
 	"model", "temperature", "top_p", "max_tokens", "extra_body", "reasoning_effort",
-	"max_context_tokens", "max_tool_calls", "max_duplicate_tool_calls",
+	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
 	"use_json_schema", "verify_concurrency", "verify_drop_policy",
@@ -143,10 +146,6 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	}
 	if o.ReasoningEffort != nil {
 		p.ReasoningEffort = *o.ReasoningEffort
-	}
-	if o.MaxContextTokens != nil {
-		p.MaxContextTokens = *o.MaxContextTokens
-		req.MaxContextTokens = *o.MaxContextTokens
 	}
 	if o.MaxToolCalls != nil {
 		p.MaxToolCalls = *o.MaxToolCalls
@@ -401,18 +400,16 @@ func (s Spec) Validate() error {
 		if err := validateStepType(entry.Type); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 		}
+		// Only the per-vector reviewers are safe to run concurrently — each owns
+		// its own session. Every other step (collect-context, verify, dedupe,
+		// merge, finalize, nudge, reasoning-extract) mutates shared pipeline
+		// state (the enriched context, the flat result, or a shared session) and
+		// must run sequentially.
+		if inParallel && !strings.HasPrefix(entry.Type, StepReviewPrefix) {
+			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only review:<vector> steps may run concurrently", idx, entry.Type)
+		}
 		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix} {
-			v, ok := vectorOf(entry.Type, prefix)
-			if !ok {
-				continue
-			}
-			// nudge/reasoning-extract mutate the shared per-vector reviewer
-			// session and hand a delta from extract to nudge, so they must run
-			// sequentially — never concurrently inside a parallel group.
-			if inParallel {
-				return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; it mutates the shared reviewer session and must be sequenced", idx, entry.Type)
-			}
-			if !available[v] {
+			if v, ok := vectorOf(entry.Type, prefix); ok && !available[v] {
 				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step, not the same parallel group)", idx, entry.Type, StepReviewPrefix, v)
 			}
 		}

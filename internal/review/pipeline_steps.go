@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -307,7 +308,16 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 			warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
 			mergeResult = emptyVerifiedMergeResult()
 		default:
-			mergeResult, mergeRuns = sc.Engine.runPairwiseMergeAgents(ctx, st.enrichedPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req)
+			// review_context is embedded as raw JSON in the merge prompt; a
+			// source-less workflow (e.g. --step merge --findings a.json b.json)
+			// has no enriched prompt yet, so fall back to an empty JSON object so
+			// the merge agent actually runs instead of failing JSON rendering and
+			// degrading to a plain concatenation.
+			userPrompt := st.enrichedPrompt
+			if strings.TrimSpace(userPrompt) == "" {
+				userPrompt = "{}"
+			}
+			mergeResult, mergeRuns = sc.Engine.runPairwiseMergeAgents(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req)
 		}
 		if mergeResult.resp != nil {
 			mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
@@ -346,9 +356,13 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 				return err
 			}
 			flat := flattenInjectedGroups(groups)
+			// Apply the priority threshold to imported findings, matching what
+			// merge and materializeFromGroups do, so --priority-threshold stays
+			// effective for finalize-from-file workflows.
+			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
 			st.mu.Lock()
 			st.result = &model.ReviewResult{
-				Findings:               flat.findings,
+				Findings:               findings,
 				OverallCorrectness:     flat.overallCorrectness,
 				OverallExplanation:     flat.overallExplanation,
 				OverallConfidenceScore: flat.overallConfidence,

@@ -151,6 +151,67 @@ func TestWorkflowFinalizeWithoutMergeNoDeadlock(t *testing.T) {
 	}
 }
 
+// Two injected files give merge two groups, so the merge agent must actually
+// run (not degrade to the JSON-render fallback) even though no source/context
+// populated the enriched prompt.
+func TestWorkflowMergeTwoFilesInvokesMergeAgent(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+
+	a := writeFindingsFile(t, "a.json", model.ReviewResult{
+		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "a", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
+		OverallCorrectness: "patch is incorrect",
+	})
+	b := writeFindingsFile(t, "b.json", model.ReviewResult{
+		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 2, End: 2}}}},
+		OverallCorrectness: "patch is incorrect",
+	})
+	pipeline, err := engine.BuildPipeline(workflow.SingleStepSpec(workflow.StepMerge, []string{a, b}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.mergeRequests) == 0 {
+		t.Fatal("merge agent was not invoked for a two-group injected merge")
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("merged findings = %d, want 2", len(result.Findings))
+	}
+}
+
+// Findings injected into finalize must still be priority-filtered, so
+// --priority-threshold stays effective for finalize-from-file workflows.
+func TestWorkflowFinalizeInjectionRespectsPriorityThreshold(t *testing.T) {
+	client := &countingLLM{}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "f.json", model.ReviewResult{
+		Findings: []model.Finding{
+			{ID: "11111111-1111-1111-1111-111111111111", Title: "p2", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			{ID: "22222222-2222-2222-2222-222222222222", Title: "p3", Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		},
+		OverallCorrectness: "patch is incorrect",
+	})
+	pipeline, err := engine.BuildPipeline(workflow.SingleStepSpec(workflow.StepFinalize, []string{path}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// p1 threshold drops both p2 and p3; finalize then short-circuits on empty.
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, PriorityThreshold: "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %d, want 0 after p1 filter", len(result.Findings))
+	}
+	if client.calls != 0 {
+		t.Fatalf("LLM calls = %d, want 0 (all findings filtered out)", client.calls)
+	}
+}
+
 // A standalone nudge step advances the session left open by a review step
 // (nudge_count: 0), driving an extra reviewer pass through the same
 // reviewer-session machinery the default flow uses.

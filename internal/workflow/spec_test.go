@@ -172,6 +172,22 @@ func TestValidateRejectsNudgeOrExtractInParallelGroup(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNonReviewStepsInParallelGroup(t *testing.T) {
+	// Only review:<vector> may run concurrently; other steps mutate shared
+	// pipeline state and must be sequential.
+	for _, bad := range []string{StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize} {
+		spec := Spec{Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{
+				{Type: StepReviewPrefix + "security"},
+				{Type: bad},
+			}},
+		}}
+		if err := spec.Validate(); err == nil {
+			t.Fatalf("expected rejection of %q inside a parallel group", bad)
+		}
+	}
+}
+
 func TestValidateAcceptsReviewThenNudgeAcrossUnits(t *testing.T) {
 	// review in a parallel group, then nudge in a later sequential step: ok.
 	spec := Spec{Version: 1, Steps: []StepEntry{
