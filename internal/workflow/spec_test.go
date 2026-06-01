@@ -141,6 +141,31 @@ func TestValidateRejections(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNudgeInSameParallelGroupAsReview(t *testing.T) {
+	// review:security and nudge:security run concurrently here, so the session
+	// the nudge depends on is not yet populated — must be rejected.
+	spec := Spec{Version: 1, Steps: []StepEntry{
+		{Parallel: []StepEntry{
+			{Type: StepReviewPrefix + "security"},
+			{Type: StepNudgePrefix + "security"},
+		}},
+	}}
+	if err := spec.Validate(); err == nil {
+		t.Fatal("expected rejection of nudge in same parallel group as its review")
+	}
+}
+
+func TestValidateAcceptsReviewThenNudgeAcrossUnits(t *testing.T) {
+	// review in a parallel group, then nudge in a later sequential step: ok.
+	spec := Spec{Version: 1, Steps: []StepEntry{
+		{Parallel: []StepEntry{{Type: StepReviewPrefix + "security"}}},
+		{Type: StepNudgePrefix + "security"},
+	}}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
 func TestValidateAcceptsNudgeAfterReview(t *testing.T) {
 	spec := Spec{Version: 1, Steps: []StepEntry{
 		{Type: StepReviewPrefix + "security"},

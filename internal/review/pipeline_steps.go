@@ -347,7 +347,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 		}
 		st.mu.Lock()
 		if st.result == nil {
-			st.result = st.materializeFromGroups(sc.Req)
+			st.result = st.materializeFromGroupsLocked(sc.Req)
 		}
 		in := st.result
 		st.mu.Unlock()
@@ -400,8 +400,9 @@ func injectGroups(st *PipelineState, findingsFrom []string) error {
 	if err != nil {
 		return err
 	}
+	seq := st.nextInjectSeq()
 	for i, g := range groups {
-		st.setGroup(fmt.Sprintf("injected-%d", i), injectedAgentResult(g), nil)
+		st.setGroup(fmt.Sprintf("injected-%d-%d", seq, i), injectedAgentResult(g), nil)
 	}
 	return nil
 }

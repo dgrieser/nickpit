@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
@@ -112,6 +113,41 @@ func TestWorkflowFinalizeInjectionEmptyFindings(t *testing.T) {
 	}
 	if len(result.Findings) != 0 {
 		t.Fatalf("findings = %d, want 0", len(result.Findings))
+	}
+}
+
+// Finalize with no merge and no injection must materialize from groups while
+// the finalize step holds the state lock — exercising the locked materialize
+// path that must not self-deadlock on the non-reentrant mutex.
+func TestWorkflowFinalizeWithoutMergeNoDeadlock(t *testing.T) {
+	client := &countingLLM{}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(workflow.SingleStepSpec(workflow.StepFinalize, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		result *model.ReviewResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, _, e := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+		done <- outcome{r, e}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if len(got.result.Findings) != 0 {
+			t.Fatalf("findings = %d, want 0", len(got.result.Findings))
+		}
+		if client.calls != 0 {
+			t.Fatalf("LLM calls = %d, want 0", client.calls)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("finalize-without-merge deadlocked")
 	}
 }
 

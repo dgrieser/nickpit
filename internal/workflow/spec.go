@@ -391,32 +391,51 @@ func (s Spec) Validate() error {
 	}
 	reviewed := map[string]bool{}
 	idx := 0
-	check := func(entry StepEntry) error {
+	// validate checks one step's type and dependencies against the set of
+	// reviewers available so far, returning the vector it reviews (if any). A
+	// nudge/extract step depends on a review of the same vector, which must have
+	// completed in an EARLIER unit — reviews inside the same parallel group run
+	// concurrently and are therefore not yet available.
+	validate := func(entry StepEntry, available map[string]bool) (string, error) {
 		idx++
 		if err := validateStepType(entry.Type); err != nil {
-			return fmt.Errorf("workflow: step %d: %w", idx, err)
-		}
-		if v, ok := vectorOf(entry.Type, StepReviewPrefix); ok {
-			reviewed[v] = true
+			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 		}
 		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix} {
-			if v, ok := vectorOf(entry.Type, prefix); ok && !reviewed[v] {
-				return fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step", idx, entry.Type, StepReviewPrefix, v)
+			if v, ok := vectorOf(entry.Type, prefix); ok && !available[v] {
+				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step, not the same parallel group)", idx, entry.Type, StepReviewPrefix, v)
 			}
 		}
-		return nil
+		if v, ok := vectorOf(entry.Type, StepReviewPrefix); ok {
+			return v, nil
+		}
+		return "", nil
 	}
 	for _, entry := range s.Steps {
 		if entry.IsParallel() {
+			// Validate every child against the pre-group reviewer set, then
+			// publish the group's reviewers only after the whole group.
+			var produced []string
 			for _, sub := range entry.Parallel {
-				if err := check(sub); err != nil {
+				v, err := validate(sub, reviewed)
+				if err != nil {
 					return err
 				}
+				if v != "" {
+					produced = append(produced, v)
+				}
+			}
+			for _, v := range produced {
+				reviewed[v] = true
 			}
 			continue
 		}
-		if err := check(entry); err != nil {
+		v, err := validate(entry, reviewed)
+		if err != nil {
 			return err
+		}
+		if v != "" {
+			reviewed[v] = true
 		}
 	}
 	return nil

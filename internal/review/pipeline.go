@@ -36,6 +36,7 @@ type PipelineState struct {
 
 	groupOrder []string
 	groupByID  map[string]*groupEntry
+	injectSeq  int
 
 	// Flat result, set by the merge step, by findings injection into finalize,
 	// or by materialization from groups.
@@ -96,12 +97,28 @@ func (st *PipelineState) group(id string) *groupEntry {
 	return st.groupByID[id]
 }
 
+// nextInjectSeq returns a monotonically increasing sequence number so each
+// injection's synthetic group ids are unique across the whole pipeline run and
+// cannot overwrite a prior injection's groups.
+func (st *PipelineState) nextInjectSeq() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	seq := st.injectSeq
+	st.injectSeq++
+	return seq
+}
+
 // vectorResults returns the filled groups in deterministic order. The returned
 // agentResult values share their *llm.ReviewResponse pointers with the groups,
 // so in-place finding mutations (e.g. verify) propagate automatically.
 func (st *PipelineState) vectorResults() []agentResult {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	return st.vectorResultsLocked()
+}
+
+// vectorResultsLocked is the body of vectorResults; the caller must hold st.mu.
+func (st *PipelineState) vectorResultsLocked() []agentResult {
 	out := make([]agentResult, 0, len(st.groupOrder))
 	for _, id := range st.groupOrder {
 		if g := st.groupByID[id]; g.filled {
@@ -297,8 +314,17 @@ func (st *PipelineState) aggregateTelemetry() ([]model.AgentRun, model.TokenUsag
 // custom specs that have no merge step but still need a flat result for output
 // or finalize.
 func (st *PipelineState) materializeFromGroups(req model.ReviewRequest) *model.ReviewResult {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.materializeFromGroupsLocked(req)
+}
+
+// materializeFromGroupsLocked is the body of materializeFromGroups; the caller
+// must hold st.mu. The finalize step uses this while already holding the lock,
+// avoiding a self-deadlock on the non-reentrant mutex.
+func (st *PipelineState) materializeFromGroupsLocked(req model.ReviewRequest) *model.ReviewResult {
 	var findings []model.Finding
-	for _, vr := range st.vectorResults() {
+	for _, vr := range st.vectorResultsLocked() {
 		if vr.resp != nil {
 			findings = append(findings, vr.resp.Findings...)
 		}
