@@ -1,0 +1,39 @@
+# Keep the build context small: only Go sources + embedded assets
+# (prompts/, mappings/) and go.mod/go.sum are needed to build ./cmd/nickpit.
+
+# VCS
+.git
+.gitignore
+
+# Logs and test-run artifacts
+*.log
+logs/
+review_test.sh
+review_test_analysis_*.log
+
+# Docs / images (not needed to build)
+*.png
+README.md
+TODO.md
+assets/
+
+# Local tooling, editor and agent configs
+.vscode/
+.zed/
+.codex/
+.agents/
+.claude/
+
+# Build outputs
+bin/
+
+# Test fixtures (go build skips testdata dirs anyway)
+testdata/
+
+# Example/config files not needed for the build
+.nickpit.yaml.example
+workflow.yaml.example
+
+# The Dockerfile and this file themselves
+Dockerfile
+.dockerignore
