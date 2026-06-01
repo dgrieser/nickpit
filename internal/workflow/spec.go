@@ -459,6 +459,18 @@ func validateStepType(t string) error {
 	return fmt.Errorf("unknown step type %q", t)
 }
 
+// StepConsumesFindings reports whether a step type reads injected findings
+// (findings_from / --findings). Only these steps load findings; collect-context
+// and review/nudge/reasoning-extract steps ignore them.
+func StepConsumesFindings(stepType string) bool {
+	switch stepType {
+	case StepVerify, StepDedupe, StepMerge, StepFinalize:
+		return true
+	default:
+		return false
+	}
+}
+
 // vectorOf returns the vector id when t has the given prefix.
 func vectorOf(t, prefix string) (string, bool) {
 	return strings.CutPrefix(t, prefix)

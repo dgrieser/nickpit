@@ -676,6 +676,25 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
 
+	// Resolve a workflow spec up front so a spec-declared profile is honored
+	// before the LLM client, engine, and request budgets are built from it.
+	var spec *workflow.Spec
+	if a.specPath != "" || a.stepName != "" {
+		resolved, err := a.resolveSpec()
+		if err != nil {
+			return err
+		}
+		if resolved.Profile != "" && resolved.Profile != profileName {
+			pn, pf, err := a.loadProfileNamed(resolved.Profile)
+			if err != nil {
+				return err
+			}
+			profileName, profile = pn, pf
+			req = applyProfileBudgets(req, profile)
+		}
+		spec = &resolved
+	}
+
 	if profile.APIKey == "" {
 		if profile.APIKeyConfigured {
 			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
@@ -737,8 +756,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	// A workflow spec or single-step run takes a separate path: it may skip
 	// source/repo resolution entirely (e.g. merge/finalize from a findings file)
 	// and runs the finalize step inside the pipeline rather than afterward.
-	if a.specPath != "" || a.stepName != "" {
-		return a.runWorkflow(ctx, engine, source, profile, req)
+	if spec != nil {
+		return a.runWorkflow(ctx, engine, source, *spec, profile, req)
 	}
 
 	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
@@ -838,11 +857,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 // through the pipeline. Source/repo resolution is skipped when no step needs a
 // source (e.g. a merge/finalize-from-file run). Finalize, when present in the
 // spec, runs inside the pipeline rather than afterward.
-func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) error {
-	spec, err := a.resolveSpec()
-	if err != nil {
-		return err
-	}
+func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source model.ReviewSource, spec workflow.Spec, profile config.Profile, req model.ReviewRequest) error {
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {
 		return err
@@ -885,23 +900,59 @@ func (a *app) resolveSpec() (workflow.Spec, error) {
 	if err != nil {
 		return workflow.Spec{}, err
 	}
-	seedFindings(&spec, a.findingsFiles)
+	if err := seedFindings(&spec, a.findingsFiles); err != nil {
+		return workflow.Spec{}, err
+	}
 	return spec, nil
 }
 
-// seedFindings attaches top-level --findings to the first plain step that does
-// not already declare findings_from, so `--spec w.yaml --findings f.json` works.
-func seedFindings(spec *workflow.Spec, findings []string) {
+// seedFindings attaches top-level --findings to the first step that actually
+// consumes findings (verify/dedupe/merge/finalize) and does not already declare
+// findings_from, so `--spec w.yaml --findings f.json` lands where it is read
+// instead of being silently dropped on a collect-context/review step. Returns an
+// error when findings are supplied but no step would consume them.
+func seedFindings(spec *workflow.Spec, findings []string) error {
 	if len(findings) == 0 {
-		return
+		return nil
 	}
 	for i := range spec.Steps {
-		if spec.Steps[i].IsParallel() || len(spec.Steps[i].FindingsFrom) > 0 {
+		entry := &spec.Steps[i]
+		if entry.IsParallel() || len(entry.FindingsFrom) > 0 {
 			continue
 		}
-		spec.Steps[i].FindingsFrom = findings
-		return
+		if workflow.StepConsumesFindings(entry.Type) {
+			entry.FindingsFrom = findings
+			return nil
+		}
 	}
+	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize step to consume them; add findings_from to a specific step")
+}
+
+// loadProfileNamed loads a profile by name (e.g. a spec's `profile:` field),
+// applying the same CLI overrides as loadProfile.
+func (a *app) loadProfileNamed(name string) (string, config.Profile, error) {
+	saved := a.profile
+	a.profile = name
+	defer func() { a.profile = saved }()
+	return a.loadProfile()
+}
+
+// applyProfileBudgets resets the profile-derived request fields from profile.
+// Used when a workflow spec selects a different profile after the request was
+// already built from the invoking command's profile.
+func applyProfileBudgets(req model.ReviewRequest, profile config.Profile) model.ReviewRequest {
+	req.MaxContextTokens = profile.MaxContextTokens
+	req.MaxToolCalls = profile.MaxToolCalls
+	req.MaxDuplicateToolCalls = profile.MaxDuplicateToolCalls
+	req.MaxOutputRetries = profile.MaxOutputRetries
+	req.MaxReasoningSeconds = profile.MaxReasoningSeconds
+	req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
+	req.NudgeCount = profile.NudgeCount
+	req.UseJSONSchema = profile.UseJSONSchema
+	if profile.Workdir != "" {
+		req.Workdir = profile.Workdir
+	}
+	return req
 }
 
 func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {
