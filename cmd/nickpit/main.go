@@ -695,7 +695,15 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		spec = &resolved
 	}
 
-	if profile.APIKey == "" {
+	// Source-less workflows (e.g. --step merge / --step finalize on imported
+	// findings) operate on injected findings and commonly make no LLM call at
+	// all — a single-input merge is a passthrough, finalize on empty findings is
+	// a no-op. Defer the credential requirement and the model probe for them: the
+	// client is still built, so any LLM call that does happen fails at call time
+	// if credentials are missing, exactly as --skip-model-check behaves.
+	needsLLMSetup := spec == nil || spec.NeedsSource()
+
+	if needsLLMSetup && profile.APIKey == "" {
 		if profile.APIKeyConfigured {
 			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
 		}
@@ -729,7 +737,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-	if !a.skipModelCheck {
+	if needsLLMSetup && !a.skipModelCheck {
 		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, false)
 		if err != nil {
 			return err

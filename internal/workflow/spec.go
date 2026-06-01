@@ -469,6 +469,37 @@ func validateStepType(t string) error {
 	return fmt.Errorf("unknown step type %q", t)
 }
 
+// StepNeedsSource reports whether a step type requires a review source. Only
+// context collection and the reviewers read the source; the post-reviewer steps
+// operate on in-memory or injected findings.
+func StepNeedsSource(stepType string) bool {
+	if stepType == StepCollectContext {
+		return true
+	}
+	_, ok := vectorOf(stepType, StepReviewPrefix)
+	return ok
+}
+
+// NeedsSource reports whether any step in the spec requires a review source.
+// When false, the workflow operates purely on injected findings and the caller
+// can skip source/repo resolution and the upfront model-credential requirement.
+func (s Spec) NeedsSource() bool {
+	for _, entry := range s.Steps {
+		if entry.IsParallel() {
+			for _, sub := range entry.Parallel {
+				if StepNeedsSource(sub.Type) {
+					return true
+				}
+			}
+			continue
+		}
+		if StepNeedsSource(entry.Type) {
+			return true
+		}
+	}
+	return false
+}
+
 // StepConsumesFindings reports whether a step type reads injected findings
 // (findings_from / --findings). Only these steps load findings; collect-context
 // and review/nudge/reasoning-extract steps ignore them.
