@@ -396,13 +396,23 @@ func (s Spec) Validate() error {
 	// nudge/extract step depends on a review of the same vector, which must have
 	// completed in an EARLIER unit — reviews inside the same parallel group run
 	// concurrently and are therefore not yet available.
-	validate := func(entry StepEntry, available map[string]bool) (string, error) {
+	validate := func(entry StepEntry, available map[string]bool, inParallel bool) (string, error) {
 		idx++
 		if err := validateStepType(entry.Type); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 		}
 		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix} {
-			if v, ok := vectorOf(entry.Type, prefix); ok && !available[v] {
+			v, ok := vectorOf(entry.Type, prefix)
+			if !ok {
+				continue
+			}
+			// nudge/reasoning-extract mutate the shared per-vector reviewer
+			// session and hand a delta from extract to nudge, so they must run
+			// sequentially — never concurrently inside a parallel group.
+			if inParallel {
+				return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; it mutates the shared reviewer session and must be sequenced", idx, entry.Type)
+			}
+			if !available[v] {
 				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step, not the same parallel group)", idx, entry.Type, StepReviewPrefix, v)
 			}
 		}
@@ -417,7 +427,7 @@ func (s Spec) Validate() error {
 			// publish the group's reviewers only after the whole group.
 			var produced []string
 			for _, sub := range entry.Parallel {
-				v, err := validate(sub, reviewed)
+				v, err := validate(sub, reviewed, true)
 				if err != nil {
 					return err
 				}
@@ -430,7 +440,7 @@ func (s Spec) Validate() error {
 			}
 			continue
 		}
-		v, err := validate(entry, reviewed)
+		v, err := validate(entry, reviewed, false)
 		if err != nil {
 			return err
 		}

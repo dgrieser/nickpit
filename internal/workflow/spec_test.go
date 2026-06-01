@@ -155,6 +155,23 @@ func TestValidateRejectsNudgeInSameParallelGroupAsReview(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNudgeOrExtractInParallelGroup(t *testing.T) {
+	// Even with the review completed in an earlier unit, nudge/extract steps
+	// mutate the shared session and must not run concurrently.
+	for _, dep := range []string{StepNudgePrefix + "security", StepExtractPrefix + "security"} {
+		spec := Spec{Version: 1, Steps: []StepEntry{
+			{Type: StepReviewPrefix + "security"},
+			{Parallel: []StepEntry{
+				{Type: dep},
+				{Type: StepReviewPrefix + "performance"},
+			}},
+		}}
+		if err := spec.Validate(); err == nil {
+			t.Fatalf("expected rejection of %q inside a parallel group", dep)
+		}
+	}
+}
+
 func TestValidateAcceptsReviewThenNudgeAcrossUnits(t *testing.T) {
 	// review in a parallel group, then nudge in a later sequential step: ok.
 	spec := Spec{Version: 1, Steps: []StepEntry{
