@@ -43,6 +43,25 @@ func TestSeedFindingsSkipsStepsThatAlreadyDeclare(t *testing.T) {
 	}
 }
 
+func TestSeedFindingsReachesConsumerInsideParallelGroup(t *testing.T) {
+	// A consuming step nested in a parallel group must still receive seeded
+	// findings rather than being skipped.
+	spec := workflow.Spec{Version: 1, Steps: []workflow.StepEntry{
+		{Type: workflow.StepCollectContext},
+		{Parallel: []workflow.StepEntry{
+			{Type: workflow.StepReviewPrefix + "security"},
+			{Type: workflow.StepVerify},
+		}},
+	}}
+	if err := seedFindings(&spec, []string{"a.json"}); err != nil {
+		t.Fatal(err)
+	}
+	verify := spec.Steps[1].Parallel[1]
+	if len(verify.FindingsFrom) != 1 || verify.FindingsFrom[0] != "a.json" {
+		t.Fatalf("verify in parallel group not seeded: %v", verify.FindingsFrom)
+	}
+}
+
 func TestSeedFindingsErrorsWhenNoConsumer(t *testing.T) {
 	spec := workflow.Spec{Version: 1, Steps: []workflow.StepEntry{
 		{Type: workflow.StepCollectContext},

@@ -925,10 +925,17 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 	}
 	for i := range spec.Steps {
 		entry := &spec.Steps[i]
-		if entry.IsParallel() || len(entry.FindingsFrom) > 0 {
+		if entry.IsParallel() {
+			for j := range entry.Parallel {
+				sub := &entry.Parallel[j]
+				if len(sub.FindingsFrom) == 0 && workflow.StepConsumesFindings(sub.Type) {
+					sub.FindingsFrom = findings
+					return nil
+				}
+			}
 			continue
 		}
-		if workflow.StepConsumesFindings(entry.Type) {
+		if len(entry.FindingsFrom) == 0 && workflow.StepConsumesFindings(entry.Type) {
 			entry.FindingsFrom = findings
 			return nil
 		}

@@ -157,13 +157,23 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 		}
 		session := sc.Engine.newReviewerSession(spec, sc.Req, collectAnyway)
 		if err := sc.Engine.reviewerInitial(ctx, session, sc.Req); err != nil {
+			// Preserve the partial telemetry (tokens/tool calls) of the failed
+			// initial pass instead of discarding it with a bare failed result.
 			sc.Engine.logf("Vector reviewer failed, continuing with others: vector=%s error=%v", vector.name, err)
-			st.setGroup(vectorID, failedVectorResult(vector, err), session)
+			res := session.partialResult(sc.Req)
+			res.run.Status = model.AgentRunStatusFailed
+			res.run.Error = err.Error()
+			st.setGroup(vectorID, res, session)
 			return nil
 		}
 		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req); err != nil {
-			sc.Engine.logf("Vector reviewer failed, continuing with others: vector=%s error=%v", vector.name, err)
-			st.setGroup(vectorID, failedVectorResult(vector, err), session)
+			// The initial pass already produced findings; keep them (and their
+			// telemetry) as a partial result rather than throwing them away.
+			sc.Engine.logf("Vector reviewer nudges failed, keeping initial findings: vector=%s error=%v", vector.name, err)
+			res := session.result(sc.Req)
+			res.run.Status = model.AgentRunStatusPartial
+			res.run.Error = err.Error()
+			st.setGroup(vectorID, res, session)
 			return nil
 		}
 		st.setGroup(vectorID, session.result(sc.Req), session)

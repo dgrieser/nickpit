@@ -1653,18 +1653,6 @@ func partialAgentResult(agent agentSpec, req model.ReviewRequest, loop agentLoop
 	}
 }
 
-func failedVectorResult(vector reviewVector, err error) agentResult {
-	return agentResult{
-		resp: &llm.ReviewResponse{},
-		run: model.AgentRun{
-			Name:   vector.name,
-			Role:   "reviewer",
-			Status: model.AgentRunStatusFailed,
-			Error:  err.Error(),
-		},
-	}
-}
-
 func emptyVerifiedMergeResult() agentResult {
 	return agentResult{
 		resp: &llm.ReviewResponse{
