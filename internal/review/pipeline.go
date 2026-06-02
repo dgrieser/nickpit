@@ -251,8 +251,7 @@ func (e *Engine) stepContext(override *workflow.StepOverride, req model.ReviewRe
 }
 
 // assemble builds the final ReviewResult: the flat findings/overall from the
-// merge/finalize/injection, plus the aggregated telemetry, mirroring the legacy
-// runMultiAgentReview tail exactly for the default spec.
+// merge/finalize/injection, plus the aggregated telemetry.
 func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.ReviewResult {
 	res := st.result
 	if res == nil {

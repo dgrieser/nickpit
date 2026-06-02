@@ -23,7 +23,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/toolchain"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
-	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 )
@@ -101,28 +100,11 @@ func (e *Engine) SetSearchToolOptimization(enabled bool) {
 	e.searchToolOptimization = enabled
 }
 
-func (e *Engine) Run(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, error) {
-	result, _, err := e.RunWithContext(ctx, req)
-	return result, err
-}
-
-func (e *Engine) RunWithContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
-	trimmed, err := e.resolveAndTrimContext(ctx, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	result, enrichedCtx, err := e.runMultiAgentReview(ctx, trimmed, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	e.applyResultMetadata(result, req, trimmed)
-	return result, enrichedCtx, nil
-}
-
 // RunSpecPipeline executes an already-built pipeline. When the pipeline needs a
-// source it resolves and trims the review context as RunWithContext does;
-// otherwise (e.g. a merge/finalize-from-file workflow) it runs against a minimal
-// synthetic context so no git/PR resolution is required.
+// source it resolves and trims the review context; otherwise (e.g. a
+// merge/finalize-from-file workflow) it runs against a minimal synthetic context
+// so no git/PR resolution is required. This is the single execution path for
+// every review — the embedded DefaultSpec and any user-supplied spec alike.
 func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	var reviewCtx *model.ReviewContext
 	if p.NeedsSource() {
@@ -362,20 +344,6 @@ func (e *Engine) withConfig(profile config.Profile) *Engine {
 	clone := *e
 	clone.config = profile
 	return &clone
-}
-
-// runMultiAgentReview executes the default review workflow (collect → vector
-// reviewers → verify → dedupe → merge) through the spec-driven pipeline. The
-// finalize step is intentionally excluded here; callers (cmd) apply Finalize
-// afterward, preserving the historical RunWithContext contract of returning the
-// pre-finalize result. This is the single code path: the same executor runs both
-// this default spec and any user-supplied spec.
-func (e *Engine) runMultiAgentReview(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
-	pipeline, err := e.BuildPipeline(workflow.DefaultReviewSpec())
-	if err != nil {
-		return nil, nil, err
-	}
-	return pipeline.Run(ctx, reviewCtx, req)
 }
 
 // verifyAndFilterVectorFindings runs the verifier on every finding from

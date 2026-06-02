@@ -56,7 +56,7 @@ func TestEngineSerializesPythonAndNodeToolPayloadLanguages(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, multilangRetrieval{}, config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
 		MaxToolCalls:     2,
@@ -116,7 +116,7 @@ func TestEngineAddsPythonStyleGuideForPythonDiffs(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
 	})
@@ -166,7 +166,7 @@ func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(styleGuideDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
 	})
@@ -591,7 +591,7 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 	llmClient := &capturingLLM{}
 	engine := NewEngine(kubernetesStyleGuideDiffSource{ctx: reviewCtx}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         reviewCtx.CheckoutRoot,
 		MaxContextTokens: 1000,

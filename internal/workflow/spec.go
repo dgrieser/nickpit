@@ -200,19 +200,10 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 // DefaultSpec is the embedded workflow that reproduces the tool's standard
 // review end to end: collect context, run the six vector reviewers concurrently,
 // verify, dedupe, merge, finalize, summarize. It carries no overrides, so every
-// step inherits the active profile/request. This is the canonical spec shown to
-// users and run by `--spec` with the full workflow.
+// step inherits the active profile/request. This is the single spec the engine
+// runs for an ordinary (no --spec/--step) review, and the canonical full
+// workflow shown to users.
 func DefaultSpec() Spec {
-	spec := DefaultReviewSpec()
-	spec.Steps = append(spec.Steps, StepEntry{Type: StepFinalize}, StepEntry{Type: StepSummarize})
-	return spec
-}
-
-// DefaultReviewSpec is DefaultSpec without the finalize step. It is what the
-// no-spec review path executes; finalize is applied by the caller afterward so
-// the engine's RunWithContext contract (returns the pre-finalize result) is
-// preserved. The two compose into the same end result as DefaultSpec.
-func DefaultReviewSpec() Spec {
 	parallel := make([]StepEntry, len(ReviewVectorIDs))
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Type: StepReviewPrefix + id}
@@ -225,6 +216,8 @@ func DefaultReviewSpec() Spec {
 			{Type: StepVerify},
 			{Type: StepDedupe},
 			{Type: StepMerge},
+			{Type: StepFinalize},
+			{Type: StepSummarize},
 		},
 	}
 }

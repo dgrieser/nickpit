@@ -1213,7 +1213,7 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, trimmed, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	result, trimmed, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -1305,7 +1305,7 @@ func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:              model.ModeLocal,
 		RepoRoot:          ".",
 		MaxContextTokens:  1000,
@@ -1374,7 +1374,7 @@ func TestMultiAgentMergeValidationRetriesWhenBelowLargestReviewerCount(t *testin
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	result, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -1414,7 +1414,7 @@ func TestMultiAgentPairwiseMergeStartsWithLargestReviewers(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -1490,7 +1490,7 @@ func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	result, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -2058,7 +2058,7 @@ func TestEngineVectorNudgeRepeatsReviewerQuestions(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -2090,7 +2090,7 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	result, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -2139,7 +2139,7 @@ func TestMultiAgentToleratesContextFailure(t *testing.T) {
 	llmClient := &multiAgentLLM{contextFailErr: errors.New("context upstream fail")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	result, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -2168,7 +2168,7 @@ func TestMultiAgentToleratesMergeFailure(t *testing.T) {
 	llmClient := &multiAgentLLM{mergeFailErr: errors.New("merge upstream fail")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	result, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -2216,7 +2216,7 @@ func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	result, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	result, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
@@ -2308,7 +2308,7 @@ func TestEngineMergeSchemaHonorsPriorityThreshold(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	_, _, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:              model.ModeLocal,
 		RepoRoot:          ".",
 		MaxContextTokens:  1000,

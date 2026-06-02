@@ -288,14 +288,15 @@ func TestWorkflowNudgeAfterFailedReviewErrorsNoPanic(t *testing.T) {
 	}
 }
 
-// The default review spec executed through the pipeline needs a source and
-// reproduces the legacy reviewer/merge run shape that RunWithContext returns.
-func TestWorkflowDefaultReviewSpecNeedsSourceAndRuns(t *testing.T) {
+// The reviewer-only spec executed through the pipeline needs a source and
+// produces the reviewer/merge run shape (collect → reviewers → verify → dedupe
+// → merge) without finalize/summarize.
+func TestWorkflowReviewerSpecNeedsSourceAndRuns(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logging.New(os.Stderr, false, false))
 
-	pipeline, err := engine.BuildPipeline(workflow.DefaultReviewSpec())
+	pipeline, err := engine.BuildPipeline(reviewerOnlySpec())
 	if err != nil {
 		t.Fatal(err)
 	}
