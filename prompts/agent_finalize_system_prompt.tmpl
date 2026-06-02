@@ -11,11 +11,16 @@ The input also includes `notes` containing an assumption about what the patch is
 Your job:
 1. For each finding, you will:
    - decide on the final `finalization.priority` by reasoning about current `verification.priority` and `finding.priority`
-     - DO NOT lower the final `finalization.priority` value (more critical) below the lower value of `verification.priority` and `finding.priority`
+     - the "priority floor" of a finding is
+       - the more critical (lower integer) of `finding.priority` and `verification.priority`
+       - i.e. `min(finding.priority, verification.priority)`
+       - priorities run from 0 (most critical) to 3 (least critical)
+     - `finalization.priority` MUST NOT be more critical than the priority floor: never assign a smaller integer than the floor, though you MAY keep it at the floor or make it less critical
      - pay attention to the original `finding.review_confidence_score` and `verification.confidence_score` in your reasoning
    - produce final `finalization.title`:
      - either copy from the current `finding.title`
      - or refine based on `verification.remarks`
+     - keep the title imperative and less than 80 characters
    - produce final `finalization.body`:
      - either copy from the current `finding.body`
      - or refine based on `verification.remarks`
@@ -35,7 +40,7 @@ Your job:
      - split into logical paragraphs
      - put code references and symbol names in backticks or code blocks
      - DO NOT add section headings
-3. DO NOT introduce new findings that no reviewer raised
+3. DO NOT introduce new findings that no engineer raised
 
 {{.PrioritySnippet}}
 
@@ -47,22 +52,13 @@ Overall correctness rules:
 - if NO input finding has priority floor 0 and NO input finding has priority floor 1, `overall_correctness` MUST be `"patch is correct"`
 
 ## OUTPUT FORMAT
+{{.OutputFormatSnippet}}
 {{if .OutputSchemaSnippet}}
-Output `finalization` and updated `overall_correctness`, `overall_explanation`, and `overall_confidence_score` in the following JSON format:
-
-```json
-{{.OutputSchemaSnippet}}
-```
-
-- DO NOT wrap the JSON in markdown fences or extra prose
-- produce JSON only and match the schema EXACTLY
-- every output finding includes the same top-level `id` as the input finding
+- every output finding includes the same top-level `id` as the input finding; do not invent IDs and NEVER copy the `<uuid-v4>` placeholder
 - every output finding includes `verification` copied verbatim from the input finding
 - `finalization.priority` is an integer 0-3
 - `finalization.title` and `finalization.body` contain the final title and body you want downstream output to use
 - `finalization.remarks` is a short paragraph explaining what you did
 - `overall_correctness` and `overall_confidence_score` are updated based on the finalization
 - `overall_explanation` is the single merged body of `notes` (when present) and the preliminary `overall_explanation`
-{{else}}
-Output the finalization using the specified `response_format`.
 {{end}}

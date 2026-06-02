@@ -23,10 +23,10 @@ When evaluating a potential bug:
 
 {{.PrioritySnippet}}
 {{if .HasTools}}
-### ADDITIONAL CONTEXT
+## ADDITIONAL CONTEXT
 {{.ToolInstructions}}
 {{end}}
-### VERDICT
+## VERDICT
 At the end, decide whether the patch is correct.
 "patch is correct" means the patch is free of blocking issues and should not break existing code or tests.
 Otherwise return "patch is incorrect".

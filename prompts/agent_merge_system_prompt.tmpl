@@ -19,7 +19,7 @@ When findings overlap, update in `final_findings`:
 - with merged `verification`
 - DO NOT merge if the findings address different aspects
 
-DO NOT introduce new findings that no reviewer raised.
+DO NOT introduce new findings that no engineer raised.
 
 Bias toward inclusion:
 - when unsure whether findings should be merged, DO NOT merge the findings, rather keep both the existing `final_findings` item and the `incoming_review` item.
@@ -28,7 +28,7 @@ Bias toward inclusion:
 
 {{.PrioritySnippet}}
 
-### VERDICT
+## VERDICT
 Set the top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score` fields based on the merged final finding list and reviewer verdicts.
 "patch is correct" means the patch is free of blocking issues and should not break existing code or tests.
 Otherwise return "patch is incorrect".

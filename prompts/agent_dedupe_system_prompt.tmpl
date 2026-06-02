@@ -15,7 +15,7 @@ When findings overlap:
   - or merge into one coherent verification with `verification.id` equal to the output finding `id`
 - DO NOT merge if the findings address different aspects
 
-DO NOT introduce new findings that this reviewer did not raise.
+DO NOT introduce new findings that this engineer did not raise.
 
 Bias toward inclusion:
 - when unsure whether findings are duplicates, DO NOT merge the findings; keep both unchanged.
@@ -24,7 +24,7 @@ Bias toward inclusion:
 
 {{.PrioritySnippet}}
 
-### VERDICT
+## VERDICT
 Set the top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score` fields based on the deduplicated finding list and reviewer verdict.
 "patch is correct" means the patch is free of blocking issues and should not break existing code or tests.
 Otherwise return "patch is incorrect".

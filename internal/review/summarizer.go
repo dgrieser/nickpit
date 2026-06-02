@@ -42,10 +42,16 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
+	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.UseJSONSchema))
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet string
+		OutputFormatSnippet string
 	}{
 		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.UseJSONSchema),
+		OutputFormatSnippet: commonSnippets.outputFormat,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: rendering system prompt: %w", err)

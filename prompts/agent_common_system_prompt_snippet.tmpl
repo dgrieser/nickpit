@@ -1,5 +1,5 @@
 {{if eq .Snippet "findings"}}
-For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merged or not{{else if eq .AgentRole "finalize"}} you keep{{end}}:
+For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merged or not{{end}}:
 {{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}- output `id` for every finding; preserve one source `id` when keeping or merging input findings
 - DO NOT generate a fresh UUID
 - NEVER copy the `<uuid-v4>` placeholder
@@ -8,10 +8,15 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
 - use ONE distinct issue per finding
 - make the title imperative and less than 80 characters
 - set `priority` to 0, 1, 2 or 3 (always required)
-- keep the body to ONE paragraph, matter-of-fact, and EXPLICIT about the scenario where it fails
+- set `confidence_score` to a value between 0 and 1 reflecting how confident you are in the finding (always required)
+- keep the body matter-of-fact and EXPLICIT about the scenario where it fails
+  - write it as one continuous body
+  - NO headers, NO titles
+  - split into logical paragraphs where it aids readability
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
 {{if eq .AgentRole "reviewer"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
+{{else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}- copy `suggestions` from the source findings, each including `body`, `line_range.start` and `line_range.end`; merge them only when it makes sense and DO NOT invent new suggestions
 {{end}}{{end}}
 {{if eq .Snippet "priority"}}
 ### PRIORITY

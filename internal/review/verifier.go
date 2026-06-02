@@ -69,7 +69,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	prioritySnippet, err := agentCommonSystemPromptSnippet("verify", "priority", "")
+	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -86,6 +86,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet        string
+		OutputFormatSnippet        string
 		PrioritySnippet            string
 		ParallelToolCallGuidance   bool
 		HasTools                   bool
@@ -93,7 +94,8 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		StyleGuideToolchainSnippet string
 	}{
 		OutputSchemaSnippet:        systemSnippet,
-		PrioritySnippet:            prioritySnippet,
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+		PrioritySnippet:            commonSnippets.priority,
 		ParallelToolCallGuidance:   !req.DisableParallelToolCalls,
 		HasTools:                   true,
 		ToolInstructions:           toolInstructions,

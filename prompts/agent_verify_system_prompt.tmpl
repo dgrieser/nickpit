@@ -36,24 +36,15 @@ Rules:
 
 Set `priority` to the same value as the original finding's `priority` UNLESS you believe the priority should change.
 {{if .HasTools}}
-### ADDITIONAL CONTEXT
+## ADDITIONAL CONTEXT
 {{.ToolInstructions}}
 {{end}}
 ## OUTPUT FORMAT
+{{.OutputFormatSnippet}}
 {{if .OutputSchemaSnippet}}
-Output `verification` in the following JSON format:
-
-```json
-{{.OutputSchemaSnippet}}
-```
-
-- DO NOT wrap the JSON in markdown fences or extra prose
-- produce JSON only and match the schema EXACTLY
 - `verification.id` is the same UUID as the input `finding.id`; copy that actual UUID, never the `<uuid-v4>` placeholder
 - `verification.verdict` is one of `confirmed`, `refuted`, `unverified`
 - `verification.priority` is an integer 0-3
 - `verification.confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
 - `verification.remarks` is one short paragraph explaining the verdict; when `refuted`, MUST cite the concrete code or invariant that contradicts the finding
-{{else}}
-Output the verification using the specified `response_format`.
 {{end}}
