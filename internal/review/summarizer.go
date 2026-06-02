@@ -86,6 +86,9 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 		// for telemetry parity with the finalize/merge failure paths.
 		return nil, result.run, err
 	}
+	if result.resp == nil {
+		return nil, result.run, fmt.Errorf("summarize: agent returned nil response")
+	}
 
 	out, err := in.Clone()
 	if err != nil {

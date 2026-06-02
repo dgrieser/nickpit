@@ -394,7 +394,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 		contextNotes := st.contextNotes
 		st.mu.Unlock()
 
-		if len(in.Findings) == 0 {
+		if in == nil || len(in.Findings) == 0 {
 			return nil
 		}
 		opts := FinalizeOptions{
@@ -462,7 +462,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 		in := st.result
 		st.mu.Unlock()
 
-		if len(in.Findings) == 0 {
+		if in == nil || len(in.Findings) == 0 {
 			return nil
 		}
 		opts := SummarizeOptions{
