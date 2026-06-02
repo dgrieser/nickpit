@@ -32,8 +32,15 @@ func (a *Adapter) correctnessBadge(correctness string) string {
 	return fmt.Sprintf("![%s](%s%s.svg)", name, a.assetBaseURL, name)
 }
 
-// priorityBadge renders a clamped priority rank (0-3) as a Pn badge image.
+// priorityBadge renders a priority rank as a Pn badge image, clamping to the
+// [0,3] range of available SVGs so an out-of-range rank never yields a broken
+// image link.
 func (a *Adapter) priorityBadge(rank int) string {
+	if rank < 0 {
+		rank = 0
+	} else if rank > 3 {
+		rank = 3
+	}
 	return fmt.Sprintf("![P%d](%sp%d.svg)", rank, a.assetBaseURL, rank)
 }
 
