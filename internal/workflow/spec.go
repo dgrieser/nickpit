@@ -19,6 +19,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/workflows"
 )
 
 // SpecVersion is the only supported major spec version.
@@ -203,23 +204,17 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 // step inherits the active profile/request. This is the single spec the engine
 // runs for an ordinary (no --spec/--step) review, and the canonical full
 // workflow shown to users.
+//
+// It is parsed from the embedded workflows/default.yaml through the same loader
+// as any user-supplied spec, so the default is a real spec artifact rather than
+// bespoke Go. The asset is static and test-covered (see TestDefaultSpecMatchesConstants),
+// so a parse failure is a build error, not a runtime condition — hence the panic.
 func DefaultSpec() Spec {
-	parallel := make([]StepEntry, len(ReviewVectorIDs))
-	for i, id := range ReviewVectorIDs {
-		parallel[i] = StepEntry{Type: StepReviewPrefix + id}
+	spec, err := parseSpec(workflows.Default())
+	if err != nil {
+		panic(fmt.Sprintf("workflow: invalid embedded default workflow: %v", err))
 	}
-	return Spec{
-		Version: SpecVersion,
-		Steps: []StepEntry{
-			{Type: StepCollectContext},
-			{Parallel: parallel},
-			{Type: StepVerify},
-			{Type: StepDedupe},
-			{Type: StepMerge},
-			{Type: StepFinalize},
-			{Type: StepSummarize},
-		},
-	}
+	return spec
 }
 
 // SingleStepSpec builds a one-step spec for `--step <type>`. findingsFrom seeds
@@ -237,18 +232,24 @@ func Load(path string) (Spec, error) {
 	if err != nil {
 		return Spec{}, fmt.Errorf("workflow: reading %s: %w", path, err)
 	}
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return Spec{}, fmt.Errorf("workflow: parsing %s: %w", path, err)
-	}
-	if len(root.Content) == 0 {
-		return Spec{}, fmt.Errorf("workflow: %s is empty", path)
-	}
-	spec, err := decodeSpec(root.Content[0])
+	spec, err := parseSpec(data)
 	if err != nil {
 		return Spec{}, fmt.Errorf("workflow: parsing %s: %w", path, err)
 	}
 	return spec, nil
+}
+
+// parseSpec decodes spec YAML bytes, rejecting unknown keys. It is the single
+// parse path shared by Load (disk specs) and DefaultSpec (the embedded default).
+func parseSpec(data []byte) (Spec, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return Spec{}, err
+	}
+	if len(root.Content) == 0 {
+		return Spec{}, fmt.Errorf("empty document")
+	}
+	return decodeSpec(root.Content[0])
 }
 
 func decodeSpec(node *yaml.Node) (Spec, error) {

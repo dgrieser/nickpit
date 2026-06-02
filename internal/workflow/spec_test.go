@@ -32,6 +32,45 @@ func TestDefaultSpecsValidate(t *testing.T) {
 	}
 }
 
+// TestDefaultSpecMatchesConstants pins the embedded workflows/default.yaml to the
+// Go constants. The old Go-built DefaultSpec auto-tracked ReviewVectorIDs; the
+// static YAML does not, so reordering/renaming a vector (or changing the step
+// sequence) must fail here and force a matching default.yaml edit.
+func TestDefaultSpecMatchesConstants(t *testing.T) {
+	parallel := make([]StepEntry, len(ReviewVectorIDs))
+	for i, id := range ReviewVectorIDs {
+		parallel[i] = StepEntry{Type: StepReviewPrefix + id}
+	}
+	want := Spec{Version: SpecVersion, Steps: []StepEntry{
+		{Type: StepCollectContext},
+		{Parallel: parallel},
+		{Type: StepVerify},
+		{Type: StepDedupe},
+		{Type: StepMerge},
+		{Type: StepFinalize},
+		{Type: StepSummarize},
+	}}
+	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestExampleFileLoadsToDefault confirms the generated workflow.yaml.example
+// round-trips the real loader and decodes to exactly DefaultSpec — the docs and
+// banner comments do not change what the file parses to.
+func TestExampleFileLoadsToDefault(t *testing.T) {
+	spec, err := Load("../../workflow.yaml.example")
+	if err != nil {
+		t.Fatalf("Load(workflow.yaml.example): %v", err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("workflow.yaml.example invalid: %v", err)
+	}
+	if !reflect.DeepEqual(spec, DefaultSpec()) {
+		t.Fatalf("workflow.yaml.example does not decode to DefaultSpec:\n got %+v\nwant %+v", spec, DefaultSpec())
+	}
+}
+
 func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 	spec := DefaultSpec()
 	var parallel *StepEntry

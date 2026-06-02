@@ -13,7 +13,7 @@ BINDIR ?= $(PREFIX)/bin
 	@exit 1
 
 generate: ## Generate checked-in files
-	go generate ./internal/config
+	go generate ./internal/config ./workflows
 
 build: generate ## Build the nickpit binary into ./bin
 	mkdir -p ./bin
