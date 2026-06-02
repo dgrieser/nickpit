@@ -3,8 +3,10 @@ package mappings
 import (
 	"embed"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -499,7 +501,7 @@ func hasPathSegment(path, segment string) bool {
 
 func normalizeSignalContent(content string) string {
 	var out strings.Builder
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -536,12 +538,7 @@ func lowerSlashStrings(in []string) []string {
 }
 
 func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func hasAnySuffix(value string, suffixes []string) bool {
@@ -591,9 +588,7 @@ func matchesAnyRegex(content string, expressions []*regexp.Regexp) bool {
 
 func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
+	maps.Copy(out, in)
 	return out
 }
 

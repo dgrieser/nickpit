@@ -202,6 +202,31 @@ func TestTerminalFormatterRendersFinalizationPriorityUnchanged(t *testing.T) {
 	}
 }
 
+func TestTerminalFormatterPrefersSummarizationBody(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewTerminalFormatter(&buf, false)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title: "Bug", Body: "original", ConfidenceScore: 0.8, Priority: intPtr(1),
+				CodeLocation:  model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Finalization:  &model.FindingFinalization{Title: "Bug", Body: "long finalized body", Priority: 1, ConfidenceScore: 0.85, Remarks: "kept"},
+				Summarization: &model.FindingSummarization{Title: "Bug", Body: "short summary", Priority: 1, ConfidenceScore: 0.85, Remarks: "kept"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "short summary") {
+		t.Fatalf("missing summarized body:\n%s", out)
+	}
+	if strings.Contains(out, "long finalized body") {
+		t.Fatalf("finalized body should be replaced by the summary:\n%s", out)
+	}
+}
+
 func TestTerminalFormatterRendersWarnings(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewTerminalFormatter(&buf, false)

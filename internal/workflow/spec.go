@@ -32,6 +32,7 @@ const (
 	StepDedupe         = "dedupe"
 	StepMerge          = "merge"
 	StepFinalize       = "finalize"
+	StepSummarize      = "summarize"
 
 	StepReviewPrefix  = "review:"
 	StepExtractPrefix = "reasoning-extract:"
@@ -198,12 +199,12 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 
 // DefaultSpec is the embedded workflow that reproduces the tool's standard
 // review end to end: collect context, run the six vector reviewers concurrently,
-// verify, dedupe, merge, finalize. It carries no overrides, so every step
-// inherits the active profile/request. This is the canonical spec shown to
+// verify, dedupe, merge, finalize, summarize. It carries no overrides, so every
+// step inherits the active profile/request. This is the canonical spec shown to
 // users and run by `--spec` with the full workflow.
 func DefaultSpec() Spec {
 	spec := DefaultReviewSpec()
-	spec.Steps = append(spec.Steps, StepEntry{Type: StepFinalize})
+	spec.Steps = append(spec.Steps, StepEntry{Type: StepFinalize}, StepEntry{Type: StepSummarize})
 	return spec
 }
 
@@ -450,7 +451,7 @@ func (s Spec) Validate() error {
 
 func validateStepType(t string) error {
 	switch t {
-	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize:
+	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepSummarize:
 		return nil
 	case "":
 		return fmt.Errorf("missing step type")
@@ -502,7 +503,7 @@ func (s Spec) NeedsSource() bool {
 // and review/nudge/reasoning-extract steps ignore them.
 func StepConsumesFindings(stepType string) bool {
 	switch stepType {
-	case StepVerify, StepDedupe, StepMerge, StepFinalize:
+	case StepVerify, StepDedupe, StepMerge, StepFinalize, StepSummarize:
 		return true
 	default:
 		return false

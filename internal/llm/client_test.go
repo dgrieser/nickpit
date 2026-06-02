@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2772,7 +2773,7 @@ func TestClientReviewRetriesMinimalWithoutToolsWhenNoneIsUnknownVariant(t *testi
 		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
 		if effort == "none" || effort == "off" {
 			w.WriteHeader(http.StatusBadRequest)
-			if _, err := w.Write([]byte(fmt.Sprintf("Failed to deserialize the JSON body into the target type: unknown variant `%s`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 46461", effort))); err != nil {
+			if _, err := fmt.Fprintf(w, "Failed to deserialize the JSON body into the target type: unknown variant `%s`, expected one of `minimal`, `low`, `medium`, `high` at line 1 column 46461", effort); err != nil {
 				t.Fatalf("write error: %v", err)
 			}
 			return
@@ -3570,13 +3571,7 @@ func TestParseReviewResponseFlagsMissingPriority(t *testing.T) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
 	wantField := "findings[0].priority"
-	found := false
-	for _, m := range invalid.MissingFields {
-		if m == wantField {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(invalid.MissingFields, wantField)
 	if !found {
 		t.Fatalf("missing fields = %v, want %q", invalid.MissingFields, wantField)
 	}
@@ -3638,13 +3633,7 @@ func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
-	found := false
-	for _, m := range invalid.MissingFields {
-		if m == "findings[0].finalization" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(invalid.MissingFields, "findings[0].finalization")
 	if !found {
 		t.Fatalf("missing fields = %v, want findings[0].finalization", invalid.MissingFields)
 	}
@@ -3674,13 +3663,7 @@ func TestParseMergeResponseRequiresVerification(t *testing.T) {
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
-	found := false
-	for _, m := range invalid.MissingFields {
-		if m == "findings[0].verification" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(invalid.MissingFields, "findings[0].verification")
 	if !found {
 		t.Fatalf("missing fields = %v, want findings[0].verification", invalid.MissingFields)
 	}
@@ -3704,13 +3687,7 @@ func TestParseFinalizeResponseRequiresVerification(t *testing.T) {
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
-	found := false
-	for _, m := range invalid.MissingFields {
-		if m == "findings[0].verification" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(invalid.MissingFields, "findings[0].verification")
 	if !found {
 		t.Fatalf("missing fields = %v, want findings[0].verification", invalid.MissingFields)
 	}
@@ -3724,13 +3701,7 @@ func TestParseFinalizeResponseFlagsInvalidVerificationID(t *testing.T) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
 	want := "findings[0].verification.id (must be UUID)"
-	found := false
-	for _, m := range invalid.MissingFields {
-		if m == want {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(invalid.MissingFields, want)
 	if !found {
 		t.Fatalf("missing fields = %v, want %q", invalid.MissingFields, want)
 	}

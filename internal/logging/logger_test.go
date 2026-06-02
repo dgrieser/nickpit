@@ -106,7 +106,7 @@ func TestReasoningRendererTTYReplaysFullReasoningAfterPreview(t *testing.T) {
 	id := renderer.Begin("review")
 	var want strings.Builder
 	want.WriteString("Reasoning for review...\n")
-	for i := 0; i < 80; i++ {
+	for i := range 80 {
 		line := fmt.Sprintf("line %02d\n", i)
 		want.WriteString(line)
 		renderer.Append(id, line)
@@ -207,7 +207,7 @@ func TestReasoningRendererLivePreviewShrinksToFitTerminal(t *testing.T) {
 
 	for _, label := range []string{"one", "two", "three"} {
 		id := renderer.Begin(label)
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			renderer.Append(id, fmt.Sprintf("%s line %02d\n", label, i))
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -53,7 +54,7 @@ func readFileCapped(path string, limit int) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
 		return nil, false, err
@@ -260,10 +261,7 @@ func runFileSearch(repoRoot, path string, contextLines, maxResults int, match fu
 			if start <= 0 {
 				start = 1
 			}
-			end := i + 1 + contextLines
-			if end > len(lines) {
-				end = len(lines)
-			}
+			end := min(i+1+contextLines, len(lines))
 			results = append(results, SearchResult{
 				Path:      relPath,
 				StartLine: start,
@@ -341,10 +339,5 @@ func isTextContent(data []byte) bool {
 	if !utf8.Valid(data) {
 		return false
 	}
-	for _, b := range data {
-		if b == 0 {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains(data, 0)
 }

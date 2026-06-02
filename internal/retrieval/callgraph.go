@@ -107,8 +107,8 @@ func renderNode(b *strings.Builder, node CallNode, prefix string, last, root boo
 }
 
 func renderSource(b *strings.Builder, source, prefix, separatorPrefix string, addSeparator bool) {
-	lines := strings.Split(source, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(source, "\n")
+	for line := range lines {
 		normalized := strings.ReplaceAll(line, "\t", "    ")
 		fmt.Fprintf(b, "%s%s\n", prefix, normalized)
 	}

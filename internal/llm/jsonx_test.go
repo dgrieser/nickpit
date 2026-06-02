@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"testing"
 )
@@ -324,9 +325,7 @@ func (m *mergeableRecorder) MergeFrom(other any, presentKeys map[string]bool) (b
 	src := other.(*mergeableRecorder)
 	m.Calls++
 	keysCopy := make(map[string]bool, len(presentKeys))
-	for k, v := range presentKeys {
-		keysCopy[k] = v
-	}
+	maps.Copy(keysCopy, presentKeys)
 	m.SeenKeysAll = append(m.SeenKeysAll, keysCopy)
 	claimed := false
 	if presentKeys["sum"] {

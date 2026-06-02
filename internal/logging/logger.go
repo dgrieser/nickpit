@@ -291,8 +291,8 @@ func (l *Logger) writeRaw(text string) {
 }
 
 func (l *Logger) writeLines(text, color string) {
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	for line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -461,8 +461,8 @@ func colorizeToolCallCall(text string) string {
 }
 
 func colorizeToolCallResult(text string) string {
-	if strings.HasPrefix(text, "result") {
-		return "\x1b[37mresult\x1b[0m" + colorizeKeyValueSummary(strings.TrimPrefix(text, "result"))
+	if after, ok := strings.CutPrefix(text, "result"); ok {
+		return "\x1b[37mresult\x1b[0m" + colorizeKeyValueSummary(after)
 	}
 	return colorizeKeyValueSummary(text)
 }
@@ -480,18 +480,19 @@ func colorizeReasoningSummary(text string) string {
 	}
 	label := text[open+1 : close]
 	rest := strings.TrimSpace(text[close+1:])
-	out := "\x1b[90m[\x1b[0m" + colorizeReasoningLabel(label) + "\x1b[90m]\x1b[0m"
-	for _, tok := range strings.Fields(rest) {
+	var out strings.Builder
+	out.WriteString("\x1b[90m[\x1b[0m" + colorizeReasoningLabel(label) + "\x1b[90m]\x1b[0m")
+	for tok := range strings.FieldsSeq(rest) {
 		switch {
 		case strings.HasPrefix(tok, "#"):
-			out += " \x1b[32m" + tok + "\x1b[0m" // counter: green
+			out.WriteString(" \x1b[32m" + tok + "\x1b[0m") // counter: green
 		case isAllLetters(tok):
-			out += " \x1b[34m" + tok + "\x1b[0m" // action word (Done/After): blue
+			out.WriteString(" \x1b[34m" + tok + "\x1b[0m") // action word (Done/After): blue
 		default:
-			out += " \x1b[32m" + tok + "\x1b[0m" // duration / other: green
+			out.WriteString(" \x1b[32m" + tok + "\x1b[0m") // duration / other: green
 		}
 	}
-	return out
+	return out.String()
 }
 
 func isAllLetters(s string) bool {

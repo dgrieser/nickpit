@@ -118,6 +118,11 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		if finding.Finalization != nil {
 			title, body, conf = finding.Finalization.Title, finding.Finalization.Body, finding.Finalization.ConfidenceScore
 		}
+		// The summarize pass shortens the finalized body (other fields copied from
+		// finalization), so prefer it for what the user sees when present.
+		if finding.Summarization != nil {
+			title, body, conf = finding.Summarization.Title, finding.Summarization.Body, finding.Summarization.ConfidenceScore
+		}
 		// Title/Body are LLM-generated and untrusted; strip control characters
 		// so embedded ANSI/escape sequences cannot manipulate the terminal.
 		if _, err := fmt.Fprintf(f.w, "%s\n%s\nConfidence: %.2f\n\n",
@@ -173,7 +178,7 @@ func (f *TerminalFormatter) renderVerification(v *model.FindingVerification, ori
 	default:
 		b.WriteString(f.colorVerifyInvalid(glyphUnverified, v.ConfidenceScore))
 	}
-	b.WriteString(fmt.Sprintf("  conf %.2f", v.ConfidenceScore))
+	fmt.Fprintf(&b, "  conf %.2f", v.ConfidenceScore)
 	if v.Priority != originalRank {
 		arrow := fmt.Sprintf("  P%d→P%d", originalRank, v.Priority)
 		b.WriteString(f.colorPriorityArrow(arrow))
@@ -246,11 +251,4 @@ func (f *TerminalFormatter) colorize(text string, priority int) string {
 
 func priorityLabel(priority *int) string {
 	return fmt.Sprintf("P%d", model.PriorityRank(priority))
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

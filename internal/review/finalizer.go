@@ -24,6 +24,10 @@ type FinalizeOptions struct {
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	RepoRoot                 string
+	// ContextNotes is the context agent's markdown summary of the patch's
+	// intended purpose. When set, it is sent to the finalizer as `notes` so it
+	// can be merged into overall_explanation.
+	ContextNotes string
 }
 
 func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts FinalizeOptions) (*model.ReviewResult, model.AgentRun, error) {
@@ -62,7 +66,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in)
+	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -101,6 +105,9 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		// Preserve partial AgentRun (tokens, tool calls accumulated before
 		// the loop aborted) for telemetry parity with merge/context failures.
 		return nil, result.run, err
+	}
+	if result.resp == nil {
+		return nil, result.run, fmt.Errorf("finalize: agent returned nil response")
 	}
 
 	out, err := in.Clone()
@@ -167,7 +174,7 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 	}
 }
 
-func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult) (string, error) {
+func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
@@ -200,13 +207,19 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 		findings = append(findings, entry)
 	}
 
-	user, err := llm.RenderJSON(map[string]any{
+	payloadMap := map[string]any{
 		"review_context":           json.RawMessage(contextJSON),
 		"overall_correctness":      in.OverallCorrectness,
 		"overall_explanation":      in.OverallExplanation,
 		"overall_confidence_score": in.OverallConfidenceScore,
 		"findings":                 findings,
-	})
+	}
+	// Only send notes when present so finalize-from-file / no-context runs do
+	// not include an empty field for the model to merge.
+	if strings.TrimSpace(contextNotes) != "" {
+		payloadMap["notes"] = contextNotes
+	}
+	user, err := llm.RenderJSON(payloadMap)
 	if err != nil {
 		return "", fmt.Errorf("finalize: rendering finalize prompt json: %w", err)
 	}

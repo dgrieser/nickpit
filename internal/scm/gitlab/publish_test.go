@@ -286,3 +286,27 @@ func TestSanitizeForPublish(t *testing.T) {
 		t.Fatalf("defused text still yielded markers: %v", markers)
 	}
 }
+
+func TestFindingDisplayPrefersSummarization(t *testing.T) {
+	finding := model.Finding{
+		Title:           "Original title",
+		Body:            "original body",
+		ConfidenceScore: 0.5,
+		Priority:        func() *int { p := 3; return &p }(),
+		Finalization:    &model.FindingFinalization{Title: "Final title", Body: "long finalized body", Priority: 2, ConfidenceScore: 0.7, Remarks: "kept"},
+		Summarization:   &model.FindingSummarization{Title: "Final title", Body: "short summary", Priority: 2, ConfidenceScore: 0.7, Remarks: "kept"},
+	}
+	title, body, rank, confidence := findingDisplay(finding)
+	if body != "short summary" {
+		t.Fatalf("body = %q, want short summary", body)
+	}
+	if title != "Final title" {
+		t.Fatalf("title = %q, want Final title", title)
+	}
+	if rank != 2 {
+		t.Fatalf("rank = %d, want 2 (from summarization)", rank)
+	}
+	if confidence != 0.7 {
+		t.Fatalf("confidence = %v, want 0.7 (from summarization)", confidence)
+	}
+}

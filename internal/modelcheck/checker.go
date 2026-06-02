@@ -369,7 +369,7 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		return probe
 	}
 	allowedTools := toolSet(tools)
-	for round := 0; round < 8; round++ {
+	for range 8 {
 		req := c.baseRequest(effort, messages, tools, probeRetryReviewLike)
 		if sec != nil {
 			req.ReasoningSink = sec
@@ -436,7 +436,7 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 		probe.ReasoningEffort = resp.ReasoningEffort
 	}
 	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
-		resp, probe = c.retryJSONProbe(ctx, sec, probe, req, resp, err)
+		_, probe = c.retryJSONProbe(ctx, sec, probe, req, resp, err)
 		if probe.Status != "" {
 			return probe
 		}
@@ -472,7 +472,7 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 		probe.ReasoningEffort = resp.ReasoningEffort
 	}
 	if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
-		resp, probe = c.retryJSONProbe(ctx, sec, probe, req, resp, err)
+		_, probe = c.retryJSONProbe(ctx, sec, probe, req, resp, err)
 		if probe.Status != "" {
 			return probe
 		}

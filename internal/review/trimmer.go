@@ -144,8 +144,8 @@ func (t *Trimmer) trimDiff(ctx *model.ReviewContext) {
 
 	var diff strings.Builder
 	for _, hunk := range ctx.DiffHunks {
-		diff.WriteString(fmt.Sprintf("--- %s\n", hunk.FilePath))
-		diff.WriteString(fmt.Sprintf("@@ -%d,%d +%d,%d @@\n", hunk.OldStart, hunk.OldLines, hunk.NewStart, hunk.NewLines))
+		fmt.Fprintf(&diff, "--- %s\n", hunk.FilePath)
+		fmt.Fprintf(&diff, "@@ -%d,%d +%d,%d @@\n", hunk.OldStart, hunk.OldLines, hunk.NewStart, hunk.NewLines)
 		diff.WriteString(hunk.Content)
 		if !strings.HasSuffix(hunk.Content, "\n") {
 			diff.WriteByte('\n')

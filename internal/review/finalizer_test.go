@@ -73,6 +73,77 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 	}
 }
 
+func TestFinalizeContextNotesInPrompt(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	const notes = "## Notes\n\nCONTEXT_NOTES_MARKER the patch wires notes into the finalizer."
+	newClient := func() *capturingLLM {
+		return &capturingLLM{
+			resps: []*llm.ReviewResponse{
+				{
+					Findings: []model.Finding{
+						{
+							ID:              findingID,
+							Title:           "Fix issue",
+							Body:            "body",
+							ConfidenceScore: 0.7,
+							Priority:        intPtr(1),
+							CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+							Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+							Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
+						},
+					},
+					OverallCorrectness:     "patch is correct",
+					OverallExplanation:     "ok",
+					OverallConfidenceScore: 0.7,
+				},
+			},
+		}
+	}
+	newInput := func() *model.ReviewResult {
+		return &model.ReviewResult{
+			Findings: []model.Finding{
+				{
+					ID:              findingID,
+					Title:           "Fix issue",
+					Body:            "body",
+					ConfidenceScore: 0.7,
+					Priority:        intPtr(1),
+					CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+					Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+				},
+			},
+			OverallCorrectness:     "patch is correct",
+			OverallExplanation:     "ok",
+			OverallConfidenceScore: 0.7,
+		}
+	}
+
+	// With notes: the finalize user prompt carries `notes`.
+	withNotes := newClient()
+	engine := NewEngine(stubSource{}, withNotes, stubRetrieval{}, config.Profile{Model: "test"})
+	if _, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), newInput(), FinalizeOptions{ContextNotes: notes}); err != nil {
+		t.Fatalf("Finalize (with notes) returned err: %v", err)
+	}
+	userPrompt := withNotes.reqs[0].Messages[1].Content
+	if !strings.Contains(userPrompt, `"notes"`) || !strings.Contains(userPrompt, "CONTEXT_NOTES_MARKER") {
+		t.Fatalf("finalize user prompt missing notes:\n%s", userPrompt)
+	}
+	// The system prompt tasks the model to merge notes into overall_explanation.
+	if sys := withNotes.reqs[0].Messages[0].Content; !strings.Contains(sys, "notes") {
+		t.Fatalf("finalize system prompt does not mention notes:\n%s", sys)
+	}
+
+	// Without notes: the `notes` key is omitted entirely.
+	withoutNotes := newClient()
+	engine = NewEngine(stubSource{}, withoutNotes, stubRetrieval{}, config.Profile{Model: "test"})
+	if _, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), newInput(), FinalizeOptions{}); err != nil {
+		t.Fatalf("Finalize (no notes) returned err: %v", err)
+	}
+	if up := withoutNotes.reqs[0].Messages[1].Content; strings.Contains(up, `"notes"`) {
+		t.Fatalf("finalize user prompt should omit notes when none provided:\n%s", up)
+	}
+}
+
 func TestExampleSnippetForFinalizeIncludesFinalization(t *testing.T) {
 	snippet := exampleSnippetFor(llm.SchemaKindFinalize)
 	if !strings.Contains(snippet, `"finalization"`) {

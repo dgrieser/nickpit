@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -200,9 +201,7 @@ func parsePythonFiles(repoRoot string, files []string) (map[string]*pythonFile, 
 				continue
 			}
 			if binding, ok := parsePythonImport(repoRoot, rel, trimmed); ok {
-				for name, target := range binding {
-					module.imports[name] = target
-				}
+				maps.Copy(module.imports, binding)
 				continue
 			}
 			if match := pythonFuncPattern.FindStringSubmatch(trimmed); len(match) == 2 {
@@ -263,8 +262,8 @@ func parsePythonFiles(repoRoot string, files []string) (map[string]*pythonFile, 
 func parsePythonImport(repoRoot, currentPath, line string) (map[string]pythonImportBinding, bool) {
 	if match := pythonImportPattern.FindStringSubmatch(line); len(match) == 2 {
 		out := map[string]pythonImportBinding{}
-		parts := strings.Split(match[1], ",")
-		for _, part := range parts {
+		parts := strings.SplitSeq(match[1], ",")
+		for part := range parts {
 			part = strings.TrimSpace(part)
 			name := part
 			alias := ""
@@ -291,7 +290,7 @@ func parsePythonImport(repoRoot, currentPath, line string) (map[string]pythonImp
 			return nil, true
 		}
 		out := map[string]pythonImportBinding{}
-		for _, rawPart := range strings.Split(match[2], ",") {
+		for rawPart := range strings.SplitSeq(match[2], ",") {
 			part := strings.TrimSpace(rawPart)
 			if part == "*" || part == "" {
 				continue
@@ -426,8 +425,8 @@ func pythonBlockEnd(lines []string, start, indent int) int {
 }
 
 func stripPythonComment(line string) string {
-	if idx := strings.Index(line, "#"); idx >= 0 {
-		return line[:idx]
+	if before, _, ok := strings.Cut(line, "#"); ok {
+		return before
 	}
 	return line
 }

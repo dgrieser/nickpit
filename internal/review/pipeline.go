@@ -50,8 +50,10 @@ type PipelineState struct {
 	mergeRuns        []model.AgentRun
 	mergeReasoning   string
 	finalizeRun      *model.AgentRun
+	summarizeRun     *model.AgentRun
 	verifyUsage      model.TokenUsage
 	finalizeUsage    model.TokenUsage
+	summarizeUsage   model.TokenUsage
 	warnings         []string
 }
 
@@ -262,6 +264,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	res.TokensUsed = usage
 	res.VerifyTokensUsed = st.verifyUsage
 	res.FinalizeTokensUsed = st.finalizeUsage
+	res.SummarizeTokensUsed = st.summarizeUsage
 	res.TotalToolCalls = toolCalls
 	res.ReasoningEffort = reasoning
 	return res
@@ -307,6 +310,9 @@ func (st *PipelineState) aggregateTelemetry() ([]model.AgentRun, model.TokenUsag
 	if st.finalizeRun != nil {
 		runs = append(runs, *st.finalizeRun)
 	}
+	if st.summarizeRun != nil {
+		runs = append(runs, *st.summarizeRun)
+	}
 	return runs, usage, toolCalls, reasoning
 }
 
@@ -349,6 +355,8 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 		return boundStep{label: t, override: entry.Config, run: e.mergeStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepFinalize:
 		return boundStep{label: t, override: entry.Config, run: e.finalizeStepFunc(entry.FindingsFrom)}, nil
+	case workflow.StepSummarize:
+		return boundStep{label: t, override: entry.Config, run: e.summarizeStepFunc(entry.FindingsFrom)}, nil
 	}
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {
 		return boundStep{label: t, needsSource: true, override: entry.Config, run: e.reviewStepFunc(id, manual[id])}, nil

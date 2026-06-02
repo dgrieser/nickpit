@@ -209,7 +209,7 @@ func decodeJSONCandidate(extracted string, alloc func() any) (any, []byte, bool)
 	return nil, nil, false
 }
 
-var rawMessageType = reflect.TypeOf(json.RawMessage(nil))
+var rawMessageType = reflect.TypeFor[json.RawMessage]()
 
 func mergeJSONValue(dst, src reflect.Value) {
 	if !dst.IsValid() || !src.IsValid() {
@@ -438,7 +438,7 @@ func RepairJSON(data []byte) []byte {
 		// Strip block comments: /* ... */
 		if c == '/' && i+1 < len(data) && data[i+1] == '*' {
 			i += 2
-			for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
+			for i+1 < len(data) && (data[i] != '*' || data[i+1] != '/') {
 				i++
 			}
 			i++ // points at '/', loop's i++ moves past it

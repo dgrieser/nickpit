@@ -167,7 +167,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the default review pipeline")
-	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, review:security); mutually exclusive with --spec")
+	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
 	root.AddCommand(cli.newCheckCmd())
@@ -809,6 +809,38 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)
 			result = finalized
 		}
+
+		// Summarize runs after finalize, shortening each finding's finalized body
+		// into summarization.body (other fields copied verbatim from finalization).
+		// Mirrors the finalize soft-fail: on error, keep the finalized result.
+		summarizeOpts := review.SummarizeOptions{
+			UseJSONSchema:            req.UseJSONSchema,
+			MaxOutputRetries:         req.MaxOutputRetries,
+			MaxReasoningSeconds:      req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
+			DisableParallelToolCalls: req.DisableParallelToolCalls,
+			RepoRoot:                 req.RepoRoot,
+		}
+		// result is non-nil here (guarded above + the len(result.Findings) gate),
+		// but the error branch writes back to result, so guard defensively against
+		// any future change to those invariants.
+		if result != nil {
+			summarized, summarizeRun, summarizeErr := engine.Summarize(ctx, result, summarizeOpts)
+			if summarizeErr != nil {
+				a.logProgress("Summarize", fmt.Sprintf("status=ERROR, error=%v; falling back to finalized result", summarizeErr))
+				result.Warnings = append(result.Warnings, fmt.Sprintf("Summarize failed: %v; using finalized result", summarizeErr))
+				summarizeRun.Name = "summarize"
+				summarizeRun.Role = "summarize"
+				summarizeRun.Status = model.AgentRunStatusFailed
+				summarizeRun.Error = summarizeErr.Error()
+				result.SummarizeTokensUsed = summarizeRun.TokensUsed
+				result.AgentRuns = append(result.AgentRuns, summarizeRun)
+			} else {
+				summarized.SummarizeTokensUsed = summarizeRun.TokensUsed
+				summarized.AgentRuns = append(summarized.AgentRuns, summarizeRun)
+				result = summarized
+			}
+		}
 	}
 
 	return a.emitResult(ctx, source, req, result)
@@ -932,7 +964,7 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize step to consume them; add findings_from to a specific step")
+	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize/summarize step to consume them; add findings_from to a specific step")
 }
 
 // loadProfileNamed loads a profile by name (e.g. a spec's `profile:` field),

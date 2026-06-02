@@ -218,5 +218,18 @@ func findingDisplay(finding model.Finding) (title, body string, rank int, confid
 		priority := finding.Finalization.Priority
 		rank = model.PriorityRank(&priority)
 	}
+	// The summarize pass produces a shortened body (other fields copied from
+	// finalization); prefer it for the published comment when present.
+	if finding.Summarization != nil {
+		if t := strings.TrimSpace(finding.Summarization.Title); t != "" {
+			title = t
+		}
+		if bodyText := strings.TrimSpace(finding.Summarization.Body); bodyText != "" {
+			body = finding.Summarization.Body
+		}
+		confidence = finding.Summarization.ConfidenceScore
+		priority := finding.Summarization.Priority
+		rank = model.PriorityRank(&priority)
+	}
 	return title, body, rank, confidence
 }

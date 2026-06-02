@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -83,12 +84,13 @@ type OpenAIClient struct {
 type SchemaKind string
 
 const (
-	SchemaKindReview   SchemaKind = "review"
-	SchemaKindMerge    SchemaKind = "merge"
-	SchemaKindVerify   SchemaKind = "verify"
-	SchemaKindFinalize SchemaKind = "finalize"
-	SchemaKindJSON     SchemaKind = "json"
-	SchemaKindText     SchemaKind = "text"
+	SchemaKindReview    SchemaKind = "review"
+	SchemaKindMerge     SchemaKind = "merge"
+	SchemaKindVerify    SchemaKind = "verify"
+	SchemaKindFinalize  SchemaKind = "finalize"
+	SchemaKindSummarize SchemaKind = "summarize"
+	SchemaKindJSON      SchemaKind = "json"
+	SchemaKindText      SchemaKind = "text"
 )
 
 // ReasoningSink receives streaming reasoning content from collectStream.
@@ -334,7 +336,7 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	// connection and never sends the first byte would hang indefinitely (the
 	// reasoning-timeout controller only starts once streaming begins). The body
 	// itself stays unbounded so legitimate long completion streams are fine.
-	var base http.RoundTripper = http.DefaultTransport
+	base := http.DefaultTransport
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 		clone := dt.Clone()
 		clone.ResponseHeaderTimeout = 120 * time.Second
@@ -394,9 +396,7 @@ func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[st
 	if err := json.Unmarshal(data, &body); err != nil {
 		return nil, err
 	}
-	for key, value := range extraBody {
-		body[key] = value
-	}
+	maps.Copy(body, extraBody)
 	if _, err := json.Marshal(body); err != nil {
 		return nil, err
 	}
@@ -540,9 +540,7 @@ func injectExtraBody(req *http.Request) error {
 			return fmt.Errorf("llm: decoding request body for extra_body: %w", err)
 		}
 	}
-	for key, value := range extraBody {
-		body[key] = value
-	}
+	maps.Copy(body, extraBody)
 
 	merged, err := json.Marshal(body)
 	if err != nil {
@@ -749,15 +747,15 @@ func addReasoningRetryHint(req *ReviewRequest, hint string) {
 		req.UserContent = appendUserHint(req.UserContent, hint)
 		return
 	}
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == openai.ChatMessageRoleUser {
-			if strings.Contains(req.Messages[i].Content, hint) {
+	for _, v := range slices.Backward(req.Messages) {
+		if v.Role == openai.ChatMessageRoleUser {
+			if strings.Contains(v.Content, hint) {
 				return
 			}
 		}
 	}
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == openai.ChatMessageRoleUser && strings.TrimSpace(req.Messages[i].Content) != "" {
+	for i, v := range slices.Backward(req.Messages) {
+		if v.Role == openai.ChatMessageRoleUser && strings.TrimSpace(v.Content) != "" {
 			req.Messages = append(req.Messages[:i+1], append([]Message{{Role: openai.ChatMessageRoleUser, Content: hint}}, req.Messages[i+1:]...)...)
 			return
 		}
@@ -1443,7 +1441,7 @@ func readAndRestoreBody(resp *http.Response) ([]byte, error) {
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxCapturedBodyBytes))
 	if err != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, err
 	}
 	if err := resp.Body.Close(); err != nil {
@@ -1638,11 +1636,7 @@ func isRetryableNetworkError(err error) bool {
 	}
 
 	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return true
-	}
-
-	return false
+	return errors.As(err, &opErr)
 }
 
 func isReasoningOnlyPeerInternalStreamError(err *streamReadError) bool {
@@ -1864,6 +1858,10 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 		resp, err := parseVerifyResponse(content)
 		return resp, 0, err
 	}
+	if kind == SchemaKindSummarize {
+		resp, err := parseSummarizeResponse(content)
+		return resp, 0, err
+	}
 	var parsed ReviewResponse
 	if err := LenientUnmarshalMerge(content, &parsed, reviewResponseFallbackTypes()...); err != nil {
 		return nil, 0, &InvalidResponseError{
@@ -1953,7 +1951,7 @@ func reviewResponseFallbackTypes() []FallbackType {
 				title := strings.TrimSpace(f.Title)
 				body := strings.TrimSpace(f.Body)
 				hasLoc := f.CodeLocation != (model.CodeLocation{})
-				if title == "" && !(body != "" && hasLoc) {
+				if title == "" && (body == "" || !hasLoc) {
 					return false
 				}
 				rr := into.(*ReviewResponse)
@@ -2038,9 +2036,7 @@ func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 		if err := json.Unmarshal(decoded, &asMap); err != nil {
 			continue
 		}
-		for k, val := range asMap {
-			top[k] = val
-		}
+		maps.Copy(top, asMap)
 	}
 	return top
 }
@@ -2055,6 +2051,47 @@ func missingVerifyFields(content string) []string {
 	}
 	if rawID, ok := raw["id"]; ok && !rawUUIDIsValid(rawID) {
 		missing = append(missing, "id (must be UUID)")
+	}
+	return missing
+}
+
+// parseSummarizeResponse parses the summarize pass output. Unlike review/merge/
+// finalize, the summarizer emits a deliberately minimal shape — one entry per
+// finding carrying only `id` and `summarization.body` — so it bypasses the
+// generic findings validator (which would force priority/verification/overall_*
+// the summarizer never produces) and validates only that each finding carries a
+// non-empty summarization body. Finding-to-output matching (count, ids) is the
+// engine validator's job (summarizerOutputValidator), mirroring how the verify
+// pass keeps parsing and orchestration concerns separate.
+func parseSummarizeResponse(content string) (*ReviewResponse, error) {
+	var parsed ReviewResponse
+	if err := LenientUnmarshalMerge(content, &parsed); err != nil {
+		return nil, &InvalidResponseError{
+			RawContent: content,
+			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
+		}
+	}
+	if missing := missingSummarizeFields(&parsed); len(missing) > 0 {
+		return &parsed, &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: missing,
+		}
+	}
+	return &parsed, nil
+}
+
+func missingSummarizeFields(parsed *ReviewResponse) []string {
+	var missing []string
+	for i := range parsed.Findings {
+		s := parsed.Findings[i].Summarization
+		if s == nil {
+			missing = append(missing, fmt.Sprintf("findings[%d].summarization", i))
+			continue
+		}
+		if strings.TrimSpace(s.Body) == "" {
+			missing = append(missing, fmt.Sprintf("findings[%d].summarization.body", i))
+		}
 	}
 	return missing
 }
@@ -2086,18 +2123,14 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 					findings = append(findings, items...)
 				}
 				delete(asMap, "findings")
-				for k, v := range asMap {
-					top[k] = v
-				}
+				maps.Copy(top, asMap)
 				continue
 			}
 			if rawCandidateIsBareFinding(decoded) {
 				findings = append(findings, json.RawMessage(decoded))
 				continue
 			}
-			for k, v := range asMap {
-				top[k] = v
-			}
+			maps.Copy(top, asMap)
 			continue
 		}
 		if parsed, _, ok := decodeJSONCandidate(c, func() any { return new([]json.RawMessage) }); ok {

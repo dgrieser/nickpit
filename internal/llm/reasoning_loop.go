@@ -245,11 +245,11 @@ func repeatedChunkFromError(err error) (string, bool) {
 		return "", false
 	}
 	message := err.Error()
-	start := strings.Index(message, liteLLMRepeatedChunkMarker)
-	if start < 0 {
+	_, after, ok := strings.Cut(message, liteLLMRepeatedChunkMarker)
+	if !ok {
 		return "", false
 	}
-	chunk := message[start+len(liteLLMRepeatedChunkMarker):]
+	chunk := after
 	end := len(chunk)
 	for _, marker := range []string{"Received Model Group=", "Available Model Group Fallbacks="} {
 		if idx := strings.Index(chunk, marker); idx >= 0 {
@@ -290,10 +290,7 @@ func (d *reasoningLoopDetector) checkLoopLocked() bool {
 
 	// Strategy 2: block of k lines appearing consecutively beyond the allowance.
 	requiredCopies := d.maxRepeats + 2
-	maxK := n / requiredCopies
-	if maxK > loopBlockMaxLines {
-		maxK = loopBlockMaxLines
-	}
+	maxK := min(n/requiredCopies, loopBlockMaxLines)
 	for k := loopBlockMinLines; k <= maxK; k++ {
 		recentStart := n - k
 		if !hasRepeatedBlockSignal(d.lines[recentStart:]) {
@@ -319,10 +316,7 @@ func (d *reasoningLoopDetector) checkLoopLocked() bool {
 		}
 	}
 
-	if d.checkFuzzyLoopLocked(n) {
-		return true
-	}
-	return false
+	return d.checkFuzzyLoopLocked(n)
 }
 
 func hasRepeatedBlockSignal(lines []string) bool {

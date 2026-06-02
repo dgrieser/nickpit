@@ -27,8 +27,11 @@ func TestDefaultSpecsValidate(t *testing.T) {
 		t.Fatalf("DefaultReviewSpec invalid: %v", err)
 	}
 	full := DefaultSpec()
-	if last := full.Steps[len(full.Steps)-1]; last.Type != StepFinalize {
-		t.Fatalf("DefaultSpec last step = %q, want finalize", last.Type)
+	if last := full.Steps[len(full.Steps)-1]; last.Type != StepSummarize {
+		t.Fatalf("DefaultSpec last step = %q, want summarize", last.Type)
+	}
+	if penult := full.Steps[len(full.Steps)-2]; penult.Type != StepFinalize {
+		t.Fatalf("DefaultSpec second-to-last step = %q, want finalize", penult.Type)
 	}
 	for _, s := range DefaultReviewSpec().Steps {
 		if s.Type == StepFinalize {

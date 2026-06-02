@@ -1,5 +1,7 @@
 package llm
 
+import "slices"
+
 import "encoding/json"
 
 // finalizeSchemaDefinition extends the findings schema with required
@@ -69,13 +71,7 @@ func extendFindingsForFinalize(root map[string]any) map[string]any {
 func appendRequired(required []string, fields ...string) []string {
 	out := append([]string{}, required...)
 	for _, field := range fields {
-		found := false
-		for _, existing := range out {
-			if existing == field {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(out, field)
 		if !found {
 			out = append(out, field)
 		}

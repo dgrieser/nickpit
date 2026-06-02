@@ -56,14 +56,6 @@ func FindSymbols(_ context.Context, repoRoot, name, path string) ([]Symbol, erro
 	return results, nil
 }
 
-func findSymbolInFile(repoRoot, path, name string) *Symbol {
-	results := findSymbolsInFile(repoRoot, path, name)
-	if len(results) == 0 {
-		return nil
-	}
-	return &results[0]
-}
-
 func findSymbolsInFile(repoRoot, path, name string) []Symbol {
 	fset := token.NewFileSet()
 	file, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
