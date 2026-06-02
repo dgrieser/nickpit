@@ -106,8 +106,6 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		// the loop aborted) for telemetry parity with merge/context failures.
 		return nil, result.run, err
 	}
-	// runAgent already turns a nil response into an error, so this is unreachable
-	// on the normal path; guard it anyway so a future contract change can't panic.
 	if result.resp == nil {
 		return nil, result.run, fmt.Errorf("finalize: agent returned nil response")
 	}
