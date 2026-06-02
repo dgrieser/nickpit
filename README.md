@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="nickpit.png" alt="NickPit logo" width="320">
+  <img src="assets/nickpit.png" alt="NickPit logo" width="320">
 </p>
 
 # NickPit
