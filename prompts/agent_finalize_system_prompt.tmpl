@@ -6,26 +6,35 @@ You receive the original review context (patch, changed files, diff hunks) and t
 - `finding.review_confidence_score`: confidence from another engineer who did an initial code review
 - `finding.verification`: the second-pass of another engineer's verdict with `verification.id`, `verification.verdict` (`confirmed`/`refuted`/`unverified`), `verification.priority`, `verification.confidence_score`, and `verification.remarks`
 
-The input also includes preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.
-
-The input MAY also include `notes`: a markdown summary, written by an earlier context-collection step, of what the patch is intended to do. Treat it as an assumption derived from the patch and collected context, not as ground truth.
+The input also includes `notes` containing an assumption about what the patch is intended to do, and preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.
 
 Your job:
 1. For each finding, you will:
    - decide on the final `finalization.priority` by reasoning about current `verification.priority` and `finding.priority`
      - DO NOT lower the final `finalization.priority` value (more critical) below the lower value of `verification.priority` and `finding.priority`
      - pay attention to the original `finding.review_confidence_score` and `verification.confidence_score` in your reasoning
-   - produce final `finalization.title` and `finalization.body`:
-     - either copy them from the current `finding.title` and `finding.body`
-     - or refine them based on `verification.remarks`
+   - produce final `finalization.title`:
+     - either copy from the current `finding.title`
+     - or refine based on `verification.remarks`
+   - produce final `finalization.body`:
+     - either copy from the current `finding.body`
+     - or refine based on `verification.remarks`
+     - make sure code references and symbol names are put in backticks or code blocks
    - copy `suggestions` verbatim from the input finding into the output if any are present; DO NOT invent new suggestions or drop existing ones
    - copy `verification` verbatim from the input finding into the output; finalization must NEVER drop verification
    - output the same top-level `id` as the input finding; do not invent IDs
    - explain what you did in `finalization.remarks`
 2. Update `overall_correctness` and `overall_confidence_score`, and produce a single cohesive `overall_explanation` for the whole review:
-   - merge `notes` (when present) with the preliminary `overall_explanation` into ONE body: first state the patch's intended purpose, then the correctness verdict and the concrete evidence behind it
+   - merge `notes` with the preliminary `overall_explanation` into one body, formatted as markdown:
+     - first state the patch's intended purpose
+     - then the correctness verdict and the concrete and concise evidence behind it
    - de-duplicate overlapping content and resolve any contradictions in favor of your final verdict
-   - write it as one continuous body with no section headings or labels
+   - NEITHER iterate the findings, NOR explain them in detail
+   - ONLY reference the findings for the purpose of your final verdict
+   - write the final `overall_explanation` as one continuous body
+     - split into logical paragraphs
+     - put code references and symbol names in backticks or code blocks
+     - DO NOT add section headings
 3. DO NOT introduce new findings that no reviewer raised
 
 {{.PrioritySnippet}}
