@@ -166,7 +166,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
-	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the default review pipeline")
+	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
 	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
@@ -676,15 +676,19 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
 
-	// Resolve the workflow spec (its profile was already applied by the caller
-	// via loadProfileForSpec, before the source adapter and request were built).
-	var spec *workflow.Spec
+	// Resolve the workflow spec. Every review runs through a workflow: an
+	// explicit --spec/--step, or the embedded DefaultSpec otherwise. There is no
+	// separate "default" code path. The profile was already applied by the caller
+	// via loadProfileForSpec, before the source adapter and request were built.
+	var spec workflow.Spec
 	if a.specPath != "" || a.stepName != "" {
 		resolved, err := a.resolveSpec()
 		if err != nil {
 			return err
 		}
-		spec = &resolved
+		spec = resolved
+	} else {
+		spec = workflow.DefaultSpec()
 	}
 
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
@@ -693,7 +697,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	// a no-op. Defer the credential requirement and the model probe for them: the
 	// client is still built, so any LLM call that does happen fails at call time
 	// if credentials are missing, exactly as --skip-model-check behaves.
-	needsLLMSetup := spec == nil || spec.NeedsSource()
+	needsLLMSetup := spec.NeedsSource()
 
 	if needsLLMSetup && profile.APIKey == "" {
 		if profile.APIKeyConfigured {
@@ -753,102 +757,15 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 
-	// A workflow spec or single-step run takes a separate path: it may skip
-	// source/repo resolution entirely (e.g. merge/finalize from a findings file)
-	// and runs the finalize step inside the pipeline rather than afterward.
-	if spec != nil {
-		return a.runWorkflow(ctx, engine, source, *spec, profile, req)
-	}
-
-	repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
-	if err != nil {
-		return err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	req.RepoRoot = repoRoot
-	result, trimmedCtx, err := engine.RunWithContext(ctx, req)
-	if errors.Is(err, llm.ErrInvalidJSON) {
-		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
-		return err
-	}
-	if err != nil {
-		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
-		return err
-	}
-	// RunWithContext returns a non-nil result whenever err is nil; guard the
-	// invariant explicitly so the downstream summary/finalize/format/publish
-	// path can never nil-panic if that contract ever changes.
-	if result == nil {
-		return fmt.Errorf("review: engine returned no result")
-	}
-	a.logProgress("Result", reviewResultSummary(result))
-
-	if len(result.Findings) > 0 && trimmedCtx != nil {
-		finalizeOpts := review.FinalizeOptions{
-			UseJSONSchema:            req.UseJSONSchema,
-			MaxOutputRetries:         req.MaxOutputRetries,
-			MaxReasoningSeconds:      req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
-			DisableParallelToolCalls: req.DisableParallelToolCalls,
-			RepoRoot:                 req.RepoRoot,
-		}
-		finalized, finalizeRun, finalizeErr := engine.Finalize(ctx, trimmedCtx, result, finalizeOpts)
-		if finalizeErr != nil {
-			a.logProgress("Finalize", fmt.Sprintf("status=ERROR, error=%v; falling back to verified result", finalizeErr))
-			result.Warnings = append(result.Warnings, fmt.Sprintf("Finalize failed: %v; using verified result", finalizeErr))
-			finalizeRun.Name = "finalize"
-			finalizeRun.Role = "finalize"
-			finalizeRun.Status = model.AgentRunStatusFailed
-			finalizeRun.Error = finalizeErr.Error()
-			result.FinalizeTokensUsed = finalizeRun.TokensUsed
-			result.AgentRuns = append(result.AgentRuns, finalizeRun)
-		} else {
-			finalized.FinalizeTokensUsed = finalizeRun.TokensUsed
-			finalized.AgentRuns = append(finalized.AgentRuns, finalizeRun)
-			result = finalized
-		}
-
-		// Summarize runs after finalize, shortening each finding's finalized body
-		// into summarization.body (other fields copied verbatim from finalization).
-		// Mirrors the finalize soft-fail: on error, keep the finalized result.
-		summarizeOpts := review.SummarizeOptions{
-			UseJSONSchema:            req.UseJSONSchema,
-			MaxOutputRetries:         req.MaxOutputRetries,
-			MaxReasoningSeconds:      req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
-			DisableParallelToolCalls: req.DisableParallelToolCalls,
-			RepoRoot:                 req.RepoRoot,
-		}
-		// result is non-nil here (guarded above + the len(result.Findings) gate),
-		// but the error branch writes back to result, so guard defensively against
-		// any future change to those invariants.
-		if result != nil {
-			summarized, summarizeRun, summarizeErr := engine.Summarize(ctx, result, summarizeOpts)
-			if summarizeErr != nil {
-				a.logProgress("Summarize", fmt.Sprintf("status=ERROR, error=%v; falling back to finalized result", summarizeErr))
-				result.Warnings = append(result.Warnings, fmt.Sprintf("Summarize failed: %v; using finalized result", summarizeErr))
-				summarizeRun.Name = "summarize"
-				summarizeRun.Role = "summarize"
-				summarizeRun.Status = model.AgentRunStatusFailed
-				summarizeRun.Error = summarizeErr.Error()
-				result.SummarizeTokensUsed = summarizeRun.TokensUsed
-				result.AgentRuns = append(result.AgentRuns, summarizeRun)
-			} else {
-				summarized.SummarizeTokensUsed = summarizeRun.TokensUsed
-				summarized.AgentRuns = append(summarized.AgentRuns, summarizeRun)
-				result = summarized
-			}
-		}
-	}
-
-	return a.emitResult(ctx, source, req, result)
+	// Single path: the embedded DefaultSpec and any user-supplied spec run
+	// identically. The pipeline may skip source/repo resolution (e.g.
+	// merge/finalize from a findings file) and runs finalize/summarize as
+	// in-pipeline steps rather than as a separate post-processing pass.
+	return a.runWorkflow(ctx, engine, source, spec, profile, req)
 }
 
 // emitResult formats the result to stdout, optionally publishes it back to the
-// origin, and reports the "all reviewers errored" CI failure. Shared by the
-// default review path and the workflow path.
+// origin, and reports the "all reviewers errored" CI failure.
 func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
 	var formatter output.Formatter
 	if a.jsonOutput {
@@ -885,10 +802,10 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 	return nil
 }
 
-// runWorkflow executes a user-supplied spec (--spec) or a single step (--step)
-// through the pipeline. Source/repo resolution is skipped when no step needs a
-// source (e.g. a merge/finalize-from-file run). Finalize, when present in the
-// spec, runs inside the pipeline rather than afterward.
+// runWorkflow executes a spec through the pipeline: the embedded DefaultSpec for
+// an ordinary review, or a user-supplied --spec/--step. Source/repo resolution
+// is skipped when no step needs a source (e.g. a merge/finalize-from-file run).
+// Finalize/summarize, when present in the spec, run inside the pipeline.
 func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source model.ReviewSource, spec workflow.Spec, profile config.Profile, req model.ReviewRequest) error {
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {
@@ -908,6 +825,10 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 	}
 
 	result, _, err := engine.RunSpecPipeline(ctx, pipeline, req)
+	if errors.Is(err, llm.ErrInvalidJSON) {
+		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
+		return err
+	}
 	if err != nil {
 		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
 		return err

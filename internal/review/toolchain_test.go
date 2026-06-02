@@ -69,7 +69,7 @@ func TestEngineIncludesToolchainVersionsInContextPayload(t *testing.T) {
 		}
 	})
 
-	_, enriched, err := engine.RunWithContext(context.Background(), model.ReviewRequest{
+	_, enriched, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         "/some/repo",
 		MaxContextTokens: 1000,
@@ -110,7 +110,7 @@ func TestEngineSkipsToolchainCaptureWhenNil(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetToolchainCapture(nil)
 
-	_, err := engine.Run(context.Background(), model.ReviewRequest{
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		MaxContextTokens: 1000,
 	})

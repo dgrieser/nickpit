@@ -23,9 +23,6 @@ func TestDefaultSpecsValidate(t *testing.T) {
 	if err := DefaultSpec().Validate(); err != nil {
 		t.Fatalf("DefaultSpec invalid: %v", err)
 	}
-	if err := DefaultReviewSpec().Validate(); err != nil {
-		t.Fatalf("DefaultReviewSpec invalid: %v", err)
-	}
 	full := DefaultSpec()
 	if last := full.Steps[len(full.Steps)-1]; last.Type != StepSummarize {
 		t.Fatalf("DefaultSpec last step = %q, want summarize", last.Type)
@@ -33,15 +30,10 @@ func TestDefaultSpecsValidate(t *testing.T) {
 	if penult := full.Steps[len(full.Steps)-2]; penult.Type != StepFinalize {
 		t.Fatalf("DefaultSpec second-to-last step = %q, want finalize", penult.Type)
 	}
-	for _, s := range DefaultReviewSpec().Steps {
-		if s.Type == StepFinalize {
-			t.Fatal("DefaultReviewSpec must not contain finalize")
-		}
-	}
 }
 
 func TestDefaultSpecReviewersAreParallel(t *testing.T) {
-	spec := DefaultReviewSpec()
+	spec := DefaultSpec()
 	var parallel *StepEntry
 	for i := range spec.Steps {
 		if spec.Steps[i].IsParallel() {
