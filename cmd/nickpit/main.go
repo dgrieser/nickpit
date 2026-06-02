@@ -449,7 +449,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken))
+			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken), profile.AssetBaseURL)
 			req := model.ReviewRequest{
 				Mode:                    model.ModeGitLab,
 				Workdir:                 profile.Workdir,

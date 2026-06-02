@@ -28,6 +28,9 @@ const (
 	DefaultGitHubTokenRef           = "${GITHUB_TOKEN}"
 	DefaultGitLabTokenRef           = "${GITLAB_TOKEN}"
 	DefaultGitLabBaseURLRef         = "${GITLAB_BASE_URL}"
+	// DefaultAssetBaseURL is where the published-review badge SVGs are served.
+	// The Pages workflow deploys the repo's assets/ directory here.
+	DefaultAssetBaseURL = "https://dgrieser.github.io/nickpit/"
 )
 
 var envReferencePattern = regexp.MustCompile(`^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$`)
@@ -60,6 +63,7 @@ type Profile struct {
 	GitHubToken                        string              `yaml:"github_token"`
 	GitLabToken                        string              `yaml:"gitlab_token"`
 	GitLabBaseURL                      string              `yaml:"gitlab_base_url"`
+	AssetBaseURL                       string              `yaml:"asset_base_url"`
 	MaxContextTokensConfigured         bool                `yaml:"-"`
 	APIKeyConfigured                   bool                `yaml:"-"`
 	MaxToolCallsConfigured             bool                `yaml:"-"`
@@ -453,6 +457,9 @@ func applyProfileDefaults(profile Profile) Profile {
 	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort
+	}
+	if profile.AssetBaseURL == "" {
+		profile.AssetBaseURL = DefaultAssetBaseURL
 	}
 	return profile
 }

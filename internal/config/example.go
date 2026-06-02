@@ -62,6 +62,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
 		yamlEntry("gitlab_base_url", yamlScalar(profile.GitLabBaseURL)),
+		yamlEntry("asset_base_url", yamlScalar(profile.AssetBaseURL)),
 	}
 	return yamlMapping(entries...)
 }
