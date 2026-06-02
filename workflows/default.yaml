@@ -1,0 +1,17 @@
+version: 1
+# profile: default          # optional; same as --profile
+
+steps:
+  - collect-context
+  - parallel:
+      - review:codequality
+      - review:security
+      - review:architecture
+      - review:performance
+      - review:testing
+      - review:bestpractices
+  - verify
+  - dedupe
+  - merge
+  - finalize
+  - summarize
