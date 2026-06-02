@@ -118,6 +118,11 @@ func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
 		if finding.Finalization != nil {
 			title, body, conf = finding.Finalization.Title, finding.Finalization.Body, finding.Finalization.ConfidenceScore
 		}
+		// The summarize pass shortens the finalized body (other fields copied from
+		// finalization), so prefer it for what the user sees when present.
+		if finding.Summarization != nil {
+			title, body, conf = finding.Summarization.Title, finding.Summarization.Body, finding.Summarization.ConfidenceScore
+		}
 		// Title/Body are LLM-generated and untrusted; strip control characters
 		// so embedded ANSI/escape sequences cannot manipulate the terminal.
 		if _, err := fmt.Fprintf(f.w, "%s\n%s\nConfidence: %.2f\n\n",

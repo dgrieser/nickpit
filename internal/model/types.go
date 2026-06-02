@@ -69,6 +69,7 @@ type ReviewResult struct {
 	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
 	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used,omitempty"`
 	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used,omitempty"`
+	SummarizeTokensUsed    TokenUsage `json:"summarize_tokens_used,omitempty"`
 	Mode                   string     `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`
@@ -195,15 +196,16 @@ type CommitSummary struct {
 type Finding struct {
 	// ID is required at serialization boundaries; regenerate legacy artifacts
 	// that predate UUID finding IDs.
-	ID              string               `json:"id"`
-	Title           string               `json:"title"`
-	Body            string               `json:"body"`
-	ConfidenceScore float64              `json:"confidence_score"`
-	Priority        *int                 `json:"priority,omitempty"`
-	CodeLocation    CodeLocation         `json:"code_location"`
-	Suggestions     []Suggestion         `json:"suggestions,omitempty"`
-	Verification    *FindingVerification `json:"verification,omitempty"`
-	Finalization    *FindingFinalization `json:"finalization,omitempty"`
+	ID              string                `json:"id"`
+	Title           string                `json:"title"`
+	Body            string                `json:"body"`
+	ConfidenceScore float64               `json:"confidence_score"`
+	Priority        *int                  `json:"priority,omitempty"`
+	CodeLocation    CodeLocation          `json:"code_location"`
+	Suggestions     []Suggestion          `json:"suggestions,omitempty"`
+	Verification    *FindingVerification  `json:"verification,omitempty"`
+	Finalization    *FindingFinalization  `json:"finalization,omitempty"`
+	Summarization   *FindingSummarization `json:"summarization,omitempty"`
 }
 
 func EnsureFindingIDs(findings []Finding) int {
@@ -306,6 +308,19 @@ func EnsureVerificationID(v *FindingVerification, fallback string) {
 }
 
 type FindingFinalization struct {
+	Title           string  `json:"title"`
+	Body            string  `json:"body"`
+	Priority        int     `json:"priority"`
+	ConfidenceScore float64 `json:"confidence_score"`
+	Remarks         string  `json:"remarks"`
+}
+
+// FindingSummarization carries the shortened, more readable body produced by the
+// summarize pass. Its body is the only field the summarizer LLM emits; every
+// other field is copied verbatim in code from the finding's FindingFinalization
+// (see applySummarizedFinding in internal/review/summarizer.go), so a
+// summarization always mirrors the finalization it shortens apart from Body.
+type FindingSummarization struct {
 	Title           string  `json:"title"`
 	Body            string  `json:"body"`
 	Priority        int     `json:"priority"`

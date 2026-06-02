@@ -431,6 +431,73 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 	}
 }
 
+// summarizeStepFunc runs the summarizer over the flat result, after finalize.
+// Like finalize it accepts injected findings (so `--step summarize --findings
+// finalized.json` works) and falls back to the merged/materialized result
+// otherwise. Summarize failure is soft: the finalized bodies are kept.
+func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		if len(findingsFrom) > 0 {
+			groups, err := loadFindingsFiles(findingsFrom)
+			if err != nil {
+				return err
+			}
+			flat := flattenInjectedGroups(groups)
+			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
+			st.mu.Lock()
+			st.result = &model.ReviewResult{
+				Findings:               findings,
+				OverallCorrectness:     flat.overallCorrectness,
+				OverallExplanation:     flat.overallExplanation,
+				OverallConfidenceScore: flat.overallConfidence,
+			}
+			st.mu.Unlock()
+		}
+		st.mu.Lock()
+		if st.result == nil {
+			st.result = st.materializeFromGroupsLocked(sc.Req)
+		}
+		in := st.result
+		st.mu.Unlock()
+
+		if len(in.Findings) == 0 {
+			return nil
+		}
+		opts := SummarizeOptions{
+			UseJSONSchema:            sc.Req.UseJSONSchema,
+			MaxOutputRetries:         sc.Req.MaxOutputRetries,
+			MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
+			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+			RepoRoot:                 sc.Req.RepoRoot,
+		}
+		summarized, summarizeRun, err := sc.Engine.Summarize(ctx, in, opts)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if err != nil {
+			sc.Engine.logf("Summarize failed, using finalized result: error=%v", err)
+			st.warnings = append(st.warnings, fmt.Sprintf("Summarize failed: %v; using finalized result", err))
+			summarizeRun.Name = "summarize"
+			summarizeRun.Role = "summarize"
+			summarizeRun.Status = model.AgentRunStatusFailed
+			summarizeRun.Error = err.Error()
+			st.summarizeRun = &summarizeRun
+			st.summarizeUsage = summarizeRun.TokensUsed
+			return nil
+		}
+		// Fold any mismatch warning the summarizer surfaced on the cloned result
+		// into the pipeline warnings (the executor owns Warnings assembly).
+		if len(summarized.Warnings) > 0 {
+			st.warnings = append(st.warnings, summarized.Warnings...)
+			summarized.Warnings = nil
+		}
+		st.result = summarized
+		st.summarizeRun = &summarizeRun
+		st.summarizeUsage = summarizeRun.TokensUsed
+		return nil
+	}
+}
+
 // injectGroups loads findings files (one group per file) and registers them as
 // synthetic reviewer groups, used to seed verify/dedupe/merge from disk.
 func injectGroups(st *PipelineState, findingsFrom []string) error {

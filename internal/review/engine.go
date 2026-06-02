@@ -1829,6 +1829,9 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 	if kind == llm.SchemaKindFinalize {
 		return llm.FinalizeExamplePromptSnippet()
 	}
+	if kind == llm.SchemaKindSummarize {
+		return llm.SummarizeExamplePromptSnippet()
+	}
 	return llm.FindingsExamplePromptSnippet()
 }
 
@@ -2171,6 +2174,9 @@ func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {
 	}
 	if kind == llm.SchemaKindVerify {
 		return verifyOutputSchemaSnippetFor(useJSONSchema)
+	}
+	if kind == llm.SchemaKindSummarize {
+		return summarizeOutputSchemaSnippetFor(useJSONSchema)
 	}
 	return reviewOutputSchemaSnippetFor(useJSONSchema)
 }

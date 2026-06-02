@@ -15,6 +15,7 @@
 #   dedupe                    de-duplicate findings per reviewer
 #   merge                     merge reviewers' findings into one set
 #   finalize                  finalize priorities/confidence/wording
+#   summarize                 shorten each finalized body for readability
 #
 # A `parallel:` group runs its children concurrently (with a barrier after).
 version: 1
@@ -33,6 +34,7 @@ steps:
   - dedupe
   - merge
   - finalize
+  - summarize
 
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
@@ -106,3 +108,4 @@ steps:
 # Or from the CLI, run a single step on imported findings:
 #   nickpit local branch --step merge --findings a.json --findings b.json --json
 #   nickpit local branch --step finalize --findings merged.json --json
+#   nickpit local branch --step summarize --findings finalized.json --json
