@@ -79,7 +79,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 		schema:           schema,
 		schemaKind:       llm.SchemaKindSummarize,
 		hasTools:         false,
-		validateResponse: summarizerOutputValidator(in.Findings),
+		validateResponse: summarizerOutputValidator(in.Findings, in.OverallExplanation),
 	}, req)
 	if err != nil {
 		// Preserve the partial AgentRun (tokens accrued before the loop aborted)
@@ -107,15 +107,22 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	return out, result.run, nil
 }
 
-func summarizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+func summarizerOutputValidator(inputFindings []model.Finding, inputOverall string) func(*llm.ReviewResponse) *llm.InvalidResponseError {
 	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
 		expected := len(inputFindings)
 		var summarizerFindings []model.Finding
+		respOverall := ""
 		if resp != nil {
 			summarizerFindings = resp.Findings
+			respOverall = resp.OverallExplanation
 		}
 		stats := summarizerOutputStats(inputFindings, summarizerFindings, nil)
-		if stats.SummarizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0 {
+		countOK := stats.SummarizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0
+		// Only require a shortened overall_explanation back when we sent one to
+		// shorten. A standalone summarize over findings with no overall (e.g.
+		// `--step summarize --findings raw.json`) must not be forced to invent one.
+		overallMissing := strings.TrimSpace(inputOverall) != "" && strings.TrimSpace(respOverall) == ""
+		if countOK && !overallMissing {
 			return nil
 		}
 		raw := ""
@@ -124,25 +131,31 @@ func summarizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRe
 			raw = resp.RawResponse
 			reasoningEffort = resp.ReasoningEffort
 		}
+		missing := []string{"findings"}
+		if overallMissing {
+			missing = append(missing, "overall_explanation")
+		}
 		invalid := &llm.InvalidResponseError{
 			RawContent:      raw,
-			Reason:          fmt.Sprintf("summarizer_output_mismatch got=%d expected=%d matched=%d omitted=%d ignored=%d", stats.SummarizerFindings, expected, stats.Matched, stats.Omitted, stats.Ignored),
-			MissingFields:   []string{"findings"},
+			Reason:          fmt.Sprintf("summarizer_output_mismatch got=%d expected=%d matched=%d omitted=%d ignored=%d overall_missing=%t", stats.SummarizerFindings, expected, stats.Matched, stats.Omitted, stats.Ignored, overallMissing),
+			MissingFields:   missing,
 			ReasoningEffort: reasoningEffort,
 		}
 		invalid.RetryGuidanceTemplate = "summarizer_count_retry_guidance.tmpl"
 		invalid.RetryGuidanceData = struct {
-			Expected int
-			Got      int
-			Matched  int
-			Omitted  int
-			Ignored  int
+			Expected       int
+			Got            int
+			Matched        int
+			Omitted        int
+			Ignored        int
+			OverallMissing bool
 		}{
-			Expected: expected,
-			Got:      stats.SummarizerFindings,
-			Matched:  stats.Matched,
-			Omitted:  stats.Omitted,
-			Ignored:  stats.Ignored,
+			Expected:       expected,
+			Got:            stats.SummarizerFindings,
+			Matched:        stats.Matched,
+			Omitted:        stats.Omitted,
+			Ignored:        stats.Ignored,
+			OverallMissing: overallMissing,
 		}
 		return invalid
 	}
