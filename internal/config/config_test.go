@@ -452,6 +452,49 @@ profiles:
 	}
 }
 
+func TestLoadConfigAssetBaseURLFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    asset_base_url: https://badges.example.com/np/
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.AssetBaseURL != "https://badges.example.com/np/" {
+		t.Fatalf("asset_base_url = %q, want configured value", profile.AssetBaseURL)
+	}
+}
+
+func TestLoadConfigAssetBaseURLDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.AssetBaseURL != DefaultAssetBaseURL {
+		t.Fatalf("asset_base_url = %q, want default %q", profile.AssetBaseURL, DefaultAssetBaseURL)
+	}
+}
+
 func TestLoadConfigTopPFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

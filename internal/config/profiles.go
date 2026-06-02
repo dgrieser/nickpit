@@ -104,5 +104,8 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.GitLabBaseURL != "" {
 		base.GitLabBaseURL = override.GitLabBaseURL
 	}
+	if override.AssetBaseURL != "" {
+		base.AssetBaseURL = override.AssetBaseURL
+	}
 	return base
 }

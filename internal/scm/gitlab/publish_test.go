@@ -95,7 +95,7 @@ func (ps *publishServer) record(r *http.Request, dst *[]postRecord) {
 }
 
 func (ps *publishServer) adapter() *Adapter {
-	return NewAdapter(NewClient(ps.server.URL, "token"))
+	return NewAdapter(NewClient(ps.server.URL, "token"), "")
 }
 
 func intPtr(v int) *int { return &v }
