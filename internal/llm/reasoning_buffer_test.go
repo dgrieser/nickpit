@@ -22,12 +22,10 @@ func TestBufferedReasoningSinkAppendStringReset(t *testing.T) {
 func TestBufferedReasoningSinkConcurrentAppend(t *testing.T) {
 	var sink BufferedReasoningSink
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 50 {
+		wg.Go(func() {
 			sink.Append("x")
-		}()
+		})
 	}
 	wg.Wait()
 	if got, want := len(sink.String()), 50; got != want {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -132,7 +133,7 @@ type ignorePatternPart struct {
 
 func (m IgnoreMatcher) matchStatus(path string, isDir bool) bool {
 	ignored := false
-	for _, baseDir := range applicableBaseDirs(path, isDir) {
+	for _, baseDir := range applicableBaseDirs(path) {
 		for _, rule := range m.rulesByBaseDir[baseDir] {
 			if rule.matches(path, isDir) {
 				ignored = !rule.negated
@@ -211,7 +212,7 @@ func parseIgnoreFile(filePath, baseDir string) ([]ignoreRule, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	rules := make([]ignoreRule, 0)
 	scanner := bufio.NewScanner(file)
@@ -270,12 +271,7 @@ func (r ignoreRule) matches(path string, isDir bool) bool {
 		return false
 	}
 	if r.directoryOnly {
-		for _, candidate := range candidateDirectories(rel, isDir) {
-			if r.matchesSingle(candidate) {
-				return true
-			}
-		}
-		return false
+		return slices.ContainsFunc(candidateDirectories(rel, isDir), r.matchesSingle)
 	}
 	return r.matchesSingle(rel)
 }
@@ -288,7 +284,7 @@ func (r ignoreRule) matchesSingle(rel string) bool {
 		if r.anchored {
 			return matchCompiledComponent(r.patternParts[0], pathBase(rel)) && pathDir(rel) == "."
 		}
-		for _, segment := range strings.Split(rel, "/") {
+		for segment := range strings.SplitSeq(rel, "/") {
 			if matchCompiledComponent(r.patternParts[0], segment) {
 				return true
 			}
@@ -328,7 +324,7 @@ func candidateDirectories(path string, isDir bool) []string {
 	return candidates
 }
 
-func applicableBaseDirs(path string, isDir bool) []string {
+func applicableBaseDirs(path string) []string {
 	dir := pathDir(path)
 	if dir == "." || dir == "" {
 		return []string{""}
@@ -336,7 +332,7 @@ func applicableBaseDirs(path string, isDir bool) []string {
 	parts := strings.Split(dir, "/")
 	baseDirs := make([]string, 0, len(parts)+1)
 	baseDirs = append(baseDirs, "")
-	for i := 0; i < len(parts); i++ {
+	for i := range parts {
 		baseDirs = append(baseDirs, strings.Join(parts[:i+1], "/"))
 	}
 	return baseDirs

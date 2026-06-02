@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -215,9 +216,7 @@ func parseNodeFiles(repoRoot string, files []string) (map[string]*nodeFile, erro
 				continue
 			}
 			if bindings, ok := parseNodeImports(repoRoot, rel, line); ok {
-				for name, binding := range bindings {
-					module.imports[name] = binding
-				}
+				maps.Copy(module.imports, bindings)
 				continue
 			}
 			parseNodeExports(module, line)
@@ -317,7 +316,7 @@ func parseNodeImports(repoRoot, currentPath, line string) (map[string]nodeImport
 			return nil, true
 		}
 		out := map[string]nodeImportBinding{}
-		for _, rawPart := range strings.Split(match[1], ",") {
+		for rawPart := range strings.SplitSeq(match[1], ",") {
 			part := strings.TrimSpace(rawPart)
 			name := part
 			alias := ""
@@ -357,7 +356,7 @@ func parseNodeImports(repoRoot, currentPath, line string) (map[string]nodeImport
 			return nil, true
 		}
 		out := map[string]nodeImportBinding{}
-		for _, rawPart := range strings.Split(match[1], ",") {
+		for rawPart := range strings.SplitSeq(match[1], ",") {
 			part := strings.TrimSpace(rawPart)
 			name := part
 			alias := ""
@@ -378,7 +377,7 @@ func parseNodeImports(repoRoot, currentPath, line string) (map[string]nodeImport
 
 func parseNodeExports(module *nodeFile, line string) {
 	if match := nodeExportListPattern.FindStringSubmatch(line); len(match) == 2 {
-		for _, rawPart := range strings.Split(match[1], ",") {
+		for rawPart := range strings.SplitSeq(match[1], ",") {
 			part := strings.TrimSpace(rawPart)
 			name := part
 			exportName := part
@@ -398,7 +397,7 @@ func parseNodeExports(module *nodeFile, line string) {
 		}
 	}
 	if match := nodeModuleObjectPat.FindStringSubmatch(line); len(match) == 2 {
-		for _, rawPart := range strings.Split(match[1], ",") {
+		for rawPart := range strings.SplitSeq(match[1], ",") {
 			part := strings.TrimSpace(rawPart)
 			name := part
 			exportName := part
@@ -515,8 +514,8 @@ func nodeExpressionEnd(lines []string, start int) int {
 }
 
 func stripNodeLine(line string) string {
-	if idx := strings.Index(line, "//"); idx >= 0 {
-		return line[:idx]
+	if before, _, ok := strings.Cut(line, "//"); ok {
+		return before
 	}
 	return line
 }

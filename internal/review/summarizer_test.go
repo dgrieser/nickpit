@@ -127,6 +127,85 @@ func TestSummarizeSynthesizesWhenNoFinalization(t *testing.T) {
 	}
 }
 
+func TestSummarizeShortensOverallExplanation(t *testing.T) {
+	const findingID = "33333333-3333-4333-8333-333333333333"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short."}},
+				},
+				OverallExplanation: "Short overall.\nVerdict line.",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID:           findingID,
+				Title:        "Fix issue",
+				Body:         "body",
+				Priority:     intPtr(1),
+				CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Finalization: &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
+			},
+		},
+		OverallCorrectness: "patch is correct",
+		OverallExplanation: "A LONG_OVERALL_MARKER explanation describing the patch intent and the review verdict in detail.",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	// The input overall_explanation is sent to the model to shorten.
+	if up := llmClient.reqs[0].Messages[1].Content; !strings.Contains(up, `"overall_explanation"`) || !strings.Contains(up, "LONG_OVERALL_MARKER") {
+		t.Fatalf("summarize user prompt missing overall_explanation:\n%s", up)
+	}
+	// The shortened overall_explanation is adopted.
+	if out.OverallExplanation != "Short overall.\nVerdict line." {
+		t.Fatalf("out.OverallExplanation = %q, want shortened", out.OverallExplanation)
+	}
+}
+
+func TestSummarizePreservesOverallExplanationWhenModelOmitsIt(t *testing.T) {
+	const findingID = "44444444-4444-4444-8444-444444444444"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short."}},
+				},
+				// No OverallExplanation emitted.
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID:           findingID,
+				Title:        "Fix issue",
+				Body:         "body",
+				Priority:     intPtr(1),
+				CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Finalization: &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
+			},
+		},
+		OverallCorrectness: "patch is correct",
+		OverallExplanation: "finalized overall explanation",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if out.OverallExplanation != "finalized overall explanation" {
+		t.Fatalf("out.OverallExplanation = %q, want finalized preserved", out.OverallExplanation)
+	}
+}
+
 func TestSummarizeEmptyFindingsIsNoOp(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})

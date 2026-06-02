@@ -2116,7 +2116,7 @@ func readReviewFile(root, path string) string {
 	if err != nil {
 		return ""
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || info.IsDir() || info.Size() > maxStyleGuideProbeBytes {
 		return ""

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="112" height="20" viewBox="0 0 112 20" role="img" aria-label="P0">
+  <rect width="112" height="20" rx="4" transform="matrix(-1 0 0 1 112 0)" fill="#00FF0D" />
+  <circle cx="100" cy="10" r="6.5" fill="#000000" opacity="0.7" />
+  <path d="M96.8 10.1 L99.1 12.4 L103.6 7.6" fill="none" stroke="#00FF0D" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+  <text x="40.0" y="10.5" text-anchor="start" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700" fill="#000000" opacity="0.7">CORRECT</text>
+</svg>

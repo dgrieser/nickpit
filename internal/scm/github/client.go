@@ -86,7 +86,7 @@ func (c *Client) do(ctx context.Context, path string) ([]byte, *http.Response, e
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		return nil, nil, fmt.Errorf("github: status %d", resp.StatusCode)
 	}
@@ -109,8 +109,8 @@ func nextLink(header string) string {
 	if header == "" {
 		return ""
 	}
-	parts := strings.Split(header, ",")
-	for _, part := range parts {
+	parts := strings.SplitSeq(header, ",")
+	for part := range parts {
 		part = strings.TrimSpace(part)
 		if !strings.Contains(part, `rel="next"`) {
 			continue

@@ -17,7 +17,7 @@ func TestStripControl(t *testing.T) {
 		{"strips alt screen switch", "\x1b[?1049hX", "[?1049hX"},
 		{"strips bare control bytes", "a\x07\x00\x08b", "ab"},
 		{"strips DEL", "a\x7fb", "ab"},
-		{"strips C1 codepoint", "ab", "ab"},
+		{"strips C1 codepoint", "a\u009bb", "ab"},
 		{"keeps unicode", "héllo → 世界", "héllo → 世界"},
 		{"empty", "", ""},
 	}

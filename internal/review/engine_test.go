@@ -41,20 +41,6 @@ func (stubSource) ResolveContext(context.Context, model.ReviewRequest) (*model.R
 	}, nil
 }
 
-type textSource struct{}
-
-func (textSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
-	return &model.ReviewContext{
-		Mode:       model.ModeLocal,
-		Repository: model.RepositoryInfo{FullName: "repo"},
-		Title:      "title",
-		ChangedFiles: []model.ChangedFile{
-			{Path: "README.txt", Status: model.FileModified, Additions: 1},
-		},
-		Diff: "diff --git a/README.txt b/README.txt\n@@ -1 +1 @@\n-old\n+new\n",
-	}, nil
-}
-
 type stubLLM struct{}
 
 func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -2667,9 +2653,9 @@ func outputAt(values []string, idx int) string {
 }
 
 func lastUserContent(messages []llm.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			return messages[i].Content
+	for _, message := range slices.Backward(messages) {
+		if message.Role == "user" {
+			return message.Content
 		}
 	}
 	return ""

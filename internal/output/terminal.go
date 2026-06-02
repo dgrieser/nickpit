@@ -178,7 +178,7 @@ func (f *TerminalFormatter) renderVerification(v *model.FindingVerification, ori
 	default:
 		b.WriteString(f.colorVerifyInvalid(glyphUnverified, v.ConfidenceScore))
 	}
-	b.WriteString(fmt.Sprintf("  conf %.2f", v.ConfidenceScore))
+	fmt.Fprintf(&b, "  conf %.2f", v.ConfidenceScore)
 	if v.Priority != originalRank {
 		arrow := fmt.Sprintf("  P%d→P%d", originalRank, v.Priority)
 		b.WriteString(f.colorPriorityArrow(arrow))
@@ -251,11 +251,4 @@ func (f *TerminalFormatter) colorize(text string, priority int) string {
 
 func priorityLabel(priority *int) string {
 	return fmt.Sprintf("P%d", model.PriorityRank(priority))
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

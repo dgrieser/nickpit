@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -293,8 +294,8 @@ func latestRows(content string, maxRows, width int) string {
 
 	used := 0
 	start := len(lines)
-	for i := len(lines) - 1; i >= 0; i-- {
-		rows := wrappedRows(lines[i], width)
+	for i, line := range slices.Backward(lines) {
+		rows := wrappedRows(line, width)
 		if used+rows > maxRows {
 			break
 		}

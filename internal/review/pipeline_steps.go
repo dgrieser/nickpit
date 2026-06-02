@@ -391,6 +391,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			st.result = st.materializeFromGroupsLocked(sc.Req)
 		}
 		in := st.result
+		contextNotes := st.contextNotes
 		st.mu.Unlock()
 
 		if len(in.Findings) == 0 {
@@ -403,6 +404,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 			RepoRoot:                 sc.Req.RepoRoot,
+			ContextNotes:             contextNotes,
 		}
 		finalized, finalizeRun, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 		st.mu.Lock()

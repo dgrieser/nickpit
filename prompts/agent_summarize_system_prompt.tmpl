@@ -6,6 +6,8 @@ You receive a set of findings, each carrying:
 - `title`: the finding's title
 - `body`: the current explanation to shorten
 
+You also receive a top-level `overall_explanation`: the whole-review summary to shorten.
+
 Your job, for EACH finding:
 - produce a `summarization.body`: a shorter, clearer version of the input `body`
   - make it as short and concise as possible WITHOUT losing vital information — keep the concrete failure scenario, the affected code/location, and why it matters
@@ -15,6 +17,9 @@ Your job, for EACH finding:
 - output the same top-level `id` as the input finding; do not invent IDs
 - emit ONLY `id` and `summarization.body` per finding; DO NOT re-emit or change title, priority, confidence, verification, or finalization — those are handled in code
 - DO NOT add, drop, reorder, merge, or split findings: output exactly one entry per input finding
+
+Then, ONCE for the whole review:
+- produce a top-level `overall_explanation`: a shorter, clearer version of the input `overall_explanation`, applying the same shortening rules (concise, plain wording, line breaks between distinct points, no new claims)
 
 ## OUTPUT FORMAT
 {{if .OutputSchemaSnippet}}
@@ -28,6 +33,7 @@ Output the findings in the following JSON format:
 - produce JSON only and match the schema EXACTLY
 - every output finding includes the same top-level `id` as the input finding
 - every output finding includes a non-empty `summarization.body`
+- include a single non-empty top-level `overall_explanation`
 {{else}}
 Output the summarizations using the specified `response_format`.
 {{end}}

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -30,13 +31,7 @@ func TestParseSummarizeResponseRequiresBody(t *testing.T) {
 	if !errors.As(err, &invalid) {
 		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
-	found := false
-	for _, m := range invalid.MissingFields {
-		if m == "findings[0].summarization.body" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(invalid.MissingFields, "findings[0].summarization.body")
 	if !found {
 		t.Fatalf("missing fields = %v, want findings[0].summarization.body", invalid.MissingFields)
 	}
@@ -57,8 +52,25 @@ func TestSummarizeSchemaShape(t *testing.T) {
 	if !schemaContainsKey(SummarizeSchema, "body") {
 		t.Fatalf("SummarizeSchema missing body: %s", SummarizeSchema)
 	}
+	if !schemaContainsKey(SummarizeSchema, "overall_explanation") {
+		t.Fatalf("SummarizeSchema missing overall_explanation: %s", SummarizeSchema)
+	}
 	snippet := SummarizeExamplePromptSnippet()
 	if !strings.Contains(snippet, "summarization") || !strings.Contains(snippet, "body") {
 		t.Fatalf("SummarizeExamplePromptSnippet missing summarization/body: %s", snippet)
+	}
+	if !strings.Contains(snippet, "overall_explanation") {
+		t.Fatalf("SummarizeExamplePromptSnippet missing overall_explanation: %s", snippet)
+	}
+}
+
+func TestParseSummarizeResponseCapturesOverallExplanation(t *testing.T) {
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","summarization":{"body":"Short body."}}],"overall_explanation":"Short overall summary."}`
+	resp, err := parseReviewResponse(content, SchemaKindSummarize, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.OverallExplanation != "Short overall summary." {
+		t.Fatalf("resp.OverallExplanation = %q, want shortened overall", resp.OverallExplanation)
 	}
 }

@@ -4,7 +4,7 @@ BINDIR ?= $(PREFIX)/bin
 
 .DEFAULT_GOAL := build
 
-.PHONY: help generate build debug install test race lint fmt
+.PHONY: help generate build debug install test race lint modernize vet fmt
 
 .DEFAULT:
 	@echo "Error: unknown target '$@'"
@@ -35,7 +35,13 @@ test: ## Run the test suite
 race: ## Run the race detector
 	go test -race ./...
 
-lint: ## Run go vet
+lint: ## Run golangci-lint (install: https://golangci-lint.run/welcome/install/)
+	golangci-lint run ./...
+
+modernize: ## Run gopls modernize analyzers (add -fix to auto-apply)
+	go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.22.0 ./...
+
+vet: ## Run go vet
 	go vet ./...
 
 fmt: ## Format Go source files

@@ -66,10 +66,10 @@ type ReviewResult struct {
 	OverallConfidenceScore float64    `json:"overall_confidence_score"`
 	AgentRuns              []AgentRun `json:"agent_runs,omitempty"`
 	Warnings               []string   `json:"warnings,omitempty"`
-	TokensUsed             TokenUsage `json:"tokens_used,omitempty"`
-	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used,omitempty"`
-	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used,omitempty"`
-	SummarizeTokensUsed    TokenUsage `json:"summarize_tokens_used,omitempty"`
+	TokensUsed             TokenUsage `json:"tokens_used"`
+	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used"`
+	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used"`
+	SummarizeTokensUsed    TokenUsage `json:"summarize_tokens_used"`
 	Mode                   string     `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`
@@ -89,7 +89,7 @@ type AgentRun struct {
 	MaxDuplicateToolCalls int        `json:"max_duplicate_tool_calls,omitempty"`
 	ToolCalls             int        `json:"tool_calls,omitempty"`
 	DuplicateToolCalls    int        `json:"duplicate_tool_calls"`
-	TokensUsed            TokenUsage `json:"tokens_used,omitempty"`
+	TokensUsed            TokenUsage `json:"tokens_used"`
 	// Status is one of AgentRunStatus*. Empty = implicit ok (preserves
 	// backward compatibility with pre-failure-tolerance consumers).
 	Status string `json:"status,omitempty"`

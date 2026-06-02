@@ -92,6 +92,11 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: cloning input result: %w", err)
 	}
 	stats := applySummarizerOutput(out.Findings, result.resp.Findings)
+	// Adopt the shortened overall_explanation; keep the finalized one if the
+	// model omitted it (soft, mirroring the per-finding body handling).
+	if strings.TrimSpace(result.resp.OverallExplanation) != "" {
+		out.OverallExplanation = result.resp.OverallExplanation
+	}
 	if stats.Omitted > 0 || stats.Ignored > 0 || stats.SummarizerFindings != len(in.Findings) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("Summarizer output mismatch: findings_in=%d summarizer_findings=%d matched=%d omitted=%d ignored=%d; preserved finalized bodies", len(in.Findings), stats.SummarizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
 	}
@@ -157,7 +162,13 @@ func (e *Engine) buildSummarizeUserPrompt(in *model.ReviewResult) (string, error
 			"body":  body,
 		})
 	}
-	user, err := llm.RenderJSON(map[string]any{"findings": findings})
+	payloadMap := map[string]any{"findings": findings}
+	// The finalized overall_explanation already folds in the context notes; send
+	// it so the summarizer shortens it alongside the finding bodies.
+	if strings.TrimSpace(in.OverallExplanation) != "" {
+		payloadMap["overall_explanation"] = in.OverallExplanation
+	}
+	user, err := llm.RenderJSON(payloadMap)
 	if err != nil {
 		return "", fmt.Errorf("summarize: rendering summarize prompt json: %w", err)
 	}

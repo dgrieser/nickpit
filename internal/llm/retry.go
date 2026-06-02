@@ -59,10 +59,7 @@ func (r *Retrier) BackoffForHTTPStatus(attempt, status int, resp *http.Response,
 }
 
 func (r *Retrier) Backoff(attempt int, resp *http.Response) time.Duration {
-	backoff := r.InitialBackoff * time.Duration(1<<attempt)
-	if backoff > r.MaxBackoff {
-		backoff = r.MaxBackoff
-	}
+	backoff := min(r.InitialBackoff*time.Duration(1<<attempt), r.MaxBackoff)
 	if resp != nil {
 		if header := resp.Header.Get("Retry-After"); header != "" {
 			if seconds, err := strconv.Atoi(header); err == nil {
