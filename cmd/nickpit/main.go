@@ -821,20 +821,25 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			DisableParallelToolCalls: req.DisableParallelToolCalls,
 			RepoRoot:                 req.RepoRoot,
 		}
-		summarized, summarizeRun, summarizeErr := engine.Summarize(ctx, result, summarizeOpts)
-		if summarizeErr != nil {
-			a.logProgress("Summarize", fmt.Sprintf("status=ERROR, error=%v; falling back to finalized result", summarizeErr))
-			result.Warnings = append(result.Warnings, fmt.Sprintf("Summarize failed: %v; using finalized result", summarizeErr))
-			summarizeRun.Name = "summarize"
-			summarizeRun.Role = "summarize"
-			summarizeRun.Status = model.AgentRunStatusFailed
-			summarizeRun.Error = summarizeErr.Error()
-			result.SummarizeTokensUsed = summarizeRun.TokensUsed
-			result.AgentRuns = append(result.AgentRuns, summarizeRun)
-		} else {
-			summarized.SummarizeTokensUsed = summarizeRun.TokensUsed
-			summarized.AgentRuns = append(summarized.AgentRuns, summarizeRun)
-			result = summarized
+		// result is non-nil here (guarded above + the len(result.Findings) gate),
+		// but the error branch writes back to result, so guard defensively against
+		// any future change to those invariants.
+		if result != nil {
+			summarized, summarizeRun, summarizeErr := engine.Summarize(ctx, result, summarizeOpts)
+			if summarizeErr != nil {
+				a.logProgress("Summarize", fmt.Sprintf("status=ERROR, error=%v; falling back to finalized result", summarizeErr))
+				result.Warnings = append(result.Warnings, fmt.Sprintf("Summarize failed: %v; using finalized result", summarizeErr))
+				summarizeRun.Name = "summarize"
+				summarizeRun.Role = "summarize"
+				summarizeRun.Status = model.AgentRunStatusFailed
+				summarizeRun.Error = summarizeErr.Error()
+				result.SummarizeTokensUsed = summarizeRun.TokensUsed
+				result.AgentRuns = append(result.AgentRuns, summarizeRun)
+			} else {
+				summarized.SummarizeTokensUsed = summarizeRun.TokensUsed
+				summarized.AgentRuns = append(summarized.AgentRuns, summarizeRun)
+				result = summarized
+			}
 		}
 	}
 
