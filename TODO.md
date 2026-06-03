@@ -2,8 +2,6 @@
 
 - Add max turns for agents; unlimited by default
 - Add suggestion agent to format suggestions for gitlab/github
-- Add simplifier agent to shorten text on findings
-- Ability to compile and run tests to verify functionality/compile
 
 - Logging: Change to "[agent: <agent_name>]"
 - Logging: Put turns into bracket, e.g. "[agent: <agent_name>, turn: <round>]"
@@ -11,6 +9,4 @@
 - Verbose: Fix json formatted printing for verbose on <wrongcolor>"content": "</wrongcolor>
 - Remove unnecessary arguments/config.
 
-- Add kubernetes best practices styleguide: https://github.com/wshobson/agents/tree/main/plugins/kubernetes-operations/skills
-- Add more styleguides: https://github.com/wshobson/agents/tree/main/plugins
 - Add man pages for commands used/called
