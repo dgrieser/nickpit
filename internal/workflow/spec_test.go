@@ -32,6 +32,31 @@ func TestDefaultSpecsValidate(t *testing.T) {
 	}
 }
 
+// TestSimpleSpecParsesAndValidates confirms the embedded workflows/simple.yaml
+// parses (SimpleSpec panics otherwise) and validates: review:simple is an accepted
+// non-default vector and the standalone nudge:simple has its preceding review.
+func TestSimpleSpecParsesAndValidates(t *testing.T) {
+	spec := SimpleSpec()
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("SimpleSpec invalid: %v", err)
+	}
+	var hasReview, hasNudge bool
+	for _, s := range spec.Steps {
+		switch s.Type {
+		case StepReviewPrefix + "simple":
+			hasReview = true
+		case StepNudgePrefix + "simple":
+			hasNudge = true
+		}
+	}
+	if !hasReview {
+		t.Fatal("SimpleSpec missing review:simple step")
+	}
+	if !hasNudge {
+		t.Fatal("SimpleSpec missing nudge:simple step")
+	}
+}
+
 // TestDefaultSpecMatchesConstants pins the embedded workflows/default.yaml to the
 // Go constants. The old Go-built DefaultSpec auto-tracked ReviewVectorIDs; the
 // static YAML does not, so reordering/renaming a vector (or changing the step

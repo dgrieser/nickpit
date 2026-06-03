@@ -278,7 +278,18 @@ type reviewVector struct {
 	focusFile     string
 	questionsFile string
 	constraints   llm.ResponseConstraints
+	// components, when set, marks this as a composite reviewer whose focus and
+	// questions are combined at render time from the leaf vectors named here
+	// (their focusFile/questionsFile). A composite carries no focusFile/
+	// questionsFile/constraints of its own. nil = leaf vector.
+	components []string
 }
+
+// reviewerQuestionsMarker separates a focus template's scope (heading + scope
+// sentence) from its shared "ask yourself" tail. The composite reviewer keeps
+// only the scope of each component and cuts here; any per-vector tail (e.g.
+// testing's priority restrictions, which sit after the marker) is dropped.
+const reviewerQuestionsMarker = "When reviewing a patch, ask yourself:"
 
 var reviewVectors = []reviewVector{
 	{
@@ -323,12 +334,32 @@ var reviewVectors = []reviewVector{
 	},
 }
 
-// reviewVectorByID returns the reviewVector with the given workflow id.
+// simpleReviewVector is a composite, non-default reviewer that covers every leaf
+// focus area in a single agent. It is intentionally kept out of reviewVectors (so
+// len(reviewVectors) stays the canonical six) and out of the default workflow; it
+// is reachable only via a spec that names review:simple. Its prompt is combined
+// at render time from the components' templates — one source of truth, no
+// duplicated prompt text. It carries empty constraints so it can emit any priority
+// and report "patch is incorrect" (unlike the testing leaf).
+var simpleReviewVector = reviewVector{
+	id:   "simple",
+	name: "Simple (all areas)",
+	components: []string{
+		"codequality", "security", "architecture",
+		"performance", "testing", "bestpractices",
+	},
+}
+
+// reviewVectorByID returns the reviewVector with the given workflow id, matching
+// the canonical leaf vectors first, then the composite simple reviewer.
 func reviewVectorByID(id string) (reviewVector, bool) {
 	for _, v := range reviewVectors {
 		if v.id == id {
 			return v, true
 		}
+	}
+	if id == simpleReviewVector.id {
+		return simpleReviewVector, true
 	}
 	return reviewVector{}, false
 }
@@ -1484,6 +1515,61 @@ func (e *Engine) renderReviewerFocusSnippet(focusName, questionsSnippet string) 
 		return "", fmt.Errorf("review: rendering reviewer focus prompt %s: %w", focusName, err)
 	}
 	return rendered, nil
+}
+
+// scopeOfFocusTemplate extracts a leaf focus template's scope — the "## FOCUS ON
+// X" heading plus its scope sentence — by keeping everything before
+// reviewerQuestionsMarker and dropping the per-area "Return only findings for this
+// focus area." line, which is contradictory once focus areas are combined. Any
+// tail after the marker (e.g. testing's priority restrictions) is excluded by
+// construction.
+func scopeOfFocusTemplate(focus string) string {
+	scope, _, _ := strings.Cut(focus, reviewerQuestionsMarker)
+	var kept []string
+	for ln := range strings.SplitSeq(scope, "\n") {
+		if strings.TrimSpace(ln) == "Return only findings for this focus area." {
+			continue
+		}
+		kept = append(kept, ln)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// renderCombinedFocusSnippet builds a composite reviewer's prompt from its
+// component leaf vectors, reusing their existing focus and questions templates as
+// the single source of truth. It returns the full focus snippet (every component
+// scope, then the shared "ask yourself" header, then the combined questions) for
+// the system prompt, plus the bare combined questions for nudge re-asks.
+func (e *Engine) renderCombinedFocusSnippet(components []string) (focusSnippet, questionsSnippet string, err error) {
+	var scopes, questionBlocks []string
+	for _, id := range components {
+		v, ok := reviewVectorByID(id)
+		if !ok {
+			return "", "", fmt.Errorf("review: unknown component reviewer vector %q", id)
+		}
+		focus, err := e.loadPrompt(v.focusFile)
+		if err != nil {
+			return "", "", err
+		}
+		scopes = append(scopes, scopeOfFocusTemplate(focus))
+		qs, err := e.renderReviewerQuestionsSnippet(v.questionsFile)
+		if err != nil {
+			return "", "", err
+		}
+		if strings.TrimSpace(qs) != "" {
+			questionBlocks = append(questionBlocks, v.name+":\n"+qs)
+		}
+	}
+	questionsSnippet = strings.Join(questionBlocks, "\n\n")
+	var b strings.Builder
+	b.WriteString("## REVIEW ALL FOCUS AREAS\n")
+	b.WriteString("Review the patch across every focus area below in a single pass, and return findings for any of them.\n\n")
+	b.WriteString(strings.Join(scopes, "\n\n"))
+	b.WriteString("\n\n")
+	b.WriteString(reviewerQuestionsMarker)
+	b.WriteString("\n")
+	b.WriteString(questionsSnippet)
+	return b.String(), questionsSnippet, nil
 }
 
 func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req model.ReviewRequest, hasTools bool, agentRole string, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {

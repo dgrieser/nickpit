@@ -105,15 +105,27 @@ func (e *Engine) collectStepFunc() stepFunc {
 // buildReviewerAgentSpec renders the per-vector reviewer agent spec from the
 // prepared prompt scaffolding in the state.
 func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, req model.ReviewRequest) (agentSpec, error) {
-	questionsSnippet, err := e.renderReviewerQuestionsSnippet(vector.questionsFile)
+	// A composite reviewer combines its components' templates into one focus
+	// snippet; a leaf reviewer wraps its own focus template around its questions.
+	// Both then render through the same focus-based system path.
+	var focusSnippet, questionsSnippet string
+	var err error
+	if len(vector.components) > 0 {
+		focusSnippet, questionsSnippet, err = e.renderCombinedFocusSnippet(vector.components)
+	} else {
+		questionsSnippet, err = e.renderReviewerQuestionsSnippet(vector.questionsFile)
+		if err == nil {
+			focusSnippet, err = e.renderReviewerFocusSnippet(vector.focusFile, questionsSnippet)
+		}
+	}
 	if err != nil {
 		return agentSpec{}, err
 	}
-	system, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, true, "reviewer", st.styleGuides, st.hasToolchain)
+	system, err := e.renderReviewSystemWithFocus(st.baseTemplate, focusSnippet, req, true, "reviewer", st.styleGuides, st.hasToolchain)
 	if err != nil {
 		return agentSpec{}, err
 	}
-	noToolsSystem, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, false, "reviewer", st.styleGuides, st.hasToolchain)
+	noToolsSystem, err := e.renderReviewSystemWithFocus(st.baseTemplate, focusSnippet, req, false, "reviewer", st.styleGuides, st.hasToolchain)
 	if err != nil {
 		return agentSpec{}, err
 	}

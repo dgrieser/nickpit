@@ -53,6 +53,15 @@ var ReviewVectorIDs = []string{
 	"bestpractices",
 }
 
+// ExtraReviewVectorIDs are reviewer vectors that are valid in a spec but are not
+// part of the default workflow's canonical set. They mirror non-default reviewers
+// in internal/review (e.g. the "simple" composite reviewer) so review:/nudge:/
+// reasoning-extract: steps naming them validate, without enlarging ReviewVectorIDs
+// (which DefaultSpec and its tests treat as the full reviewer set).
+var ExtraReviewVectorIDs = []string{
+	"simple",
+}
+
 // Spec is a complete workflow definition.
 type Spec struct {
 	Version int
@@ -213,6 +222,19 @@ func DefaultSpec() Spec {
 	spec, err := parseSpec(workflows.Default())
 	if err != nil {
 		panic(fmt.Sprintf("workflow: invalid embedded default workflow: %v", err))
+	}
+	return spec
+}
+
+// SimpleSpec is the embedded "simple" workflow: collect context, run the single
+// composite review:simple reviewer (all focus areas in one agent) with one manual
+// nudge round, then verify, dedupe, merge, finalize, summarize. Like DefaultSpec
+// it is parsed from an embedded asset through the shared loader, so a parse
+// failure is a build error — hence the panic. Not wired to any CLI selection yet.
+func SimpleSpec() Spec {
+	spec, err := parseSpec(workflows.Simple())
+	if err != nil {
+		panic(fmt.Sprintf("workflow: invalid embedded simple workflow: %v", err))
 	}
 	return spec
 }
@@ -510,7 +532,7 @@ func vectorOf(t, prefix string) (string, bool) {
 }
 
 func validVector(id string) bool {
-	return slices.Contains(ReviewVectorIDs, id)
+	return slices.Contains(ReviewVectorIDs, id) || slices.Contains(ExtraReviewVectorIDs, id)
 }
 
 func checkAllowedKeys(node *yaml.Node, allowed ...string) error {

@@ -1,0 +1,15 @@
+version: 1
+# A lighter alternative to the default: one composite reviewer (all focus areas
+# in a single agent) instead of six parallel vector reviewers.
+
+steps:
+  - collect-context
+  - type: review:simple
+    config:
+      nudge_count: 0
+  - nudge:simple
+  - verify
+  - dedupe
+  - merge
+  - finalize
+  - summarize
