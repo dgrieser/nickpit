@@ -58,6 +58,7 @@ type Profile struct {
 	MaxReasoningLoopRepeats            int                 `yaml:"max_reasoning_loop_repeats"`
 	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
 	NudgeCount                         int                 `yaml:"nudge_count"`
+	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
 	ReasoningEffort                    string              `yaml:"reasoning_effort"`
 	Workdir                            string              `yaml:"workdir"`
 	GitHubToken                        string              `yaml:"github_token"`
@@ -108,6 +109,7 @@ type Overrides struct {
 	ReasoningLoopRepeats  *int
 	RateLimitDelaySeconds *int
 	NudgeCount            *int
+	DisablePatchSummary   bool
 	ReasoningEffort       string
 	Workdir               string
 	GitHubToken           string
@@ -407,6 +409,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.NudgeCount != nil {
 		profile.NudgeCount = *overrides.NudgeCount
 		profile.NudgeCountConfigured = true
+	}
+	if overrides.DisablePatchSummary {
+		profile.DisablePatchSummary = true
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort

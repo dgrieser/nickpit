@@ -50,6 +50,7 @@ type ReviewRequest struct {
 	NudgeCount               int
 	DisableParallelToolCalls bool
 	DisableReasoningExtract  bool
+	DisablePatchSummary      bool
 	ModelEmitsReasoning      bool
 	UseJSONSchema            bool
 	PriorityThreshold        string

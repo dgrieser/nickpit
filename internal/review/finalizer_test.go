@@ -142,6 +142,27 @@ func TestFinalizeContextNotesInPrompt(t *testing.T) {
 	if up := withoutNotes.reqs[0].Messages[1].Content; strings.Contains(up, `"notes"`) {
 		t.Fatalf("finalize user prompt should omit notes when none provided:\n%s", up)
 	}
+
+	// Disabled patch summary: notes remain available as internal context, but
+	// the finalizer is told not to surface the patch-purpose assumption.
+	disabledSummary := newClient()
+	engine = NewEngine(stubSource{}, disabledSummary, stubRetrieval{}, config.Profile{Model: "test"})
+	if _, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), newInput(), FinalizeOptions{ContextNotes: notes, DisablePatchSummary: true}); err != nil {
+		t.Fatalf("Finalize (disabled patch summary) returned err: %v", err)
+	}
+	if up := disabledSummary.reqs[0].Messages[1].Content; !strings.Contains(up, `"notes"`) || !strings.Contains(up, "CONTEXT_NOTES_MARKER") {
+		t.Fatalf("finalize user prompt should still carry internal notes:\n%s", up)
+	}
+	sys := disabledSummary.reqs[0].Messages[0].Content
+	if !strings.Contains(sys, "preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score`") {
+		t.Fatalf("finalize system prompt missing preliminary field description:\n%s", sys)
+	}
+	if !strings.Contains(sys, "do not include the patch-purpose assumption") {
+		t.Fatalf("finalize system prompt missing disabled-summary instruction:\n%s", sys)
+	}
+	if strings.Contains(sys, "first state the patch's intended purpose") {
+		t.Fatalf("finalize system prompt should not require patch purpose when disabled:\n%s", sys)
+	}
 }
 
 func TestExampleSnippetForFinalizeIncludesFinalization(t *testing.T) {

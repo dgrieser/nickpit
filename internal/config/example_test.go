@@ -58,6 +58,9 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.NudgeCount != DefaultNudgeCount {
 			t.Fatalf("%s nudge count = %d", entry.name, profile.NudgeCount)
 		}
+		if profile.DisablePatchSummary {
+			t.Fatalf("%s disable patch summary = true, want false default", entry.name)
+		}
 		if profile.ReasoningEffort != DefaultReasoningEffort {
 			t.Fatalf("%s reasoning effort = %q", entry.name, profile.ReasoningEffort)
 		}

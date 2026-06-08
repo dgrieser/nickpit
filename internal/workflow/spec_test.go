@@ -100,6 +100,7 @@ steps:
         config:
           model: fast-model
           nudge_count: 0
+          disable_patch_summary: true
   - type: merge
     findings_from:
       - a.json
@@ -130,6 +131,9 @@ steps:
 	}
 	if perf.Config.NudgeCount == nil || *perf.Config.NudgeCount != 0 {
 		t.Fatalf("nudge_count override not parsed: %+v", perf.Config)
+	}
+	if perf.Config.DisablePatchSummary == nil || !*perf.Config.DisablePatchSummary {
+		t.Fatalf("disable_patch_summary override not parsed: %+v", perf.Config)
 	}
 	merge := spec.Steps[2]
 	if len(merge.FindingsFrom) != 2 {
@@ -263,15 +267,17 @@ func TestStepOverrideResolveIdentity(t *testing.T) {
 
 func TestStepOverrideResolveApplies(t *testing.T) {
 	base := config.Profile{Model: "base", ReasoningEffort: "high", MaxToolCalls: 7}
-	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3}
+	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, DisablePatchSummary: true}
 	zero := 0
 	model5 := "opus"
 	effort := "low"
+	disablePatchSummary := false
 	ov := &StepOverride{
-		Model:           &model5,
-		ReasoningEffort: &effort,
-		MaxToolCalls:    &zero, // explicit zero must win (unlimited)
-		NudgeCount:      &zero,
+		Model:               &model5,
+		ReasoningEffort:     &effort,
+		MaxToolCalls:        &zero, // explicit zero must win (unlimited)
+		NudgeCount:          &zero,
+		DisablePatchSummary: &disablePatchSummary,
 	}
 	gotProfile, gotReq := ov.Resolve(base, req)
 	if gotProfile.Model != "opus" || gotProfile.ReasoningEffort != "low" {
@@ -282,5 +288,8 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 	}
 	if gotReq.NudgeCount != 0 {
 		t.Fatalf("explicit zero nudge_count not applied: %d", gotReq.NudgeCount)
+	}
+	if gotReq.DisablePatchSummary {
+		t.Fatal("explicit false disable_patch_summary not applied")
 	}
 }
