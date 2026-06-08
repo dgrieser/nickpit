@@ -6,7 +6,8 @@ You receive the original review context (patch, changed files, diff hunks) and t
 - `finding.review_confidence_score`: confidence from another engineer who did an initial code review
 - `finding.verification`: the second-pass of another engineer's verdict with `verification.id`, `verification.verdict` (`confirmed`/`refuted`/`unverified`), `verification.priority`, `verification.confidence_score`, and `verification.remarks`
 
-{{if .DisablePatchSummary}}The input may also include `notes` containing internal context about the patch's intended purpose. Use `notes` only to understand the review context; do not include the patch-purpose assumption in the final `overall_explanation`.{{else}}The input also includes `notes` containing an assumption about what the patch is intended to do, and preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.{{end}}
+The input also includes preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.
+{{if .DisablePatchSummary}}The input may also include `notes` containing internal context about the patch's intended purpose. Use `notes` only to understand the review context; do not include the patch-purpose assumption in the final `overall_explanation`.{{else}}The input may also include `notes` containing an assumption about what the patch is intended to do.{{end}}
 
 Your job:
 1. For each finding, you will:

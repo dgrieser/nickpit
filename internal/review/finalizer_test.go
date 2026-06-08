@@ -154,6 +154,9 @@ func TestFinalizeContextNotesInPrompt(t *testing.T) {
 		t.Fatalf("finalize user prompt should still carry internal notes:\n%s", up)
 	}
 	sys := disabledSummary.reqs[0].Messages[0].Content
+	if !strings.Contains(sys, "preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score`") {
+		t.Fatalf("finalize system prompt missing preliminary field description:\n%s", sys)
+	}
 	if !strings.Contains(sys, "do not include the patch-purpose assumption") {
 		t.Fatalf("finalize system prompt missing disabled-summary instruction:\n%s", sys)
 	}
