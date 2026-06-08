@@ -74,6 +74,7 @@ type app struct {
 	disableSearchToolOptimization bool
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
+	disablePatchSummary           bool
 	verifyConcurrency             int
 	verifyDropPolicy              string
 	verifyDropConfidence          float64
@@ -162,6 +163,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
+	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
 	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
@@ -246,6 +248,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		ReasoningLoopRepeats:  reasoningLoopRepeats,
 		RateLimitDelaySeconds: rateLimitDelaySeconds,
 		NudgeCount:            nudgeCount,
+		DisablePatchSummary:   a.disablePatchSummary,
 		Workdir:               a.workDir,
 		GitHubToken:           a.githubToken,
 		GitLabToken:           a.gitlabToken,
@@ -359,6 +362,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				NudgeCount:              profile.NudgeCount,
+				DisablePatchSummary:     profile.DisablePatchSummary,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Submode:                 submode,
@@ -413,6 +417,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				NudgeCount:              profile.NudgeCount,
+				DisablePatchSummary:     profile.DisablePatchSummary,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Offline:                 a.offline,
@@ -464,6 +469,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				NudgeCount:              profile.NudgeCount,
+				DisablePatchSummary:     profile.DisablePatchSummary,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Offline:                 a.offline,
@@ -708,6 +714,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
 	req.DisableReasoningExtract = a.disableReasoningExtract
+	if profile.DisablePatchSummary {
+		req.DisablePatchSummary = true
+	}
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
 		req.MaxContextTokens = profile.MaxContextTokens

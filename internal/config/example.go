@@ -58,6 +58,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("max_reasoning_loop_repeats", yamlInt(profile.MaxReasoningLoopRepeats)),
 		yamlEntry("max_rate_limit_delay_seconds", yamlInt(profile.MaxRateLimitDelaySeconds)),
 		yamlEntry("nudge_count", yamlInt(profile.NudgeCount)),
+		yamlEntry("disable_patch_summary", yamlBool(profile.DisablePatchSummary)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),

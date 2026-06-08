@@ -114,6 +114,10 @@ Findings whose lines are part of the diff are posted as inline discussions; the 
 
 Append `--show-progress` to print review details and tool calls on stderr.
 
+### Patch Summary
+
+By default, the final overall explanation starts with an assumed summary of what the patch is intended to do. Use `--disable-patch-summary` or `disable_patch_summary: true` in the active profile to omit that summary from final output while still allowing internal agents to use context notes.
+
 ### Debug
 
 Append `--verbose` or `--debug` to print step-by-step execution details to stderr, including prompt rendering and raw LLM request/response payloads.
@@ -144,7 +148,7 @@ nickpit local branch --step finalize --findings merged.json --json
 nickpit local branch --step summarize --findings finalized.json --json
 ```
 
-See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, reasoning_effort, max_tool_calls, max_output_retries, max_reasoning_loop_repeats, nudge_count, verify_*, …) — anything unset inherits the active profile/flags. Reviewers are addressed per vector (`review:security`, `review:performance`, …), and `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group). Steps that only consume injected findings (e.g. `merge`, `finalize`, `summarize`) run without a git/PR source.
+See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, reasoning_effort, max_tool_calls, max_output_retries, max_reasoning_loop_repeats, nudge_count, disable_patch_summary, verify_*, …) — anything unset inherits the active profile/flags. Reviewers are addressed per vector (`review:security`, `review:performance`, …), and `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group). Steps that only consume injected findings (e.g. `merge`, `finalize`, `summarize`) run without a git/PR source.
 
 ### Filtering by Priority
 

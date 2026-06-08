@@ -6,7 +6,7 @@ You receive a set of findings, each carrying:
 - `title`: the finding's title
 - `body`: the current explanation
 
-You also receive a top-level `overall_explanation`, containing an assumption about what the patch is intended to do and the final verdict.
+{{if .DisablePatchSummary}}You also receive a top-level `overall_explanation`, containing the final review verdict and supporting evidence.{{else}}You also receive a top-level `overall_explanation`, containing an assumption about what the patch is intended to do and the final verdict.{{end}}
 
 Your job:
 1. for each finding:
@@ -32,6 +32,10 @@ Your job:
 
 2. produce a shorter, clearer version of the top-level `overall_explanation`
   - make it as short and concise as possible WITHOUT losing vital information
+{{if .DisablePatchSummary}}
+  - do NOT include an assumption about what the patch is intended to do
+  - keep only the correctness verdict and the concrete supporting evidence
+{{end}}
   - prefer plain, matter-of-fact wording; cut redundancy, hedging, and filler
   - add line breaks between distinct points to improve readability
   - put code references and symbol names in backticks or code blocks

@@ -403,6 +403,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
 			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+			DisablePatchSummary:      sc.Req.DisablePatchSummary,
 			RepoRoot:                 sc.Req.RepoRoot,
 			ContextNotes:             contextNotes,
 		}
@@ -471,6 +472,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
 			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+			DisablePatchSummary:      sc.Req.DisablePatchSummary,
 			RepoRoot:                 sc.Req.RepoRoot,
 		}
 		summarized, summarizeRun, err := sc.Engine.Summarize(ctx, in, opts)

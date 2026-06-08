@@ -17,6 +17,7 @@ type SummarizeOptions struct {
 	MaxReasoningSeconds      int
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
+	DisablePatchSummary      bool
 	RepoRoot                 string
 }
 
@@ -49,9 +50,11 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	system, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet string
 		OutputFormatSnippet string
+		DisablePatchSummary bool
 	}{
 		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.UseJSONSchema),
 		OutputFormatSnippet: commonSnippets.outputFormat,
+		DisablePatchSummary: opts.DisablePatchSummary,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: rendering system prompt: %w", err)

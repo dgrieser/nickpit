@@ -23,6 +23,7 @@ type FinalizeOptions struct {
 	MaxReasoningSeconds      int
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
+	DisablePatchSummary      bool
 	RepoRoot                 string
 	// ContextNotes is the context agent's markdown summary of the patch's
 	// intended purpose. When set, it is sent to the finalizer as `notes` so it
@@ -57,10 +58,12 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		PrioritySnippet     string
 		OutputSchemaSnippet string
 		OutputFormatSnippet string
+		DisablePatchSummary bool
 	}{
 		PrioritySnippet:     commonSnippets.priority,
 		OutputSchemaSnippet: finalizeOutputSchemaSnippetFor(opts.UseJSONSchema),
 		OutputFormatSnippet: commonSnippets.outputFormat,
+		DisablePatchSummary: opts.DisablePatchSummary,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)

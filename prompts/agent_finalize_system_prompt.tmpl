@@ -6,7 +6,7 @@ You receive the original review context (patch, changed files, diff hunks) and t
 - `finding.review_confidence_score`: confidence from another engineer who did an initial code review
 - `finding.verification`: the second-pass of another engineer's verdict with `verification.id`, `verification.verdict` (`confirmed`/`refuted`/`unverified`), `verification.priority`, `verification.confidence_score`, and `verification.remarks`
 
-The input also includes `notes` containing an assumption about what the patch is intended to do, and preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.
+{{if .DisablePatchSummary}}The input may also include `notes` containing internal context about the patch's intended purpose. Use `notes` only to understand the review context; do not include the patch-purpose assumption in the final `overall_explanation`.{{else}}The input also includes `notes` containing an assumption about what the patch is intended to do, and preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.{{end}}
 
 Your job:
 1. For each finding, you will:
@@ -30,9 +30,15 @@ Your job:
    - output the same top-level `id` as the input finding; do not invent IDs
    - explain what you did in `finalization.remarks`
 2. Update `overall_correctness` and `overall_confidence_score`, and produce a single cohesive `overall_explanation` for the whole review:
+{{if .DisablePatchSummary}}
+   - use `notes` only as internal context
+   - do NOT state what the patch appears intended to do
+   - focus on the correctness verdict and the concrete and concise evidence behind it
+{{else}}
    - merge `notes` with the preliminary `overall_explanation` into one body, formatted as markdown:
      - first state the patch's intended purpose
      - then the correctness verdict and the concrete and concise evidence behind it
+{{end}}
    - de-duplicate overlapping content and resolve any contradictions in favor of your final verdict
    - NEITHER iterate the findings, NOR explain them in detail
    - ONLY reference the findings for the purpose of your final verdict
@@ -60,5 +66,5 @@ Overall correctness rules:
 - `finalization.title` and `finalization.body` contain the final title and body you want downstream output to use
 - `finalization.remarks` is a short paragraph explaining what you did
 - `overall_correctness` and `overall_confidence_score` are updated based on the finalization
-- `overall_explanation` is the single merged body of `notes` (when present) and the preliminary `overall_explanation`
+{{if .DisablePatchSummary}}- `overall_explanation` contains the final verdict and evidence only; do not include a patch-purpose summary{{else}}- `overall_explanation` is the single merged body of `notes` (when present) and the preliminary `overall_explanation`{{end}}
 {{end}}

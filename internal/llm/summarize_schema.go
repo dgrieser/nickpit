@@ -27,7 +27,7 @@ var summarizeSchemaDefinition = map[string]any{
 				"required": []string{"id", "summarization"},
 			},
 		},
-		"overall_explanation": map[string]any{"type": "string", "examples": []any{"Concise overall summary of the patch and the review verdict."}},
+		"overall_explanation": map[string]any{"type": "string", "examples": []any{"Concise overall review verdict and supporting evidence."}},
 	},
 	"required": []string{"findings", "overall_explanation"},
 }

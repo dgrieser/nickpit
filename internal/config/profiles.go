@@ -92,6 +92,9 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.NudgeCount != 0 {
 		base.NudgeCount = override.NudgeCount
 	}
+	if override.DisablePatchSummary {
+		base.DisablePatchSummary = true
+	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}
