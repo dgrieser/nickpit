@@ -1,5 +1,8 @@
 # TODO
 
+- Add feature to give additional instructions to agents
+- Add feature to include/exclude files in the patch
+- Make "what the patch does" optional, default on
 - Add max turns for agents; unlimited by default
 - Add suggestion agent to format suggestions for gitlab/github
 
