@@ -92,6 +92,8 @@ profiles:
     exclude_content: ["(?m)Code generated .* DO NOT EDIT"]
 ```
 
+Deleted files have no post-change content, so a non-empty `include_content` always drops them; `exclude_content` leaves them in. Path filters still apply to deletions.
+
 The same filters can be set per run with repeatable flags such as `--include-path`, `--exclude-path`, `--include-content`, and `--exclude-content`.
 
 ## Usage

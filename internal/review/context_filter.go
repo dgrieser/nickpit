@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -124,7 +125,7 @@ func (e *Engine) keepFilteredPath(ctx context.Context, req model.ReviewRequest, 
 		file, err := e.retrieval.GetFile(ctx, req.RepoRoot, filePath)
 		if err != nil {
 			e.logf("Skipping filter content read: path=%s error=%v", filePath, err)
-		} else {
+		} else if file != nil {
 			content = file.Content
 			contentOK = true
 		}
@@ -267,24 +268,32 @@ func splitUnifiedDiff(diff string) []diffSection {
 }
 
 func parseDiffGitPath(line string) string {
-	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) >= 4 {
-		value := fields[len(fields)-1]
-		value = strings.TrimPrefix(value, "b/")
-		value = strings.TrimPrefix(value, "a/")
-		return normalizeReviewPath(value)
+	const prefix = "diff --git "
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, prefix) {
+		return ""
 	}
-	return ""
+	// The header is "a/<old> b/<new>". Git leaves spaces unquoted here, so
+	// splitting on whitespace mangles paths that contain them. Instead take
+	// everything after the last " b/", which is the post-change path unless a
+	// path literally contains " b/" (rare enough to fall back on).
+	rest := line[len(prefix):]
+	if idx := strings.LastIndex(rest, " b/"); idx >= 0 {
+		return normalizeReviewPath(rest[idx+len(" b/"):])
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	value := fields[len(fields)-1]
+	value = strings.TrimPrefix(value, "b/")
+	value = strings.TrimPrefix(value, "a/")
+	return normalizeReviewPath(value)
 }
 
 func reviewContextAllFiltered(ctx *model.ReviewContext) bool {
 	if ctx == nil {
 		return false
 	}
-	for _, omitted := range ctx.OmittedSections {
-		if omitted == allChangedFilesFilteredWarning {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ctx.OmittedSections, allChangedFilesFilteredWarning)
 }

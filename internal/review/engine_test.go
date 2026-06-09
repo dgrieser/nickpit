@@ -203,6 +203,30 @@ func commentBodies(comments []model.Comment) []string {
 	return out
 }
 
+func TestParseDiffGitPath(t *testing.T) {
+	cases := map[string]string{
+		"diff --git a/app/main.go b/app/main.go":         "app/main.go",
+		"diff --git a/my file.go b/my file.go":           "my file.go",
+		"diff --git a/dir/old name.go b/dir/new name.go": "dir/new name.go",
+		"diff --git a/old.go b/old.go":                   "old.go",
+		"not a diff header":                              "",
+	}
+	for line, want := range cases {
+		if got := parseDiffGitPath(line); got != want {
+			t.Errorf("parseDiffGitPath(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+func TestFilterUnifiedDiffSpacePath(t *testing.T) {
+	diff := "diff --git a/my file.go b/my file.go\n@@ -1 +1 @@\n-old\n+new\n" +
+		"diff --git a/drop.go b/drop.go\n@@ -1 +1 @@\n-old\n+new\n"
+	out := filterUnifiedDiff(diff, map[string]bool{"my file.go": true})
+	if !strings.Contains(out, "my file.go") || strings.Contains(out, "drop.go") {
+		t.Fatalf("filtered diff = %q", out)
+	}
+}
+
 type capturingLLM struct {
 	mu    sync.Mutex
 	reqs  []*llm.ReviewRequest
