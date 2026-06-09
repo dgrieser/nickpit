@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -41,6 +43,17 @@ func (stubSource) ResolveContext(context.Context, model.ReviewRequest) (*model.R
 	}, nil
 }
 
+type filteredOutSource struct{}
+
+func (filteredOutSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{
+		Mode:         model.ModeLocal,
+		ChangedFiles: []model.ChangedFile{{Path: "README.md", Status: model.FileModified}},
+		Diff:         "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
+		DiffHunks:    []model.DiffHunk{{FilePath: "README.md", Content: "+new\n"}},
+	}, nil
+}
+
 type stubLLM struct{}
 
 func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -53,6 +66,165 @@ func (stubLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewResponse,
 		OverallExplanation:     "summary",
 		OverallConfidenceScore: 0.9,
 	}, nil
+}
+
+func TestReviewContextFilterPathAndContent(t *testing.T) {
+	repoRoot := t.TempDir()
+	for path, content := range map[string]string{
+		"app/main.go":      "package main\nfunc main() {}\n",
+		"app/generated.go": "package main\n// DO NOT EDIT\n",
+		"web/app.ts":       "export const app = true\n",
+	} {
+		fullPath := filepath.Join(repoRoot, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx := &model.ReviewContext{
+		ChangedFiles: []model.ChangedFile{
+			{Path: "app/main.go", Status: model.FileModified},
+			{Path: "app/generated.go", Status: model.FileModified},
+			{Path: "web/app.ts", Status: model.FileModified},
+			{Path: "old.go", Status: model.FileDeleted},
+		},
+		Diff: strings.Join([]string{
+			"diff --git a/app/main.go b/app/main.go\n@@ -1 +1 @@\n-old\n+new\n",
+			"diff --git a/app/generated.go b/app/generated.go\n@@ -1 +1 @@\n-old\n+new\n",
+			"diff --git a/web/app.ts b/web/app.ts\n@@ -1 +1 @@\n-old\n+new\n",
+			"diff --git a/old.go b/old.go\n@@ -1 +0,0 @@\n-old\n",
+		}, ""),
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "app/main.go", Content: "+new\n"},
+			{FilePath: "app/generated.go", Content: "+new\n"},
+			{FilePath: "web/app.ts", Content: "+new\n"},
+			{FilePath: "old.go", Content: "-old\n"},
+		},
+		Comments: []model.Comment{
+			{Path: "app/main.go", Body: "keep inline"},
+			{Path: "app/generated.go", Body: "drop inline"},
+			{Body: "keep general"},
+		},
+	}
+	filter, err := newReviewContextFilter(model.ReviewRequest{
+		RepoRoot:       repoRoot,
+		IncludePaths:   []string{`\.go$`},
+		ExcludePaths:   []string{`generated`},
+		IncludeContent: []string{`(?m)^package main`},
+		ExcludeContent: []string{`DO NOT EDIT`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+
+	allFiltered, err := engine.applyReviewContextFilter(context.Background(), ctx, model.ReviewRequest{RepoRoot: repoRoot}, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allFiltered {
+		t.Fatal("expected one file to remain")
+	}
+	if len(ctx.ChangedFiles) != 1 || ctx.ChangedFiles[0].Path != "app/main.go" {
+		t.Fatalf("changed files = %#v", ctx.ChangedFiles)
+	}
+	if len(ctx.DiffHunks) != 1 || ctx.DiffHunks[0].FilePath != "app/main.go" {
+		t.Fatalf("diff hunks = %#v", ctx.DiffHunks)
+	}
+	if !strings.Contains(ctx.Diff, "app/main.go") || strings.Contains(ctx.Diff, "generated.go") || strings.Contains(ctx.Diff, "web/app.ts") || strings.Contains(ctx.Diff, "old.go") {
+		t.Fatalf("diff = %q", ctx.Diff)
+	}
+	if got := commentBodies(ctx.Comments); !reflect.DeepEqual(got, []string{"keep inline", "keep general"}) {
+		t.Fatalf("comments = %#v", got)
+	}
+	if len(ctx.OmittedSections) == 0 || !strings.Contains(ctx.OmittedSections[0], "files omitted by filters") {
+		t.Fatalf("omitted sections = %#v", ctx.OmittedSections)
+	}
+}
+
+func TestReviewContextFilterAllOmitted(t *testing.T) {
+	ctx := &model.ReviewContext{
+		ChangedFiles: []model.ChangedFile{{Path: "README.md", Status: model.FileModified}},
+		Diff:         "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
+		DiffHunks:    []model.DiffHunk{{FilePath: "README.md", Content: "+new\n"}},
+	}
+	filter, err := newReviewContextFilter(model.ReviewRequest{IncludePaths: []string{`\.go$`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+
+	allFiltered, err := engine.applyReviewContextFilter(context.Background(), ctx, model.ReviewRequest{}, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allFiltered {
+		t.Fatal("expected all files filtered")
+	}
+	if len(ctx.ChangedFiles) != 0 || strings.TrimSpace(ctx.Diff) != "" || len(ctx.DiffHunks) != 0 {
+		t.Fatalf("context not empty: files=%#v diff=%q hunks=%#v", ctx.ChangedFiles, ctx.Diff, ctx.DiffHunks)
+	}
+	if !reviewContextAllFiltered(ctx) {
+		t.Fatalf("omitted sections = %#v", ctx.OmittedSections)
+	}
+}
+
+func TestRunSpecPipelineReturnsCleanResultWhenFiltersOmitAll(t *testing.T) {
+	engine := NewEngine(filteredOutSource{}, stubLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test-model"})
+	result, _, err := engine.RunSpecPipeline(context.Background(), &Pipeline{needsSource: true}, model.ReviewRequest{
+		Mode:         model.ModeLocal,
+		IncludePaths: []string{`\.go$`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %#v", result.Findings)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0] != allChangedFilesFilteredWarning {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+	if result.OverallExplanation != "All changed files were omitted by filters." {
+		t.Fatalf("overall explanation = %q", result.OverallExplanation)
+	}
+}
+
+func commentBodies(comments []model.Comment) []string {
+	out := make([]string, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, comment.Body)
+	}
+	return out
+}
+
+func TestParseDiffGitPath(t *testing.T) {
+	cases := map[string]string{
+		"diff --git a/app/main.go b/app/main.go":         "app/main.go",
+		"diff --git a/my file.go b/my file.go":           "my file.go",
+		"diff --git a/dir/old name.go b/dir/new name.go": "dir/new name.go",
+		"diff --git a/old.go b/old.go":                   "old.go",
+		"not a diff header":                              "",
+	}
+	for line, want := range cases {
+		if got := parseDiffGitPath(line); got != want {
+			t.Errorf("parseDiffGitPath(%q) = %q, want %q", line, got, want)
+		}
+	}
+}
+
+func TestFilterUnifiedDiffSpacePath(t *testing.T) {
+	diff := "diff --git a/my file.go b/my file.go\n@@ -1 +1 @@\n-old\n+new\n" +
+		"diff --git a/drop.go b/drop.go\n@@ -1 +1 @@\n-old\n+new\n"
+	out := filterUnifiedDiff(diff, map[string]bool{"my file.go": true})
+	if !strings.Contains(out, "my file.go") || strings.Contains(out, "drop.go") {
+		t.Fatalf("filtered diff = %q", out)
+	}
 }
 
 type capturingLLM struct {

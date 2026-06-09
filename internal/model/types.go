@@ -38,6 +38,10 @@ type ReviewRequest struct {
 	IncludeComments          bool
 	IncludeCommits           bool
 	IncludeFullFiles         bool
+	IncludePaths             []string
+	ExcludePaths             []string
+	IncludeContent           []string
+	ExcludeContent           []string
 	MaxContextTokens         int
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int

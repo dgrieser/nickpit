@@ -45,6 +45,14 @@ type app struct {
 	includeFullFiles              bool
 	includeComments               bool
 	includeCommits                bool
+	includePaths                  []string
+	includePathsSet               bool
+	excludePaths                  []string
+	excludePathsSet               bool
+	includeContent                []string
+	includeContentSet             bool
+	excludeContent                []string
+	excludeContentSet             bool
 	jsonOutput                    bool
 	useJSONSchema                 bool
 	maxToolCalls                  int
@@ -114,7 +122,12 @@ func newRootCmd() *cobra.Command {
 		Short:         "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			rootFlags := cmd.Root().PersistentFlags()
+			cli.includePathsSet = rootFlags.Changed("include-path")
+			cli.excludePathsSet = rootFlags.Changed("exclude-path")
+			cli.includeContentSet = rootFlags.Changed("include-content")
+			cli.excludeContentSet = rootFlags.Changed("exclude-content")
 			if err := review.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
 				return err
 			}
@@ -140,6 +153,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
+	root.PersistentFlags().StringArrayVar(&cli.includePaths, "include-path", nil, "Include changed files whose repo-relative path matches this regex; repeatable")
+	root.PersistentFlags().StringArrayVar(&cli.excludePaths, "exclude-path", nil, "Exclude changed files whose repo-relative path matches this regex; repeatable")
+	root.PersistentFlags().StringArrayVar(&cli.includeContent, "include-content", nil, "Include changed files whose full post-change content matches this regex; repeatable")
+	root.PersistentFlags().StringArrayVar(&cli.excludeContent, "exclude-content", nil, "Exclude changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
@@ -230,6 +247,22 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 			return "", config.Profile{}, fmt.Errorf("--extra-body must be a JSON object")
 		}
 	}
+	var includePaths *[]string
+	if a.includePathsSet {
+		includePaths = &a.includePaths
+	}
+	var excludePaths *[]string
+	if a.excludePathsSet {
+		excludePaths = &a.excludePaths
+	}
+	var includeContent *[]string
+	if a.includeContentSet {
+		includeContent = &a.includeContent
+	}
+	var excludeContent *[]string
+	if a.excludeContentSet {
+		excludeContent = &a.excludeContent
+	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
 		Profile:               a.profile,
 		Model:                 a.model,
@@ -240,6 +273,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		TopP:                  topP,
 		ExtraBody:             extraBody,
 		UseJSONSchema:         a.useJSONSchema,
+		IncludePaths:          includePaths,
+		ExcludePaths:          excludePaths,
+		IncludeContent:        includeContent,
+		ExcludeContent:        excludeContent,
 		MaxContextTokens:      maxContextTokens,
 		ToolCalls:             toolCalls,
 		DuplicateToolCalls:    duplicateToolCalls,
@@ -355,6 +392,10 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				IncludeComments:         a.includeComments,
 				IncludeCommits:          a.includeCommits,
 				IncludeFullFiles:        a.includeFullFiles,
+				IncludePaths:            profile.IncludePaths,
+				ExcludePaths:            profile.ExcludePaths,
+				IncludeContent:          profile.IncludeContent,
+				ExcludeContent:          profile.ExcludeContent,
 				MaxContextTokens:        profile.MaxContextTokens,
 				MaxToolCalls:            profile.MaxToolCalls,
 				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
@@ -410,6 +451,10 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				Identifier:              pr,
 				IncludeComments:         a.includeComments,
 				IncludeCommits:          a.includeCommits,
+				IncludePaths:            profile.IncludePaths,
+				ExcludePaths:            profile.ExcludePaths,
+				IncludeContent:          profile.IncludeContent,
+				ExcludeContent:          profile.ExcludeContent,
 				MaxContextTokens:        profile.MaxContextTokens,
 				MaxToolCalls:            profile.MaxToolCalls,
 				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
@@ -462,6 +507,10 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				Identifier:              mr,
 				IncludeComments:         a.includeComments,
 				IncludeCommits:          a.includeCommits,
+				IncludePaths:            profile.IncludePaths,
+				ExcludePaths:            profile.ExcludePaths,
+				IncludeContent:          profile.IncludeContent,
+				ExcludeContent:          profile.ExcludeContent,
 				MaxContextTokens:        profile.MaxContextTokens,
 				MaxToolCalls:            profile.MaxToolCalls,
 				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
@@ -1055,8 +1104,8 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if maxToolCalls == 0 {
 		maxToolCalls = profile.MaxToolCalls
 	}
-	if !req.IncludeFullFiles && maxToolCalls < 0 {
-		a.logf("Skipping remote checkout: include_full_files=%t max_tool_calls=%d", req.IncludeFullFiles, maxToolCalls)
+	if !req.IncludeFullFiles && !hasContentFilters(req) && maxToolCalls < 0 {
+		a.logf("Skipping remote checkout: include_full_files=%t content_filters=%t max_tool_calls=%d", req.IncludeFullFiles, hasContentFilters(req), maxToolCalls)
 		return "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)
@@ -1082,6 +1131,10 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	}
 	a.logf("Prepared repo root: path=%s", repoRoot)
 	return repoRoot, cleanup, nil
+}
+
+func hasContentFilters(req model.ReviewRequest) bool {
+	return len(req.IncludeContent) > 0 || len(req.ExcludeContent) > 0
 }
 
 func checkoutToken(mode model.ReviewMode, profile config.Profile) string {
