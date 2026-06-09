@@ -4,14 +4,18 @@ import (
 	"context"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 type Adapter struct {
 	client *Client
+	// render builds the platform-neutral markdown comment bodies; it carries
+	// the badge host (normalized by reviewmd.NewRenderer).
+	render reviewmd.Renderer
 }
 
-func NewAdapter(client *Client) *Adapter {
-	return &Adapter{client: client}
+func NewAdapter(client *Client, assetBaseURL string) *Adapter {
+	return &Adapter{client: client, render: reviewmd.NewRenderer(assetBaseURL)}
 }
 
 func (a *Adapter) ResolveContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {

@@ -425,6 +425,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 func (a *app) newGitHubCmd() *cobra.Command {
 	var repo string
 	var pr int
+	var publish bool
 	cmd := &cobra.Command{
 		Use:   "github",
 		Short: "Review GitHub pull requests",
@@ -443,7 +444,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken))
+			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken), profile.AssetBaseURL)
 			req := model.ReviewRequest{
 				Mode:                    model.ModeGitHub,
 				Workdir:                 profile.Workdir,
@@ -466,12 +467,14 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Offline:                 a.offline,
+				PostReview:              publish,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
 	}
 	prCmd.Flags().StringVar(&repo, "repo", "", "GitHub repo owner/name (inferred from git remote if omitted)")
 	prCmd.Flags().IntVar(&pr, "id", 0, "Pull request number")
+	prCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitHub PR as a review (summary + one comment per finding)")
 	_ = prCmd.MarkFlagRequired("id")
 	cmd.AddCommand(prCmd)
 	return cmd
@@ -840,7 +843,12 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 	// (GitLab) act here; github/local are unaffected.
 	if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
 		if publisher, ok := source.(model.ReviewPublisher); ok {
-			a.logProgress("Publish", fmt.Sprintf("posting review to %s !%d", req.Repo, req.Identifier))
+			// GitLab numbers MRs with "!", GitHub PRs with "#".
+			sigil := "!"
+			if req.Mode == model.ModeGitHub {
+				sigil = "#"
+			}
+			a.logProgress("Publish", fmt.Sprintf("posting review to %s %s%d", req.Repo, sigil, req.Identifier))
 			if err := publisher.PublishReview(ctx, req, result); err != nil {
 				a.logProgress("Publish", fmt.Sprintf("status=ERROR, error=%v", err))
 				result.Warnings = append(result.Warnings, fmt.Sprintf("Publish failed: %v", err))

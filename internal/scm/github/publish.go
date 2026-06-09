@@ -1,0 +1,163 @@
+package github
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
+)
+
+// reviewFallbackBody is the review body used when the summary was already posted
+// on a prior run but new inline findings still need a review to carry them.
+// GitHub requires a non-empty body for a submitted COMMENT review, and a
+// marker-free line here avoids re-posting (and re-deduping) the verdict.
+const reviewFallbackBody = "Additional nickpit findings below."
+
+// inlineItem pairs a finding with its rendered inline comment so the finding can
+// be re-rendered as a general comment if the atomic review POST is rejected.
+type inlineItem struct {
+	finding model.Finding
+	comment reviewComment
+}
+
+// PublishReview posts the review back to the pull request as a single GitHub PR
+// review (event COMMENT): the overall verdict as the review body and one inline
+// comment per finding anchored to its diff line. Findings whose line is not part
+// of the diff fall back to a general PR comment prefixed with file:line. Hidden
+// markers make re-runs idempotent. Per-item failures are aggregated; a failure
+// never aborts the rest.
+func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, result *model.ReviewResult) error {
+	if result == nil {
+		return nil
+	}
+	info, err := a.client.FetchPRPositionInfo(ctx, req.Repo, req.Identifier)
+	if err != nil {
+		return fmt.Errorf("github publish: fetch position info: %w", err)
+	}
+
+	escaped := escapeRepo(req.Repo)
+	reviewsPath := fmt.Sprintf("/repos/%s/pulls/%d/reviews", escaped, req.Identifier)
+	issueCommentsPath := fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, req.Identifier)
+
+	posted := a.existingMarkers(ctx, req.Repo, req.Identifier)
+
+	// Partition not-yet-posted findings: those whose line maps to the diff become
+	// inline review comments; the rest become general comments.
+	var inline []inlineItem
+	var overflow []model.Finding
+	for _, finding := range result.Findings {
+		if _, ok := posted[reviewmd.FindingMarker(finding.ID)]; ok {
+			continue
+		}
+		body := a.render.FindingBody(finding, "")
+		if comment, ok := inlineComment(info.Hunks[finding.CodeLocation.FilePath], finding.CodeLocation.FilePath, finding.CodeLocation.LineRange, body); ok {
+			inline = append(inline, inlineItem{finding: finding, comment: comment})
+		} else {
+			overflow = append(overflow, finding)
+		}
+	}
+
+	summaryBody := ""
+	if _, ok := posted[reviewmd.SummaryMarker]; !ok {
+		summaryBody = a.render.SummaryBody(result)
+	}
+
+	var errs []error
+	if err := a.publishReview(ctx, reviewsPath, issueCommentsPath, info.HeadSHA, summaryBody, inline); err != nil {
+		errs = append(errs, err)
+	}
+	for _, finding := range overflow {
+		if err := a.postIssueComment(ctx, issueCommentsPath, finding); err != nil {
+			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// publishReview posts the summary + inline findings as one review. GitHub's
+// create-review call is atomic, so if it rejects an inline line (422) the whole
+// review fails; we then degrade gracefully — post the summary as a body-only
+// review and each inline finding as a general comment — rather than drop them.
+func (a *Adapter) publishReview(ctx context.Context, reviewsPath, issueCommentsPath, headSHA, summaryBody string, inline []inlineItem) error {
+	body := summaryBody
+	if body == "" && len(inline) > 0 {
+		body = reviewFallbackBody
+	}
+	if body == "" && len(inline) == 0 {
+		return nil // Nothing new to post.
+	}
+
+	comments := make([]reviewComment, len(inline))
+	for i, item := range inline {
+		comments[i] = item.comment
+	}
+	err := a.postReview(ctx, reviewsPath, headSHA, body, comments)
+	if err == nil {
+		return nil
+	}
+	if !IsUnprocessable(err) || len(comments) == 0 {
+		return fmt.Errorf("review: %w", err)
+	}
+
+	var errs []error
+	if summaryBody != "" {
+		if err := a.postReview(ctx, reviewsPath, headSHA, summaryBody, nil); err != nil {
+			errs = append(errs, fmt.Errorf("summary review: %w", err))
+		}
+	}
+	for _, item := range inline {
+		if err := a.postIssueComment(ctx, issueCommentsPath, item.finding); err != nil {
+			errs = append(errs, fmt.Errorf("finding %s: %w", item.finding.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (a *Adapter) postReview(ctx context.Context, path, commitID, body string, comments []reviewComment) error {
+	payload := map[string]any{"event": "COMMENT"}
+	if commitID != "" {
+		payload["commit_id"] = commitID
+	}
+	if body != "" {
+		payload["body"] = body
+	}
+	if len(comments) > 0 {
+		payload["comments"] = comments
+	}
+	return a.client.Post(ctx, path, payload, nil)
+}
+
+func (a *Adapter) postIssueComment(ctx context.Context, path string, finding model.Finding) error {
+	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
+	return a.client.Post(ctx, path, map[string]string{"body": a.render.FindingBody(finding, prefix)}, nil)
+}
+
+// existingMarkers collects the nickpit markers already present in the PR's
+// reviews, review comments, and issue comments so re-runs skip findings posted
+// before. Fetch errors are tolerated (worst case: a duplicate comment).
+func (a *Adapter) existingMarkers(ctx context.Context, repo string, number int) map[string]struct{} {
+	markers := map[string]struct{}{}
+	escaped := escapeRepo(repo)
+
+	var reviews []reviewResponse
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/reviews", escaped, number), &reviews); err == nil {
+		for _, review := range reviews {
+			reviewmd.CollectMarkers(review.Body, markers)
+		}
+	}
+	var comments []commentResponse
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/comments", escaped, number), &comments); err == nil {
+		for _, comment := range comments {
+			reviewmd.CollectMarkers(comment.Body, markers)
+		}
+	}
+	var issueComments []issueCommentResponse
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, number), &issueComments); err == nil {
+		for _, comment := range issueComments {
+			reviewmd.CollectMarkers(comment.Body, markers)
+		}
+	}
+	return markers
+}

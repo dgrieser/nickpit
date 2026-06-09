@@ -3,9 +3,9 @@ package gitlab
 import (
 	"crypto/sha1"
 	"fmt"
-	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 // position is a GitLab diff-note position for a text diff. NewLine/OldLine use
@@ -36,65 +36,18 @@ type linePoint struct {
 	NewLine  *int   `json:"new_line,omitempty"`
 }
 
-// lineLoc is where a new-side line sits in the diff: its new-side number, the
-// old-side cursor at that point, and whether it is an added line (new side only).
-type lineLoc struct {
-	oldLine int
-	newLine int
-	added   bool
-}
-
-// locateLine walks the change's hunks to find the new-side line `newLine`,
-// returning its location, or false when the line is not part of the diff.
-func locateLine(change MRChange, newLine int) (lineLoc, bool) {
-	for _, hunk := range change.Hunks {
-		oldCursor := hunk.OldStart
-		newCursor := hunk.NewStart
-		// TrimRight (not TrimSuffix) drops the trailing blank produced by the
-		// per-file "diff + \n" framing so it is not mistaken for a context line.
-		for raw := range strings.SplitSeq(strings.TrimRight(hunk.Content, "\n"), "\n") {
-			// A hunk-body line carries a leading marker (' ', '+', '-', '\'). A
-			// genuinely empty interior line has none; treat it as a blank context
-			// line so the cursors stay in sync — skipping it would desync the
-			// new-side number for every line that follows.
-			marker := byte(' ')
-			if raw != "" {
-				marker = raw[0]
-			}
-			switch marker {
-			case '+':
-				if newCursor == newLine {
-					return lineLoc{oldLine: oldCursor, newLine: newCursor, added: true}, true
-				}
-				newCursor++
-			case '-':
-				oldCursor++
-			case '\\':
-				// "\ No newline at end of file": no line on either side.
-			default: // ' ' context, an empty line, or any unexpected prefix
-				if newCursor == newLine {
-					return lineLoc{oldLine: oldCursor, newLine: newCursor}, true
-				}
-				oldCursor++
-				newCursor++
-			}
-		}
-	}
-	return lineLoc{}, false
-}
-
 // mapPosition builds a single-line position for the given new-side line, or
 // false when the line is not in the diff.
 func mapPosition(change MRChange, refs DiffRefs, newLine int) (position, bool) {
-	loc, ok := locateLine(change, newLine)
+	loc, ok := reviewmd.LocateLine(change.Hunks, newLine)
 	if !ok {
 		return position{}, false
 	}
 	pos := basePosition(change, refs)
-	nl := loc.newLine
+	nl := loc.NewLine
 	pos.NewLine = &nl
-	if !loc.added {
-		ol := loc.oldLine
+	if !loc.Added {
+		ol := loc.OldLine
 		pos.OldLine = &ol
 	}
 	return pos, true
@@ -119,17 +72,17 @@ func multiLinePosition(change MRChange, refs DiffRefs, lr model.LineRange) (posi
 	if lr.End <= lr.Start {
 		return position{}, false
 	}
-	startLoc, ok1 := locateLine(change, lr.Start)
-	endLoc, ok2 := locateLine(change, lr.End)
+	startLoc, ok1 := reviewmd.LocateLine(change.Hunks, lr.Start)
+	endLoc, ok2 := reviewmd.LocateLine(change.Hunks, lr.End)
 	if !ok1 || !ok2 {
 		return position{}, false
 	}
 	pos := basePosition(change, refs)
 	// The anchor (new_line/old_line) points at the last line of the range.
-	enl := endLoc.newLine
+	enl := endLoc.NewLine
 	pos.NewLine = &enl
-	if !endLoc.added {
-		eol := endLoc.oldLine
+	if !endLoc.Added {
+		eol := endLoc.OldLine
 		pos.OldLine = &eol
 	}
 	pos.LineRange = &lineRange{
@@ -150,21 +103,21 @@ func basePosition(change MRChange, refs DiffRefs) position {
 	}
 }
 
-func newLinePoint(path string, loc lineLoc) linePoint {
+func newLinePoint(path string, loc reviewmd.LineLoc) linePoint {
 	lp := linePoint{LineCode: lineCode(path, loc)}
-	nl := loc.newLine
+	nl := loc.NewLine
 	lp.NewLine = &nl
-	if loc.added {
+	if loc.Added {
 		lp.Type = "new"
 	} else {
-		ol := loc.oldLine
+		ol := loc.OldLine
 		lp.OldLine = &ol
 	}
 	return lp
 }
 
 // lineCode mirrors GitLab's `<sha1(path)>_<old_line>_<new_line>` line identifier.
-func lineCode(path string, loc lineLoc) string {
+func lineCode(path string, loc reviewmd.LineLoc) string {
 	sum := sha1.Sum([]byte(path))
-	return fmt.Sprintf("%x_%d_%d", sum, loc.oldLine, loc.newLine)
+	return fmt.Sprintf("%x_%d_%d", sum, loc.OldLine, loc.NewLine)
 }
