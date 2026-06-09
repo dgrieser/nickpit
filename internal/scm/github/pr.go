@@ -136,7 +136,6 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		}
 	}
 
-	var diff strings.Builder
 	changedFiles := make([]model.ChangedFile, 0, len(files))
 	for _, file := range files {
 		status := model.FileModified
@@ -155,17 +154,9 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 			Deletions: file.Deletions,
 			PatchURL:  file.Contents,
 		})
-		if file.Patch != "" {
-			diff.WriteString("diff --git a/")
-			diff.WriteString(file.Filename)
-			diff.WriteString(" b/")
-			diff.WriteString(file.Filename)
-			diff.WriteByte('\n')
-			diff.WriteString(file.Patch)
-			diff.WriteByte('\n')
-		}
 	}
-	hunks, _, _ := git.ParseUnifiedDiff(diff.String())
+	diff := framedDiff(files)
+	hunks, _, _ := git.ParseUnifiedDiff(diff)
 	return &model.ReviewContext{
 		Mode:       model.ModeGitHub,
 		Identifier: number,
@@ -179,7 +170,7 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		Description:  pr.Body,
 		Commits:      normalizeCommits(commits),
 		ChangedFiles: changedFiles,
-		Diff:         diff.String(),
+		Diff:         diff,
 		DiffHunks:    hunks,
 		Comments:     comments,
 	}, nil
@@ -205,6 +196,56 @@ func (c *Client) FetchPRCheckout(ctx context.Context, repo string, number int) (
 		HeadRef:  pr.Head.Ref,
 		HeadSHA:  pr.Head.SHA,
 	}, nil
+}
+
+// PRPositionInfo is the freshly-fetched diff state used when publishing review
+// comments back to a PR. It is fetched at post-time (not reused from the review
+// context) so the head SHA and hunks match the current diff and GitHub accepts
+// the inline comment positions.
+type PRPositionInfo struct {
+	HeadSHA string
+	// Hunks maps a file's new-side path to its parsed diff hunks.
+	Hunks map[string][]model.DiffHunk
+}
+
+// FetchPRPositionInfo fetches the PR's head SHA and per-file diff hunks so review
+// findings can be anchored to exact diff lines.
+func (c *Client) FetchPRPositionInfo(ctx context.Context, repo string, number int) (*PRPositionInfo, error) {
+	escaped := escapeRepo(repo)
+	var pr prResponse
+	if err := c.Get(ctx, fmt.Sprintf("/repos/%s/pulls/%d", escaped, number), &pr); err != nil {
+		return nil, err
+	}
+	var files []fileResponse
+	if err := c.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/files", escaped, number), &files); err != nil {
+		return nil, err
+	}
+	hunks, _, _ := git.ParseUnifiedDiff(framedDiff(files))
+	byPath := make(map[string][]model.DiffHunk, len(files))
+	for _, hunk := range hunks {
+		byPath[hunk.FilePath] = append(byPath[hunk.FilePath], hunk)
+	}
+	return &PRPositionInfo{HeadSHA: pr.Head.SHA, Hunks: byPath}, nil
+}
+
+// framedDiff reconstructs a unified diff from the PR file patches, re-creating
+// the minimal "diff --git" framing so git.ParseUnifiedDiff attributes each hunk
+// to its file (the GitHub files API returns per-file patches without it).
+func framedDiff(files []fileResponse) string {
+	var diff strings.Builder
+	for _, file := range files {
+		if file.Patch == "" {
+			continue
+		}
+		diff.WriteString("diff --git a/")
+		diff.WriteString(file.Filename)
+		diff.WriteString(" b/")
+		diff.WriteString(file.Filename)
+		diff.WriteByte('\n')
+		diff.WriteString(file.Patch)
+		diff.WriteByte('\n')
+	}
+	return diff.String()
 }
 
 func normalizeCommits(in []commitResponse) []model.CommitSummary {

@@ -118,6 +118,9 @@ nickpit local uncommitted
 nickpit github pr --repo owner/repo --id 123
 nickpit github pr --repo owner/repo --id 123 --local-repo ~/src/repo
 
+# Review a GitHub PR and post the result back as a review (summary + one comment per finding)
+nickpit github pr --repo owner/repo --id 123 --publish
+
 # Review MR in GitLab
 nickpit gitlab mr --repo group/project --id 456
 
@@ -125,7 +128,7 @@ nickpit gitlab mr --repo group/project --id 456
 nickpit gitlab mr --repo group/project --id 456 --publish
 ```
 
-Findings whose lines are part of the diff are posted as inline discussions; the rest fall back to general notes prefixed with `file:line`. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
+With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments prefixed with `file:line`. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
 
 ### Progress
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 const (
@@ -140,7 +141,7 @@ func TestPublishReviewHappyPath(t *testing.T) {
 	if len(ps.discPosts) != 1 {
 		t.Fatalf("discussion posts = %d, want 1", len(ps.discPosts))
 	}
-	if !strings.Contains(ps.notePosts[0].body, summaryMarker) {
+	if !strings.Contains(ps.notePosts[0].body, reviewmd.SummaryMarker) {
 		t.Fatalf("first note is not the summary: %q", ps.notePosts[0].body)
 	}
 	disc := ps.discPosts[0]
@@ -150,12 +151,12 @@ func TestPublishReviewHappyPath(t *testing.T) {
 	if disc.position["new_line"].(float64) != 1 {
 		t.Fatalf("new_line = %v, want 1", disc.position["new_line"])
 	}
-	if !strings.Contains(disc.body, findingMarker("finding-a")) {
+	if !strings.Contains(disc.body, reviewmd.FindingMarker("finding-a")) {
 		t.Fatalf("discussion missing finding marker: %q", disc.body)
 	}
 	// out-of-diff note carries file:line prefix
 	fallback := ps.notePosts[1]
-	if !strings.Contains(fallback.body, "`other.go:5`") || !strings.Contains(fallback.body, findingMarker("finding-b")) {
+	if !strings.Contains(fallback.body, "`other.go:5`") || !strings.Contains(fallback.body, reviewmd.FindingMarker("finding-b")) {
 		t.Fatalf("fallback note missing prefix/marker: %q", fallback.body)
 	}
 }
@@ -175,7 +176,7 @@ func TestPublishReview422FallsBackToNote(t *testing.T) {
 	}
 	var sawA bool
 	for _, n := range ps.notePosts {
-		if strings.Contains(n.body, findingMarker("finding-a")) && strings.Contains(n.body, "`main.go:1`") {
+		if strings.Contains(n.body, reviewmd.FindingMarker("finding-a")) && strings.Contains(n.body, "`main.go:1`") {
 			sawA = true
 		}
 	}
@@ -186,7 +187,7 @@ func TestPublishReview422FallsBackToNote(t *testing.T) {
 
 func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	ps := newPublishServer(t)
-	ps.noteBody = []byte(`[{"body":"` + summaryMarker + `"},{"body":"prefix ` + findingMarker("finding-a") + ` suffix"}]`)
+	ps.noteBody = []byte(`[{"body":"` + reviewmd.SummaryMarker + `"},{"body":"prefix ` + reviewmd.FindingMarker("finding-a") + ` suffix"}]`)
 	if err := ps.adapter().PublishReview(context.Background(), req(), sampleResult()); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	if len(ps.notePosts) != 1 {
 		t.Fatalf("note posts = %d, want 1 (only finding-b)", len(ps.notePosts))
 	}
-	if !strings.Contains(ps.notePosts[0].body, findingMarker("finding-b")) {
+	if !strings.Contains(ps.notePosts[0].body, reviewmd.FindingMarker("finding-b")) {
 		t.Fatalf("expected only finding-b note, got %q", ps.notePosts[0].body)
 	}
 }
@@ -222,7 +223,7 @@ func TestPublishFindingNon422Propagates(t *testing.T) {
 		t.Fatalf("note posts = %d, want 2 (summary + finding-b)", len(ps.notePosts))
 	}
 	for _, n := range ps.notePosts {
-		if strings.Contains(n.body, findingMarker("finding-a")) {
+		if strings.Contains(n.body, reviewmd.FindingMarker("finding-a")) {
 			t.Fatalf("finding-a must not fall back on a non-422 error: %q", n.body)
 		}
 	}
@@ -269,44 +270,5 @@ func TestPublishReviewMultiLineInline(t *testing.T) {
 	}
 }
 
-func TestSanitizeForPublish(t *testing.T) {
-	// C0/ESC/BEL control bytes (terminal-escape vectors) are stripped.
-	if got := sanitizeForPublish("a\x00\x1b\x07b"); got != "ab" {
-		t.Fatalf("control strip = %q, want %q", got, "ab")
-	}
-	// An injected nickpit marker in untrusted text is defused so it cannot
-	// poison re-run dedupe.
-	got := sanitizeForPublish("evil " + summaryMarker + " text")
-	if strings.Contains(got, markerOpen) {
-		t.Fatalf("marker token not defused: %q", got)
-	}
-	markers := map[string]struct{}{}
-	collectMarkers(got, markers)
-	if len(markers) != 0 {
-		t.Fatalf("defused text still yielded markers: %v", markers)
-	}
-}
-
-func TestFindingDisplayPrefersSummarization(t *testing.T) {
-	finding := model.Finding{
-		Title:           "Original title",
-		Body:            "original body",
-		ConfidenceScore: 0.5,
-		Priority:        func() *int { p := 3; return &p }(),
-		Finalization:    &model.FindingFinalization{Title: "Final title", Body: "long finalized body", Priority: 2, ConfidenceScore: 0.7, Remarks: "kept"},
-		Summarization:   &model.FindingSummarization{Title: "Final title", Body: "short summary", Priority: 2, ConfidenceScore: 0.7, Remarks: "kept"},
-	}
-	title, body, rank, confidence := findingDisplay(finding)
-	if body != "short summary" {
-		t.Fatalf("body = %q, want short summary", body)
-	}
-	if title != "Final title" {
-		t.Fatalf("title = %q, want Final title", title)
-	}
-	if rank != 2 {
-		t.Fatalf("rank = %d, want 2 (from summarization)", rank)
-	}
-	if confidence != 0.7 {
-		t.Fatalf("confidence = %v, want 0.7 (from summarization)", confidence)
-	}
-}
+// Pure-markdown rendering (sanitize, marker collection, finding-field
+// precedence) is exercised in the shared internal/scm/reviewmd package.
