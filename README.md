@@ -79,6 +79,21 @@ Run `make generate` or `make build` to generate `.nickpit.yaml.example` from the
 
 The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`.
 
+### Diff Filters
+
+Profiles can filter changed files before review. Path and content values are Go regular expressions; path regexes match repo-relative paths, while content regexes match the full post-change file content.
+
+```yaml
+profiles:
+  default:
+    include_paths: ["\\.go$"]
+    exclude_paths: ["\\.pb\\.go$", "(^|/)package-lock\\.json$"]
+    include_content: ["(?m)^package "]
+    exclude_content: ["(?m)Code generated .* DO NOT EDIT"]
+```
+
+The same filters can be set per run with repeatable flags such as `--include-path`, `--exclude-path`, `--include-content`, and `--exclude-content`.
+
 ## Usage
 
 ```bash

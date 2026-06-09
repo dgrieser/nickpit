@@ -376,6 +376,72 @@ profiles:
 	}
 }
 
+func TestLoadConfigFiltersFromFileAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    include_paths: ["\\.go$"]
+    exclude_paths: ["\\.pb\\.go$"]
+    include_content: ["(?m)^package "]
+    exclude_content: ["DO NOT EDIT"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.IncludePaths, ",") != "\\.go$" {
+		t.Fatalf("include paths = %#v", profile.IncludePaths)
+	}
+	if strings.Join(profile.ExcludePaths, ",") != "\\.pb\\.go$" {
+		t.Fatalf("exclude paths = %#v", profile.ExcludePaths)
+	}
+	if strings.Join(profile.IncludeContent, ",") != "(?m)^package " {
+		t.Fatalf("include content = %#v", profile.IncludeContent)
+	}
+	if strings.Join(profile.ExcludeContent, ",") != "DO NOT EDIT" {
+		t.Fatalf("exclude content = %#v", profile.ExcludeContent)
+	}
+
+	includePaths := []string{"\\.ts$"}
+	excludeContent := []string{"generated"}
+	_, profile, err = Load(path, Overrides{IncludePaths: &includePaths, ExcludeContent: &excludeContent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.IncludePaths, ",") != "\\.ts$" {
+		t.Fatalf("override include paths = %#v", profile.IncludePaths)
+	}
+	if strings.Join(profile.ExcludeContent, ",") != "generated" {
+		t.Fatalf("override exclude content = %#v", profile.ExcludeContent)
+	}
+}
+
+func TestLoadConfigRejectsInvalidFilterRegex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    include_paths: ["["]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "include_paths[0] invalid regex") {
+		t.Fatalf("error = %v, want invalid regex", err)
+	}
+}
+
 func TestLoadConfigSupportedModels(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

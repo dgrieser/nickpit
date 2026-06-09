@@ -113,6 +113,17 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 			return nil, nil, err
 		}
 		reviewCtx = c
+		if reviewContextAllFiltered(reviewCtx) {
+			result := &model.ReviewResult{
+				Findings:               nil,
+				OverallCorrectness:     "patch is correct",
+				OverallExplanation:     "All changed files were omitted by filters.",
+				OverallConfidenceScore: 1,
+				Warnings:               []string{allChangedFilesFilteredWarning},
+			}
+			e.applyResultMetadata(result, req, reviewCtx)
+			return result, reviewCtx, nil
+		}
 	} else {
 		reviewCtx = &model.ReviewContext{Mode: req.Mode, CheckoutRoot: req.RepoRoot, Identifier: req.Identifier}
 	}
@@ -128,6 +139,10 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 // optionally inlines full files, and trims to the context budget.
 func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
 	e.logf("Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
+	contextFilter, err := newReviewContextFilter(req)
+	if err != nil {
+		return nil, err
+	}
 	reviewCtx, err := e.source.ResolveContext(ctx, req)
 	if err != nil {
 		return nil, err
@@ -139,6 +154,12 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	}
 	reviewCtx.CheckoutRoot = req.RepoRoot
 	reviewCtx.Identifier = req.Identifier
+	if allFiltered, err := e.applyReviewContextFilter(ctx, reviewCtx, req, contextFilter); err != nil {
+		return nil, err
+	} else if allFiltered {
+		e.logf("Filtered context: files=0 diff_bytes=0")
+		return reviewCtx, nil
+	}
 
 	if e.toolchainCapture != nil {
 		reviewCtx.ToolchainVersions = e.toolchainCapture(ctx, req.RepoRoot, reviewCtx)

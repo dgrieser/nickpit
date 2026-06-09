@@ -1,6 +1,9 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 func ResolveProfile(cfg *Config, name string) (Profile, error) {
 	if cfg == nil {
@@ -43,6 +46,18 @@ func mergeProfiles(base, override Profile) Profile {
 	}
 	if override.UseJSONSchema {
 		base.UseJSONSchema = true
+	}
+	if override.IncludePaths != nil {
+		base.IncludePaths = slices.Clone(override.IncludePaths)
+	}
+	if override.ExcludePaths != nil {
+		base.ExcludePaths = slices.Clone(override.ExcludePaths)
+	}
+	if override.IncludeContent != nil {
+		base.IncludeContent = slices.Clone(override.IncludeContent)
+	}
+	if override.ExcludeContent != nil {
+		base.ExcludeContent = slices.Clone(override.ExcludeContent)
 	}
 	if override.MaxContextTokensConfigured {
 		base.MaxContextTokensConfigured = true

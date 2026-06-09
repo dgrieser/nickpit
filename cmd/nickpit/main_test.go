@@ -104,6 +104,52 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesFilterCLIOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    include_paths: ["\\.go$"]
+    exclude_paths: ["\\.pb\\.go$"]
+    include_content: ["package main"]
+    exclude_content: ["DO NOT EDIT"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:           "default",
+		configPath:        path,
+		includePaths:      []string{"\\.ts$"},
+		includePathsSet:   true,
+		excludePaths:      []string{"\\.gen\\.ts$"},
+		excludePathsSet:   true,
+		includeContent:    []string{"export "},
+		includeContentSet: true,
+		excludeContent:    []string{"generated"},
+		excludeContentSet: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.IncludePaths, ",") != "\\.ts$" {
+		t.Fatalf("include paths = %#v", profile.IncludePaths)
+	}
+	if strings.Join(profile.ExcludePaths, ",") != "\\.gen\\.ts$" {
+		t.Fatalf("exclude paths = %#v", profile.ExcludePaths)
+	}
+	if strings.Join(profile.IncludeContent, ",") != "export " {
+		t.Fatalf("include content = %#v", profile.IncludeContent)
+	}
+	if strings.Join(profile.ExcludeContent, ",") != "generated" {
+		t.Fatalf("exclude content = %#v", profile.ExcludeContent)
+	}
+}
+
 func TestLoadProfileAppliesRateLimitDelayCLIOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

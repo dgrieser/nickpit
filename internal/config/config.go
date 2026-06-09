@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -50,6 +51,10 @@ type Profile struct {
 	TopP                               *float64            `yaml:"top_p"`
 	ExtraBody                          map[string]any      `yaml:"extra_body"`
 	UseJSONSchema                      bool                `yaml:"use_json_schema"`
+	IncludePaths                       []string            `yaml:"include_paths"`
+	ExcludePaths                       []string            `yaml:"exclude_paths"`
+	IncludeContent                     []string            `yaml:"include_content"`
+	ExcludeContent                     []string            `yaml:"exclude_content"`
 	MaxContextTokens                   int                 `yaml:"max_context_tokens"`
 	MaxToolCalls                       int                 `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls              int                 `yaml:"max_duplicate_tool_calls"`
@@ -101,6 +106,10 @@ type Overrides struct {
 	TopP                  *float64
 	ExtraBody             map[string]any
 	UseJSONSchema         bool
+	IncludePaths          *[]string
+	ExcludePaths          *[]string
+	IncludeContent        *[]string
+	ExcludeContent        *[]string
 	MaxContextTokens      *int
 	ToolCalls             *int
 	DuplicateToolCalls    *int
@@ -203,6 +212,10 @@ func cloneProfile(profile Profile) Profile {
 	}
 	profile.ExtraBody = cloneMap(profile.ExtraBody)
 	profile.SupportedModels = cloneSupportedModels(profile.SupportedModels)
+	profile.IncludePaths = slices.Clone(profile.IncludePaths)
+	profile.ExcludePaths = slices.Clone(profile.ExcludePaths)
+	profile.IncludeContent = slices.Clone(profile.IncludeContent)
+	profile.ExcludeContent = slices.Clone(profile.ExcludeContent)
 	return profile
 }
 
@@ -378,6 +391,18 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.UseJSONSchema {
 		profile.UseJSONSchema = true
 	}
+	if overrides.IncludePaths != nil {
+		profile.IncludePaths = slices.Clone(*overrides.IncludePaths)
+	}
+	if overrides.ExcludePaths != nil {
+		profile.ExcludePaths = slices.Clone(*overrides.ExcludePaths)
+	}
+	if overrides.IncludeContent != nil {
+		profile.IncludeContent = slices.Clone(*overrides.IncludeContent)
+	}
+	if overrides.ExcludeContent != nil {
+		profile.ExcludeContent = slices.Clone(*overrides.ExcludeContent)
+	}
 	if overrides.MaxContextTokens != nil {
 		profile.MaxContextTokens = *overrides.MaxContextTokens
 		profile.MaxContextTokensConfigured = true
@@ -502,7 +527,28 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.GitLabBaseURL == "" {
 		profile.GitLabBaseURL = "https://gitlab.com/api/v4"
 	}
+	if err := validateRegexList("include_paths", profile.IncludePaths); err != nil {
+		return Profile{}, err
+	}
+	if err := validateRegexList("exclude_paths", profile.ExcludePaths); err != nil {
+		return Profile{}, err
+	}
+	if err := validateRegexList("include_content", profile.IncludeContent); err != nil {
+		return Profile{}, err
+	}
+	if err := validateRegexList("exclude_content", profile.ExcludeContent); err != nil {
+		return Profile{}, err
+	}
 	return profile, nil
+}
+
+func validateRegexList(key string, patterns []string) error {
+	for i, pattern := range patterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("config: %s[%d] invalid regex %q: %w", key, i, pattern, err)
+		}
+	}
+	return nil
 }
 
 func expandEnvReference(value string) string {
