@@ -60,9 +60,16 @@ func (l *Logger) VerboseJSON(ctx context.Context, label string, value any) {
 	for _, line := range renderVerboseJSONLines(value) {
 		text := line.text
 		if l.useANSI {
-			if line.stringOnly {
+			switch {
+			case line.stringOnly && line.prefixLen > 0:
+				// First line of a multiline string: the structural prefix
+				// (`"key": `) keeps JSON key coloring, the rest is string
+				// content.
+				text = colorizeJSON(text[:line.prefixLen]) +
+					progressStyle(progressColorStringGreen, text[line.prefixLen:])
+			case line.stringOnly:
 				text = progressStyle(progressColorStringGreen, text)
-			} else {
+			default:
 				text = colorizeJSON(text)
 			}
 		}

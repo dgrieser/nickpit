@@ -175,6 +175,11 @@ func (l *Logger) writeRaw(text string) {
 type renderedJSONLine struct {
 	text       string
 	stringOnly bool
+	// prefixLen is the length of the structural prefix (indentation plus
+	// `"key": `) on the first line of a multiline string. Renderers colorize
+	// text[:prefixLen] as JSON structure and text[prefixLen:] as string
+	// content; 0 means the whole line is string content.
+	prefixLen int
 }
 
 func normalizeEmbeddedJSON(value any) any {
@@ -275,6 +280,7 @@ func renderJSONStringLines(value, prefix string, trailingComma bool) []renderedJ
 	lines = append(lines, renderedJSONLine{
 		text:       prefix + `"` + escapeJSONStringFragment(parts[0]),
 		stringOnly: true,
+		prefixLen:  len(prefix),
 	})
 	for _, part := range parts[1 : len(parts)-1] {
 		lines = append(lines, renderedJSONLine{

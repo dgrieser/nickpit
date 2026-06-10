@@ -144,6 +144,26 @@ func TestVerboseJSONANSIPalette(t *testing.T) {
 	}
 }
 
+func TestVerboseJSONMultilineStringKeepsKeyColor(t *testing.T) {
+	var buf bytes.Buffer
+	l := ansiVerboseLogger(&buf)
+	l.VerboseJSON(context.Background(), "", map[string]any{
+		"content": "# Bash Style Guide\nDefensive Bash.",
+	})
+	got := buf.String()
+	// The key on the first line of a multiline string keeps JSON key coloring
+	// instead of being painted as string content.
+	if !strings.Contains(got, "\x1b[38;5;116m\"content\"\x1b[0m") {
+		t.Errorf("multiline string key not turquoise:\n%q", got)
+	}
+	if !strings.Contains(got, "\x1b[38;5;120m\"# Bash Style Guide\x1b[0m") {
+		t.Errorf("multiline string first fragment not green:\n%q", got)
+	}
+	if !strings.Contains(got, "\x1b[38;5;120m              Defensive Bash.\"\x1b[0m") {
+		t.Errorf("continuation line not green:\n%q", got)
+	}
+}
+
 func TestVerboseMaybeJSONBothBranches(t *testing.T) {
 	var buf bytes.Buffer
 	l := &Logger{w: &buf, useANSI: false, enabled: true}
