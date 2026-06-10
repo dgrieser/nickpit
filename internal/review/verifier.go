@@ -53,7 +53,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: nil review context")
 	}
 	if model.EnsureFindingID(&req.Finding) {
-		e.logf("Verify generated replacement ID for invalid finding ID: title=%q", req.Finding.Title)
+		e.logf(ctx, "Verify generated replacement ID for invalid finding ID: title=%q", req.Finding.Title)
 	}
 
 	systemTemplate, err := e.loadPrompt("agent_verify_system_prompt.tmpl")
@@ -168,7 +168,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
 			return nil, usage, fmt.Errorf("verify: missing verification in response")
 		}
-		e.logf("Verify: missing verification, retrying: attempt=%d", attempt+1)
+		e.logf(ctx, "Verify: missing verification, retrying: attempt=%d", attempt+1)
 		if len(loopResult.messages) > 0 {
 			messages = loopResult.messages
 		}
@@ -178,7 +178,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, []string, error) {
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
-		e.logf("Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
+		e.logf(ctx, "Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 	}
 	verifications := make([]*model.FindingVerification, len(findings))
 	if len(findings) == 0 {
@@ -246,7 +246,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 			}
 			mu.Unlock()
 			if err != nil {
-				e.logf("Verify failed: index=%d title=%q error=%v", idx, f.Title, err)
+				e.logf(ctx, "Verify failed: index=%d title=%q error=%v", idx, f.Title, err)
 				return
 			}
 			verifications[idx] = verification

@@ -146,12 +146,12 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	seenContent, ok := state.seenFiles[normalizedPath]
 	state.mu.Unlock()
 	if ok {
-		e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
 		return toolError(seenContent.Path, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_file"}))
 	}
 
 	if args.LineStart > 0 || args.LineEnd > 0 {
-		e.logfCtx(ctx, "Executing tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, args.LineStart, args.LineEnd)
+		e.logf(ctx, "Executing tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, args.LineStart, args.LineEnd)
 		content, err := e.retrieval.GetFileSlice(ctx, repoRoot, normalizedPath, args.LineStart, args.LineEnd)
 		if err != nil {
 			return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -164,7 +164,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		}
 		state.mu.Unlock()
 		if covered {
-			e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, requested.Start, requested.End)
+			e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, requested.Start, requested.End)
 			return toolError(content.Path, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_file"}))
 		}
 		return mustToolResultJSON(map[string]any{
@@ -176,7 +176,7 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 		})
 	}
 
-	e.logfCtx(ctx, "Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+	e.logf(ctx, "Executing tool call: name=%s path=%s", toolCall.Name, normalizedPath)
 	content, err := e.retrieval.GetFile(ctx, repoRoot, normalizedPath)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -217,10 +217,10 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	_, ok := state.seenToolCalls[key]
 	state.mu.Unlock()
 	if ok {
-		e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
+		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
 		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
-	e.logfCtx(ctx, "Executing tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
+	e.logf(ctx, "Executing tool call: name=%s path=%s depth=%d", toolCall.Name, normalizedPath, args.Depth)
 	listing, err := e.retrieval.ListFiles(ctx, repoRoot, normalizedPath, args.Depth)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -263,10 +263,10 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			_, ok := state.seenToolCalls[key]
 			state.mu.Unlock()
 			if ok {
-				e.logfCtx(ctx, "Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
+				e.logf(ctx, "Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
 				return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 			}
-			e.logfCtx(ctx, "Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
+			e.logf(ctx, "Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
 			return e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
 				ID:   toolCall.ID,
 				Name: "find_callers",
@@ -278,7 +278,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			}, true, state)
 		}
 	}
-	e.logfCtx(ctx, "Executing tool call: name=%s path=%s query=%q context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
+	e.logf(ctx, "Executing tool call: name=%s path=%s query=%q context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	results, err := e.retrieval.Search(ctx, repoRoot, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -290,7 +290,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			regexPattern = "(?i)" + regexPattern
 		}
 		if compiled, compileErr := regexp.Compile(regexPattern); compileErr == nil {
-			e.logfCtx(ctx, "Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
+			e.logf(ctx, "Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
 			regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, args.ContextLines, args.MaxResults)
 			if err != nil {
 				return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -299,7 +299,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			results.Results = merged
 			results.ResultCount = len(merged)
 		} else {
-			e.logfCtx(ctx, "Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
+			e.logf(ctx, "Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
 		}
 	}
 
@@ -371,10 +371,10 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 	_, ok := state.seenToolCalls[key]
 	state.mu.Unlock()
 	if ok {
-		e.logfCtx(ctx, "Skipping duplicate tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
+		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
 		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
-	e.logfCtx(ctx, "Executing tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
+	e.logf(ctx, "Executing tool call: name=%s path=%s symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Symbol, args.Depth)
 
 	symbol := retrieval.SymbolRef{Name: args.Symbol, Path: normalizedPath}
 	var (

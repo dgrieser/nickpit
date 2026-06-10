@@ -782,10 +782,10 @@ func TestRunAgent_ReasoningExtractorVerboseLogsFindingsWithContext(t *testing.T)
 
 	got := buf.String()
 	for _, want := range []string{
-		"[extract: Mine Reasoning of review] Extracted reasoning findings:",
+		"[extract: Mine Reasoning of review · test-model:high] Extracted reasoning findings:",
 		"collected issue",
 		"second collected issue",
-		"[review: review · Nudge 1/1] Extracted reasoning findings sent to nudge:",
+		"[review: review · Nudge 1/1 · test-model:high] Extracted reasoning findings sent to nudge:",
 		"- reduced issue",
 	} {
 		if !strings.Contains(got, want) {

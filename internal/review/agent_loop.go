@@ -189,7 +189,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 					syntheticFollowup = nil
 					continue
 				}
-				e.logfCtx(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+				e.logf(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
 			}
 		}
 
@@ -198,7 +198,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		if originalToolCalls > 0 && len(resp.ToolCalls) == 0 {
 			if outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
 				state.jsonRetries++
-				e.logfCtx(loopCtx, "Invalid tool call response, retrying without tool history: attempt=%d", state.jsonRetries)
+				e.logf(loopCtx, "Invalid tool call response, retrying without tool history: attempt=%d", state.jsonRetries)
 				if strings.TrimSpace(resp.RawResponse) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 				}
@@ -214,7 +214,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		}
 		pendingToolCalls := len(resp.ToolCalls)
 		if req.MaxToolCalls > 0 && state.toolCalls+pendingToolCalls > req.MaxToolCalls {
-			e.logfCtx(loopCtx, "Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, state.toolCalls, pendingToolCalls)
+			e.logf(loopCtx, "Tool call limit reached, making final call without tools: limit=%d used=%d requested=%d", req.MaxToolCalls, state.toolCalls, pendingToolCalls)
 			finalMessages := append([]llm.Message(nil), messages...)
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
@@ -229,7 +229,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			break
 		}
 
-		e.logfCtx(loopCtx, "Executing tool batch: used=%d requested=%d", state.toolCalls, pendingToolCalls)
+		e.logf(loopCtx, "Executing tool batch: used=%d requested=%d", state.toolCalls, pendingToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
 		batch := e.executeToolCalls(loopCtx, req.RepoRoot, resp.ToolCalls, state.toolState)
 		messages = append(messages, batch...)
@@ -241,7 +241,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		result.toolCalls += pendingToolCalls
 		state.toolCalls += pendingToolCalls
 		if req.MaxDuplicateToolCalls > 0 && state.duplicateToolCalls >= req.MaxDuplicateToolCalls {
-			e.logfCtx(loopCtx, "Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, state.duplicateToolCalls)
+			e.logf(loopCtx, "Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, state.duplicateToolCalls)
 			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, messages)
 			if err != nil {
 				return result, err
@@ -292,10 +292,10 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 
 func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {
 	if req.JSONRetryProgressAgentName == "" {
-		e.logfCtx(ctx, "Verify: invalid JSON, retrying: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
+		e.logf(ctx, "Verify: invalid JSON, retrying: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
 		return
 	}
-	e.logfCtx(ctx, "Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
+	e.logf(ctx, "Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
 	if e.logger != nil {
 		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt))
 	}

@@ -75,7 +75,7 @@ func (e *Engine) collectStepFunc() stepFunc {
 			hasTools:      true,
 		}, sc.Req)
 		if contextErr != nil {
-			sc.Engine.logf("Context agent failed, continuing with degraded context: error=%v", contextErr)
+			sc.Engine.logf(ctx, "Context agent failed, continuing with degraded context: error=%v", contextErr)
 			contextResult.run.Status = model.AgentRunStatusFailed
 			contextResult.run.Error = contextErr.Error()
 		}
@@ -164,7 +164,7 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 			// Store NO session: the initial pass never populated it, so a later
 			// nudge/reasoning-extract step must reject the failed group rather
 			// than dereference a nil response.
-			sc.Engine.logf("Vector reviewer failed, continuing with others: vector=%s error=%v", vector.name, err)
+			sc.Engine.logf(ctx, "Vector reviewer failed, continuing with others: vector=%s error=%v", vector.name, err)
 			res := session.partialResult(sc.Req)
 			res.run.Status = model.AgentRunStatusFailed
 			res.run.Error = err.Error()
@@ -174,7 +174,7 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req); err != nil {
 			// The initial pass already produced findings; keep them (and their
 			// telemetry) as a partial result rather than throwing them away.
-			sc.Engine.logf("Vector reviewer nudges failed, keeping initial findings: vector=%s error=%v", vector.name, err)
+			sc.Engine.logf(ctx, "Vector reviewer nudges failed, keeping initial findings: vector=%s error=%v", vector.name, err)
 			res := session.result(sc.Req)
 			res.run.Status = model.AgentRunStatusPartial
 			res.run.Error = err.Error()
@@ -264,7 +264,7 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 		st.warnings = append(st.warnings, warnings...)
 		st.mu.Unlock()
 		if err != nil {
-			sc.Engine.logf("Verifier failed before merge: tokens=%d warnings=%d error=%v", usage.TotalTokens, len(warnings), err)
+			sc.Engine.logf(ctx, "Verifier failed before merge: tokens=%d warnings=%d error=%v", usage.TotalTokens, len(warnings), err)
 			return err
 		}
 		return nil
@@ -318,11 +318,11 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		)
 		switch {
 		case allVectorsFailed(vr):
-			sc.Engine.logf("All vector reviewers failed; skipping merge agent and emitting empty result")
+			sc.Engine.logf(ctx, "All vector reviewers failed; skipping merge agent and emitting empty result")
 			warnings = append(warnings, "All vector reviewers failed; skipped merge agent and returning empty findings")
 			mergeResult = emptyVerifiedMergeResult()
 		case len(mergeInputs) == 0:
-			sc.Engine.logf("No verified findings remained; skipping merge agent and emitting empty result")
+			sc.Engine.logf(ctx, "No verified findings remained; skipping merge agent and emitting empty result")
 			warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
 			mergeResult = emptyVerifiedMergeResult()
 		default:
@@ -346,7 +346,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 
 		filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
 		if overwrote := model.EnsureFindingIDs(filtered); overwrote > 0 {
-			sc.Engine.logf("Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
+			sc.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 		}
 		st.mu.Lock()
 		st.mergeRuns = append(st.mergeRuns, mergeRuns...)
@@ -412,7 +412,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
-			sc.Engine.logf("Finalize failed, using verified result: error=%v", err)
+			sc.Engine.logf(ctx, "Finalize failed, using verified result: error=%v", err)
 			st.warnings = append(st.warnings, fmt.Sprintf("Finalize failed: %v; using verified result", err))
 			finalizeRun.Name = "finalize"
 			finalizeRun.Role = "finalize"
@@ -480,7 +480,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
-			sc.Engine.logf("Summarize failed, using finalized result: error=%v", err)
+			sc.Engine.logf(ctx, "Summarize failed, using finalized result: error=%v", err)
 			st.warnings = append(st.warnings, fmt.Sprintf("Summarize failed: %v; using finalized result", err))
 			summarizeRun.Name = "summarize"
 			summarizeRun.Role = "summarize"

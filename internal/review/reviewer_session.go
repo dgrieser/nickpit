@@ -168,7 +168,7 @@ func (s *reviewerSession) launchCollect(ctx context.Context, e *Engine, agentNam
 		list, result, err := e.runReasoningCollectFindings(ctx, reasoning, agentName, iterIdx, req)
 		s.addExtractorRun(result.run)
 		if err != nil {
-			e.logf("Reasoning collect findings failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
+			e.logf(ctx, "Reasoning collect findings failed: agent=%s iter=%d error=%v", agentName, iterIdx, err)
 			return
 		}
 		if strings.TrimSpace(list) == "" {
@@ -232,7 +232,7 @@ func (e *Engine) reviewerComputeExtractDelta(ctx context.Context, s *reviewerSes
 			delta, result, err := e.runReasoningUpdateFindings(ctx, combined, findingsJSON, s.agent.name, req)
 			s.addExtractorRun(result.run)
 			if err != nil {
-				e.logfCtx(ctx, "Reasoning update findings failed, using standard nudge: error=%v", err)
+				e.logf(ctx, "Reasoning update findings failed, using standard nudge: error=%v", err)
 			} else {
 				reasoningFindings = delta
 				s.cachedUpdateDelta = delta
@@ -243,9 +243,9 @@ func (e *Engine) reviewerComputeExtractDelta(ctx context.Context, s *reviewerSes
 	formatted := formatReasoningFindingsList(reasoningFindings)
 	if s.extractEnabled {
 		if formatted != "" {
-			e.logBlockCtx(ctx, "Extracted reasoning findings sent to nudge:", formatted)
+			e.logBlock(ctx, "Extracted reasoning findings sent to nudge:", formatted)
 		} else {
-			e.logfCtx(ctx, "No extracted reasoning findings to send to nudge")
+			e.logf(ctx, "No extracted reasoning findings to send to nudge")
 		}
 	}
 	return formatted, nil
@@ -263,7 +263,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	if s.nudgeReasoningEffort == "" {
 		s.nudgeReasoningEffort = e.config.ReasoningEffort
 	}
-	e.logfCtx(nudgeCtx, "Nudge round: round=%d/%d", iterIdx+1, total)
+	e.logf(nudgeCtx, "Nudge round: round=%d/%d", iterIdx+1, total)
 	nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
 		HasResponseFormat bool
 		QuestionsSnippet  string
@@ -290,17 +290,17 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	sub, err := e.runAgentLoop(nudgeCtx, loopReq)
 	if err != nil {
 		s.nudgeErr = fmt.Errorf("nudge %d: %w", iterIdx+1, err)
-		e.logfCtx(nudgeCtx, "Nudge failed, keeping prior findings: round=%d/%d error=%v", iterIdx+1, total, err)
+		e.logf(nudgeCtx, "Nudge failed, keeping prior findings: round=%d/%d error=%v", iterIdx+1, total, err)
 		return false
 	}
 	if sub.resp == nil {
 		s.nudgeErr = fmt.Errorf("nudge %d: agent %s returned no response", iterIdx+1, s.agent.name)
-		e.logfCtx(nudgeCtx, "Nudge returned no response, keeping prior findings: round=%d/%d", iterIdx+1, total)
+		e.logf(nudgeCtx, "Nudge returned no response, keeping prior findings: round=%d/%d", iterIdx+1, total)
 		return false
 	}
 	prevFindings := len(s.totalFindings)
 	s.totalFindings = appendNewFindings(s.totalFindings, sub.resp.Findings)
-	e.logfCtx(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", iterIdx+1, total, len(sub.resp.Findings), len(s.totalFindings)-prevFindings, len(s.totalFindings))
+	e.logf(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", iterIdx+1, total, len(sub.resp.Findings), len(s.totalFindings)-prevFindings, len(s.totalFindings))
 	s.totalTokens = addTokenUsage(s.totalTokens, sub.tokensUsed)
 	s.totalToolCalls += sub.toolCalls
 	s.totalDuplicates += sub.duplicateToolCalls

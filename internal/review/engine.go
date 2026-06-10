@@ -138,7 +138,7 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 // resolveAndTrimContext resolves the review source, captures toolchain versions,
 // optionally inlines full files, and trims to the context budget.
 func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
-	e.logf("Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
+	e.logf(ctx, "Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
 	contextFilter, err := newReviewContextFilter(req)
 	if err != nil {
 		return nil, err
@@ -148,7 +148,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 		return nil, err
 	}
 	e.logProgress(logging.StageReview, logging.StateStart, reviewContextSummary(reviewCtx, req))
-	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
+	e.logf(ctx, "Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
 		return nil, ErrEmptyDiff
 	}
@@ -157,24 +157,24 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if allFiltered, err := e.applyReviewContextFilter(ctx, reviewCtx, req, contextFilter); err != nil {
 		return nil, err
 	} else if allFiltered {
-		e.logf("Filtered context: files=0 diff_bytes=0")
+		e.logf(ctx, "Filtered context: files=0 diff_bytes=0")
 		return reviewCtx, nil
 	}
 
 	if e.toolchainCapture != nil {
 		reviewCtx.ToolchainVersions = e.toolchainCapture(ctx, req.RepoRoot, reviewCtx)
 		if len(reviewCtx.ToolchainVersions) > 0 {
-			e.logf("Captured toolchain versions: count=%d", len(reviewCtx.ToolchainVersions))
+			e.logf(ctx, "Captured toolchain versions: count=%d", len(reviewCtx.ToolchainVersions))
 		}
 	}
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
-		e.logf("Including full files: count=%d", len(reviewCtx.ChangedFiles))
+		e.logf(ctx, "Including full files: count=%d", len(reviewCtx.ChangedFiles))
 		for _, file := range reviewCtx.ChangedFiles {
-			e.logf("Retrieving file: path=%s", file.Path)
+			e.logf(ctx, "Retrieving file: path=%s", file.Path)
 			content, err := e.retrieval.GetFile(ctx, req.RepoRoot, file.Path)
 			if err != nil {
-				e.logf("Skipping file retrieval: path=%s error=%v", file.Path, err)
+				e.logf(ctx, "Skipping file retrieval: path=%s error=%v", file.Path, err)
 				continue
 			}
 			reviewCtx.SupplementalContext = append(reviewCtx.SupplementalContext, model.SupplementalFile{
@@ -195,7 +195,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if err != nil {
 		return nil, fmt.Errorf("review: trim context: %w", err)
 	}
-	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
+	e.logf(ctx, "Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	return trimmed, nil
 }
 
@@ -238,7 +238,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		if invalidResp.ReasoningEffort != "" {
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
-		e.logfCtx(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
+		e.logf(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
 		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt+1))
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
@@ -390,7 +390,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		return model.TokenUsage{}, nil, nil
 	}
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
-		e.logf("Review generated replacement IDs before verification: count=%d", overwrote)
+		e.logf(ctx, "Review generated replacement IDs before verification: count=%d", overwrote)
 	}
 	opts := verifyOptionsFromReviewRequest(req)
 	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
@@ -456,7 +456,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		dropped := len(droppedIdxByVector[vectorIdx])
 		counts := dropsByVector[vectorIdx]
 		if dropped > 0 || counts.belowConfidence > 0 {
-			e.logf("Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d below_confidence_kept=%d kept=%d policy=%s threshold=%.2f",
+			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d below_confidence_kept=%d kept=%d policy=%s threshold=%.2f",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.refuted,
@@ -1392,9 +1392,9 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 	if err == nil {
 		extractCtx := logging.WithProgressInfo(ctx, e.progressInfo("extract", name, ""))
 		if out != "" {
-			e.logBlockCtx(extractCtx, "Extracted reasoning findings:", out)
+			e.logBlock(extractCtx, "Extracted reasoning findings:", out)
 		} else {
-			e.logfCtx(extractCtx, "No reasoning findings extracted")
+			e.logf(extractCtx, "No reasoning findings extracted")
 		}
 	}
 	return out, result, err
@@ -1896,7 +1896,7 @@ func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exam
 }
 
 func (e *Engine) loadPrompt(name string) (string, error) {
-	e.logf("Loading prompt: source=embedded name=%s", name)
+	e.logf(context.Background(), "Loading prompt: source=embedded name=%s", name)
 	return prompts.Load(name)
 }
 
@@ -2486,28 +2486,12 @@ func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, ca
 	return e.logger.OpenReasoningSection(info.WithTurn(callNum))
 }
 
-func (e *Engine) logf(format string, args ...any) {
-	if e.logger != nil {
-		e.logger.Printf(format, args...)
-	}
+func (e *Engine) logf(ctx context.Context, format string, args ...any) {
+	e.logger.Verbosef(ctx, format, args...)
 }
 
-func (e *Engine) logfCtx(ctx context.Context, format string, args ...any) {
-	if e.logger == nil {
-		return
-	}
-	e.logger.Printf("%s%s", agentLogPrefix(ctx), fmt.Sprintf(format, args...))
-}
-
-func (e *Engine) logBlockCtx(ctx context.Context, label, content string) {
-	if e.logger != nil {
-		e.logger.PrintBlock(agentLogPrefix(ctx)+label, content)
-	}
-}
-
-func agentLogPrefix(ctx context.Context) string {
-	info, _ := logging.ProgressInfoFromContext(ctx)
-	return info.VerbosePrefix()
+func (e *Engine) logBlock(ctx context.Context, label, content string) {
+	e.logger.VerboseBlock(ctx, label, content)
 }
 
 // progressInfo builds the ctx-carried logging identity for an agent, filling
