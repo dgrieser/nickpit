@@ -25,7 +25,7 @@ func TestPrintErrorANSI(t *testing.T) {
 
 	logger.PrintError(assertErr("boom"))
 
-	want := "\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37mboom\x1b[0m\n"
+	want := "\x1b[38;5;203mERROR\x1b[0m\x1b[38;5;244m:\x1b[0m \x1b[38;5;252mboom\x1b[0m\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("unexpected output: %q", got)
 	}

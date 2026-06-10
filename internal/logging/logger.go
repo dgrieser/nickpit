@@ -216,7 +216,7 @@ func (l *Logger) PrintError(err error) {
 		return
 	}
 	if l.useANSI {
-		l.writeRaw(fmt.Sprintf("\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37m%s\x1b[0m\n", err))
+		l.writeRaw(progressStyle(progressColorErrorRed, "ERROR") + progressGrey(":") + " " + progressLight(err.Error()) + "\n")
 		return
 	}
 	l.writeRaw(fmt.Sprintf("ERROR: %s\n", err))
@@ -424,11 +424,11 @@ func colorizeJSON(line string) string {
 		text := token.String()
 		switch text {
 		case "true", "false":
-			out.WriteString("\x1b[35m" + text + "\x1b[0m")
+			out.WriteString(progressStyle(progressColorBoolGreen, text))
 		case "null":
-			out.WriteString("\x1b[1;30m" + text + "\x1b[0m")
+			out.WriteString(progressStyle(progressColorDarkGrey, text))
 		default:
-			out.WriteString("\x1b[36m" + text + "\x1b[0m")
+			out.WriteString(progressStyle(progressColorNumberGreen, text))
 		}
 		token.Reset()
 	}
@@ -451,11 +451,11 @@ func colorizeJSON(line string) string {
 				for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
 					j++
 				}
-				color := "32"
+				color := progressColorStringGreen
 				if j < len(line) && line[j] == ':' {
-					color = "34"
+					color = progressColorKeyTurquoise
 				}
-				out.WriteString("\x1b[" + color + "m" + token.String() + "\x1b[0m")
+				out.WriteString(progressStyle(color, token.String()))
 				token.Reset()
 			}
 			continue

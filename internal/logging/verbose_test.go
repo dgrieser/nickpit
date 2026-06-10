@@ -1,0 +1,185 @@
+package logging
+
+import (
+	"bytes"
+	"context"
+	"strings"
+	"testing"
+)
+
+func ansiVerboseLogger(buf *bytes.Buffer) *Logger {
+	// Construct directly so a NO_COLOR env var cannot flip useANSI.
+	return &Logger{w: buf, useANSI: true, enabled: true}
+}
+
+func verboseCtx() context.Context {
+	return WithProgressInfo(context.Background(), ProgressInfo{
+		AgentRole: "review",
+		AgentName: "Security",
+		Model:     "gpt-5",
+		Effort:    "high",
+		Turn:      2,
+	})
+}
+
+func TestVerbosefPlain(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{w: &buf, useANSI: false, enabled: true}
+	l.Verbosef(verboseCtx(), "Executing tool call: name=%s path=%s", "inspect_file", "internal/llm/client.go")
+	want := "+ [review: Security · gpt-5:high] #2 Executing tool call: name=inspect_file path=internal/llm/client.go\n"
+	if got := buf.String(); got != want {
+		t.Errorf("Verbosef plain = %q, want %q", got, want)
+	}
+}
+
+func TestVerbosefPlainNoInfo(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{w: &buf, useANSI: false, enabled: true}
+	l.Verbosef(context.Background(), "Loading prompt: source=embedded name=x")
+	want := "+ Loading prompt: source=embedded name=x\n"
+	if got := buf.String(); got != want {
+		t.Errorf("Verbosef plain no-info = %q, want %q", got, want)
+	}
+}
+
+func TestVerbosefGatedOnEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{w: &buf, useANSI: false, enabled: false}
+	l.Verbosef(verboseCtx(), "hidden")
+	l.VerboseBlock(verboseCtx(), "label:", "content")
+	l.VerboseJSON(verboseCtx(), "label:", map[string]any{"a": 1})
+	l.VerboseMaybeJSON(verboseCtx(), "label:", []byte(`{"a":1}`))
+	if buf.Len() != 0 {
+		t.Errorf("expected no output when disabled, got %q", buf.String())
+	}
+}
+
+func TestVerbosefANSIHeadTailSplit(t *testing.T) {
+	var buf bytes.Buffer
+	l := ansiVerboseLogger(&buf)
+	l.Verbosef(context.Background(), "LLM stream opened: status=ok")
+	got := buf.String()
+	// dim gutter, white head without the colon, two-space gap, tokenized tail
+	if !strings.HasPrefix(got, "\x1b[38;5;242m+\x1b[0m ") {
+		t.Errorf("missing dim gutter: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[38;5;255mLLM stream opened\x1b[0m  ") {
+		t.Errorf("missing white head with two-space gap: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[38;5;116mstatus\x1b[0m") {
+		t.Errorf("tail key not tokenized: %q", got)
+	}
+	if strings.Contains(got, "opened:") {
+		t.Errorf("colon should be dropped in ANSI head: %q", got)
+	}
+}
+
+func TestVerbosefANSIProseOnlyAndTrailingColon(t *testing.T) {
+	var buf bytes.Buffer
+	l := ansiVerboseLogger(&buf)
+	l.Verbosef(context.Background(), "LLM waiting for first stream chunk")
+	l.Verbosef(context.Background(), "Extracted reasoning findings:")
+	got := buf.String()
+	if !strings.Contains(got, "\x1b[38;5;255mLLM waiting for first stream chunk\x1b[0m\n") {
+		t.Errorf("prose message should render entirely as head: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[38;5;255mExtracted reasoning findings\x1b[0m\n") {
+		t.Errorf("trailing colon should be trimmed from bare label: %q", got)
+	}
+}
+
+func TestVerbosefANSIBracketMatchesProgress(t *testing.T) {
+	var buf bytes.Buffer
+	l := ansiVerboseLogger(&buf)
+	info, _ := ProgressInfoFromContext(verboseCtx())
+	l.Verbosef(verboseCtx(), "msg")
+	if want := formatProgressBracket(true, info); !strings.Contains(buf.String(), want) {
+		t.Errorf("verbose bracket %q not identical to progress bracket %q", buf.String(), want)
+	}
+	if want := formatProgressTurn(true, 2); !strings.Contains(buf.String(), want) {
+		t.Errorf("verbose turn rendering missing: %q", buf.String())
+	}
+}
+
+func TestVerboseBlockPlain(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{w: &buf, useANSI: false, enabled: true}
+	l.VerboseBlock(context.Background(), "Extracted reasoning findings:", "one\n\r\n  \ntwo\n")
+	want := "+ Extracted reasoning findings:\n+ one\n+ two\n"
+	if got := buf.String(); got != want {
+		t.Errorf("VerboseBlock plain = %q, want %q", got, want)
+	}
+}
+
+func TestVerboseBlockEmptyContent(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{w: &buf, useANSI: false, enabled: true}
+	l.VerboseBlock(context.Background(), "label:", "")
+	want := "+ label:\n+ (empty)\n"
+	if got := buf.String(); got != want {
+		t.Errorf("VerboseBlock empty = %q, want %q", got, want)
+	}
+}
+
+func TestVerboseJSONANSIPalette(t *testing.T) {
+	var buf bytes.Buffer
+	l := ansiVerboseLogger(&buf)
+	l.VerboseJSON(context.Background(), "", map[string]any{
+		"key":  "value",
+		"n":    3,
+		"flag": true,
+		"none": nil,
+	})
+	got := buf.String()
+	for name, want := range map[string]string{
+		"key turquoise":  "\x1b[38;5;116m\"key\"\x1b[0m",
+		"string green":   "\x1b[38;5;120m\"value\"\x1b[0m",
+		"number green":   "\x1b[38;5;118m3\x1b[0m",
+		"bool green":     "\x1b[38;5;156mtrue\x1b[0m",
+		"null dark grey": "\x1b[38;5;242mnull\x1b[0m",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s (%q) in:\n%q", name, want, got)
+		}
+	}
+}
+
+func TestVerboseMaybeJSONBothBranches(t *testing.T) {
+	var buf bytes.Buffer
+	l := &Logger{w: &buf, useANSI: false, enabled: true}
+	l.VerboseMaybeJSON(context.Background(), "body:", []byte(`{"a":1}`))
+	if got := buf.String(); !strings.Contains(got, `"a": 1`) {
+		t.Errorf("parseable data should render as JSON: %q", got)
+	}
+	buf.Reset()
+	l.VerboseMaybeJSON(context.Background(), "body:", []byte("not json"))
+	if got := buf.String(); !strings.Contains(got, "+ not json\n") {
+		t.Errorf("unparseable data should render as block: %q", got)
+	}
+}
+
+// writeCounter deliberately does NOT embed bytes.Buffer: an embedded buffer
+// would promote WriteString, which io.WriteString prefers over Write, and the
+// count would never increment.
+type writeCounter struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *writeCounter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.buf.Write(p)
+}
+
+func TestVerboseBlockSingleWrite(t *testing.T) {
+	var w writeCounter
+	l := &Logger{w: &w, useANSI: false, enabled: true}
+	l.VerboseBlock(context.Background(), "label:", "a\nb\nc")
+	if w.writes != 1 {
+		t.Errorf("VerboseBlock wrote %d times, want 1 batched write", w.writes)
+	}
+	l.VerboseJSON(context.Background(), "payload:", map[string]any{"a": []any{1, 2}})
+	if w.writes != 2 {
+		t.Errorf("VerboseJSON wrote %d more times, want exactly 1", w.writes-1)
+	}
+}
