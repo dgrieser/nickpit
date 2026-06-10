@@ -98,7 +98,7 @@ func (l *Logger) SetShowReasoning(enabled bool) {
 	// Construct the renderer eagerly here. SetShowReasoning is called during
 	// command setup, before any reviewer/verifier goroutine starts, so the
 	// l.reasoning field is written once before the concurrent readers
-	// (PrintProgress, PrintProgressToolCall, writeRaw) ever run. Lazy
+	// (emitProgress, writeRaw) ever run. Lazy
 	// initialization under sync.Once raced with those unsynchronized readers,
 	// since Once only establishes happens-before for goroutines that call Do.
 	if enabled && l.reasoning == nil {
@@ -189,57 +189,6 @@ func (l *Logger) PrintJSON(label string, value any) {
 	l.printJSON(label, value, false)
 }
 
-func (l *Logger) PrintProgress(label, summary string) {
-	if l == nil || !l.showProgress {
-		return
-	}
-	var line string
-	if l.useANSI {
-		coloredSummary := colorizeProgressSummary(summary)
-		switch label {
-		case "Reasoning", "Request", "Response":
-			coloredSummary = colorizeReasoningSummary(summary)
-		case "Model":
-			coloredSummary = colorizeModelSummary(summary)
-		case "Agent":
-			coloredSummary = colorizeAgentSummary(summary)
-		case "Review":
-			coloredSummary = colorizeReviewSummary(summary)
-		case "Result", "Tool":
-			coloredSummary = colorizeResultSummary(summary)
-		}
-		line = fmt.Sprintf("\x1b[33m%s\x1b[0m\x1b[90m: \x1b[0m%s\n", label, coloredSummary)
-	} else {
-		line = fmt.Sprintf("%s: %s\n", label, summary)
-	}
-	if l.reasoning != nil {
-		l.reasoning.WriteProgress(line)
-	} else {
-		l.writeRaw(line)
-	}
-}
-
-func (l *Logger) PrintProgressToolCall(call, result string) {
-	if l == nil || !l.showProgress {
-		return
-	}
-	var line string
-	if l.useANSI {
-		line = fmt.Sprintf(
-			"\x1b[33mTool\x1b[0m\x1b[90m: \x1b[0m%s \x1b[90m→\x1b[0m %s\n",
-			colorizeToolCallCall(call),
-			colorizeToolCallResult(result),
-		)
-	} else {
-		line = fmt.Sprintf("Tool: %s → %s\n", call, result)
-	}
-	if l.reasoning != nil {
-		l.reasoning.WriteProgress(line)
-	} else {
-		l.writeRaw(line)
-	}
-}
-
 func (l *Logger) printJSON(label string, value any, force bool) {
 	if !force && !l.Enabled() {
 		return
@@ -261,17 +210,6 @@ func (l *Logger) printJSON(label string, value any, force bool) {
 	for _, line := range renderJSONLines(normalized, 0, "", false) {
 		l.writeRenderedJSONLine(line)
 	}
-}
-
-func (l *Logger) PrintStatusLine(text string) {
-	if l == nil || text == "" {
-		return
-	}
-	if l.useANSI {
-		l.writeRaw(fmt.Sprintf("\x1b[90m%s\x1b[0m\n", text))
-		return
-	}
-	l.writeRaw(fmt.Sprintf("%s\n", text))
 }
 
 func (l *Logger) PrintError(err error) {
@@ -437,204 +375,6 @@ func renderJSONStringLines(value, prefix string, trailingComma bool) []renderedJ
 		stringOnly: true,
 	})
 	return lines
-}
-
-func colorizeToolCallArguments(text string) string {
-	return colorizeKeyValueSummary(text)
-}
-
-func colorizeToolCallCall(text string) string {
-	var b strings.Builder
-	segments := strings.Split(text, " replaced with ")
-	for i, segment := range segments {
-		if i > 0 {
-			b.WriteString("\x1b[90m replaced with \x1b[0m")
-		}
-		open := strings.IndexByte(segment, '(')
-		close := strings.LastIndexByte(segment, ')')
-		if open <= 0 || close < open {
-			b.WriteString(colorizeKeyValueSummary(text))
-			return b.String()
-		}
-		b.WriteString("\x1b[37m")
-		b.WriteString(segment[:open])
-		b.WriteString("\x1b[0m")
-		b.WriteString("\x1b[90m(\x1b[0m")
-		b.WriteString(colorizeToolCallArguments(segment[open+1 : close]))
-		b.WriteString("\x1b[90m)\x1b[0m")
-	}
-	return b.String()
-}
-
-func colorizeToolCallResult(text string) string {
-	if after, ok := strings.CutPrefix(text, "result"); ok {
-		return "\x1b[37mresult\x1b[0m" + colorizeKeyValueSummary(after)
-	}
-	return colorizeKeyValueSummary(text)
-}
-
-func colorizeProgressSummary(text string) string {
-	return colorizeKeyValueSummary(text)
-}
-
-func colorizeReasoningSummary(text string) string {
-	// format: [label] [#N] [Word] [duration] in any combination
-	open := strings.IndexByte(text, '[')
-	close := strings.IndexByte(text, ']')
-	if open < 0 || close < open {
-		return colorizeProgressSummary(text)
-	}
-	label := text[open+1 : close]
-	rest := strings.TrimSpace(text[close+1:])
-	var out strings.Builder
-	out.WriteString("\x1b[90m[\x1b[0m" + colorizeReasoningLabel(label) + "\x1b[90m]\x1b[0m")
-	for tok := range strings.FieldsSeq(rest) {
-		switch {
-		case strings.HasPrefix(tok, "#"):
-			out.WriteString(" \x1b[32m" + tok + "\x1b[0m") // counter: green
-		case isAllLetters(tok):
-			out.WriteString(" \x1b[34m" + tok + "\x1b[0m") // action word (Done/After): blue
-		default:
-			out.WriteString(" \x1b[32m" + tok + "\x1b[0m") // duration / other: green
-		}
-	}
-	return out.String()
-}
-
-func isAllLetters(s string) bool {
-	for _, r := range s {
-		if !unicode.IsLetter(r) {
-			return false
-		}
-	}
-	return len(s) > 0
-}
-
-// colorizeReasoningLabel colorizes a label of the form "<type> #<n>: <description>",
-// e.g. "verifier #2: Missing error handling" or "reviewer #1: repo@branch".
-func colorizeReasoningLabel(label string) string {
-	// split on first space: "verifier" vs "#2: description"
-	kind, rest, ok := strings.Cut(label, " ")
-	if !ok {
-		return "\x1b[34m" + label + "\x1b[0m"
-	}
-	// split "#2" from ": description"
-	num, desc, hasDesc := strings.Cut(rest, ": ")
-	if !hasDesc {
-		return "\x1b[34m" + kind + "\x1b[0m \x1b[32m" + rest + "\x1b[0m"
-	}
-	return "\x1b[34m" + kind + "\x1b[0m" +
-		" \x1b[32m" + num + "\x1b[0m" +
-		"\x1b[90m: " + desc + "\x1b[0m"
-}
-
-func colorizeModelSummary(text string) string {
-	// format: model:effort [flags] @ url
-	modelName, rest, ok := strings.Cut(text, ":")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	effortAndFlags, urlPart, ok := strings.Cut(rest, " @ ")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	effort, flags, hasFlags := strings.Cut(effortAndFlags, " [")
-	out := "\x1b[34m" + modelName + "\x1b[0m" +
-		"\x1b[90m:\x1b[0m" +
-		"\x1b[32m" + effort + "\x1b[0m"
-	if hasFlags {
-		out += " \x1b[90m[\x1b[0m" + colorizeModelFlags(strings.TrimSuffix(flags, "]")) + "\x1b[90m]\x1b[0m"
-	}
-	return out + " \x1b[90m@\x1b[0m \x1b[35m" + urlPart + "\x1b[0m"
-}
-
-// format: Kind [flags]
-func colorizeAgentSummary(text string) string {
-	kind, rest, ok := strings.Cut(text, " [")
-	if !ok || !strings.HasSuffix(rest, "]") {
-		return colorizeProgressSummary(text)
-	}
-	flags := strings.TrimSuffix(rest, "]")
-	return "\x1b[34m" + kind + "\x1b[0m" +
-		" \x1b[90m[\x1b[0m" + colorizeModelFlags(flags) + "\x1b[90m]\x1b[0m"
-}
-
-func colorizeModelFlags(flagsStr string) string {
-	parts := strings.Split(flagsStr, ", ")
-	var b strings.Builder
-	for i, part := range parts {
-		if i > 0 {
-			b.WriteString("\x1b[90m, \x1b[0m")
-		}
-		numPart, wordPart, hasWord := strings.Cut(part, " ")
-		if !hasWord {
-			b.WriteString("\x1b[32m" + part + "\x1b[0m")
-			continue
-		}
-		b.WriteString("\x1b[32m" + numPart + "\x1b[0m" + " " + "\x1b[34m" + wordPart + "\x1b[0m")
-	}
-	return b.String()
-}
-
-func colorizeReviewSummary(text string) string {
-	// format: mode:submode [profile, ≥threshold] on repo @ head → base
-	mode, rest, ok := strings.Cut(text, ":")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	submode, rest, ok := strings.Cut(rest, " [")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	profileThreshold, repoRefs, ok := strings.Cut(rest, "] on ")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	profile, threshold, ok := strings.Cut(profileThreshold, ", ")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	repo, refs, ok := strings.Cut(repoRefs, " @ ")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	head, base, ok := strings.Cut(refs, " → ")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	return "\x1b[34m" + mode + "\x1b[0m" +
-		"\x1b[90m:\x1b[0m" +
-		"\x1b[32m" + submode + "\x1b[0m" +
-		" \x1b[90m[\x1b[0m" +
-		"\x1b[32m" + profile + "\x1b[0m" +
-		"\x1b[90m, \x1b[0m" +
-		"\x1b[32m" + threshold + "\x1b[0m" +
-		"\x1b[90m]\x1b[0m" +
-		" \x1b[90mon\x1b[0m " +
-		"\x1b[34m" + repo + "\x1b[0m" +
-		" \x1b[90m@\x1b[0m " +
-		"\x1b[32m" + head + "\x1b[0m" +
-		" \x1b[90m→\x1b[0m " +
-		"\x1b[35m" + base + "\x1b[0m"
-}
-
-func colorizeResultSummary(text string) string {
-	statusPart, rest, ok := strings.Cut(text, ", ")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	key, value, ok := strings.Cut(statusPart, "=")
-	if !ok {
-		return colorizeProgressSummary(text)
-	}
-	valueColor := "\x1b[34m"
-	switch value {
-	case "OK":
-		valueColor = "\x1b[32m"
-	case "ERROR", "LimitReached", "DuplicateLimitReached":
-		valueColor = "\x1b[31m"
-	}
-	return "\x1b[34m" + key + "\x1b[0m" + "\x1b[90m=\x1b[0m" + valueColor + value + "\x1b[0m" + "\x1b[90m, \x1b[0m" + colorizeProgressSummary(rest)
 }
 
 func colorizeKeyValueSummary(text string) string {
