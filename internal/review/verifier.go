@@ -12,7 +12,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-const defaultVerifyConcurrency = 4
+const defaultVerifyConcurrency = 10
 
 type VerifyRequest struct {
 	ReviewCtx *model.ReviewContext
