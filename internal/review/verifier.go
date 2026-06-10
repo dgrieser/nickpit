@@ -211,7 +211,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		semaphore = make(chan struct{}, concurrency)
 		wg        sync.WaitGroup
 	)
-	e.logProgress("Verify", fmt.Sprintf("findings=%d concurrency=%d", len(findings), concurrency))
+	e.logProgress(logging.StageVerify, logging.StateStart, fmt.Sprintf("findings=%d concurrency=%d", len(findings), concurrency))
 	for i, finding := range findings {
 		wg.Add(1)
 		semaphore <- struct{}{}
@@ -253,7 +253,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		}(i, finding)
 	}
 	wg.Wait()
-	e.logProgress("Verify", fmt.Sprintf("done findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d warnings=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens, len(warnings)))
+	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d warnings=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens, len(warnings)))
 	return verifications, usageSum, warnings, nil
 }
 

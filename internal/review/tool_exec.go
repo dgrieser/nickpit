@@ -43,7 +43,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCall
 					Name:       toolCall.Name,
 					Content:    result,
 				}
-				e.logToolCall(toolCall, result)
+				e.logToolCall(ctx, toolCall, result)
 			}
 		}(indexes)
 	}

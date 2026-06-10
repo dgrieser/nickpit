@@ -296,7 +296,9 @@ func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt
 		return
 	}
 	e.logfCtx(ctx, "Invalid JSON response, retrying with feedback: attempt=%d reason=%q missing=%v", attempt, invalidResp.Reason, invalidResp.MissingFields)
-	e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", req.JSONRetryProgressAgentName, attempt))
+	if e.logger != nil {
+		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt))
+	}
 }
 
 func filterAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) ([]llm.ToolCall, int) {

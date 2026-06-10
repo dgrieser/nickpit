@@ -147,7 +147,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if err != nil {
 		return nil, err
 	}
-	e.logProgress("Review", reviewContextSummary(reviewCtx, req))
+	e.logProgress(logging.StageReview, logging.StateStart, reviewContextSummary(reviewCtx, req))
 	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
 		return nil, ErrEmptyDiff
@@ -239,11 +239,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
 		e.logfCtx(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		if info, ok := logging.ProgressInfoFromContext(ctx); ok && info.AgentName != "" {
-			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", info.AgentName, attempt+1))
-		} else {
-			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
-		}
+		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt+1))
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		}
@@ -2531,17 +2527,17 @@ func (e *Engine) progressInfo(role, name, detail string) logging.ProgressInfo {
 	}
 }
 
-func (e *Engine) logProgress(label, summary string) {
+func (e *Engine) logProgress(stage logging.Stage, state logging.State, msg string) {
 	if e.logger != nil {
-		e.logger.PrintProgress(label, summary)
+		e.logger.ProgressFor(e.progressInfo("", "", ""), stage, state, msg)
 	}
 }
 
-func (e *Engine) logToolCall(toolCall llm.ToolCall, result string) {
+func (e *Engine) logToolCall(ctx context.Context, toolCall llm.ToolCall, result string) {
 	if e.logger == nil {
 		return
 	}
-	e.logger.PrintProgressToolCall(toolCallDisplay(toolCall), syntheticToolOutcome(toolCall.Name, parseToolResultSummary(result)))
+	e.logger.ProgressToolCall(ctx, toolCallDisplay(toolCall), syntheticToolOutcome(toolCall.Name, parseToolResultSummary(result)))
 }
 
 func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
