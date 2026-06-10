@@ -89,12 +89,12 @@ func TestPriorityBadge(t *testing.T) {
 		wantANSI  string
 		wantPlain string
 	}{
-		{0, "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m BLOCKING \x1b[0m", "[BLOCKING]"},
-		{1, "\x1b[48;2;251;20;139m\x1b[38;2;0;0;0m HIGH \x1b[0m", "[HIGH]"},
-		{2, "\x1b[48;2;255;81;0m\x1b[38;2;0;0;0m MEDIUM \x1b[0m", "[MEDIUM]"},
-		{3, "\x1b[48;2;255;234;0m\x1b[38;2;0;0;0m LOW \x1b[0m", "[LOW]"},
-		{-1, "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m BLOCKING \x1b[0m", "[BLOCKING]"},
-		{9, "\x1b[48;2;255;234;0m\x1b[38;2;0;0;0m LOW \x1b[0m", "[LOW]"},
+		{0, "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m    BLOCKING    \x1b[0m", "[BLOCKING]"},
+		{1, "\x1b[48;2;251;20;139m\x1b[38;2;0;0;0m      HIGH      \x1b[0m", "[HIGH]"},
+		{2, "\x1b[48;2;255;81;0m\x1b[38;2;0;0;0m     MEDIUM     \x1b[0m", "[MEDIUM]"},
+		{3, "\x1b[48;2;255;234;0m\x1b[38;2;0;0;0m      LOW       \x1b[0m", "[LOW]"},
+		{-1, "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m    BLOCKING    \x1b[0m", "[BLOCKING]"},
+		{9, "\x1b[48;2;255;234;0m\x1b[38;2;0;0;0m      LOW       \x1b[0m", "[LOW]"},
 	}
 	for _, tt := range tests {
 		if got := priorityBadge(tt.rank, true); got != tt.wantANSI {
@@ -107,10 +107,10 @@ func TestPriorityBadge(t *testing.T) {
 }
 
 func TestCorrectnessBadge(t *testing.T) {
-	if got, want := correctnessBadge("patch is correct", true), "\x1b[48;2;0;255;13m\x1b[38;2;0;0;0m ✓ CORRECT \x1b[0m"; got != want {
+	if got, want := correctnessBadge("patch is correct", true), "\x1b[48;2;0;255;13m\x1b[38;2;0;0;0m      CORRECT ✓ \x1b[0m"; got != want {
 		t.Errorf("correct ANSI badge = %q, want %q", got, want)
 	}
-	if got, want := correctnessBadge("patch is incorrect", true), "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m ✗ INCORRECT \x1b[0m"; got != want {
+	if got, want := correctnessBadge("patch is incorrect", true), "\x1b[48;2;255;7;58m\x1b[38;2;0;0;0m    INCORRECT ✗ \x1b[0m"; got != want {
 		t.Errorf("incorrect ANSI badge = %q, want %q", got, want)
 	}
 	if got := correctnessBadge("Patch is INCORRECT because", false); got != "[INCORRECT]" {

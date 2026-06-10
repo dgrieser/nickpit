@@ -5,8 +5,10 @@ Summary text
 
 ---
 
+[HIGH]
+(60% confidence)
+
 b.go:7
-[HIGH]  (60% confidence)
 
 ### Single line
 
@@ -14,8 +16,10 @@ Short.
 
 ---
 
+[MEDIUM]
+(82% confidence)
+
 a.go:10-12
-[MEDIUM]  (82% confidence)
 
 ### Problem
 

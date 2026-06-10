@@ -90,15 +90,15 @@ func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.Revie
 	}
 }
 
-// writeFinding renders one finding comment: location, badge, confidence, and
+// writeFinding renders one finding comment: badge, confidence, location, and
 // the title/body/suggestions markdown.
 func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Finding) {
 	_, _, rank, confidence := reviewmd.FindingDisplay(finding)
-	b.WriteString(f.bold(findingLocation(finding)))
-	b.WriteString("\n")
 	b.WriteString(priorityBadge(rank, f.useANSI))
-	b.WriteString("  ")
+	b.WriteString("\n")
 	b.WriteString(f.dim(reviewmd.ConfidencePercent(confidence)))
+	b.WriteString("\n\n")
+	b.WriteString(f.bold(findingLocation(finding)))
 	b.WriteString("\n\n")
 	b.WriteString(f.renderMarkdown(findingMarkdown(finding)))
 	b.WriteString("\n")
