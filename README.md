@@ -128,7 +128,7 @@ nickpit gitlab mr --repo group/project --id 456
 nickpit gitlab mr --repo group/project --id 456 --publish
 ```
 
-With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments prefixed with `file:line`. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
+With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge and confidence line. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
 
 ### Progress
 

@@ -93,7 +93,7 @@ func TestSummaryBodyTaggedAndBadged(t *testing.T) {
 	r := NewRenderer("https://host/")
 	body := r.SummaryBody(&model.ReviewResult{
 		OverallCorrectness:     "patch is incorrect",
-		OverallExplanation:     "boom",
+		OverallExplanation:     "boom\n\nsecond paragraph",
 		OverallConfidenceScore: 0.9,
 	})
 	if !strings.HasPrefix(body, SummaryMarker) {
@@ -102,22 +102,38 @@ func TestSummaryBodyTaggedAndBadged(t *testing.T) {
 	if !strings.Contains(body, "incorrect.svg") || !strings.Contains(body, "90% confidence") || !strings.Contains(body, "boom") {
 		t.Fatalf("summary missing badge/confidence/explanation: %q", body)
 	}
+	if !strings.Contains(body, "_(90% confidence)_  \n\nboom  \n\nsecond paragraph  \n") {
+		t.Fatalf("summary missing hard breaks after paragraphs: %q", body)
+	}
 }
 
 func TestFindingBodyPrefixAndMarker(t *testing.T) {
 	r := NewRenderer("https://host/")
 	body := r.FindingBody(model.Finding{
-		ID:          "f1",
-		Title:       "Title",
-		Body:        "Detail",
-		Priority:    func() *int { p := 1; return &p }(),
-		Suggestions: []model.Suggestion{{Body: "do x"}},
+		ID:              "f1",
+		Title:           "Title",
+		Body:            "Detail",
+		ConfidenceScore: 0.91,
+		Priority:        func() *int { p := 1; return &p }(),
+		Suggestions:     []model.Suggestion{{Body: "do x"}},
 	}, "`file.go:5`")
 	if !strings.HasPrefix(body, FindingMarker("f1")) {
 		t.Fatalf("finding not tagged: %q", body)
 	}
+	wantPrefix := FindingMarker("f1") + "\n\n" +
+		"![P1](https://host/p1.svg)  \n" +
+		"_(91% confidence)_  \n\n" +
+		"`file.go:5`  \n\n" +
+		"### Title  \n\n" +
+		"Detail  "
+	if !strings.HasPrefix(body, wantPrefix) {
+		t.Fatalf("finding body order = %q, want prefix %q", body, wantPrefix)
+	}
 	if !strings.Contains(body, "`file.go:5`") || !strings.Contains(body, "### Title") || !strings.Contains(body, "- do x") {
 		t.Fatalf("finding body missing prefix/title/suggestion: %q", body)
+	}
+	if !strings.Contains(body, "\n\n**Suggestions**  \n\n- do x  ") {
+		t.Fatalf("finding suggestions missing hard breaks: %q", body)
 	}
 }
 
