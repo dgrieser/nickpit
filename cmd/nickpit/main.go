@@ -834,7 +834,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
 	} else {
-		formatter = output.NewTerminalFormatter(os.Stdout, true)
+		formatter = output.NewTerminalFormatter(os.Stdout, isTerminal(os.Stdout))
 	}
 	if err := formatter.FormatFindings(result); err != nil {
 		return err

@@ -1,0 +1,33 @@
+{
+  "findings": [
+    {
+      "id": "5fa9f1e2-3b4c-4d5e-8f6a-7b8c9d0e1f2a",
+      "title": "Race condition in stream retry counter",
+      "body": "The retry counter is read outside the mutex while concurrent goroutines increment it.\n\nUnder load the counter can skip values, so `maxRetries` is never reached and the loop retries forever:\n\n```go\nfor attempt := 0; attempt < c.maxRetries; attempt++ {\n    go c.retry(attempt) // attempt captured racily\n}\n```\n\nWrap the read in the same mutex or use `atomic.Int64`.",
+      "confidence_score": 0.86,
+      "priority": 1,
+      "code_location": {
+        "file_path": "internal/llm/client.go",
+        "line_range": { "start": 120, "end": 124 }
+      },
+      "suggestions": [
+        { "body": "Use `atomic.Int64` for the retry counter.", "line_range": { "start": 120, "end": 124 } },
+        { "body": "Alternatively hold `c.mu` across the read:\n```go\nc.mu.Lock()\nn := c.retries\nc.mu.Unlock()\n```", "line_range": { "start": 120, "end": 124 } }
+      ]
+    },
+    {
+      "id": "0b51bcd9-04d7-4c2a-a4a9-3e1d6cd44b25",
+      "title": "Missing error check on file close",
+      "body": "`defer f.Close()` discards the error on a file opened for writing; buffered data may be lost silently.",
+      "confidence_score": 0.74,
+      "priority": 2,
+      "code_location": {
+        "file_path": "internal/review/review_file_unix.go",
+        "line_range": { "start": 42, "end": 42 }
+      }
+    }
+  ],
+  "overall_correctness": "patch is incorrect",
+  "overall_explanation": "The change introduces a **data race** in the retry path and one minor resource-handling issue. The race is reachable in production whenever more than one stream retries concurrently.",
+  "overall_confidence_score": 0.81
+}

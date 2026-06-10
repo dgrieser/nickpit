@@ -94,9 +94,24 @@ func sanitizeWithHardBreaks(s string) string {
 	return hardBreakParagraphs(Sanitize(s))
 }
 
+// ConfidencePercent renders a 0..1 confidence score as "(NN% confidence)".
+func ConfidencePercent(score float64) string {
+	return fmt.Sprintf("(%.0f%% confidence)", score*100)
+}
+
 // ConfidenceLine renders a 0..1 confidence score as an italic percentage.
 func ConfidenceLine(score float64) string {
-	return fmt.Sprintf("_(%.0f%% confidence)_", score*100)
+	return "_" + ConfidencePercent(score) + "_"
+}
+
+// CorrectnessName maps the overall verdict to its badge name. The verdict enum
+// is "patch is correct" / "patch is incorrect"; anything containing
+// "incorrect" maps to "incorrect", else "correct".
+func CorrectnessName(correctness string) string {
+	if strings.Contains(strings.ToLower(correctness), "incorrect") {
+		return "incorrect"
+	}
+	return "correct"
 }
 
 // Renderer turns review results into markdown comment bodies. It carries the
@@ -119,14 +134,10 @@ func NewRenderer(assetBaseURL string) Renderer {
 	return Renderer{assetBaseURL: assetBaseURL}
 }
 
-// CorrectnessBadge renders the overall verdict as a badge image. The verdict
-// enum is "patch is correct" / "patch is incorrect"; anything containing
-// "incorrect" maps to the incorrect badge, else correct.
+// CorrectnessBadge renders the overall verdict as a badge image, mapping the
+// verdict via CorrectnessName.
 func (r Renderer) CorrectnessBadge(correctness string) string {
-	name := "correct"
-	if strings.Contains(strings.ToLower(correctness), "incorrect") {
-		name = "incorrect"
-	}
+	name := CorrectnessName(correctness)
 	return fmt.Sprintf("![%s](%s%s.svg)", name, r.assetBaseURL, name)
 }
 
