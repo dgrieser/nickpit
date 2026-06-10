@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -31,12 +32,12 @@ func TestPrintErrorANSI(t *testing.T) {
 	}
 }
 
-func TestPrintJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
+func TestVerboseJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
-	logger.PrintJSON("", map[string]any{
+	logger.VerboseJSON(context.Background(), "", map[string]any{
 		"payload": `{"nested":{"ok":true},"items":[1,2]}`,
 	})
 
@@ -55,12 +56,12 @@ func TestPrintJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
 	}
 }
 
-func TestPrintJSONRendersMultilineStringsConsistently(t *testing.T) {
+func TestVerboseJSONRendersMultilineStringsConsistently(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
-	logger.PrintJSON("", map[string]any{
+	logger.VerboseJSON(context.Background(), "", map[string]any{
 		"content": "line1\nline2\nline3",
 	})
 
@@ -76,12 +77,12 @@ func TestPrintJSONRendersMultilineStringsConsistently(t *testing.T) {
 	}
 }
 
-func TestPrintJSONPreservesEscapesInMultilineStrings(t *testing.T) {
+func TestVerboseJSONPreservesEscapesInMultilineStrings(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
-	logger.PrintJSON("", map[string]any{
+	logger.VerboseJSON(context.Background(), "", map[string]any{
 		"content": "line1\t\"quoted\" <tag>\npath\\segment\t\"tail\"",
 	})
 

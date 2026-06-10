@@ -150,67 +150,6 @@ func (l *Logger) NewReasoningTracker(info ProgressInfo) *ReasoningSection {
 	return sec
 }
 
-func (l *Logger) Printf(format string, args ...any) {
-	if !l.Enabled() {
-		return
-	}
-	msg := fmt.Sprintf(format, args...)
-	if l.useANSI {
-		if idx := strings.IndexByte(msg, ':'); idx >= 0 {
-			l.writeRaw(fmt.Sprintf("\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\x1b[90m%s\x1b[0m\n", msg[:idx], msg[idx:]))
-			return
-		}
-		l.writeRaw(fmt.Sprintf("\x1b[90m+\x1b[0m \x1b[1;33m%s\x1b[0m\n", msg))
-		return
-	}
-	l.writeRaw(fmt.Sprintf("+ %s\n", msg))
-}
-
-func (l *Logger) PrintBlock(label, content string) {
-	l.PrintBlockColor(label, content, "90")
-}
-
-func (l *Logger) PrintBlockColor(label, content, color string) {
-	if !l.Enabled() {
-		return
-	}
-	if label != "" {
-		l.writeLines(label, color)
-	}
-	if content == "" {
-		l.writeLines("(empty)", color)
-		return
-	}
-	l.writeLines(content, color)
-}
-
-func (l *Logger) PrintJSON(label string, value any) {
-	l.printJSON(label, value, false)
-}
-
-func (l *Logger) printJSON(label string, value any, force bool) {
-	if !force && !l.Enabled() {
-		return
-	}
-	if label != "" {
-		l.writeLines(label, "90")
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		l.writeLines(fmt.Sprintf("failed to encode json: %v", err), "90")
-		return
-	}
-	var normalized any
-	if err := json.Unmarshal(data, &normalized); err != nil {
-		l.writeLines(fmt.Sprintf("failed to decode json: %v", err), "90")
-		return
-	}
-	normalized = normalizeEmbeddedJSON(normalized)
-	for _, line := range renderJSONLines(normalized, 0, "", false) {
-		l.writeRenderedJSONLine(line)
-	}
-}
-
 func (l *Logger) PrintError(err error) {
 	if l == nil || err == nil {
 		return
@@ -233,35 +172,9 @@ func (l *Logger) writeRaw(text string) {
 	_, _ = io.WriteString(l.w, text)
 }
 
-func (l *Logger) writeLines(text, color string) {
-	lines := strings.SplitSeq(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	for line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if l.useANSI {
-			l.writeRaw(fmt.Sprintf("\x1b[%sm+ %s\x1b[0m\n", color, line))
-			continue
-		}
-		l.writeRaw(fmt.Sprintf("+ %s\n", line))
-	}
-}
-
 type renderedJSONLine struct {
 	text       string
 	stringOnly bool
-}
-
-func (l *Logger) writeRenderedJSONLine(line renderedJSONLine) {
-	if l.useANSI {
-		if line.stringOnly {
-			l.writeRaw(fmt.Sprintf("\x1b[90m+ \x1b[0m\x1b[32m%s\x1b[0m\n", line.text))
-			return
-		}
-		l.writeRaw(fmt.Sprintf("\x1b[90m+ \x1b[0m%s\n", colorizeJSON(line.text)))
-		return
-	}
-	l.writeRaw(fmt.Sprintf("+ %s\n", line.text))
 }
 
 func normalizeEmbeddedJSON(value any) any {

@@ -66,19 +66,6 @@ func (p ProgressInfo) Label() string {
 	return label
 }
 
-// VerbosePrefix renders the verbose-log agent prefix, byte-identical to the
-// previous formatAgentTag output: "[role: name, turn: #N] ".
-func (p ProgressInfo) VerbosePrefix() string {
-	if p.AgentRole == "" && p.AgentName == "" {
-		return ""
-	}
-	head := fmt.Sprintf("%s: %s", p.AgentRole, p.AgentName)
-	if p.Turn > 0 {
-		head = fmt.Sprintf("%s, turn: #%d", head, p.Turn)
-	}
-	return "[" + head + "] "
-}
-
 type progressInfoKey struct{}
 
 func WithProgressInfo(ctx context.Context, info ProgressInfo) context.Context {

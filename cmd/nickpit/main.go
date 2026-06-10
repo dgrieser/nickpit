@@ -1007,7 +1007,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		}
 		cachePath, err := modelcheck.DefaultCachePath()
 		if err != nil {
-			a.logf("Model capability cache unavailable: %v", err)
+			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
 			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, profile.Model)
 			if err == nil && ok {
@@ -1016,7 +1016,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 				return result, nil
 			}
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				a.logf("Model capability cache ignored: %v", err)
+				a.logf(ctx, "Model capability cache ignored: %v", err)
 			}
 		}
 	}
@@ -1031,11 +1031,11 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	capability := modelcheck.CapabilityFromResult(result)
 	cachePath, err := modelcheck.DefaultCachePath()
 	if err != nil {
-		a.logf("Model capability cache unavailable: %v", err)
+		a.logf(ctx, "Model capability cache unavailable: %v", err)
 		return result, nil
 	}
 	if err := modelcheck.WriteCachedCapability(cachePath, profile.BaseURL, capability, time.Now()); err != nil {
-		a.logf("Model capability cache write failed: %v", err)
+		a.logf(ctx, "Model capability cache write failed: %v", err)
 	}
 	return result, nil
 }
@@ -1100,13 +1100,13 @@ func envVarName(value string) string {
 
 func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
 	if req.RepoRoot != "" {
-		a.logf("Resolved repo root: source=provided path=%s", req.RepoRoot)
+		a.logf(ctx, "Resolved repo root: source=provided path=%s", req.RepoRoot)
 		return req.RepoRoot, nil, nil
 	}
 	if req.Mode == model.ModeLocal {
 		wd, err := os.Getwd()
 		if err == nil {
-			a.logf("Resolved repo root: source=working_dir path=%s", wd)
+			a.logf(ctx, "Resolved repo root: source=working_dir path=%s", wd)
 		}
 		return wd, nil, err
 	}
@@ -1115,14 +1115,14 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 		maxToolCalls = profile.MaxToolCalls
 	}
 	if !req.IncludeFullFiles && !hasContentFilters(req) && maxToolCalls < 0 {
-		a.logf("Skipping remote checkout: include_full_files=%t content_filters=%t max_tool_calls=%d", req.IncludeFullFiles, hasContentFilters(req), maxToolCalls)
+		a.logf(ctx, "Skipping remote checkout: include_full_files=%t content_filters=%t max_tool_calls=%d", req.IncludeFullFiles, hasContentFilters(req), maxToolCalls)
 		return "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)
 	if !ok {
 		wd, err := os.Getwd()
 		if err == nil {
-			a.logf("Skipping remote checkout: reason=no_support fallback=%s", wd)
+			a.logf(ctx, "Skipping remote checkout: reason=no_support fallback=%s", wd)
 		}
 		return wd, nil, err
 	}
@@ -1130,7 +1130,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if err != nil {
 		return "", nil, err
 	}
-	a.logf("Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
+	a.logf(ctx, "Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
 	manager := git.NewCheckoutManager()
 	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
 		Workdir: req.Workdir,
@@ -1139,7 +1139,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if err != nil {
 		return "", nil, err
 	}
-	a.logf("Prepared repo root: path=%s", repoRoot)
+	a.logf(ctx, "Prepared repo root: path=%s", repoRoot)
 	return repoRoot, cleanup, nil
 }
 
@@ -1360,11 +1360,8 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (a *app) logf(format string, args ...any) {
-	if a.logger == nil {
-		return
-	}
-	a.logger.Printf(format, args...)
+func (a *app) logf(ctx context.Context, format string, args ...any) {
+	a.logger.Verbosef(ctx, format, args...)
 }
 
 func (a *app) logProgress(ctx context.Context, stage logging.Stage, state logging.State, msg string) {

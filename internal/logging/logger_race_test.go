@@ -30,7 +30,7 @@ func TestLoggerReasoningConcurrentNoRace(t *testing.T) {
 			l.Progress(ctx, StageReasoning, StateNone, "thinking about something")
 			l.ProgressFor(ProgressInfo{AgentRole: "verify", AgentName: "#2"}, StageVerify, StateDone, "conf=0.9")
 			l.ProgressToolCall(ctx, "inspect_file(path=foo.go)", "result=[ok]")
-			l.Printf("status: working")
+			l.Verbosef(ctx, "status: working")
 			sec.End()
 		})
 	}

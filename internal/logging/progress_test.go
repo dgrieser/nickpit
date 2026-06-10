@@ -383,7 +383,7 @@ func TestProgressToolCallPlain(t *testing.T) {
 	}
 }
 
-func TestProgressInfoContextRoundTripAndVerbosePrefix(t *testing.T) {
+func TestProgressInfoContextRoundTrip(t *testing.T) {
 	var nilCtx context.Context // nil-safety contract of ProgressInfoFromContext
 	if _, ok := ProgressInfoFromContext(nilCtx); ok {
 		t.Error("nil context should not carry info")
@@ -395,13 +395,6 @@ func TestProgressInfoContextRoundTripAndVerbosePrefix(t *testing.T) {
 	got, ok := ProgressInfoFromContext(WithProgressInfo(context.Background(), info))
 	if !ok || got != info {
 		t.Errorf("round trip = %+v, %t; want %+v, true", got, ok, info)
-	}
-	// Same shape as the old formatAgentTag-based prefix.
-	if got, want := info.VerbosePrefix(), "[review: #1, turn: #2] "; got != want {
-		t.Errorf("VerbosePrefix() = %q, want %q", got, want)
-	}
-	if got := (ProgressInfo{Model: "gpt-5"}).VerbosePrefix(); got != "" {
-		t.Errorf("VerbosePrefix() without agent = %q, want empty", got)
 	}
 }
 
