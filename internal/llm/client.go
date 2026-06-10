@@ -1130,7 +1130,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 						c.logfCtx(ctx, "Retry honoring 429 reset hint: %s", waitFor)
 					}
 				}
-				c.logRetryHTTPStatus(status, attempt+1, waitFor)
+				c.logRetryHTTPStatus(ctx, status, attempt+1, waitFor)
 				c.logfCtx(ctx, "Retrying request: status=%d backoff=%s", status, waitFor)
 				if waitErr := c.retrier.WaitFor(ctx, waitFor); waitErr != nil {
 					return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
@@ -1141,9 +1141,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			if !isRetryableNetworkError(err) || attempt >= c.retrier.MaxRetries {
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
-			if c.logger != nil {
-				c.logger.PrintStatusLine("LLM request hit a network error, retrying...")
-			}
+			c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, "network error")
 			if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
 				return nil, fmt.Errorf("llm: request canceled: %w", waitErr)
 			}
@@ -1180,9 +1178,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 				}
 				if retryableStreamReadError(readErr) && attempt < c.retrier.MaxRetries {
-					if c.logger != nil {
-						c.logger.PrintStatusLine("LLM stream hit a network error, retrying...")
-					}
+					c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, "stream network error")
 					c.logfCtx(ctx, "Retrying request: stream network error")
 					if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
 						return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
@@ -1209,15 +1205,12 @@ func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
 	return attempt < c.retrier.MaxRetries
 }
 
-func (c *OpenAIClient) logRetryHTTPStatus(status, currentAttempt int, waitFor time.Duration) {
-	if c.logger == nil {
-		return
-	}
+func (c *OpenAIClient) logRetryHTTPStatus(ctx context.Context, status, currentAttempt int, waitFor time.Duration) {
 	if status == http.StatusTooManyRequests {
-		c.logger.PrintProgress("Model", fmt.Sprintf("rate limited (429), waiting %s before retry attempt %d", waitFor, currentAttempt+1))
+		c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("rate limited (429), waiting %s before attempt %d", waitFor, currentAttempt+1))
 		return
 	}
-	c.logger.PrintStatusLine(fmt.Sprintf("LLM request failed with status %d, retrying in %s...", status, waitFor))
+	c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("status=%d, retrying in %s", status, waitFor))
 }
 
 func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController) (*streamedResponse, error) {
