@@ -158,9 +158,10 @@ func TestVerboseMaybeJSONBothBranches(t *testing.T) {
 	}
 }
 
-// writeCounter deliberately does NOT embed bytes.Buffer: an embedded buffer
-// would promote WriteString, which io.WriteString prefers over Write, and the
-// count would never increment.
+// writeCounter counts calls to the underlying writer. It implements both
+// Write and WriteString against the same counter because io.WriteString
+// prefers WriteString when available — counting only one of the two would
+// silently measure nothing if the emit path switches methods.
 type writeCounter struct {
 	buf    bytes.Buffer
 	writes int
@@ -169,6 +170,11 @@ type writeCounter struct {
 func (w *writeCounter) Write(p []byte) (int, error) {
 	w.writes++
 	return w.buf.Write(p)
+}
+
+func (w *writeCounter) WriteString(s string) (int, error) {
+	w.writes++
+	return w.buf.WriteString(s)
 }
 
 func TestVerboseBlockSingleWrite(t *testing.T) {
