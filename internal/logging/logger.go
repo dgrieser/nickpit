@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/dgrieser/nickpit/internal/textsan"
 )
@@ -375,105 +374,6 @@ func renderJSONStringLines(value, prefix string, trailingComma bool) []renderedJ
 		stringOnly: true,
 	})
 	return lines
-}
-
-func colorizeKeyValueSummary(text string) string {
-	var b strings.Builder
-	inString := false
-	for i := 0; i < len(text); i++ {
-		ch := text[i]
-		if ch == '"' {
-			if inString {
-				b.WriteString(string(ch))
-				b.WriteString("\x1b[0m")
-				inString = false
-			} else {
-				b.WriteString("\x1b[32m")
-				b.WriteString(string(ch))
-				inString = true
-			}
-			continue
-		}
-		if inString {
-			b.WriteByte(ch)
-			continue
-		}
-		switch ch {
-		case '=':
-			b.WriteString("\x1b[90m=\x1b[0m")
-		case ',', '(', ')', '[', ']':
-			b.WriteString("\x1b[90m")
-			b.WriteByte(ch)
-			b.WriteString("\x1b[0m")
-		case ' ':
-			b.WriteByte(ch)
-		default:
-			if isToolCallKeyStart(text, i) {
-				j := i
-				for j < len(text) && isToolCallKeyChar(rune(text[j])) {
-					j++
-				}
-				if j < len(text) && text[j] == '=' {
-					b.WriteString("\x1b[34m")
-					b.WriteString(text[i:j])
-					b.WriteString("\x1b[0m")
-					i = j - 1
-					continue
-				}
-			}
-			if isNumberStart(text, i) {
-				j := i + 1
-				for j < len(text) && isNumberChar(rune(text[j])) {
-					j++
-				}
-				b.WriteString("\x1b[32m")
-				b.WriteString(text[i:j])
-				b.WriteString("\x1b[0m")
-				i = j - 1
-				continue
-			}
-			b.WriteByte(ch)
-		}
-	}
-	if inString {
-		b.WriteString("\x1b[0m")
-	}
-	return b.String()
-}
-
-func isToolCallKeyStart(text string, i int) bool {
-	if !isToolCallKeyChar(rune(text[i])) {
-		return false
-	}
-	if i > 0 {
-		prev := rune(text[i-1])
-		if isToolCallKeyChar(prev) {
-			return false
-		}
-	}
-	return true
-}
-
-func isToolCallKeyChar(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
-}
-
-func isNumberStart(text string, i int) bool {
-	ch := rune(text[i])
-	if !unicode.IsDigit(ch) {
-		return false
-	}
-	if i > 0 {
-		prev := rune(text[i-1])
-		if unicode.IsLetter(prev) || unicode.IsDigit(prev) || prev == '"' {
-			return false
-		}
-	}
-	return true
-}
-
-func isNumberChar(r rune) bool {
-	return unicode.IsDigit(r) || r == '.'
 }
 
 func marshalJSONString(value string) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // ProgressInfo is the unified identity carried in context.Context for progress
@@ -145,16 +146,70 @@ const (
 func stateColor(state State) string {
 	switch state {
 	case StateDone, StateOK, StateReady:
-		return "32"
+		return progressColorLightGrey
 	case StateError:
-		return "31"
+		return progressColorErrorRed
 	case StateRetry, StateWarn:
-		return "33"
+		return progressColorWarnYellow
 	case StateSkip:
-		return "90"
+		return progressColorDarkGrey
 	default:
-		return "34"
+		return progressColorLightGrey
 	}
+}
+
+const (
+	progressColorReset             = "\x1b[0m"
+	progressColorBold              = "1"
+	progressColorGrey              = "38;5;244"
+	progressColorDarkGrey          = "38;5;242"
+	progressColorLightGrey         = "38;5;252"
+	progressColorWhite             = "38;5;255"
+	progressColorNumberGreen       = "38;5;118"
+	progressColorUnitGreen         = "38;5;71"
+	progressColorKeyTurquoise      = "38;5;116"
+	progressColorKeyTeal           = "38;5;37"
+	progressColorStringGreen       = "38;5;120"
+	progressColorBoolGreen         = "38;5;156"
+	progressColorTaskPink          = "38;5;218"
+	progressColorMutedModel        = "38;5;110"
+	progressColorURLPurpleBlue     = "38;5;105"
+	progressColorProfile           = "38;5;216"
+	progressColorBranchFromGold    = "38;5;214"
+	progressColorBranchToAquaGreen = "38;5;48"
+	progressColorErrorRed          = "38;5;203"
+	progressColorWarnYellow        = "38;5;221"
+)
+
+var progressStageStyles = map[Stage]string{
+	StageModel:      "1;38;5;81",
+	StageAgent:      "1;38;5;111",
+	StageModelCheck: "1;38;5;114",
+	StageReview:     "1;38;5;219",
+	StageRequest:    "1;38;5;214",
+	StageReasoning:  "1;38;5;183",
+	StageResponse:   "1;38;5;150",
+	StageTool:       "1;38;5;80",
+	StageVerify:     "1;38;5;123",
+	StageFinalize:   "1;38;5;207",
+	StageSummarize:  "1;38;5;222",
+	StagePublish:    "1;38;5;209",
+	StageResult:     "1;38;5;118",
+}
+
+func progressStyle(code, text string) string {
+	if text == "" {
+		return ""
+	}
+	return "\x1b[" + code + "m" + text + progressColorReset
+}
+
+func progressGrey(text string) string {
+	return progressStyle(progressColorGrey, text)
+}
+
+func progressLight(text string) string {
+	return progressStyle(progressColorLightGrey, text)
 }
 
 // Progress emits a progress line using the ProgressInfo carried in ctx.
@@ -197,7 +252,11 @@ func formatProgressLine(useANSI bool, info ProgressInfo, stage Stage, state Stat
 	var b strings.Builder
 	paddedStage := fmt.Sprintf("%-*s", stageColumnWidth, string(stage))
 	if useANSI {
-		b.WriteString("\x1b[33m" + paddedStage + "\x1b[0m")
+		style := progressStageStyles[stage]
+		if style == "" {
+			style = progressColorBold + ";" + progressColorLightGrey
+		}
+		b.WriteString(progressStyle(style, paddedStage))
 	} else {
 		b.WriteString(paddedStage)
 	}
@@ -206,24 +265,21 @@ func formatProgressLine(useANSI bool, info ProgressInfo, stage Stage, state Stat
 		b.WriteString(bracket)
 	}
 	if info.Turn > 0 {
-		turn := fmt.Sprintf("#%d", info.Turn)
-		if useANSI {
-			turn = "\x1b[32m" + turn + "\x1b[0m"
-		}
+		turn := formatProgressTurn(useANSI, info.Turn)
 		b.WriteString(" ")
 		b.WriteString(turn)
 	}
 	if state != StateNone {
 		word := string(state)
 		if useANSI {
-			word = "\x1b[" + stateColor(state) + "m" + word + "\x1b[0m"
+			word = progressStyle(stateColor(state), word)
 		}
 		b.WriteString(" ")
 		b.WriteString(word)
 	}
 	if msg != "" {
 		if useANSI {
-			msg = colorizeKeyValueSummary(msg)
+			msg = colorizeProgressMessage(msg)
 		}
 		b.WriteString(" ")
 		b.WriteString(msg)
@@ -234,19 +290,20 @@ func formatProgressLine(useANSI bool, info ProgressInfo, stage Stage, state Stat
 
 func formatProgressBracket(useANSI bool, info ProgressInfo) string {
 	var parts []string
-	if roleName := info.roleName(); roleName != "" {
-		if useANSI {
-			roleName = "\x1b[34m" + roleName + "\x1b[0m"
+	if useANSI {
+		if rolePart := formatProgressRolePart(info); rolePart != "" {
+			parts = append(parts, rolePart)
 		}
+	} else if roleName := info.roleName(); roleName != "" {
 		parts = append(parts, roleName)
 	}
-	if modelPart := formatProgressModel(useANSI, info); modelPart != "" {
+	if modelPart := formatProgressModel(useANSI, info, len(parts) > 0); modelPart != "" {
 		parts = append(parts, modelPart)
 	}
 	if info.Detail != "" {
 		detail := info.Detail
 		if useANSI {
-			detail = "\x1b[90m" + detail + "\x1b[0m"
+			detail = progressLight(detail)
 		}
 		parts = append(parts, detail)
 	}
@@ -256,24 +313,69 @@ func formatProgressBracket(useANSI bool, info ProgressInfo) string {
 	sep := " · "
 	open, close := "[", "]"
 	if useANSI {
-		sep = "\x1b[90m · \x1b[0m"
-		open, close = "\x1b[90m[\x1b[0m", "\x1b[90m]\x1b[0m"
+		sep = progressGrey(" · ")
+		open, close = progressGrey("["), progressGrey("]")
 	}
 	return open + strings.Join(parts, sep) + close
 }
 
-func formatProgressModel(useANSI bool, info ProgressInfo) string {
+func formatProgressRolePart(info ProgressInfo) string {
+	switch {
+	case info.AgentRole == "":
+		return styleSeparatedText(info.AgentName, progressColorTaskPink)
+	case info.AgentName == "":
+		return progressStyle(progressColorKeyTeal, info.AgentRole)
+	case strings.HasPrefix(info.AgentName, "#"):
+		return progressStyle(progressColorKeyTeal, info.AgentRole) + " " + formatProgressCounter(info.AgentName)
+	default:
+		return progressStyle(progressColorKeyTeal, info.AgentRole) + progressGrey(": ") + styleSeparatedText(info.AgentName, progressColorTaskPink)
+	}
+}
+
+func styleSeparatedText(text, color string) string {
+	var b strings.Builder
+	var segment strings.Builder
+	flush := func() {
+		if segment.Len() == 0 {
+			return
+		}
+		b.WriteString(progressStyle(color, segment.String()))
+		segment.Reset()
+	}
+	for _, r := range text {
+		switch r {
+		case ':':
+			flush()
+			b.WriteString(progressGrey(":"))
+		case '/':
+			flush()
+			b.WriteString(progressGrey("/"))
+		default:
+			segment.WriteRune(r)
+		}
+	}
+	flush()
+	return b.String()
+}
+
+func formatProgressModel(useANSI bool, info ProgressInfo, scoped bool) string {
 	if info.Model == "" {
 		return ""
 	}
 	var b strings.Builder
 	if useANSI {
-		b.WriteString("\x1b[34m" + info.Model + "\x1b[0m")
+		modelColor := progressColorKeyTeal
+		effortColor := progressColorTaskPink
+		if scoped {
+			modelColor = progressColorMutedModel
+			effortColor = progressColorMutedModel
+		}
+		b.WriteString(progressStyle(modelColor, info.Model))
 		if info.Effort != "" {
-			b.WriteString("\x1b[90m:\x1b[0m\x1b[32m" + info.Effort + "\x1b[0m")
+			b.WriteString(progressGrey(":") + progressStyle(effortColor, info.Effort))
 		}
 		if info.BaseURL != "" {
-			b.WriteString("\x1b[90m @ \x1b[0m\x1b[35m" + info.BaseURL + "\x1b[0m")
+			b.WriteString(progressGrey(" @ ") + progressStyle(progressColorURLPurpleBlue, info.BaseURL))
 		}
 		return b.String()
 	}
@@ -285,4 +387,222 @@ func formatProgressModel(useANSI bool, info ProgressInfo) string {
 		b.WriteString(" @ " + info.BaseURL)
 	}
 	return b.String()
+}
+
+func formatProgressTurn(useANSI bool, turn int) string {
+	if !useANSI {
+		return fmt.Sprintf("#%d", turn)
+	}
+	return progressStyle(progressColorUnitGreen, "#") + progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", turn))
+}
+
+func formatProgressCounter(counter string) string {
+	if strings.HasPrefix(counter, "#") && len(counter) > 1 {
+		return progressStyle(progressColorUnitGreen, "#") + progressStyle(progressColorNumberGreen, counter[1:])
+	}
+	return progressLight(counter)
+}
+
+func colorizeProgressMessage(text string) string {
+	if text == "" {
+		return ""
+	}
+	if reviewCtx, ok := colorizeReviewContextMessage(text); ok {
+		return reviewCtx
+	}
+	return colorizeProgressText(text)
+}
+
+func colorizeReviewContextMessage(text string) (string, bool) {
+	mode, rest, ok := strings.Cut(text, " [")
+	if !ok {
+		return "", false
+	}
+	profileAndThreshold, rest, ok := strings.Cut(rest, "] on ")
+	if !ok {
+		return "", false
+	}
+	repo, rest, ok := strings.Cut(rest, " @ ")
+	if !ok {
+		return "", false
+	}
+	head, base, ok := strings.Cut(rest, " → ")
+	if !ok {
+		return "", false
+	}
+	profile, threshold, ok := strings.Cut(profileAndThreshold, ", ")
+	if !ok {
+		return "", false
+	}
+
+	var b strings.Builder
+	b.WriteString(styleModeWithSubmode(mode))
+	b.WriteString(" ")
+	b.WriteString(progressGrey("["))
+	b.WriteString(progressStyle(progressColorProfile, profile))
+	b.WriteString(progressGrey(", "))
+	b.WriteString(colorizeProgressText(threshold))
+	b.WriteString(progressGrey("]"))
+	b.WriteString(" ")
+	b.WriteString(progressLight("on"))
+	b.WriteString(" ")
+	b.WriteString(stylePathParts(repo, progressColorTaskPink))
+	b.WriteString(progressGrey(" @ "))
+	b.WriteString(stylePathParts(head, progressColorBranchFromGold))
+	b.WriteString(progressGrey(" → "))
+	b.WriteString(stylePathParts(base, progressColorBranchToAquaGreen))
+	return b.String(), true
+}
+
+func styleModeWithSubmode(mode string) string {
+	before, after, ok := strings.Cut(mode, ":")
+	if !ok {
+		return progressLight(mode)
+	}
+	return progressLight(before) + progressGrey(":") + progressLight(after)
+}
+
+func stylePathParts(path, color string) string {
+	return styleSeparatedText(path, color)
+}
+
+func colorizeProgressText(text string) string {
+	runes := []rune(text)
+	var b strings.Builder
+	for i := 0; i < len(runes); {
+		r := runes[i]
+		switch {
+		case unicode.IsSpace(r):
+			b.WriteRune(r)
+			i++
+		case r == '"':
+			i = writeQuotedProgressString(&b, runes, i)
+		case isProgressSeparator(r):
+			b.WriteString(progressGrey(string(r)))
+			i++
+		case r == '#':
+			i = writeProgressHashNumber(&b, runes, i)
+		case r == '≤' || r == '≥':
+			i = writeProgressComparator(&b, runes, i)
+		case r == '∞':
+			b.WriteString(progressStyle(progressColorUnitGreen, string(r)))
+			i++
+		case unicode.IsDigit(r):
+			i = writeProgressNumber(&b, runes, i, true)
+		case isProgressWordStart(r):
+			i = writeProgressWord(&b, runes, i)
+		default:
+			b.WriteString(progressLight(string(r)))
+			i++
+		}
+	}
+	return b.String()
+}
+
+func writeQuotedProgressString(b *strings.Builder, runes []rune, i int) int {
+	j := i + 1
+	escaped := false
+	for j < len(runes) {
+		switch {
+		case escaped:
+			escaped = false
+		case runes[j] == '\\':
+			escaped = true
+		case runes[j] == '"':
+			j++
+			b.WriteString(progressStyle(progressColorStringGreen, string(runes[i:j])))
+			return j
+		}
+		j++
+	}
+	b.WriteString(progressStyle(progressColorStringGreen, string(runes[i:])))
+	return len(runes)
+}
+
+func writeProgressHashNumber(b *strings.Builder, runes []rune, i int) int {
+	if i+1 < len(runes) && unicode.IsDigit(runes[i+1]) {
+		b.WriteString(progressStyle(progressColorUnitGreen, "#"))
+		return writeProgressNumber(b, runes, i+1, true)
+	}
+	b.WriteString(progressLight("#"))
+	return i + 1
+}
+
+func writeProgressComparator(b *strings.Builder, runes []rune, i int) int {
+	b.WriteString(progressStyle(progressColorUnitGreen, string(runes[i])))
+	i++
+	if i >= len(runes) {
+		return i
+	}
+	if unicode.IsDigit(runes[i]) {
+		return writeProgressNumber(b, runes, i, true)
+	}
+	if unicode.IsLetter(runes[i]) {
+		j := i + 1
+		for j < len(runes) && (unicode.IsLetter(runes[j]) || unicode.IsDigit(runes[j])) {
+			j++
+		}
+		b.WriteString(progressStyle(progressColorNumberGreen, string(runes[i:j])))
+		return j
+	}
+	return i
+}
+
+func writeProgressNumber(b *strings.Builder, runes []rune, i int, withUnit bool) int {
+	j := i
+	for j < len(runes) && (unicode.IsDigit(runes[j]) || runes[j] == '.') {
+		j++
+	}
+	b.WriteString(progressStyle(progressColorNumberGreen, string(runes[i:j])))
+	if j < len(runes) && runes[j] == '/' && j+1 < len(runes) && unicode.IsDigit(runes[j+1]) {
+		b.WriteString(progressStyle(progressColorUnitGreen, "/"))
+		return writeProgressNumber(b, runes, j+1, false)
+	}
+	if withUnit {
+		k := j
+		for k < len(runes) && unicode.IsLetter(runes[k]) {
+			k++
+		}
+		if k > j {
+			b.WriteString(progressStyle(progressColorUnitGreen, string(runes[j:k])))
+			return k
+		}
+	}
+	return j
+}
+
+func writeProgressWord(b *strings.Builder, runes []rune, i int) int {
+	j := i + 1
+	for j < len(runes) && isProgressWordChar(runes[j]) {
+		j++
+	}
+	word := string(runes[i:j])
+	if j < len(runes) && runes[j] == '=' {
+		b.WriteString(progressStyle(progressColorKeyTurquoise, word))
+		return j
+	}
+	switch word {
+	case "true", "false":
+		b.WriteString(progressStyle(progressColorBoolGreen, word))
+	default:
+		b.WriteString(progressLight(word))
+	}
+	return j
+}
+
+func isProgressSeparator(r rune) bool {
+	switch r {
+	case '[', ']', '(', ')', ',', ':', '=', '@', '→', '·', '/':
+		return true
+	default:
+		return false
+	}
+}
+
+func isProgressWordStart(r rune) bool {
+	return unicode.IsLetter(r) || r == '_'
+}
+
+func isProgressWordChar(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-'
 }

@@ -112,6 +112,59 @@ func TestFormatProgressPlain(t *testing.T) {
 	}
 }
 
+func progressTestStyle(code, text string) string {
+	if text == "" {
+		return ""
+	}
+	return "\x1b[" + code + "m" + text + "\x1b[0m"
+}
+
+func progressTestGrey(text string) string {
+	return progressTestStyle(progressColorGrey, text)
+}
+
+func progressTestLight(text string) string {
+	return progressTestStyle(progressColorLightGrey, text)
+}
+
+func progressTestCounter(n string) string {
+	return progressTestStyle(progressColorUnitGreen, "#") + progressTestStyle(progressColorNumberGreen, n)
+}
+
+func TestProgressPaletteValues(t *testing.T) {
+	tests := map[string]string{
+		"grey":              progressColorGrey,
+		"darkGrey":          progressColorDarkGrey,
+		"numberGreen":       progressColorNumberGreen,
+		"unitGreen":         progressColorUnitGreen,
+		"keyTurquoise":      progressColorKeyTurquoise,
+		"keyTeal":           progressColorKeyTeal,
+		"taskPink":          progressColorTaskPink,
+		"urlPurpleBlue":     progressColorURLPurpleBlue,
+		"profile":           progressColorProfile,
+		"branchFromGold":    progressColorBranchFromGold,
+		"branchToAquaGreen": progressColorBranchToAquaGreen,
+	}
+	want := map[string]string{
+		"grey":              "38;5;244",
+		"darkGrey":          "38;5;242",
+		"numberGreen":       "38;5;118",
+		"unitGreen":         "38;5;71",
+		"keyTurquoise":      "38;5;116",
+		"keyTeal":           "38;5;37",
+		"taskPink":          "38;5;218",
+		"urlPurpleBlue":     "38;5;105",
+		"profile":           "38;5;216",
+		"branchFromGold":    "38;5;214",
+		"branchToAquaGreen": "38;5;48",
+	}
+	for name, got := range tests {
+		if got != want[name] {
+			t.Fatalf("%s = %q, want %q", name, got, want[name])
+		}
+	}
+}
+
 func TestFormatProgressANSI(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -126,46 +179,49 @@ func TestFormatProgressANSI(t *testing.T) {
 			info:  reviewerInfo().WithTurn(2),
 			stage: StageRequest,
 			state: StateDone,
-			want: "\x1b[33mRequest   \x1b[0m " +
-				"\x1b[90m[\x1b[0m\x1b[34mreview #1\x1b[0m\x1b[90m · \x1b[0m\x1b[34mgpt-5\x1b[0m\x1b[90m:\x1b[0m\x1b[32mhigh\x1b[0m\x1b[90m]\x1b[0m " +
-				"\x1b[32m#2\x1b[0m \x1b[32mdone\x1b[0m\n",
+			want: progressTestStyle(progressStageStyles[StageRequest], "Request   ") + " " +
+				progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, "review") + " " + progressTestCounter("1") +
+				progressTestGrey(" · ") + progressTestStyle(progressColorMutedModel, "gpt-5") + progressTestGrey(":") +
+				progressTestStyle(progressColorMutedModel, "high") + progressTestGrey("]") + " " +
+				progressTestCounter("2") + " " + progressTestLight("done") + "\n",
 		},
 		{
 			name:  "red error state",
 			info:  ProgressInfo{},
 			stage: StagePublish,
 			state: StateError,
-			want:  "\x1b[33mPublish   \x1b[0m \x1b[31merror\x1b[0m\n",
+			want:  progressTestStyle(progressStageStyles[StagePublish], "Publish   ") + " " + progressTestStyle(progressColorErrorRed, "error") + "\n",
 		},
 		{
 			name:  "yellow retry state",
 			info:  ProgressInfo{},
 			stage: StageModel,
 			state: StateRetry,
-			want:  "\x1b[33mModel     \x1b[0m \x1b[33mretry\x1b[0m\n",
+			want:  progressTestStyle(progressStageStyles[StageModel], "Model     ") + " " + progressTestStyle(progressColorWarnYellow, "retry") + "\n",
 		},
 		{
 			name:  "gray skip state",
 			info:  ProgressInfo{},
 			stage: StageModelCheck,
 			state: StateSkip,
-			want:  "\x1b[33mModelCheck\x1b[0m \x1b[90mskip\x1b[0m\n",
+			want:  progressTestStyle(progressStageStyles[StageModelCheck], "ModelCheck") + " " + progressTestStyle(progressColorDarkGrey, "skip") + "\n",
 		},
 		{
 			name:  "blue start state",
 			info:  ProgressInfo{},
 			stage: StageReview,
 			state: StateStart,
-			want:  "\x1b[33mReview    \x1b[0m \x1b[34mstart\x1b[0m\n",
+			want:  progressTestStyle(progressStageStyles[StageReview], "Review    ") + " " + progressTestLight("start") + "\n",
 		},
 		{
 			name:  "detail gray and base url magenta",
 			info:  ProgressInfo{Model: "gpt-5", BaseURL: "api.example.com", Detail: "Missing err check"},
 			stage: StageVerify,
 			state: StateNone,
-			want: "\x1b[33mVerify    \x1b[0m " +
-				"\x1b[90m[\x1b[0m\x1b[34mgpt-5\x1b[0m\x1b[90m @ \x1b[0m\x1b[35mapi.example.com\x1b[0m" +
-				"\x1b[90m · \x1b[0m\x1b[90mMissing err check\x1b[0m\x1b[90m]\x1b[0m\n",
+			want: progressTestStyle(progressStageStyles[StageVerify], "Verify    ") + " " +
+				progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, "gpt-5") + progressTestGrey(" @ ") +
+				progressTestStyle(progressColorURLPurpleBlue, "api.example.com") + progressTestGrey(" · ") +
+				progressTestLight("Missing err check") + progressTestGrey("]") + "\n",
 		},
 		{
 			name:  "msg tail key-value colorized",
@@ -173,7 +229,9 @@ func TestFormatProgressANSI(t *testing.T) {
 			stage: StageResult,
 			state: StateOK,
 			msg:   "findings=3",
-			want:  "\x1b[33mResult    \x1b[0m \x1b[32mok\x1b[0m \x1b[34mfindings\x1b[0m\x1b[90m=\x1b[0m\x1b[32m3\x1b[0m\n",
+			want: progressTestStyle(progressStageStyles[StageResult], "Result    ") + " " + progressTestLight("ok") + " " +
+				progressTestStyle(progressColorKeyTurquoise, "findings") + progressTestGrey("=") +
+				progressTestStyle(progressColorNumberGreen, "3") + "\n",
 		},
 	}
 	for _, tt := range tests {
@@ -183,6 +241,100 @@ func TestFormatProgressANSI(t *testing.T) {
 				t.Errorf("formatProgressLine() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatProgressANSIExamples(t *testing.T) {
+	const model = "Qwen3.5-122B-A10B-FP8"
+	modelInfo := ProgressInfo{Model: model, Effort: "high", BaseURL: "https://llm.aihosting.mittwald.de/v1"}
+	wantModel := progressTestStyle(progressStageStyles[StageModel], "Model     ") + " " +
+		progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, model) + progressTestGrey(":") +
+		progressTestStyle(progressColorTaskPink, "high") + progressTestGrey(" @ ") +
+		progressTestStyle(progressColorURLPurpleBlue, "https://llm.aihosting.mittwald.de/v1") + progressTestGrey("]") + " " +
+		progressTestLight("ready") + " " + progressTestStyle(progressColorNumberGreen, "120") +
+		progressTestStyle(progressColorUnitGreen, "k") + " " + progressTestLight("context") + "\n"
+	if got := formatProgressLine(true, modelInfo, StageModel, StateReady, "120k context"); got != wantModel {
+		t.Fatalf("model line = %q, want %q", got, wantModel)
+	}
+
+	reviewInfo := ProgressInfo{Model: model, Effort: "high"}
+	reviewMsg := "gitlab: [mittwald, ≥p3] on asylum/services/omvormer @ fix/imagebase-synchronized-race → master"
+	wantReview := progressTestStyle(progressStageStyles[StageReview], "Review    ") + " " +
+		progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, model) + progressTestGrey(":") +
+		progressTestStyle(progressColorTaskPink, "high") + progressTestGrey("]") + " " +
+		progressTestLight("start") + " " + progressTestLight("gitlab") + progressTestGrey(":") + " " +
+		progressTestGrey("[") + progressTestStyle(progressColorProfile, "mittwald") + progressTestGrey(", ") +
+		progressTestStyle(progressColorUnitGreen, "≥") + progressTestStyle(progressColorNumberGreen, "p3") +
+		progressTestGrey("]") + " " + progressTestLight("on") + " " +
+		progressTestStyle(progressColorTaskPink, "asylum") + progressTestGrey("/") +
+		progressTestStyle(progressColorTaskPink, "services") + progressTestGrey("/") +
+		progressTestStyle(progressColorTaskPink, "omvormer") + progressTestGrey(" @ ") +
+		progressTestStyle(progressColorBranchFromGold, "fix") + progressTestGrey("/") +
+		progressTestStyle(progressColorBranchFromGold, "imagebase-synchronized-race") + progressTestGrey(" → ") +
+		progressTestStyle(progressColorBranchToAquaGreen, "master") + "\n"
+	if got := formatProgressLine(true, reviewInfo, StageReview, StateStart, reviewMsg); got != wantReview {
+		t.Fatalf("review line = %q, want %q", got, wantReview)
+	}
+
+	requestInfo := ProgressInfo{AgentRole: "context", AgentName: "Collect Context", Model: model, Effort: "high", Turn: 1}
+	wantRequest := progressTestStyle(progressStageStyles[StageRequest], "Request   ") + " " +
+		progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, "context") + progressTestGrey(": ") +
+		progressTestStyle(progressColorTaskPink, "Collect Context") + progressTestGrey(" · ") +
+		progressTestStyle(progressColorMutedModel, model) + progressTestGrey(":") +
+		progressTestStyle(progressColorMutedModel, "high") + progressTestGrey("]") + " " +
+		progressTestCounter("1") + " " + progressTestLight("sent") + "\n"
+	if got := formatProgressLine(true, requestInfo, StageRequest, StateSent, ""); got != wantRequest {
+		t.Fatalf("request line = %q, want %q", got, wantRequest)
+	}
+
+	toolMsg := `search(path=".", query="IsImageBaseCurrent", context_lines=0, max_results=0, case_sensitive=false) → result=[files=5, result_count=12]`
+	wantTool := progressTestStyle(progressStageStyles[StageTool], "Tool      ") + " " +
+		progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, "context") + progressTestGrey(": ") +
+		progressTestStyle(progressColorTaskPink, "Collect Context") + progressTestGrey(" · ") +
+		progressTestStyle(progressColorMutedModel, model) + progressTestGrey(":") +
+		progressTestStyle(progressColorMutedModel, "high") + progressTestGrey("]") + " " +
+		progressTestCounter("1") + " " + progressTestLight("search") + progressTestGrey("(") +
+		progressTestStyle(progressColorKeyTurquoise, "path") + progressTestGrey("=") + progressTestStyle(progressColorStringGreen, `"."`) + progressTestGrey(",") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "query") + progressTestGrey("=") + progressTestStyle(progressColorStringGreen, `"IsImageBaseCurrent"`) + progressTestGrey(",") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "context_lines") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "0") + progressTestGrey(",") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "max_results") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "0") + progressTestGrey(",") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "case_sensitive") + progressTestGrey("=") + progressTestStyle(progressColorBoolGreen, "false") + progressTestGrey(")") + " " +
+		progressTestGrey("→") + " " + progressTestStyle(progressColorKeyTurquoise, "result") + progressTestGrey("=") + progressTestGrey("[") +
+		progressTestStyle(progressColorKeyTurquoise, "files") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "5") + progressTestGrey(",") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "result_count") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "12") + progressTestGrey("]") + "\n"
+	if got := formatProgressLine(true, requestInfo, StageTool, StateNone, toolMsg); got != wantTool {
+		t.Fatalf("tool line = %q, want %q", got, wantTool)
+	}
+
+	finalizeMsg := "findings_in=8 finalizer_findings=8 matched=8 omitted=0 ignored=0 findings_out=8 prompt_tokens=48709 completion_tokens=6684 total_tokens=55393"
+	wantFinalize := progressTestStyle(progressStageStyles[StageFinalize], "Finalize  ") + " " +
+		progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, model) + progressTestGrey(":") +
+		progressTestStyle(progressColorTaskPink, "high") + progressTestGrey("]") + " " +
+		progressTestLight("done") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "findings_in") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "8") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "finalizer_findings") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "8") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "matched") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "8") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "omitted") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "0") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "ignored") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "0") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "findings_out") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "8") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "prompt_tokens") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "48709") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "completion_tokens") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "6684") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "total_tokens") + progressTestGrey("=") + progressTestStyle(progressColorNumberGreen, "55393") + "\n"
+	if got := formatProgressLine(true, reviewInfo, StageFinalize, StateDone, finalizeMsg); got != wantFinalize {
+		t.Fatalf("finalize line = %q, want %q", got, wantFinalize)
+	}
+}
+
+func TestColorizeProgressNumbers(t *testing.T) {
+	msg := "≤600s 120k #3 2/5 ≥p3 ∞"
+	want := progressTestStyle(progressColorUnitGreen, "≤") + progressTestStyle(progressColorNumberGreen, "600") + progressTestStyle(progressColorUnitGreen, "s") + " " +
+		progressTestStyle(progressColorNumberGreen, "120") + progressTestStyle(progressColorUnitGreen, "k") + " " +
+		progressTestCounter("3") + " " +
+		progressTestStyle(progressColorNumberGreen, "2") + progressTestStyle(progressColorUnitGreen, "/") + progressTestStyle(progressColorNumberGreen, "5") + " " +
+		progressTestStyle(progressColorUnitGreen, "≥") + progressTestStyle(progressColorNumberGreen, "p3") + " " +
+		progressTestStyle(progressColorUnitGreen, "∞")
+	if got := colorizeProgressMessage(msg); got != want {
+		t.Fatalf("numbers = %q, want %q", got, want)
 	}
 }
 
