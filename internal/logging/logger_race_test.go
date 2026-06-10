@@ -23,7 +23,7 @@ func TestLoggerReasoningConcurrentNoRace(t *testing.T) {
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
-			sec := l.OpenReasoningSection("agent")
+			sec := l.OpenReasoningSection(ProgressInfo{AgentRole: "agent"})
 			sec.Append("reasoning delta\n")
 			l.PrintProgress("Reasoning", "thinking about something")
 			l.PrintProgressToolCall("inspect_file foo.go", "ok")

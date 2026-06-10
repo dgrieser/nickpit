@@ -30,7 +30,7 @@ type ReasoningSection struct {
 	r         *ReasoningRenderer
 	id        SectionID
 	logger    *Logger
-	label     string
+	info      ProgressInfo // identity snapshot taken when the section opens
 	startTime time.Time
 	ended     bool
 	callNum   int // incremented by IncrCallNum on each LLM request
@@ -43,12 +43,13 @@ func (s *ReasoningSection) Append(delta string) {
 	s.r.Append(s.id, delta)
 }
 
-// Label returns the section label, or "" for nil sections.
-func (s *ReasoningSection) Label() string {
+// Info returns the section's identity snapshot, or the zero value for nil
+// sections.
+func (s *ReasoningSection) Info() ProgressInfo {
 	if s == nil {
-		return ""
+		return ProgressInfo{}
 	}
-	return s.label
+	return s.info
 }
 
 // IncrCallNum increments the per-section LLM call counter and returns the new value.
@@ -68,9 +69,13 @@ func (s *ReasoningSection) End() {
 	if s.r != nil {
 		s.r.End(s.id)
 	}
-	if s.label != "" {
+	if !s.info.IsZero() {
+		info := s.info
+		if s.callNum > 0 {
+			info = info.WithTurn(s.callNum)
+		}
 		elapsed := time.Since(s.startTime).Truncate(time.Second)
-		s.logger.PrintProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", s.label, s.callNum, elapsed))
+		s.logger.ProgressFor(info, StageReasoning, StateDone, elapsed.String())
 	}
 }
 
@@ -119,27 +124,28 @@ func (l *Logger) ShowReasoning() bool {
 // OpenReasoningSection opens a new labeled reasoning section. Returns nil when
 // neither --show-reasoning nor --show-progress is enabled.
 // All ReasoningSection methods are nil-safe.
-func (l *Logger) OpenReasoningSection(label string) *ReasoningSection {
+func (l *Logger) OpenReasoningSection(info ProgressInfo) *ReasoningSection {
 	if l == nil || (!l.showReasoning && !l.showProgress) {
 		return nil
 	}
-	sec := l.NewReasoningTracker(label)
+	sec := l.NewReasoningTracker(info)
 	if l.showReasoning && l.reasoning != nil {
-		sec.id = l.reasoning.Begin(label)
+		sec.id = l.reasoning.Begin(info.Label())
 		sec.r = l.reasoning
 	}
 	return sec
 }
 
 // NewReasoningTracker returns a progress-only reasoning section. It tracks
-// labels, elapsed time, and call numbers without opening a renderer section.
-func (l *Logger) NewReasoningTracker(label string) *ReasoningSection {
+// the identity, elapsed time, and call numbers without opening a renderer
+// section.
+func (l *Logger) NewReasoningTracker(info ProgressInfo) *ReasoningSection {
 	if l == nil || (!l.showReasoning && !l.showProgress) {
 		return nil
 	}
 	sec := &ReasoningSection{
 		logger:    l,
-		label:     label,
+		info:      info,
 		startTime: time.Now(),
 	}
 	return sec

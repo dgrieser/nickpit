@@ -1083,7 +1083,7 @@ func TestClientReviewDoesNotEndExternalReasoningSink(t *testing.T) {
 	logger := logging.New(&buf, true, false)
 	logger.SetShowReasoning(true)
 	client.SetLogger(logger)
-	sec := logger.OpenReasoningSection("review")
+	sec := logger.OpenReasoningSection(logging.ProgressInfo{AgentRole: "review"})
 
 	for range 2 {
 		if _, err := client.Review(context.Background(), &ReviewRequest{

@@ -1236,7 +1236,7 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 	ownsSink := false
 	ensureSink := func() ReasoningSink {
 		if sink == nil && c.logger != nil {
-			sink = c.logger.OpenReasoningSection("")
+			sink = c.logger.OpenReasoningSection(logging.ProgressInfo{})
 			ownsSink = sink != nil
 		}
 		return sink

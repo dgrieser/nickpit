@@ -219,7 +219,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 			defer wg.Done()
 			defer func() { <-semaphore }()
 			info := e.progressInfo("verifier", fmt.Sprintf("#%d", idx+1), truncateFindingTitle(f.Title))
-			sec := e.logger.NewReasoningTracker(info.Label())
+			sec := e.logger.NewReasoningTracker(info)
 			defer sec.End()
 			req := VerifyRequest{
 				ReviewCtx:                reviewCtx,

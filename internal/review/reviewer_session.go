@@ -80,7 +80,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	}
 	messages = append(messages, agent.extraMessages...)
 	info := e.progressInfo(agent.role, agent.name, "")
-	sec := e.logger.NewReasoningTracker(info.Label())
+	sec := e.logger.NewReasoningTracker(info)
 
 	tools := []llm.ToolDefinition(nil)
 	if agent.hasTools {

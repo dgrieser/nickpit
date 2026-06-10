@@ -2460,13 +2460,14 @@ func normalizeToolPath(path string) string {
 
 func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
 	callNum := sec.IncrCallNum()
-	label := sec.Label()
-	if label != "" {
-		e.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
-		e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d", label, callNum))
+	info, ok := logging.ProgressInfoFromContext(ctx)
+	turnInfo := info.WithTurn(callNum)
+	if ok {
+		e.logger.ProgressFor(turnInfo, logging.StageRequest, logging.StateSent, "")
+		e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateStart, "")
 	}
 	previousSink := req.ReasoningSink
-	callSec := e.openReviewRequestReasoningSection(label, callNum)
+	callSec := e.openReviewRequestReasoningSection(info, callNum)
 	req.ReasoningSink = llm.TeeReasoningSinks(callSec, previousSink)
 	defer func() {
 		req.ReasoningSink = previousSink
@@ -2475,23 +2476,23 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 	start := time.Now()
 	resp, err := e.llm.Review(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
-	if label != "" {
+	if ok {
 		if resp != nil && resp.Reasoned {
-			e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", label, callNum, elapsed))
+			e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateDone, elapsed.String())
 		}
-		e.logProgress("Response", fmt.Sprintf("[%s] #%d After %s", label, callNum, elapsed))
+		e.logger.ProgressFor(turnInfo, logging.StageResponse, logging.StateDone, elapsed.String())
 	}
 	return resp, err
 }
 
-func (e *Engine) openReviewRequestReasoningSection(label string, callNum int) *logging.ReasoningSection {
+func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {
 	if e.logger == nil || !e.logger.ShowReasoning() {
 		return nil
 	}
-	if label == "" || callNum <= 0 {
-		return e.logger.OpenReasoningSection("")
+	if info.IsZero() || callNum <= 0 {
+		return e.logger.OpenReasoningSection(logging.ProgressInfo{})
 	}
-	return e.logger.OpenReasoningSection(fmt.Sprintf("%s #%d", label, callNum))
+	return e.logger.OpenReasoningSection(info.WithTurn(callNum))
 }
 
 func (e *Engine) logf(format string, args ...any) {

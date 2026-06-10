@@ -369,8 +369,8 @@ func TestCheckerShowProgressLogsProbeRequestsResponsesAndResults(t *testing.T) {
 	got := stderr.String()
 	for _, want := range []string{
 		"ModelCheck: probe=configured_no_tools, effort=high, tools=false",
-		"Request: [configured_no_tools:high] #1",
-		"Response: [configured_no_tools:high] #1 status=ok",
+		"Request    [modelcheck: configured_no_tools:high · model] #1 sent",
+		"Response   [modelcheck: configured_no_tools:high · model] #1 done",
 		"ModelCheck: probe=configured_no_tools, effort=high, status=ok, reasoned=true",
 		"Tool: list_files status=ok",
 		"ModelCheck: probe=configured_json_output, effort=high, status=ok",
