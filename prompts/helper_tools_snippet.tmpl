@@ -7,7 +7,7 @@ Please retry the last tool call.
 {{else if eq .AgentRole "context"}}
 If you have enough context for a useful code review, stop calling tools and return the summary of what you believe the patch is intended to do.
 Otherwise, continue calling tools to gather more context.
-{{else if eq .AgentRole "reviewer"}}
+{{else if eq .AgentRole "review"}}
 Continue calling tools, if the provided context is insufficient.
 If you have enough context for the code review, stop calling tools and return the requested JSON format.
 {{else if eq .AgentRole "verify"}}

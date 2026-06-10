@@ -545,7 +545,7 @@ func TestRunAgent_NudgeDuplicate(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{NudgeCount: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +583,7 @@ func TestRunAgent_NudgeKeepDuplicate(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 1})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{NudgeCount: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +601,7 @@ func TestRunAgent_NudgeZeroDisables(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 0})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{NudgeCount: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +631,7 @@ func TestRunAgent_NudgeBudgetsResetOnceBeforeNudges(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("reviewer"), model.ReviewRequest{NudgeCount: 2, MaxToolCalls: 1})
+	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("review"), model.ReviewRequest{NudgeCount: 2, MaxToolCalls: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,7 +697,7 @@ func TestRunAgent_ReasoningExtractorAugmentsNudges(t *testing.T) {
 	}
 	done := make(chan runResult, 1)
 	go func() {
-		result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{
+		result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{
 			NudgeCount:          2,
 			ModelEmitsReasoning: true,
 		})
@@ -772,7 +772,7 @@ func TestRunAgent_ReasoningExtractorVerboseLogsFindingsWithContext(t *testing.T)
 	var buf lockedTestBuffer
 	engine.SetLogger(logging.New(&buf, true, false))
 
-	_, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{
+	_, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{
 		NudgeCount:          1,
 		ModelEmitsReasoning: true,
 	})
@@ -782,10 +782,10 @@ func TestRunAgent_ReasoningExtractorVerboseLogsFindingsWithContext(t *testing.T)
 
 	got := buf.String()
 	for _, want := range []string{
-		"[reasoning_extract: reasoning-extract:reviewer:collect:turn-1] Extracted reasoning findings:",
+		"[extract: Mine Reasoning of review] Extracted reasoning findings:",
 		"collected issue",
 		"second collected issue",
-		"[reviewer: reviewer - Nudge 1/1] Extracted reasoning findings sent to nudge:",
+		"[review: review · Nudge 1/1] Extracted reasoning findings sent to nudge:",
 		"- reduced issue",
 	} {
 		if !strings.Contains(got, want) {
@@ -823,7 +823,7 @@ func TestRunAgent_PerIterCollectInsideInitialReviewer(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("reviewer"), model.ReviewRequest{
+	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("review"), model.ReviewRequest{
 		NudgeCount:          1,
 		ModelEmitsReasoning: true,
 	})
@@ -871,7 +871,7 @@ func TestRunAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	}
 	engine := nudgeTestEngine(llmClient)
 
-	result, err := engine.runAgent(context.Background(), nudgeTestAgent("reviewer"), model.ReviewRequest{NudgeCount: 3})
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{NudgeCount: 3})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1264,7 +1264,7 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 
 func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	engine := NewEngine(stubSource{}, &capturingLLM{}, nil, config.Profile{})
-	rendered, err := engine.renderToolInstructions(toolInstructionsConfig{agentRole: "reviewer", parallelToolCallGuidance: true})
+	rendered, err := engine.renderToolInstructions(toolInstructionsConfig{agentRole: "review", parallelToolCallGuidance: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1345,7 +1345,7 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 		},
 	}
 
-	retry, err := engine.renderSyntheticToolFollowup(errorHistory, "reviewer")
+	retry, err := engine.renderSyntheticToolFollowup(errorHistory, "review")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1361,7 +1361,7 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 		t.Fatalf("context follow-up = %q", contextRendered)
 	}
 
-	reviewRendered, err := engine.renderSyntheticToolFollowup(optimizedHistory, "reviewer")
+	reviewRendered, err := engine.renderSyntheticToolFollowup(optimizedHistory, "review")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1716,9 +1716,9 @@ func TestPairwiseMergeReturnedRunMatchesPartialStepStatus(t *testing.T) {
 		},
 	}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer C", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix C", 3)}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer C", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix C", 3)}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runPairwiseMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
@@ -1747,8 +1747,8 @@ func TestPairwiseMergeErrorMarksRunFailed(t *testing.T) {
 		mergeFailErr: errors.New("merge upstream fail"),
 	}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix A", 1)}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "reviewer", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix B", 2)}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix A", 1)}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{mergeTestFinding("Fix B", 2)}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runPairwiseMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
@@ -1775,7 +1775,7 @@ func TestPairwiseMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{{
 		name:     "Reviewer A",
-		role:     "reviewer",
+		role:     "review",
 		response: &llm.ReviewResponse{Findings: []model.Finding{finding}, OverallConfidenceScore: 0.9},
 	}}
 
@@ -1956,7 +1956,7 @@ func TestDedupeAgentAcceptsDedupedReviewerFindings(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	input := agentResult{
 		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}},
-		run:  model.AgentRun{Name: "Testing", Role: "reviewer"},
+		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}
 
 	resp, run := engine.runDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
@@ -1982,7 +1982,7 @@ func TestDedupeAgentRejectsUnknownIDsAndFallsBack(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	input := agentResult{
 		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}},
-		run:  model.AgentRun{Name: "Testing", Role: "reviewer"},
+		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}
 
 	resp, run := engine.runDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
@@ -2050,7 +2050,7 @@ func TestPairwiseMergeRejectsUnchangedAccumulator(t *testing.T) {
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
 		name:     "Reviewer 2",
-		role:     "reviewer",
+		role:     "review",
 		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
 	}
 	// Same count as accumulator (no growth) and identical content — incoming was dropped.
@@ -2076,7 +2076,7 @@ func TestPairwiseMergeAcceptsModifiedAccumulator(t *testing.T) {
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
 		name:     "Reviewer 2",
-		role:     "reviewer",
+		role:     "review",
 		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
 	}
 	// Same count, but accumulator finding `a` was modified (body refined from incoming).
@@ -2097,7 +2097,7 @@ func TestPairwiseMergeAcceptsAppendedIncoming(t *testing.T) {
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
 		name:     "Reviewer 2",
-		role:     "reviewer",
+		role:     "review",
 		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
 	}
 	// Count grew by len(incoming) — no accumulator modifications required.
@@ -2117,7 +2117,7 @@ func TestPairwiseMergePartialGrowthRequiresRemainingChanges(t *testing.T) {
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
 	incoming := pairwiseMergeInput{
 		name:     "Reviewer 2",
-		role:     "reviewer",
+		role:     "review",
 		response: &llm.ReviewResponse{Findings: []model.Finding{c, d}},
 	}
 	// Count grew by 1 of 2 incoming. Accumulator untouched → still 1 modification short.
@@ -2137,7 +2137,7 @@ func TestPairwiseMergeMismatchSkippedWhenIncomingEmpty(t *testing.T) {
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a}}
 	incoming := pairwiseMergeInput{
 		name:     "Reviewer 2",
-		role:     "reviewer",
+		role:     "review",
 		response: &llm.ReviewResponse{Findings: nil},
 	}
 	resp := &llm.ReviewResponse{Findings: []model.Finding{a}}
@@ -2156,7 +2156,7 @@ func TestPairwiseMergeAcceptsIncomingIDPreservingMerge(t *testing.T) {
 	accumulator := &llm.ReviewResponse{Findings: []model.Finding{a}}
 	incoming := pairwiseMergeInput{
 		name:     "Reviewer 2",
-		role:     "reviewer",
+		role:     "review",
 		response: &llm.ReviewResponse{Findings: []model.Finding{c}},
 	}
 
@@ -2192,7 +2192,7 @@ func TestFindingMaterialEqualIgnoresIDChanges(t *testing.T) {
 
 func TestNoToolsMessagesUsesAgentRoleForCommonSnippets(t *testing.T) {
 	messages := []llm.Message{{Role: "system", Content: "old"}}
-	reviewerMessages, err := noToolsMessages("reviewer", "{{.FindingInstructionsSnippet}}", messages, "", "")
+	reviewerMessages, err := noToolsMessages("review", "{{.FindingInstructionsSnippet}}", messages, "", "")
 	if err != nil {
 		t.Fatalf("reviewer noToolsMessages returned err: %v", err)
 	}
@@ -2279,7 +2279,7 @@ func TestMultiAgentToleratesVectorFailure(t *testing.T) {
 			securityRun = run
 			continue
 		}
-		if run.Role == "reviewer" && run.Status == model.AgentRunStatusOK {
+		if run.Role == "review" && run.Status == model.AgentRunStatusOK {
 			successfulReviewers++
 		}
 	}
@@ -2399,7 +2399,7 @@ func TestMultiAgentToleratesAllVectorsFailing(t *testing.T) {
 	}
 	failedReviewers := 0
 	for _, run := range result.AgentRuns {
-		if run.Role == "reviewer" && run.Status == model.AgentRunStatusFailed {
+		if run.Role == "review" && run.Status == model.AgentRunStatusFailed {
 			failedReviewers++
 		}
 	}
@@ -2462,7 +2462,7 @@ func TestReviewerQuestionsRenderFromSeparateTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "reviewer", nil, false)
+		system, err := engine.renderReviewSystemWithQuestions(baseTemplate, vector.focusFile, questionsSnippet, model.ReviewRequest{}, false, "review", nil, false)
 		if err != nil {
 			t.Fatal(err)
 		}

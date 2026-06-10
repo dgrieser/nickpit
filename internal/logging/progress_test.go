@@ -9,7 +9,7 @@ import (
 
 func reviewerInfo() ProgressInfo {
 	return ProgressInfo{
-		AgentRole: "reviewer",
+		AgentRole: "review",
 		AgentName: "#1",
 		Model:     "gpt-5",
 		Effort:    "high",
@@ -31,12 +31,12 @@ func TestFormatProgressPlain(t *testing.T) {
 			stage: StageRequest,
 			state: StateSent,
 			msg:   "",
-			want:  "Request    [reviewer #1 · gpt-5:high] #2 sent\n",
+			want:  "Request    [review #1 · gpt-5:high] #2 sent\n",
 		},
 		{
 			name: "detail part",
 			info: ProgressInfo{
-				AgentRole: "verifier",
+				AgentRole: "verify",
 				AgentName: "#3",
 				Detail:    "Missing err check",
 				Turn:      1,
@@ -44,7 +44,7 @@ func TestFormatProgressPlain(t *testing.T) {
 			stage: StageVerify,
 			state: StateDone,
 			msg:   "conf=0.91",
-			want:  "Verify     [verifier #3 · Missing err check] #1 done conf=0.91\n",
+			want:  "Verify     [verify #3 · Missing err check] #1 done conf=0.91\n",
 		},
 		{
 			name: "base url part",
@@ -72,7 +72,7 @@ func TestFormatProgressPlain(t *testing.T) {
 			stage: StageAgent,
 			state: StateNone,
 			msg:   "3 retries, parallel",
-			want:  "Agent      [reviewer #1 · gpt-5:high] 3 retries, parallel\n",
+			want:  "Agent      [review #1 · gpt-5:high] 3 retries, parallel\n",
 		},
 		{
 			name:  "no msg",
@@ -80,7 +80,7 @@ func TestFormatProgressPlain(t *testing.T) {
 			stage: StageResponse,
 			state: StateDone,
 			msg:   "",
-			want:  "Response   [reviewer #1 · gpt-5:high] #1 done\n",
+			want:  "Response   [review #1 · gpt-5:high] #1 done\n",
 		},
 		{
 			name: "named agent uses colon join",
@@ -127,7 +127,7 @@ func TestFormatProgressANSI(t *testing.T) {
 			stage: StageRequest,
 			state: StateDone,
 			want: "\x1b[33mRequest   \x1b[0m " +
-				"\x1b[90m[\x1b[0m\x1b[34mreviewer #1\x1b[0m\x1b[90m · \x1b[0m\x1b[34mgpt-5\x1b[0m\x1b[90m:\x1b[0m\x1b[32mhigh\x1b[0m\x1b[90m]\x1b[0m " +
+				"\x1b[90m[\x1b[0m\x1b[34mreview #1\x1b[0m\x1b[90m · \x1b[0m\x1b[34mgpt-5\x1b[0m\x1b[90m:\x1b[0m\x1b[32mhigh\x1b[0m\x1b[90m]\x1b[0m " +
 				"\x1b[32m#2\x1b[0m \x1b[32mdone\x1b[0m\n",
 		},
 		{
@@ -214,7 +214,7 @@ func TestProgressGatedByShowProgress(t *testing.T) {
 	}
 	l.SetShowProgress(true)
 	l.Progress(ctx, StageRequest, StateSent, "")
-	if got, want := buf.String(), "Request    [reviewer #1 · gpt-5:high] sent\n"; got != want {
+	if got, want := buf.String(), "Request    [review #1 · gpt-5:high] sent\n"; got != want {
 		t.Errorf("Progress() wrote %q, want %q", got, want)
 	}
 }
@@ -223,9 +223,9 @@ func TestProgressToolCallPlain(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, false, false)
 	l.SetShowProgress(true)
-	ctx := WithProgressInfo(context.Background(), ProgressInfo{AgentRole: "reviewer", AgentName: "#2"})
+	ctx := WithProgressInfo(context.Background(), ProgressInfo{AgentRole: "review", AgentName: "#2"})
 	l.ProgressToolCall(ctx, "inspect_file(path=foo.go)", "result=[ok]")
-	want := "Tool       [reviewer #2] inspect_file(path=foo.go) → result=[ok]\n"
+	want := "Tool       [review #2] inspect_file(path=foo.go) → result=[ok]\n"
 	if got := buf.String(); got != want {
 		t.Errorf("ProgressToolCall() wrote %q, want %q", got, want)
 	}
@@ -244,8 +244,8 @@ func TestProgressInfoContextRoundTripAndVerbosePrefix(t *testing.T) {
 	if !ok || got != info {
 		t.Errorf("round trip = %+v, %t; want %+v, true", got, ok, info)
 	}
-	// Byte-compatible with the old formatAgentTag-based prefix.
-	if got, want := info.VerbosePrefix(), "[reviewer: #1, turn: #2] "; got != want {
+	// Same shape as the old formatAgentTag-based prefix.
+	if got, want := info.VerbosePrefix(), "[review: #1, turn: #2] "; got != want {
 		t.Errorf("VerbosePrefix() = %q, want %q", got, want)
 	}
 	if got := (ProgressInfo{Model: "gpt-5"}).VerbosePrefix(); got != "" {
@@ -259,10 +259,10 @@ func TestProgressInfoLabel(t *testing.T) {
 		info ProgressInfo
 		want string
 	}{
-		{"reviewer counter", ProgressInfo{AgentRole: "reviewer", AgentName: "#1"}, "reviewer #1"},
+		{"review counter", ProgressInfo{AgentRole: "review", AgentName: "#1"}, "review #1"},
 		{"named agent", ProgressInfo{AgentRole: "verify", AgentName: "Verify Findings"}, "verify: Verify Findings"},
-		{"with detail", ProgressInfo{AgentRole: "verifier", AgentName: "#2", Detail: "Missing error handling"}, "verifier #2: Missing error handling"},
-		{"with turn", ProgressInfo{AgentRole: "reviewer", AgentName: "#1", Turn: 3}, "reviewer #1 #3"},
+		{"with detail", ProgressInfo{AgentRole: "verify", AgentName: "#2", Detail: "Missing error handling"}, "verify #2: Missing error handling"},
+		{"with turn", ProgressInfo{AgentRole: "review", AgentName: "#1", Turn: 3}, "review #1 #3"},
 		{"zero", ProgressInfo{}, ""},
 	}
 	for _, tt := range tests {

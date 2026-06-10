@@ -21,14 +21,14 @@ func TestLoggerReasoningConcurrentNoRace(t *testing.T) {
 	l.SetShowProgress(true)
 
 	const workers = 16
-	ctx := WithProgressInfo(context.Background(), ProgressInfo{AgentRole: "reviewer", AgentName: "#1"})
+	ctx := WithProgressInfo(context.Background(), ProgressInfo{AgentRole: "review", AgentName: "#1"})
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
 			sec := l.OpenReasoningSection(ProgressInfo{AgentRole: "agent"})
 			sec.Append("reasoning delta\n")
 			l.Progress(ctx, StageReasoning, StateNone, "thinking about something")
-			l.ProgressFor(ProgressInfo{AgentRole: "verifier", AgentName: "#2"}, StageVerify, StateDone, "conf=0.9")
+			l.ProgressFor(ProgressInfo{AgentRole: "verify", AgentName: "#2"}, StageVerify, StateDone, "conf=0.9")
 			l.ProgressToolCall(ctx, "inspect_file(path=foo.go)", "result=[ok]")
 			l.Printf("status: working")
 			sec.End()

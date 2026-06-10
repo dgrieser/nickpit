@@ -74,7 +74,7 @@ func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
 	err := formatter.FormatFindings(&model.ReviewResult{
 		Findings: []model.Finding{},
 		AgentRuns: []model.AgentRun{
-			{Name: "reviewer", Role: "reviewer", MaxToolCalls: 0, DuplicateToolCalls: 0},
+			{Name: "review", Role: "review", MaxToolCalls: 0, DuplicateToolCalls: 0},
 		},
 	})
 	if err != nil {

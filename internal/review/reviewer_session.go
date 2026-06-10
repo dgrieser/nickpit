@@ -132,7 +132,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 // collection during the initial pass even when no nudges are configured — used
 // by the spec runner when later standalone nudge/extract steps will consume it.
 func (e *Engine) newReviewerSession(agent agentSpec, req model.ReviewRequest, collectAnyway bool) *reviewerSession {
-	extractEnabled := agent.role == "reviewer" && !req.DisableReasoningExtract && req.ModelEmitsReasoning && (req.NudgeCount > 0 || collectAnyway)
+	extractEnabled := agent.role == "review" && !req.DisableReasoningExtract && req.ModelEmitsReasoning && (req.NudgeCount > 0 || collectAnyway)
 	return &reviewerSession{
 		agent:           agent,
 		extractEnabled:  extractEnabled,
@@ -323,7 +323,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 // not a hard error), matching the legacy behavior.
 func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest) error {
 	for i := 0; i < req.NudgeCount; i++ {
-		nudgeName := fmt.Sprintf("%s - Nudge %d/%d", s.agent.name, i+1, req.NudgeCount)
+		nudgeName := fmt.Sprintf("%s · Nudge %d/%d", s.agent.name, i+1, req.NudgeCount)
 		nudgeCtx := logging.WithProgressInfo(ctx, e.progressInfo(s.agent.role, nudgeName, ""))
 		delta, err := e.reviewerComputeExtractDelta(nudgeCtx, s, req)
 		if err != nil {

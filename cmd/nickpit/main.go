@@ -1053,7 +1053,7 @@ func reviewProducedNothing(result *model.ReviewResult) bool {
 	}
 	reviewerSeen := false
 	for _, run := range result.AgentRuns {
-		if run.Role != "reviewer" {
+		if run.Role != "review" {
 			continue
 		}
 		reviewerSeen = true

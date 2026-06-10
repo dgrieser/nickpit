@@ -1326,7 +1326,7 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (
 // is the single implementation shared with the spec-driven standalone
 // nudge/reasoning-extract steps — there is no parallel reviewer code path.
 func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
-	if agent.role == "reviewer" {
+	if agent.role == "review" {
 		s := e.newReviewerSession(agent, req, false)
 		if err := e.reviewerInitial(ctx, s, req); err != nil {
 			return s.partialResult(req), err
@@ -1366,8 +1366,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	}, nil
 }
 
-func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, parentName string, turnIdx int, req model.ReviewRequest) (string, agentResult, error) {
-	name := fmt.Sprintf("reasoning-extract:%s:collect:turn-%d", parentName, turnIdx)
+func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, parentName string, _ int, req model.ReviewRequest) (string, agentResult, error) {
+	name := fmt.Sprintf("Mine Reasoning of %s", parentName)
 	system, err := renderPromptFile("agent_reasoning_collect_findings_system_prompt.tmpl", nil)
 	if err != nil {
 		return "", agentResult{}, err
@@ -1382,7 +1382,7 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 	}
 	result, err := e.runAgent(ctx, agentSpec{
 		name:       name,
-		role:       "reasoning_extract",
+		role:       "extract",
 		system:     system,
 		user:       user,
 		schemaKind: llm.SchemaKindText,
@@ -1390,7 +1390,7 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 	}, reasoningExtractRequest(req))
 	out := reasoningExtractOutput(result.contentMessages)
 	if err == nil {
-		extractCtx := logging.WithProgressInfo(ctx, e.progressInfo("reasoning_extract", name, ""))
+		extractCtx := logging.WithProgressInfo(ctx, e.progressInfo("extract", name, ""))
 		if out != "" {
 			e.logBlockCtx(extractCtx, "Extracted reasoning findings:", out)
 		} else {
@@ -1416,8 +1416,8 @@ func (e *Engine) runReasoningUpdateFindings(ctx context.Context, combinedList, f
 		return "", agentResult{}, err
 	}
 	result, err := e.runAgent(ctx, agentSpec{
-		name:       fmt.Sprintf("reasoning-extract:%s:update", parentName),
-		role:       "reasoning_extract",
+		name:       fmt.Sprintf("Compiling Findings to Nudge from %s", parentName),
+		role:       "extract",
 		system:     system,
 		user:       user,
 		schemaKind: llm.SchemaKindText,
@@ -1982,7 +1982,7 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 
 func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
 	agentRole = strings.TrimSpace(agentRole)
-	if agentRole != "reviewer" && agentRole != "verify" {
+	if agentRole != "review" && agentRole != "verify" {
 		return "", nil
 	}
 	titles := make([]string, 0, len(guides))
@@ -2166,17 +2166,12 @@ func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {
 	return reviewOutputSchemaSnippetFor(useJSONSchema)
 }
 
+// agentLoopKind maps an agentSpec role to the loop kind. Roles are uniform
+// identifiers (context, review, verify, dedupe, merge, finalize, summarize,
+// extract), so this is the identity today; it stays as the seam where a role
+// would diverge from its loop kind.
 func agentLoopKind(role string) string {
-	switch role {
-	case "context":
-		return "context"
-	case "reviewer":
-		return "reviewer"
-	case "verify":
-		return "verify"
-	default:
-		return role
-	}
+	return role
 }
 
 func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, agentRole string) (string, error) {

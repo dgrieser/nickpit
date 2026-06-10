@@ -175,7 +175,7 @@ func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
 
 	vectorResults := []agentResult{{
 		resp: &llm.ReviewResponse{Findings: reviewerFindings},
-		run:  model.AgentRun{Name: "Reviewer 1", Role: "reviewer", Status: model.AgentRunStatusOK},
+		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
 
 	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{})

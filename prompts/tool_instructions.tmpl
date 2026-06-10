@@ -1,5 +1,5 @@
 {{if eq .AgentRole "context"}}Call one of the following tools:
-{{else if eq .AgentRole "reviewer"}}Another senior engineer already collected the code context needed for your code review.
+{{else if eq .AgentRole "review"}}Another senior engineer already collected the code context needed for your code review.
 In some cases, you might still need more code context, use the following tools, if necessary:
 {{else if eq .AgentRole "verify"}}Multiple senior engineers already collected the code context needed.
 In the rare case that you still need more code context for your verification, use the following tools:{{end}}
@@ -8,7 +8,7 @@ In the rare case that you still need more code context for your verification, us
 Important:{{if eq .AgentRole "context"}}
 - In each turn, first decide whether you already have enough context for a useful code review.
 - If you already have enough context, stop calling tools and return the summary of what you believe the patch is intended to do.
-{{else if or (eq .AgentRole "reviewer") (eq .AgentRole "verify")}}
+{{else if or (eq .AgentRole "review") (eq .AgentRole "verify")}}
 - Check the provided context first.
 - Only make additional tool calls, if the provided context is really insufficient.{{end}}
 {{if .ParallelToolCallGuidance}}

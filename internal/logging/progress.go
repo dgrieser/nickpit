@@ -10,8 +10,8 @@ import (
 // and verbose logging. Fields are plain strings so logging stays free of
 // config/model imports.
 type ProgressInfo struct {
-	AgentRole string // "reviewer", "verifier", "modelcheck", "reasoning_extract", ...
-	AgentName string // "#1", "Verify Findings", "configured_no_tools:high", ...
+	AgentRole string // "context", "review", "verify", "dedupe", "merge", "finalize", "summarize", "extract", "probe"
+	AgentName string // "#1", "Verify Findings", "Probe Response:high", ...
 	Detail    string // finding title or similar, caller-truncated
 	Model     string
 	Effort    string

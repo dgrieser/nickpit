@@ -110,11 +110,11 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	if err != nil {
 		return agentSpec{}, err
 	}
-	system, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, true, "reviewer", st.styleGuides, st.hasToolchain)
+	system, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, true, "review", st.styleGuides, st.hasToolchain)
 	if err != nil {
 		return agentSpec{}, err
 	}
-	noToolsSystem, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, false, "reviewer", st.styleGuides, st.hasToolchain)
+	noToolsSystem, err := e.renderReviewSystemWithQuestions(st.baseTemplate, vector.focusFile, questionsSnippet, req, false, "review", st.styleGuides, st.hasToolchain)
 	if err != nil {
 		return agentSpec{}, err
 	}
@@ -127,7 +127,7 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	}
 	return agentSpec{
 		name:             vector.name,
-		role:             "reviewer",
+		role:             "review",
 		system:           system,
 		noToolsSystem:    noToolsSystem,
 		user:             st.enrichedPrompt,
@@ -238,7 +238,7 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 			delta = d
 		}
 		iter := sess.nudgeTurns
-		nudgeName := fmt.Sprintf("%s - Nudge %d", sess.agent.name, iter+1)
+		nudgeName := fmt.Sprintf("%s · Nudge %d", sess.agent.name, iter+1)
 		nudgeCtx := logging.WithProgressInfo(ctx, sc.Engine.progressInfo(sess.agent.role, nudgeName, ""))
 		sc.Engine.reviewerNudgeTurn(nudgeCtx, sess, iter, iter+1, nudgeName, delta, sc.Req)
 		sess.pendingDelta = ""

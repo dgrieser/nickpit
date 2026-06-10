@@ -159,13 +159,30 @@ func (c *Checker) openSection(name, effort string) *logging.ReasoningSection {
 	return c.logger.OpenReasoningSection(c.probeInfo(name, effort))
 }
 
+// probeDisplayNames maps internal probe identifiers (stable keys in the
+// capability cache and JSON output) to the names shown in logs.
+var probeDisplayNames = map[string]string{
+	"configured_no_tools":    "Probe Response",
+	"fallback_no_tools":      "Probe Reasoning Efforts",
+	"configured_tools":       "Probe Tool Calling",
+	"configured_json_output": "Probe Plain JSON Response",
+	"configured_json_schema": "Probe Structured JSON Output",
+}
+
+func probeDisplayName(name string) string {
+	if display, ok := probeDisplayNames[name]; ok {
+		return display
+	}
+	return name
+}
+
 // probeInfo builds the logging identity for one probe. The effort is part of
 // the probe label (AgentName), so the Effort field stays empty to avoid
 // rendering it twice.
 func (c *Checker) probeInfo(name, effort string) logging.ProgressInfo {
 	return logging.ProgressInfo{
-		AgentRole: "modelcheck",
-		AgentName: probeLabel(name, effort),
+		AgentRole: "probe",
+		AgentName: probeLabel(probeDisplayName(name), effort),
 		Model:     c.profile.Model,
 	}
 }
