@@ -151,11 +151,6 @@ func (c *Checker) SetParallel(enabled bool) {
 	c.parallel = enabled
 }
 
-func (c *Checker) logProgress(label, summary string) {
-	if c.logger != nil {
-		c.logger.PrintProgress(label, summary)
-	}
-}
 
 func (c *Checker) openSection(name, effort string) *logging.ReasoningSection {
 	if c.logger == nil {
@@ -183,20 +178,22 @@ func probeLabel(name, effort string) string {
 }
 
 func (c *Checker) logProbeStart(probe ProbeResult) {
-	c.logProgress("ModelCheck", fmt.Sprintf("probe=%s, effort=%s, tools=%t", probe.Name, probe.ReasoningEffort, probe.Tools))
+	c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateStart, fmt.Sprintf("tools=%t", probe.Tools))
 }
 
 func (c *Checker) logProbeResult(probe ProbeResult) {
-	parts := []string{
-		fmt.Sprintf("probe=%s", probe.Name),
-		fmt.Sprintf("effort=%s", probe.ReasoningEffort),
-		fmt.Sprintf("status=%s", probe.Status),
-		fmt.Sprintf("reasoned=%t", probe.Reasoned),
+	state := logging.StateOK
+	switch probe.Status {
+	case StatusFailed:
+		state = logging.StateError
+	case StatusUnsupported:
+		state = logging.StateSkip
 	}
+	msg := fmt.Sprintf("reasoned=%t", probe.Reasoned)
 	if probe.Error != "" {
-		parts = append(parts, fmt.Sprintf("error=%q", probe.Error))
+		msg += fmt.Sprintf(" error=%q", probe.Error)
 	}
-	c.logProgress("ModelCheck", strings.Join(parts, ", "))
+	c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, state, msg)
 }
 
 func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection, probe ProbeResult) (*llm.ReviewResponse, error) {
@@ -232,7 +229,7 @@ func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewReques
 		if !sameEffortRetryable(err) || attempt >= maxRetries {
 			return resp, err
 		}
-		c.logProgress("ModelCheck", fmt.Sprintf("probe=%s, effort=%s, retry=%d, reason=%q", probe.Name, probe.ReasoningEffort, attempt+1, err.Error()))
+		c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("attempt=%d reason=%q", attempt+1, err.Error()))
 	}
 }
 
@@ -408,12 +405,12 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		for _, call := range resp.ToolCalls {
 			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
-				c.logProgress("Tool", fmt.Sprintf("%s status=error, error=%q", call.Name, err.Error()))
+				c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateError, fmt.Sprintf("%s error=%q", call.Name, err.Error()))
 				probe.Status = StatusFailed
 				probe.Error = err.Error()
 				return probe
 			}
-			c.logProgress("Tool", fmt.Sprintf("%s status=ok", call.Name))
+			c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateOK, call.Name)
 			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: content})
 		}
 	}
@@ -514,7 +511,7 @@ func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSect
 		if err := validateJSONProbeResponse(retryResp.RawResponse); err != nil {
 			validationErr = err
 			resp = retryResp
-			c.logProgress("ModelCheck", fmt.Sprintf("probe=%s, effort=%s, json_retry=%d, error=%q", probe.Name, probe.ReasoningEffort, attempt+1, err.Error()))
+			c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("json_retry=%d error=%q", attempt+1, err.Error()))
 			continue
 		}
 		probe.Status = ""
