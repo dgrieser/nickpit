@@ -79,11 +79,8 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		{Role: "user", Content: agent.user},
 	}
 	messages = append(messages, agent.extraMessages...)
-	label := fmt.Sprintf("%s: %s", agent.role, agent.name)
-	if agent.role == "reviewer" && strings.HasPrefix(agent.name, "#") {
-		label = "reviewer " + agent.name
-	}
-	sec := e.logger.NewReasoningTracker(label)
+	info := e.progressInfo(agent.role, agent.name, "")
+	sec := e.logger.NewReasoningTracker(info.Label())
 
 	tools := []llm.ToolDefinition(nil)
 	if agent.hasTools {
@@ -96,6 +93,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
 		AgentKind:                  agentLoopKind(agent.role),
+		Progress:                   info,
 		Messages:                   messages,
 		Tools:                      tools,
 		Schema:                     agent.schema,
@@ -283,6 +281,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
 	loopReq.AgentName = nudgeName
+	loopReq.Progress.AgentName = nudgeName
 	loopReq.JSONRetryProgressAgentName = nudgeName
 	loopReq.Messages = nudged
 	loopReq.ReasoningEffort = s.nudgeReasoningEffort
@@ -325,7 +324,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest) error {
 	for i := 0; i < req.NudgeCount; i++ {
 		nudgeName := fmt.Sprintf("%s - Nudge %d/%d", s.agent.name, i+1, req.NudgeCount)
-		nudgeCtx := ctxWithAgent(ctx, agentTag{Role: s.agent.role, Name: nudgeName})
+		nudgeCtx := logging.WithProgressInfo(ctx, e.progressInfo(s.agent.role, nudgeName, ""))
 		delta, err := e.reviewerComputeExtractDelta(nudgeCtx, s, req)
 		if err != nil {
 			return err

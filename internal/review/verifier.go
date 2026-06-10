@@ -23,6 +23,7 @@ type VerifyRequest struct {
 	StyleGuides              []model.StyleGuide
 	RepoRoot                 string
 	Section                  *logging.ReasoningSection
+	Progress                 logging.ProgressInfo
 	UseJSONSchema            bool
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
@@ -120,10 +121,15 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		{Role: "user", Content: userPrompt},
 	}
 
+	progress := req.Progress
+	if progress.IsZero() {
+		progress = e.progressInfo(agentKind, "Verify Findings", "")
+	}
 	for attempt := 0; ; attempt++ {
 		loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
 			AgentName:                         "Verify Findings",
 			AgentKind:                         agentKind,
+			Progress:                          progress,
 			Messages:                          messages,
 			Tools:                             reviewerToolDefinitions(),
 			Schema:                            schema,
@@ -212,7 +218,8 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		go func(idx int, f model.Finding) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			sec := e.logger.NewReasoningTracker(labelForFinding(idx, f))
+			info := e.progressInfo("verifier", fmt.Sprintf("#%d", idx+1), truncateFindingTitle(f.Title))
+			sec := e.logger.NewReasoningTracker(info.Label())
 			defer sec.End()
 			req := VerifyRequest{
 				ReviewCtx:                reviewCtx,
@@ -220,6 +227,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				StyleGuides:              sharedStyleGuides,
 				RepoRoot:                 opts.RepoRoot,
 				Section:                  sec,
+				Progress:                 info,
 				UseJSONSchema:            opts.UseJSONSchema,
 				MaxToolCalls:             opts.MaxToolCalls,
 				MaxDuplicateToolCalls:    opts.MaxDuplicateToolCalls,
@@ -249,15 +257,12 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 	return verifications, usageSum, warnings, nil
 }
 
-func labelForFinding(idx int, f model.Finding) string {
-	title := strings.TrimSpace(f.Title)
-	if title == "" {
-		return fmt.Sprintf("verifier #%d", idx+1)
-	}
+func truncateFindingTitle(title string) string {
+	title = strings.TrimSpace(title)
 	if len([]rune(title)) > 60 {
 		title = string([]rune(title)[:57]) + "..."
 	}
-	return fmt.Sprintf("verifier #%d: %s", idx+1, title)
+	return title
 }
 
 func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {

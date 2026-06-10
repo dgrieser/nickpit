@@ -196,7 +196,13 @@ func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *
 	}
 	c.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
 	start := time.Now()
-	probeCtx := llm.WithAgentLabel(ctx, fmt.Sprintf("modelcheck: %s, turn: #%d", label, callNum))
+	probeCtx := logging.WithProgressInfo(ctx, logging.ProgressInfo{
+		AgentRole: "modelcheck",
+		AgentName: label,
+		Model:     c.profile.Model,
+		Effort:    probe.ReasoningEffort,
+		Turn:      callNum,
+	})
 	resp, err := c.client.Review(probeCtx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
 	status := "ok"

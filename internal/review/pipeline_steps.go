@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -238,7 +239,7 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 		}
 		iter := sess.nudgeTurns
 		nudgeName := fmt.Sprintf("%s - Nudge %d", sess.agent.name, iter+1)
-		nudgeCtx := ctxWithAgent(ctx, agentTag{Role: sess.agent.role, Name: nudgeName})
+		nudgeCtx := logging.WithProgressInfo(ctx, sc.Engine.progressInfo(sess.agent.role, nudgeName, ""))
 		sc.Engine.reviewerNudgeTurn(nudgeCtx, sess, iter, iter+1, nudgeName, delta, sc.Req)
 		sess.pendingDelta = ""
 		sess.pendingDeltaSet = false

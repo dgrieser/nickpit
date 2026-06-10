@@ -239,8 +239,8 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
 		e.logfCtx(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		if tag, ok := agentTagFromContext(ctx); ok && tag.Name != "" {
-			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", tag.Name, attempt+1))
+		if info, ok := logging.ProgressInfoFromContext(ctx); ok && info.AgentName != "" {
+			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", info.AgentName, attempt+1))
 		} else {
 			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
 		}
@@ -1394,7 +1394,7 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 	}, reasoningExtractRequest(req))
 	out := reasoningExtractOutput(result.contentMessages)
 	if err == nil {
-		extractCtx := ctxWithAgent(ctx, agentTag{Role: "reasoning_extract", Name: name})
+		extractCtx := logging.WithProgressInfo(ctx, e.progressInfo("reasoning_extract", name, ""))
 		if out != "" {
 			e.logBlockCtx(extractCtx, "Extracted reasoning findings:", out)
 		} else {
@@ -2513,51 +2513,21 @@ func (e *Engine) logBlockCtx(ctx context.Context, label, content string) {
 	}
 }
 
-type agentTag struct {
-	Role string
-	Name string
-	Turn int
-}
-
-type agentTagKey struct{}
-
-func ctxWithAgent(ctx context.Context, tag agentTag) context.Context {
-	return context.WithValue(ctx, agentTagKey{}, tag)
-}
-
-func agentTagFromContext(ctx context.Context) (agentTag, bool) {
-	if ctx == nil {
-		return agentTag{}, false
-	}
-	tag, ok := ctx.Value(agentTagKey{}).(agentTag)
-	if !ok || (tag.Role == "" && tag.Name == "") {
-		return agentTag{}, false
-	}
-	return tag, true
-}
-
 func agentLogPrefix(ctx context.Context) string {
-	tag, ok := agentTagFromContext(ctx)
-	if !ok {
-		return ""
-	}
-	return "[" + formatAgentTag(tag) + "] "
+	info, _ := logging.ProgressInfoFromContext(ctx)
+	return info.VerbosePrefix()
 }
 
-func agentLabelForLLM(ctx context.Context) string {
-	tag, ok := agentTagFromContext(ctx)
-	if !ok {
-		return ""
+// progressInfo builds the ctx-carried logging identity for an agent, filling
+// model and effort from the engine profile.
+func (e *Engine) progressInfo(role, name, detail string) logging.ProgressInfo {
+	return logging.ProgressInfo{
+		AgentRole: role,
+		AgentName: name,
+		Detail:    detail,
+		Model:     e.config.Model,
+		Effort:    e.config.ReasoningEffort,
 	}
-	return formatAgentTag(tag)
-}
-
-func formatAgentTag(tag agentTag) string {
-	head := fmt.Sprintf("%s: %s", tag.Role, tag.Name)
-	if tag.Turn > 0 {
-		head = fmt.Sprintf("%s, turn: #%d", head, tag.Turn)
-	}
-	return head
 }
 
 func (e *Engine) logProgress(label, summary string) {

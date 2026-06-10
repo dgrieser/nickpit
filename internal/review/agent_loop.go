@@ -16,6 +16,7 @@ import (
 type agentLoopRequest struct {
 	AgentName                         string
 	AgentKind                         string
+	Progress                          logging.ProgressInfo
 	Messages                          []llm.Message
 	Tools                             []llm.ToolDefinition
 	Schema                            []byte
@@ -107,8 +108,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 
 	for {
 		state.callNum++
-		loopCtx := ctxWithAgent(ctx, agentTag{Role: req.AgentKind, Name: req.AgentName, Turn: state.callNum})
-		loopCtx = llm.WithAgentLabel(loopCtx, agentLabelForLLM(loopCtx))
+		loopCtx := logging.WithProgressInfo(ctx, req.Progress.WithTurn(state.callNum))
 		noToolsHistory, err := agentLoopNoToolsMessages(req, messages)
 		if err != nil {
 			return result, err

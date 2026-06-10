@@ -1666,11 +1666,8 @@ func retryableStreamReadError(err *streamReadError) bool {
 }
 
 func agentLogPrefix(ctx context.Context) string {
-	label := AgentLabelFromContext(ctx)
-	if label == "" {
-		return ""
-	}
-	return "[" + label + "] "
+	info, _ := logging.ProgressInfoFromContext(ctx)
+	return info.VerbosePrefix()
 }
 
 func (c *OpenAIClient) logfCtx(ctx context.Context, format string, args ...any) {
