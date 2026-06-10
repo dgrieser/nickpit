@@ -154,6 +154,7 @@ const (
 	progressColorWhite             = "38;5;255"
 	progressColorNumberGreen       = "38;5;118"
 	progressColorUnitGreen         = "38;5;71"
+	progressColorHashDarkGreen     = "38;5;71"
 	progressColorKeyTurquoise      = "38;5;116"
 	progressColorKeyTeal           = "38;5;37"
 	progressColorStringGreen       = "38;5;120"
@@ -458,6 +459,13 @@ func colorizeProgressText(text string) string {
 	var b strings.Builder
 	for i := 0; i < len(runes); {
 		r := runes[i]
+		if isProgressHexStart(r) {
+			if j, ok := scanProgressHashToken(runes, i); ok {
+				b.WriteString(progressStyle(progressColorHashDarkGreen, string(runes[i:j])))
+				i = j
+				continue
+			}
+		}
 		switch {
 		case unicode.IsSpace(r):
 			b.WriteRune(r)
@@ -575,6 +583,58 @@ func writeProgressWord(b *strings.Builder, runes []rune, i int) int {
 		b.WriteString(progressLight(word))
 	}
 	return j
+}
+
+func isProgressHexStart(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
+// scanProgressHashToken reports whether the token starting at i is a hash-like
+// identifier — a git SHA (≥7 hex chars mixing digits and letters) or a UUID
+// (8-4-4-4-12 hex segments) — and returns the index past it. Such tokens are
+// rendered as one uniformly colored unit instead of being fragmented by the
+// number/word tokenizers.
+func scanProgressHashToken(runes []rune, i int) (int, bool) {
+	j := i
+	hasDigit := false
+	hasLetter := false
+	segLen := 0
+	var segs []int
+scan:
+	for j < len(runes) {
+		r := runes[j]
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+			segLen++
+		case (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F'):
+			hasLetter = true
+			segLen++
+		case r == '-':
+			segs = append(segs, segLen)
+			segLen = 0
+		default:
+			break scan
+		}
+		j++
+	}
+	// Must end on a token boundary; otherwise this is part of a longer word.
+	if j < len(runes) && isProgressWordChar(runes[j]) {
+		return i, false
+	}
+	segs = append(segs, segLen)
+	if len(segs) == 1 {
+		// Plain hash: long enough and mixing digits with hex letters, so pure
+		// numbers and ordinary words keep their own coloring.
+		if segs[0] >= 7 && hasDigit && hasLetter {
+			return j, true
+		}
+		return i, false
+	}
+	if len(segs) == 5 && segs[0] == 8 && segs[1] == 4 && segs[2] == 4 && segs[3] == 4 && segs[4] == 12 {
+		return j, true
+	}
+	return i, false
 }
 
 func isProgressSeparator(r rune) bool {

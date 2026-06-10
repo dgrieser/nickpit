@@ -144,6 +144,75 @@ func TestVerboseJSONANSIPalette(t *testing.T) {
 	}
 }
 
+func TestColorizeProgressTextHashTokens(t *testing.T) {
+	hash := func(s string) string { return "\x1b[38;5;71m" + s + "\x1b[0m" }
+	tests := []struct {
+		name string
+		in   string
+		want string // substring that must appear
+		not  string // substring that must not appear
+	}{
+		{
+			name: "full git sha uniform dark green",
+			in:   "head_sha=4953b5702dae8484fb5a30b9eac6d9dceb4b279f",
+			want: hash("4953b5702dae8484fb5a30b9eac6d9dceb4b279f"),
+		},
+		{
+			name: "short sha",
+			in:   "sha=4953b57",
+			want: hash("4953b57"),
+		},
+		{
+			name: "uuid",
+			in:   "id=0b51bcd9-04d7-4c2a-a4a9-3e1d6cd44b25",
+			want: hash("0b51bcd9-04d7-4c2a-a4a9-3e1d6cd44b25"),
+		},
+		{
+			name: "uppercase hex",
+			in:   "sha=4953B5702DAE8484FB5A30B9EAC6D9DCEB4B279F",
+			want: hash("4953B5702DAE8484FB5A30B9EAC6D9DCEB4B279F"),
+		},
+		{
+			name: "pure number stays number green",
+			in:   "tokens=12345678",
+			want: "\x1b[38;5;118m12345678\x1b[0m",
+			not:  hash("12345678"),
+		},
+		{
+			name: "hex-letter word without digits stays word",
+			in:   "deadbeef accede",
+			want: "\x1b[38;5;252mdeadbeef\x1b[0m",
+			not:  hash("deadbeef"),
+		},
+		{
+			name: "number with unit suffix unaffected",
+			in:   "budget=120k context",
+			want: "\x1b[38;5;118m120\x1b[0m\x1b[38;5;71mk\x1b[0m",
+		},
+		{
+			name: "longer word containing hex prefix not clipped",
+			in:   "ref=4953b5702daextra",
+			not:  hash("4953b5702dae"),
+		},
+		{
+			name: "non-uuid dashed token unaffected",
+			in:   "rate-limit-delay",
+			not:  hash("rate"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := colorizeProgressText(tt.in)
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Errorf("colorizeProgressText(%q) = %q, missing %q", tt.in, got, tt.want)
+			}
+			if tt.not != "" && strings.Contains(got, tt.not) {
+				t.Errorf("colorizeProgressText(%q) = %q, must not contain %q", tt.in, got, tt.not)
+			}
+		})
+	}
+}
+
 func TestVerboseJSONMultilineStringKeepsKeyColor(t *testing.T) {
 	var buf bytes.Buffer
 	l := ansiVerboseLogger(&buf)
