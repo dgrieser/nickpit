@@ -370,7 +370,7 @@ func (e *Engine) withConfig(profile config.Profile) *Engine {
 // Returns aggregated token usage, soft warnings, and any fatal error. On error,
 // callers should still propagate the returned usage/warnings — they hold the
 // partial-run telemetry up to the failure point.
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) (model.TokenUsage, []string, error) {
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *VerifyLimiter, reviewerName string) (model.TokenUsage, []string, error) {
 	findings := make([]model.Finding, 0)
 	type findingRef struct {
 		vectorIdx  int
@@ -393,6 +393,8 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		e.logf(ctx, "Review generated replacement IDs before verification: count=%d", overwrote)
 	}
 	opts := verifyOptionsFromReviewRequest(req)
+	opts.Limiter = limiter
+	opts.ReviewerName = reviewerName
 	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
 	if err != nil {
 		return usage, warnings, err
@@ -548,7 +550,6 @@ func normalizeDropPolicy(policy string) string {
 
 func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 	return VerifyOptions{
-		Concurrency:              req.VerifyConcurrency,
 		UseJSONSchema:            req.UseJSONSchema,
 		MaxToolCalls:             req.MaxToolCalls,
 		MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,

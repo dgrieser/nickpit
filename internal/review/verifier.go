@@ -13,8 +13,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-const defaultVerifyConcurrency = 10
-
 type VerifyRequest struct {
 	ReviewCtx *model.ReviewContext
 	Finding   model.Finding
@@ -35,7 +33,13 @@ type VerifyRequest struct {
 }
 
 type VerifyOptions struct {
-	Concurrency              int
+	// Limiter admits verify agent calls; it is shared across the whole pipeline
+	// run so the concurrency cap is global, not per call. A nil limiter is
+	// unlimited.
+	Limiter *VerifyLimiter
+	// ReviewerName labels progress output when verifying a single reviewer's
+	// findings (per-vector lane steps); empty for the global verify step.
+	ReviewerName             string
 	UseJSONSchema            bool
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
@@ -185,13 +189,6 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 	if len(findings) == 0 {
 		return verifications, model.TokenUsage{}, nil, nil
 	}
-	concurrency := opts.Concurrency
-	if concurrency <= 0 {
-		concurrency = defaultVerifyConcurrency
-	}
-	if concurrency > len(findings) {
-		concurrency = len(findings)
-	}
 
 	// Resolve style guides once: the result depends only on reviewCtx, which is
 	// constant across findings, so this avoids re-reading the style-guide probe
@@ -206,21 +203,30 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 	}
 
 	var (
-		mu        sync.Mutex
-		usageSum  model.TokenUsage
-		warnings  []string
-		semaphore = make(chan struct{}, concurrency)
-		wg        sync.WaitGroup
+		mu       sync.Mutex
+		usageSum model.TokenUsage
+		warnings []string
+		wg       sync.WaitGroup
 	)
 	verifyStart := time.Now()
-	e.logProgress(logging.StageVerify, logging.StateStart, fmt.Sprintf("findings=%d concurrency=%d", len(findings), concurrency))
+	e.logProgress(logging.StageVerify, logging.StateStart, fmt.Sprintf("%sfindings=%d concurrency=%s", verifyReviewerPrefix(opts.ReviewerName), len(findings), verifyConcurrencyLabel(opts.Limiter)))
 	for i, finding := range findings {
+		// Admission goes through the run-shared limiter in the spawn loop so
+		// this call's findings start in order; concurrent VerifyAll calls (one
+		// per reviewer lane) block only their own loop and compete fairly for
+		// slots. Acquire fails only when ctx is done, so one aggregate warning
+		// replaces a per-finding flood and the loop stops.
+		if err := opts.Limiter.Acquire(ctx); err != nil {
+			mu.Lock()
+			warnings = append(warnings, fmt.Sprintf("Verify cancelled at finding #%d %q: %v; skipped %d remaining finding(s)", i+1, finding.Title, err, len(findings)-i))
+			mu.Unlock()
+			break
+		}
 		wg.Add(1)
-		semaphore <- struct{}{}
 		go func(idx int, f model.Finding) {
 			defer wg.Done()
-			defer func() { <-semaphore }()
-			info := e.progressInfo("verify", fmt.Sprintf("#%d", idx+1), truncateFindingTitle(f.Title))
+			defer opts.Limiter.Release()
+			info := e.progressInfo("verify", verifyProgressName(opts.ReviewerName, idx), truncateFindingTitle(f.Title))
 			sec := e.logger.NewReasoningTracker(info)
 			defer sec.End()
 			req := VerifyRequest{
@@ -255,8 +261,34 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		}(i, finding)
 	}
 	wg.Wait()
-	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("findings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(verifyStart))))
+	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("%sfindings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", verifyReviewerPrefix(opts.ReviewerName), len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(verifyStart))))
 	return verifications, usageSum, warnings, nil
+}
+
+// verifyReviewerPrefix labels per-reviewer verify progress lines; the global
+// verify step (no reviewer name) keeps its unprefixed format.
+func verifyReviewerPrefix(reviewerName string) string {
+	if reviewerName == "" {
+		return ""
+	}
+	return fmt.Sprintf("reviewer=%q ", reviewerName)
+}
+
+// verifyConcurrencyLabel renders the run-global verify cap; 0 = unlimited.
+func verifyConcurrencyLabel(l *VerifyLimiter) string {
+	if limit := l.Limit(); limit > 0 {
+		return fmt.Sprintf("%d", limit)
+	}
+	return "∞"
+}
+
+// verifyProgressName scopes a finding's progress name to its reviewer when
+// verifying a single reviewer's findings, e.g. "Code Quality #2".
+func verifyProgressName(reviewerName string, idx int) string {
+	if reviewerName == "" {
+		return fmt.Sprintf("#%d", idx+1)
+	}
+	return fmt.Sprintf("%s #%d", reviewerName, idx+1)
 }
 
 func truncateFindingTitle(title string) string {

@@ -39,13 +39,15 @@ func TestDefaultSpecsValidate(t *testing.T) {
 func TestDefaultSpecMatchesConstants(t *testing.T) {
 	parallel := make([]StepEntry, len(ReviewVectorIDs))
 	for i, id := range ReviewVectorIDs {
-		parallel[i] = StepEntry{Type: StepReviewPrefix + id}
+		parallel[i] = StepEntry{Lane: []StepEntry{
+			{Type: StepReviewPrefix + id},
+			{Type: StepVerifyPrefix + id},
+			{Type: StepDedupePrefix + id},
+		}}
 	}
 	want := Spec{Version: SpecVersion, Steps: []StepEntry{
 		{Type: StepCollectContext},
 		{Parallel: parallel},
-		{Type: StepVerify},
-		{Type: StepDedupe},
 		{Type: StepMerge},
 		{Type: StepFinalize},
 		{Type: StepSummarize},
@@ -84,7 +86,12 @@ func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 		t.Fatal("expected a parallel reviewer group")
 	}
 	if len(parallel.Parallel) != len(ReviewVectorIDs) {
-		t.Fatalf("parallel reviewers = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs))
+		t.Fatalf("parallel lanes = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs))
+	}
+	for i, lane := range parallel.Parallel {
+		if !lane.IsLane() || len(lane.Lane) != 3 {
+			t.Fatalf("parallel child %d is not a 3-step lane: %+v", i, lane)
+		}
 	}
 }
 
@@ -180,8 +187,9 @@ func TestValidateRejections(t *testing.T) {
 }
 
 func TestValidateRejectsNudgeInSameParallelGroupAsReview(t *testing.T) {
-	// review:security and nudge:security run concurrently here, so the session
-	// the nudge depends on is not yet populated — must be rejected.
+	// review:security and nudge:security run concurrently here (different
+	// lanes), so the session the nudge depends on is not yet populated — the
+	// vector-ownership rule must reject this.
 	spec := Spec{Version: 1, Steps: []StepEntry{
 		{Parallel: []StepEntry{
 			{Type: StepReviewPrefix + "security"},
@@ -193,9 +201,10 @@ func TestValidateRejectsNudgeInSameParallelGroupAsReview(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsNudgeOrExtractInParallelGroup(t *testing.T) {
-	// Even with the review completed in an earlier unit, nudge/extract steps
-	// mutate the shared session and must not run concurrently.
+func TestValidateNudgeOrExtractInParallelGroup(t *testing.T) {
+	// With the review completed in an earlier unit, a bare nudge/extract child
+	// is a one-step lane owning its vector — legal. Without any prior review it
+	// stays rejected.
 	for _, dep := range []string{StepNudgePrefix + "security", StepExtractPrefix + "security"} {
 		spec := Spec{Version: 1, Steps: []StepEntry{
 			{Type: StepReviewPrefix + "security"},
@@ -204,8 +213,17 @@ func TestValidateRejectsNudgeOrExtractInParallelGroup(t *testing.T) {
 				{Type: StepReviewPrefix + "performance"},
 			}},
 		}}
-		if err := spec.Validate(); err == nil {
-			t.Fatalf("expected rejection of %q inside a parallel group", dep)
+		if err := spec.Validate(); err != nil {
+			t.Fatalf("%q after an earlier review must be valid in a parallel group: %v", dep, err)
+		}
+		noReview := Spec{Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{
+				{Type: dep},
+				{Type: StepReviewPrefix + "performance"},
+			}},
+		}}
+		if err := noReview.Validate(); err == nil {
+			t.Fatalf("expected rejection of %q without a preceding review", dep)
 		}
 	}
 }
@@ -223,6 +241,141 @@ func TestValidateRejectsNonReviewStepsInParallelGroup(t *testing.T) {
 		if err := spec.Validate(); err == nil {
 			t.Fatalf("expected rejection of %q inside a parallel group", bad)
 		}
+	}
+}
+
+func TestLoadParsesLanes(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - collect-context
+  - parallel:
+      - review:security
+      - lane:
+          - review:performance
+          - type: verify:performance
+            config:
+              verify_drop_policy: none
+          - dedupe:performance
+  - merge
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	par := spec.Steps[1]
+	if !par.IsParallel() || len(par.Parallel) != 2 {
+		t.Fatalf("step1 not a 2-child parallel: %+v", par)
+	}
+	if bare := par.Parallel[0]; bare.IsLane() || bare.Type != "review:security" {
+		t.Fatalf("bare child = %+v", bare)
+	}
+	lane := par.Parallel[1]
+	if !lane.IsLane() || len(lane.Lane) != 3 {
+		t.Fatalf("lane child = %+v", lane)
+	}
+	if got := lane.LaneSteps(); len(got) != 3 || got[0].Type != "review:performance" || got[2].Type != "dedupe:performance" {
+		t.Fatalf("lane steps = %+v", got)
+	}
+	verify := lane.Lane[1]
+	if verify.Type != "verify:performance" || verify.Config == nil || verify.Config.VerifyDropPolicy == nil || *verify.Config.VerifyDropPolicy != "none" {
+		t.Fatalf("lane verify override not parsed: %+v", verify)
+	}
+	if bare := par.Parallel[0].LaneSteps(); len(bare) != 1 || bare[0].Type != "review:security" {
+		t.Fatalf("bare child LaneSteps = %+v", bare)
+	}
+}
+
+func TestLoadRejectsBadLanes(t *testing.T) {
+	cases := map[string]string{
+		"top-level lane":     "version: 1\nsteps:\n  - lane:\n      - review:security\n",
+		"lane in lane":       "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - lane:\n              - review:security\n",
+		"parallel in lane":   "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - parallel:\n              - review:security\n",
+		"empty lane":         "version: 1\nsteps:\n  - parallel:\n      - lane: []\n",
+		"lane not a list":    "version: 1\nsteps:\n  - parallel:\n      - lane: review:security\n",
+		"verify_concurrency": "version: 1\nsteps:\n  - type: verify\n    config:\n      verify_concurrency: 5\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeSpec(t, body)); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestValidateLanes(t *testing.T) {
+	laneFor := func(vector string) StepEntry {
+		return StepEntry{Lane: []StepEntry{
+			{Type: StepReviewPrefix + vector},
+			{Type: StepVerifyPrefix + vector},
+			{Type: StepDedupePrefix + vector},
+		}}
+	}
+	accept := map[string]Spec{
+		"review-verify-dedupe lanes": {Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{laneFor("security"), laneFor("performance")}},
+			{Type: StepMerge},
+		}},
+		"lane depends on earlier unit": {Version: 1, Steps: []StepEntry{
+			{Type: StepReviewPrefix + "security"},
+			{Parallel: []StepEntry{
+				{Lane: []StepEntry{{Type: StepVerifyPrefix + "security"}, {Type: StepDedupePrefix + "security"}}},
+				{Type: StepReviewPrefix + "performance"},
+			}},
+		}},
+		"sequential per-vector verify/dedupe": {Version: 1, Steps: []StepEntry{
+			{Type: StepReviewPrefix + "security"},
+			{Type: StepVerifyPrefix + "security"},
+			{Type: StepDedupePrefix + "security"},
+		}},
+	}
+	for name, spec := range accept {
+		t.Run("accept "+name, func(t *testing.T) {
+			if err := spec.Validate(); err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+		})
+	}
+	reject := map[string]Spec{
+		"verify without review": {Version: 1, Steps: []StepEntry{
+			{Type: StepVerifyPrefix + "security"},
+		}},
+		"dedupe without review in lane": {Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{{Lane: []StepEntry{{Type: StepDedupePrefix + "security"}}}}},
+		}},
+		"two lanes own one vector": {Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{
+				laneFor("security"),
+				{Lane: []StepEntry{{Type: StepNudgePrefix + "security"}}},
+			}},
+		}},
+		"global step inside lane": {Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{
+				{Lane: []StepEntry{{Type: StepReviewPrefix + "security"}, {Type: StepMerge}}},
+			}},
+		}},
+		"unknown vector in lane": {Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{{Lane: []StepEntry{{Type: StepVerifyPrefix + "bogus"}}}}},
+		}},
+		"top-level lane": {Version: 1, Steps: []StepEntry{
+			{Lane: []StepEntry{{Type: StepReviewPrefix + "security"}}},
+		}},
+		"nested lane": {Version: 1, Steps: []StepEntry{
+			{Parallel: []StepEntry{
+				{Lane: []StepEntry{{Lane: []StepEntry{{Type: StepReviewPrefix + "security"}}}}},
+			}},
+		}},
+	}
+	for name, spec := range reject {
+		t.Run("reject "+name, func(t *testing.T) {
+			if err := spec.Validate(); err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+		})
 	}
 }
 

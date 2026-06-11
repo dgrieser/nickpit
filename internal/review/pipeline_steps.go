@@ -257,7 +257,7 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 			return err
 		}
 		vr := st.vectorResults()
-		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req)
+		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.verifyLimiter, "")
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.verifyUsage = addTokenUsage(st.verifyUsage, usage)
@@ -267,6 +267,59 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 			sc.Engine.logf(ctx, "Verifier failed before merge: tokens=%s warnings=%d error=%v", model.HumanTokens(usage.TotalTokens), len(warnings), err)
 			return err
 		}
+		return nil
+	}
+}
+
+// verifyVectorStepFunc verifies and filters one reviewer group's findings in
+// place, admitted through the run-shared verify limiter. Verifier failure is
+// fatal, matching the global verify step; a soft-failed or empty reviewer is a
+// graceful no-op.
+func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		vr, ok := st.vectorResult(vectorID)
+		if !ok {
+			return fmt.Errorf("workflow: verify:%s requires a preceding review:%s step", vectorID, vectorID)
+		}
+		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) == 0 {
+			return nil
+		}
+		vector, ok := reviewVectorByID(vectorID)
+		if !ok {
+			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
+		}
+		results := []agentResult{vr}
+		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.verifyLimiter, vector.name)
+		st.mu.Lock()
+		st.verifyUsage = addTokenUsage(st.verifyUsage, usage)
+		st.warnings = append(st.warnings, warnings...)
+		st.mu.Unlock()
+		if err != nil {
+			sc.Engine.logf(ctx, "Verifier failed for reviewer: reviewer=%s tokens=%s warnings=%d error=%v", vector.name, model.HumanTokens(usage.TotalTokens), len(warnings), err)
+			return err
+		}
+		return nil
+	}
+}
+
+// dedupeVectorStepFunc runs the dedupe pass for one reviewer group. Failure is
+// soft (the original findings are kept), matching the global dedupe step.
+func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		vr, ok := st.vectorResult(vectorID)
+		if !ok {
+			return fmt.Errorf("workflow: dedupe:%s requires a preceding review:%s step", vectorID, vectorID)
+		}
+		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) < 2 {
+			return nil
+		}
+		resp, run := sc.Engine.runDedupeAgent(ctx, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req)
+		if resp != nil {
+			st.setVectorResponse(vectorID, resp)
+		}
+		st.mu.Lock()
+		st.dedupeRuns = append(st.dedupeRuns, run)
+		st.mu.Unlock()
 		return nil
 	}
 }

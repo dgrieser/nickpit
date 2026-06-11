@@ -339,3 +339,325 @@ func TestReviewerSessionStampsRuntime(t *testing.T) {
 		t.Fatalf("runtime_seconds = %v, want >= 3", result.run.RuntimeSeconds)
 	}
 }
+
+// --- lane pipeline tests ---
+
+// laneSpec builds collect-context → parallel lanes (review→verify→dedupe per
+// vector) → merge, the shape of the embedded default workflow without
+// finalize/summarize.
+func laneSpec(vectors ...string) workflow.Spec {
+	lanes := make([]workflow.StepEntry, len(vectors))
+	for i, id := range vectors {
+		lanes[i] = workflow.StepEntry{Lane: []workflow.StepEntry{
+			{Type: workflow.StepReviewPrefix + id},
+			{Type: workflow.StepVerifyPrefix + id},
+			{Type: workflow.StepDedupePrefix + id},
+		}}
+	}
+	return workflow.Spec{
+		Version: workflow.SpecVersion,
+		Steps: []workflow.StepEntry{
+			{Type: workflow.StepCollectContext},
+			{Parallel: lanes},
+			{Type: workflow.StepMerge},
+		},
+	}
+}
+
+// laneEventLLM wraps multiAgentLLM, recording one classified event per LLM call
+// ("review:Security", "verify:Security", "dedupe:Security", "context", "merge")
+// so tests can assert cross-stage ordering within and across lanes. It can also
+// fail or stall verify calls to exercise lane error and limiter semantics.
+type laneEventLLM struct {
+	inner *multiAgentLLM
+
+	verifyErrFor     string        // fail verify calls for this vector's findings
+	verifyHold       time.Duration // sleep inside each verify call
+	verifyRendezvous int           // wait until this many verifies are in flight (1s cap)
+
+	mu                sync.Mutex
+	events            []string
+	verifyInFlight    int
+	maxVerifyInFlight int
+}
+
+func (l *laneEventLLM) Review(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	label := classifyLaneCall(req)
+	l.mu.Lock()
+	l.events = append(l.events, label)
+	l.mu.Unlock()
+	if !strings.HasPrefix(label, "verify:") {
+		return l.inner.Review(ctx, req)
+	}
+	if l.verifyErrFor != "" && label == "verify:"+l.verifyErrFor {
+		return nil, errors.New("verify upstream down")
+	}
+	l.mu.Lock()
+	l.verifyInFlight++
+	if l.verifyInFlight > l.maxVerifyInFlight {
+		l.maxVerifyInFlight = l.verifyInFlight
+	}
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		l.verifyInFlight--
+		l.mu.Unlock()
+	}()
+	if l.verifyRendezvous > 0 {
+		deadline := time.Now().Add(time.Second)
+		for {
+			l.mu.Lock()
+			// maxVerifyInFlight: once the rendezvous has been observed, later
+			// (possibly lone) verify calls need not wait out the deadline.
+			reached := l.maxVerifyInFlight >= l.verifyRendezvous
+			l.mu.Unlock()
+			if reached || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if l.verifyHold > 0 {
+		time.Sleep(l.verifyHold)
+	}
+	return l.inner.Review(ctx, req)
+}
+
+func (l *laneEventLLM) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
+}
+
+func classifyLaneCall(req *llm.ReviewRequest) string {
+	system, user := "", ""
+	if len(req.Messages) > 0 {
+		system = req.Messages[0].Content
+	}
+	if len(req.Messages) > 1 {
+		user = req.Messages[1].Content
+	}
+	switch {
+	case req.SchemaKind == llm.SchemaKindVerify:
+		return "verify:" + laneVectorFromContent(user)
+	case strings.Contains(system, "DO NOT produce review findings yourself"):
+		return "context"
+	case strings.Contains(system, "## FOCUS ON "):
+		return "review:" + vectorNameFromSystem(system)
+	case strings.Contains(user, `"review_findings"`):
+		return "dedupe:" + laneVectorFromContent(user)
+	default:
+		return "merge"
+	}
+}
+
+// laneVectorFromContent identifies the vector a verify/dedupe payload belongs
+// to via the stub finding titles ("Fix <vector name>").
+func laneVectorFromContent(content string) string {
+	for _, v := range reviewVectors {
+		if strings.Contains(content, "Fix "+v.name) {
+			return v.name
+		}
+	}
+	return ""
+}
+
+func firstEventIndex(events []string, label string) int {
+	for i, e := range events {
+		if e == label {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastEventIndex(events []string, label string) int {
+	last := -1
+	for i, e := range events {
+		if e == label {
+			last = i
+		}
+	}
+	return last
+}
+
+func laneTestRequest() model.ReviewRequest {
+	return model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	}
+}
+
+// Each lane runs review → verify → dedupe in order for its own vector, and the
+// merge step only runs after every lane finished. The unit's segment runtime
+// records the lane chains.
+func TestWorkflowLaneRunsPerVectorVerifyAndDedupeInOrder(t *testing.T) {
+	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
+	client := &laneEventLLM{inner: inner}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec("security", "performance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := client.snapshot()
+	mergeIdx := firstEventIndex(events, "merge")
+	if mergeIdx < 0 {
+		t.Fatalf("no merge event in %v", events)
+	}
+	for _, name := range []string{"Security", "Performance"} {
+		lastReview := lastEventIndex(events, "review:"+name)
+		firstVerify := firstEventIndex(events, "verify:"+name)
+		lastVerify := lastEventIndex(events, "verify:"+name)
+		dedupeIdx := firstEventIndex(events, "dedupe:"+name)
+		if lastReview < 0 || firstVerify < 0 || dedupeIdx < 0 {
+			t.Fatalf("missing %s lane events in %v", name, events)
+		}
+		if lastReview > firstVerify || lastVerify > dedupeIdx || dedupeIdx > mergeIdx {
+			t.Fatalf("%s lane out of order: review@%d verify@[%d,%d] dedupe@%d merge@%d", name, lastReview, firstVerify, lastVerify, dedupeIdx, mergeIdx)
+		}
+	}
+	if len(result.Findings) != 4 {
+		t.Fatalf("findings = %d, want 4", len(result.Findings))
+	}
+	wantSegment := "review:security→verify:security→dedupe:security"
+	found := false
+	for _, seg := range result.SegmentRuntimes {
+		for _, step := range seg.Steps {
+			if step == wantSegment {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("segment %q not recorded in %+v", wantSegment, result.SegmentRuntimes)
+	}
+}
+
+// The verify limiter is shared across lanes: with a cap of 1, the four verify
+// calls (two lanes × two findings) never overlap.
+func TestVerifyLimiterCapsAcrossLanes(t *testing.T) {
+	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
+	client := &laneEventLLM{inner: inner, verifyHold: 20 * time.Millisecond}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec("security", "performance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := laneTestRequest()
+	req.VerifyConcurrency = 1
+	if _, _, err := engine.RunSpecPipeline(context.Background(), pipeline, req); err != nil {
+		t.Fatal(err)
+	}
+	if client.maxVerifyInFlight != 1 {
+		t.Fatalf("max verify in flight = %d, want 1", client.maxVerifyInFlight)
+	}
+	if got := len(client.snapshot()); got == 0 {
+		t.Fatal("no events recorded")
+	}
+}
+
+// The default cap of 0 is unlimited: verify calls from different lanes overlap.
+func TestVerifyUnlimitedRunsLanesConcurrently(t *testing.T) {
+	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
+	client := &laneEventLLM{inner: inner, verifyRendezvous: 2}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec("security", "performance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if client.maxVerifyInFlight < 2 {
+		t.Fatalf("max verify in flight = %d, want >= 2", client.maxVerifyInFlight)
+	}
+}
+
+// A fatal verify failure aborts only its own lane; sibling lanes run to the
+// barrier, then the run fails and merge never executes.
+func TestWorkflowLaneVerifyFailureFailsRunAfterSiblingCompletes(t *testing.T) {
+	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
+	client := &laneEventLLM{inner: inner, verifyErrFor: "Security"}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec("security", "performance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
+	if err == nil {
+		t.Fatal("expected run to fail on security verify error")
+	}
+	events := client.snapshot()
+	if firstEventIndex(events, "dedupe:Security") >= 0 {
+		t.Fatalf("security dedupe ran after fatal verify: %v", events)
+	}
+	if firstEventIndex(events, "dedupe:Performance") < 0 {
+		t.Fatalf("sibling performance lane did not complete: %v", events)
+	}
+	if firstEventIndex(events, "merge") >= 0 {
+		t.Fatalf("merge ran despite failed lane: %v", events)
+	}
+}
+
+// A soft-failed reviewer leaves its lane's verify and dedupe as graceful no-ops;
+// a single-finding reviewer skips dedupe.
+func TestWorkflowLaneSkipsVerifyAndDedupeNoOps(t *testing.T) {
+	inner := &multiAgentLLM{
+		vectorFailErr:  map[string]error{"Security": errors.New("review down")},
+		vectorFindings: map[string]int{"Performance": 1},
+	}
+	client := &laneEventLLM{inner: inner}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec("security", "performance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := client.snapshot()
+	if firstEventIndex(events, "verify:Security") >= 0 || firstEventIndex(events, "dedupe:Security") >= 0 {
+		t.Fatalf("failed security review must skip verify/dedupe: %v", events)
+	}
+	if firstEventIndex(events, "verify:Performance") < 0 {
+		t.Fatalf("performance verify missing: %v", events)
+	}
+	if firstEventIndex(events, "dedupe:Performance") >= 0 {
+		t.Fatalf("single-finding performance dedupe must be skipped: %v", events)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(result.Findings))
+	}
+}
+
+// The six-lane shape of the embedded default workflow (minus finalize/summarize)
+// produces the same result shape as the global-step spec.
+func TestWorkflowSixLaneSpecMatchesGlobalResultShape(t *testing.T) {
+	inner := &multiAgentLLM{}
+	client := &laneEventLLM{inner: inner}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec(workflow.ReviewVectorIDs...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pipeline.NeedsSource() {
+		t.Fatal("lane review spec must need a source")
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != len(reviewVectors) {
+		t.Fatalf("findings = %d, want %d", len(result.Findings), len(reviewVectors))
+	}
+	if inner.verifyCalls != len(reviewVectors) {
+		t.Fatalf("verify calls = %d, want %d", inner.verifyCalls, len(reviewVectors))
+	}
+}

@@ -294,8 +294,12 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 			t.Fatalf("unexpected persistent flag %q", name)
 		}
 	}
-	if cmd.PersistentFlags().Lookup("verify-concurrency") == nil {
+	vc := cmd.PersistentFlags().Lookup("verify-concurrency")
+	if vc == nil {
 		t.Fatal("verify-concurrency flag missing")
+	}
+	if vc.DefValue != "0" {
+		t.Fatalf("verify-concurrency default = %q, want 0 (unlimited)", vc.DefValue)
 	}
 	if cmd.PersistentFlags().Lookup("skip-model-check") == nil {
 		t.Fatal("skip-model-check flag missing")

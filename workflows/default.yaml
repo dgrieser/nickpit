@@ -4,14 +4,30 @@ version: 1
 steps:
   - collect-context
   - parallel:
-      - review:codequality
-      - review:security
-      - review:architecture
-      - review:performance
-      - review:testing
-      - review:bestpractices
-  - verify
-  - dedupe
+      - lane:
+          - review:codequality
+          - verify:codequality
+          - dedupe:codequality
+      - lane:
+          - review:security
+          - verify:security
+          - dedupe:security
+      - lane:
+          - review:architecture
+          - verify:architecture
+          - dedupe:architecture
+      - lane:
+          - review:performance
+          - verify:performance
+          - dedupe:performance
+      - lane:
+          - review:testing
+          - verify:testing
+          - dedupe:testing
+      - lane:
+          - review:bestpractices
+          - verify:bestpractices
+          - dedupe:bestpractices
   - merge
   - finalize
   - summarize
