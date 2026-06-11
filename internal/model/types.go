@@ -28,26 +28,28 @@ const (
 )
 
 type ReviewRequest struct {
-	Mode                     ReviewMode
-	RepoRoot                 string
-	Workdir                  string
-	Repo                     string
-	Identifier               int
-	BaseRef                  string
-	HeadRef                  string
-	IncludeComments          bool
-	IncludeCommits           bool
-	IncludeFullFiles         bool
-	IncludePaths             []string
-	ExcludePaths             []string
-	IncludeContent           []string
-	ExcludeContent           []string
-	MaxContextTokens         int
-	MaxToolCalls             int
-	MaxDuplicateToolCalls    int
-	MaxOutputRetries         int
-	MaxReasoningSeconds      int
-	MaxReasoningLoopRepeats  int
+	Mode                    ReviewMode
+	RepoRoot                string
+	Workdir                 string
+	Repo                    string
+	Identifier              int
+	BaseRef                 string
+	HeadRef                 string
+	IncludeComments         bool
+	IncludeCommits          bool
+	IncludeFullFiles        bool
+	IncludePaths            []string
+	ExcludePaths            []string
+	IncludeContent          []string
+	ExcludeContent          []string
+	MaxContextTokens        int
+	MaxToolCalls            int
+	MaxDuplicateToolCalls   int
+	MaxOutputRetries        int
+	MaxReasoningSeconds     int
+	MaxReasoningLoopRepeats int
+	// VerifyConcurrency caps concurrent verifier calls across all reviewers
+	// (one shared limiter per pipeline run); 0 = unlimited.
 	VerifyConcurrency        int
 	VerifyDropPolicy         string
 	VerifyDropConfidence     float64
@@ -82,14 +84,14 @@ type ReviewResult struct {
 	// single step or a parallel group) in execution order.
 	SegmentRuntimes []SegmentRuntime `json:"segment_runtimes,omitempty"`
 	Mode            string           `json:"mode,omitempty"`
-	Repo                   string     `json:"repo,omitempty"`
-	Identifier             int        `json:"identifier,omitempty"`
-	BaseRef                string     `json:"base_ref,omitempty"`
-	HeadRef                string     `json:"head_ref,omitempty"`
-	BaseURL                string     `json:"base_url,omitempty"`
-	Model                  string     `json:"model,omitempty"`
-	ReasoningEffort        string     `json:"reasoning_effort,omitempty"`
-	TotalToolCalls         int        `json:"total_tool_calls,omitempty"`
+	Repo            string           `json:"repo,omitempty"`
+	Identifier      int              `json:"identifier,omitempty"`
+	BaseRef         string           `json:"base_ref,omitempty"`
+	HeadRef         string           `json:"head_ref,omitempty"`
+	BaseURL         string           `json:"base_url,omitempty"`
+	Model           string           `json:"model,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
+	TotalToolCalls  int              `json:"total_tool_calls,omitempty"`
 }
 
 type AgentRun struct {
@@ -111,7 +113,9 @@ type AgentRun struct {
 }
 
 // SegmentRuntime is the wall-clock span of one pipeline unit: a single step
-// or a parallel group (whose runtime is the span of its slowest member).
+// or a parallel group (whose runtime is the span of its slowest lane). Each
+// Steps entry is one lane — a sequential chain joined with "→", e.g.
+// "review:security→verify:security→dedupe:security".
 type SegmentRuntime struct {
 	Steps          []string `json:"steps"`
 	RuntimeSeconds float64  `json:"runtime_seconds"`

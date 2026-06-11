@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,11 @@ type PipelineState struct {
 	groupOrder []string
 	groupByID  map[string]*groupEntry
 	injectSeq  int
+
+	// verifyLimiter is the run-global cap on concurrent verify agent calls,
+	// shared by every verify step (global or per-vector). Set once in Run before
+	// any step goroutine starts; read-only afterwards.
+	verifyLimiter *VerifyLimiter
 
 	// Flat result, set by the merge step, by findings injection into finalize,
 	// or by materialization from groups.
@@ -132,6 +138,29 @@ func (st *PipelineState) vectorResultsLocked() []agentResult {
 	return out
 }
 
+// vectorResult returns the filled group's result for id. The agentResult shares
+// its *llm.ReviewResponse pointer with the group, so in-place finding mutation
+// (verify) propagates without write-back.
+func (st *PipelineState) vectorResult(id string) (agentResult, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	g, ok := st.groupByID[id]
+	if !ok || !g.filled {
+		return agentResult{}, false
+	}
+	return g.result, true
+}
+
+// setVectorResponse swaps group id's response pointer; dedupe replaces the
+// response rather than mutating findings in place.
+func (st *PipelineState) setVectorResponse(id string, resp *llm.ReviewResponse) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if g, ok := st.groupByID[id]; ok && g.filled {
+		g.result.resp = resp
+	}
+}
+
 // writeBackVectorResults copies (possibly replaced) response pointers from a
 // vectorResults slice back into the groups, needed after dedupe which swaps the
 // response pointer rather than mutating findings in place.
@@ -167,7 +196,9 @@ type boundStep struct {
 }
 
 type planUnit struct {
-	steps []boundStep // length 1 = sequential; >1 = concurrent group
+	// lanes run concurrently; the steps within one lane run sequentially. A
+	// plain sequential step is a single lane of length 1.
+	lanes [][]boundStep
 }
 
 // Pipeline is a compiled, runnable workflow.
@@ -196,12 +227,16 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 		if entry.IsParallel() {
 			unit := planUnit{}
 			for _, sub := range entry.Parallel {
-				bs, err := e.bindStep(sub, manual)
-				if err != nil {
-					return nil, err
+				var lane []boundStep
+				for _, ls := range sub.LaneSteps() {
+					bs, err := e.bindStep(ls, manual)
+					if err != nil {
+						return nil, err
+					}
+					lane = append(lane, bs)
+					p.needsSource = p.needsSource || bs.needsSource
 				}
-				unit.steps = append(unit.steps, bs)
-				p.needsSource = p.needsSource || bs.needsSource
+				unit.lanes = append(unit.lanes, lane)
 			}
 			p.units = append(p.units, unit)
 			continue
@@ -210,7 +245,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.units = append(p.units, planUnit{steps: []boundStep{bs}})
+		p.units = append(p.units, planUnit{lanes: [][]boundStep{{bs}}})
 		p.needsSource = p.needsSource || bs.needsSource
 	}
 	return p, nil
@@ -220,25 +255,25 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 // result and the (possibly enriched) context.
 func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	st := newPipelineState(reviewCtx, p.reviewOrder)
+	st.verifyLimiter = NewVerifyLimiter(req.VerifyConcurrency)
 	var segments []model.SegmentRuntime
 	for _, unit := range p.units {
 		unitStart := time.Now()
-		if len(unit.steps) == 1 {
-			bs := unit.steps[0]
-			if err := bs.run(ctx, p.engine.stepContext(bs.override, req), st); err != nil {
-				return nil, nil, err
-			}
-			segments = append(segments, unitSegment(unit, unitStart))
-			continue
-		}
-		errs := make([]error, len(unit.steps))
+		errs := make([]error, len(unit.lanes))
 		var wg sync.WaitGroup
-		for i, bs := range unit.steps {
+		for i, lane := range unit.lanes {
 			wg.Add(1)
-			go func(i int, bs boundStep) {
+			go func(i int, lane []boundStep) {
 				defer wg.Done()
-				errs[i] = bs.run(ctx, p.engine.stepContext(bs.override, req), st)
-			}(i, bs)
+				for _, bs := range lane {
+					if err := bs.run(ctx, p.engine.stepContext(bs.override, req), st); err != nil {
+						// Abort this lane on its first error; sibling lanes run
+						// to the barrier below.
+						errs[i] = err
+						return
+					}
+				}
+			}(i, lane)
 		}
 		wg.Wait()
 		for _, err := range errs {
@@ -247,21 +282,29 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 			}
 		}
 		segments = append(segments, unitSegment(unit, unitStart))
-		// One line for the whole concurrent group: its wall-clock span (the
-		// slowest member), which individual step lines cannot show.
-		p.engine.logProgress(logging.StageReview, logging.StateDone,
-			fmt.Sprintf("reviewers=%d runtime=%s", len(unit.steps), model.HumanDuration(time.Since(unitStart))))
+		if len(unit.lanes) > 1 {
+			// One line for the whole concurrent group: its wall-clock span (the
+			// slowest lane), which individual step lines cannot show.
+			p.engine.logProgress(logging.StageReview, logging.StateDone,
+				fmt.Sprintf("lanes=%d runtime=%s", len(unit.lanes), model.HumanDuration(time.Since(unitStart))))
+		}
 	}
 	result := p.assemble(st, req)
 	result.SegmentRuntimes = segments
 	return result, st.Enriched, nil
 }
 
-// unitSegment records the wall-clock span of one executed pipeline unit.
+// unitSegment records the wall-clock span of one executed pipeline unit. Each
+// lane becomes one entry; a multi-step lane's labels are joined with "→" so
+// single-step segments keep their plain step label.
 func unitSegment(unit planUnit, start time.Time) model.SegmentRuntime {
-	steps := make([]string, len(unit.steps))
-	for i, bs := range unit.steps {
-		steps[i] = bs.label
+	steps := make([]string, len(unit.lanes))
+	for i, lane := range unit.lanes {
+		labels := make([]string, len(lane))
+		for j, bs := range lane {
+			labels[j] = bs.label
+		}
+		steps[i] = strings.Join(labels, "→")
 	}
 	return model.SegmentRuntime{
 		Steps:          steps,
@@ -384,6 +427,12 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {
 		return boundStep{label: t, needsSource: true, override: entry.Config, run: e.reviewStepFunc(id, manual[id])}, nil
 	}
+	if id, ok := stepVector(t, workflow.StepVerifyPrefix); ok {
+		return boundStep{label: t, override: entry.Config, run: e.verifyVectorStepFunc(id)}, nil
+	}
+	if id, ok := stepVector(t, workflow.StepDedupePrefix); ok {
+		return boundStep{label: t, override: entry.Config, run: e.dedupeVectorStepFunc(id)}, nil
+	}
 	if id, ok := stepVector(t, workflow.StepExtractPrefix); ok {
 		return boundStep{label: t, override: entry.Config, run: e.extractStepFunc(id)}, nil
 	}
@@ -406,20 +455,11 @@ func stepVector(t, prefix string) (string, bool) {
 func reviewVectorOrder(spec workflow.Spec) []string {
 	var order []string
 	seen := map[string]bool{}
-	add := func(t string) {
-		if id, ok := stepVector(t, workflow.StepReviewPrefix); ok && !seen[id] {
+	for _, entry := range spec.FlatSteps() {
+		if id, ok := stepVector(entry.Type, workflow.StepReviewPrefix); ok && !seen[id] {
 			seen[id] = true
 			order = append(order, id)
 		}
-	}
-	for _, entry := range spec.Steps {
-		if entry.IsParallel() {
-			for _, sub := range entry.Parallel {
-				add(sub.Type)
-			}
-			continue
-		}
-		add(entry.Type)
 	}
 	return order
 }
@@ -429,21 +469,12 @@ func reviewVectorOrder(spec workflow.Spec) []string {
 // collection during the initial pass even when nudge_count is 0.
 func manualReviewVectors(spec workflow.Spec) map[string]bool {
 	manual := map[string]bool{}
-	check := func(t string) {
+	for _, entry := range spec.FlatSteps() {
 		for _, prefix := range []string{workflow.StepExtractPrefix, workflow.StepNudgePrefix} {
-			if id, ok := stepVector(t, prefix); ok {
+			if id, ok := stepVector(entry.Type, prefix); ok {
 				manual[id] = true
 			}
 		}
-	}
-	for _, entry := range spec.Steps {
-		if entry.IsParallel() {
-			for _, sub := range entry.Parallel {
-				check(sub.Type)
-			}
-			continue
-		}
-		check(entry.Type)
 	}
 	return manual
 }

@@ -38,7 +38,14 @@ const (
 	StepReviewPrefix  = "review:"
 	StepExtractPrefix = "reasoning-extract:"
 	StepNudgePrefix   = "nudge:"
+	StepVerifyPrefix  = "verify:"
+	StepDedupePrefix  = "dedupe:"
 )
+
+// perVectorPrefixes lists every step prefix that addresses a single reviewer
+// vector. Per-vector steps touch only their vector's group/session, so they are
+// the only steps allowed inside parallel groups and lanes.
+var perVectorPrefixes = []string{StepReviewPrefix, StepExtractPrefix, StepNudgePrefix, StepVerifyPrefix, StepDedupePrefix}
 
 // ReviewVectorIDs is the canonical, ordered set of reviewer vector identifiers.
 // The order matches the engine's reviewVectors so DefaultSpec() reproduces the
@@ -62,16 +69,32 @@ type Spec struct {
 
 // StepEntry is one entry in a step list. It is exactly one of:
 //   - a plain step (Type set), optionally with Config/FindingsFrom;
-//   - a parallel group (Parallel set) whose children run concurrently.
+//   - a parallel group (Parallel set) whose children run concurrently;
+//   - a lane (Lane set): a sequential chain of plain steps, valid only as a
+//     parallel child, so e.g. review→verify→dedupe of one reviewer runs in
+//     order while other reviewers' lanes proceed concurrently.
 type StepEntry struct {
 	Type         string
 	Config       *StepOverride
 	FindingsFrom []string
 	Parallel     []StepEntry
+	Lane         []StepEntry
 }
 
 // IsParallel reports whether the entry is a parallel group.
 func (s StepEntry) IsParallel() bool { return len(s.Parallel) > 0 }
+
+// IsLane reports whether the entry is a lane (sequential chain in a parallel group).
+func (s StepEntry) IsLane() bool { return len(s.Lane) > 0 }
+
+// LaneSteps returns the entry's sequential chain: its Lane when set, else the
+// entry itself as a single-step chain. A bare parallel child is a one-step lane.
+func (s StepEntry) LaneSteps() []StepEntry {
+	if s.IsLane() {
+		return s.Lane
+	}
+	return []StepEntry{s}
+}
 
 // StepOverride layers per-step overrides onto the resolved base profile and
 // review request. Every field is a pointer (or nil-able map) so "unset" is
@@ -107,7 +130,6 @@ type StepOverride struct {
 	DisableParallelToolCalls *bool    `yaml:"disable_parallel_tool_calls"`
 	DisablePatchSummary      *bool    `yaml:"disable_patch_summary"`
 	UseJSONSchema            *bool    `yaml:"use_json_schema"`
-	VerifyConcurrency        *int     `yaml:"verify_concurrency"`
 	VerifyDropPolicy         *string  `yaml:"verify_drop_policy"`
 	VerifyDropConfidence     *float64 `yaml:"verify_drop_confidence"`
 	PriorityThreshold        *string  `yaml:"priority_threshold"`
@@ -118,7 +140,7 @@ var stepOverrideKeys = []string{
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
-	"disable_patch_summary", "use_json_schema", "verify_concurrency", "verify_drop_policy",
+	"disable_patch_summary", "use_json_schema", "verify_drop_policy",
 	"verify_drop_confidence", "priority_threshold",
 }
 
@@ -186,9 +208,6 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	}
 	if o.DisablePatchSummary != nil {
 		req.DisablePatchSummary = *o.DisablePatchSummary
-	}
-	if o.VerifyConcurrency != nil {
-		req.VerifyConcurrency = *o.VerifyConcurrency
 	}
 	if o.VerifyDropPolicy != nil {
 		req.VerifyDropPolicy = *o.VerifyDropPolicy
@@ -296,6 +315,9 @@ func decodeStepEntry(node *yaml.Node) (StepEntry, error) {
 	case yaml.ScalarNode:
 		return StepEntry{Type: node.Value}, nil
 	case yaml.MappingNode:
+		if mappingValue(node, "lane") != nil {
+			return StepEntry{}, fmt.Errorf("lane is only allowed inside a parallel group")
+		}
 		if mappingValue(node, "parallel") != nil {
 			return decodeParallelEntry(node)
 		}
@@ -318,14 +340,52 @@ func decodeParallelEntry(node *yaml.Node) (StepEntry, error) {
 	}
 	entry := StepEntry{}
 	for i, child := range seq.Content {
-		sub, err := decodeStepEntry(child)
+		sub, err := decodeParallelChild(child)
 		if err != nil {
 			return StepEntry{}, fmt.Errorf("parallel child %d: %w", i+1, err)
 		}
-		if sub.IsParallel() {
+		entry.Parallel = append(entry.Parallel, sub)
+	}
+	return entry, nil
+}
+
+// decodeParallelChild decodes one parallel-group child: a plain step (scalar or
+// type-mapping) or a lane (sequential chain of plain steps).
+func decodeParallelChild(node *yaml.Node) (StepEntry, error) {
+	if node.Kind == yaml.MappingNode {
+		if mappingValue(node, "parallel") != nil {
 			return StepEntry{}, fmt.Errorf("parallel groups cannot be nested")
 		}
-		entry.Parallel = append(entry.Parallel, sub)
+		if mappingValue(node, "lane") != nil {
+			return decodeLaneEntry(node)
+		}
+	}
+	return decodeStepEntry(node)
+}
+
+func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
+	if err := checkAllowedKeys(node, "lane"); err != nil {
+		return StepEntry{}, err
+	}
+	seq := mappingValue(node, "lane")
+	if seq.Kind != yaml.SequenceNode || len(seq.Content) == 0 {
+		return StepEntry{}, fmt.Errorf("lane must be a non-empty list")
+	}
+	entry := StepEntry{}
+	for i, child := range seq.Content {
+		if child.Kind == yaml.MappingNode {
+			if mappingValue(child, "parallel") != nil {
+				return StepEntry{}, fmt.Errorf("lane step %d: parallel groups cannot be nested", i+1)
+			}
+			if mappingValue(child, "lane") != nil {
+				return StepEntry{}, fmt.Errorf("lane step %d: lanes cannot be nested", i+1)
+			}
+		}
+		sub, err := decodeStepEntry(child)
+		if err != nil {
+			return StepEntry{}, fmt.Errorf("lane step %d: %w", i+1, err)
+		}
+		entry.Lane = append(entry.Lane, sub)
 	}
 	return entry, nil
 }
@@ -389,27 +449,30 @@ func (s Spec) Validate() error {
 	}
 	reviewed := map[string]bool{}
 	idx := 0
-	// validate checks one step's type and dependencies against the set of
-	// reviewers available so far, returning the vector it reviews (if any). A
-	// nudge/extract step depends on a review of the same vector, which must have
-	// completed in an EARLIER unit — reviews inside the same parallel group run
-	// concurrently and are therefore not yet available.
-	validate := func(entry StepEntry, available map[string]bool, inParallel bool) (string, error) {
+	// validate checks one plain step's type and dependencies, returning the
+	// vector it reviews (if any). Per-vector follow-up steps (verify, dedupe,
+	// nudge, reasoning-extract) depend on a review of the same vector, which
+	// must have completed either in an EARLIER unit or earlier in the SAME lane
+	// — concurrent lanes' reviews are not yet available.
+	validate := func(entry StepEntry, laneReviewed map[string]bool, inParallel bool) (string, error) {
 		idx++
+		if entry.IsParallel() || entry.IsLane() {
+			return "", fmt.Errorf("workflow: step %d: parallel groups and lanes cannot be nested", idx)
+		}
 		if err := validateStepType(entry.Type); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 		}
-		// Only the per-vector reviewers are safe to run concurrently — each owns
-		// its own session. Every other step (collect-context, verify, dedupe,
-		// merge, finalize, nudge, reasoning-extract) mutates shared pipeline
-		// state (the enriched context, the flat result, or a shared session) and
-		// must run sequentially.
-		if inParallel && !strings.HasPrefix(entry.Type, StepReviewPrefix) {
-			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only review:<vector> steps may run concurrently", idx, entry.Type)
+		// Only per-vector steps are safe to run concurrently — each touches only
+		// its own vector's group/session. Every global step (collect-context,
+		// verify, dedupe, merge, finalize, summarize) mutates shared pipeline
+		// state (the enriched context, the flat result, or all groups) and must
+		// run sequentially.
+		if inParallel && !isPerVectorStep(entry.Type) {
+			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only per-vector steps (review:/verify:/dedupe:/nudge:/reasoning-extract:) may run concurrently", idx, entry.Type)
 		}
-		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix} {
-			if v, ok := vectorOf(entry.Type, prefix); ok && !available[v] {
-				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step, not the same parallel group)", idx, entry.Type, StepReviewPrefix, v)
+		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix, StepVerifyPrefix, StepDedupePrefix} {
+			if v, ok := vectorOf(entry.Type, prefix); ok && !reviewed[v] && !laneReviewed[v] {
+				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step or earlier in the same lane)", idx, entry.Type, StepReviewPrefix, v)
 			}
 		}
 		if v, ok := vectorOf(entry.Type, StepReviewPrefix); ok {
@@ -418,17 +481,33 @@ func (s Spec) Validate() error {
 		return "", nil
 	}
 	for _, entry := range s.Steps {
+		if entry.IsLane() {
+			return fmt.Errorf("workflow: lane is only allowed inside a parallel group")
+		}
 		if entry.IsParallel() {
-			// Validate every child against the pre-group reviewer set, then
-			// publish the group's reviewers only after the whole group.
+			// Validate every lane against the pre-group reviewer set plus its
+			// own earlier steps; publish the group's reviewers only after the
+			// whole group. Each vector may be touched by at most one lane, so
+			// concurrent lanes cannot race on a group or session.
 			var produced []string
-			for _, sub := range entry.Parallel {
-				v, err := validate(sub, reviewed, true)
-				if err != nil {
-					return err
-				}
-				if v != "" {
-					produced = append(produced, v)
+			vectorOwner := map[string]int{}
+			for laneIdx, sub := range entry.Parallel {
+				laneReviewed := map[string]bool{}
+				for _, ls := range sub.LaneSteps() {
+					v, err := validate(ls, laneReviewed, true)
+					if err != nil {
+						return err
+					}
+					if v != "" {
+						laneReviewed[v] = true
+						produced = append(produced, v)
+					}
+					if vec, ok := stepVectorAny(ls.Type); ok {
+						if owner, claimed := vectorOwner[vec]; claimed && owner != laneIdx {
+							return fmt.Errorf("workflow: vector %q is used by more than one lane in the same parallel group", vec)
+						}
+						vectorOwner[vec] = laneIdx
+					}
 				}
 			}
 			for _, v := range produced {
@@ -436,7 +515,7 @@ func (s Spec) Validate() error {
 			}
 			continue
 		}
-		v, err := validate(entry, reviewed, false)
+		v, err := validate(entry, nil, false)
 		if err != nil {
 			return err
 		}
@@ -447,6 +526,22 @@ func (s Spec) Validate() error {
 	return nil
 }
 
+// stepVectorAny returns the vector id when t is a per-vector step of any kind.
+func stepVectorAny(t string) (string, bool) {
+	for _, prefix := range perVectorPrefixes {
+		if v, ok := vectorOf(t, prefix); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// isPerVectorStep reports whether t addresses a single reviewer vector.
+func isPerVectorStep(t string) bool {
+	_, ok := stepVectorAny(t)
+	return ok
+}
+
 func validateStepType(t string) error {
 	switch t {
 	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepSummarize:
@@ -454,7 +549,7 @@ func validateStepType(t string) error {
 	case "":
 		return fmt.Errorf("missing step type")
 	}
-	for _, prefix := range []string{StepReviewPrefix, StepExtractPrefix, StepNudgePrefix} {
+	for _, prefix := range perVectorPrefixes {
 		if v, ok := vectorOf(t, prefix); ok {
 			if !validVector(v) {
 				return fmt.Errorf("unknown reviewer vector %q (valid: %s)", v, strings.Join(ReviewVectorIDs, ", "))
@@ -480,20 +575,38 @@ func StepNeedsSource(stepType string) bool {
 // When false, the workflow operates purely on injected findings and the caller
 // can skip source/repo resolution and the upfront model-credential requirement.
 func (s Spec) NeedsSource() bool {
-	for _, entry := range s.Steps {
-		if entry.IsParallel() {
-			for _, sub := range entry.Parallel {
-				if StepNeedsSource(sub.Type) {
-					return true
-				}
-			}
-			continue
-		}
+	for _, entry := range s.FlatSteps() {
 		if StepNeedsSource(entry.Type) {
 			return true
 		}
 	}
 	return false
+}
+
+// FlatSteps returns pointers to every plain step entry in document order:
+// top-level steps, parallel children, and lane steps. Pointer access lets
+// callers mutate entries in place (e.g. findings seeding).
+func (s *Spec) FlatSteps() []*StepEntry {
+	var out []*StepEntry
+	var walk func(entry *StepEntry)
+	walk = func(entry *StepEntry) {
+		switch {
+		case entry.IsParallel():
+			for i := range entry.Parallel {
+				walk(&entry.Parallel[i])
+			}
+		case entry.IsLane():
+			for i := range entry.Lane {
+				walk(&entry.Lane[i])
+			}
+		default:
+			out = append(out, entry)
+		}
+	}
+	for i := range s.Steps {
+		walk(&s.Steps[i])
+	}
+	return out
 }
 
 // StepConsumesFindings reports whether a step type reads injected findings
