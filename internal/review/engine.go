@@ -239,7 +239,7 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
 		e.logf(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt+1))
+		e.logProgress(logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt+1))
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		}
@@ -2453,7 +2453,7 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 	callNum := sec.IncrCallNum()
 	info, ok := logging.ProgressInfoFromContext(ctx)
 	turnInfo := info.WithTurn(callNum)
-	if ok {
+	if ok && e.logger != nil {
 		e.logger.ProgressFor(turnInfo, logging.StageRequest, logging.StateSent, "")
 		e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateStart, "")
 	}
@@ -2467,7 +2467,7 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 	start := time.Now()
 	resp, err := e.llm.Review(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
-	if ok {
+	if ok && e.logger != nil {
 		if resp != nil && resp.Reasoned {
 			e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateDone, elapsed.String())
 		}
@@ -2487,10 +2487,16 @@ func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, ca
 }
 
 func (e *Engine) logf(ctx context.Context, format string, args ...any) {
+	if e.logger == nil {
+		return
+	}
 	e.logger.Verbosef(ctx, format, args...)
 }
 
 func (e *Engine) logBlock(ctx context.Context, label, content string) {
+	if e.logger == nil {
+		return
+	}
 	e.logger.VerboseBlock(ctx, label, content)
 }
 

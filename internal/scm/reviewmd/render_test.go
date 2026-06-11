@@ -107,6 +107,17 @@ func TestSummaryBodyTaggedAndBadged(t *testing.T) {
 	}
 }
 
+func TestHardBreakParagraphsNormalizesCRLF(t *testing.T) {
+	got := hardBreakParagraphs("first line\r\nsecond line  \r\n\r\n```go\r\nfmt.Println(\"x\")\r\n```")
+	want := "first line  \nsecond line  \n\n```go\nfmt.Println(\"x\")\n```"
+	if got != want {
+		t.Fatalf("hardBreakParagraphs() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "\r  \n") {
+		t.Fatalf("hardBreakParagraphs left CR before markdown break: %q", got)
+	}
+}
+
 func TestFindingBodyPrefixAndMarker(t *testing.T) {
 	r := NewRenderer("https://host/")
 	body := r.FindingBody(model.Finding{

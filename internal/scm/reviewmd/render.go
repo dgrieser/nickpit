@@ -67,6 +67,7 @@ func hardBreakParagraphs(s string) string {
 	if s == "" {
 		return ""
 	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
 	lines := strings.Split(s, "\n")
 	inFence := false
 	for i, line := range lines {

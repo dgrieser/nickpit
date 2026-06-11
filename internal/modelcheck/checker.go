@@ -194,7 +194,7 @@ func probeLabel(name, effort string) string {
 }
 
 func (c *Checker) logProbeStart(probe ProbeResult) {
-	c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateStart, fmt.Sprintf("tools=%t", probe.Tools))
+	c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateStart, fmt.Sprintf("tools=%t", probe.Tools))
 }
 
 func (c *Checker) logProbeResult(probe ProbeResult) {
@@ -209,7 +209,7 @@ func (c *Checker) logProbeResult(probe ProbeResult) {
 	if probe.Error != "" {
 		msg += fmt.Sprintf(" error=%q", probe.Error)
 	}
-	c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, state, msg)
+	c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, state, msg)
 }
 
 func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection, probe ProbeResult) (*llm.ReviewResponse, error) {
@@ -219,7 +219,7 @@ func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *
 		info = c.probeInfo(probe.Name, probe.ReasoningEffort)
 	}
 	info = info.WithTurn(callNum)
-	c.logger.ProgressFor(info, logging.StageRequest, logging.StateSent, "")
+	c.logProgressFor(info, logging.StageRequest, logging.StateSent, "")
 	start := time.Now()
 	probeCtx := logging.WithProgressInfo(ctx, info)
 	resp, err := c.client.Review(probeCtx, req)
@@ -228,7 +228,7 @@ func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *
 	if err != nil {
 		state = logging.StateError
 	}
-	c.logger.ProgressFor(info, logging.StageResponse, state, elapsed.String())
+	c.logProgressFor(info, logging.StageResponse, state, elapsed.String())
 	return resp, err
 }
 
@@ -245,8 +245,15 @@ func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewReques
 		if !sameEffortRetryable(err) || attempt >= maxRetries {
 			return resp, err
 		}
-		c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("attempt=%d reason=%q", attempt+1, err.Error()))
+		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("attempt=%d reason=%q", attempt+1, err.Error()))
 	}
+}
+
+func (c *Checker) logProgressFor(info logging.ProgressInfo, stage logging.Stage, state logging.State, msg string) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.ProgressFor(info, stage, state, msg)
 }
 
 func (c *Checker) Run(ctx context.Context) Result {
@@ -421,12 +428,12 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 		for _, call := range resp.ToolCalls {
 			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
 			if err != nil {
-				c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateError, fmt.Sprintf("%s error=%q", call.Name, err.Error()))
+				c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateError, fmt.Sprintf("%s error=%q", call.Name, err.Error()))
 				probe.Status = StatusFailed
 				probe.Error = err.Error()
 				return probe
 			}
-			c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateOK, call.Name)
+			c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateOK, call.Name)
 			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: content})
 		}
 	}
@@ -527,7 +534,7 @@ func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSect
 		if err := validateJSONProbeResponse(retryResp.RawResponse); err != nil {
 			validationErr = err
 			resp = retryResp
-			c.logger.ProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("json_retry=%d error=%q", attempt+1, err.Error()))
+			c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("json_retry=%d error=%q", attempt+1, err.Error()))
 			continue
 		}
 		probe.Status = ""

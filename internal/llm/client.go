@@ -1141,7 +1141,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			if !isRetryableNetworkError(err) || attempt >= c.retrier.MaxRetries {
 				return nil, fmt.Errorf("llm: request failed: %w", err)
 			}
-			c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, "network error")
+			c.logProgress(ctx, logging.StageModel, logging.StateRetry, "network error")
 			if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
 				return nil, fmt.Errorf("llm: request canceled: %w", waitErr)
 			}
@@ -1178,7 +1178,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 				}
 				if retryableStreamReadError(readErr) && attempt < c.retrier.MaxRetries {
-					c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, "stream network error")
+					c.logProgress(ctx, logging.StageModel, logging.StateRetry, "stream network error")
 					c.logf(ctx, "Retrying request: stream network error")
 					if waitErr := c.retrier.Wait(ctx, attempt, nil); waitErr != nil {
 						return nil, fmt.Errorf("llm: retry canceled: %w", waitErr)
@@ -1207,10 +1207,10 @@ func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
 
 func (c *OpenAIClient) logRetryHTTPStatus(ctx context.Context, status, currentAttempt int, waitFor time.Duration) {
 	if status == http.StatusTooManyRequests {
-		c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("rate limited (429), waiting %s before attempt %d", waitFor, currentAttempt+1))
+		c.logProgress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("rate limited (429), waiting %s before attempt %d", waitFor, currentAttempt+1))
 		return
 	}
-	c.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("status=%d, retrying in %s", status, waitFor))
+	c.logProgress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("status=%d, retrying in %s", status, waitFor))
 }
 
 func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController) (*streamedResponse, error) {
@@ -1659,19 +1659,38 @@ func retryableStreamReadError(err *streamReadError) bool {
 }
 
 func (c *OpenAIClient) logf(ctx context.Context, format string, args ...any) {
+	if c.logger == nil {
+		return
+	}
 	c.logger.Verbosef(ctx, format, args...)
 }
 
 func (c *OpenAIClient) logBlock(ctx context.Context, label, content string) {
+	if c.logger == nil {
+		return
+	}
 	c.logger.VerboseBlock(ctx, label, content)
 }
 
 func (c *OpenAIClient) logJSON(ctx context.Context, label string, value any) {
+	if c.logger == nil {
+		return
+	}
 	c.logger.VerboseJSON(ctx, label, value)
 }
 
 func (c *OpenAIClient) logMaybeJSON(ctx context.Context, label string, data []byte) {
+	if c.logger == nil {
+		return
+	}
 	c.logger.VerboseMaybeJSON(ctx, label, data)
+}
+
+func (c *OpenAIClient) logProgress(ctx context.Context, stage logging.Stage, state logging.State, msg string) {
+	if c.logger == nil {
+		return
+	}
+	c.logger.Progress(ctx, stage, state, msg)
 }
 
 func (c *OpenAIClient) logRawModelResponse(ctx context.Context, streamed *streamedResponse) {

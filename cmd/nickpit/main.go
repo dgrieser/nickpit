@@ -1361,6 +1361,9 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (a *app) logf(ctx context.Context, format string, args ...any) {
+	if a.logger == nil {
+		return
+	}
 	a.logger.Verbosef(ctx, format, args...)
 }
 

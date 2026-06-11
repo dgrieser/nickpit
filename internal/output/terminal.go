@@ -39,7 +39,7 @@ func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
 		useANSI = false
 	}
 	width := terminalDefaultWidth
-	if f, ok := w.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+	if f, ok := w.(*os.File); ok && f != nil && term.IsTerminal(int(f.Fd())) {
 		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
 			width = min(max(w, terminalMinWidth), terminalMaxWidth)
 		}

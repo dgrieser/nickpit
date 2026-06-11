@@ -48,6 +48,14 @@ func TestTerminalFormatter(t *testing.T) {
 	testutil.AssertGolden(t, buf.String(), filepath.Join("..", "..", "testdata", "golden", "TestTerminalFormatter.txt"))
 }
 
+func TestNewTerminalFormatterNilFileWriter(t *testing.T) {
+	var f *os.File
+	formatter := NewTerminalFormatter(f, false)
+	if formatter.width != terminalDefaultWidth {
+		t.Fatalf("width = %d, want %d", formatter.width, terminalDefaultWidth)
+	}
+}
+
 func TestTerminalFormatterStripsControlCharsFromUntrustedText(t *testing.T) {
 	var buf bytes.Buffer
 	// useANSI=false: the formatter emits no escape codes of its own, so any
