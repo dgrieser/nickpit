@@ -75,7 +75,13 @@ type ReviewResult struct {
 	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used"`
 	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used"`
 	SummarizeTokensUsed    TokenUsage `json:"summarize_tokens_used"`
-	Mode                   string     `json:"mode,omitempty"`
+	// RuntimeSeconds is the whole review command span in seconds (model check,
+	// checkout, pipeline through summarize).
+	RuntimeSeconds float64 `json:"runtime_seconds,omitempty"`
+	// SegmentRuntimes records the wall-clock span of each pipeline unit (a
+	// single step or a parallel group) in execution order.
+	SegmentRuntimes []SegmentRuntime `json:"segment_runtimes,omitempty"`
+	Mode            string           `json:"mode,omitempty"`
 	Repo                   string     `json:"repo,omitempty"`
 	Identifier             int        `json:"identifier,omitempty"`
 	BaseRef                string     `json:"base_ref,omitempty"`
@@ -95,10 +101,20 @@ type AgentRun struct {
 	ToolCalls             int        `json:"tool_calls,omitempty"`
 	DuplicateToolCalls    int        `json:"duplicate_tool_calls"`
 	TokensUsed            TokenUsage `json:"tokens_used"`
+	// RuntimeSeconds is the agent's total wall-clock runtime in seconds
+	// (reviewers: initial pass through nudges and reasoning extraction).
+	RuntimeSeconds float64 `json:"runtime_seconds,omitempty"`
 	// Status is one of AgentRunStatus*. Empty = implicit ok (preserves
 	// backward compatibility with pre-failure-tolerance consumers).
 	Status string `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
+}
+
+// SegmentRuntime is the wall-clock span of one pipeline unit: a single step
+// or a parallel group (whose runtime is the span of its slowest member).
+type SegmentRuntime struct {
+	Steps          []string `json:"steps"`
+	RuntimeSeconds float64  `json:"runtime_seconds"`
 }
 
 const (

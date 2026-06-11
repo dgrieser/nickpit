@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -109,9 +110,15 @@ func (f *TerminalFormatter) writeFooter(b *strings.Builder, result *model.Review
 		b.WriteString(f.yellow("! " + textsan.StripControl(warning)))
 		b.WriteString("\n")
 	}
-	b.WriteString(f.dim(fmt.Sprintf("Tokens: %d prompt / %d completion / %d total",
-		result.TokensUsed.PromptTokens, result.TokensUsed.CompletionTokens, result.TokensUsed.TotalTokens)))
+	b.WriteString(f.dim(fmt.Sprintf("Tokens: %s prompt / %s completion / %s total",
+		model.HumanTokens(result.TokensUsed.PromptTokens),
+		model.HumanTokens(result.TokensUsed.CompletionTokens),
+		model.HumanTokens(result.TokensUsed.TotalTokens))))
 	b.WriteString("\n")
+	if result.RuntimeSeconds > 0 {
+		b.WriteString(f.dim("Runtime: " + model.HumanDuration(time.Duration(result.RuntimeSeconds*float64(time.Second)))))
+		b.WriteString("\n")
+	}
 }
 
 func (f *TerminalFormatter) writeRule(b *strings.Builder) {

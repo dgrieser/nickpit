@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
@@ -79,6 +80,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
+	summarizeStart := time.Now()
 	e.logProgress(logging.StageSummarize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
 		name:             "Summarize Review",
@@ -113,7 +115,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	if stats.Omitted > 0 || stats.Ignored > 0 || stats.SummarizerFindings != len(in.Findings) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("Summarizer output mismatch: findings_in=%d summarizer_findings=%d matched=%d omitted=%d ignored=%d; preserved finalized bodies", len(in.Findings), stats.SummarizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
 	}
-	e.logProgress(logging.StageSummarize, logging.StateDone, fmt.Sprintf("findings_in=%d summarizer_findings=%d matched=%d omitted=%d ignored=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), stats.SummarizerFindings, stats.Matched, stats.Omitted, stats.Ignored, len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
+	e.logProgress(logging.StageSummarize, logging.StateDone, fmt.Sprintf("findings_in=%d summarizer_findings=%d matched=%d omitted=%d ignored=%d findings_out=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s runtime=%s", len(in.Findings), stats.SummarizerFindings, stats.Matched, stats.Omitted, stats.Ignored, len(out.Findings), model.HumanTokens(result.run.TokensUsed.PromptTokens), model.HumanTokens(result.run.TokensUsed.CompletionTokens), model.HumanTokens(result.run.TokensUsed.TotalTokens), model.HumanDuration(time.Since(summarizeStart))))
 	return out, result.run, nil
 }
 

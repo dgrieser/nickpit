@@ -92,6 +92,9 @@ type app struct {
 	stepName                      string
 	findingsFiles                 []string
 	logger                        *logging.Logger
+	// reviewStart anchors the whole-review runtime (model check, checkout,
+	// pipeline through summarize), stamped at runReview entry.
+	reviewStart time.Time
 }
 
 func main() {
@@ -730,6 +733,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 }
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
+	a.reviewStart = time.Now()
 	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
 	logger.SetShowProgress(a.showProgress)
@@ -903,6 +907,9 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 	}
 	if result == nil {
 		return fmt.Errorf("review: engine returned no result")
+	}
+	if !a.reviewStart.IsZero() {
+		result.RuntimeSeconds = model.RuntimeSeconds(time.Since(a.reviewStart))
 	}
 	a.logProgress(ctx, logging.StageResult, logging.StateOK, reviewResultSummary(result))
 	return a.emitResult(ctx, source, req, result)
@@ -1430,14 +1437,18 @@ func disablable(n int, unit, label string) string {
 }
 
 func reviewResultSummary(result *model.ReviewResult) string {
-	return strings.Join([]string{
+	parts := []string{
 		fmt.Sprintf("findings=%d", len(result.Findings)),
 		fmt.Sprintf("total_tool_calls=%d", result.TotalToolCalls),
 		fmt.Sprintf("duplicate_tool_calls=%d", totalDuplicateToolCalls(result.AgentRuns)),
-		fmt.Sprintf("prompt_tokens=%d", result.TokensUsed.PromptTokens),
-		fmt.Sprintf("completion_tokens=%d", result.TokensUsed.CompletionTokens),
-		fmt.Sprintf("total_tokens=%d", result.TokensUsed.TotalTokens),
-	}, ", ")
+		fmt.Sprintf("prompt_tokens=%s", model.HumanTokens(result.TokensUsed.PromptTokens)),
+		fmt.Sprintf("completion_tokens=%s", model.HumanTokens(result.TokensUsed.CompletionTokens)),
+		fmt.Sprintf("total_tokens=%s", model.HumanTokens(result.TokensUsed.TotalTokens)),
+	}
+	if result.RuntimeSeconds > 0 {
+		parts = append(parts, fmt.Sprintf("runtime=%s", model.HumanDuration(time.Duration(result.RuntimeSeconds*float64(time.Second)))))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func totalDuplicateToolCalls(runs []model.AgentRun) int {

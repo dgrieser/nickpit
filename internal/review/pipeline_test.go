@@ -81,6 +81,12 @@ func TestWorkflowMergeSingleFileInjectionPassthrough(t *testing.T) {
 	if len(result.Findings) != 2 {
 		t.Fatalf("findings = %d, want 2 preserved from injection", len(result.Findings))
 	}
+	if len(result.SegmentRuntimes) != 1 {
+		t.Fatalf("segment runtimes = %#v, want one entry per pipeline unit", result.SegmentRuntimes)
+	}
+	if steps := result.SegmentRuntimes[0].Steps; len(steps) != 1 || steps[0] != workflow.StepMerge {
+		t.Fatalf("segment steps = %#v, want [merge]", steps)
+	}
 }
 
 // Finalize injection with no findings short-circuits (Finalize early-returns),
@@ -321,5 +327,15 @@ func TestWorkflowReviewerSpecNeedsSourceAndRuns(t *testing.T) {
 	}
 	if client.verifyCalls != len(reviewVectors) {
 		t.Fatalf("verify calls = %d, want %d", client.verifyCalls, len(reviewVectors))
+	}
+}
+
+// Runtime stamping is wall-clock based; back-date the anchors so the assertion
+// is deterministic instead of racing a sub-millisecond stub run.
+func TestReviewerSessionStampsRuntime(t *testing.T) {
+	s := &reviewerSession{agent: agentSpec{name: "Security", role: "review"}, started: time.Now().Add(-3 * time.Second)}
+	result := s.partialResult(model.ReviewRequest{})
+	if result.run.RuntimeSeconds < 3 {
+		t.Fatalf("runtime_seconds = %v, want >= 3", result.run.RuntimeSeconds)
 	}
 }

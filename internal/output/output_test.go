@@ -37,10 +37,11 @@ func TestTerminalFormatter(t *testing.T) {
 		OverallExplanation:     "Summary text",
 		OverallConfidenceScore: 0.77,
 		TokensUsed: model.TokenUsage{
-			PromptTokens:     10,
-			CompletionTokens: 4,
-			TotalTokens:      14,
+			PromptTokens:     38192,
+			CompletionTokens: 5120,
+			TotalTokens:      43312,
 		},
+		RuntimeSeconds: 252.4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -335,6 +336,46 @@ func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
 	}
 	if got, ok := run["duplicate_tool_calls"]; !ok || got != float64(0) {
 		t.Fatalf("agent duplicate_tool_calls = %#v, present=%t", got, ok)
+	}
+}
+
+func TestJSONFormatterRuntimeSecondsNumeric(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewJSONFormatter(&buf)
+	err := formatter.FormatFindings(&model.ReviewResult{
+		Findings:       []model.Finding{},
+		RuntimeSeconds: 252.4,
+		AgentRuns: []model.AgentRun{
+			{Name: "Security", Role: "review", RuntimeSeconds: 93.21},
+		},
+		SegmentRuntimes: []model.SegmentRuntime{
+			{Steps: []string{"review:security", "review:testing"}, RuntimeSeconds: 95.5},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := payload["runtime_seconds"]; got != 252.4 {
+		t.Fatalf("result runtime_seconds = %#v, want 252.4", got)
+	}
+	run := payload["agent_runs"].([]any)[0].(map[string]any)
+	if got := run["runtime_seconds"]; got != 93.21 {
+		t.Fatalf("agent runtime_seconds = %#v, want 93.21", got)
+	}
+	segment := payload["segment_runtimes"].([]any)[0].(map[string]any)
+	if got := segment["runtime_seconds"]; got != 95.5 {
+		t.Fatalf("segment runtime_seconds = %#v, want 95.5", got)
+	}
+	steps := segment["steps"].([]any)
+	if len(steps) != 2 || steps[0] != "review:security" {
+		t.Fatalf("segment steps = %#v", steps)
+	}
+	if strings.Contains(buf.String(), "runtime=") || strings.Contains(buf.String(), "m12s") {
+		t.Fatalf("JSON must stay numeric without units:\n%s", buf.String())
 	}
 }
 

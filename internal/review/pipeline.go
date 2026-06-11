@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/workflow"
 )
@@ -218,12 +220,15 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 // result and the (possibly enriched) context.
 func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	st := newPipelineState(reviewCtx, p.reviewOrder)
+	var segments []model.SegmentRuntime
 	for _, unit := range p.units {
+		unitStart := time.Now()
 		if len(unit.steps) == 1 {
 			bs := unit.steps[0]
 			if err := bs.run(ctx, p.engine.stepContext(bs.override, req), st); err != nil {
 				return nil, nil, err
 			}
+			segments = append(segments, unitSegment(unit, unitStart))
 			continue
 		}
 		errs := make([]error, len(unit.steps))
@@ -241,8 +246,27 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 				return nil, nil, err
 			}
 		}
+		segments = append(segments, unitSegment(unit, unitStart))
+		// One line for the whole concurrent group: its wall-clock span (the
+		// slowest member), which individual step lines cannot show.
+		p.engine.logProgress(logging.StageReview, logging.StateDone,
+			fmt.Sprintf("reviewers=%d runtime=%s", len(unit.steps), model.HumanDuration(time.Since(unitStart))))
 	}
-	return p.assemble(st, req), st.Enriched, nil
+	result := p.assemble(st, req)
+	result.SegmentRuntimes = segments
+	return result, st.Enriched, nil
+}
+
+// unitSegment records the wall-clock span of one executed pipeline unit.
+func unitSegment(unit planUnit, start time.Time) model.SegmentRuntime {
+	steps := make([]string, len(unit.steps))
+	for i, bs := range unit.steps {
+		steps[i] = bs.label
+	}
+	return model.SegmentRuntime{
+		Steps:          steps,
+		RuntimeSeconds: model.RuntimeSeconds(time.Since(start)),
+	}
 }
 
 func (e *Engine) stepContext(override *workflow.StepOverride, req model.ReviewRequest) *stepContext {

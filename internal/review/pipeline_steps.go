@@ -264,7 +264,7 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 		st.warnings = append(st.warnings, warnings...)
 		st.mu.Unlock()
 		if err != nil {
-			sc.Engine.logf(ctx, "Verifier failed before merge: tokens=%d warnings=%d error=%v", usage.TotalTokens, len(warnings), err)
+			sc.Engine.logf(ctx, "Verifier failed before merge: tokens=%s warnings=%d error=%v", model.HumanTokens(usage.TotalTokens), len(warnings), err)
 			return err
 		}
 		return nil

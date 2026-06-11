@@ -1326,6 +1326,17 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (
 // is the single implementation shared with the spec-driven standalone
 // nudge/reasoning-extract steps — there is no parallel reviewer code path.
 func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
+	start := time.Now()
+	result, err := e.runAgentOnce(ctx, agent, req)
+	// Reviewer sessions stamp their own runtime (anchored at session start);
+	// every other role is timed here.
+	if result.run.RuntimeSeconds == 0 {
+		result.run.RuntimeSeconds = model.RuntimeSeconds(time.Since(start))
+	}
+	return result, err
+}
+
+func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	if agent.role == "review" {
 		s := e.newReviewerSession(agent, req, false)
 		if err := e.reviewerInitial(ctx, s, req); err != nil {

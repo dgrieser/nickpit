@@ -961,12 +961,12 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	resp.ReasoningEffort = payload.ReasoningEffort
 	resp.Reasoned = streamed.reasoned
 	c.logf(ctx,
-		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+		"Parsed LLM response: findings=%d tool_calls=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s",
 		len(resp.Findings),
 		len(resp.ToolCalls),
-		resp.TokensUsed.PromptTokens,
-		resp.TokensUsed.CompletionTokens,
-		resp.TokensUsed.TotalTokens,
+		model.HumanTokens(resp.TokensUsed.PromptTokens),
+		model.HumanTokens(resp.TokensUsed.CompletionTokens),
+		model.HumanTokens(resp.TokensUsed.TotalTokens),
 	)
 	return resp, nil
 }

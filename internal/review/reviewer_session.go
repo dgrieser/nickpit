@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
@@ -63,6 +64,11 @@ type reviewerSession struct {
 	// initLoop preserves the initial-pass telemetry so partialResult can report
 	// it when the initial loop itself fails.
 	initLoop agentLoopResult
+
+	// started anchors the session's total runtime (initial pass through nudges
+	// and reasoning extraction). Wall clock: spec-driven sessions advanced by
+	// later standalone steps include the time between steps.
+	started time.Time
 }
 
 // buildAgentLoopRequest assembles the agent-loop request and reasoning tracker
@@ -137,6 +143,7 @@ func (e *Engine) newReviewerSession(agent agentSpec, req model.ReviewRequest, co
 		agent:           agent,
 		extractEnabled:  extractEnabled,
 		cachedUpdateLen: -1,
+		started:         time.Now(),
 	}
 }
 
@@ -362,6 +369,7 @@ func (s *reviewerSession) result(req model.ReviewRequest) agentResult {
 		run.Status = model.AgentRunStatusPartial
 		run.Error = s.nudgeErr.Error()
 	}
+	run.RuntimeSeconds = model.RuntimeSeconds(time.Since(s.started))
 	return agentResult{
 		resp:               &latest,
 		reasoningEffort:    s.latestReasoning,
@@ -376,5 +384,7 @@ func (s *reviewerSession) result(req model.ReviewRequest) agentResult {
 // partialResult builds the partial agentResult used when the initial reviewer
 // loop fails before the session was populated.
 func (s *reviewerSession) partialResult(req model.ReviewRequest) agentResult {
-	return partialAgentResult(s.agent, req, s.initLoop)
+	result := partialAgentResult(s.agent, req, s.initLoop)
+	result.run.RuntimeSeconds = model.RuntimeSeconds(time.Since(s.started))
+	return result
 }

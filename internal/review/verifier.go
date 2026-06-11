@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
@@ -211,6 +212,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		semaphore = make(chan struct{}, concurrency)
 		wg        sync.WaitGroup
 	)
+	verifyStart := time.Now()
 	e.logProgress(logging.StageVerify, logging.StateStart, fmt.Sprintf("findings=%d concurrency=%d", len(findings), concurrency))
 	for i, finding := range findings {
 		wg.Add(1)
@@ -253,7 +255,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		}(i, finding)
 	}
 	wg.Wait()
-	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d warnings=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens, len(warnings)))
+	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("findings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(verifyStart))))
 	return verifications, usageSum, warnings, nil
 }
 
