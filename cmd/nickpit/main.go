@@ -181,7 +181,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
-	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 4, "Maximum parallel verifier calls")
+	root.PersistentFlags().IntVar(&cli.verifyConcurrency, "verify-concurrency", 10, "Maximum parallel verifier calls")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
@@ -699,16 +699,17 @@ func (a *app) newCheckCmd() *cobra.Command {
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				UseJSONSchema:           profile.UseJSONSchema,
 			}
-			a.logProgress("Model", modelSummary(profile, checkReq))
-			a.logProgress("Agent", agentSummary(profile, checkReq))
+			ctx := logging.WithProgressInfo(cmd.Context(), profileProgressInfo(profile))
+			a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, checkReq))
+			a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, checkReq))
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-			result, err := a.resolveModelCapabilities(cmd.Context(), client, profile, a.refreshModelCheck)
+			result, err := a.resolveModelCapabilities(ctx, client, profile, a.refreshModelCheck)
 			if err != nil {
 				return err
 			}
-			a.logProgress("ModelCheck", modelCheckSummary(result))
+			a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
 			if a.jsonOutput {
 				if err := writeJSON(struct {
 					Check modelcheck.CheckSummary `json:"check"`
@@ -733,6 +734,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	logger.SetShowReasoning(a.showReasoning)
 	logger.SetShowProgress(a.showProgress)
 	a.logger = logger
+	ctx = logging.WithProgressInfo(ctx, profileProgressInfo(profile))
 
 	// Resolve the workflow spec. Every review runs through a workflow: an
 	// explicit --spec/--step, or the embedded DefaultSpec otherwise. There is no
@@ -788,8 +790,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if req.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
 		req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
 	}
-	a.logProgress("Model", modelSummary(profile, req))
-	a.logProgress("Agent", agentSummary(profile, req))
+	a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, req))
+	a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
@@ -804,10 +806,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		}
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
 		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
-		a.logProgress("ModelCheck", modelCheckSummary(checkResult))
+		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
 	} else {
 		req.ModelEmitsReasoning = true
-		a.logProgress("ModelCheck", "skipped")
+		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
 	}
 
 	req.VerifyConcurrency = a.verifyConcurrency
@@ -832,7 +834,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
 	} else {
-		formatter = output.NewTerminalFormatter(os.Stdout, true)
+		formatter = output.NewTerminalFormatter(os.Stdout, isTerminal(os.Stdout))
 	}
 	if err := formatter.FormatFindings(result); err != nil {
 		return err
@@ -848,15 +850,15 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 			if req.Mode == model.ModeGitHub {
 				sigil = "#"
 			}
-			a.logProgress("Publish", fmt.Sprintf("posting review to %s %s%d", req.Repo, sigil, req.Identifier))
+			a.logProgress(ctx, logging.StagePublish, logging.StateStart, fmt.Sprintf("posting to %s %s%d", req.Repo, sigil, req.Identifier))
 			if err := publisher.PublishReview(ctx, req, result); err != nil {
-				a.logProgress("Publish", fmt.Sprintf("status=ERROR, error=%v", err))
+				a.logProgress(ctx, logging.StagePublish, logging.StateError, fmt.Sprintf("error=%v", err))
 				result.Warnings = append(result.Warnings, fmt.Sprintf("Publish failed: %v", err))
 			} else {
-				a.logProgress("Publish", "done")
+				a.logProgress(ctx, logging.StagePublish, logging.StateDone, "")
 			}
 		} else {
-			a.logProgress("Publish", "skipped (source does not support publishing)")
+			a.logProgress(ctx, logging.StagePublish, logging.StateSkip, "source does not support publishing")
 		}
 	}
 	// Distinguish "review produced nothing because every reviewer crashed"
@@ -892,17 +894,17 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 
 	result, _, err := engine.RunSpecPipeline(ctx, pipeline, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
-		a.logProgress("Result", fmt.Sprintf("status=InvalidJson, error=%v", err))
+		a.logProgress(ctx, logging.StageResult, logging.StateError, fmt.Sprintf("invalid_json error=%v", err))
 		return err
 	}
 	if err != nil {
-		a.logProgress("Result", fmt.Sprintf("status=ERROR, error=%v", err))
+		a.logProgress(ctx, logging.StageResult, logging.StateError, fmt.Sprintf("error=%v", err))
 		return err
 	}
 	if result == nil {
 		return fmt.Errorf("review: engine returned no result")
 	}
-	a.logProgress("Result", reviewResultSummary(result))
+	a.logProgress(ctx, logging.StageResult, logging.StateOK, reviewResultSummary(result))
 	return a.emitResult(ctx, source, req, result)
 }
 
@@ -1000,21 +1002,21 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	if !refresh {
 		if capability, ok := modelcheck.FindProfileCapability(profile); ok {
 			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
-			a.logProgress("ModelCheck", "source=profile")
+			a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=profile")
 			return result, nil
 		}
 		cachePath, err := modelcheck.DefaultCachePath()
 		if err != nil {
-			a.logf("Model capability cache unavailable: %v", err)
+			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
 			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, profile.Model)
 			if err == nil && ok {
 				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
-				a.logProgress("ModelCheck", "source=cache")
+				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
 				return result, nil
 			}
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				a.logf("Model capability cache ignored: %v", err)
+				a.logf(ctx, "Model capability cache ignored: %v", err)
 			}
 		}
 	}
@@ -1029,11 +1031,11 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	capability := modelcheck.CapabilityFromResult(result)
 	cachePath, err := modelcheck.DefaultCachePath()
 	if err != nil {
-		a.logf("Model capability cache unavailable: %v", err)
+		a.logf(ctx, "Model capability cache unavailable: %v", err)
 		return result, nil
 	}
 	if err := modelcheck.WriteCachedCapability(cachePath, profile.BaseURL, capability, time.Now()); err != nil {
-		a.logf("Model capability cache write failed: %v", err)
+		a.logf(ctx, "Model capability cache write failed: %v", err)
 	}
 	return result, nil
 }
@@ -1051,7 +1053,7 @@ func reviewProducedNothing(result *model.ReviewResult) bool {
 	}
 	reviewerSeen := false
 	for _, run := range result.AgentRuns {
-		if run.Role != "reviewer" {
+		if run.Role != "review" {
 			continue
 		}
 		reviewerSeen = true
@@ -1098,13 +1100,13 @@ func envVarName(value string) string {
 
 func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
 	if req.RepoRoot != "" {
-		a.logf("Resolved repo root: source=provided path=%s", req.RepoRoot)
+		a.logf(ctx, "Resolved repo root: source=provided path=%s", req.RepoRoot)
 		return req.RepoRoot, nil, nil
 	}
 	if req.Mode == model.ModeLocal {
 		wd, err := os.Getwd()
 		if err == nil {
-			a.logf("Resolved repo root: source=working_dir path=%s", wd)
+			a.logf(ctx, "Resolved repo root: source=working_dir path=%s", wd)
 		}
 		return wd, nil, err
 	}
@@ -1113,14 +1115,14 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 		maxToolCalls = profile.MaxToolCalls
 	}
 	if !req.IncludeFullFiles && !hasContentFilters(req) && maxToolCalls < 0 {
-		a.logf("Skipping remote checkout: include_full_files=%t content_filters=%t max_tool_calls=%d", req.IncludeFullFiles, hasContentFilters(req), maxToolCalls)
+		a.logf(ctx, "Skipping remote checkout: include_full_files=%t content_filters=%t max_tool_calls=%d", req.IncludeFullFiles, hasContentFilters(req), maxToolCalls)
 		return "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)
 	if !ok {
 		wd, err := os.Getwd()
 		if err == nil {
-			a.logf("Skipping remote checkout: reason=no_support fallback=%s", wd)
+			a.logf(ctx, "Skipping remote checkout: reason=no_support fallback=%s", wd)
 		}
 		return wd, nil, err
 	}
@@ -1128,7 +1130,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if err != nil {
 		return "", nil, err
 	}
-	a.logf("Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
+	a.logf(ctx, "Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
 	manager := git.NewCheckoutManager()
 	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
 		Workdir: req.Workdir,
@@ -1137,7 +1139,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	if err != nil {
 		return "", nil, err
 	}
-	a.logf("Prepared repo root: path=%s", repoRoot)
+	a.logf(ctx, "Prepared repo root: path=%s", repoRoot)
 	return repoRoot, cleanup, nil
 }
 
@@ -1358,18 +1360,28 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (a *app) logf(format string, args ...any) {
+func (a *app) logf(ctx context.Context, format string, args ...any) {
 	if a.logger == nil {
 		return
 	}
-	a.logger.Printf(format, args...)
+	a.logger.Verbosef(ctx, format, args...)
 }
 
-func (a *app) logProgress(label, summary string) {
+func (a *app) logProgress(ctx context.Context, stage logging.Stage, state logging.State, msg string) {
 	if a.logger == nil {
 		return
 	}
-	a.logger.PrintProgress(label, summary)
+	a.logger.Progress(ctx, stage, state, msg)
+}
+
+// profileProgressInfo builds the command-level logging identity: model, effort
+// and endpoint, rendered in the bracket of every top-level progress line.
+func profileProgressInfo(profile config.Profile) logging.ProgressInfo {
+	return logging.ProgressInfo{
+		Model:   profile.Model,
+		Effort:  profile.ReasoningEffort,
+		BaseURL: profile.BaseURL,
+	}
 }
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {
@@ -1380,11 +1392,7 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	if profile.TopP != nil {
 		flags = append(flags, fmt.Sprintf("top_p=%g", *profile.TopP))
 	}
-	return fmt.Sprintf("%s:%s [%s] @ %s",
-		profile.Model, profile.ReasoningEffort,
-		strings.Join(flags, ", "),
-		profile.BaseURL,
-	)
+	return strings.Join(flags, ", ")
 }
 
 func agentSummary(profile config.Profile, req model.ReviewRequest) string {
@@ -1404,7 +1412,7 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")
 	}
-	return fmt.Sprintf("%s [%s]", kind, strings.Join(flags, ", "))
+	return fmt.Sprintf("%s %s", kind, strings.Join(flags, ", "))
 }
 
 func unlimited(n int, unit, label string) string {
@@ -1423,7 +1431,6 @@ func disablable(n int, unit, label string) string {
 
 func reviewResultSummary(result *model.ReviewResult) string {
 	return strings.Join([]string{
-		"status=OK",
 		fmt.Sprintf("findings=%d", len(result.Findings)),
 		fmt.Sprintf("total_tool_calls=%d", result.TotalToolCalls),
 		fmt.Sprintf("duplicate_tool_calls=%d", totalDuplicateToolCalls(result.AgentRuns)),

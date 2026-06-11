@@ -368,13 +368,13 @@ func TestCheckerShowProgressLogsProbeRequestsResponsesAndResults(t *testing.T) {
 
 	got := stderr.String()
 	for _, want := range []string{
-		"ModelCheck: probe=configured_no_tools, effort=high, tools=false",
-		"Request: [configured_no_tools:high] #1",
-		"Response: [configured_no_tools:high] #1 status=ok",
-		"ModelCheck: probe=configured_no_tools, effort=high, status=ok, reasoned=true",
-		"Tool: list_files status=ok",
-		"ModelCheck: probe=configured_json_output, effort=high, status=ok",
-		"ModelCheck: probe=fallback_no_tools, effort=",
+		"ModelCheck [probe: Probe Response:high · model] start tools=false",
+		"Request    [probe: Probe Response:high · model] #1 sent",
+		"Response   [probe: Probe Response:high · model] #1 done",
+		"ModelCheck [probe: Probe Response:high · model] ok reasoned=true",
+		"Tool       [probe: Probe Tool Calling:high · model] ok list_files",
+		"ModelCheck [probe: Probe Plain JSON Response:high · model] ok",
+		"ModelCheck [probe: Probe Reasoning Efforts:",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("progress log missing %q\nlog:\n%s", want, got)

@@ -61,9 +61,58 @@ func Sanitize(s string) string {
 	return strings.ReplaceAll(s, MarkerOpen, "&lt;"+strings.TrimPrefix(MarkerOpen, "<"))
 }
 
+// hardBreakParagraphs appends a markdown hard break to each rendered prose line
+// outside fenced code blocks, so GitHub/GitLab preserve the intended spacing.
+func hardBreakParagraphs(s string) string {
+	if s == "" {
+		return ""
+	}
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	inFence := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if isFenceLine(trimmed) {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		lines[i] = strings.TrimRight(line, " \t") + "  "
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isFenceLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
+func sanitizeWithHardBreaks(s string) string {
+	return hardBreakParagraphs(Sanitize(s))
+}
+
+// ConfidencePercent renders a 0..1 confidence score as "(NN% confidence)".
+func ConfidencePercent(score float64) string {
+	return fmt.Sprintf("(%.0f%% confidence)", score*100)
+}
+
 // ConfidenceLine renders a 0..1 confidence score as an italic percentage.
 func ConfidenceLine(score float64) string {
-	return fmt.Sprintf("_(%.0f%% confidence)_", score*100)
+	return "_" + ConfidencePercent(score) + "_"
+}
+
+// CorrectnessName maps the overall verdict to its badge name. The verdict enum
+// is "patch is correct" / "patch is incorrect"; anything containing
+// "incorrect" maps to "incorrect", else "correct".
+func CorrectnessName(correctness string) string {
+	if strings.Contains(strings.ToLower(correctness), "incorrect") {
+		return "incorrect"
+	}
+	return "correct"
 }
 
 // Renderer turns review results into markdown comment bodies. It carries the
@@ -86,14 +135,10 @@ func NewRenderer(assetBaseURL string) Renderer {
 	return Renderer{assetBaseURL: assetBaseURL}
 }
 
-// CorrectnessBadge renders the overall verdict as a badge image. The verdict
-// enum is "patch is correct" / "patch is incorrect"; anything containing
-// "incorrect" maps to the incorrect badge, else correct.
+// CorrectnessBadge renders the overall verdict as a badge image, mapping the
+// verdict via CorrectnessName.
 func (r Renderer) CorrectnessBadge(correctness string) string {
-	name := "correct"
-	if strings.Contains(strings.ToLower(correctness), "incorrect") {
-		name = "incorrect"
-	}
+	name := CorrectnessName(correctness)
 	return fmt.Sprintf("![%s](%s%s.svg)", name, r.assetBaseURL, name)
 }
 
@@ -119,13 +164,13 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 	correctness := strings.TrimSpace(result.OverallCorrectness)
 	if correctness == "" {
 		// No verdict to badge; fall back to plain text.
-		fmt.Fprintf(&b, "**review complete**  \n%s\n", ConfidenceLine(result.OverallConfidenceScore))
+		fmt.Fprintf(&b, "**review complete**  \n%s  \n", ConfidenceLine(result.OverallConfidenceScore))
 	} else {
-		fmt.Fprintf(&b, "%s  \n%s\n", r.CorrectnessBadge(correctness), ConfidenceLine(result.OverallConfidenceScore))
+		fmt.Fprintf(&b, "%s  \n%s  \n", r.CorrectnessBadge(correctness), ConfidenceLine(result.OverallConfidenceScore))
 	}
 	if explanation := Sanitize(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
 		b.WriteString("\n")
-		b.WriteString(explanation)
+		b.WriteString(hardBreakParagraphs(explanation))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -133,32 +178,33 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 
 // FindingBody renders a finding as markdown, tagged with its FindingMarker. When
 // locationPrefix is non-empty (the general-comment fallback used when a finding
-// cannot be anchored inline) it is shown above the body so the location is still
-// visible without an inline anchor.
+// cannot be anchored inline) it is shown after the badge/confidence block so the
+// location is still visible without an inline anchor.
 func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) string {
 	title, body, rank, confidence := FindingDisplay(finding)
 	var b strings.Builder
 	b.WriteString(FindingMarker(finding.ID))
-	b.WriteString("\n")
-	if locationPrefix != "" {
-		// Hard break so the location sits on its own line above the badge.
-		b.WriteString(locationPrefix)
-		b.WriteString("  \n")
-	}
+	b.WriteString("\n\n")
 	// Trailing two spaces: markdown hard break stacking badge over confidence.
-	fmt.Fprintf(&b, "%s  \n%s\n\n", r.PriorityBadge(rank), ConfidenceLine(confidence))
-	if title != "" {
-		fmt.Fprintf(&b, "### %s\n\n", Sanitize(title))
+	fmt.Fprintf(&b, "%s  \n%s  \n\n", r.PriorityBadge(rank), ConfidenceLine(confidence))
+	if locationPrefix != "" {
+		// Hard break so the location sits on its own line above the title/body.
+		b.WriteString(locationPrefix)
+		b.WriteString("  \n\n")
 	}
-	b.WriteString(Sanitize(body))
+	if title != "" {
+		fmt.Fprintf(&b, "### %s  \n\n", Sanitize(title))
+	}
+	b.WriteString(sanitizeWithHardBreaks(body))
 	if len(finding.Suggestions) > 0 {
-		b.WriteString("\n\n**Suggestions**\n")
+		b.WriteString("\n\n**Suggestions**  \n")
 		for _, suggestion := range finding.Suggestions {
 			text := strings.TrimSpace(suggestion.Body)
 			if text == "" {
 				continue
 			}
-			fmt.Fprintf(&b, "\n- %s", Sanitize(text))
+			formatted := strings.ReplaceAll(sanitizeWithHardBreaks(text), "\n", "\n  ")
+			fmt.Fprintf(&b, "\n- %s", formatted)
 		}
 	}
 	return b.String()

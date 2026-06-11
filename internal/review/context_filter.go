@@ -124,7 +124,7 @@ func (e *Engine) keepFilteredPath(ctx context.Context, req model.ReviewRequest, 
 	if status != model.FileDeleted {
 		file, err := e.retrieval.GetFile(ctx, req.RepoRoot, filePath)
 		if err != nil {
-			e.logf("Skipping filter content read: path=%s error=%v", filePath, err)
+			e.logf(ctx, "Skipping filter content read: path=%s error=%v", filePath, err)
 		} else if file != nil {
 			content = file.Content
 			contentOK = true

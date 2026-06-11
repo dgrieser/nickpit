@@ -508,7 +508,7 @@ func injectedAgentResult(g injectedGroup) agentResult {
 		},
 		run: model.AgentRun{
 			Name:     "Injected Findings",
-			Role:     "reviewer",
+			Role:     "review",
 			Findings: len(g.findings),
 			Status:   model.AgentRunStatusSkipped,
 		},

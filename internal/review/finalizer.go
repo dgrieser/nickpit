@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -91,7 +92,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if opts.UseJSONSchema && len(constraints.AllowedCorrectness) > 0 {
 		schema = llm.FinalizeSchemaWithConstraints(constraints)
 	}
-	e.logProgress("Finalize", fmt.Sprintf("findings=%d", len(in.Findings)))
+	e.logProgress(logging.StageFinalize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
 		name:             "Finalize Review",
 		role:             "finalize",
@@ -130,7 +131,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if stats.Omitted > 0 || stats.Ignored > 0 || stats.FinalizerFindings != len(in.Findings) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("Finalizer output mismatch: findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d; preserved input findings", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
 	}
-	e.logProgress("Finalize", fmt.Sprintf("done findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored, len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
+	e.logProgress(logging.StageFinalize, logging.StateDone, fmt.Sprintf("findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored, len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
 	return out, result.run, nil
 }
 

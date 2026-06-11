@@ -12,7 +12,7 @@ import (
 
 // PublishReview posts the review back to the merge request: one summary note and
 // one comment per finding (pinned inline when the line is part of the diff, else
-// a general note prefixed with file:line). Hidden markers make re-runs
+// a general note carrying file:line). Hidden markers make re-runs
 // idempotent. Per-item failures are aggregated; a failure never aborts the rest.
 func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, result *model.ReviewResult) error {
 	if result == nil {
@@ -53,7 +53,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 
 // publishFinding posts a single finding. It tries a multi-line inline comment,
 // then a single-line inline comment, then (on an unmappable line or a 422 from
-// GitLab) a general note prefixed with file:line.
+// GitLab) a general note carrying file:line.
 func (a *Adapter) publishFinding(ctx context.Context, notesPath, discussionsPath string, change MRChange, hasChange bool, refs DiffRefs, finding model.Finding) error {
 	if hasChange {
 		if pos, ok := multiLinePosition(change, refs, finding.CodeLocation.LineRange); ok {

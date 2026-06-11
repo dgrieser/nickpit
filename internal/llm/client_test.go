@@ -366,10 +366,10 @@ func TestClientReviewRetries429WithProgressLoggingUntilSuccess(t *testing.T) {
 		t.Fatalf("attempts = %d", attempts)
 	}
 	got := logs.String()
-	if want := "Model: rate limited (429), waiting 1ms before retry attempt 2"; !strings.Contains(got, want) {
+	if want := "Model      retry rate limited (429), waiting 1ms before attempt 2"; !strings.Contains(got, want) {
 		t.Fatalf("missing first retry progress log %q in:\n%s", want, got)
 	}
-	if want := "Model: rate limited (429), waiting 1ms before retry attempt 3"; !strings.Contains(got, want) {
+	if want := "Model      retry rate limited (429), waiting 1ms before attempt 3"; !strings.Contains(got, want) {
 		t.Fatalf("missing second retry progress log %q in:\n%s", want, got)
 	}
 }
@@ -1083,7 +1083,7 @@ func TestClientReviewDoesNotEndExternalReasoningSink(t *testing.T) {
 	logger := logging.New(&buf, true, false)
 	logger.SetShowReasoning(true)
 	client.SetLogger(logger)
-	sec := logger.OpenReasoningSection("review")
+	sec := logger.OpenReasoningSection(logging.ProgressInfo{AgentRole: "review"})
 
 	for range 2 {
 		if _, err := client.Review(context.Background(), &ReviewRequest{
@@ -2975,7 +2975,9 @@ func TestClientReviewRetriesNetworkErrorWhileReadingStream(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(logging.New(&logBuf, false, false))
+	retryLogger := logging.New(&logBuf, false, false)
+	retryLogger.SetShowProgress(true)
+	client.SetLogger(retryLogger)
 	client.retrier.InitialBackoff = 4 * time.Nanosecond
 	client.retrier.MaxBackoff = 4 * time.Nanosecond
 
@@ -2989,7 +2991,7 @@ func TestClientReviewRetriesNetworkErrorWhileReadingStream(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "LLM stream hit a network error, retrying...") {
+	if !strings.Contains(logBuf.String(), "Model      retry stream network error") {
 		t.Fatalf("retry notice missing: %q", logBuf.String())
 	}
 }
@@ -2999,7 +3001,9 @@ func TestClientReviewRetriesPeerInternalStreamErrorWithPartialContent(t *testing
 	var logBuf bytes.Buffer
 
 	client := NewOpenAIClient("http://example.test", "token", "model")
-	client.SetLogger(logging.New(&logBuf, false, false))
+	retryLogger := logging.New(&logBuf, false, false)
+	retryLogger.SetShowProgress(true)
+	client.SetLogger(retryLogger)
 	client.retrier.InitialBackoff = 4 * time.Nanosecond
 	client.retrier.MaxBackoff = 4 * time.Nanosecond
 	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -3049,7 +3053,7 @@ func TestClientReviewRetriesPeerInternalStreamErrorWithPartialContent(t *testing
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "LLM stream hit a network error, retrying...") {
+	if !strings.Contains(logBuf.String(), "Model      retry stream network error") {
 		t.Fatalf("retry notice missing: %q", logBuf.String())
 	}
 }
@@ -3104,7 +3108,9 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "token", "model")
-	client.SetLogger(logging.New(&logBuf, false, false))
+	retryLogger := logging.New(&logBuf, false, false)
+	retryLogger.SetShowProgress(true)
+	client.SetLogger(retryLogger)
 	client.retrier.InitialBackoff = 4 * time.Nanosecond
 	client.retrier.MaxBackoff = 4 * time.Nanosecond
 
@@ -3118,7 +3124,7 @@ func TestClientReviewRetriesNetworkErrorOpeningStream(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d", attempts)
 	}
-	if !strings.Contains(logBuf.String(), "LLM request hit a network error, retrying...") {
+	if !strings.Contains(logBuf.String(), "Model      retry network error") {
 		t.Fatalf("network retry notice missing: %q", logBuf.String())
 	}
 }

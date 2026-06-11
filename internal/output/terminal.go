@@ -7,248 +7,237 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/textsan"
+	"golang.org/x/term"
 )
 
 type Formatter interface {
 	FormatFindings(result *model.ReviewResult) error
 }
 
+const (
+	terminalDefaultWidth = 80
+	terminalMinWidth     = 60
+	terminalMaxWidth     = 120
+)
+
+// TerminalFormatter renders the review result the way it appears as published
+// GitLab/GitHub comments: the summary comment first, then one comment per
+// finding, with badge labels in place of the badge SVGs and markdown bodies
+// rendered for the terminal. A dim footer keeps token usage and warnings.
 type TerminalFormatter struct {
 	w       io.Writer
 	useANSI bool
+	width   int
 }
 
 func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
 	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
 		useANSI = false
 	}
-	return &TerminalFormatter{w: w, useANSI: useANSI}
+	width := terminalDefaultWidth
+	if f, ok := w.(*os.File); ok && f != nil && term.IsTerminal(int(f.Fd())) {
+		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+			width = min(max(w, terminalMinWidth), terminalMaxWidth)
+		}
+	}
+	return &TerminalFormatter{w: w, useANSI: useANSI, width: width}
+}
+
+// SetWidth overrides the detected terminal width (test hook).
+func (f *TerminalFormatter) SetWidth(n int) {
+	if n > 0 {
+		f.width = n
+	}
 }
 
 func (f *TerminalFormatter) FormatFindings(result *model.ReviewResult) error {
-	counts := map[int]int{}
-	verifiedCount := 0
-	confirmedCount := 0
-	refutedCount := 0
-	unverifiedCount := 0
+	sortFindings(result.Findings)
+
+	var b strings.Builder
+	f.writeSummary(&b, result)
 	for _, finding := range result.Findings {
-		counts[model.PriorityRank(finding.Priority)]++
-		if finding.Verification != nil {
-			verifiedCount++
-			switch finding.Verification.Verdict {
-			case model.VerdictConfirmed:
-				confirmedCount++
-			case model.VerdictRefuted:
-				refutedCount++
-			default:
-				unverifiedCount++
-			}
+		f.writeRule(&b)
+		f.writeFinding(&b, finding)
+	}
+	f.writeRule(&b)
+	f.writeFooter(&b, result)
+
+	_, err := io.WriteString(f.w, b.String())
+	return err
+}
+
+// writeSummary renders the overall verdict comment: badge, confidence, and the
+// explanation as rendered markdown.
+func (f *TerminalFormatter) writeSummary(b *strings.Builder, result *model.ReviewResult) {
+	correctness := strings.TrimSpace(result.OverallCorrectness)
+	if correctness == "" {
+		// No verdict to badge; fall back to plain text like the publisher.
+		b.WriteString(f.bold("review complete"))
+	} else {
+		b.WriteString(correctnessBadge(correctness, f.useANSI))
+	}
+	b.WriteString("\n")
+	b.WriteString(f.dim(reviewmd.ConfidencePercent(result.OverallConfidenceScore)))
+	b.WriteString("\n")
+	if explanation := textsan.StripControl(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
+		b.WriteString("\n")
+		b.WriteString(f.renderMarkdown(explanation))
+		b.WriteString("\n")
+	}
+}
+
+// writeFinding renders one finding comment: badge, confidence, location, and
+// the title/body/suggestions markdown.
+func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Finding) {
+	_, _, rank, confidence := reviewmd.FindingDisplay(finding)
+	b.WriteString(priorityBadge(rank, f.useANSI))
+	b.WriteString("\n")
+	b.WriteString(f.dim(reviewmd.ConfidencePercent(confidence)))
+	b.WriteString("\n\n")
+	b.WriteString(f.bold(findingLocation(finding)))
+	b.WriteString("\n\n")
+	b.WriteString(f.renderMarkdown(findingMarkdown(finding)))
+	b.WriteString("\n")
+}
+
+func (f *TerminalFormatter) writeFooter(b *strings.Builder, result *model.ReviewResult) {
+	for _, warning := range result.Warnings {
+		b.WriteString(f.yellow("! " + textsan.StripControl(warning)))
+		b.WriteString("\n")
+	}
+	b.WriteString(f.dim(fmt.Sprintf("Tokens: %d prompt / %d completion / %d total",
+		result.TokensUsed.PromptTokens, result.TokensUsed.CompletionTokens, result.TokensUsed.TotalTokens)))
+	b.WriteString("\n")
+}
+
+func (f *TerminalFormatter) writeRule(b *strings.Builder) {
+	b.WriteString("\n")
+	if f.useANSI {
+		b.WriteString(f.dim(strings.Repeat("─", f.width)))
+	} else {
+		b.WriteString("---")
+	}
+	b.WriteString("\n\n")
+}
+
+// findingLocation renders the file:line anchor shown above each finding — the
+// terminal equivalent of the platform inline anchor (and identical in shape to
+// the publisher's general-comment location prefix).
+func findingLocation(finding model.Finding) string {
+	path := textsan.StripControl(finding.CodeLocation.FilePath)
+	start := finding.CodeLocation.LineRange.Start
+	end := finding.CodeLocation.LineRange.End
+	if end > start {
+		return fmt.Sprintf("%s:%d-%d", path, start, end)
+	}
+	return fmt.Sprintf("%s:%d", path, start)
+}
+
+// findingMarkdown builds the markdown one would see in the published comment:
+// title heading, body, and the suggestions block. Markers and hard breaks are
+// publishing concerns and are deliberately absent; the renderer wraps at a
+// known width.
+func findingMarkdown(finding model.Finding) string {
+	title, body, _, _ := reviewmd.FindingDisplay(finding)
+	var b strings.Builder
+	if title = strings.TrimSpace(title); title != "" {
+		b.WriteString("### ")
+		b.WriteString(textsan.StripControl(title))
+		b.WriteString("\n\n")
+	}
+	b.WriteString(textsan.StripControl(strings.TrimSpace(body)))
+	suggestions := make([]string, 0, len(finding.Suggestions))
+	for _, suggestion := range finding.Suggestions {
+		text := strings.TrimSpace(suggestion.Body)
+		if text == "" {
+			continue
+		}
+		suggestions = append(suggestions, strings.ReplaceAll(textsan.StripControl(text), "\n", "\n  "))
+	}
+	if len(suggestions) > 0 {
+		b.WriteString("\n\n**Suggestions**\n")
+		for _, suggestion := range suggestions {
+			b.WriteString("\n- ")
+			b.WriteString(suggestion)
 		}
 	}
-	header := fmt.Sprintf("NickPit Review\n\n%d findings (%d P0, %d P1, %d P2, %d P3)",
-		len(result.Findings), counts[0], counts[1], counts[2], counts[3],
+	return b.String()
+}
+
+// renderMarkdown renders markdown for the terminal. Plain mode returns the raw
+// markdown (deterministic, pipe-friendly); rendering errors fall back to the
+// raw markdown — never fail the review output over styling.
+func (f *TerminalFormatter) renderMarkdown(md string) string {
+	if !f.useANSI {
+		return md
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(f.width),
 	)
-	if verifiedCount > 0 {
-		header += fmt.Sprintf(" · verified: %d confirmed, %d refuted, %d unverified", confirmedCount, refutedCount, unverifiedCount)
+	if err != nil {
+		return md
 	}
-	if _, err := fmt.Fprintf(f.w, "%s\n\n", header); err != nil {
-		return err
+	rendered, err := renderer.Render(md)
+	if err != nil {
+		return md
 	}
-	if len(result.Warnings) > 0 {
-		if _, err := fmt.Fprintln(f.w, f.colorWarning("Warnings:")); err != nil {
-			return err
-		}
-		for _, w := range result.Warnings {
-			if _, err := fmt.Fprintf(f.w, "  %s %s\n", f.colorWarning("-"), w); err != nil {
-				return err
-			}
-		}
-		if _, err := fmt.Fprintln(f.w); err != nil {
-			return err
-		}
-	}
-	sort.SliceStable(result.Findings, func(i, j int) bool {
-		ri := model.PriorityRank(result.Findings[i].Priority)
-		rj := model.PriorityRank(result.Findings[j].Priority)
+	return strings.Trim(rendered, "\n")
+}
+
+// sortFindings orders findings by priority rank, refuted-last within a rank,
+// then by verification confidence descending. Verification is no longer shown
+// but still drives a useful reading order.
+func sortFindings(findings []model.Finding) {
+	sort.SliceStable(findings, func(i, j int) bool {
+		ri := displayRank(findings[i])
+		rj := displayRank(findings[j])
 		if ri != rj {
 			return ri < rj
 		}
-		invI := result.Findings[i].Verification != nil && result.Findings[i].Verification.Verdict == model.VerdictRefuted
-		invJ := result.Findings[j].Verification != nil && result.Findings[j].Verification.Verdict == model.VerdictRefuted
+		invI := findings[i].Verification != nil && findings[i].Verification.Verdict == model.VerdictRefuted
+		invJ := findings[j].Verification != nil && findings[j].Verification.Verdict == model.VerdictRefuted
 		if invI != invJ {
 			return !invI
 		}
 		ci := 0.0
-		if result.Findings[i].Verification != nil {
-			ci = result.Findings[i].Verification.ConfidenceScore
+		if findings[i].Verification != nil {
+			ci = findings[i].Verification.ConfidenceScore
 		}
 		cj := 0.0
-		if result.Findings[j].Verification != nil {
-			cj = result.Findings[j].Verification.ConfidenceScore
+		if findings[j].Verification != nil {
+			cj = findings[j].Verification.ConfidenceScore
 		}
 		return ci > cj
 	})
-	for _, finding := range result.Findings {
-		header := fmt.Sprintf("%s %s:%d-%d",
-			f.colorize(priorityLabel(finding.Priority), model.PriorityRank(finding.Priority)),
-			finding.CodeLocation.FilePath,
-			finding.CodeLocation.LineRange.Start,
-			max(finding.CodeLocation.LineRange.End, finding.CodeLocation.LineRange.Start),
-		)
-		if _, err := fmt.Fprintln(f.w, header); err != nil {
-			return err
-		}
-		if line := f.renderVerification(finding.Verification, model.PriorityRank(finding.Priority)); line != "" {
-			if _, err := fmt.Fprintln(f.w, line); err != nil {
-				return err
-			}
-		}
-		prevRank := model.PriorityRank(finding.Priority)
-		if finding.Verification != nil {
-			prevRank = finding.Verification.Priority
-		}
-		if line := f.renderFinalization(finding.Finalization, prevRank); line != "" {
-			if _, err := fmt.Fprintln(f.w, line); err != nil {
-				return err
-			}
-		}
-		title, body, conf := finding.Title, finding.Body, finding.ConfidenceScore
-		if finding.Finalization != nil {
-			title, body, conf = finding.Finalization.Title, finding.Finalization.Body, finding.Finalization.ConfidenceScore
-		}
-		// The summarize pass shortens the finalized body (other fields copied from
-		// finalization), so prefer it for what the user sees when present.
-		if finding.Summarization != nil {
-			title, body, conf = finding.Summarization.Title, finding.Summarization.Body, finding.Summarization.ConfidenceScore
-		}
-		// Title/Body are LLM-generated and untrusted; strip control characters
-		// so embedded ANSI/escape sequences cannot manipulate the terminal.
-		if _, err := fmt.Fprintf(f.w, "%s\n%s\nConfidence: %.2f\n\n",
-			textsan.StripControl(title), textsan.StripControl(body), conf,
-		); err != nil {
-			return err
-		}
-	}
-	_, err := fmt.Fprintf(f.w, "Overall: %s\n%s\nConfidence: %.2f\nTokens: %d prompt / %d completion / %d total\n",
-		textsan.StripControl(string(result.OverallCorrectness)), textsan.StripControl(result.OverallExplanation), result.OverallConfidenceScore,
-		result.TokensUsed.PromptTokens, result.TokensUsed.CompletionTokens, result.TokensUsed.TotalTokens)
-	return err
 }
 
-func (f *TerminalFormatter) renderFinalization(v *model.FindingFinalization, prevRank int) string {
-	if v == nil {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("  finalized")
-	if v.Priority != prevRank {
-		arrow := fmt.Sprintf("  P%d→P%d", prevRank, v.Priority)
-		b.WriteString(f.colorPriorityArrow(arrow))
-	} else {
-		fmt.Fprintf(&b, "  P%d", v.Priority)
-	}
-	if remarks := strings.TrimSpace(v.Remarks); remarks != "" {
-		b.WriteString("\n  final remark: ")
-		b.WriteString(truncateRemark(textsan.StripControl(remarks), 200))
-	}
-	return b.String()
+func displayRank(finding model.Finding) int {
+	_, _, rank, _ := reviewmd.FindingDisplay(finding)
+	return rank
 }
 
-func (f *TerminalFormatter) renderVerification(v *model.FindingVerification, originalRank int) string {
-	if v == nil {
-		return ""
-	}
-	glyphConfirmed := "✓ confirmed"
-	glyphRefuted := "✗ refuted"
-	glyphUnverified := "? unverified"
-	if !f.useANSI {
-		glyphConfirmed = "[ok] confirmed"
-		glyphRefuted = "[bad] refuted"
-		glyphUnverified = "[??] unverified"
-	}
-	var b strings.Builder
-	b.WriteString("  ")
-	switch v.Verdict {
-	case model.VerdictConfirmed:
-		b.WriteString(f.colorVerifyValid(glyphConfirmed))
-	case model.VerdictRefuted:
-		b.WriteString(f.colorVerifyInvalid(glyphRefuted, v.ConfidenceScore))
-	default:
-		b.WriteString(f.colorVerifyInvalid(glyphUnverified, v.ConfidenceScore))
-	}
-	fmt.Fprintf(&b, "  conf %.2f", v.ConfidenceScore)
-	if v.Priority != originalRank {
-		arrow := fmt.Sprintf("  P%d→P%d", originalRank, v.Priority)
-		b.WriteString(f.colorPriorityArrow(arrow))
-	}
-	if remarks := strings.TrimSpace(v.Remarks); remarks != "" {
-		b.WriteString("\n  remark: ")
-		b.WriteString(truncateRemark(textsan.StripControl(remarks), 200))
-	}
-	return b.String()
-}
-
-func truncateRemark(text string, max int) string {
-	if len(text) <= max {
+func (f *TerminalFormatter) dim(text string) string {
+	if !f.useANSI || text == "" {
 		return text
 	}
-	runes := []rune(text)
-	if len(runes) <= max {
-		return text
-	}
-	return string(runes[:max]) + "…"
+	return "\x1b[2m" + text + "\x1b[0m"
 }
 
-func (f *TerminalFormatter) colorVerifyValid(text string) string {
-	if !f.useANSI {
+func (f *TerminalFormatter) bold(text string) string {
+	if !f.useANSI || text == "" {
 		return text
 	}
-	return "\x1b[2;32m" + text + "\x1b[0m"
+	return "\x1b[1m" + text + "\x1b[0m"
 }
 
-func (f *TerminalFormatter) colorVerifyInvalid(text string, confidence float64) string {
-	if !f.useANSI {
-		return text
-	}
-	code := "31"
-	if confidence >= 0.8 {
-		code = "1;31"
-	}
-	return "\x1b[" + code + "m" + text + "\x1b[0m"
-}
-
-func (f *TerminalFormatter) colorWarning(text string) string {
-	if !f.useANSI {
+func (f *TerminalFormatter) yellow(text string) string {
+	if !f.useANSI || text == "" {
 		return text
 	}
 	return "\x1b[33m" + text + "\x1b[0m"
-}
-
-func (f *TerminalFormatter) colorPriorityArrow(text string) string {
-	if !f.useANSI {
-		return text
-	}
-	return "\x1b[33m" + text + "\x1b[0m"
-}
-
-func (f *TerminalFormatter) colorize(text string, priority int) string {
-	if !f.useANSI {
-		return text
-	}
-	code := "36"
-	switch priority {
-	case 0:
-		code = "1;31"
-	case 1:
-		code = "31"
-	case 2:
-		code = "33"
-	}
-	return "\x1b[" + code + "m" + text + "\x1b[0m"
-}
-
-func priorityLabel(priority *int) string {
-	return fmt.Sprintf("P%d", model.PriorityRank(priority))
 }

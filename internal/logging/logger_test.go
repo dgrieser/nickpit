@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -25,18 +26,18 @@ func TestPrintErrorANSI(t *testing.T) {
 
 	logger.PrintError(assertErr("boom"))
 
-	want := "\x1b[31mERROR\x1b[0m\x1b[90m:\x1b[0m \x1b[37mboom\x1b[0m\n"
+	want := "\x1b[38;5;203mERROR\x1b[0m\x1b[38;5;244m:\x1b[0m \x1b[38;5;252mboom\x1b[0m\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("unexpected output: %q", got)
 	}
 }
 
-func TestPrintJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
+func TestVerboseJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
-	logger.PrintJSON("", map[string]any{
+	logger.VerboseJSON(context.Background(), "", map[string]any{
 		"payload": `{"nested":{"ok":true},"items":[1,2]}`,
 	})
 
@@ -55,12 +56,12 @@ func TestPrintJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
 	}
 }
 
-func TestPrintJSONRendersMultilineStringsConsistently(t *testing.T) {
+func TestVerboseJSONRendersMultilineStringsConsistently(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
-	logger.PrintJSON("", map[string]any{
+	logger.VerboseJSON(context.Background(), "", map[string]any{
 		"content": "line1\nline2\nline3",
 	})
 
@@ -76,12 +77,12 @@ func TestPrintJSONRendersMultilineStringsConsistently(t *testing.T) {
 	}
 }
 
-func TestPrintJSONPreservesEscapesInMultilineStrings(t *testing.T) {
+func TestVerboseJSONPreservesEscapesInMultilineStrings(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
 	logger := New(&buf, true, false)
 
-	logger.PrintJSON("", map[string]any{
+	logger.VerboseJSON(context.Background(), "", map[string]any{
 		"content": "line1\t\"quoted\" <tag>\npath\\segment\t\"tail\"",
 	})
 

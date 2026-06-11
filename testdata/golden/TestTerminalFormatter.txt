@@ -1,13 +1,39 @@
-NickPit Review
+[INCORRECT]
+(77% confidence)
 
-1 findings (0 P0, 0 P1, 1 P2, 0 P3)
-
-P2 a.go:10-12
-Problem
-Description
-Confidence: 0.82
-
-Overall: patch is incorrect
 Summary text
-Confidence: 0.77
+
+---
+
+[HIGH]
+(60% confidence)
+
+b.go:7
+
+### Single line
+
+Short.
+
+---
+
+[MEDIUM]
+(82% confidence)
+
+a.go:10-12
+
+### Problem
+
+Description with `code`.
+
+Second paragraph.
+
+**Suggestions**
+
+- use a mutex
+- first line
+  second line
+
+---
+
+! Publish failed: 404
 Tokens: 10 prompt / 4 completion / 14 total

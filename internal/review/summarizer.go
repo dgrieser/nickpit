@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -78,7 +79,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
-	e.logProgress("Summarize", fmt.Sprintf("findings=%d", len(in.Findings)))
+	e.logProgress(logging.StageSummarize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
 		name:             "Summarize Review",
 		role:             "summarize",
@@ -112,7 +113,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	if stats.Omitted > 0 || stats.Ignored > 0 || stats.SummarizerFindings != len(in.Findings) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("Summarizer output mismatch: findings_in=%d summarizer_findings=%d matched=%d omitted=%d ignored=%d; preserved finalized bodies", len(in.Findings), stats.SummarizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
 	}
-	e.logProgress("Summarize", fmt.Sprintf("done findings_in=%d summarizer_findings=%d matched=%d omitted=%d ignored=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), stats.SummarizerFindings, stats.Matched, stats.Omitted, stats.Ignored, len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
+	e.logProgress(logging.StageSummarize, logging.StateDone, fmt.Sprintf("findings_in=%d summarizer_findings=%d matched=%d omitted=%d ignored=%d findings_out=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", len(in.Findings), stats.SummarizerFindings, stats.Matched, stats.Omitted, stats.Ignored, len(out.Findings), result.run.TokensUsed.PromptTokens, result.run.TokensUsed.CompletionTokens, result.run.TokensUsed.TotalTokens))
 	return out, result.run, nil
 }
 

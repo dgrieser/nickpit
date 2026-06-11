@@ -2,15 +2,16 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"sync"
 	"testing"
 )
 
 // TestLoggerReasoningConcurrentNoRace guards against the data race that existed
 // when l.reasoning was lazily initialized under sync.Once inside
-// OpenReasoningSection while PrintProgress/PrintProgressToolCall/writeRaw read
-// the field without synchronization. The reviewer/verifier fan-out calls these
-// from many goroutines at once. Run with -race.
+// OpenReasoningSection while Progress/ProgressToolCall/writeRaw read the field
+// without synchronization. The reviewer/verifier fan-out calls these from many
+// goroutines at once. Run with -race.
 func TestLoggerReasoningConcurrentNoRace(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, true, false)
@@ -20,14 +21,16 @@ func TestLoggerReasoningConcurrentNoRace(t *testing.T) {
 	l.SetShowProgress(true)
 
 	const workers = 16
+	ctx := WithProgressInfo(context.Background(), ProgressInfo{AgentRole: "review", AgentName: "#1"})
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
-			sec := l.OpenReasoningSection("agent")
+			sec := l.OpenReasoningSection(ProgressInfo{AgentRole: "agent"})
 			sec.Append("reasoning delta\n")
-			l.PrintProgress("Reasoning", "thinking about something")
-			l.PrintProgressToolCall("inspect_file foo.go", "ok")
-			l.Printf("status: working")
+			l.Progress(ctx, StageReasoning, StateNone, "thinking about something")
+			l.ProgressFor(ProgressInfo{AgentRole: "verify", AgentName: "#2"}, StageVerify, StateDone, "conf=0.9")
+			l.ProgressToolCall(ctx, "inspect_file(path=foo.go)", "result=[ok]")
+			l.Verbosef(ctx, "status: working")
 			sec.End()
 		})
 	}

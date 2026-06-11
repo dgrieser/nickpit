@@ -1,4 +1,4 @@
-{{if or .StyleGuideTitles .HasToolchainVersions}}{{if .StyleGuideTitles}}IMPORTANT: When {{if eq .AgentRole "verify"}}validating{{else if eq .AgentRole "reviewer"}}reviewing{{end}} findings, check the provided styleguides:
+{{if or .StyleGuideTitles .HasToolchainVersions}}{{if .StyleGuideTitles}}IMPORTANT: When {{if eq .AgentRole "verify"}}validating{{else if eq .AgentRole "review"}}reviewing{{end}} findings, check the provided styleguides:
 {{range .StyleGuideTitles}}- {{.}}
 {{end}}{{if eq .AgentRole "verify"}}
 Make sure the reviewer ACTUALLY followed the instructions from the styleguides, BEFORE trusting a finding.{{end}}{{end}}{{if .HasToolchainVersions}}

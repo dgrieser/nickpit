@@ -12,7 +12,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-const defaultVerifyConcurrency = 4
+const defaultVerifyConcurrency = 10
 
 type VerifyRequest struct {
 	ReviewCtx *model.ReviewContext
@@ -23,6 +23,7 @@ type VerifyRequest struct {
 	StyleGuides              []model.StyleGuide
 	RepoRoot                 string
 	Section                  *logging.ReasoningSection
+	Progress                 logging.ProgressInfo
 	UseJSONSchema            bool
 	MaxToolCalls             int
 	MaxDuplicateToolCalls    int
@@ -52,7 +53,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: nil review context")
 	}
 	if model.EnsureFindingID(&req.Finding) {
-		e.logf("Verify generated replacement ID for invalid finding ID: title=%q", req.Finding.Title)
+		e.logf(ctx, "Verify generated replacement ID for invalid finding ID: title=%q", req.Finding.Title)
 	}
 
 	systemTemplate, err := e.loadPrompt("agent_verify_system_prompt.tmpl")
@@ -120,10 +121,15 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		{Role: "user", Content: userPrompt},
 	}
 
+	progress := req.Progress
+	if progress.IsZero() {
+		progress = e.progressInfo(agentKind, "Verify Findings", "")
+	}
 	for attempt := 0; ; attempt++ {
 		loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
 			AgentName:                         "Verify Findings",
 			AgentKind:                         agentKind,
+			Progress:                          progress,
 			Messages:                          messages,
 			Tools:                             reviewerToolDefinitions(),
 			Schema:                            schema,
@@ -162,7 +168,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
 			return nil, usage, fmt.Errorf("verify: missing verification in response")
 		}
-		e.logf("Verify: missing verification, retrying: attempt=%d", attempt+1)
+		e.logf(ctx, "Verify: missing verification, retrying: attempt=%d", attempt+1)
 		if len(loopResult.messages) > 0 {
 			messages = loopResult.messages
 		}
@@ -172,7 +178,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, []string, error) {
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
-		e.logf("Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
+		e.logf(ctx, "Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 	}
 	verifications := make([]*model.FindingVerification, len(findings))
 	if len(findings) == 0 {
@@ -205,14 +211,15 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		semaphore = make(chan struct{}, concurrency)
 		wg        sync.WaitGroup
 	)
-	e.logProgress("Verify", fmt.Sprintf("findings=%d concurrency=%d", len(findings), concurrency))
+	e.logProgress(logging.StageVerify, logging.StateStart, fmt.Sprintf("findings=%d concurrency=%d", len(findings), concurrency))
 	for i, finding := range findings {
 		wg.Add(1)
 		semaphore <- struct{}{}
 		go func(idx int, f model.Finding) {
 			defer wg.Done()
 			defer func() { <-semaphore }()
-			sec := e.logger.NewReasoningTracker(labelForFinding(idx, f))
+			info := e.progressInfo("verify", fmt.Sprintf("#%d", idx+1), truncateFindingTitle(f.Title))
+			sec := e.logger.NewReasoningTracker(info)
 			defer sec.End()
 			req := VerifyRequest{
 				ReviewCtx:                reviewCtx,
@@ -220,6 +227,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				StyleGuides:              sharedStyleGuides,
 				RepoRoot:                 opts.RepoRoot,
 				Section:                  sec,
+				Progress:                 info,
 				UseJSONSchema:            opts.UseJSONSchema,
 				MaxToolCalls:             opts.MaxToolCalls,
 				MaxDuplicateToolCalls:    opts.MaxDuplicateToolCalls,
@@ -238,26 +246,23 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 			}
 			mu.Unlock()
 			if err != nil {
-				e.logf("Verify failed: index=%d title=%q error=%v", idx, f.Title, err)
+				e.logf(ctx, "Verify failed: index=%d title=%q error=%v", idx, f.Title, err)
 				return
 			}
 			verifications[idx] = verification
 		}(i, finding)
 	}
 	wg.Wait()
-	e.logProgress("Verify", fmt.Sprintf("done findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d warnings=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens, len(warnings)))
+	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("findings=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d warnings=%d", len(findings), usageSum.PromptTokens, usageSum.CompletionTokens, usageSum.TotalTokens, len(warnings)))
 	return verifications, usageSum, warnings, nil
 }
 
-func labelForFinding(idx int, f model.Finding) string {
-	title := strings.TrimSpace(f.Title)
-	if title == "" {
-		return fmt.Sprintf("verifier #%d", idx+1)
-	}
+func truncateFindingTitle(title string) string {
+	title = strings.TrimSpace(title)
 	if len([]rune(title)) > 60 {
 		title = string([]rune(title)[:57]) + "..."
 	}
-	return fmt.Sprintf("verifier #%d: %s", idx+1, title)
+	return title
 }
 
 func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {

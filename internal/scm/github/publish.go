@@ -13,7 +13,7 @@ import (
 // on a prior run but new inline findings still need a review to carry them.
 // GitHub requires a non-empty body for a submitted COMMENT review, and a
 // marker-free line here avoids re-posting (and re-deduping) the verdict.
-const reviewFallbackBody = "Additional nickpit findings below."
+const reviewFallbackBody = "Additional nickpit findings below.  "
 
 // inlineItem pairs a finding with its rendered inline comment so the finding can
 // be re-rendered as a general comment if the atomic review POST is rejected.
@@ -25,7 +25,7 @@ type inlineItem struct {
 // PublishReview posts the review back to the pull request as a single GitHub PR
 // review (event COMMENT): the overall verdict as the review body and one inline
 // comment per finding anchored to its diff line. Findings whose line is not part
-// of the diff fall back to a general PR comment prefixed with file:line. Hidden
+// of the diff fall back to a general PR comment carrying file:line. Hidden
 // markers make re-runs idempotent. Per-item failures are aggregated; a failure
 // never aborts the rest.
 func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, result *model.ReviewResult) error {

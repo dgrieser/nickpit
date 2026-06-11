@@ -138,7 +138,7 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 // resolveAndTrimContext resolves the review source, captures toolchain versions,
 // optionally inlines full files, and trims to the context budget.
 func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
-	e.logf("Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
+	e.logf(ctx, "Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
 	contextFilter, err := newReviewContextFilter(req)
 	if err != nil {
 		return nil, err
@@ -147,8 +147,8 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if err != nil {
 		return nil, err
 	}
-	e.logProgress("Review", reviewContextSummary(reviewCtx, req))
-	e.logf("Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
+	e.logProgress(logging.StageReview, logging.StateStart, reviewContextSummary(reviewCtx, req))
+	e.logf(ctx, "Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
 		return nil, ErrEmptyDiff
 	}
@@ -157,24 +157,24 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if allFiltered, err := e.applyReviewContextFilter(ctx, reviewCtx, req, contextFilter); err != nil {
 		return nil, err
 	} else if allFiltered {
-		e.logf("Filtered context: files=0 diff_bytes=0")
+		e.logf(ctx, "Filtered context: files=0 diff_bytes=0")
 		return reviewCtx, nil
 	}
 
 	if e.toolchainCapture != nil {
 		reviewCtx.ToolchainVersions = e.toolchainCapture(ctx, req.RepoRoot, reviewCtx)
 		if len(reviewCtx.ToolchainVersions) > 0 {
-			e.logf("Captured toolchain versions: count=%d", len(reviewCtx.ToolchainVersions))
+			e.logf(ctx, "Captured toolchain versions: count=%d", len(reviewCtx.ToolchainVersions))
 		}
 	}
 
 	if req.IncludeFullFiles && e.retrieval != nil && req.RepoRoot != "" {
-		e.logf("Including full files: count=%d", len(reviewCtx.ChangedFiles))
+		e.logf(ctx, "Including full files: count=%d", len(reviewCtx.ChangedFiles))
 		for _, file := range reviewCtx.ChangedFiles {
-			e.logf("Retrieving file: path=%s", file.Path)
+			e.logf(ctx, "Retrieving file: path=%s", file.Path)
 			content, err := e.retrieval.GetFile(ctx, req.RepoRoot, file.Path)
 			if err != nil {
-				e.logf("Skipping file retrieval: path=%s error=%v", file.Path, err)
+				e.logf(ctx, "Skipping file retrieval: path=%s error=%v", file.Path, err)
 				continue
 			}
 			reviewCtx.SupplementalContext = append(reviewCtx.SupplementalContext, model.SupplementalFile{
@@ -195,7 +195,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if err != nil {
 		return nil, fmt.Errorf("review: trim context: %w", err)
 	}
-	e.logf("Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
+	e.logf(ctx, "Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	return trimmed, nil
 }
 
@@ -238,12 +238,8 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		if invalidResp.ReasoningEffort != "" {
 			llmReq.ReasoningEffort = invalidResp.ReasoningEffort
 		}
-		e.logfCtx(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
-		if tag, ok := agentTagFromContext(ctx); ok && tag.Name != "" {
-			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, agent=%s, attempt=%d", tag.Name, attempt+1))
-		} else {
-			e.logProgress("Model", fmt.Sprintf("status=InvalidJsonRetry, attempt=%d", attempt+1))
-		}
+		e.logf(ctx, "Invalid JSON response in no-tools call, retrying: attempt=%d reason=%q missing=%v", attempt+1, invalidResp.Reason, invalidResp.MissingFields)
+		e.logProgress(logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt+1))
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
 		}
@@ -394,7 +390,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		return model.TokenUsage{}, nil, nil
 	}
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
-		e.logf("Review generated replacement IDs before verification: count=%d", overwrote)
+		e.logf(ctx, "Review generated replacement IDs before verification: count=%d", overwrote)
 	}
 	opts := verifyOptionsFromReviewRequest(req)
 	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
@@ -460,7 +456,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		dropped := len(droppedIdxByVector[vectorIdx])
 		counts := dropsByVector[vectorIdx]
 		if dropped > 0 || counts.belowConfidence > 0 {
-			e.logf("Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d below_confidence_kept=%d kept=%d policy=%s threshold=%.2f",
+			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d below_confidence_kept=%d kept=%d policy=%s threshold=%.2f",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.refuted,
@@ -1330,7 +1326,7 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (
 // is the single implementation shared with the spec-driven standalone
 // nudge/reasoning-extract steps — there is no parallel reviewer code path.
 func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
-	if agent.role == "reviewer" {
+	if agent.role == "review" {
 		s := e.newReviewerSession(agent, req, false)
 		if err := e.reviewerInitial(ctx, s, req); err != nil {
 			return s.partialResult(req), err
@@ -1370,8 +1366,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	}, nil
 }
 
-func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, parentName string, turnIdx int, req model.ReviewRequest) (string, agentResult, error) {
-	name := fmt.Sprintf("reasoning-extract:%s:collect:turn-%d", parentName, turnIdx)
+func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, parentName string, _ int, req model.ReviewRequest) (string, agentResult, error) {
+	name := fmt.Sprintf("Mine Reasoning of %s", parentName)
 	system, err := renderPromptFile("agent_reasoning_collect_findings_system_prompt.tmpl", nil)
 	if err != nil {
 		return "", agentResult{}, err
@@ -1386,7 +1382,7 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 	}
 	result, err := e.runAgent(ctx, agentSpec{
 		name:       name,
-		role:       "reasoning_extract",
+		role:       "extract",
 		system:     system,
 		user:       user,
 		schemaKind: llm.SchemaKindText,
@@ -1394,11 +1390,11 @@ func (e *Engine) runReasoningCollectFindings(ctx context.Context, reasoning, par
 	}, reasoningExtractRequest(req))
 	out := reasoningExtractOutput(result.contentMessages)
 	if err == nil {
-		extractCtx := ctxWithAgent(ctx, agentTag{Role: "reasoning_extract", Name: name})
+		extractCtx := logging.WithProgressInfo(ctx, e.progressInfo("extract", name, ""))
 		if out != "" {
-			e.logBlockCtx(extractCtx, "Extracted reasoning findings:", out)
+			e.logBlock(extractCtx, "Extracted reasoning findings:", out)
 		} else {
-			e.logfCtx(extractCtx, "No reasoning findings extracted")
+			e.logf(extractCtx, "No reasoning findings extracted")
 		}
 	}
 	return out, result, err
@@ -1420,8 +1416,8 @@ func (e *Engine) runReasoningUpdateFindings(ctx context.Context, combinedList, f
 		return "", agentResult{}, err
 	}
 	result, err := e.runAgent(ctx, agentSpec{
-		name:       fmt.Sprintf("reasoning-extract:%s:update", parentName),
-		role:       "reasoning_extract",
+		name:       fmt.Sprintf("Compiling Findings to Nudge from %s", parentName),
+		role:       "extract",
 		system:     system,
 		user:       user,
 		schemaKind: llm.SchemaKindText,
@@ -1900,7 +1896,7 @@ func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exam
 }
 
 func (e *Engine) loadPrompt(name string) (string, error) {
-	e.logf("Loading prompt: source=embedded name=%s", name)
+	e.logf(context.Background(), "Loading prompt: source=embedded name=%s", name)
 	return prompts.Load(name)
 }
 
@@ -1986,7 +1982,7 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 
 func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
 	agentRole = strings.TrimSpace(agentRole)
-	if agentRole != "reviewer" && agentRole != "verify" {
+	if agentRole != "review" && agentRole != "verify" {
 		return "", nil
 	}
 	titles := make([]string, 0, len(guides))
@@ -2170,17 +2166,12 @@ func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {
 	return reviewOutputSchemaSnippetFor(useJSONSchema)
 }
 
+// agentLoopKind maps an agentSpec role to the loop kind. Roles are uniform
+// identifiers (context, review, verify, dedupe, merge, finalize, summarize,
+// extract), so this is the identity today; it stays as the seam where a role
+// would diverge from its loop kind.
 func agentLoopKind(role string) string {
-	switch role {
-	case "context":
-		return "context"
-	case "reviewer":
-		return "reviewer"
-	case "verify":
-		return "verify"
-	default:
-		return role
-	}
+	return role
 }
 
 func (e *Engine) renderSyntheticToolFollowup(history []toolCallHistoryEntry, agentRole string) (string, error) {
@@ -2460,13 +2451,14 @@ func normalizeToolPath(path string) string {
 
 func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
 	callNum := sec.IncrCallNum()
-	label := sec.Label()
-	if label != "" {
-		e.logProgress("Request", fmt.Sprintf("[%s] #%d", label, callNum))
-		e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d", label, callNum))
+	info, ok := logging.ProgressInfoFromContext(ctx)
+	turnInfo := info.WithTurn(callNum)
+	if ok && e.logger != nil {
+		e.logger.ProgressFor(turnInfo, logging.StageRequest, logging.StateSent, "")
+		e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateStart, "")
 	}
 	previousSink := req.ReasoningSink
-	callSec := e.openReviewRequestReasoningSection(label, callNum)
+	callSec := e.openReviewRequestReasoningSection(info, callNum)
 	req.ReasoningSink = llm.TeeReasoningSinks(callSec, previousSink)
 	defer func() {
 		req.ReasoningSink = previousSink
@@ -2475,102 +2467,62 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 	start := time.Now()
 	resp, err := e.llm.Review(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
-	if label != "" {
+	if ok && e.logger != nil {
 		if resp != nil && resp.Reasoned {
-			e.logProgress("Reasoning", fmt.Sprintf("[%s] #%d Done %s", label, callNum, elapsed))
+			e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateDone, elapsed.String())
 		}
-		e.logProgress("Response", fmt.Sprintf("[%s] #%d After %s", label, callNum, elapsed))
+		e.logger.ProgressFor(turnInfo, logging.StageResponse, logging.StateDone, elapsed.String())
 	}
 	return resp, err
 }
 
-func (e *Engine) openReviewRequestReasoningSection(label string, callNum int) *logging.ReasoningSection {
+func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {
 	if e.logger == nil || !e.logger.ShowReasoning() {
 		return nil
 	}
-	if label == "" || callNum <= 0 {
-		return e.logger.OpenReasoningSection("")
+	if info.IsZero() || callNum <= 0 {
+		return e.logger.OpenReasoningSection(logging.ProgressInfo{})
 	}
-	return e.logger.OpenReasoningSection(fmt.Sprintf("%s #%d", label, callNum))
+	return e.logger.OpenReasoningSection(info.WithTurn(callNum))
 }
 
-func (e *Engine) logf(format string, args ...any) {
-	if e.logger != nil {
-		e.logger.Printf(format, args...)
-	}
-}
-
-func (e *Engine) logfCtx(ctx context.Context, format string, args ...any) {
+func (e *Engine) logf(ctx context.Context, format string, args ...any) {
 	if e.logger == nil {
 		return
 	}
-	e.logger.Printf("%s%s", agentLogPrefix(ctx), fmt.Sprintf(format, args...))
+	e.logger.Verbosef(ctx, format, args...)
 }
 
-func (e *Engine) logBlockCtx(ctx context.Context, label, content string) {
-	if e.logger != nil {
-		e.logger.PrintBlock(agentLogPrefix(ctx)+label, content)
-	}
-}
-
-type agentTag struct {
-	Role string
-	Name string
-	Turn int
-}
-
-type agentTagKey struct{}
-
-func ctxWithAgent(ctx context.Context, tag agentTag) context.Context {
-	return context.WithValue(ctx, agentTagKey{}, tag)
-}
-
-func agentTagFromContext(ctx context.Context) (agentTag, bool) {
-	if ctx == nil {
-		return agentTag{}, false
-	}
-	tag, ok := ctx.Value(agentTagKey{}).(agentTag)
-	if !ok || (tag.Role == "" && tag.Name == "") {
-		return agentTag{}, false
-	}
-	return tag, true
-}
-
-func agentLogPrefix(ctx context.Context) string {
-	tag, ok := agentTagFromContext(ctx)
-	if !ok {
-		return ""
-	}
-	return "[" + formatAgentTag(tag) + "] "
-}
-
-func agentLabelForLLM(ctx context.Context) string {
-	tag, ok := agentTagFromContext(ctx)
-	if !ok {
-		return ""
-	}
-	return formatAgentTag(tag)
-}
-
-func formatAgentTag(tag agentTag) string {
-	head := fmt.Sprintf("%s: %s", tag.Role, tag.Name)
-	if tag.Turn > 0 {
-		head = fmt.Sprintf("%s, turn: #%d", head, tag.Turn)
-	}
-	return head
-}
-
-func (e *Engine) logProgress(label, summary string) {
-	if e.logger != nil {
-		e.logger.PrintProgress(label, summary)
-	}
-}
-
-func (e *Engine) logToolCall(toolCall llm.ToolCall, result string) {
+func (e *Engine) logBlock(ctx context.Context, label, content string) {
 	if e.logger == nil {
 		return
 	}
-	e.logger.PrintProgressToolCall(toolCallDisplay(toolCall), syntheticToolOutcome(toolCall.Name, parseToolResultSummary(result)))
+	e.logger.VerboseBlock(ctx, label, content)
+}
+
+// progressInfo builds the ctx-carried logging identity for an agent, filling
+// model and effort from the engine profile.
+func (e *Engine) progressInfo(role, name, detail string) logging.ProgressInfo {
+	return logging.ProgressInfo{
+		AgentRole: role,
+		AgentName: name,
+		Detail:    detail,
+		Model:     e.config.Model,
+		Effort:    e.config.ReasoningEffort,
+	}
+}
+
+func (e *Engine) logProgress(stage logging.Stage, state logging.State, msg string) {
+	if e.logger != nil {
+		e.logger.ProgressFor(e.progressInfo("", "", ""), stage, state, msg)
+	}
+}
+
+func (e *Engine) logToolCall(ctx context.Context, toolCall llm.ToolCall, result string) {
+	if e.logger == nil {
+		return
+	}
+	e.logger.ProgressToolCall(ctx, toolCallDisplay(toolCall), syntheticToolOutcome(toolCall.Name, parseToolResultSummary(result)))
 }
 
 func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
