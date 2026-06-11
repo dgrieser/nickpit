@@ -131,6 +131,37 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	}
 }
 
+func TestVerifyAllCancelledContextWarnsOnceAndStops(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	findings := []model.Finding{
+		{Title: "a", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "b", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{Title: "c", Body: "b", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	verifications, _, warnings, err := engine.VerifyAll(ctx, sampleReviewCtx(), findings, VerifyOptions{Limiter: NewVerifyLimiter(1)})
+	if err != nil {
+		t.Fatalf("VerifyAll returned err: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want exactly one aggregate cancellation warning", warnings)
+	}
+	if !strings.Contains(warnings[0], "skipped 3 remaining") {
+		t.Fatalf("warning content = %q", warnings[0])
+	}
+	for i, v := range verifications {
+		if v != nil {
+			t.Fatalf("verifications[%d] = %#v, want nil", i, v)
+		}
+	}
+	if llmClient.calls != 0 {
+		t.Fatalf("LLM calls = %d, want 0 after cancellation", llmClient.calls)
+	}
+}
+
 func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})

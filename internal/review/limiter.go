@@ -20,10 +20,15 @@ func NewVerifyLimiter(limit int) *VerifyLimiter {
 }
 
 // Acquire blocks until a slot frees or ctx is done. Nil and unlimited limiters
-// admit immediately (still honoring an already-cancelled ctx).
+// admit immediately. An already-cancelled ctx is honored before attempting the
+// channel send, which would otherwise be chosen pseudo-randomly by select when
+// a slot is free.
 func (l *VerifyLimiter) Acquire(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if l == nil || l.sem == nil {
-		return ctx.Err()
+		return nil
 	}
 	select {
 	case l.sem <- struct{}{}:

@@ -214,12 +214,13 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		// Admission goes through the run-shared limiter in the spawn loop so
 		// this call's findings start in order; concurrent VerifyAll calls (one
 		// per reviewer lane) block only their own loop and compete fairly for
-		// slots.
+		// slots. Acquire fails only when ctx is done, so one aggregate warning
+		// replaces a per-finding flood and the loop stops.
 		if err := opts.Limiter.Acquire(ctx); err != nil {
 			mu.Lock()
-			warnings = append(warnings, fmt.Sprintf("Verify failed for finding #%d %q: %v", i+1, finding.Title, err))
+			warnings = append(warnings, fmt.Sprintf("Verify cancelled at finding #%d %q: %v; skipped %d remaining finding(s)", i+1, finding.Title, err, len(findings)-i))
 			mu.Unlock()
-			continue
+			break
 		}
 		wg.Add(1)
 		go func(idx int, f model.Finding) {

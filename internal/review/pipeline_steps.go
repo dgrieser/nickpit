@@ -281,6 +281,9 @@ func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
 		if !ok {
 			return fmt.Errorf("workflow: verify:%s requires a preceding review:%s step", vectorID, vectorID)
 		}
+		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) == 0 {
+			return nil
+		}
 		vector, ok := reviewVectorByID(vectorID)
 		if !ok {
 			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
