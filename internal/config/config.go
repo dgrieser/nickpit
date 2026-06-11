@@ -26,9 +26,9 @@ const (
 	DefaultNudgeCount               = 3
 	DefaultConfigPath               = ".nickpit.yaml"
 	DefaultReasoningEffort          = "high"
-	DefaultGitHubTokenRef           = "${GITHUB_TOKEN}"
-	DefaultGitLabTokenRef           = "${GITLAB_TOKEN}"
-	DefaultGitLabBaseURLRef         = "${GITLAB_BASE_URL}"
+	DefaultGitHubTokenRef           = "${NICKPIT_GITHUB_TOKEN}"
+	DefaultGitLabTokenRef           = "${NICKPIT_GITLAB_TOKEN}"
+	DefaultGitLabBaseURLRef         = "${NICKPIT_GITLAB_BASE_URL}"
 	// DefaultAssetBaseURL is where the published-review badge SVGs are served.
 	// The Pages workflow deploys the repo's assets/ directory here.
 	DefaultAssetBaseURL = "https://dgrieser.github.io/nickpit/"
@@ -357,10 +357,19 @@ func applyEnv(cfg *Config, profileName string) {
 	if value := os.Getenv("GITHUB_TOKEN"); value != "" {
 		profile.GitHubToken = value
 	}
+	if value := os.Getenv("NICKPIT_GITHUB_TOKEN"); value != "" {
+		profile.GitHubToken = value
+	}
 	if value := os.Getenv("GITLAB_TOKEN"); value != "" {
 		profile.GitLabToken = value
 	}
+	if value := os.Getenv("NICKPIT_GITLAB_TOKEN"); value != "" {
+		profile.GitLabToken = value
+	}
 	if value := os.Getenv("GITLAB_BASE_URL"); value != "" {
+		profile.GitLabBaseURL = value
+	}
+	if value := os.Getenv("NICKPIT_GITLAB_BASE_URL"); value != "" {
 		profile.GitLabBaseURL = value
 	}
 	cfg.Profiles[profileName] = profile

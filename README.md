@@ -42,14 +42,14 @@ to operate on mounted repositories and config.
 # Review a host-mounted repo as your own user (rootless).
 docker run --rm \
   --user "$(id -u):$(id -g)" \
-  -e OPENROUTER_API_KEY -e GITHUB_TOKEN -e GITLAB_TOKEN \
+  -e OPENROUTER_API_KEY -e NICKPIT_GITHUB_TOKEN -e NICKPIT_GITLAB_TOKEN \
   -v "$PWD:/work" -w /work \
   ghcr.io/dgrieser/nickpit:latest local branch
 
 # Review a remote PR/MR (no mount needed); pass the SCM token via env.
 docker run --rm \
   --user "$(id -u):$(id -g)" \
-  -e OPENROUTER_API_KEY -e GITHUB_TOKEN \
+  -e OPENROUTER_API_KEY -e NICKPIT_GITHUB_TOKEN \
   ghcr.io/dgrieser/nickpit:latest github pr --repo owner/repo --id 123
 ```
 
@@ -57,8 +57,11 @@ Notes:
 - `--user "$(id -u):$(id -g)"` makes the container read mounts and write temp files as
   your host user. The image trusts mounted repositories (`git safe.directory=*`), so git
   does not reject a repo owned by a different UID.
-- Pass auth via env: `OPENROUTER_API_KEY`, plus `GITHUB_TOKEN` / `GITLAB_TOKEN` for remote
-  reviews. The bare `-e NAME` form forwards the value from your shell.
+- Pass auth via env: `OPENROUTER_API_KEY`, plus `NICKPIT_GITHUB_TOKEN` /
+  `NICKPIT_GITLAB_TOKEN` for remote reviews. `NICKPIT_GITLAB_BASE_URL` sets a custom
+  GitLab API root. `GITHUB_TOKEN`, `GITLAB_TOKEN`, and `GITLAB_BASE_URL` also work, but
+  the `NICKPIT_` names win when both are set. The bare `-e NAME` form forwards the value
+  from your shell.
 - Provide config by mounting `.nickpit.yaml` into `/work`, or with an absolute
   `--config /work/.nickpit.yaml`. When running as an arbitrary UID, prefer an absolute
   `--config` path over `~` expansion (the image `HOME` is not readable by a foreign UID).

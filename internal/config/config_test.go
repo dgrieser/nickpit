@@ -208,6 +208,54 @@ func TestLoadConfigDefaultProfileFallsBackToGenericAPIKeyEnv(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPrefersNickpitSCMEnv(t *testing.T) {
+	t.Setenv("NICKPIT_MODEL", "test-model")
+	t.Setenv("GITHUB_TOKEN", "bare-github")
+	t.Setenv("NICKPIT_GITHUB_TOKEN", "prefixed-github")
+	t.Setenv("GITLAB_TOKEN", "bare-gitlab")
+	t.Setenv("NICKPIT_GITLAB_TOKEN", "prefixed-gitlab")
+	t.Setenv("GITLAB_BASE_URL", "https://bare.gitlab.invalid/api/v4")
+	t.Setenv("NICKPIT_GITLAB_BASE_URL", "https://prefixed.gitlab.invalid/api/v4")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.GitHubToken != "prefixed-github" {
+		t.Fatalf("github token = %q", profile.GitHubToken)
+	}
+	if profile.GitLabToken != "prefixed-gitlab" {
+		t.Fatalf("gitlab token = %q", profile.GitLabToken)
+	}
+	if profile.GitLabBaseURL != "https://prefixed.gitlab.invalid/api/v4" {
+		t.Fatalf("gitlab base url = %q", profile.GitLabBaseURL)
+	}
+}
+
+func TestLoadConfigUsesBareSCMEnvFallback(t *testing.T) {
+	t.Setenv("NICKPIT_MODEL", "test-model")
+	t.Setenv("NICKPIT_GITHUB_TOKEN", "")
+	t.Setenv("NICKPIT_GITLAB_TOKEN", "")
+	t.Setenv("NICKPIT_GITLAB_BASE_URL", "")
+	t.Setenv("GITHUB_TOKEN", "bare-github")
+	t.Setenv("GITLAB_TOKEN", "bare-gitlab")
+	t.Setenv("GITLAB_BASE_URL", "https://bare.gitlab.invalid/api/v4")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.GitHubToken != "bare-github" {
+		t.Fatalf("github token = %q", profile.GitHubToken)
+	}
+	if profile.GitLabToken != "bare-gitlab" {
+		t.Fatalf("gitlab token = %q", profile.GitLabToken)
+	}
+	if profile.GitLabBaseURL != "https://bare.gitlab.invalid/api/v4" {
+		t.Fatalf("gitlab base url = %q", profile.GitLabBaseURL)
+	}
+}
+
 func TestLoadConfigExpandsAPIKeyEnvReferenceFromYAML(t *testing.T) {
 	t.Setenv("TEST_LLM_API_KEY", "yaml-key")
 
