@@ -151,7 +151,6 @@ func (c *Checker) SetParallel(enabled bool) {
 	c.parallel = enabled
 }
 
-
 func (c *Checker) openSection(name, effort string) *logging.ReasoningSection {
 	if c.logger == nil {
 		return nil

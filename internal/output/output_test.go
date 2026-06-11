@@ -150,7 +150,7 @@ func TestTerminalFormatterSortsFindings(t *testing.T) {
 	confirmed := strings.Index(out, "confirmed.go")
 	refuted := strings.Index(out, "refuted.go")
 	low := strings.Index(out, "low.go")
-	if !(confirmed < refuted && refuted < low) {
+	if confirmed >= refuted || refuted >= low {
 		t.Fatalf("sort order wrong (confirmed=%d refuted=%d low=%d):\n%s", confirmed, refuted, low, out)
 	}
 }
