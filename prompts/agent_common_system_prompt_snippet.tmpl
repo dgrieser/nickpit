@@ -37,5 +37,5 @@ Make sure to output the findings in the following JSON format:
 - produce JSON only and match the schema EXACTLY
 {{end}}
 {{if eq .Snippet "response_format"}}
-Make sure to output the findings using the specified `response_format`
+Make sure to output the findings using the specified `response_format.json_schema` named `review_response`, which was sent in the API request.
 {{end}}

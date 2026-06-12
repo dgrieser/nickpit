@@ -20,7 +20,7 @@ const (
 	DefaultMaxToolCalls             = 0
 	DefaultMaxDuplicateToolCalls    = 5
 	DefaultMaxOutputRetries         = 5
-	DefaultMaxReasoningSeconds      = 600
+	DefaultMaxReasoningSeconds      = 300
 	DefaultMaxReasoningLoopRepeats  = 5
 	DefaultMaxRateLimitDelaySeconds = 300
 	DefaultNudgeCount               = 3
