@@ -8,6 +8,7 @@ package dedupe
 import (
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/dgrieser/nickpit/internal/model"
 )
@@ -215,7 +216,7 @@ var stopwords = map[string]struct{}{
 func tokens(s string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, f := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
-		return !('a' <= r && r <= 'z' || '0' <= r && r <= '9' || r == '_' || r == '.')
+		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.')
 	}) {
 		if _, stop := stopwords[f]; stop || len(f) < 2 {
 			continue

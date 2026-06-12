@@ -179,6 +179,29 @@ func TestCompareUnknownRangeNeutral(t *testing.T) {
 	}
 }
 
+// Non-ASCII letters are token characters, not delimiters; without Unicode
+// support, accented and non-Latin findings degrade to near-zero similarity.
+func TestCompareUnicodeTitles(t *testing.T) {
+	a := finding(
+		"Größenprüfung für Übergabeparameter fehlt",
+		"Die Funktion prüft die Größe der Übergabeparameter nicht vor dem Zugriff.",
+		"prüfung.go", 10, 12,
+	)
+	b := finding(
+		"Größenprüfung für Übergabeparameter fehlt komplett",
+		"Vor dem Zugriff wird die Größe der Übergabeparameter nicht geprüft.",
+		"prüfung.go", 10, 14,
+	)
+	got := Compare(a, b)
+	if got.Verdict < Duplicate {
+		t.Fatalf("verdict = %s (title=%.2f body=%.2f loc=%.2f), want >= duplicate for near-identical German findings",
+			got.Verdict, got.TitleSim, got.BodySim, got.LocationSim)
+	}
+	if got.TitleSim < TitleStrong {
+		t.Fatalf("TitleSim = %.2f, want >= %.2f — umlauts must not split tokens", got.TitleSim, TitleStrong)
+	}
+}
+
 func TestFindBest(t *testing.T) {
 	target := finding("Bash script missing strict mode flags", "set -e only", "a.sh", 1, 3)
 	pool := []model.Finding{
