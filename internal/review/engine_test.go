@@ -1828,6 +1828,39 @@ func TestClusterMergeVerdictlessInputsWithFindingsReportIncorrect(t *testing.T) 
 	}
 }
 
+// Cross-file findings with near-identical titles cluster as Possible and are
+// judged by a micro-merge agent instead of passing through as duplicates.
+func TestClusterMergeCrossFileTitleTwinsRouteToLLM(t *testing.T) {
+	a := clusterTestFinding("Test coverage missing for nested subdirectories", 176)
+	a.CodeLocation.FilePath = "controllers/logrotate_assets_test.go"
+	b := clusterTestFinding("Test coverage missing for nested subdirectories under cronjobs and container", 38)
+	b.CodeLocation.FilePath = "controllers/logrotate_assets_integration_test.go"
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want one micro-merge for the cross-file cluster", len(llmClient.mergeRequests))
+	}
+	payload := mergePayloadFromRequest(t, llmClient.mergeRequests[0])
+	cluster, _ := payload["cluster_findings"].([]any)
+	if len(cluster) != 2 {
+		t.Fatalf("cluster payload = %d findings, want both cross-file twins", len(cluster))
+	}
+	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
+		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
+	}
+	// Default fixture echoes the cluster unchanged; both findings survive.
+	if len(result.resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want echo of both", len(result.resp.Findings))
+	}
+}
+
 func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.T) {
 	finding := mergeTestFinding("Fix A", 1)
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})

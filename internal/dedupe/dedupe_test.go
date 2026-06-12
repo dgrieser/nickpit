@@ -130,6 +130,34 @@ func TestCompareCalibration(t *testing.T) {
 			want: Distinct,
 		},
 		{
+			name: "v7 cross-file: nested-subdirectory coverage gap in unit vs integration tests",
+			a: finding(
+				"Test coverage missing for nested subdirectories",
+				"Test fixtures only create flat directories; nested paths under cronjobs/ and container/ are never exercised.",
+				"controllers/logrotate_assets_test.go", 176, 182,
+			),
+			b: finding(
+				"Test coverage missing for nested subdirectories under cronjobs and container",
+				"Fixtures create only flat directories under cronjobs/ and container/; cleanup patterns for nested subdirectories are unverified.",
+				testFile, 38, 60,
+			),
+			want: Possible,
+		},
+		{
+			name: "v7 cross-file: flattening breaking change reported against script and test",
+			a: finding(
+				"Log directory flattening is breaking change without migration",
+				"Patch flattens logs/project/*/... to logs/*/... without migration; existing paths break.",
+				script, 69, 69,
+			),
+			b: finding(
+				"Log directory flattening is a breaking change without migration",
+				"Directory structure flattened without a migration strategy; old paths no longer match rotation patterns.",
+				testFile, 38, 38,
+			),
+			want: Possible,
+		},
+		{
 			name: "possible: same line, related but different aspect",
 			a: finding(
 				"Cronjobs cleanup pattern doesn't match exclusion scope",
@@ -157,6 +185,21 @@ func TestCompareCalibration(t *testing.T) {
 				t.Fatalf("Compare() not symmetric: %s vs %s", got.Verdict, reversed.Verdict)
 			}
 		})
+	}
+}
+
+// Cross-file pairs cap at Possible: identical text in two files must still be
+// judged by the merge agent, never folded mechanically (mechanical merging
+// assumes a single file when extending line ranges).
+func TestCompareCrossFileCapsAtPossible(t *testing.T) {
+	a := finding("Identical finding title", "identical body text", "a.go", 10, 12)
+	b := finding("Identical finding title", "identical body text", "b.go", 10, 12)
+	got := Compare(a, b)
+	if got.Verdict != Possible {
+		t.Fatalf("verdict = %s, want possible (cross-file ceiling)", got.Verdict)
+	}
+	if got.LocationSim != 0 {
+		t.Fatalf("LocationSim = %.2f, want 0 across files", got.LocationSim)
 	}
 }
 
