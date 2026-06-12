@@ -849,7 +849,7 @@ func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, c
 
 	resp := cloneReviewResponse(&llm.ReviewResponse{
 		Findings:               merged,
-		OverallCorrectness:     aggregateOverallCorrectness(inputs),
+		OverallCorrectness:     aggregateOverallCorrectness(inputs, len(merged)),
 		OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(inputs), len(findings), len(merged), absorbed, llmClusters),
 		OverallConfidenceScore: maxOverallConfidence(inputs),
 	})
@@ -898,7 +898,14 @@ func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, co
 	return cloneReviewResponse(result.resp).Findings, markMergeRun(run, model.AgentRunStatusOK, nil)
 }
 
-func aggregateOverallCorrectness(inputs []pairwiseMergeInput) string {
+// aggregateOverallCorrectness derives the merged verdict mechanically: any
+// input saying "patch is incorrect" wins, otherwise the first explicit input
+// verdict carries (an explicit "patch is correct" alongside findings is
+// legitimate — e.g. the Testing vector is constrained to it). Only when no
+// input carries a verdict at all (source-less merge over bare findings files)
+// is the default derived from the merged findings: preserved findings with a
+// "patch is correct" default would contradict the emitted result.
+func aggregateOverallCorrectness(inputs []pairwiseMergeInput, mergedFindings int) string {
 	out := ""
 	for _, input := range inputs {
 		if input.response == nil {
@@ -912,6 +919,9 @@ func aggregateOverallCorrectness(inputs []pairwiseMergeInput) string {
 		}
 	}
 	if out == "" {
+		if mergedFindings > 0 {
+			return "patch is incorrect"
+		}
 		return "patch is correct"
 	}
 	return out

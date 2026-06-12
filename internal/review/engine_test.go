@@ -1797,6 +1797,36 @@ func TestClusterMergeDistinctFindingsPassThroughWithoutLLM(t *testing.T) {
 	}
 }
 
+// Imported bare findings files carry no overall_correctness; when the merge
+// resolves purely mechanically (no LLM verdict either), preserved findings
+// must not be reported under a "patch is correct" default.
+func TestClusterMergeVerdictlessInputsWithFindingsReportIncorrect(t *testing.T) {
+	a := clusterTestFinding("Fix alpha issue", 1)
+	b := clusterTestFinding("Improve unrelated subsystem", 1)
+	b.CodeLocation.FilePath = "other.go"
+	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "a.json", role: "merge_input", response: &llm.ReviewResponse{Findings: []model.Finding{a}}},
+		{name: "b.json", role: "merge_input", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
+	}
+
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(result.resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want both preserved", len(result.resp.Findings))
+	}
+	if result.resp.OverallCorrectness != "patch is incorrect" {
+		t.Fatalf("overall correctness = %q with %d findings, want patch is incorrect", result.resp.OverallCorrectness, len(result.resp.Findings))
+	}
+
+	// Explicit "patch is correct" alongside findings stays untouched.
+	inputs[0].response.OverallCorrectness = "patch is correct"
+	result, _ = engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	if result.resp.OverallCorrectness != "patch is correct" {
+		t.Fatalf("overall correctness = %q, want explicit input verdict preserved", result.resp.OverallCorrectness)
+	}
+}
+
 func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.T) {
 	finding := mergeTestFinding("Fix A", 1)
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
