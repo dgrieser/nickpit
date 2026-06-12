@@ -2,7 +2,6 @@ package dedupe
 
 import (
 	"math"
-	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -71,7 +70,7 @@ func TestMergeFindingsMostCriticalPriority(t *testing.T) {
 	}
 }
 
-func TestMergeFindingsKeepsOneSuggestionSet(t *testing.T) {
+func TestMergeFindingsIncludesAllSuggestions(t *testing.T) {
 	a := finding("A", "body", "a.sh", 1, 1)
 	a.ConfidenceScore = 0.9
 	a.Suggestions = []model.Suggestion{{Body: "short fix"}}
@@ -79,12 +78,21 @@ func TestMergeFindingsKeepsOneSuggestionSet(t *testing.T) {
 	b.Suggestions = []model.Suggestion{{Body: "a far more detailed and actionable fix description"}}
 
 	out := MergeFindings(a, b)
-	if len(out.Suggestions) != 1 || out.Suggestions[0].Body != b.Suggestions[0].Body {
-		t.Fatalf("suggestions = %+v, want the more detailed set only", out.Suggestions)
+	if len(out.Suggestions) != 2 {
+		t.Fatalf("suggestions = %+v, want both sides included", out.Suggestions)
+	}
+	if out.Suggestions[0].Body != a.Suggestions[0].Body || out.Suggestions[1].Body != b.Suggestions[0].Body {
+		t.Fatalf("suggestions = %+v, want base set first then other set", out.Suggestions)
+	}
+
+	b.Suggestions = nil
+	out = MergeFindings(a, b)
+	if len(out.Suggestions) != 1 || out.Suggestions[0].Body != a.Suggestions[0].Body {
+		t.Fatalf("suggestions = %+v, want base set untouched when other side empty", out.Suggestions)
 	}
 }
 
-func TestMergeFindingsCombinesVerifications(t *testing.T) {
+func TestMergeFindingsVerificationFollowsHighestConfidence(t *testing.T) {
 	a := finding("A", "body", "a.sh", 1, 1)
 	a.ID = "id-a"
 	a.ConfidenceScore = 0.9
@@ -100,18 +108,28 @@ func TestMergeFindingsCombinesVerifications(t *testing.T) {
 	if v == nil {
 		t.Fatal("verification dropped")
 	}
-	if v.ID != "id-a" || v.Verdict != "confirmed" {
-		t.Fatalf("verification base = %s/%s, want id-a/confirmed", v.ID, v.Verdict)
+	if v.ID != "id-a" || v.Verdict != "confirmed" || v.Remarks != "base remarks" {
+		t.Fatalf("verification = %s/%s/%q, want verdict and remarks from higher-confidence side", v.ID, v.Verdict, v.Remarks)
 	}
 	if v.Priority != 1 {
 		t.Fatalf("verification priority = %d, want most critical 1", v.Priority)
 	}
-	want := 1 - (1-0.8)*(1-0.5)
-	if math.Abs(v.ConfidenceScore-want) > 1e-9 {
-		t.Fatalf("verification confidence = %v, want noisy-or %v", v.ConfidenceScore, want)
+	if v.ConfidenceScore != 0.8 {
+		t.Fatalf("verification confidence = %v, want highest 0.8", v.ConfidenceScore)
 	}
-	if !strings.Contains(v.Remarks, "base remarks") || !strings.Contains(v.Remarks, "other remarks") {
-		t.Fatalf("remarks = %q, want both texts kept", v.Remarks)
+
+	// Other side carries the stronger verification: its verdict and remarks
+	// win even though the base finding provides identity and text.
+	b.Verification.ConfidenceScore = 0.95
+	v = MergeFindings(a, b).Verification
+	if v.ID != "id-a" {
+		t.Fatalf("verification ID = %s, want surviving finding id-a", v.ID)
+	}
+	if v.Verdict != "uncertain" || v.Remarks != "other remarks" {
+		t.Fatalf("verification = %s/%q, want higher-confidence side's verdict and remarks", v.Verdict, v.Remarks)
+	}
+	if v.ConfidenceScore != 0.95 {
+		t.Fatalf("verification confidence = %v, want highest 0.95", v.ConfidenceScore)
 	}
 }
 

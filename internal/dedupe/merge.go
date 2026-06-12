@@ -6,19 +6,16 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-// secondOpinionPrefix separates the absorbed finding's verification remarks
-// from the base finding's so both reviewers' reasoning survives the merge.
-const secondOpinionPrefix = "\n\n[second reviewer] "
-
 // MergeFindings mechanically merges two findings judged to be duplicates. The
 // higher-confidence finding (ties: longer body) provides identity and text;
-// signals that benefit from agreement are combined:
+// the rest follows the merge rules the dedupe/cluster-merge prompts state:
 //   - confidence: noisy-or, capped at 0.99 — two independent reviewers
 //     agreeing is stronger evidence than either alone
 //   - priority: the most critical of the two
 //   - line range: extended to cover both findings
-//   - suggestions: the more detailed side only, never concatenated
-//   - verification: both remark texts kept, confidence noisy-or
+//   - suggestions: included from both sides, no merge attempts
+//   - verification: verdict and remarks from the side with the higher
+//     verification confidence, highest confidence, most critical priority
 func MergeFindings(a, b model.Finding) model.Finding {
 	base, other := a, b
 	if b.ConfidenceScore > a.ConfidenceScore ||
@@ -30,8 +27,8 @@ func MergeFindings(a, b model.Finding) model.Finding {
 	out.ConfidenceScore = noisyOr(base.ConfidenceScore, other.ConfidenceScore)
 	out.Priority = mostCriticalPriority(base.Priority, other.Priority)
 	out.CodeLocation.LineRange = extendRange(base.CodeLocation.LineRange, other.CodeLocation.LineRange)
-	if suggestionWeight(other.Suggestions) > suggestionWeight(base.Suggestions) {
-		out.Suggestions = other.Suggestions
+	if len(other.Suggestions) > 0 {
+		out.Suggestions = append(append([]model.Suggestion(nil), base.Suggestions...), other.Suggestions...)
 	}
 	out.Verification = mergeVerifications(base.Verification, other.Verification, out.ID)
 	return out
@@ -104,14 +101,9 @@ func extendRange(a, b model.LineRange) model.LineRange {
 	}
 }
 
-func suggestionWeight(suggestions []model.Suggestion) int {
-	total := 0
-	for _, s := range suggestions {
-		total += len(s.Body)
-	}
-	return total
-}
-
+// mergeVerifications follows the prompt-stated rules: verdict and remarks
+// from the side with the higher verification confidence (base wins ties),
+// the highest confidence score, and the most critical priority.
 func mergeVerifications(base, other *model.FindingVerification, findingID string) *model.FindingVerification {
 	if base == nil && other == nil {
 		return nil
@@ -121,15 +113,17 @@ func mergeVerifications(base, other *model.FindingVerification, findingID string
 		v.ID = findingID
 		return &v
 	}
-	v := *base
-	v.ID = findingID
 	if other == nil {
+		v := *base
+		v.ID = findingID
 		return &v
 	}
-	v.ConfidenceScore = noisyOr(base.ConfidenceScore, other.ConfidenceScore)
-	v.Priority = min(base.Priority, other.Priority)
-	if other.Remarks != "" && other.Remarks != base.Remarks {
-		v.Remarks = base.Remarks + secondOpinionPrefix + other.Remarks
+	primary, secondary := base, other
+	if other.ConfidenceScore > base.ConfidenceScore {
+		primary, secondary = other, base
 	}
+	v := *primary
+	v.ID = findingID
+	v.Priority = min(primary.Priority, secondary.Priority)
 	return &v
 }
