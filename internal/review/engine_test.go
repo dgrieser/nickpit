@@ -1934,9 +1934,91 @@ func TestClusterMergeValidationAllowsIDMatchWithRefinedLocation(t *testing.T) {
 	b := mergeTestFindingWithID("Fix B", 13)
 	merged := a
 	merged.CodeLocation.LineRange = model.LineRange{Start: 1, End: 13}
+	merged.MergedFrom = []string{b.ID}
 
 	if invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{merged}}, []model.Finding{a, b}); invalid != nil {
 		t.Fatalf("validateClusterMergeResponse = %v, want nil for ID match with extended location", invalid)
+	}
+}
+
+// The P1 regression scenario: a response returning one unchanged input while
+// silently losing the other distinct cluster members must be rejected.
+func TestClusterMergeValidationRejectsSilentlyDroppedFindings(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 13)
+	c := mergeTestFindingWithID("Fix C", 25)
+
+	invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{a}}, []model.Finding{a, b, c})
+	if invalid == nil || !strings.Contains(invalid.Reason, "dropped_findings count=2") {
+		t.Fatalf("invalid = %v, want dropped_findings count=2", invalid)
+	}
+
+	// Declaring the absorbed findings in merged_from makes the same shape valid.
+	absorbing := a
+	absorbing.MergedFrom = []string{b.ID, c.ID}
+	if invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{absorbing}}, []model.Finding{a, b, c}); invalid != nil {
+		t.Fatalf("validateClusterMergeResponse = %v, want nil with full merged_from coverage", invalid)
+	}
+}
+
+// merged_from accounting is lenient: trimmed entries, duplicates, the
+// finding's own id, and unknown ids are ignored — they cannot fake coverage,
+// so only genuinely missing inputs fail. A reminted id with unchanged
+// location+title is also accounted via attribution.
+func TestClusterMergeValidationMergedFromLeniency(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 13)
+
+	absorbing := a
+	absorbing.MergedFrom = []string{"  " + b.ID + "  ", b.ID, a.ID, "not-a-real-id", ""}
+	if invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{absorbing}}, []model.Finding{a, b}); invalid != nil {
+		t.Fatalf("validateClusterMergeResponse = %v, want nil despite messy merged_from", invalid)
+	}
+
+	// Garbage merged_from must not fake coverage of a real, missing input.
+	absorbing.MergedFrom = []string{"not-a-real-id"}
+	invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{absorbing}}, []model.Finding{a, b})
+	if invalid == nil || !strings.Contains(invalid.Reason, "dropped_findings count=1") {
+		t.Fatalf("invalid = %v, want dropped_findings count=1", invalid)
+	}
+
+	// Reminted id, same location and title: accounted via attribution.
+	reminted := mergeTestFindingWithID("Fix A", 1)
+	if invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{reminted}}, []model.Finding{a}); invalid != nil {
+		t.Fatalf("validateClusterMergeResponse = %v, want nil for reminted id with matching content", invalid)
+	}
+}
+
+// Provenance is internal to the merge step: accepted responses leave it
+// stripped so it never reaches results or posted reviews.
+func TestClusterMergeStripsMergedFromOnAccept(t *testing.T) {
+	a := clusterTestFinding("Fix alpha issue", 1)
+	b := clusterTestFinding("Fix beta issue", 13)
+	absorbing := a
+	absorbing.MergedFrom = []string{b.ID}
+	engine := NewEngine(stubSource{}, &multiAgentLLM{
+		mergeResponses: []*llm.ReviewResponse{{
+			Findings:               []model.Finding{absorbing},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "merged",
+			OverallConfidenceScore: 0.9,
+		}},
+	}, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
+		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
+	}
+	if len(result.resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want merged single finding", len(result.resp.Findings))
+	}
+	if result.resp.Findings[0].MergedFrom != nil {
+		t.Fatalf("merged_from = %#v, want stripped from accepted output", result.resp.Findings[0].MergedFrom)
 	}
 }
 

@@ -232,6 +232,11 @@ type Finding struct {
 	Verification    *FindingVerification  `json:"verification,omitempty"`
 	Finalization    *FindingFinalization  `json:"finalization,omitempty"`
 	Summarization   *FindingSummarization `json:"summarization,omitempty"`
+	// MergedFrom is merge-step provenance only: the ids of cluster findings
+	// absorbed into this one. Validation consumes it to detect silently
+	// dropped findings; the merge step strips it before findings leave the
+	// step, so it never reaches results or posted reviews.
+	MergedFrom []string `json:"merged_from,omitempty"`
 }
 
 func EnsureFindingIDs(findings []Finding) int {

@@ -18,10 +18,11 @@ When merging duplicate findings:
   - set the most critical verification `priority` of the merged findings
   - prefer the `verdict` of the finding with the highest `confidence_score`
   - `verification.id` must equal the output finding `id`
+- always add the `id`, of the finding you merged, into `merged_from` of the surviving finding;
+  findings kept unchanged need no `merged_from`
 - DO NOT merge findings that address different aspects
 
 DO NOT introduce new findings that no reviewer raised.
-DO NOT drop a finding: every input finding must either appear in the output or be merged into another output finding.
 
 Bias toward inclusion:
 - when unsure whether two findings describe the same issue, DO NOT merge them; keep both unchanged.

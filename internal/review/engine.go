@@ -714,7 +714,11 @@ func (e *Engine) runDedupeAgent(ctx context.Context, contextNotes string, input 
 		run = markDedupeRun(run, model.AgentRunStatusPartial, invalid)
 		return nil, run
 	}
-	return cloneReviewResponse(result.resp), run
+	resp := cloneReviewResponse(result.resp)
+	// The dedupe agent shares the merge output schema, so a model may emit
+	// merged_from provenance here as well; it must not leak downstream.
+	stripMergedFrom(resp.Findings)
+	return resp, run
 }
 
 func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
@@ -895,7 +899,17 @@ func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, co
 	if invalid := validateClusterMergeResponse(result.resp, cluster); invalid != nil {
 		return cluster, markMergeRun(run, model.AgentRunStatusPartial, invalid)
 	}
-	return cloneReviewResponse(result.resp).Findings, markMergeRun(run, model.AgentRunStatusOK, nil)
+	findings := cloneReviewResponse(result.resp).Findings
+	stripMergedFrom(findings)
+	return findings, markMergeRun(run, model.AgentRunStatusOK, nil)
+}
+
+// stripMergedFrom clears the merge-step provenance once validation consumed
+// it, so merged_from never leaks into results or posted reviews.
+func stripMergedFrom(findings []model.Finding) {
+	for i := range findings {
+		findings[i].MergedFrom = nil
+	}
 }
 
 // aggregateOverallCorrectness derives the merged verdict mechanically: any
@@ -1002,6 +1016,9 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 		}
 		if len(finding.Suggestions) > 0 {
 			clone.Findings[i].Suggestions = append([]model.Suggestion(nil), finding.Suggestions...)
+		}
+		if len(finding.MergedFrom) > 0 {
+			clone.Findings[i].MergedFrom = append([]string(nil), finding.MergedFrom...)
 		}
 		if finding.Verification != nil {
 			verification := *finding.Verification
@@ -1169,12 +1186,19 @@ func dedupeMinCount(inputCount int) int {
 }
 
 // validateClusterMergeResponse checks a micro-merge response against its
-// cluster: the output must keep between 1 and len(cluster) findings, and every
+// cluster: the output must keep between 1 and len(cluster) findings, every
 // output finding must be attributable to a cluster finding (ID first, then
-// code location with a title tiebreak). Absorbing a duplicate without touching
-// the surviving finding's text is a valid merge, so unlike the old pairwise
-// validator there is no "accumulator must change" heuristic — that heuristic
-// deadlocked on exact duplicates.
+// code location with a title tiebreak), and every cluster finding must be
+// accounted for — surviving in the output, listed in an output finding's
+// merged_from provenance, or content-matching an output finding. Absorbing a
+// duplicate without touching the surviving finding's text is a valid merge,
+// so unlike the old pairwise validator there is no "accumulator must change"
+// heuristic — that heuristic deadlocked on exact duplicates.
+//
+// The merged_from accounting is deliberately lenient, matching the rest of
+// the LLM output handling: entries are trimmed, unknown ids, duplicates, and
+// a finding's own id are ignored rather than rejected — stray entries cannot
+// fake coverage of a real input, so only genuinely lost findings fail.
 func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Finding) *llm.InvalidResponseError {
 	if resp == nil {
 		return &llm.InvalidResponseError{
@@ -1188,11 +1212,39 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=1 max=%d", len(resp.Findings), len(cluster)))
 	}
 	unmatched := 0
+	covered := make(map[string]struct{})
 	for i, finding := range resp.Findings {
 		if findMergeInputMatch(finding, cluster) == nil {
 			unmatched++
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
 		}
+		if id := strings.TrimSpace(finding.ID); id != "" {
+			covered[id] = struct{}{}
+		}
+		for _, src := range finding.MergedFrom {
+			if src = strings.TrimSpace(src); src != "" {
+				covered[src] = struct{}{}
+			}
+		}
+	}
+	var droppedTitles []string
+	for _, in := range cluster {
+		id := strings.TrimSpace(in.ID)
+		if id != "" {
+			if _, ok := covered[id]; ok {
+				continue
+			}
+		}
+		// Lenient fallback: a model that reminted the id but kept the finding
+		// (or absorbed an exact duplicate without declaring provenance) still
+		// accounts for the input via location+title attribution.
+		if findMergeInputMatch(in, resp.Findings) != nil {
+			continue
+		}
+		droppedTitles = append(droppedTitles, in.Title)
+	}
+	if len(droppedTitles) > 0 {
+		problems = append(problems, fmt.Sprintf("dropped_findings count=%d", len(droppedTitles)))
 	}
 	if len(problems) == 0 {
 		return nil
@@ -1208,11 +1260,15 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			GotCount      int
 			MaxCount      int
 			Unmatched     int
+			Dropped       int
+			DroppedTitles string
 		}{
 			CountMismatch: countMismatch,
 			GotCount:      len(resp.Findings),
 			MaxCount:      len(cluster),
 			Unmatched:     unmatched,
+			Dropped:       len(droppedTitles),
+			DroppedTitles: strings.Join(droppedTitles, "; "),
 		},
 	}
 }
