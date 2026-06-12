@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/dedupe"
 	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
@@ -370,7 +370,7 @@ func (e *Engine) withConfig(profile config.Profile) *Engine {
 // Returns aggregated token usage, soft warnings, and any fatal error. On error,
 // callers should still propagate the returned usage/warnings — they hold the
 // partial-run telemetry up to the failure point.
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *VerifyLimiter, reviewerName string) (model.TokenUsage, []string, error) {
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, []string, error) {
 	findings := make([]model.Finding, 0)
 	type findingRef struct {
 		vectorIdx  int
@@ -627,16 +627,53 @@ func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints 
 	return mergeConstraintsForRequest(req)
 }
 
+// mechanicallyDedupeFindings folds clusters of mechanically-detectable
+// duplicates (dedupe.Duplicate or stronger) into single findings, so LLM
+// dedupe/merge agents only ever judge the ambiguous remainder. Returns the
+// reduced list and how many findings were absorbed; zero absorbed returns the
+// input slice untouched.
+func mechanicallyDedupeFindings(findings []model.Finding) ([]model.Finding, int) {
+	clusters := dedupe.Clusters(findings, dedupe.Duplicate)
+	if len(clusters) == len(findings) {
+		return findings, 0
+	}
+	out := make([]model.Finding, 0, len(clusters))
+	for _, cluster := range clusters {
+		if len(cluster) == 1 {
+			out = append(out, findings[cluster[0]])
+			continue
+		}
+		members := make([]model.Finding, 0, len(cluster))
+		for _, idx := range cluster {
+			members = append(members, findings[idx])
+		}
+		out = append(out, dedupe.FoldCluster(members))
+	}
+	return out, len(findings) - len(out)
+}
+
 // runDedupeAgents runs a per-reviewer dedupe pass concurrently. It intentionally
 // mutates vectorResults[idx].resp in place, but only when a dedupe agent returns
 // a valid response. A failed or invalid dedupe leaves that reviewer's original
-// findings intact and only records the dedupe run for telemetry.
+// findings intact and only records the dedupe run for telemetry. Mechanically
+// detectable duplicates are folded in code first; the LLM agent only sees the
+// reduced set.
 func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) []model.AgentRun {
 	runs := make([]model.AgentRun, len(vectorResults))
 	var wg sync.WaitGroup
 	for i := range vectorResults {
 		result := vectorResults[i]
 		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil || len(result.resp.Findings) < 2 {
+			continue
+		}
+		if reduced, absorbed := mechanicallyDedupeFindings(result.resp.Findings); absorbed > 0 {
+			resp := cloneReviewResponse(result.resp)
+			resp.Findings = reduced
+			vectorResults[i].resp = resp
+			result.resp = resp
+			e.logf(ctx, "Mechanical dedupe: reviewer=%q absorbed=%d findings=%d", result.run.Name, absorbed, len(reduced))
+		}
+		if len(result.resp.Findings) < 2 {
 			continue
 		}
 		wg.Add(1)
@@ -677,7 +714,11 @@ func (e *Engine) runDedupeAgent(ctx context.Context, contextNotes string, input 
 		run = markDedupeRun(run, model.AgentRunStatusPartial, invalid)
 		return nil, run
 	}
-	return cloneReviewResponse(result.resp), run
+	resp := cloneReviewResponse(result.resp)
+	// The dedupe agent shares the merge output schema, so a model may emit
+	// merged_from provenance here as well; it must not leak downstream.
+	stripMergedFrom(resp.Findings)
+	return resp, run
 }
 
 func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
@@ -747,7 +788,14 @@ func markDedupeRun(run model.AgentRun, status string, err error) model.AgentRun 
 	return run
 }
 
-func (e *Engine) runPairwiseMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, []model.AgentRun) {
+// runClusterMergeAgents merges all reviewer finding lists into one. Findings
+// are clustered mechanically (dedupe.Clusters at Possible): clear duplicates
+// inside a cluster are folded in code, singleton clusters pass through
+// untouched, and only ambiguous clusters are judged by small merge agents that
+// run concurrently. A failed or invalid micro-merge keeps its cluster's
+// findings unmerged — bias toward inclusion: a rare surviving near-duplicate
+// beats silently losing a reviewer's finding.
+func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, []model.AgentRun) {
 	if len(inputs) == 0 {
 		result := emptyVerifiedMergeResult()
 		return result, []model.AgentRun{result.run}
@@ -764,39 +812,143 @@ func (e *Engine) runPairwiseMergeAgents(ctx context.Context, userPrompt string, 
 		return result, []model.AgentRun{result.run}
 	}
 
-	accumulator := cloneReviewResponse(inputs[0].response)
-	var runs []model.AgentRun
-	var last agentResult
-	for i := 1; i < len(inputs); i++ {
-		stepResult, err := e.runMergeAgent(ctx, userPrompt, contextNotes, accumulator, inputs[i], schema, constraints, req)
-		run := stepResult.run
-		if err != nil {
-			run = markMergeRun(run, model.AgentRunStatusFailed, err)
-			accumulator = fallbackPairwiseMerge(accumulator, inputs[i], err)
-			last = agentResult{resp: accumulator, run: run, reasoningEffort: stepResult.reasoningEffort}
-			runs = append(runs, run)
+	findings, reviewerByID := flattenMergeMembers(inputs)
+	clusters := dedupe.Clusters(findings, dedupe.Possible)
+
+	outcomes := make([][]model.Finding, len(clusters))
+	runs := make([]model.AgentRun, len(clusters))
+	absorbed := 0
+	llmClusters := 0
+	var wg sync.WaitGroup
+	for ci, cluster := range clusters {
+		clusterFindings := make([]model.Finding, 0, len(cluster))
+		for _, idx := range cluster {
+			clusterFindings = append(clusterFindings, findings[idx])
+		}
+		reduced, folded := mechanicallyDedupeFindings(clusterFindings)
+		absorbed += folded
+		if len(reduced) == 1 {
+			outcomes[ci] = reduced
 			continue
 		}
-		if stepResult.resp == nil {
-			err := fmt.Errorf("merge step returned no response")
-			run = markMergeRun(run, model.AgentRunStatusFailed, err)
-			accumulator = fallbackPairwiseMerge(accumulator, inputs[i], err)
-			last = agentResult{resp: accumulator, run: run, reasoningEffort: stepResult.reasoningEffort}
-			runs = append(runs, run)
-			continue
-		}
-		if invalid := validatePairwiseMergeResponse(stepResult.resp, accumulator, inputs[i]); invalid != nil {
-			run = markMergeRun(run, model.AgentRunStatusPartial, invalid)
-			accumulator = fallbackPairwiseMerge(accumulator, inputs[i], invalid)
-			last = agentResult{resp: accumulator, run: run, reasoningEffort: stepResult.reasoningEffort}
-			runs = append(runs, run)
-			continue
-		}
-		accumulator = cloneReviewResponse(stepResult.resp)
-		last = agentResult{resp: accumulator, run: run, reasoningEffort: stepResult.reasoningEffort}
-		runs = append(runs, run)
+		llmClusters++
+		wg.Add(1)
+		go func(ci int, reduced []model.Finding) {
+			defer wg.Done()
+			outcomes[ci], runs[ci] = e.runClusterMergeAgent(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req)
+		}(ci, reduced)
 	}
-	return last, runs
+	wg.Wait()
+
+	var merged []model.Finding
+	mergeRuns := make([]model.AgentRun, 0, llmClusters)
+	for ci := range clusters {
+		merged = append(merged, outcomes[ci]...)
+		if runs[ci].Name != "" {
+			mergeRuns = append(mergeRuns, runs[ci])
+		}
+	}
+	e.logf(ctx, "Mechanical merge: findings=%d clusters=%d llm_clusters=%d absorbed=%d merged=%d",
+		len(findings), len(clusters), llmClusters, absorbed, len(merged))
+
+	resp := cloneReviewResponse(&llm.ReviewResponse{
+		Findings:               merged,
+		OverallCorrectness:     aggregateOverallCorrectness(inputs, len(merged)),
+		OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(inputs), len(findings), len(merged), absorbed, llmClusters),
+		OverallConfidenceScore: maxOverallConfidence(inputs),
+	})
+	if len(mergeRuns) == 0 {
+		mergeRuns = append(mergeRuns, model.AgentRun{
+			Name:   "Merge Findings",
+			Role:   "merge",
+			Status: model.AgentRunStatusSkipped,
+		})
+	}
+	return agentResult{resp: resp, run: mergeRuns[len(mergeRuns)-1]}, mergeRuns
+}
+
+// flattenMergeMembers flattens all reviewer responses into one finding list
+// and records which reviewer produced each finding (keyed by finding ID, which
+// the parser keeps unique across responses) for prompt provenance.
+func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[string]string) {
+	var findings []model.Finding
+	reviewerByID := make(map[string]string)
+	for _, input := range inputs {
+		if input.response == nil {
+			continue
+		}
+		for _, f := range input.response.Findings {
+			findings = append(findings, f)
+			reviewerByID[f.ID] = input.name
+		}
+	}
+	return findings, reviewerByID
+}
+
+// runClusterMergeAgent judges one ambiguous cluster. Any failure path returns
+// the cluster unmerged so reviewer findings are never lost.
+func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) ([]model.Finding, model.AgentRun) {
+	result, err := e.callClusterMergeAgent(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req)
+	run := result.run
+	if err != nil {
+		return cluster, markMergeRun(run, model.AgentRunStatusFailed, err)
+	}
+	if result.resp == nil {
+		return cluster, markMergeRun(run, model.AgentRunStatusFailed, fmt.Errorf("merge step returned no response"))
+	}
+	if invalid := validateClusterMergeResponse(result.resp, cluster); invalid != nil {
+		return cluster, markMergeRun(run, model.AgentRunStatusPartial, invalid)
+	}
+	findings := cloneReviewResponse(result.resp).Findings
+	stripMergedFrom(findings)
+	return findings, markMergeRun(run, model.AgentRunStatusOK, nil)
+}
+
+// stripMergedFrom clears the merge-step provenance once validation consumed
+// it, so merged_from never leaks into results or posted reviews.
+func stripMergedFrom(findings []model.Finding) {
+	for i := range findings {
+		findings[i].MergedFrom = nil
+	}
+}
+
+// aggregateOverallCorrectness derives the merged verdict mechanically: any
+// input saying "patch is incorrect" wins, otherwise the first explicit input
+// verdict carries (an explicit "patch is correct" alongside findings is
+// legitimate — e.g. the Testing vector is constrained to it). Only when no
+// input carries a verdict at all (source-less merge over bare findings files)
+// is the default derived from the merged findings: preserved findings with a
+// "patch is correct" default would contradict the emitted result.
+func aggregateOverallCorrectness(inputs []pairwiseMergeInput, mergedFindings int) string {
+	out := ""
+	for _, input := range inputs {
+		if input.response == nil {
+			continue
+		}
+		if input.response.OverallCorrectness == "patch is incorrect" {
+			return "patch is incorrect"
+		}
+		if out == "" {
+			out = input.response.OverallCorrectness
+		}
+	}
+	if out == "" {
+		if mergedFindings > 0 {
+			return "patch is incorrect"
+		}
+		return "patch is correct"
+	}
+	return out
+}
+
+func maxOverallConfidence(inputs []pairwiseMergeInput) float64 {
+	out := 0.0
+	for _, input := range inputs {
+		if input.response != nil && input.response.OverallConfidenceScore > out {
+			out = input.response.OverallConfidenceScore
+		}
+	}
+	return out
 }
 
 func markMergeRun(run model.AgentRun, status string, err error) model.AgentRun {
@@ -813,51 +965,6 @@ func markMergeRun(run model.AgentRun, status string, err error) model.AgentRun {
 		run.Error = err.Error()
 	}
 	return run
-}
-
-func fallbackPairwiseMerge(finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput, mergeFailure error) *llm.ReviewResponse {
-	out := cloneReviewResponse(finalFindings)
-	if out == nil {
-		out = &llm.ReviewResponse{}
-	}
-	if incoming.response != nil {
-		clonedIncoming := cloneReviewResponse(incoming.response)
-		out.Findings = append(out.Findings, clonedIncoming.Findings...)
-		remintDuplicateFindingIDs(out.Findings)
-	}
-	out.OverallCorrectness = "patch is incorrect"
-	out.OverallExplanation = fmt.Sprintf("Merge step unavailable; kept Final findings and appended %s findings unchanged.", incoming.name)
-	if mergeFailure != nil {
-		out.OverallExplanation += " Error: " + mergeFailure.Error()
-	}
-	out.OverallConfidenceScore = fallbackMergeConfidence(finalFindings)
-	return out
-}
-
-func fallbackMergeConfidence(finalFindings *llm.ReviewResponse) float64 {
-	if finalFindings == nil || finalFindings.OverallConfidenceScore <= 0 {
-		return 0
-	}
-	if finalFindings.OverallConfidenceScore < 0.3 {
-		return finalFindings.OverallConfidenceScore
-	}
-	return 0.3
-}
-
-// remintDuplicateFindingIDs replaces colliding valid UUIDs in-place so that
-// downstream verification repair can address each finding by ID.
-func remintDuplicateFindingIDs(findings []model.Finding) {
-	seen := make(map[string]struct{}, len(findings))
-	for i := range findings {
-		if findings[i].ID == "" {
-			continue
-		}
-		if _, ok := seen[findings[i].ID]; ok {
-			findings[i].ID = ""
-			model.EnsureFindingID(&findings[i])
-		}
-		seen[findings[i].ID] = struct{}{}
-	}
 }
 
 func pairwiseMergeInputs(vectorResults []agentResult) []pairwiseMergeInput {
@@ -910,6 +1017,9 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 		if len(finding.Suggestions) > 0 {
 			clone.Findings[i].Suggestions = append([]model.Suggestion(nil), finding.Suggestions...)
 		}
+		if len(finding.MergedFrom) > 0 {
+			clone.Findings[i].MergedFrom = append([]string(nil), finding.MergedFrom...)
+		}
 		if finding.Verification != nil {
 			verification := *finding.Verification
 			clone.Findings[i].Verification = &verification
@@ -922,8 +1032,8 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 	return &clone
 }
 
-func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNotes string, finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
-	systemTemplate, err := e.loadPrompt("agent_merge_system_prompt.tmpl")
+func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
+	systemTemplate, err := e.loadPrompt("agent_cluster_merge_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -946,8 +1056,7 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 	mergeUser, err := llm.RenderJSON(map[string]any{
 		"review_context":      json.RawMessage(userPrompt),
 		"context_agent_notes": contextNotes,
-		"final_findings":      finalFindingsPayload(finalFindings),
-		"incoming_review":     pairwiseMergePayload(incoming),
+		"cluster_findings":    clusterMergePayload(cluster, reviewerByID),
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
@@ -963,37 +1072,20 @@ func (e *Engine) runMergeAgent(ctx context.Context, userPrompt string, contextNo
 		constraints:   constraints,
 		hasTools:      false,
 		validateResponse: func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
-			return validatePairwiseMergeResponse(resp, finalFindings, incoming)
+			return validateClusterMergeResponse(resp, cluster)
 		},
 	}, req)
 }
 
-func finalFindingsPayload(resp *llm.ReviewResponse) map[string]any {
-	entry := map[string]any{
-		"name": "Final findings",
-		"role": "merge_accumulator",
+func clusterMergePayload(cluster []model.Finding, reviewerByID map[string]string) []map[string]any {
+	out := make([]map[string]any, 0, len(cluster))
+	for _, f := range cluster {
+		out = append(out, map[string]any{
+			"reviewer": reviewerByID[f.ID],
+			"finding":  f,
+		})
 	}
-	if resp != nil {
-		entry["findings"] = resp.Findings
-		entry["overall_correctness"] = resp.OverallCorrectness
-		entry["overall_explanation"] = resp.OverallExplanation
-		entry["overall_confidence_score"] = resp.OverallConfidenceScore
-	}
-	return entry
-}
-
-func pairwiseMergePayload(input pairwiseMergeInput) map[string]any {
-	entry := map[string]any{
-		"name": input.name,
-		"role": input.role,
-	}
-	if input.response != nil {
-		entry["findings"] = input.response.Findings
-		entry["overall_correctness"] = input.response.OverallCorrectness
-		entry["overall_explanation"] = input.response.OverallExplanation
-		entry["overall_confidence_score"] = input.response.OverallConfidenceScore
-	}
-	return entry
+	return out
 }
 
 func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse) *llm.InvalidResponseError {
@@ -1093,45 +1185,21 @@ func dedupeMinCount(inputCount int) int {
 	return (inputCount + 1) / 2
 }
 
-func validatePairwiseMergeResponse(resp *llm.ReviewResponse, finalFindings *llm.ReviewResponse, incoming pairwiseMergeInput) *llm.InvalidResponseError {
-	var inputFindings []model.Finding
-	minCount := 0
-	if finalFindings != nil {
-		// The protected count is the current accumulator size, not the
-		// original reviewer size. This floor intentionally grows after each
-		// accepted step because pairwise merge must keep existing Final
-		// findings and only merge the incoming reviewer into them.
-		minCount = len(finalFindings.Findings)
-		inputFindings = append(inputFindings, finalFindings.Findings...)
-	}
-	var incomingFindings []model.Finding
-	if incoming.response != nil {
-		incomingFindings = incoming.response.Findings
-		inputFindings = append(inputFindings, incomingFindings...)
-	}
-	return validateMergeResponse(resp, mergeValidationInputs{
-		minCount:         minCount,
-		protectedName:    "Final findings",
-		inputFindings:    inputFindings,
-		accumulator:      finalFindings,
-		incomingFindings: incomingFindings,
-	})
-}
-
-type mergeValidationInputs struct {
-	minCount      int
-	protectedName string
-	inputFindings []model.Finding
-	// Pairwise-only. accumulator and incomingFindings must both be set to enable
-	// the merge_mismatch check that detects responses where count did not grow
-	// enough to absorb the incoming reviewer and none of the accumulator findings
-	// were modified — i.e. the merge step silently dropped the incoming
-	// reviewer's contribution.
-	accumulator      *llm.ReviewResponse
-	incomingFindings []model.Finding
-}
-
-func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *llm.InvalidResponseError {
+// validateClusterMergeResponse checks a micro-merge response against its
+// cluster: the output must keep between 1 and len(cluster) findings, every
+// output finding must be attributable to a cluster finding (ID first, then
+// code location with a title tiebreak), and every cluster finding must be
+// accounted for — surviving in the output, listed in an output finding's
+// merged_from provenance, or content-matching an output finding. Absorbing a
+// duplicate without touching the surviving finding's text is a valid merge,
+// so unlike the old pairwise validator there is no "accumulator must change"
+// heuristic — that heuristic deadlocked on exact duplicates.
+//
+// The merged_from accounting is deliberately lenient, matching the rest of
+// the LLM output handling: entries are trimmed, unknown ids, duplicates, and
+// a finding's own id are ignored rather than rejected — stray entries cannot
+// fake coverage of a real input, so only genuinely lost findings fail.
+func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Finding) *llm.InvalidResponseError {
 	if resp == nil {
 		return &llm.InvalidResponseError{
 			Reason:        "merge returned no response",
@@ -1139,30 +1207,44 @@ func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *
 		}
 	}
 	var problems []string
-	countMismatch := len(resp.Findings) < in.minCount
+	countMismatch := len(resp.Findings) < 1 || len(resp.Findings) > len(cluster)
 	if countMismatch {
-		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=%d", len(resp.Findings), in.minCount))
+		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=1 max=%d", len(resp.Findings), len(cluster)))
 	}
 	unmatched := 0
+	covered := make(map[string]struct{})
 	for i, finding := range resp.Findings {
-		if findMergeInputMatch(finding, in.inputFindings) == nil {
+		if findMergeInputMatch(finding, cluster) == nil {
 			unmatched++
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
 		}
-	}
-	mergeMismatch := false
-	changed, required, growth, incomingCount := 0, 0, 0, len(in.incomingFindings)
-	if in.accumulator != nil && incomingCount > 0 {
-		finalCount := len(in.accumulator.Findings)
-		growth = max(len(resp.Findings)-finalCount, 0)
-		required = incomingCount - growth
-		if required > 0 {
-			changed = pairwiseMergeChangedCount(resp.Findings, in.accumulator.Findings)
-			if changed < required {
-				mergeMismatch = true
-				problems = append(problems, fmt.Sprintf("merge_mismatch changed=%d required=%d incoming=%d growth=%d", changed, required, incomingCount, growth))
+		if id := strings.TrimSpace(finding.ID); id != "" {
+			covered[id] = struct{}{}
+		}
+		for _, src := range finding.MergedFrom {
+			if src = strings.TrimSpace(src); src != "" {
+				covered[src] = struct{}{}
 			}
 		}
+	}
+	var droppedTitles []string
+	for _, in := range cluster {
+		id := strings.TrimSpace(in.ID)
+		if id != "" {
+			if _, ok := covered[id]; ok {
+				continue
+			}
+		}
+		// Lenient fallback: a model that reminted the id but kept the finding
+		// (or absorbed an exact duplicate without declaring provenance) still
+		// accounts for the input via location+title attribution.
+		if findMergeInputMatch(in, resp.Findings) != nil {
+			continue
+		}
+		droppedTitles = append(droppedTitles, in.Title)
+	}
+	if len(droppedTitles) > 0 {
+		problems = append(problems, fmt.Sprintf("dropped_findings count=%d", len(droppedTitles)))
 	}
 	if len(problems) == 0 {
 		return nil
@@ -1176,103 +1258,19 @@ func validateMergeResponse(resp *llm.ReviewResponse, in mergeValidationInputs) *
 		RetryGuidanceData: struct {
 			CountMismatch bool
 			GotCount      int
-			MinCount      int
+			MaxCount      int
 			Unmatched     int
-			ProtectedName string
-			MergeMismatch bool
-			Changed       int
-			Required      int
-			IncomingCount int
-			Growth        int
+			Dropped       int
+			DroppedTitles string
 		}{
 			CountMismatch: countMismatch,
 			GotCount:      len(resp.Findings),
-			MinCount:      in.minCount,
+			MaxCount:      len(cluster),
 			Unmatched:     unmatched,
-			ProtectedName: in.protectedName,
-			MergeMismatch: mergeMismatch,
-			Changed:       changed,
-			Required:      required,
-			IncomingCount: incomingCount,
-			Growth:        growth,
+			Dropped:       len(droppedTitles),
+			DroppedTitles: strings.Join(droppedTitles, "; "),
 		},
 	}
-}
-
-// pairwiseMergeChangedCount counts how many accumulator findings the merge
-// output failed to carry through unchanged. It iterates the accumulator (the
-// protected side), not the output, so it stays correct when a valid merge folds
-// an accumulator finding into the incoming reviewer's finding and keeps the
-// incoming ID: such a merge is invisible to an output-keyed scan, but here it
-// still registers because the accumulator finding either drops out of the
-// output entirely or surfaces as a materially different output finding.
-//
-// Each accumulator finding is attributed to an output finding via
-// findMergeInputMatch (ID first, then code_location with a title tiebreak),
-// which handles both the production path (parser mints UUIDs, so IDs match
-// across steps) and degenerate cases where IDs are missing (location/title
-// fallback still attributes correctly). An accumulator finding counts as
-// changed when no output finding matches it, or when the matched output finding
-// differs materially.
-func pairwiseMergeChangedCount(out, accumulator []model.Finding) int {
-	changed := 0
-	for i := range accumulator {
-		match := findMergeInputMatch(accumulator[i], out)
-		if match == nil {
-			changed++
-			continue
-		}
-		if !findingMaterialEqual(accumulator[i], *match) {
-			changed++
-		}
-	}
-	return changed
-}
-
-// findingMaterialEqual compares the parts of a finding that a merge step would
-// rewrite when folding in new information. Finding ID and Verification.ID are
-// intentionally ignored: a merge that only reassigns an ID without touching
-// content is not a merge, and Verification.ID merely mirrors the parent finding
-// ID, which may legitimately change when a finding is folded into another.
-func findingMaterialEqual(a, b model.Finding) bool {
-	if a.Title != b.Title || a.Body != b.Body {
-		return false
-	}
-	if a.ConfidenceScore != b.ConfidenceScore {
-		return false
-	}
-	if model.PriorityRank(a.Priority) != model.PriorityRank(b.Priority) {
-		return false
-	}
-	if a.CodeLocation != b.CodeLocation {
-		return false
-	}
-	if len(a.Suggestions) != 0 || len(b.Suggestions) != 0 {
-		if !reflect.DeepEqual(a.Suggestions, b.Suggestions) {
-			return false
-		}
-	}
-	if !verificationContentEqual(a.Verification, b.Verification) {
-		return false
-	}
-	if !reflect.DeepEqual(a.Finalization, b.Finalization) {
-		return false
-	}
-	return true
-}
-
-// verificationContentEqual compares only the content fields of two
-// verifications, ignoring Verification.ID. That ID mirrors the parent finding
-// ID and may legitimately change during a merge, so it must not make two
-// otherwise-identical verifications compare unequal.
-func verificationContentEqual(a, b *model.FindingVerification) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.Verdict == b.Verdict &&
-		a.Priority == b.Priority &&
-		a.ConfidenceScore == b.ConfidenceScore &&
-		a.Remarks == b.Remarks
 }
 
 func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {

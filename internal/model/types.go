@@ -48,9 +48,10 @@ type ReviewRequest struct {
 	MaxOutputRetries        int
 	MaxReasoningSeconds     int
 	MaxReasoningLoopRepeats int
-	// VerifyConcurrency caps concurrent verifier calls across all reviewers
-	// (one shared limiter per pipeline run); 0 = unlimited.
-	VerifyConcurrency        int
+	// Concurrency caps concurrent LLM agent loops across the whole pipeline
+	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
+	// summarize); 0 = unlimited.
+	Concurrency              int
 	VerifyDropPolicy         string
 	VerifyDropConfidence     float64
 	NudgeCount               int
@@ -231,6 +232,11 @@ type Finding struct {
 	Verification    *FindingVerification  `json:"verification,omitempty"`
 	Finalization    *FindingFinalization  `json:"finalization,omitempty"`
 	Summarization   *FindingSummarization `json:"summarization,omitempty"`
+	// MergedFrom is merge-step provenance only: the ids of cluster findings
+	// absorbed into this one. Validation consumes it to detect silently
+	// dropped findings; the merge step strips it before findings leave the
+	// step, so it never reaches results or posted reviews.
+	MergedFrom []string `json:"merged_from,omitempty"`
 }
 
 func EnsureFindingIDs(findings []Finding) int {

@@ -85,7 +85,7 @@ func TestVerifyAllAttachesByIndex(t *testing.T) {
 		{Title: "first", Body: "b1", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		{Title: "second", Body: "b2", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 	}
-	verifications, usage, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewVerifyLimiter(1)})
+	verifications, usage, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	findings := []model.Finding{
 		{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
-	verifications, _, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewVerifyLimiter(1)})
+	verifications, _, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestVerifyAllCancelledContextWarnsOnceAndStops(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	verifications, _, warnings, err := engine.VerifyAll(ctx, sampleReviewCtx(), findings, VerifyOptions{Limiter: NewVerifyLimiter(1)})
+	verifications, _, warnings, err := engine.VerifyAll(ctx, sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
 	findings := []model.Finding{
 		{ID: "not-a-uuid", Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
-	_, _, _, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewVerifyLimiter(1)})
+	_, _, _, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
 
-	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewVerifyLimiter(0), "")
+	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(0), "")
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
