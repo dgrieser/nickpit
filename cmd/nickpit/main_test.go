@@ -300,6 +300,7 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	vc := cmd.PersistentFlags().Lookup("concurrency")
 	if vc == nil {
 		t.Fatal("concurrency flag missing")
+		return
 	}
 	if vc.DefValue != "10" {
 		t.Fatalf("concurrency default = %q, want 10", vc.DefValue)

@@ -107,6 +107,7 @@ func TestMergeFindingsVerificationFollowsHighestConfidence(t *testing.T) {
 	v := MergeFindings(a, b).Verification
 	if v == nil {
 		t.Fatal("verification dropped")
+		return
 	}
 	if v.ID != "id-a" || v.Verdict != "confirmed" || v.Remarks != "base remarks" {
 		t.Fatalf("verification = %s/%s/%q, want verdict and remarks from higher-confidence side", v.ID, v.Verdict, v.Remarks)

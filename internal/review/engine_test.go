@@ -183,6 +183,7 @@ func TestRunSpecPipelineReturnsCleanResultWhenFiltersOmitAll(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected result")
+		return
 	}
 	if len(result.Findings) != 0 {
 		t.Fatalf("findings = %#v", result.Findings)
@@ -1526,10 +1527,10 @@ func TestMultiAgentVerifiesBeforeMergeAndDropsInvalidFindings(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
-		Mode:              model.ModeLocal,
-		RepoRoot:          ".",
-		MaxContextTokens:  1000,
-		MaxToolCalls:      1,
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
 		Concurrency:      3,
 	})
 	if err != nil {

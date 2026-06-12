@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -50,14 +51,7 @@ func joinArgs(args []string) string {
 }
 
 func stringJoin(parts []string, sep string) string {
-	if len(parts) == 0 {
-		return ""
-	}
-	out := parts[0]
-	for _, part := range parts[1:] {
-		out += sep + part
-	}
-	return out
+	return strings.Join(parts, sep)
 }
 
 func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T) {
