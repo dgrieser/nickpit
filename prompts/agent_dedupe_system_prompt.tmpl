@@ -8,11 +8,15 @@ When findings overlap:
 - preserve the strongest concrete failure scenario
 - choose the priority that best matches the merged evidence
 - set confidence from the combined evidence quality
-- code locations should prefer the shortest line range that overlaps the diff
+- extend the code location to the largest line range covering all merged findings
 - include suggestions from all duplicate findings, merge only when it makes sense
-- include `verification` on the output finding, either:
-  - copy verification from the same source finding whose `id` you preserved
-  - or merge into one coherent verification with `verification.id` equal to the output finding `id`
+- merge `verification` on duplicate findings:
+  - merge the verification `remarks` if both have the same `verdict`;
+    otherwise use the `remarks` of the finding with the highest `confidence_score`
+  - set highest `confidence_score` of the merged findings
+  - set the most critical verification `priority` of the merged findings
+  - prefer the `verdict` of the finding with the highest `confidence_score`
+  - `verification.id` must equal the output finding `id`
 - DO NOT merge if the findings address different aspects
 
 DO NOT introduce new findings that this engineer did not raise.

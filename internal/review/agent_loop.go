@@ -80,6 +80,15 @@ func newAgentLoopState() *agentLoopState {
 }
 
 func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentLoopResult, error) {
+	// Admission through the run-global limiter caps concurrent LLM agent
+	// loops across the whole pipeline. Chains admitted upstream (verify's
+	// ordered spawn loop) carry the admission in ctx and pass through.
+	ctx, release, err := LimiterFromContext(ctx).Acquire(ctx)
+	if err != nil {
+		return agentLoopResult{}, err
+	}
+	defer release()
+
 	llmReq := &llm.ReviewRequest{
 		Messages:                req.Messages,
 		Tools:                   append([]llm.ToolDefinition(nil), req.Tools...),

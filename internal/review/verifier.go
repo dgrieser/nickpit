@@ -33,10 +33,10 @@ type VerifyRequest struct {
 }
 
 type VerifyOptions struct {
-	// Limiter admits verify agent calls; it is shared across the whole pipeline
-	// run so the concurrency cap is global, not per call. A nil limiter is
-	// unlimited.
-	Limiter *VerifyLimiter
+	// Limiter admits verify agent calls in spawn order; it is the same
+	// run-global limiter that caps every LLM agent loop, so verify competes
+	// fairly with all other steps. A nil limiter is unlimited.
+	Limiter *Limiter
 	// ReviewerName labels progress output when verifying a single reviewer's
 	// findings (per-vector lane steps); empty for the global verify step.
 	ReviewerName             string
@@ -216,16 +216,17 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		// per reviewer lane) block only their own loop and compete fairly for
 		// slots. Acquire fails only when ctx is done, so one aggregate warning
 		// replaces a per-finding flood and the loop stops.
-		if err := opts.Limiter.Acquire(ctx); err != nil {
+		verifyCtx, release, err := opts.Limiter.Acquire(ctx)
+		if err != nil {
 			mu.Lock()
 			warnings = append(warnings, fmt.Sprintf("Verify cancelled at finding #%d %q: %v; skipped %d remaining finding(s)", i+1, finding.Title, err, len(findings)-i))
 			mu.Unlock()
 			break
 		}
 		wg.Add(1)
-		go func(idx int, f model.Finding) {
+		go func(idx int, f model.Finding, ctx context.Context, release func()) {
 			defer wg.Done()
-			defer opts.Limiter.Release()
+			defer release()
 			info := e.progressInfo("verify", verifyProgressName(opts.ReviewerName, idx), truncateFindingTitle(f.Title))
 			sec := e.logger.NewReasoningTracker(info)
 			defer sec.End()
@@ -258,7 +259,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				return
 			}
 			verifications[idx] = verification
-		}(i, finding)
+		}(i, finding, verifyCtx, release)
 	}
 	wg.Wait()
 	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("%sfindings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", verifyReviewerPrefix(opts.ReviewerName), len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(verifyStart))))
@@ -274,8 +275,8 @@ func verifyReviewerPrefix(reviewerName string) string {
 	return fmt.Sprintf("reviewer=%q ", reviewerName)
 }
 
-// verifyConcurrencyLabel renders the run-global verify cap; 0 = unlimited.
-func verifyConcurrencyLabel(l *VerifyLimiter) string {
+// verifyConcurrencyLabel renders the run-global agent-loop cap; 0 = unlimited.
+func verifyConcurrencyLabel(l *Limiter) string {
 	if limit := l.Limit(); limit > 0 {
 		return fmt.Sprintf("%d", limit)
 	}

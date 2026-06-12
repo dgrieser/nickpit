@@ -167,12 +167,15 @@ func TestWorkflowMergeTwoFilesInvokesMergeAgent(t *testing.T) {
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logging.New(os.Stderr, false, false))
 
+	// The two findings are related enough to cluster as dedupe.Possible (same
+	// file, 12-line gap, shared body, similar titles), so the cluster merge
+	// actually invokes a micro-merge agent instead of passing both through.
 	a := writeFindingsFile(t, "a.json", model.ReviewResult{
-		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "a", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
+		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "Fix cleanup behavior alpha", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
 		OverallCorrectness: "patch is incorrect",
 	})
 	b := writeFindingsFile(t, "b.json", model.ReviewResult{
-		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 2, End: 2}}}},
+		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "Fix cleanup behavior beta", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 13, End: 13}}}},
 		OverallCorrectness: "patch is incorrect",
 	})
 	pipeline, err := engine.BuildPipeline(workflow.SingleStepSpec(workflow.StepMerge, []string{a, b}))
@@ -321,7 +324,9 @@ func TestWorkflowReviewerSpecNeedsSourceAndRuns(t *testing.T) {
 	if len(result.Findings) != len(reviewVectors) {
 		t.Fatalf("findings = %d, want %d", len(result.Findings), len(reviewVectors))
 	}
-	expectedAgentRuns := 1 + len(reviewVectors) + (len(reviewVectors) - 1)
+	// One micro-merge run: the synthetic vector findings form a single
+	// Possible cluster.
+	expectedAgentRuns := 1 + len(reviewVectors) + 1
 	if len(result.AgentRuns) != expectedAgentRuns {
 		t.Fatalf("agent runs = %d, want %d", len(result.AgentRuns), expectedAgentRuns)
 	}
@@ -541,7 +546,7 @@ func TestWorkflowLaneRunsPerVectorVerifyAndDedupeInOrder(t *testing.T) {
 
 // The verify limiter is shared across lanes: with a cap of 1, the four verify
 // calls (two lanes × two findings) never overlap.
-func TestVerifyLimiterCapsAcrossLanes(t *testing.T) {
+func TestLimiterCapsAcrossLanes(t *testing.T) {
 	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
 	client := &laneEventLLM{inner: inner, verifyHold: 20 * time.Millisecond}
 	engine := pipelineTestEngine(client)
@@ -550,7 +555,7 @@ func TestVerifyLimiterCapsAcrossLanes(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := laneTestRequest()
-	req.VerifyConcurrency = 1
+	req.Concurrency = 1
 	if _, _, err := engine.RunSpecPipeline(context.Background(), pipeline, req); err != nil {
 		t.Fatal(err)
 	}

@@ -257,7 +257,7 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 			return err
 		}
 		vr := st.vectorResults()
-		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.verifyLimiter, "")
+		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "")
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.verifyUsage = addTokenUsage(st.verifyUsage, usage)
@@ -289,7 +289,7 @@ func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
 			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
 		}
 		results := []agentResult{vr}
-		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.verifyLimiter, vector.name)
+		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name)
 		st.mu.Lock()
 		st.verifyUsage = addTokenUsage(st.verifyUsage, usage)
 		st.warnings = append(st.warnings, warnings...)
@@ -340,7 +340,7 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 	}
 }
 
-// mergeStepFunc performs the pairwise merge across groups, the single
+// mergeStepFunc performs the cluster merge across groups, the single
 // grouped→flat transform. It sets the flat result (priority-filtered, IDs
 // normalized) consumed by finalize and output.
 func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
@@ -388,7 +388,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 			if strings.TrimSpace(userPrompt) == "" {
 				userPrompt = "{}"
 			}
-			mergeResult, mergeRuns = sc.Engine.runPairwiseMergeAgents(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req)
+			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgents(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req)
 		}
 		if mergeResult.resp != nil {
 			mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)

@@ -41,10 +41,11 @@ type PipelineState struct {
 	groupByID  map[string]*groupEntry
 	injectSeq  int
 
-	// verifyLimiter is the run-global cap on concurrent verify agent calls,
-	// shared by every verify step (global or per-vector). Set once in Run before
-	// any step goroutine starts; read-only afterwards.
-	verifyLimiter *VerifyLimiter
+	// limiter is the run-global cap on concurrent LLM agent loops, shared by
+	// every step. Set once in Run before any step goroutine starts; read-only
+	// afterwards. Verify steps additionally use it for ordered admission in
+	// their spawn loops.
+	limiter *Limiter
 
 	// Flat result, set by the merge step, by findings injection into finalize,
 	// or by materialization from groups.
@@ -255,7 +256,10 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 // result and the (possibly enriched) context.
 func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	st := newPipelineState(reviewCtx, p.reviewOrder)
-	st.verifyLimiter = NewVerifyLimiter(req.VerifyConcurrency)
+	st.limiter = NewLimiter(req.Concurrency)
+	// Every agent loop in this run acquires admission from the same limiter,
+	// capping LLM concurrency globally (reviewers, verify, dedupe, merge, ...).
+	ctx = WithLimiter(ctx, st.limiter)
 	var segments []model.SegmentRuntime
 	for _, unit := range p.units {
 		unitStart := time.Now()

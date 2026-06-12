@@ -294,12 +294,15 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 			t.Fatalf("unexpected persistent flag %q", name)
 		}
 	}
-	vc := cmd.PersistentFlags().Lookup("verify-concurrency")
-	if vc == nil {
-		t.Fatal("verify-concurrency flag missing")
+	if cmd.PersistentFlags().Lookup("verify-concurrency") != nil {
+		t.Fatal("verify-concurrency flag should be replaced by --concurrency")
 	}
-	if vc.DefValue != "0" {
-		t.Fatalf("verify-concurrency default = %q, want 0 (unlimited)", vc.DefValue)
+	vc := cmd.PersistentFlags().Lookup("concurrency")
+	if vc == nil {
+		t.Fatal("concurrency flag missing")
+	}
+	if vc.DefValue != "10" {
+		t.Fatalf("concurrency default = %q, want 10", vc.DefValue)
 	}
 	if cmd.PersistentFlags().Lookup("skip-model-check") == nil {
 		t.Fatal("skip-model-check flag missing")
@@ -435,7 +438,7 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 	if !strings.Contains(stderr, wantModel) {
 		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", wantModel, stderr)
 	}
-	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ tool calls, ≤5 duplicates, parallel"
+	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ tool calls, ≤5 duplicates, ∞ concurrency, parallel"
 	if !strings.Contains(stderr, wantAgent) {
 		t.Fatalf("stderr missing agent progress line\nwant: %s\nstderr:\n%s", wantAgent, stderr)
 	}

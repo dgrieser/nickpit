@@ -48,9 +48,10 @@ type ReviewRequest struct {
 	MaxOutputRetries        int
 	MaxReasoningSeconds     int
 	MaxReasoningLoopRepeats int
-	// VerifyConcurrency caps concurrent verifier calls across all reviewers
-	// (one shared limiter per pipeline run); 0 = unlimited.
-	VerifyConcurrency        int
+	// Concurrency caps concurrent LLM agent loops across the whole pipeline
+	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
+	// summarize); 0 = unlimited.
+	Concurrency              int
 	VerifyDropPolicy         string
 	VerifyDropConfidence     float64
 	NudgeCount               int
