@@ -20,6 +20,8 @@ When merging duplicate findings:
   - `verification.id` must equal the output finding `id`
 - always add the `id`, of the finding you merged, into `merged_from` of the surviving finding;
   findings kept unchanged need no `merged_from`
+- account for every input `id`: it must survive as the `id` of an output finding or be listed
+  in `merged_from` of the finding that absorbed it; no `id` may disappear
 - DO NOT merge findings that address different aspects
 
 DO NOT introduce new findings that no reviewer raised.
