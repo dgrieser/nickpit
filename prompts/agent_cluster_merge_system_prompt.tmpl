@@ -2,7 +2,8 @@ You are acting as a senior engineer judging a cluster of code-review findings th
 
 ## GUIDELINES
 `cluster_findings` contains findings from different reviewers, anchored to
-the same code region or carrying near-identical titles across related files.
+the same code region, carrying near-identical titles across related files, or
+carrying related title/body signals across related files.
 
 Decide which of them describe the same underlying issue and merge those
 into one finding; keep findings that address different aspects as separate
@@ -10,8 +11,9 @@ output findings.
 
 Findings reporting the same underlying issue against different code locations
 (e.g. the same coverage gap in unit and integration tests) should merge;
-findings that require genuinely different fixes in different files stay
-separate.
+cross-file code/test pairs should merge only when they describe the same
+failure condition or missing behavior; findings that require genuinely
+different fixes in different files stay separate.
 
 When merging duplicate findings:
 - keep the clearest title and body

@@ -1861,6 +1861,39 @@ func TestClusterMergeCrossFileTitleTwinsRouteToLLM(t *testing.T) {
 	}
 }
 
+func TestClusterMergeCrossFileRelatedTitleAndBodyRouteToLLM(t *testing.T) {
+	a := clusterTestFinding("Bash script missing strict mode flags", 3)
+	a.Body = "Script uses set -e only; unset variables and pipeline failures pass silently without strict mode flags."
+	a.CodeLocation.FilePath = "controllers/logrotate/logrotate.sh"
+	b := clusterTestFinding("Bash strict mode flags not enabled per style guide", 100)
+	b.Body = "Tests cover SIGTERM but not unset variables or pipeline failures caused by missing strict mode flags."
+	b.CodeLocation.FilePath = "controllers/logrotate_assets_test.go"
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want one micro-merge for the related cross-file cluster", len(llmClient.mergeRequests))
+	}
+	payload := mergePayloadFromRequest(t, llmClient.mergeRequests[0])
+	cluster, _ := payload["cluster_findings"].([]any)
+	if len(cluster) != 2 {
+		t.Fatalf("cluster payload = %d findings, want both related cross-file findings", len(cluster))
+	}
+	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
+		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
+	}
+	// Default fixture echoes the cluster unchanged; both findings survive.
+	if len(result.resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want echo of both", len(result.resp.Findings))
+	}
+}
+
 func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.T) {
 	finding := mergeTestFinding("Fix A", 1)
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
