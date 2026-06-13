@@ -896,6 +896,9 @@ func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, co
 	if result.resp == nil {
 		return cluster, markMergeRun(run, model.AgentRunStatusFailed, fmt.Errorf("merge step returned no response"))
 	}
+	if repaired := repairClusterMergeProvenance(result.resp, cluster); repaired > 0 {
+		e.logf(ctx, "Merge provenance repair: repaired=%d", repaired)
+	}
 	if invalid := validateClusterMergeResponse(result.resp, cluster); invalid != nil {
 		return cluster, markMergeRun(run, model.AgentRunStatusPartial, invalid)
 	}
@@ -1072,6 +1075,9 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 		constraints:   constraints,
 		hasTools:      false,
 		validateResponse: func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+			if repaired := repairClusterMergeProvenance(resp, cluster); repaired > 0 {
+				e.logf(ctx, "Merge provenance repair: repaired=%d", repaired)
+			}
 			return validateClusterMergeResponse(resp, cluster)
 		},
 	}, req)
@@ -1271,6 +1277,68 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			DroppedTitles: strings.Join(droppedTitles, "; "),
 		},
 	}
+}
+
+// repairClusterMergeProvenance patches the common case where a merge response
+// correctly absorbs an input finding but forgets to list that input id in
+// merged_from. It only repairs missing provenance when exactly one output is a
+// strong semantic match; ambiguous or unrelated drops still fail validation and
+// take the normal retry path.
+func repairClusterMergeProvenance(resp *llm.ReviewResponse, cluster []model.Finding) int {
+	if resp == nil || len(resp.Findings) < 1 || len(resp.Findings) > len(cluster) {
+		return 0
+	}
+	covered := make(map[string]struct{})
+	for _, finding := range resp.Findings {
+		if id := strings.TrimSpace(finding.ID); id != "" {
+			covered[id] = struct{}{}
+		}
+		for _, src := range finding.MergedFrom {
+			if src = strings.TrimSpace(src); src != "" {
+				covered[src] = struct{}{}
+			}
+		}
+	}
+	repaired := 0
+	for _, in := range cluster {
+		id := strings.TrimSpace(in.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := covered[id]; ok {
+			continue
+		}
+		if findMergeInputMatch(in, resp.Findings) != nil {
+			continue
+		}
+		match := -1
+		for i := range resp.Findings {
+			if findMergeInputMatch(resp.Findings[i], cluster) == nil {
+				continue
+			}
+			if !mergeProvenanceRepairMatch(dedupe.Compare(in, resp.Findings[i])) {
+				continue
+			}
+			if match >= 0 {
+				match = -1
+				break
+			}
+			match = i
+		}
+		if match < 0 {
+			continue
+		}
+		resp.Findings[match].MergedFrom = append(resp.Findings[match].MergedFrom, id)
+		covered[id] = struct{}{}
+		repaired++
+	}
+	return repaired
+}
+
+func mergeProvenanceRepairMatch(match dedupe.Match) bool {
+	return match.Verdict >= dedupe.Duplicate ||
+		match.TitleSim >= dedupe.TitleStrong ||
+		(match.TitleSim >= dedupe.TitleModerate && match.BodySim >= dedupe.BodyModerate)
 }
 
 func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {

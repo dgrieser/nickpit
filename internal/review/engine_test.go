@@ -2028,6 +2028,68 @@ func TestClusterMergeValidationRejectsSilentlyDroppedFindings(t *testing.T) {
 	}
 }
 
+func TestClusterMergeRepairMissingMergedFrom(t *testing.T) {
+	a := mergeTestFindingWithID("Cleanup leaves nested rotated assets", 1)
+	a.Body = "Cleanup leaves nested rotated assets behind after log rotation."
+	b := mergeTestFindingWithID("Nested rotated assets remain after cleanup", 22)
+	b.Body = "Nested rotated assets remain behind because cleanup misses rotated logs."
+	merged := a
+	merged.Title = "Nested rotated assets remain after cleanup"
+	merged.Body = "Cleanup leaves nested rotated assets behind after log rotation and misses rotated logs."
+	merged.CodeLocation.LineRange = model.LineRange{Start: 1, End: 22}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
+	cluster := []model.Finding{a, b}
+
+	if invalid := validateClusterMergeResponse(resp, cluster); invalid == nil {
+		t.Fatal("validateClusterMergeResponse accepted response before provenance repair")
+	}
+	if repaired := repairClusterMergeProvenance(resp, cluster); repaired != 1 {
+		t.Fatalf("repairClusterMergeProvenance = %d, want 1", repaired)
+	}
+	if !slices.Contains(resp.Findings[0].MergedFrom, b.ID) {
+		t.Fatalf("merged_from = %#v, want %q", resp.Findings[0].MergedFrom, b.ID)
+	}
+	if invalid := validateClusterMergeResponse(resp, cluster); invalid != nil {
+		t.Fatalf("validateClusterMergeResponse = %v, want nil after provenance repair", invalid)
+	}
+}
+
+func TestClusterMergeRepairMissingMergedFromSkipsAmbiguousAbsorber(t *testing.T) {
+	a := mergeTestFindingWithID("Shared cleanup leak in temp files", 1)
+	a.Body = "Shared cleanup leak leaves rotated files behind."
+	b := mergeTestFindingWithID("Shared cleanup leak in asset files", 13)
+	b.Body = "Shared cleanup leak leaves rotated files behind."
+	c := mergeTestFindingWithID("Shared cleanup leak", 25)
+	c.Body = "Shared cleanup leak leaves rotated files behind."
+	resp := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
+	cluster := []model.Finding{a, b, c}
+
+	if repaired := repairClusterMergeProvenance(resp, cluster); repaired != 0 {
+		t.Fatalf("repairClusterMergeProvenance = %d, want 0 for ambiguous absorber", repaired)
+	}
+	invalid := validateClusterMergeResponse(resp, cluster)
+	if invalid == nil || !strings.Contains(invalid.Reason, "dropped_findings count=1") {
+		t.Fatalf("invalid = %v, want dropped_findings count=1", invalid)
+	}
+}
+
+func TestClusterMergeRepairMissingMergedFromSkipsUnrelatedDrop(t *testing.T) {
+	a := mergeTestFindingWithID("Cleanup leaves nested rotated assets", 1)
+	a.Body = "Cleanup leaves nested rotated assets behind after log rotation."
+	b := mergeTestFindingWithID("Secret token is written to logs", 80)
+	b.Body = "Debug logging writes a secret token to application logs."
+	resp := &llm.ReviewResponse{Findings: []model.Finding{a}}
+	cluster := []model.Finding{a, b}
+
+	if repaired := repairClusterMergeProvenance(resp, cluster); repaired != 0 {
+		t.Fatalf("repairClusterMergeProvenance = %d, want 0 for unrelated drop", repaired)
+	}
+	invalid := validateClusterMergeResponse(resp, cluster)
+	if invalid == nil || !strings.Contains(invalid.Reason, "dropped_findings count=1") {
+		t.Fatalf("invalid = %v, want dropped_findings count=1", invalid)
+	}
+}
+
 // merged_from accounting is lenient: trimmed entries, duplicates, the
 // finding's own id, and unknown ids are ignored — they cannot fake coverage,
 // so only genuinely missing inputs fail. A reminted id with unchanged
@@ -2083,6 +2145,45 @@ func TestClusterMergeStripsMergedFromOnAccept(t *testing.T) {
 	}
 	if len(result.resp.Findings) != 1 {
 		t.Fatalf("findings = %d, want merged single finding", len(result.resp.Findings))
+	}
+	if result.resp.Findings[0].MergedFrom != nil {
+		t.Fatalf("merged_from = %#v, want stripped from accepted output", result.resp.Findings[0].MergedFrom)
+	}
+}
+
+func TestClusterMergeRepairsMissingMergedFromWithoutRetry(t *testing.T) {
+	a := clusterTestFinding("Log cleanup skips rotated tmp files", 1)
+	a.Body = "Cleanup leaves rotated tmp files behind after log rotation."
+	b := clusterTestFinding("Log cleanup skips rotated tmp files in nested dirs", 30)
+	b.Body = "Cleanup leaves rotated tmp files in nested directories after log rotation."
+	merged := a
+	merged.Title = b.Title
+	merged.Body = "Cleanup leaves rotated tmp files in nested directories behind after log rotation."
+	merged.CodeLocation.LineRange = model.LineRange{Start: 1, End: 30}
+	llmClient := &multiAgentLLM{
+		mergeResponses: []*llm.ReviewResponse{{
+			Findings:               []model.Finding{merged},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "merged",
+			OverallConfidenceScore: 0.9,
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
+
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want one request with provenance repair and no retry", len(llmClient.mergeRequests))
+	}
+	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
+		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
+	}
+	if len(result.resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want repaired merged single finding", len(result.resp.Findings))
 	}
 	if result.resp.Findings[0].MergedFrom != nil {
 		t.Fatalf("merged_from = %#v, want stripped from accepted output", result.resp.Findings[0].MergedFrom)
