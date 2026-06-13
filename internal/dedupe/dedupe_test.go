@@ -158,6 +158,48 @@ func TestCompareCalibration(t *testing.T) {
 			want: Possible,
 		},
 		{
+			name: "v8 cross-file: moderate strict-mode code and test gap",
+			a: finding(
+				"Bash script missing strict mode flags",
+				"Script uses `#!/bin/sh` with `set -e` only; missing `-u` and `pipefail` means unset variables and pipeline failures pass silently.",
+				script, 1, 3,
+			),
+			b: finding(
+				"Bash strict mode flags not enabled per style guide",
+				"Tests cover SIGTERM but not unset variables or pipeline failures caused by missing strict mode flags.",
+				"controllers/logrotate_assets_test.go", 100, 120,
+			),
+			want: Possible,
+		},
+		{
+			name: "cross-file moderate title alone stays distinct",
+			a: finding(
+				"Bash script missing strict mode flags",
+				"Script starts with `set -e`.",
+				script, 1, 3,
+			),
+			b: finding(
+				"Bash strict mode flags not enabled per style guide",
+				"Fixture setup writes temporary files before invoking the wrapper.",
+				"controllers/logrotate_assets_test.go", 100, 120,
+			),
+			want: Distinct,
+		},
+		{
+			name: "cross-file moderate body alone stays distinct",
+			a: finding(
+				"Runtime cleanup skips nested cronjobs",
+				"Cleanup patterns use `cronjobs/*.log` while exclusion covers nested cronjobs paths, leaving nested logs unremoved.",
+				script, 69, 69,
+			),
+			b: finding(
+				"ConfigMap key removal breaks consumers",
+				"Cleanup pattern scope and exclusion scope differ; nested cronjobs paths can accumulate because only flat files are removed.",
+				controller, 32, 38,
+			),
+			want: Distinct,
+		},
+		{
 			name: "possible: same line, related but different aspect",
 			a: finding(
 				"Cronjobs cleanup pattern doesn't match exclusion scope",

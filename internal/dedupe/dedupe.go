@@ -73,11 +73,12 @@ const (
 
 // Compare classifies how likely a and b describe the same issue. Findings in
 // different files are Distinct by convention — a code defect and the test gap
-// covering it are separate findings even when their text agrees — with one
-// exception: near-identical titles across files are at most Possible, so the
-// merge agent judges them instead of duplicate titles surviving to the final
-// review. Cross-file pairs never reach Duplicate: mechanical folding assumes
-// one file (extendRange), so the LLM is always in the loop.
+// covering it are separate findings even when their text agrees — with two
+// exceptions: near-identical titles, or moderately related title and body
+// signals, are at most Possible, so the merge agent judges them instead of
+// duplicate-looking findings surviving to the final review. Cross-file pairs
+// never reach Duplicate: mechanical folding assumes one file (extendRange), so
+// the LLM is always in the loop.
 func Compare(a, b model.Finding) Match {
 	if a.CodeLocation.FilePath != b.CodeLocation.FilePath {
 		m := Match{
@@ -86,6 +87,8 @@ func Compare(a, b model.Finding) Match {
 		}
 		if m.TitleSim >= TitleStrong {
 			m.Verdict, m.Reason = Possible, "near-identical title across files"
+		} else if m.TitleSim >= TitleModerate && m.BodySim >= BodyModerate {
+			m.Verdict, m.Reason = Possible, "related title and body across files"
 		} else {
 			m.Verdict, m.Reason = Distinct, "different file"
 		}
