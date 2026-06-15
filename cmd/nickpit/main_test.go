@@ -104,6 +104,39 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesSmallModelCLIOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: primary-model
+    small_model: file-small-model
+    reasoning_effort: high
+    small_reasoning_effort: medium
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:              "default",
+		configPath:           path,
+		smallModel:           "cli-small-model",
+		smallReasoningEffort: "low",
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.SmallModel != "cli-small-model" {
+		t.Fatalf("small model = %q", profile.SmallModel)
+	}
+	if profile.SmallReasoningEffort != "low" {
+		t.Fatalf("small reasoning effort = %q", profile.SmallReasoningEffort)
+	}
+}
+
 func TestLoadProfileAppliesFilterCLIOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -307,6 +340,12 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	}
 	if cmd.PersistentFlags().Lookup("skip-model-check") == nil {
 		t.Fatal("skip-model-check flag missing")
+	}
+	if cmd.PersistentFlags().Lookup("small-model") == nil {
+		t.Fatal("small-model flag missing")
+	}
+	if cmd.PersistentFlags().Lookup("small-reasoning-effort") == nil {
+		t.Fatal("small-reasoning-effort flag missing")
 	}
 	if cmd.PersistentFlags().Lookup("disable-reasoning-extract") == nil {
 		t.Fatal("disable-reasoning-extract flag missing")

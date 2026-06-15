@@ -24,18 +24,20 @@
 # group — so each reviewer's findings are verified and deduped as soon as that
 # reviewer finishes. Each vector may be used by at most one lane per group.
 #
-# Verify concurrency is run-level only (--verify-concurrency, 0 = unlimited):
-# one shared cap across all reviewers' verify calls.
+# LLM concurrency is run-level only (--concurrency, default 10, 0 = unlimited):
+# one shared cap across every agent loop in the run.
 {{SPEC}}
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
 # Unset = inherit from the active profile / CLI flags. (base_url / api_key are
 # profile-level only — the LLM client is created once per run.)
+# Use `model: "@small"` to select profile.small_model, falling back to
+# profile.model when no small model is configured.
 #
 # steps:
 #   - type: collect-context
 #     config:
-#       model: gpt-5-mini
+#       model: "@small"
 #       reasoning_effort: low
 #       max_tool_calls: 40
 #   - parallel:
@@ -53,7 +55,7 @@
 #           - dedupe:security
 #       - type: review:performance
 #         config:
-#           model: gpt-5-mini
+#           model: "@small"
 #   - type: merge
 #     config:
 #       model: claude-opus-4-8

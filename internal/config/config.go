@@ -43,6 +43,7 @@ type Config struct {
 
 type Profile struct {
 	Model                              string              `yaml:"model"`
+	SmallModel                         string              `yaml:"small_model"`
 	BaseURL                            string              `yaml:"base_url"`
 	APIKey                             string              `yaml:"api_key"`
 	SupportedModels                    []ModelCapabilities `yaml:"supported_models"`
@@ -65,6 +66,7 @@ type Profile struct {
 	NudgeCount                         int                 `yaml:"nudge_count"`
 	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
 	ReasoningEffort                    string              `yaml:"reasoning_effort"`
+	SmallReasoningEffort               string              `yaml:"small_reasoning_effort"`
 	Workdir                            string              `yaml:"workdir"`
 	GitHubToken                        string              `yaml:"github_token"`
 	GitLabToken                        string              `yaml:"gitlab_token"`
@@ -99,6 +101,7 @@ type ReasoningCapabilities struct {
 type Overrides struct {
 	Profile               string
 	Model                 string
+	SmallModel            string
 	BaseURL               string
 	APIKey                string
 	MaxTokens             *int
@@ -120,6 +123,7 @@ type Overrides struct {
 	NudgeCount            *int
 	DisablePatchSummary   bool
 	ReasoningEffort       string
+	SmallReasoningEffort  string
 	Workdir               string
 	GitHubToken           string
 	GitLabToken           string
@@ -348,6 +352,12 @@ func applyEnv(cfg *Config, profileName string) {
 	if value := os.Getenv("NICKPIT_MODEL"); value != "" {
 		profile.Model = value
 	}
+	if value := os.Getenv("NICKPIT_SMALL_MODEL"); value != "" {
+		profile.SmallModel = value
+	}
+	if value := os.Getenv("NICKPIT_SMALL_REASONING_EFFORT"); value != "" {
+		profile.SmallReasoningEffort = value
+	}
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
 	}
@@ -378,6 +388,9 @@ func applyEnv(cfg *Config, profileName string) {
 func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.Model != "" {
 		profile.Model = overrides.Model
+	}
+	if overrides.SmallModel != "" {
+		profile.SmallModel = overrides.SmallModel
 	}
 	if overrides.BaseURL != "" {
 		profile.BaseURL = overrides.BaseURL
@@ -449,6 +462,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
+	}
+	if overrides.SmallReasoningEffort != "" {
+		profile.SmallReasoningEffort = overrides.SmallReasoningEffort
 	}
 	if overrides.Workdir != "" {
 		profile.Workdir = overrides.Workdir

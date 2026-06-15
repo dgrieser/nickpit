@@ -31,6 +31,7 @@ import (
 
 type app struct {
 	model                         string
+	smallModel                    string
 	baseURL                       string
 	apiKey                        string
 	workDir                       string
@@ -77,6 +78,7 @@ type app struct {
 	gitlabBaseURL                 string
 	verbose                       bool
 	reasoningEffort               string
+	smallReasoningEffort          string
 	showReasoning                 bool
 	showProgress                  bool
 	disableSearchToolOptimization bool
@@ -145,6 +147,7 @@ func newRootCmd() *cobra.Command {
 	}
 
 	root.PersistentFlags().StringVar(&cli.model, "model", "", "Model identifier")
+	root.PersistentFlags().StringVar(&cli.smallModel, "small-model", "", "Small model identifier for workflow steps using model: \"@small\"")
 	root.PersistentFlags().StringVar(&cli.baseURL, "base-url", "", "LLM API base URL")
 	root.PersistentFlags().StringVar(&cli.apiKey, "api-key", "", "LLM API key")
 	root.PersistentFlags().StringVar(&cli.workDir, "workdir", "", "Working directory")
@@ -178,6 +181,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.verbose, "verbose", false, "Print debug execution details")
 	root.PersistentFlags().BoolVar(&cli.verbose, "debug", false, "Print debug execution details")
 	root.PersistentFlags().StringVar(&cli.reasoningEffort, "reasoning-effort", "", "Reasoning effort level; known fallback ladder: max, xhigh, high, medium, low, minimal, none, off")
+	root.PersistentFlags().StringVar(&cli.smallReasoningEffort, "small-reasoning-effort", "", "Reasoning effort for --small-model / workflow model: \"@small\"; defaults to --reasoning-effort")
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
@@ -269,9 +273,11 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
 		Profile:               a.profile,
 		Model:                 a.model,
+		SmallModel:            a.smallModel,
 		BaseURL:               a.baseURL,
 		APIKey:                a.apiKey,
 		ReasoningEffort:       a.reasoningEffort,
+		SmallReasoningEffort:  a.smallReasoningEffort,
 		Temperature:           temperature,
 		TopP:                  topP,
 		ExtraBody:             extraBody,
