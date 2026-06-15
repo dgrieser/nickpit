@@ -714,23 +714,50 @@ func (a *app) newCheckCmd() *cobra.Command {
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-			result, err := a.resolveModelCapabilities(ctx, client, profile, a.refreshModelCheck)
+			result, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, a.refreshModelCheck)
 			if err != nil {
 				return err
 			}
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
-			if a.jsonOutput {
-				if err := writeJSON(struct {
-					Check modelcheck.CheckSummary `json:"check"`
-				}{Check: result.Summary()}); err != nil {
-					return err
-				}
-				return validatePreReviewModelCheck(result)
-			}
-			if err := a.writeModelCheckOutput(result); err != nil {
+			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, a.refreshModelCheck)
+			if err != nil {
 				return err
 			}
-			return validatePreReviewModelCheck(result)
+			if a.jsonOutput {
+				out := struct {
+					Check modelcheck.CheckSummary  `json:"check"`
+					Small *modelcheck.CheckSummary `json:"small,omitempty"`
+				}{Check: result.Summary()}
+				if smallChecked {
+					summary := smallResult.Summary()
+					out.Small = &summary
+				}
+				if err := writeJSON(out); err != nil {
+					return err
+				}
+				if err := validatePreReviewModelCheck(result); err != nil {
+					return err
+				}
+				if smallChecked {
+					return validateSmallModelCheck(smallResult)
+				}
+				return nil
+			}
+			if err := a.writeModelCheckOutput(profile.Model, result); err != nil {
+				return err
+			}
+			if smallChecked {
+				if err := a.writeModelCheckOutput(profile.SmallModel, smallResult); err != nil {
+					return err
+				}
+			}
+			if err := validatePreReviewModelCheck(result); err != nil {
+				return err
+			}
+			if smallChecked {
+				return validateSmallModelCheck(smallResult)
+			}
+			return nil
 		},
 	}
 	modelCmd.Flags().BoolVar(&a.refreshModelCheck, "refresh", false, "Refresh stored model capabilities by running live probes")
@@ -808,7 +835,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	if needsLLMSetup && !a.skipModelCheck {
-		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, false)
+		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, false)
 		if err != nil {
 			return err
 		}
@@ -818,6 +845,15 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
 		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
+		smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, false)
+		if err != nil {
+			return err
+		}
+		if smallChecked {
+			if err := validateSmallModelCheck(smallResult); err != nil {
+				return err
+			}
+		}
 	} else {
 		req.ModelEmitsReasoning = true
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
@@ -1000,9 +1036,9 @@ func (a *app) specProfile() (string, error) {
 	return spec.Profile, nil
 }
 
-func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {
+func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort string, refresh bool) (modelcheck.Result, error) {
 	if !refresh {
-		if capability, ok := modelcheck.FindProfileCapability(profile); ok {
+		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
 			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=profile")
 			return result, nil
@@ -1011,7 +1047,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		if err != nil {
 			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
-			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, profile.Model)
+			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model)
 			if err == nil && ok {
 				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
@@ -1023,7 +1059,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		}
 	}
 
-	checker := modelcheck.New(client, profile)
+	checker := modelcheck.NewForModel(client, profile, model, effort)
 	checker.SetLogger(a.logger)
 	checker.SetParallel(!a.disableParallelToolCalls)
 	result := checker.Run(ctx)
@@ -1040,6 +1076,31 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		a.logf(ctx, "Model capability cache write failed: %v", err)
 	}
 	return result, nil
+}
+
+// smallModelConfigured reports whether the profile defines a small model that
+// is distinct from the primary model and therefore warrants its own
+// capability check.
+func smallModelConfigured(profile config.Profile) bool {
+	small := strings.TrimSpace(profile.SmallModel)
+	return small != "" && small != strings.TrimSpace(profile.Model)
+}
+
+// checkSmallModel runs (or loads cached) capabilities for profile.SmallModel
+// when one is configured distinctly from the primary model, mirroring the
+// primary check: probe, log, and return the result for the caller to validate.
+// The bool reports whether a check was actually performed.
+func (a *app) checkSmallModel(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, bool, error) {
+	if !smallModelConfigured(profile) {
+		return modelcheck.Result{}, false, nil
+	}
+	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(profile))
+	result, err := a.resolveModelCapabilities(smallCtx, client, profile, profile.SmallModel, profile.SmallReasoningEffort, refresh)
+	if err != nil {
+		return result, true, err
+	}
+	a.logProgress(smallCtx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
+	return result, true, nil
 }
 
 // reviewProducedNothing reports whether the review pipeline collapsed: every
@@ -1171,7 +1232,7 @@ func isTerminal(f *os.File) bool {
 	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
 }
 
-func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
+func (a *app) writeModelCheckOutput(modelName string, result modelcheck.Result) error {
 	s := result.Summary()
 	useANSI := isTerminal(os.Stdout)
 
@@ -1207,6 +1268,7 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	}
 
 	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s\n", label(modelName))
 	fmt.Fprintf(&sb, "%s %s\n", mark(s.Compatible), label("Model is compatible"))
 	fmt.Fprintf(&sb, "\n")
 	fmt.Fprintf(&sb, "%s Response\n", mark(s.Response))
@@ -1226,6 +1288,15 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	}
 	_, err := fmt.Fprint(os.Stdout, sb.String())
 	return err
+}
+
+// validateSmallModelCheck applies the same gate as the primary model but
+// labels failures so the user can tell which model is incompatible.
+func validateSmallModelCheck(result modelcheck.Result) error {
+	if err := validatePreReviewModelCheck(result); err != nil {
+		return fmt.Errorf("small model: %w", err)
+	}
+	return nil
 }
 
 func validatePreReviewModelCheck(result modelcheck.Result) error {
@@ -1382,6 +1453,16 @@ func profileProgressInfo(profile config.Profile) logging.ProgressInfo {
 	return logging.ProgressInfo{
 		Model:   profile.Model,
 		Effort:  profile.ReasoningEffort,
+		BaseURL: profile.BaseURL,
+	}
+}
+
+// smallModelProgressInfo mirrors profileProgressInfo for the profile's small
+// model, so the small-model capability check renders its own model and effort.
+func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
+	return logging.ProgressInfo{
+		Model:   profile.SmallModel,
+		Effort:  profile.SmallReasoningEffort,
 		BaseURL: profile.BaseURL,
 	}
 }

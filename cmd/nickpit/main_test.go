@@ -368,7 +368,7 @@ func TestRootCmdHasCheckModel(t *testing.T) {
 
 func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 	out := captureStdout(t, func() {
-		err := (&app{}).writeModelCheckOutput(modelcheck.Result{
+		err := (&app{}).writeModelCheckOutput("test-model", modelcheck.Result{
 			Probes: []modelcheck.ProbeResult{
 				{Name: "configured_no_tools", ReasoningEffort: "high", Reasoned: true, Status: modelcheck.StatusOK},
 				{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: modelcheck.StatusOK},
@@ -382,6 +382,7 @@ func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 		}
 	})
 	for _, want := range []string{
+		"test-model",
 		"✓ Model is compatible",
 		"✓ Tool Use",
 		"✓ Structured Output",
