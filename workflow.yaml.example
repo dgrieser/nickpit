@@ -32,35 +32,69 @@ version: 1
 # profile: default          # optional; same as --profile
 
 steps:
-  - collect-context
+  - type: collect-context
   - parallel:
       - lane:
-          - review:codequality
-          - verify:codequality
-          - dedupe:codequality
+          - type: review:codequality
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:codequality
+          - type: dedupe:codequality
       - lane:
-          - review:security
-          - verify:security
-          - dedupe:security
+          - type: review:security
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:security
+          - type: dedupe:security
       - lane:
-          - review:architecture
-          - verify:architecture
-          - dedupe:architecture
+          - type: review:architecture
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:architecture
+          - type: dedupe:architecture
       - lane:
-          - review:performance
-          - verify:performance
-          - dedupe:performance
+          - type: review:performance
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:performance
+          - type: dedupe:performance
       - lane:
-          - review:testing
-          - verify:testing
-          - dedupe:testing
+          - type: review:testing
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:testing
+          - type: dedupe:testing
       - lane:
-          - review:bestpractices
-          - verify:bestpractices
-          - dedupe:bestpractices
-  - merge
-  - finalize
-  - summarize
+          - type: review:bestpractices
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:bestpractices
+          - type: dedupe:bestpractices
+  - type: merge
+  - type: finalize
+    config:
+      model: "@small"
+  - type: summarize
+    config:
+      model: "@small"
 
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
@@ -83,11 +117,17 @@ steps:
 #               nudge_count: 5
 #               max_reasoning_loop_repeats: 3
 #               max_output_retries: 8
+#               mine_reasoning:
+#                 model: "@small"
+#               compile_findings:
+#                 model: "@small"
+#               nudge:
+#                 model: "@small"
 #           - type: verify:security
 #             config:
 #               verify_drop_policy: refuted-and-unverified
 #               verify_drop_confidence: 0.6
-#           - dedupe:security
+#           - type: dedupe:security
 #       - type: review:performance
 #         config:
 #           model: "@small"
@@ -104,6 +144,8 @@ steps:
 #   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
 #   disable_patch_summary, use_json_schema, verify_drop_policy,
 #   verify_drop_confidence, priority_threshold
+# Review steps also accept internal-agent subconfigs: mine_reasoning,
+# compile_findings, nudge.
 # (max_context_tokens is profile/CLI-level only — the context is trimmed once,
 #  before any step runs.)
 
@@ -112,14 +154,14 @@ steps:
 # only does its initial pass, then drive extra rounds yourself):
 #
 # steps:
-#   - collect-context
+#   - type: collect-context
 #   - type: review:security
 #     config: { nudge_count: 0 }
-#   - reasoning-extract:security
-#   - nudge:security
-#   - verify
-#   - merge
-#   - finalize
+#   - type: reasoning-extract:security
+#   - type: nudge:security
+#   - type: verify
+#   - type: merge
+#   - type: finalize
 
 # ---------------------------------------------------------------------------
 # Findings injection: feed previously-emitted findings JSON back into a step.
@@ -132,7 +174,7 @@ steps:
 #     findings_from:
 #       - reviewer_a.json
 #       - reviewer_b.json
-#   - finalize
+#   - type: finalize
 #
 # Or from the CLI, run a single step on imported findings:
 #   nickpit local branch --step merge --findings a.json --findings b.json --json

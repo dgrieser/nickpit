@@ -2832,10 +2832,13 @@ type reasoningExtractLLM struct {
 	mu                      sync.Mutex
 	reviewerReasoning       []string
 	reviewerMessages        []string
+	reviewerModels          []string
 	collectInputs           []string
+	collectModels           []string
 	collectOutputs          []string
 	updateFullLists         []string
 	updateFindingsJSON      []string
+	updateModels            []string
 	updateOutputs           []string
 	firstCollectStarted     chan struct{}
 	releaseFirstCollect     chan struct{}
@@ -2854,6 +2857,7 @@ func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) 
 		s.mu.Lock()
 		idx := len(s.collectInputs)
 		s.collectInputs = append(s.collectInputs, input)
+		s.collectModels = append(s.collectModels, req.Model)
 		output := outputAt(s.collectOutputs, idx)
 		started := s.firstCollectStarted
 		release := s.releaseFirstCollect
@@ -2871,6 +2875,7 @@ func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) 
 		idx := len(s.updateFullLists)
 		s.updateFullLists = append(s.updateFullLists, fullList)
 		s.updateFindingsJSON = append(s.updateFindingsJSON, findingsJSON)
+		s.updateModels = append(s.updateModels, req.Model)
 		output := outputAt(s.updateOutputs, idx)
 		s.mu.Unlock()
 		return textResponse(output, 1), nil
@@ -2878,6 +2883,7 @@ func (s *reasoningExtractLLM) Review(_ context.Context, req *llm.ReviewRequest) 
 		s.mu.Lock()
 		idx := len(s.reviewerMessages)
 		s.reviewerMessages = append(s.reviewerMessages, user)
+		s.reviewerModels = append(s.reviewerModels, req.Model)
 		reasoning := outputAt(s.reviewerReasoning, idx)
 		s.mu.Unlock()
 		if req.ReasoningSink != nil {

@@ -24,7 +24,8 @@ func writeProfileFixtures(t *testing.T) (cfgPath, specPath string) {
 		t.Fatal(err)
 	}
 	specPath = filepath.Join(dir, "wf.yaml")
-	if err := os.WriteFile(specPath, []byte("version: 1\nprofile: alt\nsteps: [merge]\n"), 0o600); err != nil {
+	spec := "version: 1\nprofile: alt\nsteps:\n  - type: merge\n"
+	if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return cfgPath, specPath

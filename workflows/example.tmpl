@@ -48,11 +48,17 @@
 #               nudge_count: 5
 #               max_reasoning_loop_repeats: 3
 #               max_output_retries: 8
+#               mine_reasoning:
+#                 model: "@small"
+#               compile_findings:
+#                 model: "@small"
+#               nudge:
+#                 model: "@small"
 #           - type: verify:security
 #             config:
 #               verify_drop_policy: refuted-and-unverified
 #               verify_drop_confidence: 0.6
-#           - dedupe:security
+#           - type: dedupe:security
 #       - type: review:performance
 #         config:
 #           model: "@small"
@@ -69,6 +75,8 @@
 #   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
 #   disable_patch_summary, use_json_schema, verify_drop_policy,
 #   verify_drop_confidence, priority_threshold
+# Review steps also accept internal-agent subconfigs: mine_reasoning,
+# compile_findings, nudge.
 # (max_context_tokens is profile/CLI-level only — the context is trimmed once,
 #  before any step runs.)
 
@@ -77,14 +85,14 @@
 # only does its initial pass, then drive extra rounds yourself):
 #
 # steps:
-#   - collect-context
+#   - type: collect-context
 #   - type: review:security
 #     config: { nudge_count: 0 }
-#   - reasoning-extract:security
-#   - nudge:security
-#   - verify
-#   - merge
-#   - finalize
+#   - type: reasoning-extract:security
+#   - type: nudge:security
+#   - type: verify
+#   - type: merge
+#   - type: finalize
 
 # ---------------------------------------------------------------------------
 # Findings injection: feed previously-emitted findings JSON back into a step.
@@ -97,7 +105,7 @@
 #     findings_from:
 #       - reviewer_a.json
 #       - reviewer_b.json
-#   - finalize
+#   - type: finalize
 #
 # Or from the CLI, run a single step on imported findings:
 #   nickpit local branch --step merge --findings a.json --findings b.json --json

@@ -2,33 +2,63 @@ version: 1
 # profile: default          # optional; same as --profile
 
 steps:
-  - collect-context
+  - type: collect-context
   - parallel:
       - lane:
-          - review:codequality
-          - verify:codequality
-          - dedupe:codequality
+          - type: review:codequality
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:codequality
+          - type: dedupe:codequality
       - lane:
-          - review:security
-          - verify:security
-          - dedupe:security
+          - type: review:security
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:security
+          - type: dedupe:security
       - lane:
-          - review:architecture
-          - verify:architecture
-          - dedupe:architecture
+          - type: review:architecture
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:architecture
+          - type: dedupe:architecture
       - lane:
-          - review:performance
-          - verify:performance
-          - dedupe:performance
+          - type: review:performance
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:performance
+          - type: dedupe:performance
       - lane:
-          - review:testing
-          - verify:testing
-          - dedupe:testing
+          - type: review:testing
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:testing
+          - type: dedupe:testing
       - lane:
-          - review:bestpractices
-          - verify:bestpractices
-          - dedupe:bestpractices
-  - merge
+          - type: review:bestpractices
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
+          - type: verify:bestpractices
+          - type: dedupe:bestpractices
+  - type: merge
   - type: finalize
     config:
       model: "@small"
