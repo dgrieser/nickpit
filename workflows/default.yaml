@@ -29,5 +29,9 @@ steps:
           - verify:bestpractices
           - dedupe:bestpractices
   - merge
-  - finalize
-  - summarize
+  - type: finalize
+    config:
+      model: "@small"
+  - type: summarize
+    config:
+      model: "@small"
