@@ -158,13 +158,19 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 			return err
 		}
 		session := sc.Engine.newReviewerSession(spec, sc.Req, collectAnyway)
-		mine := sc.internalAgentContext(nil)
-		compile := sc.internalAgentContext(nil)
-		nudge := sc.internalAgentContext(nil)
+		mine := internalAgentContext{Engine: sc.Engine, Req: sc.Req}
+		compile := internalAgentContext{Engine: sc.Engine, Req: sc.Req}
+		nudge := internalAgentContext{Engine: sc.Engine, Req: sc.Req}
 		if sc.Override != nil {
-			mine = sc.internalAgentContext(sc.Override.MineReasoning)
-			compile = sc.internalAgentContext(sc.Override.CompileFindings)
-			nudge = sc.internalAgentContext(sc.Override.Nudge)
+			if sc.Override.MineReasoning != nil {
+				mine = sc.internalAgentContext(sc.Override.MineReasoning)
+			}
+			if sc.Override.CompileFindings != nil {
+				compile = sc.internalAgentContext(sc.Override.CompileFindings)
+			}
+			if sc.Override.Nudge != nil {
+				nudge = sc.internalAgentContext(sc.Override.Nudge)
+			}
 		}
 		if err := sc.Engine.reviewerInitial(ctx, session, sc.Req, mine.Engine, mine.Req); err != nil {
 			// Preserve the partial telemetry (tokens/tool calls) of the failed

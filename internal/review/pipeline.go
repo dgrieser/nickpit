@@ -194,6 +194,9 @@ type internalAgentContext struct {
 }
 
 func (sc *stepContext) internalAgentContext(override *workflow.AgentOverride) internalAgentContext {
+	if override == nil {
+		return internalAgentContext{Engine: sc.Engine, Req: sc.Req}
+	}
 	profile, req := override.Resolve(sc.Engine.config, sc.Req)
 	return internalAgentContext{Engine: sc.Engine.withConfig(profile), Req: req}
 }
