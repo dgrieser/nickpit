@@ -2,7 +2,7 @@ version: 1
 # profile: default          # optional; same as --profile
 
 steps:
-  - collect-context
+  - type: collect-context
   - parallel:
       - lane:
           - type: review:codequality
@@ -11,8 +11,8 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - verify:codequality
-          - dedupe:codequality
+          - type: verify:codequality
+          - type: dedupe:codequality
       - lane:
           - type: review:security
             config:
@@ -20,8 +20,8 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - verify:security
-          - dedupe:security
+          - type: verify:security
+          - type: dedupe:security
       - lane:
           - type: review:architecture
             config:
@@ -29,8 +29,8 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - verify:architecture
-          - dedupe:architecture
+          - type: verify:architecture
+          - type: dedupe:architecture
       - lane:
           - type: review:performance
             config:
@@ -38,8 +38,8 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - verify:performance
-          - dedupe:performance
+          - type: verify:performance
+          - type: dedupe:performance
       - lane:
           - type: review:testing
             config:
@@ -47,8 +47,8 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - verify:testing
-          - dedupe:testing
+          - type: verify:testing
+          - type: dedupe:testing
       - lane:
           - type: review:bestpractices
             config:
@@ -56,9 +56,9 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - verify:bestpractices
-          - dedupe:bestpractices
-  - merge
+          - type: verify:bestpractices
+          - type: dedupe:bestpractices
+  - type: merge
   - type: finalize
     config:
       model: "@small"

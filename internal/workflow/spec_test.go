@@ -102,14 +102,14 @@ func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 	}
 }
 
-func TestLoadParsesStringMappingAndParallel(t *testing.T) {
+func TestLoadParsesMappingStepsAndParallel(t *testing.T) {
 	path := writeSpec(t, `
 version: 1
 profile: custom
 steps:
-  - collect-context
+  - type: collect-context
   - parallel:
-      - review:security
+      - type: review:security
       - type: review:performance
         config:
           model: fast-model
@@ -194,13 +194,14 @@ steps:
 
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	cases := map[string]string{
-		"unknown top key":                 "version: 1\nbogus: x\nsteps: [merge]\n",
+		"unknown top key":                 "version: 1\nbogus: x\nsteps:\n  - type: merge\n",
 		"unknown step key":                "version: 1\nsteps:\n  - type: merge\n    bogus: x\n",
 		"unknown config key":              "version: 1\nsteps:\n  - type: merge\n    config:\n      bogus: 1\n",
 		"review-only config on merge":     "version: 1\nsteps:\n  - type: merge\n    config:\n      mine_reasoning: {}\n",
 		"unknown review internal key":     "version: 1\nsteps:\n  - type: review:security\n    config:\n      mine_reasoning:\n        bogus: 1\n",
 		"non-mapping review internal key": "version: 1\nsteps:\n  - type: review:security\n    config:\n      nudge: small\n",
-		"nested parallel":                 "version: 1\nsteps:\n  - parallel:\n      - parallel:\n          - merge\n",
+		"scalar step":                     "version: 1\nsteps:\n  - merge\n",
+		"nested parallel":                 "version: 1\nsteps:\n  - parallel:\n      - parallel:\n          - type: merge\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -291,16 +292,16 @@ func TestLoadParsesLanes(t *testing.T) {
 	path := writeSpec(t, `
 version: 1
 steps:
-  - collect-context
+  - type: collect-context
   - parallel:
-      - review:security
+      - type: review:security
       - lane:
-          - review:performance
+          - type: review:performance
           - type: verify:performance
             config:
               verify_drop_policy: none
-          - dedupe:performance
-  - merge
+          - type: dedupe:performance
+  - type: merge
 `)
 	spec, err := Load(path)
 	if err != nil {
@@ -334,9 +335,9 @@ steps:
 
 func TestLoadRejectsBadLanes(t *testing.T) {
 	cases := map[string]string{
-		"top-level lane":     "version: 1\nsteps:\n  - lane:\n      - review:security\n",
-		"lane in lane":       "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - lane:\n              - review:security\n",
-		"parallel in lane":   "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - parallel:\n              - review:security\n",
+		"top-level lane":     "version: 1\nsteps:\n  - lane:\n      - type: review:security\n",
+		"lane in lane":       "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - lane:\n              - type: review:security\n",
+		"parallel in lane":   "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - parallel:\n              - type: review:security\n",
 		"empty lane":         "version: 1\nsteps:\n  - parallel:\n      - lane: []\n",
 		"lane not a list":    "version: 1\nsteps:\n  - parallel:\n      - lane: review:security\n",
 		"verify_concurrency": "version: 1\nsteps:\n  - type: verify\n    config:\n      verify_concurrency: 5\n",

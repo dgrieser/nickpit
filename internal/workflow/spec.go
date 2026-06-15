@@ -424,7 +424,7 @@ func decodeSpec(node *yaml.Node) (Spec, error) {
 func decodeStepEntry(node *yaml.Node) (StepEntry, error) {
 	switch node.Kind {
 	case yaml.ScalarNode:
-		return StepEntry{Type: node.Value}, nil
+		return StepEntry{}, fmt.Errorf("plain steps must use mapping form: type: %s", node.Value)
 	case yaml.MappingNode:
 		if mappingValue(node, "lane") != nil {
 			return StepEntry{}, fmt.Errorf("lane is only allowed inside a parallel group")
@@ -434,7 +434,7 @@ func decodeStepEntry(node *yaml.Node) (StepEntry, error) {
 		}
 		return decodePlainStep(node)
 	default:
-		return StepEntry{}, fmt.Errorf("must be a step name or mapping")
+		return StepEntry{}, fmt.Errorf("must be a step mapping")
 	}
 }
 
