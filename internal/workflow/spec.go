@@ -25,6 +25,10 @@ import (
 // SpecVersion is the only supported major spec version.
 const SpecVersion = 1
 
+// SmallModelAlias selects profile.small_model for a step. When the profile does
+// not define one, it intentionally falls back to the profile's primary model.
+const SmallModelAlias = "@small"
+
 // Step type identifiers. Steps that operate on a single reviewer vector are
 // addressed with a "<prefix><vector-id>" type, e.g. "review:security".
 const (
@@ -152,7 +156,16 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 		return p, req
 	}
 	if o.Model != nil {
-		p.Model = *o.Model
+		if strings.TrimSpace(*o.Model) == SmallModelAlias {
+			if p.SmallModel != "" {
+				p.Model = p.SmallModel
+			}
+			if p.SmallReasoningEffort != "" {
+				p.ReasoningEffort = p.SmallReasoningEffort
+			}
+		} else {
+			p.Model = *o.Model
+		}
 	}
 	if o.Temperature != nil {
 		v := *o.Temperature

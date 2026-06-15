@@ -20,6 +20,9 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.Model != "" {
 		base.Model = override.Model
 	}
+	if override.SmallModel != "" {
+		base.SmallModel = override.SmallModel
+	}
 	if override.BaseURL != "" {
 		base.BaseURL = override.BaseURL
 	}
@@ -112,6 +115,9 @@ func mergeProfiles(base, override Profile) Profile {
 	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
+	}
+	if override.SmallReasoningEffort != "" {
+		base.SmallReasoningEffort = override.SmallReasoningEffort
 	}
 	if override.GitHubToken != "" {
 		base.GitHubToken = override.GitHubToken

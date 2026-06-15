@@ -47,6 +47,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 	profile = exampleProfile(profile)
 	entries := []yamlNodeEntry{
 		yamlEntry("model", yamlScalar(profile.Model)),
+		yamlEntry("small_model", yamlScalar(profile.SmallModel)),
 		yamlEntry("base_url", yamlScalar(profile.BaseURL)),
 		yamlEntry("api_key", yamlScalar(profile.APIKey)),
 		yamlEntry("supported_models", supportedModelsNode(profile.SupportedModels)),
@@ -64,6 +65,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("nudge_count", yamlInt(profile.NudgeCount)),
 		yamlEntry("disable_patch_summary", yamlBool(profile.DisablePatchSummary)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
+		yamlEntry("small_reasoning_effort", yamlScalar(profile.SmallReasoningEffort)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
 		yamlEntry("gitlab_base_url", yamlScalar(profile.GitLabBaseURL)),

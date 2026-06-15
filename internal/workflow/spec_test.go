@@ -446,3 +446,56 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 		t.Fatal("explicit false disable_patch_summary not applied")
 	}
 }
+
+func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
+	alias := SmallModelAlias
+	explicitEffort := "none"
+	req := model.ReviewRequest{}
+
+	cases := []struct {
+		name       string
+		base       config.Profile
+		override   StepOverride
+		wantModel  string
+		wantEffort string
+	}{
+		{
+			name:       "configured small model keeps primary effort",
+			base:       config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high"},
+			override:   StepOverride{Model: &alias},
+			wantModel:  "small",
+			wantEffort: "high",
+		},
+		{
+			name:       "missing small model falls back to primary",
+			base:       config.Profile{Model: "primary", ReasoningEffort: "high"},
+			override:   StepOverride{Model: &alias},
+			wantModel:  "primary",
+			wantEffort: "high",
+		},
+		{
+			name:       "configured small effort applies",
+			base:       config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high", SmallReasoningEffort: "low"},
+			override:   StepOverride{Model: &alias},
+			wantModel:  "small",
+			wantEffort: "low",
+		},
+		{
+			name:       "step effort overrides small effort",
+			base:       config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high", SmallReasoningEffort: "low"},
+			override:   StepOverride{Model: &alias, ReasoningEffort: &explicitEffort},
+			wantModel:  "small",
+			wantEffort: "none",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotProfile, _ := tc.override.Resolve(tc.base, req)
+			if gotProfile.Model != tc.wantModel || gotProfile.ReasoningEffort != tc.wantEffort {
+				t.Fatalf("resolved profile = model %q effort %q, want model %q effort %q",
+					gotProfile.Model, gotProfile.ReasoningEffort, tc.wantModel, tc.wantEffort)
+			}
+		})
+	}
+}
