@@ -5,27 +5,57 @@ steps:
   - collect-context
   - parallel:
       - lane:
-          - review:codequality
+          - type: review:codequality
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
           - verify:codequality
           - dedupe:codequality
       - lane:
-          - review:security
+          - type: review:security
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
           - verify:security
           - dedupe:security
       - lane:
-          - review:architecture
+          - type: review:architecture
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
           - verify:architecture
           - dedupe:architecture
       - lane:
-          - review:performance
+          - type: review:performance
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
           - verify:performance
           - dedupe:performance
       - lane:
-          - review:testing
+          - type: review:testing
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
           - verify:testing
           - dedupe:testing
       - lane:
-          - review:bestpractices
+          - type: review:bestpractices
+            config:
+              mine_reasoning:
+                model: "@small"
+              compile_findings:
+                model: "@small"
           - verify:bestpractices
           - dedupe:bestpractices
   - merge
