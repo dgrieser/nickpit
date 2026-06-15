@@ -93,7 +93,7 @@ profiles:
     small_reasoning_effort: low
 ```
 
-`small_model` and `small_reasoning_effort` can also be set with `--small-model` and `--small-reasoning-effort`. In workflow step config, `model: "@small"` selects `small_model`; when `small_model` is unset it falls back to `model`, and when `small_reasoning_effort` is unset it falls back to `reasoning_effort`.
+`small_model` and `small_reasoning_effort` can also be set with `NICKPIT_SMALL_MODEL` / `NICKPIT_SMALL_REASONING_EFFORT` or `--small-model` / `--small-reasoning-effort`. In workflow step config, `model: "@small"` selects `small_model`; when `small_model` is unset it falls back to `model`, and when `small_reasoning_effort` is unset it falls back to `reasoning_effort`.
 
 ### Diff Filters
 

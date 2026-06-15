@@ -352,6 +352,12 @@ func applyEnv(cfg *Config, profileName string) {
 	if value := os.Getenv("NICKPIT_MODEL"); value != "" {
 		profile.Model = value
 	}
+	if value := os.Getenv("NICKPIT_SMALL_MODEL"); value != "" {
+		profile.SmallModel = value
+	}
+	if value := os.Getenv("NICKPIT_SMALL_REASONING_EFFORT"); value != "" {
+		profile.SmallReasoningEffort = value
+	}
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
 	}

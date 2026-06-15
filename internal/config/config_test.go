@@ -94,6 +94,24 @@ func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
 	}
 }
 
+func TestLoadConfigUsesSmallModelEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_SMALL_MODEL", "small-model")
+	t.Setenv("NICKPIT_SMALL_REASONING_EFFORT", "low")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.SmallModel != "small-model" {
+		t.Fatalf("small model = %q", profile.SmallModel)
+	}
+	if profile.SmallReasoningEffort != "low" {
+		t.Fatalf("small reasoning effort = %q", profile.SmallReasoningEffort)
+	}
+}
+
 func TestLoadConfigUsesConfiguredRateLimitDelay(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
