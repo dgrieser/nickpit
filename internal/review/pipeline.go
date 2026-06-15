@@ -183,8 +183,19 @@ func (st *PipelineState) writeBackVectorResults(vr []agentResult) {
 
 // stepContext is the per-step engine + request, with overrides applied.
 type stepContext struct {
+	Engine   *Engine
+	Req      model.ReviewRequest
+	Override *workflow.StepOverride
+}
+
+type internalAgentContext struct {
 	Engine *Engine
 	Req    model.ReviewRequest
+}
+
+func (sc *stepContext) internalAgentContext(override *workflow.AgentOverride) internalAgentContext {
+	profile, req := override.Resolve(sc.Engine.config, sc.Req)
+	return internalAgentContext{Engine: sc.Engine.withConfig(profile), Req: req}
 }
 
 type stepFunc func(ctx context.Context, sc *stepContext, st *PipelineState) error
@@ -318,7 +329,7 @@ func unitSegment(unit planUnit, start time.Time) model.SegmentRuntime {
 
 func (e *Engine) stepContext(override *workflow.StepOverride, req model.ReviewRequest) *stepContext {
 	profile, effReq := override.Resolve(e.config, req)
-	return &stepContext{Engine: e.withConfig(profile), Req: effReq}
+	return &stepContext{Engine: e.withConfig(profile), Req: effReq, Override: override}
 }
 
 // assemble builds the final ReviewResult: the flat findings/overall from the

@@ -1406,10 +1406,10 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	if agent.role == "review" {
 		s := e.newReviewerSession(agent, req, false)
-		if err := e.reviewerInitial(ctx, s, req); err != nil {
+		if err := e.reviewerInitial(ctx, s, req, e, req); err != nil {
 			return s.partialResult(req), err
 		}
-		if err := e.reviewerNudges(ctx, s, req); err != nil {
+		if err := e.reviewerNudges(ctx, s, req, e, req, e, req); err != nil {
 			return agentResult{}, err
 		}
 		return s.result(req), nil

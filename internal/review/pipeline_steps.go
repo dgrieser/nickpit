@@ -158,7 +158,15 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 			return err
 		}
 		session := sc.Engine.newReviewerSession(spec, sc.Req, collectAnyway)
-		if err := sc.Engine.reviewerInitial(ctx, session, sc.Req); err != nil {
+		mine := sc.internalAgentContext(nil)
+		compile := sc.internalAgentContext(nil)
+		nudge := sc.internalAgentContext(nil)
+		if sc.Override != nil {
+			mine = sc.internalAgentContext(sc.Override.MineReasoning)
+			compile = sc.internalAgentContext(sc.Override.CompileFindings)
+			nudge = sc.internalAgentContext(sc.Override.Nudge)
+		}
+		if err := sc.Engine.reviewerInitial(ctx, session, sc.Req, mine.Engine, mine.Req); err != nil {
 			// Preserve the partial telemetry (tokens/tool calls) of the failed
 			// initial pass instead of discarding it with a bare failed result.
 			// Store NO session: the initial pass never populated it, so a later
@@ -171,7 +179,7 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 			st.setGroup(vectorID, res, nil)
 			return nil
 		}
-		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req); err != nil {
+		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req, compile.Engine, compile.Req, nudge.Engine, nudge.Req); err != nil {
 			// The initial pass already produced findings; keep them (and their
 			// telemetry) as a partial result rather than throwing them away.
 			sc.Engine.logf(ctx, "Vector reviewer nudges failed, keeping initial findings: vector=%s error=%v", vector.name, err)

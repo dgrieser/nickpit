@@ -137,6 +137,13 @@ type StepOverride struct {
 	VerifyDropPolicy         *string  `yaml:"verify_drop_policy"`
 	VerifyDropConfidence     *float64 `yaml:"verify_drop_confidence"`
 	PriorityThreshold        *string  `yaml:"priority_threshold"`
+
+	// Review-only internal agent overrides. These keys are accepted only under
+	// config on review:<vector> steps. Each inherits the already-resolved review
+	// step config, then applies its own agent-level overrides.
+	MineReasoning   *AgentOverride `yaml:"mine_reasoning"`
+	CompileFindings *AgentOverride `yaml:"compile_findings"`
+	Nudge           *AgentOverride `yaml:"nudge"`
 }
 
 var stepOverrideKeys = []string{
@@ -148,6 +155,35 @@ var stepOverrideKeys = []string{
 	"verify_drop_confidence", "priority_threshold",
 }
 
+var reviewInternalOverrideKeys = []string{"mine_reasoning", "compile_findings", "nudge"}
+
+// AgentOverride is the subset of per-step config that can sensibly apply to an
+// internal agent spawned by a review step.
+type AgentOverride struct {
+	Model           *string        `yaml:"model"`
+	Temperature     *float64       `yaml:"temperature"`
+	TopP            *float64       `yaml:"top_p"`
+	MaxTokens       *int           `yaml:"max_tokens"`
+	ExtraBody       map[string]any `yaml:"extra_body"`
+	ReasoningEffort *string        `yaml:"reasoning_effort"`
+
+	MaxToolCalls            *int `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls   *int `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries        *int `yaml:"max_output_retries"`
+	MaxReasoningSeconds     *int `yaml:"max_reasoning_seconds"`
+	MaxReasoningLoopRepeats *int `yaml:"max_reasoning_loop_repeats"`
+
+	DisableParallelToolCalls *bool `yaml:"disable_parallel_tool_calls"`
+	UseJSONSchema            *bool `yaml:"use_json_schema"`
+}
+
+var agentOverrideKeys = []string{
+	"model", "temperature", "top_p", "max_tokens", "extra_body", "reasoning_effort",
+	"max_tool_calls", "max_duplicate_tool_calls",
+	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
+	"disable_parallel_tool_calls", "use_json_schema",
+}
+
 // Resolve layers the override onto the given base profile and request, returning
 // the effective pair for the step. A nil override (or one with no fields set)
 // returns the inputs unchanged — the default-inheritance contract.
@@ -156,16 +192,7 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 		return p, req
 	}
 	if o.Model != nil {
-		if strings.TrimSpace(*o.Model) == SmallModelAlias {
-			if p.SmallModel != "" {
-				p.Model = p.SmallModel
-			}
-			if p.SmallReasoningEffort != "" {
-				p.ReasoningEffort = p.SmallReasoningEffort
-			}
-		} else {
-			p.Model = *o.Model
-		}
+		p = resolveModelAlias(p, *o.Model)
 	}
 	if o.Temperature != nil {
 		v := *o.Temperature
@@ -234,12 +261,83 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	return p, req
 }
 
+// Resolve layers the internal-agent override onto a review step's already
+// resolved profile/request pair.
+func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (config.Profile, model.ReviewRequest) {
+	if o == nil {
+		return p, req
+	}
+	if o.Model != nil {
+		p = resolveModelAlias(p, *o.Model)
+	}
+	if o.Temperature != nil {
+		v := *o.Temperature
+		p.Temperature = &v
+	}
+	if o.TopP != nil {
+		v := *o.TopP
+		p.TopP = &v
+	}
+	if o.MaxTokens != nil {
+		v := *o.MaxTokens
+		p.MaxTokens = &v
+	}
+	if o.ExtraBody != nil {
+		p.ExtraBody = o.ExtraBody
+	}
+	if o.ReasoningEffort != nil {
+		p.ReasoningEffort = *o.ReasoningEffort
+	}
+	if o.MaxToolCalls != nil {
+		p.MaxToolCalls = *o.MaxToolCalls
+		req.MaxToolCalls = *o.MaxToolCalls
+	}
+	if o.MaxDuplicateToolCalls != nil {
+		p.MaxDuplicateToolCalls = *o.MaxDuplicateToolCalls
+		req.MaxDuplicateToolCalls = *o.MaxDuplicateToolCalls
+	}
+	if o.MaxOutputRetries != nil {
+		p.MaxOutputRetries = *o.MaxOutputRetries
+		req.MaxOutputRetries = *o.MaxOutputRetries
+	}
+	if o.MaxReasoningSeconds != nil {
+		p.MaxReasoningSeconds = *o.MaxReasoningSeconds
+		req.MaxReasoningSeconds = *o.MaxReasoningSeconds
+	}
+	if o.MaxReasoningLoopRepeats != nil {
+		p.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
+		req.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
+	}
+	if o.UseJSONSchema != nil {
+		p.UseJSONSchema = *o.UseJSONSchema
+		req.UseJSONSchema = *o.UseJSONSchema
+	}
+	if o.DisableParallelToolCalls != nil {
+		req.DisableParallelToolCalls = *o.DisableParallelToolCalls
+	}
+	return p, req
+}
+
+func resolveModelAlias(p config.Profile, model string) config.Profile {
+	if strings.TrimSpace(model) == SmallModelAlias {
+		if p.SmallModel != "" {
+			p.Model = p.SmallModel
+		}
+		if p.SmallReasoningEffort != "" {
+			p.ReasoningEffort = p.SmallReasoningEffort
+		}
+		return p
+	}
+	p.Model = model
+	return p
+}
+
 // DefaultSpec is the embedded workflow that reproduces the tool's standard
 // review end to end: collect context, run the six vector reviewers concurrently,
-// verify, dedupe, merge, finalize, summarize. It carries no overrides, so every
-// step inherits the active profile/request. This is the single spec the engine
-// runs for an ordinary (no --spec/--step) review, and the canonical full
-// workflow shown to users.
+// verify, dedupe, merge, finalize, summarize. Most steps inherit the active
+// profile/request; final polish steps may carry cheap-model overrides. This is
+// the single spec the engine runs for an ordinary (no --spec/--step) review,
+// and the canonical full workflow shown to users.
 //
 // It is parsed from the embedded workflows/default.yaml through the same loader
 // as any user-supplied spec, so the default is a real spec artifact rather than
@@ -420,7 +518,10 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 		entry.FindingsFrom = paths
 	}
 	if cfg := mappingValue(node, "config"); cfg != nil {
-		if err := checkAllowedKeys(cfg, stepOverrideKeys...); err != nil {
+		if err := checkAllowedKeys(cfg, allowedStepOverrideKeys(entry.Type)...); err != nil {
+			return StepEntry{}, fmt.Errorf("config: %w", err)
+		}
+		if err := checkReviewInternalOverrides(entry.Type, cfg); err != nil {
 			return StepEntry{}, fmt.Errorf("config: %w", err)
 		}
 		var override StepOverride
@@ -430,6 +531,33 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 		entry.Config = &override
 	}
 	return entry, nil
+}
+
+func allowedStepOverrideKeys(stepType string) []string {
+	allowed := slices.Clone(stepOverrideKeys)
+	if strings.HasPrefix(stepType, StepReviewPrefix) {
+		allowed = append(allowed, reviewInternalOverrideKeys...)
+	}
+	return allowed
+}
+
+func checkReviewInternalOverrides(stepType string, cfg *yaml.Node) error {
+	if !strings.HasPrefix(stepType, StepReviewPrefix) {
+		return nil
+	}
+	for _, key := range reviewInternalOverrideKeys {
+		node := mappingValue(cfg, key)
+		if node == nil {
+			continue
+		}
+		if node.Kind != yaml.MappingNode {
+			return fmt.Errorf("%s: must be a mapping", key)
+		}
+		if err := checkAllowedKeys(node, agentOverrideKeys...); err != nil {
+			return fmt.Errorf("%s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 func decodeStringOrList(node *yaml.Node) ([]string, error) {

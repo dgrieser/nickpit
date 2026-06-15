@@ -45,12 +45,13 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 			{Type: StepDedupePrefix + id},
 		}}
 	}
+	small := SmallModelAlias
 	want := Spec{Version: SpecVersion, Steps: []StepEntry{
 		{Type: StepCollectContext},
 		{Parallel: parallel},
 		{Type: StepMerge},
-		{Type: StepFinalize},
-		{Type: StepSummarize},
+		{Type: StepFinalize, Config: &StepOverride{Model: &small}},
+		{Type: StepSummarize, Config: &StepOverride{Model: &small}},
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)
@@ -152,12 +153,48 @@ steps:
 	}
 }
 
+func TestLoadParsesReviewInternalOverrides(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: review:security
+    config:
+      model: primary
+      mine_reasoning:
+        model: "@small"
+      compile_findings:
+        reasoning_effort: low
+      nudge:
+        max_output_retries: 2
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := spec.Steps[0].Config
+	if cfg == nil || cfg.MineReasoning == nil || cfg.CompileFindings == nil || cfg.Nudge == nil {
+		t.Fatalf("internal overrides not parsed: %+v", cfg)
+	}
+	if cfg.MineReasoning.Model == nil || *cfg.MineReasoning.Model != SmallModelAlias {
+		t.Fatalf("mine_reasoning model = %+v", cfg.MineReasoning.Model)
+	}
+	if cfg.CompileFindings.ReasoningEffort == nil || *cfg.CompileFindings.ReasoningEffort != "low" {
+		t.Fatalf("compile_findings effort = %+v", cfg.CompileFindings.ReasoningEffort)
+	}
+	if cfg.Nudge.MaxOutputRetries == nil || *cfg.Nudge.MaxOutputRetries != 2 {
+		t.Fatalf("nudge max_output_retries = %+v", cfg.Nudge.MaxOutputRetries)
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	cases := map[string]string{
-		"unknown top key":    "version: 1\nbogus: x\nsteps: [merge]\n",
-		"unknown step key":   "version: 1\nsteps:\n  - type: merge\n    bogus: x\n",
-		"unknown config key": "version: 1\nsteps:\n  - type: merge\n    config:\n      bogus: 1\n",
-		"nested parallel":    "version: 1\nsteps:\n  - parallel:\n      - parallel:\n          - merge\n",
+		"unknown top key":                 "version: 1\nbogus: x\nsteps: [merge]\n",
+		"unknown step key":                "version: 1\nsteps:\n  - type: merge\n    bogus: x\n",
+		"unknown config key":              "version: 1\nsteps:\n  - type: merge\n    config:\n      bogus: 1\n",
+		"review-only config on merge":     "version: 1\nsteps:\n  - type: merge\n    config:\n      mine_reasoning: {}\n",
+		"unknown review internal key":     "version: 1\nsteps:\n  - type: review:security\n    config:\n      mine_reasoning:\n        bogus: 1\n",
+		"non-mapping review internal key": "version: 1\nsteps:\n  - type: review:security\n    config:\n      nudge: small\n",
+		"nested parallel":                 "version: 1\nsteps:\n  - parallel:\n      - parallel:\n          - merge\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -497,5 +534,22 @@ func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
 					gotProfile.Model, gotProfile.ReasoningEffort, tc.wantModel, tc.wantEffort)
 			}
 		})
+	}
+}
+
+func TestAgentOverrideResolveSmallModelAlias(t *testing.T) {
+	alias := SmallModelAlias
+	effort := "none"
+	retries := 2
+	base := config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high", SmallReasoningEffort: "low"}
+	req := model.ReviewRequest{MaxOutputRetries: 5}
+	ov := &AgentOverride{Model: &alias, ReasoningEffort: &effort, MaxOutputRetries: &retries}
+
+	gotProfile, gotReq := ov.Resolve(base, req)
+	if gotProfile.Model != "small" || gotProfile.ReasoningEffort != "none" {
+		t.Fatalf("profile = model %q effort %q, want small/none", gotProfile.Model, gotProfile.ReasoningEffort)
+	}
+	if gotProfile.MaxOutputRetries != 2 || gotReq.MaxOutputRetries != 2 {
+		t.Fatalf("max_output_retries = profile %d req %d, want 2/2", gotProfile.MaxOutputRetries, gotReq.MaxOutputRetries)
 	}
 }

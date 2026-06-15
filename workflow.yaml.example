@@ -59,8 +59,12 @@ steps:
           - verify:bestpractices
           - dedupe:bestpractices
   - merge
-  - finalize
-  - summarize
+  - type: finalize
+    config:
+      model: "@small"
+  - type: summarize
+    config:
+      model: "@small"
 
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
@@ -83,6 +87,12 @@ steps:
 #               nudge_count: 5
 #               max_reasoning_loop_repeats: 3
 #               max_output_retries: 8
+#               mine_reasoning:
+#                 model: "@small"
+#               compile_findings:
+#                 model: "@small"
+#               nudge:
+#                 model: "@small"
 #           - type: verify:security
 #             config:
 #               verify_drop_policy: refuted-and-unverified
@@ -104,6 +114,8 @@ steps:
 #   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
 #   disable_patch_summary, use_json_schema, verify_drop_policy,
 #   verify_drop_confidence, priority_threshold
+# Review steps also accept internal-agent subconfigs: mine_reasoning,
+# compile_findings, nudge.
 # (max_context_tokens is profile/CLI-level only — the context is trimmed once,
 #  before any step runs.)
 

@@ -345,6 +345,62 @@ func TestReviewerSessionStampsRuntime(t *testing.T) {
 	}
 }
 
+func TestReviewStepInternalOverridesRouteSubagentModels(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	nudgeCount := 1
+	client := &reasoningExtractLLM{
+		reviewerReasoning: []string{"initial reasoning"},
+		collectOutputs:    []string{"collected issue"},
+		updateOutputs:     []string{"delta issue"},
+	}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{
+		Model:                "large-model",
+		SmallModel:           "small-model",
+		ReasoningEffort:      "high",
+		SmallReasoningEffort: "low",
+	})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+	spec := workflow.Spec{
+		Version: workflow.SpecVersion,
+		Steps: []workflow.StepEntry{{
+			Type: workflow.StepReviewPrefix + "security",
+			Config: &workflow.StepOverride{
+				NudgeCount:      &nudgeCount,
+				MineReasoning:   &workflow.AgentOverride{Model: &alias},
+				CompileFindings: &workflow.AgentOverride{Model: &alias},
+				Nudge:           &workflow.AgentOverride{Model: &alias},
+			},
+		}},
+	}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{
+		Mode:                model.ModeLocal,
+		ModelEmitsReasoning: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client.mu.Lock()
+	reviewerModels := append([]string(nil), client.reviewerModels...)
+	collectModels := append([]string(nil), client.collectModels...)
+	updateModels := append([]string(nil), client.updateModels...)
+	client.mu.Unlock()
+
+	if got := strings.Join(reviewerModels, ","); got != "large-model,small-model" {
+		t.Fatalf("reviewer/nudge models = %q, want large-model,small-model", got)
+	}
+	if got := strings.Join(collectModels, ","); got != "small-model" {
+		t.Fatalf("mine reasoning models = %q, want small-model", got)
+	}
+	if got := strings.Join(updateModels, ","); got != "small-model" {
+		t.Fatalf("compile findings models = %q, want small-model", got)
+	}
+}
+
 // --- lane pipeline tests ---
 
 // laneSpec builds collect-context → parallel lanes (review→verify→dedupe per
