@@ -37,15 +37,21 @@ func TestDefaultSpecsValidate(t *testing.T) {
 // static YAML does not, so reordering/renaming a vector (or changing the step
 // sequence) must fail here and force a matching default.yaml edit.
 func TestDefaultSpecMatchesConstants(t *testing.T) {
+	small := SmallModelAlias
+	reviewConfig := func() *StepOverride {
+		return &StepOverride{
+			MineReasoning:   &AgentOverride{Model: &small},
+			CompileFindings: &AgentOverride{Model: &small},
+		}
+	}
 	parallel := make([]StepEntry, len(ReviewVectorIDs))
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Lane: []StepEntry{
-			{Type: StepReviewPrefix + id},
+			{Type: StepReviewPrefix + id, Config: reviewConfig()},
 			{Type: StepVerifyPrefix + id},
 			{Type: StepDedupePrefix + id},
 		}}
 	}
-	small := SmallModelAlias
 	want := Spec{Version: SpecVersion, Steps: []StepEntry{
 		{Type: StepCollectContext},
 		{Parallel: parallel},
