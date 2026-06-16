@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
+	"github.com/dgrieser/nickpit/internal/workflow"
 )
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
@@ -368,7 +369,7 @@ func TestRootCmdHasCheckModel(t *testing.T) {
 
 func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 	out := captureStdout(t, func() {
-		err := (&app{}).writeModelCheckOutput(modelcheck.Result{
+		err := (&app{}).writeModelCheckOutput("test-model", modelcheck.Result{
 			Probes: []modelcheck.ProbeResult{
 				{Name: "configured_no_tools", ReasoningEffort: "high", Reasoned: true, Status: modelcheck.StatusOK},
 				{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: modelcheck.StatusOK},
@@ -382,6 +383,7 @@ func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 		}
 	})
 	for _, want := range []string{
+		"test-model",
 		"✓ Model is compatible",
 		"✓ Tool Use",
 		"✓ Structured Output",
@@ -397,6 +399,113 @@ func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 	}
 	if strings.Contains(out, "check:") || strings.Contains(out, "json_response:") {
 		t.Fatalf("output should not use YAML style\n%s", out)
+	}
+}
+
+func TestSmallModelRequirementsForDefaultSpecDoNotRequireTools(t *testing.T) {
+	requirements := smallModelRequirementsForSpec(workflow.DefaultSpec(), model.ReviewRequest{})
+	if !requirements.Uses() {
+		t.Fatal("default spec should use the small model")
+	}
+	if requirements.Tools {
+		t.Fatalf("default small-model requirements should not require tools: %+v", requirements)
+	}
+	if !requirements.JSONOutput || requirements.JSONSchema {
+		t.Fatalf("default small-model requirements = %+v, want JSON output only", requirements)
+	}
+
+	result := modelcheck.Result{
+		Probes: []modelcheck.ProbeResult{
+			{Name: "configured_no_tools", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+			{Name: "configured_tools", ReasoningEffort: "low", Status: modelcheck.StatusUnsupported, Error: "tools unsupported"},
+			{Name: "configured_json_output", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+		},
+		PassedEfforts: []string{"low"},
+	}
+	if err := validateSmallModelCheck(result, requirements); err != nil {
+		t.Fatalf("validateSmallModelCheck returned %v, want nil", err)
+	}
+}
+
+func TestSmallModelRequirementsSkipSpecWithoutAlias(t *testing.T) {
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepReviewPrefix + "security"},
+		{Type: workflow.StepFinalize},
+	}}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if requirements.Uses() {
+		t.Fatalf("small-model requirements = %+v, want unused", requirements)
+	}
+}
+
+func TestResolveActiveSpecUsesCustomSpecForSmallRequirements(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	if err := os.WriteFile(path, []byte(`
+version: 1
+steps:
+  - type: review:security
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := (&app{specPath: path}).resolveActiveSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if requirements.Uses() {
+		t.Fatalf("small-model requirements = %+v, want custom spec without @small to be unused", requirements)
+	}
+}
+
+func TestSmallModelRequirementsRequireToolsForReviewAlias(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
+		Type:   workflow.StepReviewPrefix + "security",
+		Config: &workflow.StepOverride{Model: &alias},
+	}}}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if !requirements.Tools || !requirements.JSONOutput || requirements.JSONSchema {
+		t.Fatalf("review small-model requirements = %+v, want tools and JSON output", requirements)
+	}
+
+	result := modelcheck.Result{
+		Probes: []modelcheck.ProbeResult{
+			{Name: "configured_no_tools", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+			{Name: "configured_tools", ReasoningEffort: "low", Status: modelcheck.StatusUnsupported, Error: "tools unsupported"},
+			{Name: "configured_json_output", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+		},
+		PassedEfforts: []string{"low"},
+	}
+	err := validateSmallModelCheck(result, requirements)
+	if err == nil || !strings.Contains(err.Error(), "tool use") {
+		t.Fatalf("validateSmallModelCheck error = %v, want tool-use failure", err)
+	}
+}
+
+func TestSmallModelRequirementsHonorSchemaOverride(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	useSchema := true
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
+		Type: workflow.StepFinalize,
+		Config: &workflow.StepOverride{
+			Model:         &alias,
+			UseJSONSchema: &useSchema,
+		},
+	}}}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if !requirements.JSONSchema || requirements.JSONOutput || requirements.Tools {
+		t.Fatalf("schema override requirements = %+v, want schema only", requirements)
+	}
+}
+
+func TestEffectiveSmallReasoningEffortFallsBackToPrimary(t *testing.T) {
+	if got := effectiveSmallReasoningEffort(config.Profile{ReasoningEffort: "low"}); got != "low" {
+		t.Fatalf("effective small effort = %q, want low", got)
+	}
+	if got := effectiveSmallReasoningEffort(config.Profile{ReasoningEffort: "low", SmallReasoningEffort: "medium"}); got != "medium" {
+		t.Fatalf("effective small effort = %q, want medium", got)
 	}
 }
 

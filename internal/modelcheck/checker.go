@@ -133,14 +133,31 @@ func (r Result) Summary() CheckSummary {
 }
 
 type Checker struct {
-	client   llm.Client
-	profile  config.Profile
-	logger   *logging.Logger
-	parallel bool
+	client          llm.Client
+	profile         config.Profile
+	model           string
+	reasoningEffort string
+	logger          *logging.Logger
+	parallel        bool
 }
 
+// New builds a Checker that probes the profile's primary model.
 func New(client llm.Client, profile config.Profile) *Checker {
-	return &Checker{client: client, profile: profile, parallel: true}
+	return NewForModel(client, profile, profile.Model, profile.ReasoningEffort)
+}
+
+// NewForModel builds a Checker that probes an explicit model and reasoning
+// effort instead of the profile's primary model, sharing the rest of the
+// profile (request limits, schema mode, endpoint). Used to check
+// profile.SmallModel alongside the primary one.
+func NewForModel(client llm.Client, profile config.Profile, model, reasoningEffort string) *Checker {
+	return &Checker{
+		client:          client,
+		profile:         profile,
+		model:           model,
+		reasoningEffort: reasoningEffort,
+		parallel:        true,
+	}
 }
 
 func (c *Checker) SetLogger(logger *logging.Logger) {
@@ -182,7 +199,7 @@ func (c *Checker) probeInfo(name, effort string) logging.ProgressInfo {
 	return logging.ProgressInfo{
 		AgentRole: "probe",
 		AgentName: probeLabel(probeDisplayName(name), effort),
-		Model:     c.profile.Model,
+		Model:     c.model,
 	}
 }
 
@@ -257,12 +274,12 @@ func (c *Checker) logProgressFor(info logging.ProgressInfo, stage logging.Stage,
 }
 
 func (c *Checker) Run(ctx context.Context) Result {
-	configured := strings.ToLower(strings.TrimSpace(c.profile.ReasoningEffort))
+	configured := strings.ToLower(strings.TrimSpace(c.reasoningEffort))
 	if configured == "" {
 		configured = config.DefaultReasoningEffort
 	}
 	result := Result{
-		Model:            c.profile.Model,
+		Model:            c.model,
 		ConfiguredEffort: configured,
 		UseJSONSchema:    c.profile.UseJSONSchema,
 	}
@@ -551,7 +568,7 @@ func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm
 		Messages:                       append([]llm.Message(nil), messages...),
 		Tools:                          tools,
 		SchemaKind:                     llm.SchemaKindText,
-		Model:                          c.profile.Model,
+		Model:                          c.model,
 		MaxTokens:                      c.profile.MaxTokens,
 		Temperature:                    c.profile.Temperature,
 		TopP:                           c.profile.TopP,

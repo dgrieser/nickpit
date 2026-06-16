@@ -714,23 +714,55 @@ func (a *app) newCheckCmd() *cobra.Command {
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-			result, err := a.resolveModelCapabilities(ctx, client, profile, a.refreshModelCheck)
+			result, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, a.refreshModelCheck)
 			if err != nil {
 				return err
 			}
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
-			if a.jsonOutput {
-				if err := writeJSON(struct {
-					Check modelcheck.CheckSummary `json:"check"`
-				}{Check: result.Summary()}); err != nil {
-					return err
-				}
-				return validatePreReviewModelCheck(result)
-			}
-			if err := a.writeModelCheckOutput(result); err != nil {
+			spec, err := a.resolveActiveSpec()
+			if err != nil {
 				return err
 			}
-			return validatePreReviewModelCheck(result)
+			smallRequirements := smallModelRequirementsForSpec(spec, checkReq)
+			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, a.refreshModelCheck)
+			if err != nil {
+				return err
+			}
+			if a.jsonOutput {
+				out := struct {
+					Check modelcheck.CheckSummary  `json:"check"`
+					Small *modelcheck.CheckSummary `json:"small,omitempty"`
+				}{Check: result.Summary()}
+				if smallChecked {
+					summary := smallResult.Summary()
+					out.Small = &summary
+				}
+				if err := writeJSON(out); err != nil {
+					return err
+				}
+				if err := validatePreReviewModelCheck(result); err != nil {
+					return err
+				}
+				if smallChecked {
+					return validateSmallModelCheck(smallResult, smallRequirements)
+				}
+				return nil
+			}
+			if err := a.writeModelCheckOutput(profile.Model, result); err != nil {
+				return err
+			}
+			if smallChecked {
+				if err := a.writeModelCheckOutput(profile.SmallModel, smallResult); err != nil {
+					return err
+				}
+			}
+			if err := validatePreReviewModelCheck(result); err != nil {
+				return err
+			}
+			if smallChecked {
+				return validateSmallModelCheck(smallResult, smallRequirements)
+			}
+			return nil
 		},
 	}
 	modelCmd.Flags().BoolVar(&a.refreshModelCheck, "refresh", false, "Refresh stored model capabilities by running live probes")
@@ -750,15 +782,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	// explicit --spec/--step, or the embedded DefaultSpec otherwise. There is no
 	// separate "default" code path. The profile was already applied by the caller
 	// via loadProfileForSpec, before the source adapter and request were built.
-	var spec workflow.Spec
-	if a.specPath != "" || a.stepName != "" {
-		resolved, err := a.resolveSpec()
-		if err != nil {
-			return err
-		}
-		spec = resolved
-	} else {
-		spec = workflow.DefaultSpec()
+	spec, err := a.resolveActiveSpec()
+	if err != nil {
+		return err
 	}
 
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
@@ -808,7 +834,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	if needsLLMSetup && !a.skipModelCheck {
-		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, false)
+		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, false)
 		if err != nil {
 			return err
 		}
@@ -816,8 +842,20 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			return err
 		}
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
-		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
+		smallRequirements := smallModelRequirementsForSpec(spec, req)
+		if smallRequirements.Uses() {
+			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, false)
+			if err != nil {
+				return err
+			}
+			if smallChecked {
+				if err := validateSmallModelCheck(smallResult, smallRequirements); err != nil {
+					return err
+				}
+			}
+		}
+		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 	} else {
 		req.ModelEmitsReasoning = true
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
@@ -940,6 +978,13 @@ func (a *app) resolveSpec() (workflow.Spec, error) {
 	return spec, nil
 }
 
+func (a *app) resolveActiveSpec() (workflow.Spec, error) {
+	if a.specPath != "" || a.stepName != "" {
+		return a.resolveSpec()
+	}
+	return workflow.DefaultSpec(), nil
+}
+
 // seedFindings attaches top-level --findings to the first step that actually
 // consumes findings (verify/dedupe/merge/finalize) and does not already declare
 // findings_from, so `--spec w.yaml --findings f.json` lands where it is read
@@ -1000,9 +1045,9 @@ func (a *app) specProfile() (string, error) {
 	return spec.Profile, nil
 }
 
-func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {
+func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort string, refresh bool) (modelcheck.Result, error) {
 	if !refresh {
-		if capability, ok := modelcheck.FindProfileCapability(profile); ok {
+		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
 			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=profile")
 			return result, nil
@@ -1011,7 +1056,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		if err != nil {
 			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
-			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, profile.Model)
+			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model)
 			if err == nil && ok {
 				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
@@ -1023,7 +1068,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		}
 	}
 
-	checker := modelcheck.New(client, profile)
+	checker := modelcheck.NewForModel(client, profile, model, effort)
 	checker.SetLogger(a.logger)
 	checker.SetParallel(!a.disableParallelToolCalls)
 	result := checker.Run(ctx)
@@ -1040,6 +1085,151 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		a.logf(ctx, "Model capability cache write failed: %v", err)
 	}
 	return result, nil
+}
+
+// smallModelConfigured reports whether the profile defines a small model that
+// is distinct from the primary model and therefore warrants its own
+// capability check.
+func smallModelConfigured(profile config.Profile) bool {
+	small := strings.TrimSpace(profile.SmallModel)
+	return small != "" && small != strings.TrimSpace(profile.Model)
+}
+
+func effectiveSmallReasoningEffort(profile config.Profile) string {
+	if strings.TrimSpace(profile.SmallReasoningEffort) != "" {
+		return profile.SmallReasoningEffort
+	}
+	return profile.ReasoningEffort
+}
+
+type modelCapabilityRequirements struct {
+	Response   bool
+	Tools      bool
+	JSONOutput bool
+	JSONSchema bool
+}
+
+func (r modelCapabilityRequirements) Uses() bool {
+	return r.Response || r.Tools || r.JSONOutput || r.JSONSchema
+}
+
+func (r *modelCapabilityRequirements) merge(other modelCapabilityRequirements) {
+	r.Response = r.Response || other.Response
+	r.Tools = r.Tools || other.Tools
+	r.JSONOutput = r.JSONOutput || other.JSONOutput
+	r.JSONSchema = r.JSONSchema || other.JSONSchema
+}
+
+func (r *modelCapabilityRequirements) requireJSON(useSchema bool) {
+	r.Response = true
+	if useSchema {
+		r.JSONSchema = true
+	} else {
+		r.JSONOutput = true
+	}
+}
+
+func smallModelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest) modelCapabilityRequirements {
+	var requirements modelCapabilityRequirements
+	for _, entry := range spec.FlatSteps() {
+		stepReq := req
+		stepUsesSmall := entry.Config != nil && usesSmallAlias(entry.Config.Model)
+		if entry.Config != nil && entry.Config.UseJSONSchema != nil {
+			stepReq.UseJSONSchema = *entry.Config.UseJSONSchema
+		}
+		if stepUsesSmall {
+			requirements.merge(stepModelRequirements(entry.Type, stepReq.UseJSONSchema))
+		}
+		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) || entry.Config == nil {
+			continue
+		}
+		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) {
+			requirements.merge(textModelRequirements())
+		}
+		if agentUsesSmall(stepUsesSmall, entry.Config.CompileFindings) {
+			requirements.merge(textModelRequirements())
+		}
+		if agentUsesSmall(stepUsesSmall, entry.Config.Nudge) {
+			requirements.merge(reviewerModelRequirements(agentUseJSONSchema(stepReq, entry.Config.Nudge)))
+		}
+	}
+	return requirements
+}
+
+func usesSmallAlias(model *string) bool {
+	return model != nil && strings.TrimSpace(*model) == workflow.SmallModelAlias
+}
+
+func agentModel(override *workflow.AgentOverride) *string {
+	if override == nil {
+		return nil
+	}
+	return override.Model
+}
+
+func agentUsesSmall(stepUsesSmall bool, override *workflow.AgentOverride) bool {
+	if override == nil || override.Model == nil {
+		return stepUsesSmall
+	}
+	return usesSmallAlias(agentModel(override))
+}
+
+func textModelRequirements() modelCapabilityRequirements {
+	return modelCapabilityRequirements{Response: true}
+}
+
+func reviewerModelRequirements(useJSONSchema bool) modelCapabilityRequirements {
+	requirements := modelCapabilityRequirements{Response: true, Tools: true}
+	requirements.requireJSON(useJSONSchema)
+	return requirements
+}
+
+func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityRequirements {
+	switch {
+	case stepType == workflow.StepCollectContext:
+		return modelCapabilityRequirements{Response: true, Tools: true}
+	case strings.HasPrefix(stepType, workflow.StepReviewPrefix),
+		stepType == workflow.StepVerify,
+		strings.HasPrefix(stepType, workflow.StepVerifyPrefix),
+		strings.HasPrefix(stepType, workflow.StepNudgePrefix):
+		return reviewerModelRequirements(useJSONSchema)
+	case stepType == workflow.StepDedupe,
+		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
+		stepType == workflow.StepMerge,
+		stepType == workflow.StepFinalize,
+		stepType == workflow.StepSummarize:
+		requirements := modelCapabilityRequirements{}
+		requirements.requireJSON(useJSONSchema)
+		return requirements
+	case strings.HasPrefix(stepType, workflow.StepExtractPrefix):
+		return textModelRequirements()
+	default:
+		return textModelRequirements()
+	}
+}
+
+func agentUseJSONSchema(stepReq model.ReviewRequest, override *workflow.AgentOverride) bool {
+	if override != nil && override.UseJSONSchema != nil {
+		return *override.UseJSONSchema
+	}
+	return stepReq.UseJSONSchema
+}
+
+// checkSmallModel runs (or loads cached) capabilities for profile.SmallModel
+// when one is configured distinctly from the primary model, mirroring the
+// primary check: probe, log, and return the result for the caller to validate.
+// The bool reports whether a check was actually performed.
+func (a *app) checkSmallModel(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, bool, error) {
+	if !smallModelConfigured(profile) {
+		return modelcheck.Result{}, false, nil
+	}
+	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(profile))
+	result, err := a.resolveModelCapabilities(smallCtx, client, profile, profile.SmallModel, effectiveSmallReasoningEffort(profile), refresh)
+	if err != nil {
+		return result, true, err
+	}
+	a.logProgress(smallCtx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
+	return result, true, nil
 }
 
 // reviewProducedNothing reports whether the review pipeline collapsed: every
@@ -1171,7 +1361,7 @@ func isTerminal(f *os.File) bool {
 	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
 }
 
-func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
+func (a *app) writeModelCheckOutput(modelName string, result modelcheck.Result) error {
 	s := result.Summary()
 	useANSI := isTerminal(os.Stdout)
 
@@ -1207,6 +1397,7 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	}
 
 	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s\n", label(modelName))
 	fmt.Fprintf(&sb, "%s %s\n", mark(s.Compatible), label("Model is compatible"))
 	fmt.Fprintf(&sb, "\n")
 	fmt.Fprintf(&sb, "%s Response\n", mark(s.Response))
@@ -1228,18 +1419,40 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	return err
 }
 
+// validateSmallModelCheck applies only the gates required by the workflow uses
+// of @small, then labels failures so the user can tell which model is
+// incompatible.
+func validateSmallModelCheck(result modelcheck.Result, requirements modelCapabilityRequirements) error {
+	if err := validateModelCheckRequirements(result, requirements); err != nil {
+		return fmt.Errorf("small model: %w", err)
+	}
+	return nil
+}
+
 func validatePreReviewModelCheck(result modelcheck.Result) error {
+	requirements := modelCapabilityRequirements{Response: true, Tools: true}
+	requirements.requireJSON(result.UseJSONSchema)
+	return validateModelCheckRequirements(result, requirements)
+}
+
+func validateModelCheckRequirements(result modelcheck.Result, requirements modelCapabilityRequirements) error {
+	if !requirements.Uses() {
+		return nil
+	}
 	if len(result.PassedEfforts) == 0 {
 		return fmt.Errorf("model check failed: no reasoning efforts passed")
 	}
-	if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
-		return fmt.Errorf("model check failed for tool use at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+	if requirements.Tools {
+		if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
+			return fmt.Errorf("model check failed for tool use at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+		}
 	}
-	if result.UseJSONSchema {
+	if requirements.JSONSchema {
 		if probe := result.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
 			return fmt.Errorf("model check failed for JSON schema output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
 		}
-	} else {
+	}
+	if requirements.JSONOutput {
 		if probe := result.ConfiguredJSONOutput(); probe.Status != modelcheck.StatusOK {
 			return fmt.Errorf("model check failed for JSON text output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
 		}
@@ -1382,6 +1595,16 @@ func profileProgressInfo(profile config.Profile) logging.ProgressInfo {
 	return logging.ProgressInfo{
 		Model:   profile.Model,
 		Effort:  profile.ReasoningEffort,
+		BaseURL: profile.BaseURL,
+	}
+}
+
+// smallModelProgressInfo mirrors profileProgressInfo for the profile's small
+// model, so the small-model capability check renders its own model and effort.
+func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
+	return logging.ProgressInfo{
+		Model:   profile.SmallModel,
+		Effort:  effectiveSmallReasoningEffort(profile),
 		BaseURL: profile.BaseURL,
 	}
 }
