@@ -81,6 +81,18 @@ func candidateBackends(scope lookupScope) ([]languageBackend, error) {
 	return nil, fmt.Errorf("no retrieval backend supports %q", scope.Path)
 }
 
+// scopeForHierarchy converts a lookup scope into the scope used to build a call
+// graph. A file scope is widened to repo-wide (the empty scope), because call
+// hierarchy traversal is not meaningful when restricted to a single file's
+// definitions; a directory scope is kept as-is. Shared by the regex backends
+// (python/node/rust).
+func scopeForHierarchy(scope lookupScope) lookupScope {
+	if scope.IsDir {
+		return scope
+	}
+	return lookupScope{}
+}
+
 func resolveSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*resolvedSymbol, error) {
 	scope, err := resolveLookupScope(repoRoot, symbol.Path)
 	if err != nil {

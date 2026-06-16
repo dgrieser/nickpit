@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
@@ -41,6 +42,47 @@ func newStaticGraph(language, repoRoot string) *staticGraph {
 		byName:        map[string][]string{},
 		lowConfidence: map[string]bool{},
 	}
+}
+
+type staticGraphCacheEntry struct {
+	mu    sync.Mutex
+	graph *staticGraph
+}
+
+// staticGraphCache memoizes a regex-built call graph per (language, repoRoot,
+// scope). The graph is immutable after construction and find() only reads it, so
+// the cached value is shared safely across the concurrent reviewer/verifier
+// agents that previously each re-read and re-parsed every source file. It mirrors
+// goparser.BuildGraphCached; the regex backends (rust/python/node) are far
+// cheaper to build than Go's type-checked graph, but the redundant file I/O and
+// parsing still add up across calls (e.g. find_callers + find_callees for the
+// same symbol run as separate tool calls).
+var staticGraphCache sync.Map // key -> *staticGraphCacheEntry
+
+// buildStaticGraphCached returns the graph for (language, repoRoot, scope),
+// invoking build at most once per key. The scope participates in the key because
+// the regex builders are scope-dependent; scopeForHierarchy only ever yields the
+// repo-wide empty scope or a directory scope, so Path+IsDir fully identifies it.
+// Errors are not cached, so a transient build failure can be retried later.
+func buildStaticGraphCached(language, repoRoot string, scope lookupScope, build func() (*staticGraph, error)) (*staticGraph, error) {
+	root := repoRoot
+	if abs, err := filepath.Abs(repoRoot); err == nil {
+		root = abs
+	}
+	key := fmt.Sprintf("%s\x00%s\x00%s\x00%t", language, root, scope.Path, scope.IsDir)
+	actual, _ := staticGraphCache.LoadOrStore(key, &staticGraphCacheEntry{})
+	entry := actual.(*staticGraphCacheEntry)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.graph != nil {
+		return entry.graph, nil
+	}
+	graph, err := build()
+	if err != nil {
+		return nil, err
+	}
+	entry.graph = graph
+	return graph, nil
 }
 
 func (g *staticGraph) addNode(id string, node staticNode) {

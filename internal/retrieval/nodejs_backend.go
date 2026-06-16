@@ -113,7 +113,10 @@ func (nodejsBackend) findSymbols(_ context.Context, repoRoot, name string, scope
 }
 
 func (nodejsBackend) findCallers(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	graph, err := buildNodeGraph(repoRoot, scopeForHierarchy(scope))
+	hierScope := scopeForHierarchy(scope)
+	graph, err := buildStaticGraphCached("nodejs", repoRoot, hierScope, func() (*staticGraph, error) {
+		return buildNodeGraph(repoRoot, hierScope)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +124,10 @@ func (nodejsBackend) findCallers(_ context.Context, repoRoot string, symbol *Sym
 }
 
 func (nodejsBackend) findCallees(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	graph, err := buildNodeGraph(repoRoot, scopeForHierarchy(scope))
+	hierScope := scopeForHierarchy(scope)
+	graph, err := buildStaticGraphCached("nodejs", repoRoot, hierScope, func() (*staticGraph, error) {
+		return buildNodeGraph(repoRoot, hierScope)
+	})
 	if err != nil {
 		return nil, err
 	}
