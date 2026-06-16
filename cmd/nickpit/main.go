@@ -844,7 +844,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			return err
 		}
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
-		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
 		smallRequirements := smallModelRequirementsForSpec(spec, req)
 		if smallRequirements.Uses() {
@@ -858,6 +857,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 				}
 			}
 		}
+		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 	} else {
 		req.ModelEmitsReasoning = true
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
