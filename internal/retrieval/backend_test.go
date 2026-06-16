@@ -95,6 +95,87 @@ func TestBuildStaticGraphCachedReusesAndIsConcurrencySafe(t *testing.T) {
 	wg.Wait()
 }
 
+// TestStaticGraphCacheCapRefusesNewKeysWhenFull exercises the soft cap on a fresh
+// store (isolated from the process-global counter): under-cap directory scopes are
+// memoized, an over-cap directory scope degrades to rebuild-without-caching, and
+// the repo-wide scope is admitted regardless of the cap.
+func TestStaticGraphCacheCapRefusesNewKeysWhenFull(t *testing.T) {
+	t.Setenv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES", "2")
+	c := &staticGraphCacheStore{}
+
+	calls := map[string]int{}
+	get := func(key string, repoWide bool) *staticGraph {
+		g, err := c.getOrBuild(key, repoWide, func() (*staticGraph, error) {
+			calls[key]++
+			return &staticGraph{}, nil
+		})
+		if err != nil {
+			t.Fatalf("getOrBuild(%q): %v", key, err)
+		}
+		if g == nil {
+			t.Fatalf("getOrBuild(%q) returned a nil graph", key)
+		}
+		return g
+	}
+
+	// Two directory scopes fit under the cap and are memoized (built once, reused).
+	if d1a, d1b := get("d1", false), get("d1", false); d1a != d1b {
+		t.Fatal("d1 was rebuilt instead of reused")
+	}
+	get("d2", false)
+	if calls["d1"] != 1 || calls["d2"] != 1 {
+		t.Fatalf("under-cap builds: d1=%d d2=%d, want 1 each", calls["d1"], calls["d2"])
+	}
+	if got := c.count.Load(); got != 2 {
+		t.Fatalf("count = %d after two directory scopes, want 2", got)
+	}
+
+	// A third directory scope is refused: rebuilt on every call, never cached.
+	if d3a, d3b := get("d3", false), get("d3", false); d3a == d3b {
+		t.Fatal("over-cap directory scope was cached instead of rebuilt")
+	}
+	if calls["d3"] != 2 {
+		t.Fatalf("over-cap build count = %d, want 2 (rebuilt each call)", calls["d3"])
+	}
+	if got := c.count.Load(); got != 2 {
+		t.Fatalf("count = %d after a refused key, want it unchanged at 2", got)
+	}
+
+	// The repo-wide scope is exempt from the cap and stays memoized.
+	if rwA, rwB := get("rw", true), get("rw", true); rwA != rwB {
+		t.Fatal("repo-wide scope was not cached despite the cap exemption")
+	}
+	if calls["rw"] != 1 {
+		t.Fatalf("repo-wide build count = %d, want 1", calls["rw"])
+	}
+	if got := c.count.Load(); got != 3 {
+		t.Fatalf("count = %d after admitting the exempt repo-wide scope, want 3", got)
+	}
+}
+
+func TestStaticGraphCacheCap(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want int
+	}{
+		{"empty falls back to default", "", defaultMaxStaticGraphCacheEntries},
+		{"garbage falls back to default", "abc", defaultMaxStaticGraphCacheEntries},
+		{"custom value", "10", 10},
+		{"surrounding whitespace", "  32  ", 32},
+		{"zero disables the cap", "0", 0},
+		{"negative disables the cap", "-1", -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES", tt.env)
+			if got := staticGraphCacheCap(); got != tt.want {
+				t.Errorf("staticGraphCacheCap() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCandidateBackendsReturnsUnsupportedLanguageError(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "Main.java", "class Main {}\n")

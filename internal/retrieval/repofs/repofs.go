@@ -82,6 +82,8 @@ type ignoreMatcherEntry struct {
 	matcher IgnoreMatcher
 }
 
+// ignoreMatcherCache holds one small ignore matcher per repository root; a
+// single-repo CLI run caches exactly one entry, so it is intentionally unbounded.
 var ignoreMatcherCache sync.Map
 
 func NewIgnoreMatcher(repoRoot string) IgnoreMatcher {
