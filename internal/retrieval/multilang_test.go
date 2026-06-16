@@ -249,6 +249,60 @@ func TestLocalEngineGetSymbolSkipsIgnoredDirectoriesDuringRepoWideSearch(t *test
 	}
 }
 
+func TestStripNodeLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no comment", "foo()", "foo()"},
+		{"comment only", "// c", ""},
+		{"trailing comment", "foo() // c", "foo() "},
+		{"url in double-quote string", `const u = "http://x"`, `const u = "http://x"`},
+		{"url in single-quote string", `'http://x' foo() // c`, `'http://x' foo() `},
+		// Backticks are written via an interpreted string literal because Go raw
+		// strings cannot contain them.
+		{"url in template literal", "`http://x` foo() // c", "`http://x` foo() "},
+		{"double slash inside string", `const s = "a//b"`, `const s = "a//b"`},
+		{"escaped quote in string", `"a\"b" // c`, `"a\"b" `},
+		{"single quote inside double", `"a'b" // c`, `"a'b" `},
+		{"comment before later quote", `foo() // "bar`, "foo() "},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripNodeLine(tc.in); got != tc.want {
+				t.Fatalf("stripNodeLine(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStripPythonComment(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no comment", "foo()", "foo()"},
+		{"comment only", "# c", ""},
+		{"trailing comment", "total = 1  # add", "total = 1  "},
+		{"hash in double-quote string", `x = "a # b"  # real`, `x = "a # b"  `},
+		{"hash in single-quote string", `s = 'a # b'`, `s = 'a # b'`},
+		{"url with fragment then call", `u = "http://x#frag" + f()  # c`, `u = "http://x#frag" + f()  `},
+		{"escaped quote in string", `s = "a\"b"  # c`, `s = "a\"b"  `},
+		{"double quote inside single", `s = 'a"b'  # c`, `s = 'a"b'  `},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripPythonComment(tc.in); got != tc.want {
+				t.Fatalf("stripPythonComment(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func writeRetrievalFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	path := filepath.Join(root, rel)

@@ -57,3 +57,32 @@ func collectFilesByExt(repoRoot string, scope lookupScope, exts map[string]struc
 	sort.Strings(files)
 	return files, err
 }
+
+// stripLineComment returns line with a trailing single-line comment removed,
+// ignoring any marker that appears inside a string literal (e.g. the // in
+// "http://x"). It is a best-effort single-line scanner: it tracks the quote
+// chars in quoteChars (honoring \-escapes) and cuts at the first marker found
+// outside a string. It does NOT model multi-line strings, template/f-string
+// interpolation, regex literals, or /* */ block comments — those need state
+// carried across lines and remain accepted best-effort gaps. Byte iteration is
+// safe because all delimiters are ASCII and never appear inside a UTF-8
+// multibyte sequence.
+func stripLineComment(line, marker, quoteChars string) string {
+	var quote byte // 0 = outside a string; otherwise the open quote char
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case quote != 0:
+			if c == '\\' {
+				i++ // skip the escaped char
+			} else if c == quote {
+				quote = 0
+			}
+		case strings.IndexByte(quoteChars, c) >= 0:
+			quote = c
+		case strings.HasPrefix(line[i:], marker):
+			return line[:i]
+		}
+	}
+	return line
+}

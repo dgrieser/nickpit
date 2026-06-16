@@ -25,6 +25,10 @@ fn parse(_url: &str) -> bool {
     true
 }
 
+fn fetch_redirect(url: &str) -> bool {
+    let _endpoint = "https://idp.example.com//callback"; parse(url)
+}
+
 struct Flow;
 
 impl Flow {
@@ -89,7 +93,44 @@ func TestRustBackendCallHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 	parseCallerNames := renderNames(parseCallers.Root.Children)
-	if !strings.Contains(parseCallerNames, "is_loopback") || !strings.Contains(parseCallerNames, "same_origin") {
+	// fetch_redirect calls parse(url) on a line whose string literal contains
+	// "//" (a URL). The old strings.Cut(line, "//") truncated the line before
+	// the call, dropping this edge; stripRustLine must now preserve it.
+	if !strings.Contains(parseCallerNames, "is_loopback") ||
+		!strings.Contains(parseCallerNames, "same_origin") ||
+		!strings.Contains(parseCallerNames, "fetch_redirect") {
 		t.Fatalf("parse callers = %q", parseCallerNames)
+	}
+}
+
+func TestStripRustLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no comment", "foo()", "foo()"},
+		{"comment only", "// c", ""},
+		// The trailing space before // is intentionally preserved; the call
+		// regexes tolerate surrounding whitespace.
+		{"trailing comment", "foo() // c", "foo() "},
+		{"url in string", `let u = "http://x";`, `let u = "http://x";`},
+		{"string then comment", `"http://x" foo() // c`, `"http://x" foo() `},
+		{"escaped quote in string", `"a\"b" // c`, `"a\"b" `},
+		{"escaped backslash then close", `"a\\" // c`, `"a\\" `},
+		{"comment before later quote", `foo() // "bar`, "foo() "},
+		// '"' is a char literal, not the start of a string; the guard prevents a
+		// phantom string from swallowing the real trailing comment.
+		{"quote char literal", `let q = '"'; // c`, `let q = '"'; `},
+		{"lifetime not char literal", `fn f<'a>(x: &'a str) {} // c`, `fn f<'a>(x: &'a str) {} `},
+		{"unterminated string", `let s = "start`, `let s = "start`},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stripRustLine(tc.in); got != tc.want {
+				t.Fatalf("stripRustLine(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

@@ -520,8 +520,8 @@ func nodeExpressionEnd(lines []string, start int) int {
 }
 
 func stripNodeLine(line string) string {
-	if before, _, ok := strings.Cut(line, "//"); ok {
-		return before
-	}
-	return line
+	// Quotes: " ' and ` (template literals). Regex literals and ${} template
+	// interpolation are not modeled — accepted best-effort gaps (see
+	// stripLineComment).
+	return stripLineComment(line, "//", "\"'`")
 }

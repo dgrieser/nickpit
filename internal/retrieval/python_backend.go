@@ -431,8 +431,8 @@ func pythonBlockEnd(lines []string, start, indent int) int {
 }
 
 func stripPythonComment(line string) string {
-	if before, _, ok := strings.Cut(line, "#"); ok {
-		return before
-	}
-	return line
+	// Triple-quoted strings (""" '''), raw/f-string prefixes, and any string
+	// spanning multiple lines are not modeled — accepted best-effort gaps (see
+	// stripLineComment).
+	return stripLineComment(line, "#", "\"'")
 }

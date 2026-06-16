@@ -268,13 +268,37 @@ func rustBlockEnd(lines []string, start int) int {
 	return len(lines)
 }
 
+// stripRustLine removes a trailing single-line // comment, ignoring // inside a
+// double-quoted string ("http://x" is preserved) and honoring \-escapes. A
+// complete char literal ('a', '\n', '"') is skipped so an embedded quote does
+// not open a phantom string; lifetimes ('a, 'static) have no closing ' at the
+// expected offset and fall through. It uses a dedicated scanner rather than the
+// shared stripLineComment because Rust's ' is a char-literal/lifetime, not a
+// string delimiter. NOT modeled (accepted best-effort gaps): raw strings
+// (r#"..."#), /* */ block comments, and any construct spanning multiple lines —
+// these need cross-line state and can skew rustBlockEnd's brace balance.
 func stripRustLine(line string) string {
-	// Strip single-line // comments. Multi-line /* */ block comments are NOT
-	// handled here (matching stripPythonComment and the node stripper): doing so
-	// correctly needs state carried across lines. Braces inside a block comment
-	// can therefore skew rustBlockEnd's balance — a rare, accepted best-effort gap.
-	if before, _, ok := strings.Cut(line, "//"); ok {
-		return before
+	inStr := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case inStr:
+			if c == '\\' {
+				i++ // skip escaped char (\" \\ etc.)
+			} else if c == '"' {
+				inStr = false
+			}
+		case c == '"':
+			inStr = true
+		case c == '\'':
+			if i+3 < len(line) && line[i+1] == '\\' && line[i+3] == '\'' {
+				i += 3 // escaped char literal: '\n' '\'' '\\'
+			} else if i+2 < len(line) && line[i+2] == '\'' {
+				i += 2 // simple char literal: 'a' '"'
+			}
+		case c == '/' && i+1 < len(line) && line[i+1] == '/':
+			return line[:i]
+		}
 	}
 	return line
 }
