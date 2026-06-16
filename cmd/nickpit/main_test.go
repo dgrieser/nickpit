@@ -112,29 +112,68 @@ func TestLoadProfileAppliesSmallModelCLIOverrides(t *testing.T) {
 profiles:
   default:
     model: primary-model
-    small_model: file-small-model
     reasoning_effort: high
-    small_reasoning_effort: medium
+    small:
+      model: file-small-model
+      reasoning_effort: medium
+      max_tokens: 1024
+      temperature: 0.25
+      top_p: 0.75
+      top_k: 20
+      presence_penalty: 0.05
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	app := &app{
-		profile:              "default",
-		configPath:           path,
-		smallModel:           "cli-small-model",
-		smallReasoningEffort: "low",
+		profile:                 "default",
+		configPath:              path,
+		smallModel:              "cli-small-model",
+		smallReasoningEffort:    "low",
+		smallMaxTokens:          2048,
+		smallMaxTokensSet:       true,
+		smallTemperature:        0.5,
+		smallTemperatureSet:     true,
+		smallTopP:               0.9,
+		smallTopPSet:            true,
+		smallTopK:               40,
+		smallTopKSet:            true,
+		smallPresencePenalty:    0.1,
+		smallPresencePenaltySet: true,
+		smallExtraBody:          `{"chat_template_kwargs":{"enable_thinking":true}}`,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.SmallModel != "cli-small-model" {
-		t.Fatalf("small model = %q", profile.SmallModel)
+	if profile.Small.Model != "cli-small-model" {
+		t.Fatalf("small model = %q", profile.Small.Model)
 	}
-	if profile.SmallReasoningEffort != "low" {
-		t.Fatalf("small reasoning effort = %q", profile.SmallReasoningEffort)
+	if profile.Small.ReasoningEffort != "low" {
+		t.Fatalf("small reasoning effort = %q", profile.Small.ReasoningEffort)
+	}
+	if profile.Small.MaxTokens == nil || *profile.Small.MaxTokens != 2048 {
+		t.Fatalf("small max tokens = %v", profile.Small.MaxTokens)
+	}
+	if profile.Small.Temperature == nil || *profile.Small.Temperature != 0.5 {
+		t.Fatalf("small temperature = %v", profile.Small.Temperature)
+	}
+	if profile.Small.TopP == nil || *profile.Small.TopP != 0.9 {
+		t.Fatalf("small top_p = %v", profile.Small.TopP)
+	}
+	if profile.Small.TopK == nil || *profile.Small.TopK != 40 {
+		t.Fatalf("small top_k = %v", profile.Small.TopK)
+	}
+	if profile.Small.PresencePenalty == nil || *profile.Small.PresencePenalty != 0.1 {
+		t.Fatalf("small presence penalty = %v", profile.Small.PresencePenalty)
+	}
+	chatTemplateKwargs, ok := profile.Small.ExtraBody["chat_template_kwargs"].(map[string]any)
+	if !ok || chatTemplateKwargs["enable_thinking"] != true {
+		t.Fatalf("small extra body = %#v", profile.Small.ExtraBody)
 	}
 }
 
@@ -253,6 +292,8 @@ profiles:
     model: test-model
     temperature: 0.25
     top_p: 0.75
+    top_k: 20
+    presence_penalty: 0.05
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
@@ -262,13 +303,17 @@ profiles:
 	}
 
 	app := &app{
-		profile:        "default",
-		configPath:     path,
-		temperature:    1,
-		temperatureSet: true,
-		topP:           1,
-		topPSet:        true,
-		extraBody:      `{"chat_template_kwargs":{"enable_thinking":true,"clear_thinking":false}}`,
+		profile:            "default",
+		configPath:         path,
+		temperature:        1,
+		temperatureSet:     true,
+		topP:               1,
+		topPSet:            true,
+		topK:               40,
+		topKSet:            true,
+		presencePenalty:    0.1,
+		presencePenaltySet: true,
+		extraBody:          `{"chat_template_kwargs":{"enable_thinking":true,"clear_thinking":false}}`,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -285,6 +330,12 @@ profiles:
 	}
 	if *profile.TopP != 1 {
 		t.Fatalf("top_p = %v", *profile.TopP)
+	}
+	if profile.TopK == nil || *profile.TopK != 40 {
+		t.Fatalf("top_k = %v", profile.TopK)
+	}
+	if profile.PresencePenalty == nil || *profile.PresencePenalty != 0.1 {
+		t.Fatalf("presence penalty = %v", profile.PresencePenalty)
 	}
 	chatTemplateKwargs, ok := profile.ExtraBody["chat_template_kwargs"].(map[string]any)
 	if !ok {
@@ -347,6 +398,20 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	}
 	if cmd.PersistentFlags().Lookup("small-reasoning-effort") == nil {
 		t.Fatal("small-reasoning-effort flag missing")
+	}
+	for _, name := range []string{
+		"top-k",
+		"presence-penalty",
+		"small-max-tokens",
+		"small-temperature",
+		"small-top-p",
+		"small-top-k",
+		"small-presence-penalty",
+		"small-extra-body",
+	} {
+		if cmd.PersistentFlags().Lookup(name) == nil {
+			t.Fatalf("%s flag missing", name)
+		}
 	}
 	if cmd.PersistentFlags().Lookup("disable-reasoning-extract") == nil {
 		t.Fatal("disable-reasoning-extract flag missing")
@@ -504,8 +569,20 @@ func TestEffectiveSmallReasoningEffortFallsBackToPrimary(t *testing.T) {
 	if got := effectiveSmallReasoningEffort(config.Profile{ReasoningEffort: "low"}); got != "low" {
 		t.Fatalf("effective small effort = %q, want low", got)
 	}
-	if got := effectiveSmallReasoningEffort(config.Profile{ReasoningEffort: "low", SmallReasoningEffort: "medium"}); got != "medium" {
+	if got := effectiveSmallReasoningEffort(config.Profile{ReasoningEffort: "low", Small: config.SmallModelConfig{ReasoningEffort: "medium"}}); got != "medium" {
 		t.Fatalf("effective small effort = %q, want medium", got)
+	}
+}
+
+func TestSmallModelConfiguredForSamplingOverride(t *testing.T) {
+	topK := 40
+	profile := config.Profile{
+		Model:           "same-model",
+		ReasoningEffort: "low",
+		Small:           config.SmallModelConfig{TopK: &topK},
+	}
+	if !smallModelConfigured(profile) {
+		t.Fatal("expected small sampling override to require a small-model check")
 	}
 }
 

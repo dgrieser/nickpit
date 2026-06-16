@@ -120,6 +120,8 @@ type ReviewRequest struct {
 	MaxTokens                      *int
 	Temperature                    *float64
 	TopP                           *float64
+	TopK                           *int
+	PresencePenalty                *float64
 	ExtraBody                      map[string]any
 	ParallelToolCalls              bool
 	ReasoningEffort                string
@@ -468,6 +470,14 @@ func cloneReviewRequest(req *ReviewRequest) ReviewRequest {
 	if req.TopP != nil {
 		topP := *req.TopP
 		cloned.TopP = &topP
+	}
+	if req.TopK != nil {
+		topK := *req.TopK
+		cloned.TopK = &topK
+	}
+	if req.PresencePenalty != nil {
+		presencePenalty := *req.PresencePenalty
+		cloned.PresencePenalty = &presencePenalty
 	}
 	return cloned
 }
@@ -876,6 +886,17 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "top_p", *req.TopP)
 		topPLog = fmt.Sprintf("%.2f", *req.TopP)
 	}
+	topKLog := "unset"
+	if req.TopK != nil {
+		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "top_k", *req.TopK)
+		topKLog = fmt.Sprintf("%d", *req.TopK)
+	}
+	presencePenaltyLog := "unset"
+	if req.PresencePenalty != nil {
+		payload.PresencePenalty = float32(*req.PresencePenalty)
+		requestExtraBody = setRequestExtraBodyField(requestExtraBody, "presence_penalty", *req.PresencePenalty)
+		presencePenaltyLog = fmt.Sprintf("%.2f", *req.PresencePenalty)
+	}
 	extraBodyLog := "unset"
 	if len(requestExtraBody) > 0 {
 		extraBodyLog = fmt.Sprintf("%d", len(requestExtraBody))
@@ -900,12 +921,14 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	}
 
 	c.logf(ctx,
-		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s top_p=%s extra_body_fields=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
+		"LLM request prepared: model=%s endpoint=%s max_tokens=%s temperature=%s top_p=%s top_k=%s presence_penalty=%s extra_body_fields=%s reasoning_effort=%s stream=%t messages=%d tools=%d",
 		payload.Model,
 		c.baseURL+"/chat/completions",
 		maxTokensLog,
 		temperatureLog,
 		topPLog,
+		topKLog,
+		presencePenaltyLog,
 		extraBodyLog,
 		payload.ReasoningEffort,
 		true,

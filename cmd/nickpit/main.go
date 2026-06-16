@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,7 +41,22 @@ type app struct {
 	temperatureSet                bool
 	topP                          float64
 	topPSet                       bool
+	topK                          int
+	topKSet                       bool
+	presencePenalty               float64
+	presencePenaltySet            bool
 	extraBody                     string
+	smallMaxTokens                int
+	smallMaxTokensSet             bool
+	smallTemperature              float64
+	smallTemperatureSet           bool
+	smallTopP                     float64
+	smallTopPSet                  bool
+	smallTopK                     int
+	smallTopKSet                  bool
+	smallPresencePenalty          float64
+	smallPresencePenaltySet       bool
+	smallExtraBody                string
 	maxContextTokens              int
 	maxContextTokensSet           bool
 	includeFullFiles              bool
@@ -154,7 +170,15 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.temperature, &cli.temperatureSet), "temperature", "Sampling temperature")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.topP, &cli.topPSet), "top-p", "Nucleus sampling probability")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.topK, &cli.topKSet), "top-k", "Top-k sampling cutoff")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.presencePenalty, &cli.presencePenaltySet), "presence-penalty", "Presence penalty")
 	root.PersistentFlags().StringVar(&cli.extraBody, "extra-body", "", "Additional JSON object fields to merge into the LLM request body")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallMaxTokens, &cli.smallMaxTokensSet), "small-max-tokens", "Max tokens for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallTemperature, &cli.smallTemperatureSet), "small-temperature", "Sampling temperature for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallTopP, &cli.smallTopPSet), "small-top-p", "Nucleus sampling probability for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallTopK, &cli.smallTopKSet), "small-top-k", "Top-k sampling cutoff for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallPresencePenalty, &cli.smallPresencePenaltySet), "small-presence-penalty", "Presence penalty for workflow steps using model: \"@small\"")
+	root.PersistentFlags().StringVar(&cli.smallExtraBody, "small-extra-body", "", "Additional JSON object fields for workflow steps using model: \"@small\"")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxContextTokens, &cli.maxContextTokensSet), "max-context-tokens", "Context token budget")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
@@ -245,14 +269,49 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.topPSet {
 		topP = &a.topP
 	}
+	var topK *int
+	if a.topKSet {
+		topK = &a.topK
+	}
+	var presencePenalty *float64
+	if a.presencePenaltySet {
+		presencePenalty = &a.presencePenalty
+	}
 	var extraBody map[string]any
 	if strings.TrimSpace(a.extraBody) != "" {
-		if err := json.Unmarshal([]byte(a.extraBody), &extraBody); err != nil {
-			return "", config.Profile{}, fmt.Errorf("parsing --extra-body JSON object: %w", err)
+		parsed, err := parseExtraBodyFlag("--extra-body", a.extraBody)
+		if err != nil {
+			return "", config.Profile{}, err
 		}
-		if extraBody == nil {
-			return "", config.Profile{}, fmt.Errorf("--extra-body must be a JSON object")
+		extraBody = parsed
+	}
+	var smallMaxTokens *int
+	if a.smallMaxTokensSet {
+		smallMaxTokens = &a.smallMaxTokens
+	}
+	var smallTemperature *float64
+	if a.smallTemperatureSet {
+		smallTemperature = &a.smallTemperature
+	}
+	var smallTopP *float64
+	if a.smallTopPSet {
+		smallTopP = &a.smallTopP
+	}
+	var smallTopK *int
+	if a.smallTopKSet {
+		smallTopK = &a.smallTopK
+	}
+	var smallPresencePenalty *float64
+	if a.smallPresencePenaltySet {
+		smallPresencePenalty = &a.smallPresencePenalty
+	}
+	var smallExtraBody map[string]any
+	if strings.TrimSpace(a.smallExtraBody) != "" {
+		parsed, err := parseExtraBodyFlag("--small-extra-body", a.smallExtraBody)
+		if err != nil {
+			return "", config.Profile{}, err
 		}
+		smallExtraBody = parsed
 	}
 	var includePaths *[]string
 	if a.includePathsSet {
@@ -271,15 +330,25 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		excludeContent = &a.excludeContent
 	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile:               a.profile,
-		Model:                 a.model,
-		SmallModel:            a.smallModel,
+		Profile: a.profile,
+		Model:   a.model,
+		Small: config.SmallModelConfig{
+			Model:           a.smallModel,
+			MaxTokens:       smallMaxTokens,
+			Temperature:     smallTemperature,
+			TopP:            smallTopP,
+			TopK:            smallTopK,
+			PresencePenalty: smallPresencePenalty,
+			ExtraBody:       smallExtraBody,
+			ReasoningEffort: a.smallReasoningEffort,
+		},
 		BaseURL:               a.baseURL,
 		APIKey:                a.apiKey,
 		ReasoningEffort:       a.reasoningEffort,
-		SmallReasoningEffort:  a.smallReasoningEffort,
 		Temperature:           temperature,
 		TopP:                  topP,
+		TopK:                  topK,
+		PresencePenalty:       presencePenalty,
 		ExtraBody:             extraBody,
 		UseJSONSchema:         a.useJSONSchema,
 		IncludePaths:          includePaths,
@@ -304,6 +373,17 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		return "", config.Profile{}, err
 	}
 	return cfg.ActiveProfile, profile, nil
+}
+
+func parseExtraBodyFlag(name, raw string) (map[string]any, error) {
+	var extraBody map[string]any
+	if err := json.Unmarshal([]byte(raw), &extraBody); err != nil {
+		return nil, fmt.Errorf("parsing %s JSON object: %w", name, err)
+	}
+	if extraBody == nil {
+		return nil, fmt.Errorf("%s must be a JSON object", name)
+	}
+	return extraBody, nil
 }
 
 type trackedIntValue struct {
@@ -752,7 +832,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 				return err
 			}
 			if smallChecked {
-				if err := a.writeModelCheckOutput(profile.SmallModel, smallResult); err != nil {
+				if err := a.writeModelCheckOutput(config.EffectiveSmallProfile(profile).Model, smallResult); err != nil {
 					return err
 				}
 			}
@@ -1087,19 +1167,38 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	return result, nil
 }
 
-// smallModelConfigured reports whether the profile defines a small model that
-// is distinct from the primary model and therefore warrants its own
-// capability check.
+// smallModelConfigured reports whether @small has distinct request settings and
+// therefore warrants its own capability check.
 func smallModelConfigured(profile config.Profile) bool {
-	small := strings.TrimSpace(profile.SmallModel)
-	return small != "" && small != strings.TrimSpace(profile.Model)
+	return !reflect.DeepEqual(modelCheckProfileSignature(profile), modelCheckProfileSignature(config.EffectiveSmallProfile(profile)))
 }
 
 func effectiveSmallReasoningEffort(profile config.Profile) string {
-	if strings.TrimSpace(profile.SmallReasoningEffort) != "" {
-		return profile.SmallReasoningEffort
+	return config.EffectiveSmallProfile(profile).ReasoningEffort
+}
+
+type modelCheckProfile struct {
+	Model           string
+	MaxTokens       *int
+	Temperature     *float64
+	TopP            *float64
+	TopK            *int
+	PresencePenalty *float64
+	ExtraBody       map[string]any
+	ReasoningEffort string
+}
+
+func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
+	return modelCheckProfile{
+		Model:           strings.TrimSpace(profile.Model),
+		MaxTokens:       profile.MaxTokens,
+		Temperature:     profile.Temperature,
+		TopP:            profile.TopP,
+		TopK:            profile.TopK,
+		PresencePenalty: profile.PresencePenalty,
+		ExtraBody:       profile.ExtraBody,
+		ReasoningEffort: profile.ReasoningEffort,
 	}
-	return profile.ReasoningEffort
 }
 
 type modelCapabilityRequirements struct {
@@ -1215,16 +1314,16 @@ func agentUseJSONSchema(stepReq model.ReviewRequest, override *workflow.AgentOve
 	return stepReq.UseJSONSchema
 }
 
-// checkSmallModel runs (or loads cached) capabilities for profile.SmallModel
-// when one is configured distinctly from the primary model, mirroring the
-// primary check: probe, log, and return the result for the caller to validate.
-// The bool reports whether a check was actually performed.
+// checkSmallModel runs (or loads cached) capabilities for the effective small
+// profile when it differs from the primary model request config, mirroring the
+// primary check. The bool reports whether a check was actually performed.
 func (a *app) checkSmallModel(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, bool, error) {
 	if !smallModelConfigured(profile) {
 		return modelcheck.Result{}, false, nil
 	}
-	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(profile))
-	result, err := a.resolveModelCapabilities(smallCtx, client, profile, profile.SmallModel, effectiveSmallReasoningEffort(profile), refresh)
+	smallProfile := config.EffectiveSmallProfile(profile)
+	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(smallProfile))
+	result, err := a.resolveModelCapabilities(smallCtx, client, smallProfile, smallProfile.Model, smallProfile.ReasoningEffort, refresh)
 	if err != nil {
 		return result, true, err
 	}
@@ -1603,8 +1702,8 @@ func profileProgressInfo(profile config.Profile) logging.ProgressInfo {
 // model, so the small-model capability check renders its own model and effort.
 func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
 	return logging.ProgressInfo{
-		Model:   profile.SmallModel,
-		Effort:  effectiveSmallReasoningEffort(profile),
+		Model:   profile.Model,
+		Effort:  profile.ReasoningEffort,
 		BaseURL: profile.BaseURL,
 	}
 }
@@ -1616,6 +1715,12 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	}
 	if profile.TopP != nil {
 		flags = append(flags, fmt.Sprintf("top_p=%g", *profile.TopP))
+	}
+	if profile.TopK != nil {
+		flags = append(flags, fmt.Sprintf("top_k=%d", *profile.TopK))
+	}
+	if profile.PresencePenalty != nil {
+		flags = append(flags, fmt.Sprintf("presence_penalty=%g", *profile.PresencePenalty))
 	}
 	return strings.Join(flags, ", ")
 }

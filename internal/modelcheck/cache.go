@@ -47,7 +47,7 @@ func FindProfileCapability(profile config.Profile) (config.ModelCapabilities, bo
 
 // FindProfileCapabilityFor looks up a pre-declared capability for an explicit
 // model in the profile's supported_models list, rather than the profile's
-// primary model. Used to resolve profile.SmallModel.
+// primary model. Used to resolve configured small-profile aliases.
 func FindProfileCapabilityFor(profile config.Profile, model string) (config.ModelCapabilities, bool) {
 	model = NormalizeModel(model)
 	for _, capability := range profile.SupportedModels {

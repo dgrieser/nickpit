@@ -495,6 +495,9 @@ func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
 	alias := SmallModelAlias
 	explicitEffort := "none"
 	req := model.ReviewRequest{}
+	smallTemp := 0.2
+	smallTopK := 40
+	smallPresencePenalty := 0.1
 
 	cases := []struct {
 		name       string
@@ -505,7 +508,7 @@ func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
 	}{
 		{
 			name:       "configured small model keeps primary effort",
-			base:       config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high"},
+			base:       config.Profile{Model: "primary", Small: config.SmallModelConfig{Model: "small"}, ReasoningEffort: "high"},
 			override:   StepOverride{Model: &alias},
 			wantModel:  "small",
 			wantEffort: "high",
@@ -519,14 +522,14 @@ func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
 		},
 		{
 			name:       "configured small effort applies",
-			base:       config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high", SmallReasoningEffort: "low"},
+			base:       config.Profile{Model: "primary", Small: config.SmallModelConfig{Model: "small", ReasoningEffort: "low"}, ReasoningEffort: "high"},
 			override:   StepOverride{Model: &alias},
 			wantModel:  "small",
 			wantEffort: "low",
 		},
 		{
 			name:       "step effort overrides small effort",
-			base:       config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high", SmallReasoningEffort: "low"},
+			base:       config.Profile{Model: "primary", Small: config.SmallModelConfig{Model: "small", ReasoningEffort: "low"}, ReasoningEffort: "high"},
 			override:   StepOverride{Model: &alias, ReasoningEffort: &explicitEffort},
 			wantModel:  "small",
 			wantEffort: "none",
@@ -542,13 +545,34 @@ func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
 			}
 		})
 	}
+
+	base := config.Profile{
+		Model:           "primary",
+		ReasoningEffort: "high",
+		Small: config.SmallModelConfig{
+			Model:           "small",
+			Temperature:     &smallTemp,
+			TopK:            &smallTopK,
+			PresencePenalty: &smallPresencePenalty,
+		},
+	}
+	gotProfile, _ := (&StepOverride{Model: &alias}).Resolve(base, req)
+	if gotProfile.Temperature == nil || *gotProfile.Temperature != smallTemp {
+		t.Fatalf("small temperature = %v, want %v", gotProfile.Temperature, smallTemp)
+	}
+	if gotProfile.TopK == nil || *gotProfile.TopK != smallTopK {
+		t.Fatalf("small top_k = %v, want %d", gotProfile.TopK, smallTopK)
+	}
+	if gotProfile.PresencePenalty == nil || *gotProfile.PresencePenalty != smallPresencePenalty {
+		t.Fatalf("small presence_penalty = %v, want %v", gotProfile.PresencePenalty, smallPresencePenalty)
+	}
 }
 
 func TestAgentOverrideResolveSmallModelAlias(t *testing.T) {
 	alias := SmallModelAlias
 	effort := "none"
 	retries := 2
-	base := config.Profile{Model: "primary", SmallModel: "small", ReasoningEffort: "high", SmallReasoningEffort: "low"}
+	base := config.Profile{Model: "primary", Small: config.SmallModelConfig{Model: "small", ReasoningEffort: "low"}, ReasoningEffort: "high"}
 	req := model.ReviewRequest{MaxOutputRetries: 5}
 	ov := &AgentOverride{Model: &alias, ReasoningEffort: &effort, MaxOutputRetries: &retries}
 

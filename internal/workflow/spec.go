@@ -25,8 +25,8 @@ import (
 // SpecVersion is the only supported major spec version.
 const SpecVersion = 1
 
-// SmallModelAlias selects profile.small_model for a step. When the profile does
-// not define one, it intentionally falls back to the profile's primary model.
+// SmallModelAlias selects profile.small for a step. Unset small fields
+// intentionally fall back to the profile's primary model config.
 const SmallModelAlias = "@small"
 
 // Step type identifiers. Steps that operate on a single reviewer vector are
@@ -113,6 +113,8 @@ type StepOverride struct {
 	Model           *string        `yaml:"model"`
 	Temperature     *float64       `yaml:"temperature"`
 	TopP            *float64       `yaml:"top_p"`
+	TopK            *int           `yaml:"top_k"`
+	PresencePenalty *float64       `yaml:"presence_penalty"`
 	MaxTokens       *int           `yaml:"max_tokens"`
 	ExtraBody       map[string]any `yaml:"extra_body"`
 	ReasoningEffort *string        `yaml:"reasoning_effort"`
@@ -147,7 +149,7 @@ type StepOverride struct {
 }
 
 var stepOverrideKeys = []string{
-	"model", "temperature", "top_p", "max_tokens", "extra_body", "reasoning_effort",
+	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
@@ -163,6 +165,8 @@ type AgentOverride struct {
 	Model           *string        `yaml:"model"`
 	Temperature     *float64       `yaml:"temperature"`
 	TopP            *float64       `yaml:"top_p"`
+	TopK            *int           `yaml:"top_k"`
+	PresencePenalty *float64       `yaml:"presence_penalty"`
 	MaxTokens       *int           `yaml:"max_tokens"`
 	ExtraBody       map[string]any `yaml:"extra_body"`
 	ReasoningEffort *string        `yaml:"reasoning_effort"`
@@ -178,7 +182,7 @@ type AgentOverride struct {
 }
 
 var agentOverrideKeys = []string{
-	"model", "temperature", "top_p", "max_tokens", "extra_body", "reasoning_effort",
+	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"disable_parallel_tool_calls", "use_json_schema",
@@ -201,6 +205,14 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.TopP != nil {
 		v := *o.TopP
 		p.TopP = &v
+	}
+	if o.TopK != nil {
+		v := *o.TopK
+		p.TopK = &v
+	}
+	if o.PresencePenalty != nil {
+		v := *o.PresencePenalty
+		p.PresencePenalty = &v
 	}
 	if o.MaxTokens != nil {
 		v := *o.MaxTokens
@@ -278,6 +290,14 @@ func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (conf
 		v := *o.TopP
 		p.TopP = &v
 	}
+	if o.TopK != nil {
+		v := *o.TopK
+		p.TopK = &v
+	}
+	if o.PresencePenalty != nil {
+		v := *o.PresencePenalty
+		p.PresencePenalty = &v
+	}
 	if o.MaxTokens != nil {
 		v := *o.MaxTokens
 		p.MaxTokens = &v
@@ -320,13 +340,7 @@ func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (conf
 
 func resolveModelAlias(p config.Profile, model string) config.Profile {
 	if strings.TrimSpace(model) == SmallModelAlias {
-		if p.SmallModel != "" {
-			p.Model = p.SmallModel
-		}
-		if p.SmallReasoningEffort != "" {
-			p.ReasoningEffort = p.SmallReasoningEffort
-		}
-		return p
+		return config.EffectiveSmallProfile(p)
 	}
 	p.Model = model
 	return p

@@ -143,6 +143,8 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			MaxTokens:                         e.config.MaxTokens,
 			Temperature:                       e.config.Temperature,
 			TopP:                              e.config.TopP,
+			TopK:                              e.config.TopK,
+			PresencePenalty:                   e.config.PresencePenalty,
 			ExtraBody:                         e.config.ExtraBody,
 			ParallelToolCalls:                 !req.DisableParallelToolCalls,
 			ReasoningEffort:                   e.config.ReasoningEffort,

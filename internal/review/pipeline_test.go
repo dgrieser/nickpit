@@ -354,10 +354,9 @@ func TestReviewStepInternalOverridesRouteSubagentModels(t *testing.T) {
 		updateOutputs:     []string{"delta issue"},
 	}
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{
-		Model:                "large-model",
-		SmallModel:           "small-model",
-		ReasoningEffort:      "high",
-		SmallReasoningEffort: "low",
+		Model:           "large-model",
+		Small:           config.SmallModelConfig{Model: "small-model", ReasoningEffort: "low"},
+		ReasoningEffort: "high",
 	})
 	engine.SetLogger(logging.New(os.Stderr, false, false))
 	spec := workflow.Spec{

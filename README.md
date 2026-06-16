@@ -88,12 +88,24 @@ Profiles can also define a cheaper/faster alias for workflow steps:
 profiles:
   default:
     model: primary-model
+    max_tokens: 4096
+    temperature: 0.2
+    top_p: 0.9
+    top_k: 40
+    presence_penalty: 0.1
     reasoning_effort: high
-    small_model: small-model
-    small_reasoning_effort: low
+    small:
+      model: small-model
+      max_tokens: 2048
+      temperature: 0.2
+      top_p: 0.9
+      top_k: 40
+      presence_penalty: 0.1
+      extra_body: {}
+      reasoning_effort: low
 ```
 
-`small_model` and `small_reasoning_effort` can also be set with `NICKPIT_SMALL_MODEL` / `NICKPIT_SMALL_REASONING_EFFORT` or `--small-model` / `--small-reasoning-effort`. In workflow step config, `model: "@small"` selects `small_model`; when `small_model` is unset it falls back to `model`, and when `small_reasoning_effort` is unset it falls back to `reasoning_effort`.
+`model: "@small"` in workflow step config selects the nested `small` config. Any unset small field falls back to the primary profile value. Small model settings can also be set with `NICKPIT_SMALL_*` environment variables or `--small-*` flags such as `--small-model`, `--small-reasoning-effort`, `--small-top-k`, and `--small-presence-penalty`.
 
 ### Diff Filters
 
@@ -184,7 +196,7 @@ nickpit local branch --step finalize --findings merged.json --json
 nickpit local branch --step summarize --findings finalized.json --json
 ```
 
-See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); a parallel child can be a `lane:` — a list of steps that run sequentially within the group, e.g. one reviewer's `review:` → `verify:` → `dedupe:` chain. Each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, reasoning_effort, max_tool_calls, max_output_retries, max_reasoning_loop_repeats, nudge_count, disable_patch_summary, verify_drop_policy, verify_drop_confidence, …) — anything unset inherits the active profile/flags. Use `model: "@small"` to select the configured `small_model` alias for a step. `review:<vector>` configs can also override internal agents with `mine_reasoning:`, `compile_findings:`, and `nudge:` subconfigs. LLM concurrency is run-level only (`--concurrency`, default `10`, `0` = unlimited): one shared cap across every agent loop in the run. Per-vector steps are addressed as `review:security`, `verify:security`, `dedupe:security`, …; `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any global step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group). Steps that only consume injected findings (e.g. `merge`, `finalize`, `summarize`) run without a git/PR source.
+See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); a parallel child can be a `lane:` — a list of steps that run sequentially within the group, e.g. one reviewer's `review:` → `verify:` → `dedupe:` chain. Each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, top_p, top_k, presence_penalty, reasoning_effort, max_tool_calls, max_output_retries, max_reasoning_loop_repeats, nudge_count, disable_patch_summary, verify_drop_policy, verify_drop_confidence, …) — anything unset inherits the active profile/flags. Use `model: "@small"` to select the configured nested `small` profile for a step. `review:<vector>` configs can also override internal agents with `mine_reasoning:`, `compile_findings:`, and `nudge:` subconfigs. LLM concurrency is run-level only (`--concurrency`, default `10`, `0` = unlimited): one shared cap across every agent loop in the run. Per-vector steps are addressed as `review:security`, `verify:security`, `dedupe:security`, …; `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any global step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group). Steps that only consume injected findings (e.g. `merge`, `finalize`, `summarize`) run without a git/PR source.
 
 ### Filtering by Priority
 

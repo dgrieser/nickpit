@@ -148,8 +148,8 @@ func New(client llm.Client, profile config.Profile) *Checker {
 
 // NewForModel builds a Checker that probes an explicit model and reasoning
 // effort instead of the profile's primary model, sharing the rest of the
-// profile (request limits, schema mode, endpoint). Used to check
-// profile.SmallModel alongside the primary one.
+// profile (request limits, schema mode, endpoint). Used to check the effective
+// small profile alongside the primary one.
 func NewForModel(client llm.Client, profile config.Profile, model, reasoningEffort string) *Checker {
 	return &Checker{
 		client:          client,
@@ -572,6 +572,8 @@ func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm
 		MaxTokens:                      c.profile.MaxTokens,
 		Temperature:                    c.profile.Temperature,
 		TopP:                           c.profile.TopP,
+		TopK:                           c.profile.TopK,
+		PresencePenalty:                c.profile.PresencePenalty,
 		ExtraBody:                      c.profile.ExtraBody,
 		ParallelToolCalls:              true,
 		ReasoningEffort:                effort,

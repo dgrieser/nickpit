@@ -217,7 +217,7 @@ func TestClientReviewOmitsTemperatureWhenUnset(t *testing.T) {
 	}
 }
 
-func TestClientReviewIncludesTopPAndExtraBody(t *testing.T) {
+func TestClientReviewIncludesSamplingFieldsAndExtraBody(t *testing.T) {
 	var payload map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -256,11 +256,17 @@ func TestClientReviewIncludesTopPAndExtraBody(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	topP := 0.9
+	topK := 40
+	presencePenalty := 0.1
 	_, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt: "system",
-		UserContent:  "user",
-		TopP:         &topP,
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		TopP:            &topP,
+		TopK:            &topK,
+		PresencePenalty: &presencePenalty,
 		ExtraBody: map[string]any{
+			"top_k":            20,
+			"presence_penalty": 0.5,
 			"chat_template_kwargs": map[string]any{
 				"enable_thinking": true,
 				"clear_thinking":  false,
@@ -272,6 +278,12 @@ func TestClientReviewIncludesTopPAndExtraBody(t *testing.T) {
 	}
 	if got := payload["top_p"]; got != 0.9 {
 		t.Fatalf("top_p = %v", got)
+	}
+	if got := payload["top_k"]; got != float64(40) {
+		t.Fatalf("top_k = %v", got)
+	}
+	if got := payload["presence_penalty"]; got != 0.1 {
+		t.Fatalf("presence_penalty = %v", got)
 	}
 	chatTemplateKwargs, ok := payload["chat_template_kwargs"].(map[string]any)
 	if !ok {
@@ -1556,6 +1568,8 @@ func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 	maxTokens := 10
 	temperature := 0.25
 	topP := 0.9
+	topK := 40
+	presencePenalty := 0.1
 	req := &ReviewRequest{
 		Messages: []Message{
 			{
@@ -1581,10 +1595,12 @@ func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 				Parameters: json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		Schema:      json.RawMessage(`{"type":"object"}`),
-		MaxTokens:   &maxTokens,
-		Temperature: &temperature,
-		TopP:        &topP,
+		Schema:          json.RawMessage(`{"type":"object"}`),
+		MaxTokens:       &maxTokens,
+		Temperature:     &temperature,
+		TopP:            &topP,
+		TopK:            &topK,
+		PresencePenalty: &presencePenalty,
 		ExtraBody: map[string]any{
 			"nested": map[string]any{"value": "original"},
 			"list":   []any{"original"},
@@ -1603,6 +1619,8 @@ func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 	*cloned.MaxTokens = 20
 	*cloned.Temperature = 0.5
 	*cloned.TopP = 0.7
+	*cloned.TopK = 10
+	*cloned.PresencePenalty = 0.2
 	cloned.ExtraBody["nested"].(map[string]any)["value"] = "changed"
 	cloned.ExtraBody["list"].([]any)[0] = "changed"
 	cloned.ExtraBody["raw"].(json.RawMessage)[0] = '['
@@ -1634,6 +1652,12 @@ func TestCloneReviewRequestIsolatesReferenceFields(t *testing.T) {
 	}
 	if *req.TopP != 0.9 {
 		t.Fatalf("top_p = %f", *req.TopP)
+	}
+	if *req.TopK != 40 {
+		t.Fatalf("top_k = %d", *req.TopK)
+	}
+	if *req.PresencePenalty != 0.1 {
+		t.Fatalf("presence_penalty = %f", *req.PresencePenalty)
 	}
 	if got := req.ExtraBody["nested"].(map[string]any)["value"]; got != "original" {
 		t.Fatalf("nested extra body = %v", got)
