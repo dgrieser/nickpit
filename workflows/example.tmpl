@@ -31,8 +31,8 @@
 # Per-step overrides: every model parameter and budget can be set per step.
 # Unset = inherit from the active profile / CLI flags. (base_url / api_key are
 # profile-level only — the LLM client is created once per run.)
-# Use `model: "@small"` to select profile.small_model, falling back to
-# profile.model when no small model is configured.
+# Use `model: "@small"` to select profile.small, with unset small fields
+# falling back to the primary profile config.
 #
 # steps:
 #   - type: collect-context
@@ -69,7 +69,8 @@
 #   - type: finalize
 #
 # Overridable config keys:
-#   model, temperature, top_p, max_tokens, extra_body, reasoning_effort,
+#   model, temperature, top_p, top_k, presence_penalty, max_tokens,
+#   extra_body, reasoning_effort,
 #   max_tool_calls, max_duplicate_tool_calls,
 #   max_output_retries, max_reasoning_seconds, max_reasoning_loop_repeats,
 #   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
