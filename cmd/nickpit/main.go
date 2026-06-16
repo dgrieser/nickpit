@@ -719,7 +719,11 @@ func (a *app) newCheckCmd() *cobra.Command {
 				return err
 			}
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
-			smallRequirements := smallModelRequirementsForSpec(workflow.DefaultSpec(), checkReq)
+			spec, err := a.resolveActiveSpec()
+			if err != nil {
+				return err
+			}
+			smallRequirements := smallModelRequirementsForSpec(spec, checkReq)
 			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, a.refreshModelCheck)
 			if err != nil {
 				return err
@@ -778,15 +782,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	// explicit --spec/--step, or the embedded DefaultSpec otherwise. There is no
 	// separate "default" code path. The profile was already applied by the caller
 	// via loadProfileForSpec, before the source adapter and request were built.
-	var spec workflow.Spec
-	if a.specPath != "" || a.stepName != "" {
-		resolved, err := a.resolveSpec()
-		if err != nil {
-			return err
-		}
-		spec = resolved
-	} else {
-		spec = workflow.DefaultSpec()
+	spec, err := a.resolveActiveSpec()
+	if err != nil {
+		return err
 	}
 
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
@@ -978,6 +976,13 @@ func (a *app) resolveSpec() (workflow.Spec, error) {
 		return workflow.Spec{}, err
 	}
 	return spec, nil
+}
+
+func (a *app) resolveActiveSpec() (workflow.Spec, error) {
+	if a.specPath != "" || a.stepName != "" {
+		return a.resolveSpec()
+	}
+	return workflow.DefaultSpec(), nil
 }
 
 // seedFindings attaches top-level --findings to the first step that actually

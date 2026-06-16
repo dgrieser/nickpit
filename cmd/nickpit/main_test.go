@@ -438,6 +438,27 @@ func TestSmallModelRequirementsSkipSpecWithoutAlias(t *testing.T) {
 	}
 }
 
+func TestResolveActiveSpecUsesCustomSpecForSmallRequirements(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	if err := os.WriteFile(path, []byte(`
+version: 1
+steps:
+  - type: review:security
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := (&app{specPath: path}).resolveActiveSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if requirements.Uses() {
+		t.Fatalf("small-model requirements = %+v, want custom spec without @small to be unused", requirements)
+	}
+}
+
 func TestSmallModelRequirementsRequireToolsForReviewAlias(t *testing.T) {
 	alias := workflow.SmallModelAlias
 	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
