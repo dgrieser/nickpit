@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -140,8 +141,13 @@ func optionalFloatNode(value *float64) *yaml.Node {
 
 func mapNode(values map[string]any) *yaml.Node {
 	node := yamlMapping()
-	for key, value := range values {
-		node.Content = append(node.Content, yamlScalar(key), anyNode(value))
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		node.Content = append(node.Content, yamlScalar(key), anyNode(values[key]))
 	}
 	return node
 }

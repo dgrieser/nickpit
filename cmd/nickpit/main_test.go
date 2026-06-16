@@ -565,15 +565,6 @@ func TestSmallModelRequirementsHonorSchemaOverride(t *testing.T) {
 	}
 }
 
-func TestEffectiveSmallReasoningEffortFallsBackToPrimary(t *testing.T) {
-	if got := effectiveSmallReasoningEffort(config.Profile{ReasoningEffort: "low"}); got != "low" {
-		t.Fatalf("effective small effort = %q, want low", got)
-	}
-	if got := effectiveSmallReasoningEffort(config.Profile{ReasoningEffort: "low", Small: config.SmallModelConfig{ReasoningEffort: "medium"}}); got != "medium" {
-		t.Fatalf("effective small effort = %q, want medium", got)
-	}
-}
-
 func TestSmallModelConfiguredForSamplingOverride(t *testing.T) {
 	topK := 40
 	profile := config.Profile{

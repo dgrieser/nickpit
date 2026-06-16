@@ -1173,10 +1173,6 @@ func smallModelConfigured(profile config.Profile) bool {
 	return !reflect.DeepEqual(modelCheckProfileSignature(profile), modelCheckProfileSignature(config.EffectiveSmallProfile(profile)))
 }
 
-func effectiveSmallReasoningEffort(profile config.Profile) string {
-	return config.EffectiveSmallProfile(profile).ReasoningEffort
-}
-
 type modelCheckProfile struct {
 	Model           string
 	MaxTokens       *int

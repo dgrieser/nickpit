@@ -302,8 +302,8 @@ func mergeSmallModelConfig(base, override SmallModelConfig) SmallModelConfig {
 }
 
 func EffectiveSmallProfile(profile Profile) Profile {
-	small := cloneSmallModelConfig(profile.Small)
 	profile = cloneProfile(profile)
+	small := profile.Small
 	if small.Model != "" {
 		profile.Model = small.Model
 	}
