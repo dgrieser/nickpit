@@ -57,6 +57,7 @@ func languageBackends() []languageBackend {
 		goBackend{},
 		pythonBackend{},
 		nodejsBackend{},
+		rustBackend{},
 	}
 }
 

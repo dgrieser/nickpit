@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +116,30 @@ func TestExecuteSearchStillRewritesForSupportedLanguage(t *testing.T) {
 	}
 }
 
+// TestExecuteSearchRewritesForRustLanguage guards the optimization for Rust,
+// which is supported by rustBackend: a `.rs` function-name search must rewrite to
+// find_callers, the same as Go/Python/TypeScript.
+func TestExecuteSearchRewritesForRustLanguage(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "src/demo.rs", "pub fn Run() -> i32 { 1 }\n")
+
+	counting := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, counting, config.Profile{Model: "test"})
+	engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"path":"src/demo.rs","query":"Run()"}`},
+	}, freshToolRoundState())
+
+	rewritten := false
+	for _, p := range counting.paths {
+		if strings.HasPrefix(p, "callers:") && strings.Contains(p, "Run") {
+			rewritten = true
+		}
+	}
+	if !rewritten {
+		t.Fatalf("expected a .rs function-name search to rewrite to find_callers, recorded paths = %v", counting.paths)
+	}
+}
+
 // TestExecuteSearchLiteralWhenOptimizationDisabled covers the otherwise-untested
 // disabled branch: with the optimization off, even a function-name search on a
 // supported language must run literally rather than rewriting to find_callers.
@@ -140,5 +165,108 @@ func TestExecuteSearchLiteralWhenOptimizationDisabled(t *testing.T) {
 	}
 	if !sawLiteralSearch {
 		t.Fatalf("expected a literal search path, recorded paths = %v", counting.paths)
+	}
+}
+
+// TestToolCallConcurrencyKey directly exercises the dedup-key generator across
+// every tool and the language-aware search rewrite. The search branch hits the
+// filesystem via SupportsStructuralAnalysis, so real fixture files are written.
+func TestToolCallConcurrencyKey(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "src/demo.go", "package demo\n\nfunc Run() int { return 1 }\n")
+	writeRepoFile(t, repoRoot, "src/demo.py", "def Run():\n    return 1\n")
+	writeRepoFile(t, repoRoot, "src/demo.ts", "export function Run() { return 1 }\n")
+	writeRepoFile(t, repoRoot, "src/demo.rs", "pub fn Run() -> i32 { 1 }\n")
+	writeRepoFile(t, repoRoot, "src/demo.rb", "def Run\n  1\nend\n")
+	writeRepoFile(t, repoRoot, "src/Demo.java", "class Demo {}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, &countingRetrieval{}, config.Profile{Model: "test"})
+
+	goPath := normalizeToolPath("src/demo.go")
+	searchRewriteKey := func(path string) string {
+		return callHierarchyDedupKey("find_callers", normalizeToolPath(path), "Run", defaultCallHierarchyDepth)
+	}
+
+	tests := []struct {
+		name   string
+		call   llm.ToolCall
+		want   string // exact match when unique == false
+		unique bool   // when true, only the "unique\x00" prefix is asserted
+	}{
+		{
+			name: "inspect_file",
+			call: llm.ToolCall{ID: "a", Name: "inspect_file", Arguments: `{"path":"src/demo.go"}`},
+			want: fmt.Sprintf("inspect_file\x00%s", goPath),
+		},
+		{
+			name: "list_files default depth",
+			call: llm.ToolCall{ID: "b", Name: "list_files", Arguments: `{"path":"src"}`},
+			want: fmt.Sprintf("list_files\x00%s\x00%d", normalizeToolPath("src"), 1),
+		},
+		{
+			name: "list_files explicit depth",
+			call: llm.ToolCall{ID: "c", Name: "list_files", Arguments: `{"path":"src","depth":3}`},
+			want: fmt.Sprintf("list_files\x00%s\x00%d", normalizeToolPath("src"), 3),
+		},
+		{
+			name: "find_callers default depth",
+			call: llm.ToolCall{ID: "d", Name: "find_callers", Arguments: `{"path":"src/demo.go","symbol":"Run"}`},
+			want: callHierarchyDedupKey("find_callers", goPath, "Run", defaultCallHierarchyDepth),
+		},
+		{
+			name: "find_callees explicit depth",
+			call: llm.ToolCall{ID: "e", Name: "find_callees", Arguments: `{"path":"src/demo.go","symbol":"Run","depth":4}`},
+			want: callHierarchyDedupKey("find_callees", goPath, "Run", 4),
+		},
+		{
+			name: "search go function name rewrites",
+			call: llm.ToolCall{ID: "f", Name: "search", Arguments: `{"path":"src/demo.go","query":"Run()"}`},
+			want: searchRewriteKey("src/demo.go"),
+		},
+		{
+			name: "search python function name rewrites",
+			call: llm.ToolCall{ID: "g", Name: "search", Arguments: `{"path":"src/demo.py","query":"Run()"}`},
+			want: searchRewriteKey("src/demo.py"),
+		},
+		{
+			name: "search typescript function name rewrites",
+			call: llm.ToolCall{ID: "h", Name: "search", Arguments: `{"path":"src/demo.ts","query":"Run()"}`},
+			want: searchRewriteKey("src/demo.ts"),
+		},
+		{
+			name: "search rust function name rewrites",
+			call: llm.ToolCall{ID: "i", Name: "search", Arguments: `{"path":"src/demo.rs","query":"Run()"}`},
+			want: searchRewriteKey("src/demo.rs"),
+		},
+		{
+			name:   "search ruby function name stays unique",
+			call:   llm.ToolCall{ID: "j", Name: "search", Arguments: `{"path":"src/demo.rb","query":"Run()"}`},
+			unique: true,
+		},
+		{
+			name:   "search java function name stays unique",
+			call:   llm.ToolCall{ID: "k", Name: "search", Arguments: `{"path":"src/Demo.java","query":"Run()"}`},
+			unique: true,
+		},
+		{
+			name:   "search non-function query stays unique",
+			call:   llm.ToolCall{ID: "l", Name: "search", Arguments: `{"path":"src/demo.go","query":"return x"}`},
+			unique: true,
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := engine.toolCallConcurrencyKey(tt.call, i, repoRoot)
+			if tt.unique {
+				if !strings.HasPrefix(got, "unique\x00") {
+					t.Fatalf("key = %q, want a unique\\x00 key", got)
+				}
+				return
+			}
+			if got != tt.want {
+				t.Fatalf("key = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
