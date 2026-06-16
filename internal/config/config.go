@@ -166,9 +166,25 @@ var defaultProfiles = []defaultProfile{
 			BaseURL:         "https://llm.aihosting.mittwald.de/v1",
 			Model:           "Qwen3.5-122B-A10B-FP8",
 			ReasoningEffort: "high",
-			Small:           SmallModelConfig{Model: "Qwen3.6-35B-A3B-FP8", ReasoningEffort: "low"},
-			UseJSONSchema:   true,
-			APIKey:          "$MITTWALD_LLM_API_KEY",
+			Temperature:     ptrTo(0.6),
+			TopP:            ptrTo(0.95),
+			TopK:            ptrTo(20),
+			PresencePenalty: ptrTo(0.0),
+			Small: SmallModelConfig{
+				Model:           "Qwen3.6-35B-A3B-FP8",
+				ReasoningEffort: "none",
+				Temperature:     ptrTo(0.7),
+				TopP:            ptrTo(1.0),
+				TopK:            ptrTo(40),
+				PresencePenalty: ptrTo(2.0),
+				ExtraBody: map[string]any{
+					"chat_template_kwargs": map[string]any{
+						"enable_thinking": false,
+					},
+				},
+			},
+			UseJSONSchema: true,
+			APIKey:        "$MITTWALD_LLM_API_KEY",
 		},
 	},
 	{
