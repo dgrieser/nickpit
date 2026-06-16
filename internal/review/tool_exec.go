@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -22,7 +23,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCall
 	groups := make(map[string][]int, len(toolCalls))
 	groupOrder := make([]string, 0, len(toolCalls))
 	for i, toolCall := range toolCalls {
-		key := toolCallConcurrencyKey(toolCall, i)
+		key := e.toolCallConcurrencyKey(toolCall, i, repoRoot)
 		if _, ok := groups[key]; !ok {
 			groupOrder = append(groupOrder, key)
 		}
@@ -51,7 +52,25 @@ func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCall
 	return results
 }
 
-func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
+// supportsStructuralAnalysis memoizes retrieval.SupportsStructuralAnalysis for a
+// (repoRoot, normalizedPath) pair. Both the dedup-key computation and executeSearch
+// consult it for every search call, and each underlying check performs an os.Stat;
+// the result is deterministic over a review's fixed checkout, so caching it halves
+// the filesystem I/O for high-frequency search operations.
+func (e *Engine) supportsStructuralAnalysis(repoRoot, normalizedPath string) bool {
+	if e.structuralSupport == nil {
+		return retrieval.SupportsStructuralAnalysis(repoRoot, normalizedPath)
+	}
+	key := repoRoot + "\x00" + normalizedPath
+	if v, ok := e.structuralSupport.Load(key); ok {
+		return v.(bool)
+	}
+	v := retrieval.SupportsStructuralAnalysis(repoRoot, normalizedPath)
+	e.structuralSupport.Store(key, v)
+	return v
+}
+
+func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRoot string) string {
 	uniqueKey := fmt.Sprintf("unique\x00%d\x00%s", index, toolCall.ID)
 	switch toolCall.Name {
 	case "inspect_file":
@@ -96,8 +115,14 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 			return uniqueKey
 		}
 		query := strings.TrimSpace(args.Query)
-		if matches := searchFunctionQueryPattern.FindStringSubmatch(query); len(matches) == 2 {
-			return callHierarchyDedupKey("find_callers", normalizeToolPath(args.Path), matches[1], defaultCallHierarchyDepth)
+		// Mirror executeSearch's rewrite condition so the dedup key matches how the
+		// call actually executes: a function-name search only collapses into the
+		// find_callers key when the optimization is on AND a backend supports the
+		// target language; otherwise it runs as its own literal search.
+		if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizeToolPath(args.Path)) {
+			if matches := searchFunctionQueryPattern.FindStringSubmatch(query); len(matches) == 2 {
+				return callHierarchyDedupKey("find_callers", normalizeToolPath(args.Path), matches[1], defaultCallHierarchyDepth)
+			}
 		}
 		return uniqueKey
 	default:
@@ -255,7 +280,11 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		args.ContextLines = defaultSearchContextLines
 	}
 	normalizedPath := normalizeToolPath(args.Path)
-	if e.searchToolOptimization {
+	// Only rewrite a function-name search into a structural call-graph lookup when a
+	// backend can actually resolve the target language. Otherwise (e.g. a Rust file)
+	// run the literal/regex search the model asked for, so `redirect_allowed(` is
+	// found by grep instead of routed into a lookup that can only fail.
+	if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizedPath) {
 		if matches := searchFunctionQueryPattern.FindStringSubmatch(args.Query); len(matches) == 2 {
 			symbol := matches[1]
 			key := callHierarchyDedupKey("find_callers", normalizedPath, symbol, defaultCallHierarchyDepth)
@@ -387,6 +416,21 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		hierarchy, err = e.retrieval.FindCallees(ctx, repoRoot, symbol, args.Depth)
 	}
 	if err != nil {
+		// A language with no structural backend is reported distinctly so the model
+		// treats it as "can't analyze this file type" (fall back to inspect_file /
+		// search) rather than "the symbol does not exist".
+		var unsupported *retrieval.UnsupportedLanguageError
+		if errors.As(err, &unsupported) {
+			return toolError(normalizedPath, "unsupported_language", toolErrorMessage(toolErrorData{Code: "unsupported_language"}))
+		}
+
+		// Low confidence indicates the analysis ran but has uncertain results due to
+		// dynamic call patterns (closures, function pointers). The LLM should treat
+		// this as partial information rather than complete failure.
+		var lowConf *retrieval.LowConfidenceError
+		if errors.As(err, &lowConf) {
+			return toolError(normalizedPath, "low_confidence", err.Error())
+		}
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
 	state.mu.Lock()

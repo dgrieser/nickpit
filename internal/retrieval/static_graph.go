@@ -113,7 +113,7 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 		return nil, fmt.Errorf("symbol %q not found", name)
 	}
 	if g.lowConfidence[key] {
-		return nil, &lowConfidenceError{language: g.language}
+		return nil, &LowConfidenceError{language: g.language}
 	}
 	if depth <= 0 {
 		depth = 1

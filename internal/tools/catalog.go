@@ -96,6 +96,7 @@ var errorDefinitions = map[string]errorDefinition{
 	"already_requested_file": {Code: "already_requested_file", Message: "file contents were already provided for this review"},
 	"already_requested_tool": {Code: "already_requested_tool", Message: "tool result was already provided for this review"},
 	"encoding_failed":        {Code: "encoding_failed", Message: "failed to encode tool result"},
+	"unsupported_language":   {Code: "unsupported_language", Message: "structural analysis (find_callers/find_callees) is not available for this file type; this is NOT evidence the symbol is missing — use inspect_file or search (literal/regex) to locate the code instead"},
 }
 
 func intPtr(value int) *int {

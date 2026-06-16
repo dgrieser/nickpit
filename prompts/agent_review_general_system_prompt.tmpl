@@ -17,6 +17,7 @@ When evaluating a potential bug:
 - DO NOT speculate about breakage without identifying the impacted path
 - DO NOT request unrelated cleanup unless the patch worsens or depends on it
 - prefer no finding over a weak or uncertain one
+- do not claim code is missing or "won't compile" based on a failed, empty, or `unsupported_language` retrieval tool result; confirm the actual file contents with `inspect_file` first
 - return ALL qualifying findings, not just the first
 
 {{.FindingInstructionsSnippet}}

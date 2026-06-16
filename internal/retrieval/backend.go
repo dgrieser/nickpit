@@ -31,12 +31,25 @@ type resolvedSymbol struct {
 	backend languageBackend
 }
 
-type lowConfidenceError struct {
+type LowConfidenceError struct {
 	language string
 }
 
-func (e *lowConfidenceError) Error() string {
+func (e *LowConfidenceError) Error() string {
 	return fmt.Sprintf("symbol found but call hierarchy could not be resolved confidently for %s", e.language)
+}
+
+// UnsupportedLanguageError reports that no structural retrieval backend (symbol
+// resolution / call graph) recognizes the target file's language. It is distinct
+// from "symbol not found": the code may well exist, it simply cannot be analyzed
+// structurally, so callers should fall back to literal file inspection/search
+// instead of treating it as evidence the symbol is absent.
+type UnsupportedLanguageError struct {
+	Path string
+}
+
+func (e *UnsupportedLanguageError) Error() string {
+	return fmt.Sprintf("no structural retrieval backend supports %q", e.Path)
 }
 
 func languageBackends() []languageBackend {
@@ -78,7 +91,23 @@ func candidateBackends(scope lookupScope) ([]languageBackend, error) {
 			return []languageBackend{backend}, nil
 		}
 	}
-	return nil, fmt.Errorf("no retrieval backend supports %q", scope.Path)
+	return nil, &UnsupportedLanguageError{Path: scope.Path}
+}
+
+// SupportsStructuralAnalysis reports whether a structural retrieval backend
+// (symbol resolution / call graph) exists for path within repoRoot. A concrete
+// file in an unsupported language returns false; a directory or the empty
+// (repo-wide) scope returns true, since at least one backend can attempt a
+// repo-wide lookup. It mirrors the resolution candidateBackends performs, so the
+// search-tool optimization only rewrites a function-name search into a call-graph
+// lookup when that lookup can actually resolve the target language.
+func SupportsStructuralAnalysis(repoRoot, path string) bool {
+	scope, err := resolveLookupScope(repoRoot, path)
+	if err != nil {
+		return false
+	}
+	_, err = candidateBackends(scope)
+	return err == nil
 }
 
 // scopeForHierarchy converts a lookup scope into the scope used to build a call
