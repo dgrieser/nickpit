@@ -68,12 +68,16 @@ func TestExecuteSearchRunsLiterallyForUnsupportedLanguage(t *testing.T) {
 	}
 }
 
-// TestExecuteCallHierarchyUnsupportedLanguage verifies the distinct, actionable
-// signal so the model never reads "can't analyze this language" as "the symbol
-// does not exist".
-func TestExecuteCallHierarchyUnsupportedLanguage(t *testing.T) {
+// TestExecuteCallHierarchyFallsBackToSearchForUnsupportedLanguage verifies that
+// find_callers on a file whose language has no structural backend degrades to a
+// literal search for the symbol instead of failing, so the model still gets the
+// definition and any call sites rather than an error it has to recover from.
+func TestExecuteCallHierarchyFallsBackToSearchForUnsupportedLanguage(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "src/auth.rb", "def redirect_allowed(url)\n  true\nend\n")
+	// A caller in another file confirms the fallback widens a single-file scope to a
+	// repo-wide search rather than only inspecting src/auth.rb.
+	writeRepoFile(t, repoRoot, "app/login.rb", "redirect_allowed(next_url)\n")
 
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
@@ -81,15 +85,17 @@ func TestExecuteCallHierarchyUnsupportedLanguage(t *testing.T) {
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	errObj, ok := payload["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected an error payload, got %#v", payload)
+	if _, isErr := payload["error"]; isErr {
+		t.Fatalf("find_callers returned an error instead of a search fallback: %#v", payload)
 	}
-	if errObj["code"] != "unsupported_language" {
-		t.Fatalf("error code = %v, want unsupported_language", errObj["code"])
+	if payload["fallback"] != "search" {
+		t.Fatalf("expected fallback=search, got %#v", payload)
 	}
-	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "inspect_file") {
-		t.Fatalf("error message should steer to inspect_file: %q", msg)
+	if payload["mode"] != "callers" {
+		t.Fatalf("expected mode=callers, got %v", payload["mode"])
+	}
+	if rc, _ := payload["result_count"].(float64); rc < 2 {
+		t.Fatalf("expected the definition and the caller to be found, result_count = %v", payload["result_count"])
 	}
 }
 

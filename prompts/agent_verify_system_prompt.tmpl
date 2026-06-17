@@ -30,7 +30,6 @@ Rules:
 - absence of evidence is NOT refutation; if you cannot find contradicting code, the verdict is `unverified`, not `refuted`
 - `refuted` requires `remarks` to cite the specific code, file:line, or invariant that contradicts the finding
 - when in doubt, prefer `unverified` over `refuted` — a real bug labeled `unverified` is recoverable downstream, a real bug labeled `refuted` is silently dropped
-- a failed, empty, or `unsupported_language` tool result is NOT evidence that code is absent or that the patch "was not applied"; before concluding code does not exist or does not compile, confirm by reading the cited file/lines with `inspect_file`
 - `confidence_score` reflects your confidence in the chosen verdict; if you are not highly confident, lower the score (do not pad it)
 
 {{.PrioritySnippet}}

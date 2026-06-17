@@ -1356,11 +1356,6 @@ func TestToolErrorMessagesComeFromCatalog(t *testing.T) {
 			data: toolErrorData{Code: "encoding_failed"},
 			want: "failed to encode tool result",
 		},
-		{
-			name: "unsupported language",
-			data: toolErrorData{Code: "unsupported_language"},
-			want: "structural analysis (find_callers/find_callees) is not available for this file type; this is NOT evidence the symbol is missing — use inspect_file or search (literal/regex) to locate the code instead",
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

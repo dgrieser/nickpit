@@ -38,6 +38,29 @@ func TestSupportsStructuralAnalysis(t *testing.T) {
 	}
 }
 
+func TestFallbackSearchScope(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "src/auth.rb", "def redirect_allowed; end\n")
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"file widens to repo-wide", "src/auth.rb", ""},
+		{"directory is kept", "src", "src"},
+		{"repo-wide scope stays repo-wide", "", ""},
+		{"unresolvable path is returned unchanged", "../escape.rb", "../escape.rb"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FallbackSearchScope(repoRoot, tt.path); got != tt.want {
+				t.Fatalf("FallbackSearchScope(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestBuildStaticGraphCachedReusesAndIsConcurrencySafe mirrors the goparser
 // cache test for the shared regex-backend memoizer: the same graph is reused
 // across calls for one (language, repoRoot, scope) key, errors are not cached,
