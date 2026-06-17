@@ -242,10 +242,12 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 	p := &Pipeline{engine: e, reviewOrder: reviewOrder}
 	for i := 0; i < len(spec.Steps); i++ {
 		entry := spec.Steps[i]
-		if fused, consumed, ok := postMergeFusedChain(spec.Steps, i); ok {
+		if entry.IsPipeline() {
+			// A pipeline group is the explicit, streamed post-review tail. There
+			// is no auto-fusion anywhere — fusion happens only here.
+			fused := fusedSpecFromPipeline(entry)
 			bs := boundStep{label: strings.Join(fused.labels, "→"), run: e.postMergeFusedStepFunc(fused)}
 			p.units = append(p.units, planUnit{lanes: [][]boundStep{{bs}}})
-			i += consumed - 1
 			continue
 		}
 		if entry.IsParallel() {
@@ -284,34 +286,30 @@ type postMergeFusedSpec struct {
 	labels       []string
 }
 
-func postMergeFusedChain(entries []workflow.StepEntry, start int) (postMergeFusedSpec, int, bool) {
-	if start+2 >= len(entries) || !plainStepOf(entries[start], workflow.StepMerge) {
-		return postMergeFusedSpec{}, 0, false
+// fusedSpecFromPipeline builds a postMergeFusedSpec from a validated pipeline
+// group. Spec.Validate guarantees the members and their order (merge, finalize,
+// verdict, optionally summarize), so this maps children by type. The label
+// order follows the children, yielding "merge→finalize→verdict[→summarize]".
+func fusedSpecFromPipeline(entry workflow.StepEntry) postMergeFusedSpec {
+	var fused postMergeFusedSpec
+	for _, child := range entry.Pipeline {
+		switch child.Type {
+		case workflow.StepMerge:
+			fused.merge = child
+			fused.labels = append(fused.labels, workflow.StepMerge)
+		case workflow.StepFinalize:
+			fused.finalize = child
+			fused.labels = append(fused.labels, workflow.StepFinalize)
+		case workflow.StepVerdict:
+			fused.verdict = child
+			fused.labels = append(fused.labels, workflow.StepVerdict)
+		case workflow.StepSummarize:
+			fused.summarize = child
+			fused.hasSummarize = true
+			fused.labels = append(fused.labels, workflow.StepSummarize)
+		}
 	}
-	if !plainStepOf(entries[start+1], workflow.StepFinalize) || len(entries[start+1].FindingsFrom) > 0 {
-		return postMergeFusedSpec{}, 0, false
-	}
-	if !plainStepOf(entries[start+2], workflow.StepVerdict) || len(entries[start+2].FindingsFrom) > 0 {
-		return postMergeFusedSpec{}, 0, false
-	}
-	fused := postMergeFusedSpec{
-		merge:    entries[start],
-		finalize: entries[start+1],
-		verdict:  entries[start+2],
-		labels:   []string{workflow.StepMerge, workflow.StepFinalize, workflow.StepVerdict},
-	}
-	consumed := 3
-	if start+3 < len(entries) && plainStepOf(entries[start+3], workflow.StepSummarize) && len(entries[start+3].FindingsFrom) == 0 {
-		fused.summarize = entries[start+3]
-		fused.hasSummarize = true
-		fused.labels = append(fused.labels, workflow.StepSummarize)
-		consumed = 4
-	}
-	return fused, consumed, true
-}
-
-func plainStepOf(entry workflow.StepEntry, stepType string) bool {
-	return !entry.IsParallel() && !entry.IsLane() && entry.Type == stepType
+	return fused
 }
 
 // Run executes the pipeline against the given context, returning the assembled

@@ -24,14 +24,18 @@ func TestDefaultSpecsValidate(t *testing.T) {
 		t.Fatalf("DefaultSpec invalid: %v", err)
 	}
 	full := DefaultSpec()
-	if last := full.Steps[len(full.Steps)-1]; last.Type != StepSummarize {
-		t.Fatalf("DefaultSpec last step = %q, want summarize", last.Type)
+	last := full.Steps[len(full.Steps)-1]
+	if !last.IsPipeline() {
+		t.Fatalf("DefaultSpec last step is not a pipeline: %+v", last)
 	}
-	if penult := full.Steps[len(full.Steps)-2]; penult.Type != StepVerdict {
-		t.Fatalf("DefaultSpec second-to-last step = %q, want verdict", penult.Type)
+	wantTail := []string{StepMerge, StepFinalize, StepVerdict, StepSummarize}
+	if len(last.Pipeline) != len(wantTail) {
+		t.Fatalf("DefaultSpec pipeline has %d steps, want %d", len(last.Pipeline), len(wantTail))
 	}
-	if beforeVerdict := full.Steps[len(full.Steps)-3]; beforeVerdict.Type != StepFinalize {
-		t.Fatalf("DefaultSpec pre-verdict step = %q, want finalize", beforeVerdict.Type)
+	for i, w := range wantTail {
+		if last.Pipeline[i].Type != w {
+			t.Fatalf("DefaultSpec pipeline step %d = %q, want %q", i, last.Pipeline[i].Type, w)
+		}
 	}
 }
 
@@ -41,6 +45,10 @@ func TestDefaultSpecsValidate(t *testing.T) {
 // sequence) must fail here and force a matching default.yaml edit.
 func TestDefaultSpecMatchesConstants(t *testing.T) {
 	small := SmallModelAlias
+	cluster := ScopeCluster
+	all := ScopeAll
+	finding := ScopeFinding
+	reviewer := ScopeReviewer
 	reviewConfig := func() *StepOverride {
 		return &StepOverride{
 			MineReasoning:   &AgentOverride{Model: &small},
@@ -51,17 +59,19 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
-			{Type: StepVerifyPrefix + id},
-			{Type: StepDedupePrefix + id},
+			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding}},
+			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer}},
 		}}
 	}
 	want := Spec{Version: SpecVersion, Steps: []StepEntry{
 		{Type: StepCollectContext},
 		{Parallel: parallel},
-		{Type: StepMerge},
-		{Type: StepFinalize, Config: &StepOverride{Model: &small}},
-		{Type: StepVerdict, Config: &StepOverride{Model: &small}},
-		{Type: StepSummarize, Config: &StepOverride{Model: &small}},
+		{Pipeline: []StepEntry{
+			{Type: StepMerge, Config: &StepOverride{Scope: &cluster}},
+			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster}},
+			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all}},
+			{Type: StepSummarize, Config: &StepOverride{Model: &small, Scope: &cluster}},
+		}},
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)
@@ -289,6 +299,105 @@ func TestValidateRejectsNonReviewStepsInParallelGroup(t *testing.T) {
 		if err := spec.Validate(); err == nil {
 			t.Fatalf("expected rejection of %q inside a parallel group", bad)
 		}
+	}
+}
+
+func TestLoadParsesPipelineAndScope(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: collect-context
+  - parallel:
+      - lane:
+          - type: review:security
+          - type: verify:security
+            config: { scope: finding }
+          - type: dedupe:security
+            config: { scope: reviewer }
+  - pipeline:
+      - type: merge
+        config: { scope: cluster }
+      - type: finalize
+        config: { scope: cluster }
+      - type: verdict
+        config: { scope: all }
+      - type: summarize
+        config: { scope: cluster }
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	last := spec.Steps[len(spec.Steps)-1]
+	if !last.IsPipeline() || len(last.Pipeline) != 4 {
+		t.Fatalf("last step is not a 4-step pipeline: %+v", last)
+	}
+	wantScope := map[string]string{StepMerge: ScopeCluster, StepFinalize: ScopeCluster, StepVerdict: ScopeAll, StepSummarize: ScopeCluster}
+	for _, child := range last.Pipeline {
+		if child.Config == nil || child.Config.Scope == nil {
+			t.Fatalf("pipeline %q missing scope: %+v", child.Type, child)
+		}
+		if got := *child.Config.Scope; got != wantScope[child.Type] {
+			t.Fatalf("pipeline %q scope = %q, want %q", child.Type, got, wantScope[child.Type])
+		}
+	}
+	lane := spec.Steps[1].Parallel[0].Lane
+	if v := lane[1]; v.Config == nil || v.Config.Scope == nil || *v.Config.Scope != ScopeFinding {
+		t.Fatalf("verify scope not parsed: %+v", v)
+	}
+	if d := lane[2]; d.Config == nil || d.Config.Scope == nil || *d.Config.Scope != ScopeReviewer {
+		t.Fatalf("dedupe scope not parsed: %+v", d)
+	}
+}
+
+func TestPipelineRejections(t *testing.T) {
+	cases := map[string]string{
+		"missing verdict":           "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - type: finalize\n",
+		"wrong order":               "version: 1\nsteps:\n  - pipeline:\n      - type: finalize\n      - type: merge\n      - type: verdict\n",
+		"summarize before verdict":  "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - type: finalize\n      - type: summarize\n      - type: verdict\n",
+		"non-tail member":           "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - type: finalize\n      - type: verdict\n      - type: collect-context\n",
+		"findings_from on finalize": "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - type: finalize\n        findings_from: x.json\n      - type: verdict\n",
+		"wrong scope in pipeline":   "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - type: finalize\n        config: { scope: all }\n      - type: verdict\n",
+		"empty pipeline":            "version: 1\nsteps:\n  - pipeline: []\n",
+		"pipeline in parallel":      "version: 1\nsteps:\n  - parallel:\n      - type: review:security\n      - pipeline:\n          - type: merge\n          - type: finalize\n          - type: verdict\n",
+		"pipeline in lane":          "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - type: review:security\n          - pipeline:\n              - type: merge\n",
+		"nested pipeline":           "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - pipeline:\n          - type: finalize\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			spec, err := Load(writeSpec(t, body))
+			if err != nil {
+				return // rejected at parse — acceptable
+			}
+			if err := spec.Validate(); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestScopeRejections(t *testing.T) {
+	cases := map[string]string{
+		"scope on collect-context": "version: 1\nsteps:\n  - type: collect-context\n    config: { scope: all }\n",
+		"scope on review":          "version: 1\nsteps:\n  - type: review:security\n    config: { scope: finding }\n",
+		"illegal verify scope":     "version: 1\nsteps:\n  - type: review:security\n  - type: verify:security\n    config: { scope: cluster }\n",
+		"illegal merge scope":      "version: 1\nsteps:\n  - type: merge\n    config: { scope: finding }\n",
+		"flat finalize cluster":    "version: 1\nsteps:\n  - type: finalize\n    config: { scope: cluster }\n",
+		"flat summarize cluster":   "version: 1\nsteps:\n  - type: summarize\n    config: { scope: cluster }\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			spec, err := Load(writeSpec(t, body))
+			if err != nil {
+				return
+			}
+			if err := spec.Validate(); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
 	}
 }
 

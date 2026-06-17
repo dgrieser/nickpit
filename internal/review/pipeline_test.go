@@ -214,10 +214,12 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 		},
 	})
 	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
-		{Type: workflow.StepMerge, FindingsFrom: []string{a, b, c}},
-		{Type: workflow.StepFinalize},
-		{Type: workflow.StepVerdict},
-		{Type: workflow.StepSummarize},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{a, b, c}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
 	}}
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {
@@ -273,6 +275,55 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	}
 }
 
+func TestWorkflowFlatTailRunsUnfused(t *testing.T) {
+	// Without a pipeline: group there is no auto-fusion: the tail runs as four
+	// separate sequential steps, and finalize/summarize each run once over the
+	// whole finding set rather than per-cluster shards.
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	a := writeFindingsFile(t, "a.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix cleanup behavior alpha", "m.go", 1, 1),
+		},
+	})
+	b := writeFindingsFile(t, "b.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("22222222-2222-4222-8222-222222222222", "Fix cleanup behavior beta", "m.go", 13, 1),
+		},
+	})
+	c := writeFindingsFile(t, "c.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("33333333-3333-4333-8333-333333333333", "Reject malformed config input", "other.go", 90, 2),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepMerge, FindingsFrom: []string{a, b, c}},
+		{Type: workflow.StepFinalize},
+		{Type: workflow.StepVerdict},
+		{Type: workflow.StepSummarize},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.SegmentRuntimes) != 4 {
+		t.Fatalf("segments = %d, want 4 unfused tail segments: %+v", len(result.SegmentRuntimes), result.SegmentRuntimes)
+	}
+	if len(client.finalizeRequests) != 1 {
+		t.Fatalf("finalize requests = %d, want one whole-set pass", len(client.finalizeRequests))
+	}
+	if len(client.summarizeRequests) != 1 {
+		t.Fatalf("summarize requests = %d, want one whole-set pass", len(client.summarizeRequests))
+	}
+	if len(client.verdictRequests) != 1 {
+		t.Fatalf("verdict requests = %d, want one", len(client.verdictRequests))
+	}
+}
+
 func TestWorkflowFusedPostMergeSingleInputSkipsMergeLLM(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := pipelineTestEngine(client)
@@ -283,10 +334,12 @@ func TestWorkflowFusedPostMergeSingleInputSkipsMergeLLM(t *testing.T) {
 		},
 	})
 	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
-		{Type: workflow.StepMerge, FindingsFrom: []string{path}},
-		{Type: workflow.StepFinalize},
-		{Type: workflow.StepVerdict},
-		{Type: workflow.StepSummarize},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
 	}}
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {
@@ -311,10 +364,12 @@ func TestWorkflowFusedPostMergeEmptyBranchSkipsLLMs(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := pipelineTestEngine(client)
 	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
-		{Type: workflow.StepMerge},
-		{Type: workflow.StepFinalize},
-		{Type: workflow.StepVerdict},
-		{Type: workflow.StepSummarize},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
 	}}
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {
@@ -344,9 +399,11 @@ func TestWorkflowFusedPostMergeVerdictFailureFallsBack(t *testing.T) {
 		},
 	})
 	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
-		{Type: workflow.StepMerge, FindingsFrom: []string{path}},
-		{Type: workflow.StepFinalize},
-		{Type: workflow.StepVerdict},
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+		}},
 	}}
 	pipeline, err := engine.BuildPipeline(spec)
 	if err != nil {

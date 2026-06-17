@@ -47,6 +47,58 @@ const (
 	StepDedupePrefix  = "dedupe:"
 )
 
+// Scope identifiers name the work unit a step's agents operate on. Scope
+// declares how a step's work is divided (what each agent invocation sees), not
+// parallelism — LLM concurrency is a run-level cap (--concurrency). Dividing a
+// step into N units only makes them eligible to run concurrently.
+const (
+	ScopeAll      = "all"      // one agent over the whole finding set (no division)
+	ScopeCluster  = "cluster"  // one agent per merge cluster
+	ScopeFinding  = "finding"  // one agent per finding
+	ScopeReviewer = "reviewer" // one agent per reviewer group
+)
+
+// legalScopes returns the scope values a step type accepts, and whether the
+// step divides its work at all. Steps that operate as a single agent
+// (collect-context, review:, reasoning-extract:, nudge:) return ok=false and do
+// not accept scope. The set is intentionally faithful to what the engine does
+// today: scope is declarative and validated, it does not unlock new fan-out
+// paths. cluster-scoped finalize/summarize is reachable only inside a pipeline
+// group (the only place the engine shards them); Validate enforces that context.
+func legalScopes(stepType string) ([]string, bool) {
+	switch {
+	case stepType == StepMerge:
+		return []string{ScopeCluster}, true
+	case stepType == StepFinalize, stepType == StepSummarize:
+		return []string{ScopeAll, ScopeCluster}, true
+	case stepType == StepVerdict:
+		return []string{ScopeAll}, true
+	case stepType == StepVerify || strings.HasPrefix(stepType, StepVerifyPrefix):
+		return []string{ScopeFinding}, true
+	case stepType == StepDedupe || strings.HasPrefix(stepType, StepDedupePrefix):
+		return []string{ScopeReviewer}, true
+	}
+	return nil, false
+}
+
+// validateScope checks a step's declared scope value against the step type. It
+// validates value legality only; the pipeline-vs-flat context rule (cluster
+// finalize/summarize is pipeline-only) is enforced in Validate.
+func validateScope(stepType string, cfg *StepOverride) error {
+	if cfg == nil || cfg.Scope == nil {
+		return nil
+	}
+	scope := *cfg.Scope
+	legal, ok := legalScopes(stepType)
+	if !ok {
+		return fmt.Errorf("step %q does not divide its work, so scope is not allowed", stepType)
+	}
+	if !slices.Contains(legal, scope) {
+		return fmt.Errorf("invalid scope %q for %q (valid: %s)", scope, stepType, strings.Join(legal, ", "))
+	}
+	return nil
+}
+
 // perVectorPrefixes lists every step prefix that addresses a single reviewer
 // vector. Per-vector steps touch only their vector's group/session, so they are
 // the only steps allowed inside parallel groups and lanes.
@@ -77,13 +129,18 @@ type Spec struct {
 //   - a parallel group (Parallel set) whose children run concurrently;
 //   - a lane (Lane set): a sequential chain of plain steps, valid only as a
 //     parallel child, so e.g. review→verify→dedupe of one reviewer runs in
-//     order while other reviewers' lanes proceed concurrently.
+//     order while other reviewers' lanes proceed concurrently;
+//   - a pipeline (Pipeline set): the post-review tail (merge→finalize→verdict,
+//     optionally summarize) executed with cross-step per-cluster streaming and
+//     no barriers between the steps. This is the only way to fuse the tail —
+//     there is no auto-fusion. Valid only at the top level.
 type StepEntry struct {
 	Type         string
 	Config       *StepOverride
 	FindingsFrom []string
 	Parallel     []StepEntry
 	Lane         []StepEntry
+	Pipeline     []StepEntry
 }
 
 // IsParallel reports whether the entry is a parallel group.
@@ -91,6 +148,9 @@ func (s StepEntry) IsParallel() bool { return len(s.Parallel) > 0 }
 
 // IsLane reports whether the entry is a lane (sequential chain in a parallel group).
 func (s StepEntry) IsLane() bool { return len(s.Lane) > 0 }
+
+// IsPipeline reports whether the entry is a pipeline group (streamed post-review tail).
+func (s StepEntry) IsPipeline() bool { return len(s.Pipeline) > 0 }
 
 // LaneSteps returns the entry's sequential chain: its Lane when set, else the
 // entry itself as a single-step chain. A bare parallel child is a one-step lane.
@@ -119,6 +179,12 @@ type StepOverride struct {
 	MaxTokens       *int           `yaml:"max_tokens"`
 	ExtraBody       map[string]any `yaml:"extra_body"`
 	ReasoningEffort *string        `yaml:"reasoning_effort"`
+
+	// Scope declares the work unit this step's agents operate on (see ScopeAll
+	// etc.). It makes the step's fan-out explicit and is validated against the
+	// step type; it does not change behavior on its own (the engine already
+	// runs each step at its only legal scope for the given context).
+	Scope *string `yaml:"scope"`
 
 	// Budgets / loop detection / retries (apply to the step's review request).
 	// max_context_tokens is intentionally not per-step overridable: the review
@@ -151,6 +217,7 @@ type StepOverride struct {
 
 var stepOverrideKeys = []string{
 	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort",
+	"scope",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
@@ -444,6 +511,9 @@ func decodeStepEntry(node *yaml.Node) (StepEntry, error) {
 		if mappingValue(node, "lane") != nil {
 			return StepEntry{}, fmt.Errorf("lane is only allowed inside a parallel group")
 		}
+		if mappingValue(node, "pipeline") != nil {
+			return decodePipelineEntry(node)
+		}
 		if mappingValue(node, "parallel") != nil {
 			return decodeParallelEntry(node)
 		}
@@ -482,6 +552,9 @@ func decodeParallelChild(node *yaml.Node) (StepEntry, error) {
 		if mappingValue(node, "parallel") != nil {
 			return StepEntry{}, fmt.Errorf("parallel groups cannot be nested")
 		}
+		if mappingValue(node, "pipeline") != nil {
+			return StepEntry{}, fmt.Errorf("pipeline groups cannot appear inside a parallel group")
+		}
 		if mappingValue(node, "lane") != nil {
 			return decodeLaneEntry(node)
 		}
@@ -506,12 +579,49 @@ func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
 			if mappingValue(child, "lane") != nil {
 				return StepEntry{}, fmt.Errorf("lane step %d: lanes cannot be nested", i+1)
 			}
+			if mappingValue(child, "pipeline") != nil {
+				return StepEntry{}, fmt.Errorf("lane step %d: pipelines cannot be nested", i+1)
+			}
 		}
 		sub, err := decodeStepEntry(child)
 		if err != nil {
 			return StepEntry{}, fmt.Errorf("lane step %d: %w", i+1, err)
 		}
 		entry.Lane = append(entry.Lane, sub)
+	}
+	return entry, nil
+}
+
+// decodePipelineEntry decodes a pipeline group: a sequential chain of plain
+// post-review steps (merge→finalize→verdict, optionally summarize) that the
+// engine streams per cluster. Structural validity (allowed members, order,
+// scopes) is checked in Spec.Validate.
+func decodePipelineEntry(node *yaml.Node) (StepEntry, error) {
+	if err := checkAllowedKeys(node, "pipeline"); err != nil {
+		return StepEntry{}, err
+	}
+	seq := mappingValue(node, "pipeline")
+	if seq.Kind != yaml.SequenceNode || len(seq.Content) == 0 {
+		return StepEntry{}, fmt.Errorf("pipeline must be a non-empty list")
+	}
+	entry := StepEntry{}
+	for i, child := range seq.Content {
+		if child.Kind == yaml.MappingNode {
+			if mappingValue(child, "parallel") != nil {
+				return StepEntry{}, fmt.Errorf("pipeline step %d: parallel groups cannot be nested", i+1)
+			}
+			if mappingValue(child, "lane") != nil {
+				return StepEntry{}, fmt.Errorf("pipeline step %d: lanes cannot be nested", i+1)
+			}
+			if mappingValue(child, "pipeline") != nil {
+				return StepEntry{}, fmt.Errorf("pipeline step %d: pipelines cannot be nested", i+1)
+			}
+		}
+		sub, err := decodeStepEntry(child)
+		if err != nil {
+			return StepEntry{}, fmt.Errorf("pipeline step %d: %w", i+1, err)
+		}
+		entry.Pipeline = append(entry.Pipeline, sub)
 	}
 	return entry, nil
 }
@@ -612,11 +722,21 @@ func (s Spec) Validate() error {
 	// — concurrent lanes' reviews are not yet available.
 	validate := func(entry StepEntry, laneReviewed map[string]bool, inParallel bool) (string, error) {
 		idx++
-		if entry.IsParallel() || entry.IsLane() {
-			return "", fmt.Errorf("workflow: step %d: parallel groups and lanes cannot be nested", idx)
+		if entry.IsParallel() || entry.IsLane() || entry.IsPipeline() {
+			return "", fmt.Errorf("workflow: step %d: parallel groups, lanes, and pipelines cannot be nested", idx)
 		}
 		if err := validateStepType(entry.Type); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
+		}
+		if err := validateScope(entry.Type, entry.Config); err != nil {
+			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
+		}
+		// cluster-scoped finalize/summarize is only reachable inside a pipeline
+		// group (the only place the engine shards them). A flat step must be
+		// scope: all (or unset, which defaults to all).
+		if (entry.Type == StepFinalize || entry.Type == StepSummarize) &&
+			entry.Config != nil && entry.Config.Scope != nil && *entry.Config.Scope == ScopeCluster {
+			return "", fmt.Errorf("workflow: step %d: scope %q for %q is only valid inside a pipeline: group", idx, ScopeCluster, entry.Type)
 		}
 		// Only per-vector steps are safe to run concurrently — each touches only
 		// its own vector's group/session. Every global step (collect-context,
@@ -639,6 +759,12 @@ func (s Spec) Validate() error {
 	for _, entry := range s.Steps {
 		if entry.IsLane() {
 			return fmt.Errorf("workflow: lane is only allowed inside a parallel group")
+		}
+		if entry.IsPipeline() {
+			if err := validatePipelineGroup(entry, &idx); err != nil {
+				return err
+			}
+			continue
 		}
 		if entry.IsParallel() {
 			// Validate every lane against the pre-group reviewer set plus its
@@ -677,6 +803,53 @@ func (s Spec) Validate() error {
 		}
 		if v != "" {
 			reviewed[v] = true
+		}
+	}
+	return nil
+}
+
+// pipelineMember is one required step of a pipeline group: its type and the one
+// scope value it must carry (when scope is set).
+type pipelineMember struct {
+	typ   string
+	scope string
+}
+
+// validatePipelineGroup validates a pipeline group — the streamed post-review
+// tail. The only shape the engine implements is merge → finalize → verdict,
+// optionally followed by summarize, with merge/finalize/summarize at
+// scope: cluster and verdict at scope: all. findings_from is accepted on the
+// merge step only. idx is advanced so step numbering in later errors stays
+// global and stable.
+func validatePipelineGroup(entry StepEntry, idx *int) error {
+	want := []pipelineMember{
+		{StepMerge, ScopeCluster},
+		{StepFinalize, ScopeCluster},
+		{StepVerdict, ScopeAll},
+	}
+	n := len(entry.Pipeline)
+	if n == 4 {
+		want = append(want, pipelineMember{StepSummarize, ScopeCluster})
+	} else if n != 3 {
+		return fmt.Errorf("workflow: pipeline must be merge → finalize → verdict, optionally followed by summarize")
+	}
+	for i, child := range entry.Pipeline {
+		*idx++
+		if child.IsParallel() || child.IsLane() || child.IsPipeline() {
+			return fmt.Errorf("workflow: step %d: parallel groups, lanes, and pipelines cannot be nested in a pipeline", *idx)
+		}
+		exp := want[i]
+		if child.Type != exp.typ {
+			return fmt.Errorf("workflow: step %d: pipeline step %d must be %q, got %q", *idx, i+1, exp.typ, child.Type)
+		}
+		if err := validateScope(child.Type, child.Config); err != nil {
+			return fmt.Errorf("workflow: step %d: %w", *idx, err)
+		}
+		if child.Config != nil && child.Config.Scope != nil && *child.Config.Scope != exp.scope {
+			return fmt.Errorf("workflow: step %d: %q in a pipeline must have scope %q", *idx, child.Type, exp.scope)
+		}
+		if child.Type != StepMerge && len(child.FindingsFrom) > 0 {
+			return fmt.Errorf("workflow: step %d: findings_from is only allowed on the merge step of a pipeline", *idx)
 		}
 	}
 	return nil
@@ -754,6 +927,10 @@ func (s *Spec) FlatSteps() []*StepEntry {
 		case entry.IsLane():
 			for i := range entry.Lane {
 				walk(&entry.Lane[i])
+			}
+		case entry.IsPipeline():
+			for i := range entry.Pipeline {
+				walk(&entry.Pipeline[i])
 			}
 		default:
 			out = append(out, entry)
