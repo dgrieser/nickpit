@@ -77,6 +77,7 @@ type ReviewResult struct {
 	TokensUsed             TokenUsage `json:"tokens_used"`
 	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used"`
 	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used"`
+	VerdictTokensUsed      TokenUsage `json:"verdict_tokens_used"`
 	SummarizeTokensUsed    TokenUsage `json:"summarize_tokens_used"`
 	// RuntimeSeconds is the whole review command span in seconds (model check,
 	// checkout, pipeline through summarize).

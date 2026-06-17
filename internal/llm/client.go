@@ -88,6 +88,7 @@ const (
 	SchemaKindMerge     SchemaKind = "merge"
 	SchemaKindVerify    SchemaKind = "verify"
 	SchemaKindFinalize  SchemaKind = "finalize"
+	SchemaKindVerdict   SchemaKind = "verdict"
 	SchemaKindSummarize SchemaKind = "summarize"
 	SchemaKindJSON      SchemaKind = "json"
 	SchemaKindText      SchemaKind = "text"
@@ -1866,6 +1867,10 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 		resp, err := parseVerifyResponse(content)
 		return resp, 0, err
 	}
+	if kind == SchemaKindVerdict {
+		resp, err := parseVerdictResponse(content, constraints)
+		return resp, 0, err
+	}
 	if kind == SchemaKindSummarize {
 		resp, err := parseSummarizeResponse(content)
 		return resp, 0, err
@@ -2104,6 +2109,42 @@ func missingSummarizeFields(parsed *ReviewResponse) []string {
 	return missing
 }
 
+func parseVerdictResponse(content string, constraints ResponseConstraints) (*ReviewResponse, error) {
+	var parsed ReviewResponse
+	if err := LenientUnmarshalMerge(content, &parsed); err != nil {
+		return nil, &InvalidResponseError{
+			RawContent: content,
+			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
+		}
+	}
+	if missing := missingVerdictFields(&parsed, constraints); len(missing) > 0 {
+		return &parsed, &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: missing,
+		}
+	}
+	return &parsed, nil
+}
+
+func missingVerdictFields(parsed *ReviewResponse, constraints ResponseConstraints) []string {
+	var missing []string
+	allowed := constraints.AllowedCorrectness
+	if len(allowed) == 0 {
+		allowed = []string{"patch is correct", "patch is incorrect"}
+	}
+	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
+		missing = append(missing, "overall_correctness")
+	} else if !slices.Contains(allowed, parsed.OverallCorrectness) {
+		missing = append(missing, fmt.Sprintf("overall_correctness (must be one of: %v)", allowed))
+	}
+	if strings.TrimSpace(parsed.OverallExplanation) == "" {
+		missing = append(missing, "overall_explanation")
+	}
+	// overall_confidence_score is computed in code, not required from the model.
+	return missing
+}
+
 // mergedRawReviewBlocks reconstructs the merged raw view of a review response
 // the same way LenientUnmarshalMerge merges parsed values: top-level scalar
 // keys union with last-wins, "findings" arrays concatenate across blocks,
@@ -2172,22 +2213,24 @@ func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKi
 	}
 	rawFindingsJSON, _ := json.Marshal(rawFindings)
 	missing = append(missing, missingFindingFields(parsed.Findings, rawFindingsJSON, kind, constraints)...)
-	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
-		missing = append(missing, "overall_correctness")
-	} else {
-		allowed := constraints.AllowedCorrectness
-		if len(allowed) == 0 {
-			allowed = []string{"patch is correct", "patch is incorrect"}
+	if kind != SchemaKindFinalize {
+		if strings.TrimSpace(parsed.OverallCorrectness) == "" {
+			missing = append(missing, "overall_correctness")
+		} else {
+			allowed := constraints.AllowedCorrectness
+			if len(allowed) == 0 {
+				allowed = []string{"patch is correct", "patch is incorrect"}
+			}
+			if !slices.Contains(allowed, parsed.OverallCorrectness) {
+				missing = append(missing, fmt.Sprintf("overall_correctness (must be one of: %v)", allowed))
+			}
 		}
-		if !slices.Contains(allowed, parsed.OverallCorrectness) {
-			missing = append(missing, fmt.Sprintf("overall_correctness (must be one of: %v)", allowed))
+		if strings.TrimSpace(parsed.OverallExplanation) == "" {
+			missing = append(missing, "overall_explanation")
 		}
-	}
-	if strings.TrimSpace(parsed.OverallExplanation) == "" {
-		missing = append(missing, "overall_explanation")
-	}
-	if _, ok := raw["overall_confidence_score"]; !ok {
-		missing = append(missing, "overall_confidence_score")
+		if _, ok := raw["overall_confidence_score"]; !ok {
+			missing = append(missing, "overall_confidence_score")
+		}
 	}
 	return missing
 }

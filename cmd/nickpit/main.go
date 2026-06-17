@@ -217,7 +217,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
-	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, summarize, review:security); mutually exclusive with --spec")
+	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
 	root.AddCommand(cli.newCheckCmd())
@@ -790,6 +790,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 			}
 			ctx := logging.WithProgressInfo(cmd.Context(), profileProgressInfo(profile))
 			a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, checkReq))
+			a.logSmallModelReady(ctx, profile, checkReq)
 			a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, checkReq))
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
@@ -908,6 +909,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
 	}
 	a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, req))
+	a.logSmallModelReady(ctx, profile, req)
 	a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
@@ -1066,10 +1068,10 @@ func (a *app) resolveActiveSpec() (workflow.Spec, error) {
 }
 
 // seedFindings attaches top-level --findings to the first step that actually
-// consumes findings (verify/dedupe/merge/finalize) and does not already declare
-// findings_from, so `--spec w.yaml --findings f.json` lands where it is read
-// instead of being silently dropped on a collect-context/review step. Returns an
-// error when findings are supplied but no step would consume them.
+// consumes findings (verify/dedupe/merge/finalize/verdict/summarize) and does
+// not already declare findings_from, so `--spec w.yaml --findings f.json` lands
+// where it is read instead of being silently dropped on a collect-context/review
+// step. Returns an error when findings are supplied but no step would consume them.
 func seedFindings(spec *workflow.Spec, findings []string) error {
 	if len(findings) == 0 {
 		return nil
@@ -1080,7 +1082,7 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize/summarize step to consume them; add findings_from to a specific step")
+	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize/verdict/summarize step to consume them; add findings_from to a specific step")
 }
 
 // loadProfileNamed loads a profile by name (e.g. a spec's `profile:` field),
@@ -1292,6 +1294,7 @@ func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityR
 		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
 		stepType == workflow.StepMerge,
 		stepType == workflow.StepFinalize,
+		stepType == workflow.StepVerdict,
 		stepType == workflow.StepSummarize:
 		requirements := modelCapabilityRequirements{}
 		requirements.requireJSON(useJSONSchema)
@@ -1702,6 +1705,19 @@ func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
 		Effort:  profile.ReasoningEffort,
 		BaseURL: profile.BaseURL,
 	}
+}
+
+// logSmallModelReady prints a Model ready line for the profile's small model
+// when it resolves to a model different from the primary, so --show-progress
+// surfaces the second model in play (the one @small steps run on). When the
+// small config inherits the primary model there is nothing extra to show.
+func (a *app) logSmallModelReady(ctx context.Context, profile config.Profile, req model.ReviewRequest) {
+	small := config.EffectiveSmallProfile(profile)
+	if small.Model == profile.Model {
+		return
+	}
+	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(small))
+	a.logProgress(smallCtx, logging.StageModel, logging.StateReady, modelSummary(small, req))
 }
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {

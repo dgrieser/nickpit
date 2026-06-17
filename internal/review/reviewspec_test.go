@@ -8,7 +8,7 @@ import (
 )
 
 // reviewerOnlySpec is the reviewer stage of the embedded workflow without
-// finalize/summarize: collect context, run the vector reviewers, verify,
+// finalize/verdict/summarize: collect context, run the vector reviewers, verify,
 // dedupe, merge. Tests use it to exercise the reviewer pipeline and assert the
 // pre-finalize result shape without mocking finalize/summarize LLM calls.
 // Production always runs the full workflow.DefaultSpec through the same path.

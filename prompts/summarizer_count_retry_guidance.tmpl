@@ -1,3 +1,2 @@
 The `findings` array must include exactly {{.Expected}} item{{if ne .Expected 1}}s{{end}}; the previous response included {{.Got}}.
 Every summarizer finding must match a distinct input finding by `id` or `code_location` and carry a non-empty `summarization.body`; the previous response matched {{.Matched}}, omitted {{.Omitted}}, and included {{.Ignored}} ignored/unmatched item{{if ne .Ignored 1}}s{{end}}.
-{{if .OverallMissing}}The top-level `overall_explanation` must be a non-empty, shortened version of the input `overall_explanation`; the previous response omitted it.{{end}}

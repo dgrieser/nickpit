@@ -12,7 +12,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:codequality
+            config:
+              scope: finding
           - type: dedupe:codequality
+            config:
+              scope: reviewer
       - lane:
           - type: review:security
             config:
@@ -21,7 +25,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:security
+            config:
+              scope: finding
           - type: dedupe:security
+            config:
+              scope: reviewer
       - lane:
           - type: review:architecture
             config:
@@ -30,7 +38,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:architecture
+            config:
+              scope: finding
           - type: dedupe:architecture
+            config:
+              scope: reviewer
       - lane:
           - type: review:performance
             config:
@@ -39,7 +51,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:performance
+            config:
+              scope: finding
           - type: dedupe:performance
+            config:
+              scope: reviewer
       - lane:
           - type: review:testing
             config:
@@ -48,7 +64,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:testing
+            config:
+              scope: finding
           - type: dedupe:testing
+            config:
+              scope: reviewer
       - lane:
           - type: review:bestpractices
             config:
@@ -57,11 +77,24 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:bestpractices
+            config:
+              scope: finding
           - type: dedupe:bestpractices
-  - type: merge
-  - type: finalize
-    config:
-      model: "@small"
-  - type: summarize
-    config:
-      model: "@small"
+            config:
+              scope: reviewer
+  - pipeline:
+      - type: merge
+        config:
+          scope: cluster
+      - type: finalize
+        config:
+          model: "@small"
+          scope: cluster
+      - type: verdict
+        config:
+          model: "@small"
+          scope: all
+      - type: summarize
+        config:
+          model: "@small"
+          scope: cluster

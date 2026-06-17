@@ -1901,6 +1901,9 @@ func exampleSnippetFor(kind llm.SchemaKind) string {
 	if kind == llm.SchemaKindFinalize {
 		return llm.FinalizeExamplePromptSnippet()
 	}
+	if kind == llm.SchemaKindVerdict {
+		return llm.VerdictExamplePromptSnippet()
+	}
 	if kind == llm.SchemaKindSummarize {
 		return llm.SummarizeExamplePromptSnippet()
 	}
@@ -2244,6 +2247,9 @@ func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {
 	if kind == llm.SchemaKindFinalize {
 		return finalizeOutputSchemaSnippetFor(useJSONSchema)
 	}
+	if kind == llm.SchemaKindVerdict {
+		return verdictOutputSchemaSnippetFor(useJSONSchema)
+	}
 	if kind == llm.SchemaKindVerify {
 		return verifyOutputSchemaSnippetFor(useJSONSchema)
 	}
@@ -2254,9 +2260,9 @@ func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool) string {
 }
 
 // agentLoopKind maps an agentSpec role to the loop kind. Roles are uniform
-// identifiers (context, review, verify, dedupe, merge, finalize, summarize,
-// extract), so this is the identity today; it stays as the seam where a role
-// would diverge from its loop kind.
+// identifiers (context, review, verify, dedupe, merge, finalize, verdict,
+// summarize, extract), so this is the identity today; it stays as the seam where
+// a role would diverge from its loop kind.
 func agentLoopKind(role string) string {
 	return role
 }
