@@ -452,41 +452,6 @@ func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
 }
 
-// finalizeConstraintsFor returns the constraints to apply to the finalizer
-// based on the verified findings. Three regimes, computed from the priority
-// floor = min(finding.priority, verification.priority):
-//   - any P0 floor: AllowedCorrectness = ["patch is incorrect"]. The schema
-//     forces the finalizer's hand because a critical finding by definition
-//     blocks the patch.
-//   - any P1 floor, no P0: unconstrained. The prompt asks the finalizer to
-//     default to "patch is incorrect" but lets it claim "patch is correct"
-//     with strong justification — schema cannot judge justification quality.
-//   - no P0/P1 floor: AllowedCorrectness = ["patch is correct"]. Without a
-//     critical finding the finalizer cannot fabricate a blocker.
-func finalizeConstraintsFor(in []model.Finding) llm.ResponseConstraints {
-	hasP0, hasP1 := false, false
-	for _, f := range in {
-		floor := model.PriorityRank(f.Priority)
-		if f.Verification != nil && f.Verification.Priority < floor {
-			floor = f.Verification.Priority
-		}
-		switch floor {
-		case 0:
-			hasP0 = true
-		case 1:
-			hasP1 = true
-		}
-	}
-	switch {
-	case hasP0:
-		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is incorrect"}}
-	case hasP1:
-		return llm.ResponseConstraints{}
-	default:
-		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is correct"}}
-	}
-}
-
 func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {
 	if useJSONSchema {
 		return ""

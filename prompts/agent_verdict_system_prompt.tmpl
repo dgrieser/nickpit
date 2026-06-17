@@ -4,6 +4,7 @@ You are acting as a senior engineer making the final correctness verdict for a c
 You receive the original review context and a finalized set of findings. Each finding carries:
 - `id`: stable code-generated reference ID
 - `priority`: original reviewer priority
+- `priority_floor`: most critical verified priority floor, computed as `min(priority, verification.priority)`
 - `verification`: second-pass verification verdict, priority, confidence, and remarks
 - `finalization`: final title, body, priority, confidence, and remarks
 
@@ -29,11 +30,11 @@ Your job:
 3. DO NOT introduce new findings.
 
 Overall correctness rules:
-- if ANY finalized finding has priority 0, `overall_correctness` MUST be `"patch is incorrect"`
-- if ANY finalized finding has priority 1 AND none have priority 0, `overall_correctness` SHOULD be `"patch is incorrect"` in most cases, otherwise:
+- if ANY finding has `priority_floor` 0, `overall_correctness` MUST be `"patch is incorrect"` even if `finalization.priority` downgraded it
+- if ANY finding has `priority_floor` 1 AND none have `priority_floor` 0, `overall_correctness` SHOULD be `"patch is incorrect"` in most cases, otherwise:
   - `overall_explanation` MUST cite concrete evidence justifying your decision
   - vague justification, e.g. "low impact", "edge case", "unlikely", is NOT acceptable
-- if NO finalized finding has priority 0 and NO finalized finding has priority 1, `overall_correctness` MUST be `"patch is correct"`
+- if NO finding has `priority_floor` 0 and NO finding has `priority_floor` 1, `overall_correctness` MUST be `"patch is correct"`
 
 ## OUTPUT FORMAT
 {{.OutputFormatSnippet}}

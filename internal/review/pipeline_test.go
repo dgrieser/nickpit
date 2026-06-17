@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -192,6 +193,207 @@ func TestWorkflowMergeTwoFilesInvokesMergeAgent(t *testing.T) {
 	if len(result.Findings) != 2 {
 		t.Fatalf("merged findings = %d, want 2", len(result.Findings))
 	}
+}
+
+func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	a := writeFindingsFile(t, "a.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix cleanup behavior alpha", "m.go", 1, 1),
+		},
+	})
+	b := writeFindingsFile(t, "b.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("22222222-2222-4222-8222-222222222222", "Fix cleanup behavior beta", "m.go", 13, 1),
+		},
+	})
+	c := writeFindingsFile(t, "c.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("33333333-3333-4333-8333-333333333333", "Reject malformed config input", "other.go", 90, 2),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepMerge, FindingsFrom: []string{a, b, c}},
+		{Type: workflow.StepFinalize},
+		{Type: workflow.StepVerdict},
+		{Type: workflow.StepSummarize},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want one ambiguous cluster merge", len(client.mergeRequests))
+	}
+	if len(client.finalizeRequests) != 2 {
+		t.Fatalf("finalize requests = %d, want one per resolved cluster", len(client.finalizeRequests))
+	}
+	if len(client.verdictRequests) != 1 {
+		t.Fatalf("verdict requests = %d, want one", len(client.verdictRequests))
+	}
+	if len(client.summarizeRequests) != 3 {
+		t.Fatalf("summarize requests = %d, want two finding shards plus overall", len(client.summarizeRequests))
+	}
+	if len(result.Findings) != 3 {
+		t.Fatalf("findings = %d, want 3", len(result.Findings))
+	}
+	for _, finding := range result.Findings {
+		if finding.Finalization == nil {
+			t.Fatalf("finding %s missing finalization: %+v", finding.ID, finding)
+		}
+		if finding.Summarization == nil || !strings.Contains(finding.Summarization.Body, "SUMMARY_MARKER FINALIZED_MARKER") {
+			t.Fatalf("finding %s summarization = %#v, want summarized finalized body", finding.ID, finding.Summarization)
+		}
+	}
+	if result.OverallCorrectness != "patch is incorrect" || result.OverallConfidenceScore != 0.88 {
+		t.Fatalf("overall = %q %.2f, want verdict-owned values", result.OverallCorrectness, result.OverallConfidenceScore)
+	}
+	if !strings.Contains(result.OverallExplanation, "SUMMARY_MARKER VERDICT_MARKER findings=3") {
+		t.Fatalf("overall explanation = %q, want summarized verdict text", result.OverallExplanation)
+	}
+	if result.FinalizeTokensUsed.TotalTokens != 14 {
+		t.Fatalf("finalize tokens = %+v, want two shard runs", result.FinalizeTokensUsed)
+	}
+	if result.VerdictTokensUsed.TotalTokens != 8 {
+		t.Fatalf("verdict tokens = %+v, want verdict run tokens", result.VerdictTokensUsed)
+	}
+	if result.SummarizeTokensUsed.TotalTokens != 15 {
+		t.Fatalf("summarize tokens = %+v, want two shard runs plus overall", result.SummarizeTokensUsed)
+	}
+	if countAgentRuns(result.AgentRuns, "finalize") != 2 || countAgentRuns(result.AgentRuns, "verdict") != 1 || countAgentRuns(result.AgentRuns, "summarize") != 3 {
+		t.Fatalf("agent run counts = finalize:%d verdict:%d summarize:%d", countAgentRuns(result.AgentRuns, "finalize"), countAgentRuns(result.AgentRuns, "verdict"), countAgentRuns(result.AgentRuns, "summarize"))
+	}
+	if len(result.SegmentRuntimes) != 1 || len(result.SegmentRuntimes[0].Steps) != 1 || result.SegmentRuntimes[0].Steps[0] != "merge→finalize→verdict→summarize" {
+		t.Fatalf("segment runtimes = %+v, want fused post-merge segment", result.SegmentRuntimes)
+	}
+}
+
+func TestWorkflowFusedPostMergeSingleInputSkipsMergeLLM(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "single.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("44444444-4444-4444-8444-444444444444", "Fix first issue", "a.go", 1, 1),
+			verifiedPipelineFinding("55555555-5555-4555-8555-555555555555", "Fix second issue", "b.go", 20, 2),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+		{Type: workflow.StepFinalize},
+		{Type: workflow.StepVerdict},
+		{Type: workflow.StepSummarize},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.mergeRequests) != 0 {
+		t.Fatalf("merge requests = %d, want none for one input group", len(client.mergeRequests))
+	}
+	if len(client.finalizeRequests) != 2 {
+		t.Fatalf("finalize requests = %d, want one per singleton finding", len(client.finalizeRequests))
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("findings = %d, want 2", len(result.Findings))
+	}
+}
+
+func TestWorkflowFusedPostMergeEmptyBranchSkipsLLMs(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepMerge},
+		{Type: workflow.StepFinalize},
+		{Type: workflow.StepVerdict},
+		{Type: workflow.StepSummarize},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(client.mergeRequests) + len(client.finalizeRequests) + len(client.verdictRequests) + len(client.summarizeRequests); got != 0 {
+		t.Fatalf("LLM calls = %d, want none for empty merge branch", got)
+	}
+	if len(result.Findings) != 0 || result.OverallCorrectness != "patch is correct" {
+		t.Fatalf("result = %+v, want empty correct result", result)
+	}
+	if countAgentRuns(result.AgentRuns, "verdict") != 1 {
+		t.Fatalf("verdict run count = %d, want skipped verdict telemetry", countAgentRuns(result.AgentRuns, "verdict"))
+	}
+}
+
+func TestWorkflowFusedPostMergeVerdictFailureFallsBack(t *testing.T) {
+	client := &multiAgentLLM{verdictFailErr: errors.New("verdict down")}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "input.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("66666666-6666-4666-8666-666666666666", "Fix fallback issue", "a.go", 1, 1),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+		{Type: workflow.StepFinalize},
+		{Type: workflow.StepVerdict},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OverallCorrectness != "patch is incorrect" {
+		t.Fatalf("overall correctness = %q, want merge-derived fallback", result.OverallCorrectness)
+	}
+	if !strings.Contains(result.OverallExplanation, "Merged 1 reviewer finding lists") {
+		t.Fatalf("overall explanation = %q, want merge-derived fallback", result.OverallExplanation)
+	}
+	if !slices.ContainsFunc(result.AgentRuns, func(run model.AgentRun) bool {
+		return run.Role == "verdict" && run.Status == model.AgentRunStatusFailed && strings.Contains(run.Error, "verdict down")
+	}) {
+		t.Fatalf("agent runs missing failed verdict: %+v", result.AgentRuns)
+	}
+	if !slices.ContainsFunc(result.Warnings, func(w string) bool {
+		return strings.Contains(w, "Verdict failed")
+	}) {
+		t.Fatalf("warnings missing verdict failure: %+v", result.Warnings)
+	}
+}
+
+func verifiedPipelineFinding(id, title, file string, line int, priority int) model.Finding {
+	return model.Finding{
+		ID:              id,
+		Title:           title,
+		Body:            "body " + title,
+		ConfidenceScore: 0.7,
+		Priority:        intPtr(priority),
+		CodeLocation:    model.CodeLocation{FilePath: file, LineRange: model.LineRange{Start: line, End: line}},
+		Verification:    &model.FindingVerification{ID: id, Verdict: model.VerdictConfirmed, Priority: priority, ConfidenceScore: 0.9, Remarks: "verified"},
+	}
+}
+
+func countAgentRuns(runs []model.AgentRun, role string) int {
+	count := 0
+	for _, run := range runs {
+		if run.Role == role {
+			count++
+		}
+	}
+	return count
 }
 
 // Findings injected into finalize must still be priority-filtered, so
@@ -404,7 +606,7 @@ func TestReviewStepInternalOverridesRouteSubagentModels(t *testing.T) {
 
 // laneSpec builds collect-context → parallel lanes (review→verify→dedupe per
 // vector) → merge, the shape of the embedded default workflow without
-// finalize/summarize.
+// finalize/verdict/summarize.
 func laneSpec(vectors ...string) workflow.Spec {
 	lanes := make([]workflow.StepEntry, len(vectors))
 	for i, id := range vectors {

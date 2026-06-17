@@ -10,6 +10,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/google/uuid"
 )
 
 // ensurePrompts builds the deterministic review prompt scaffolding (base
@@ -530,7 +531,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			close(outcomes)
 		}()
 
-		mergedByCluster := make([][]model.Finding, len(clusters))
+		rawMergedByCluster := make([][]model.Finding, len(clusters))
 		finalizedByCluster := make([][]model.Finding, len(clusters))
 		summarizedByCluster := make([][]model.Finding, len(clusters))
 		mergeRunsByCluster := make([]*model.AgentRun, len(clusters))
@@ -541,15 +542,20 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		var resultMu sync.Mutex
 		var finalizeWG sync.WaitGroup
 		var summarizeWG sync.WaitGroup
+		seenFindingIDs := make(map[string]struct{}, len(findings))
 
 		for outcome := range outcomes {
-			filtered := filterByPriority(outcome.findings, mergeSC.Req.PriorityThreshold)
-			mergeInputVerification(filtered, verifiedMergeInputs)
+			merged := append([]model.Finding(nil), outcome.findings...)
+			if overwrote := normalizeFindingIDsWithSeen(merged, seenFindingIDs); overwrote > 0 {
+				mergeSC.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
+			}
+			mergeInputVerification(merged, verifiedMergeInputs)
+			rawMergedByCluster[outcome.index] = merged
+			filtered := filterByPriority(merged, mergeSC.Req.PriorityThreshold)
 			if outcome.hasRun {
 				run := outcome.run
 				mergeRunsByCluster[outcome.index] = &run
 			}
-			mergedByCluster[outcome.index] = filtered
 			if len(filtered) == 0 {
 				finalizedByCluster[outcome.index] = filtered
 				if fused.hasSummarize {
@@ -563,6 +569,10 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				summarizeWG.Add(1)
 			}
 			go func(idx int, shard []model.Finding) {
+				defer finalizeWG.Done()
+				if fused.hasSummarize {
+					defer summarizeWG.Done()
+				}
 				shardResult := &model.ReviewResult{Findings: append([]model.Finding(nil), shard...)}
 				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(ctx, finalizeSC, st, shardResult)
 
@@ -573,10 +583,8 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				}
 				finalizeWarningsByCluster[idx] = finalizeWarnings
 				resultMu.Unlock()
-				finalizeWG.Done()
 
 				if fused.hasSummarize {
-					defer summarizeWG.Done()
 					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(ctx, summarizeSC, finalized)
 					resultMu.Lock()
 					summarizedByCluster[idx] = append([]model.Finding(nil), summarized.Findings...)
@@ -591,14 +599,15 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 		finalizeWG.Wait()
 		finalizedFindings := appendClusterFindings(finalizedByCluster)
-		if overwrote := model.EnsureFindingIDs(finalizedFindings); overwrote > 0 {
+		if overwrote := normalizeFindingIDsWithSeen(finalizedFindings, nil); overwrote > 0 {
 			mergeSC.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 		}
+		rawMergedCount := len(appendClusterFindings(rawMergedByCluster))
 
 		base := &model.ReviewResult{
 			Findings:               finalizedFindings,
-			OverallCorrectness:     aggregateOverallCorrectness(mergeInputs, len(appendClusterFindings(mergedByCluster))),
-			OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(mergeInputs), len(findings), len(finalizedFindings), absorbed, llmClusters),
+			OverallCorrectness:     aggregateOverallCorrectness(mergeInputs, rawMergedCount),
+			OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(mergeInputs), len(findings), rawMergedCount, absorbed, llmClusters),
 			OverallConfidenceScore: maxOverallConfidence(mergeInputs),
 		}
 		verdict, verdictRun, verdictWarnings := runVerdictShard(ctx, verdictSC, st, base)
@@ -616,7 +625,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		finalFindings := finalizedFindings
 		if fused.hasSummarize {
 			finalFindings = appendClusterFindings(summarizedByCluster)
-			model.EnsureFindingIDs(finalFindings)
+			normalizeFindingIDsWithSeen(finalFindings, nil)
 		}
 		verdict.Findings = finalFindings
 
@@ -635,7 +644,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		summarizeUsage := tokenUsageForRuns(summarizeRuns)
 
 		mergeSC.Engine.logf(ctx, "Mechanical merge: findings=%d clusters=%d llm_clusters=%d absorbed=%d merged=%d",
-			len(findings), len(clusters), llmClusters, absorbed, len(finalFindings))
+			len(findings), len(clusters), llmClusters, absorbed, rawMergedCount)
 
 		st.mu.Lock()
 		st.mergeRuns = append(st.mergeRuns, mergeRuns...)
@@ -781,6 +790,35 @@ func singletonFindingClusters(n int) [][]int {
 		clusters[i] = []int{i}
 	}
 	return clusters
+}
+
+func normalizeFindingIDsWithSeen(findings []model.Finding, seen map[string]struct{}) int {
+	if seen == nil {
+		seen = make(map[string]struct{}, len(findings))
+	}
+	overwrote := 0
+	for i := range findings {
+		if model.EnsureFindingID(&findings[i]) {
+			overwrote++
+		}
+		if _, ok := seen[findings[i].ID]; ok {
+			findings[i].ID = newReviewUUID(seen)
+		}
+		seen[findings[i].ID] = struct{}{}
+		if findings[i].Verification != nil {
+			findings[i].Verification.ID = findings[i].ID
+		}
+	}
+	return overwrote
+}
+
+func newReviewUUID(seen map[string]struct{}) string {
+	for {
+		id := uuid.NewString()
+		if _, ok := seen[id]; !ok {
+			return id
+		}
+	}
 }
 
 func orderedRuns(runs []*model.AgentRun) []model.AgentRun {

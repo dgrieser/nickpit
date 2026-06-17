@@ -1868,7 +1868,7 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 		return resp, 0, err
 	}
 	if kind == SchemaKindVerdict {
-		resp, err := parseVerdictResponse(content)
+		resp, err := parseVerdictResponse(content, constraints)
 		return resp, 0, err
 	}
 	if kind == SchemaKindSummarize {
@@ -2109,7 +2109,7 @@ func missingSummarizeFields(parsed *ReviewResponse) []string {
 	return missing
 }
 
-func parseVerdictResponse(content string) (*ReviewResponse, error) {
+func parseVerdictResponse(content string, constraints ResponseConstraints) (*ReviewResponse, error) {
 	var parsed ReviewResponse
 	if err := LenientUnmarshalMerge(content, &parsed); err != nil {
 		return nil, &InvalidResponseError{
@@ -2117,7 +2117,7 @@ func parseVerdictResponse(content string) (*ReviewResponse, error) {
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
 	}
-	if missing := missingVerdictFields(&parsed, content); len(missing) > 0 {
+	if missing := missingVerdictFields(&parsed, content, constraints); len(missing) > 0 {
 		return &parsed, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
@@ -2127,10 +2127,13 @@ func parseVerdictResponse(content string) (*ReviewResponse, error) {
 	return &parsed, nil
 }
 
-func missingVerdictFields(parsed *ReviewResponse, content string) []string {
+func missingVerdictFields(parsed *ReviewResponse, content string, constraints ResponseConstraints) []string {
 	raw, _ := mergedRawReviewBlocks(content)
 	var missing []string
-	allowed := []string{"patch is correct", "patch is incorrect"}
+	allowed := constraints.AllowedCorrectness
+	if len(allowed) == 0 {
+		allowed = []string{"patch is correct", "patch is incorrect"}
+	}
 	if strings.TrimSpace(parsed.OverallCorrectness) == "" {
 		missing = append(missing, "overall_correctness")
 	} else if !slices.Contains(allowed, parsed.OverallCorrectness) {

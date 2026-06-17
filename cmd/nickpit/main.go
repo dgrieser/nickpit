@@ -217,7 +217,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
-	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, summarize, review:security); mutually exclusive with --spec")
+	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
 	root.AddCommand(cli.newCheckCmd())
@@ -1066,10 +1066,10 @@ func (a *app) resolveActiveSpec() (workflow.Spec, error) {
 }
 
 // seedFindings attaches top-level --findings to the first step that actually
-// consumes findings (verify/dedupe/merge/finalize) and does not already declare
-// findings_from, so `--spec w.yaml --findings f.json` lands where it is read
-// instead of being silently dropped on a collect-context/review step. Returns an
-// error when findings are supplied but no step would consume them.
+// consumes findings (verify/dedupe/merge/finalize/verdict/summarize) and does
+// not already declare findings_from, so `--spec w.yaml --findings f.json` lands
+// where it is read instead of being silently dropped on a collect-context/review
+// step. Returns an error when findings are supplied but no step would consume them.
 func seedFindings(spec *workflow.Spec, findings []string) error {
 	if len(findings) == 0 {
 		return nil
@@ -1080,7 +1080,7 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize/summarize step to consume them; add findings_from to a specific step")
+	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize/verdict/summarize step to consume them; add findings_from to a specific step")
 }
 
 // loadProfileNamed loads a profile by name (e.g. a spec's `profile:` field),

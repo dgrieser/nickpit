@@ -116,8 +116,11 @@ func TestVerdictContextNotesInPrompt(t *testing.T) {
 	if !strings.Contains(userPrompt, `"notes"`) || !strings.Contains(userPrompt, "CONTEXT_NOTES_MARKER") {
 		t.Fatalf("verdict user prompt missing notes:\n%s", userPrompt)
 	}
+	if !strings.Contains(userPrompt, `"priority_floor": 1`) {
+		t.Fatalf("verdict user prompt missing priority_floor:\n%s", userPrompt)
+	}
 	// The system prompt tasks the model to merge notes into overall_explanation.
-	if sys := withNotes.reqs[0].Messages[0].Content; !strings.Contains(sys, "notes") {
+	if sys := withNotes.reqs[0].Messages[0].Content; !strings.Contains(sys, "notes") || !strings.Contains(sys, "priority_floor") || !strings.Contains(sys, "even if `finalization.priority` downgraded it") {
 		t.Fatalf("verdict system prompt does not mention notes:\n%s", sys)
 	}
 
@@ -935,11 +938,11 @@ func TestFinalizeEarlySkipsOnEmptyFindings(t *testing.T) {
 	}
 }
 
-// Covers the three regimes of finalizeConstraintsFor based on the priority
+// Covers the three regimes of verdictConstraintsFor based on the priority
 // floor = min(finding.priority, verification.priority): P0 → must be
 // "patch is incorrect", P1-only → unconstrained, no critical → must be
 // "patch is correct".
-func TestFinalizeConstraintsForPriorityFloor(t *testing.T) {
+func TestVerdictConstraintsForPriorityFloor(t *testing.T) {
 	cases := []struct {
 		name string
 		in   []model.Finding
@@ -999,7 +1002,7 @@ func TestFinalizeConstraintsForPriorityFloor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := finalizeConstraintsFor(tc.in).AllowedCorrectness
+			got := verdictConstraintsFor(tc.in).AllowedCorrectness
 			if len(tc.want) == 0 {
 				if len(got) != 0 {
 					t.Fatalf("AllowedCorrectness = %#v, want unconstrained", got)

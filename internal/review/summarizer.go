@@ -235,16 +235,6 @@ type summarizerApplyStats struct {
 	Ignored            int
 }
 
-// applySummarizerOutput writes a `summarization` onto each input-owned finding
-// from the summarizer output. The summarizer cannot add, remove, reorder, or
-// relocate findings; unmatched output is ignored, and omitted input findings
-// receive a summarization synthesized from their finalization (unshortened body).
-func applySummarizerOutput(inOut, summarizer []model.Finding) summarizerApplyStats {
-	return summarizerOutputStats(inOut, summarizer, func(inIdx, outIdx int) {
-		applySummarizedFinding(&inOut[inIdx], summarizer[outIdx])
-	})
-}
-
 func applySummarizerBodies(inOut []model.Finding, bodies map[string]string) summarizerApplyStats {
 	matched := make([]bool, len(inOut))
 	stats := summarizerApplyStats{SummarizerFindings: 0}
@@ -296,41 +286,6 @@ func summarizerTextOutputStats(items []summarizeTextItem, out []model.Finding) s
 	}
 	for _, count := range want {
 		stats.Omitted += count
-	}
-	return stats
-}
-
-func summarizerOutputStats(inOut, summarizer []model.Finding, onMatch func(inIdx, outIdx int)) summarizerApplyStats {
-	stats := summarizerApplyStats{SummarizerFindings: len(summarizer)}
-	matchedInput := make([]bool, len(inOut))
-	usedOutput := make([]bool, len(summarizer))
-	for outIdx := range summarizer {
-		// Reuse the finalizer's id→location→title matcher: the output carries the
-		// same top-level ids/locations, so matching is identical.
-		inIdx := findFinalizerInputIndex(summarizer[outIdx], inOut, matchedInput)
-		if inIdx < 0 {
-			continue
-		}
-		usedOutput[outIdx] = true
-		matchedInput[inIdx] = true
-		stats.Matched++
-		if onMatch != nil {
-			onMatch(inIdx, outIdx)
-		}
-	}
-	for i := range summarizer {
-		if !usedOutput[i] {
-			stats.Ignored++
-		}
-	}
-	for i := range inOut {
-		if matchedInput[i] {
-			continue
-		}
-		stats.Omitted++
-		if onMatch != nil && inOut[i].Summarization == nil {
-			inOut[i].Summarization = baseSummarization(&inOut[i])
-		}
 	}
 	return stats
 }

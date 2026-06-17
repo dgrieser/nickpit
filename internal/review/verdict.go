@@ -69,8 +69,13 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	}
 
 	var schema []byte
+	constraints := verdictConstraintsFor(in.Findings)
 	if opts.UseJSONSchema {
-		schema = llm.VerdictSchema
+		if hasResponseConstraints(constraints) {
+			schema = llm.VerdictSchemaWithConstraints(constraints)
+		} else {
+			schema = llm.VerdictSchema
+		}
 	}
 	req := model.ReviewRequest{
 		RepoRoot:                 opts.RepoRoot,
@@ -90,6 +95,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		user:             userPrompt,
 		schema:           schema,
 		schemaKind:       llm.SchemaKindVerdict,
+		constraints:      constraints,
 		hasTools:         false,
 		validateResponse: verdictOutputValidator(),
 	}, req)
@@ -149,6 +155,7 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 			"title":                   finding.Title,
 			"body":                    finding.Body,
 			"priority":                model.PriorityRank(finding.Priority),
+			"priority_floor":          findingPriorityFloor(finding),
 			"code_location":           finding.CodeLocation,
 			"review_confidence_score": finding.ConfidenceScore,
 		}
@@ -177,6 +184,38 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 		return "", fmt.Errorf("verdict: rendering verdict prompt json: %w", err)
 	}
 	return user, nil
+}
+
+func findingPriorityFloor(finding model.Finding) int {
+	floor := model.PriorityRank(finding.Priority)
+	if finding.Verification != nil && finding.Verification.Priority < floor {
+		floor = finding.Verification.Priority
+	}
+	return floor
+}
+
+// verdictConstraintsFor returns the correctness constraints implied by the
+// verified finding priority floor = min(finding.priority, verification.priority).
+// P0 blocks the patch, no P0/P1 cannot block it, and P1 remains prompt-judged
+// because justification quality cannot be expressed in JSON schema.
+func verdictConstraintsFor(in []model.Finding) llm.ResponseConstraints {
+	hasP0, hasP1 := false, false
+	for _, f := range in {
+		switch findingPriorityFloor(f) {
+		case 0:
+			hasP0 = true
+		case 1:
+			hasP1 = true
+		}
+	}
+	switch {
+	case hasP0:
+		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is incorrect"}}
+	case hasP1:
+		return llm.ResponseConstraints{}
+	default:
+		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is correct"}}
+	}
 }
 
 func verdictOutputSchemaSnippetFor(useJSONSchema bool) string {

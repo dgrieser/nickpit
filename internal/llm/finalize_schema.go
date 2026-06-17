@@ -1,9 +1,6 @@
 package llm
 
-import (
-	"encoding/json"
-	"slices"
-)
+import "slices"
 
 // finalizeSchemaDefinition extends the findings schema with required
 // per-finding verifier input and finalizer output. The finalizer preserves
@@ -105,20 +102,6 @@ func deepCopySchema(v any) any {
 
 var FinalizeSchema = mustMarshalCleanSchema(finalizeSchemaDefinition)
 
-// FinalizeSchemaWithConstraints returns the finalize schema narrowed by the
-// given priority constraints. Finalize no longer emits overall verdict fields.
-func FinalizeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
-	min, max := 0, 3
-	if c.MinPriority != nil {
-		min = *c.MinPriority
-	}
-	if c.MaxPriority != nil {
-		max = *c.MaxPriority
-	}
-	root := buildFindingsSchemaDefinition(min, max, nil, true)
-	return mustMarshalCleanSchema(stripOverallFields(extendFindingsForFinalize(root)))
-}
-
 func FinalizeExamplePromptSnippet() string {
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeSchemaDefinition)))
 }
@@ -131,16 +114,18 @@ func stripOverallFields(root map[string]any) map[string]any {
 	delete(props, "overall_correctness")
 	delete(props, "overall_explanation")
 	delete(props, "overall_confidence_score")
-	if required, ok := root["required"].([]string); ok {
-		out := required[:0]
-		for _, field := range required {
-			switch field {
-			case "overall_correctness", "overall_explanation", "overall_confidence_score":
-			default:
-				out = append(out, field)
-			}
-		}
-		root["required"] = out
+	required, ok := root["required"].([]string)
+	if !ok {
+		panic("llm: schema missing required")
 	}
+	out := required[:0]
+	for _, field := range required {
+		switch field {
+		case "overall_correctness", "overall_explanation", "overall_confidence_score":
+		default:
+			out = append(out, field)
+		}
+	}
+	root["required"] = out
 	return root
 }
