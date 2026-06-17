@@ -52,15 +52,15 @@ func TestSummarizeSchemaShape(t *testing.T) {
 	if !schemaContainsKey(SummarizeSchema, "body") {
 		t.Fatalf("SummarizeSchema missing body: %s", SummarizeSchema)
 	}
-	if !schemaContainsKey(SummarizeSchema, "overall_explanation") {
-		t.Fatalf("SummarizeSchema missing overall_explanation: %s", SummarizeSchema)
+	if schemaContainsKey(SummarizeSchema, "overall_explanation") {
+		t.Fatalf("SummarizeSchema should not emit top-level overall_explanation: %s", SummarizeSchema)
 	}
 	snippet := SummarizeExamplePromptSnippet()
 	if !strings.Contains(snippet, "summarization") || !strings.Contains(snippet, "body") {
 		t.Fatalf("SummarizeExamplePromptSnippet missing summarization/body: %s", snippet)
 	}
-	if !strings.Contains(snippet, "overall_explanation") {
-		t.Fatalf("SummarizeExamplePromptSnippet missing overall_explanation: %s", snippet)
+	if strings.Contains(snippet, "overall_explanation") {
+		t.Fatalf("SummarizeExamplePromptSnippet should not include top-level overall_explanation: %s", snippet)
 	}
 }
 

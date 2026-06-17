@@ -1,12 +1,9 @@
 package llm
 
 // summarizeSchemaDefinition is the minimal output contract for the summarize
-// pass: one entry per finding carrying only its id and a shortened
-// `summarization.body`, plus a shortened top-level `overall_explanation`. Every
-// other summarization field (title, priority, confidence_score, remarks) is
-// copied in code from the finding's finalization (see applySummarizedFinding in
-// internal/review/summarizer.go), so the model is never asked to re-emit them —
-// keeping the output small and hard to get wrong.
+// pass: one entry per text item carrying only its id and a shortened
+// `summarization.body`. Finding metadata is copied in code; the verdict
+// explanation is summarized by passing it as another text item.
 var summarizeSchemaDefinition = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
@@ -27,9 +24,8 @@ var summarizeSchemaDefinition = map[string]any{
 				"required": []string{"id", "summarization"},
 			},
 		},
-		"overall_explanation": map[string]any{"type": "string", "examples": []any{"Concise overall summary of the patch and the review verdict."}},
 	},
-	"required": []string{"findings", "overall_explanation"},
+	"required": []string{"findings"},
 }
 
 // SummarizeSchema is the JSON schema enforced when --use-json-schema is set.

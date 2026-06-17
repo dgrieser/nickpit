@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
+	"github.com/dgrieser/nickpit/internal/dedupe"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -430,6 +432,383 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 	}
 }
 
+type clusterMergeOutcome struct {
+	index    int
+	findings []model.Finding
+	run      model.AgentRun
+	hasRun   bool
+}
+
+// postMergeFusedStepFunc optimizes the normal post-review tail:
+// merge -> finalize -> verdict -> summarize. Cluster merge is still the
+// grouped->flat boundary, but each resolved cluster is immediately finalized
+// and summarized while other merge clusters are still running. The verdict waits
+// for every finalize shard so it always sees the complete finding set; overall
+// summarization starts as soon as the verdict is ready and can overlap with
+// remaining finding summaries.
+func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		mergeSC := e.stepContext(fused.merge.Config, sc.Req)
+		finalizeSC := e.stepContext(fused.finalize.Config, sc.Req)
+		verdictSC := e.stepContext(fused.verdict.Config, sc.Req)
+		var summarizeSC *stepContext
+		if fused.hasSummarize {
+			summarizeSC = e.stepContext(fused.summarize.Config, sc.Req)
+		}
+
+		if err := injectGroups(st, fused.merge.FindingsFrom); err != nil {
+			return err
+		}
+		vr := st.vectorResults()
+		mergeInputs := pairwiseMergeInputs(vr)
+		verifiedMergeInputs := flattenPairwiseMergeInputs(mergeInputs)
+
+		if allVectorsFailed(vr) || len(mergeInputs) == 0 {
+			mergeResult := emptyVerifiedMergeResult()
+			warning := "No verified findings remained; skipped merge agent and returning empty findings"
+			if allVectorsFailed(vr) {
+				mergeSC.Engine.logf(ctx, "All vector reviewers failed; skipping merge agent and emitting empty result")
+				warning = "All vector reviewers failed; skipped merge agent and returning empty findings"
+			} else {
+				mergeSC.Engine.logf(ctx, "No verified findings remained; skipping merge agent and emitting empty result")
+			}
+			st.mu.Lock()
+			st.mergeRuns = append(st.mergeRuns, mergeResult.run)
+			st.warnings = append(st.warnings, warning)
+			st.result = &model.ReviewResult{
+				Findings:               nil,
+				OverallCorrectness:     mergeResult.resp.OverallCorrectness,
+				OverallExplanation:     mergeResult.resp.OverallExplanation,
+				OverallConfidenceScore: mergeResult.resp.OverallConfidenceScore,
+			}
+			st.mu.Unlock()
+			if err := e.verdictStepFunc(nil)(ctx, verdictSC, st); err != nil {
+				return err
+			}
+			if fused.hasSummarize {
+				return e.summarizeStepFunc(nil)(ctx, summarizeSC, st)
+			}
+			return nil
+		}
+
+		mergeConstraints, mergeSchema := mergeSchemaForStep(mergeSC.Req)
+		userPrompt := st.enrichedPrompt
+		if strings.TrimSpace(userPrompt) == "" {
+			userPrompt = "{}"
+		}
+
+		findings, reviewerByID := flattenMergeMembers(mergeInputs)
+		clusters := dedupe.Clusters(findings, dedupe.Possible)
+		if len(mergeInputs) == 1 {
+			clusters = singletonFindingClusters(len(findings))
+		}
+		outcomes := make(chan clusterMergeOutcome, len(clusters))
+		absorbed := 0
+		llmClusters := 0
+		var mergeWG sync.WaitGroup
+		for ci, cluster := range clusters {
+			clusterFindings := make([]model.Finding, 0, len(cluster))
+			for _, idx := range cluster {
+				clusterFindings = append(clusterFindings, findings[idx])
+			}
+			reduced, folded := mechanicallyDedupeFindings(clusterFindings)
+			absorbed += folded
+			if len(reduced) == 1 {
+				outcomes <- clusterMergeOutcome{index: ci, findings: reduced}
+				continue
+			}
+			llmClusters++
+			mergeWG.Add(1)
+			go func(ci int, reduced []model.Finding) {
+				defer mergeWG.Done()
+				merged, run := mergeSC.Engine.runClusterMergeAgent(ctx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req)
+				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
+			}(ci, reduced)
+		}
+		go func() {
+			mergeWG.Wait()
+			close(outcomes)
+		}()
+
+		mergedByCluster := make([][]model.Finding, len(clusters))
+		finalizedByCluster := make([][]model.Finding, len(clusters))
+		summarizedByCluster := make([][]model.Finding, len(clusters))
+		mergeRunsByCluster := make([]*model.AgentRun, len(clusters))
+		finalizeRunsByCluster := make([]*model.AgentRun, len(clusters))
+		summarizeRunsByCluster := make([]*model.AgentRun, len(clusters))
+		finalizeWarningsByCluster := make([][]string, len(clusters))
+		summarizeWarningsByCluster := make([][]string, len(clusters))
+		var resultMu sync.Mutex
+		var finalizeWG sync.WaitGroup
+		var summarizeWG sync.WaitGroup
+
+		for outcome := range outcomes {
+			filtered := filterByPriority(outcome.findings, mergeSC.Req.PriorityThreshold)
+			mergeInputVerification(filtered, verifiedMergeInputs)
+			if outcome.hasRun {
+				run := outcome.run
+				mergeRunsByCluster[outcome.index] = &run
+			}
+			mergedByCluster[outcome.index] = filtered
+			if len(filtered) == 0 {
+				finalizedByCluster[outcome.index] = filtered
+				if fused.hasSummarize {
+					summarizedByCluster[outcome.index] = filtered
+				}
+				continue
+			}
+
+			finalizeWG.Add(1)
+			if fused.hasSummarize {
+				summarizeWG.Add(1)
+			}
+			go func(idx int, shard []model.Finding) {
+				shardResult := &model.ReviewResult{Findings: append([]model.Finding(nil), shard...)}
+				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(ctx, finalizeSC, st, shardResult)
+
+				resultMu.Lock()
+				finalizedByCluster[idx] = append([]model.Finding(nil), finalized.Findings...)
+				if finalizeRun != nil {
+					finalizeRunsByCluster[idx] = finalizeRun
+				}
+				finalizeWarningsByCluster[idx] = finalizeWarnings
+				resultMu.Unlock()
+				finalizeWG.Done()
+
+				if fused.hasSummarize {
+					defer summarizeWG.Done()
+					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(ctx, summarizeSC, finalized)
+					resultMu.Lock()
+					summarizedByCluster[idx] = append([]model.Finding(nil), summarized.Findings...)
+					if summarizeRun != nil {
+						summarizeRunsByCluster[idx] = summarizeRun
+					}
+					summarizeWarningsByCluster[idx] = summarizeWarnings
+					resultMu.Unlock()
+				}
+			}(outcome.index, filtered)
+		}
+
+		finalizeWG.Wait()
+		finalizedFindings := appendClusterFindings(finalizedByCluster)
+		if overwrote := model.EnsureFindingIDs(finalizedFindings); overwrote > 0 {
+			mergeSC.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
+		}
+
+		base := &model.ReviewResult{
+			Findings:               finalizedFindings,
+			OverallCorrectness:     aggregateOverallCorrectness(mergeInputs, len(appendClusterFindings(mergedByCluster))),
+			OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(mergeInputs), len(findings), len(finalizedFindings), absorbed, llmClusters),
+			OverallConfidenceScore: maxOverallConfidence(mergeInputs),
+		}
+		verdict, verdictRun, verdictWarnings := runVerdictShard(ctx, verdictSC, st, base)
+
+		var overallSummarizeRun *model.AgentRun
+		overallSummarizeWarnings := []string(nil)
+		if fused.hasSummarize {
+			overall, run, warnings := runOverallSummarize(ctx, summarizeSC, verdict.OverallExplanation)
+			verdict.OverallExplanation = overall
+			overallSummarizeRun = run
+			overallSummarizeWarnings = warnings
+		}
+		summarizeWG.Wait()
+
+		finalFindings := finalizedFindings
+		if fused.hasSummarize {
+			finalFindings = appendClusterFindings(summarizedByCluster)
+			model.EnsureFindingIDs(finalFindings)
+		}
+		verdict.Findings = finalFindings
+
+		mergeRuns := orderedRuns(mergeRunsByCluster)
+		if len(mergeRuns) == 0 {
+			mergeRuns = append(mergeRuns, model.AgentRun{Name: "Merge Findings", Role: "merge", Status: model.AgentRunStatusSkipped})
+		}
+		finalizeRuns := orderedRuns(finalizeRunsByCluster)
+		summarizeRuns := orderedRuns(summarizeRunsByCluster)
+		if overallSummarizeRun != nil {
+			summarizeRuns = append(summarizeRuns, *overallSummarizeRun)
+		}
+		finalizeWarnings := appendClusterWarnings(finalizeWarningsByCluster)
+		summarizeWarnings := appendClusterWarnings(summarizeWarningsByCluster)
+		finalizeUsage := tokenUsageForRuns(finalizeRuns)
+		summarizeUsage := tokenUsageForRuns(summarizeRuns)
+
+		mergeSC.Engine.logf(ctx, "Mechanical merge: findings=%d clusters=%d llm_clusters=%d absorbed=%d merged=%d",
+			len(findings), len(clusters), llmClusters, absorbed, len(finalFindings))
+
+		st.mu.Lock()
+		st.mergeRuns = append(st.mergeRuns, mergeRuns...)
+		st.finalizeRuns = append(st.finalizeRuns, finalizeRuns...)
+		if verdictRun != nil {
+			st.verdictRun = verdictRun
+			st.verdictUsage = verdictRun.TokensUsed
+		}
+		st.summarizeRuns = append(st.summarizeRuns, summarizeRuns...)
+		st.finalizeUsage = addTokenUsage(st.finalizeUsage, finalizeUsage)
+		st.summarizeUsage = addTokenUsage(st.summarizeUsage, summarizeUsage)
+		st.warnings = append(st.warnings, finalizeWarnings...)
+		st.warnings = append(st.warnings, summarizeWarnings...)
+		st.warnings = append(st.warnings, verdictWarnings...)
+		st.warnings = append(st.warnings, overallSummarizeWarnings...)
+		st.result = verdict
+		st.mu.Unlock()
+		return nil
+	}
+}
+
+func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byte) {
+	constraints := llm.ResponseConstraints{}
+	var schema []byte
+	if req.UseJSONSchema {
+		constraints = mergeConstraintsForRequest(req)
+		if hasResponseConstraints(constraints) {
+			schema = llm.MergeSchemaWithConstraints(constraints)
+		} else {
+			schema = llm.MergeSchema
+		}
+	}
+	return constraints, schema
+}
+
+func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
+	opts := FinalizeOptions{
+		UseJSONSchema:            sc.Req.UseJSONSchema,
+		MaxOutputRetries:         sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		RepoRoot:                 sc.Req.RepoRoot,
+		ContextNotes:             st.contextNotes,
+	}
+	finalized, run, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
+	if err != nil {
+		sc.Engine.logf(ctx, "Finalize failed for shard, using verified shard: error=%v", err)
+		run.Name = "finalize"
+		run.Role = "finalize"
+		run.Status = model.AgentRunStatusFailed
+		run.Error = err.Error()
+		return in, &run, []string{fmt.Sprintf("Finalize failed: %v; using verified result", err)}
+	}
+	warnings := append([]string(nil), finalized.Warnings...)
+	finalized.Warnings = nil
+	return finalized, &run, warnings
+}
+
+func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
+	opts := VerdictOptions{
+		UseJSONSchema:            sc.Req.UseJSONSchema,
+		MaxOutputRetries:         sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		RepoRoot:                 sc.Req.RepoRoot,
+		ContextNotes:             st.contextNotes,
+	}
+	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
+	if err != nil {
+		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
+		run.Name = "verdict"
+		run.Role = "verdict"
+		run.Status = model.AgentRunStatusFailed
+		run.Error = err.Error()
+		return in, &run, []string{fmt.Sprintf("Verdict failed: %v; using merged overall fields", err)}
+	}
+	warnings := append([]string(nil), verdict.Warnings...)
+	verdict.Warnings = nil
+	return verdict, &run, warnings
+}
+
+func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
+	opts := SummarizeOptions{
+		UseJSONSchema:            sc.Req.UseJSONSchema,
+		MaxOutputRetries:         sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		RepoRoot:                 sc.Req.RepoRoot,
+	}
+	summarized, run, err := sc.Engine.Summarize(ctx, in, opts)
+	if err != nil {
+		sc.Engine.logf(ctx, "Summarize failed for shard, using finalized shard: error=%v", err)
+		run.Name = "summarize"
+		run.Role = "summarize"
+		run.Status = model.AgentRunStatusFailed
+		run.Error = err.Error()
+		return in, &run, []string{fmt.Sprintf("Summarize failed: %v; using finalized result", err)}
+	}
+	warnings := append([]string(nil), summarized.Warnings...)
+	summarized.Warnings = nil
+	return summarized, &run, warnings
+}
+
+func runOverallSummarize(ctx context.Context, sc *stepContext, overall string) (string, *model.AgentRun, []string) {
+	opts := SummarizeOptions{
+		UseJSONSchema:            sc.Req.UseJSONSchema,
+		MaxOutputRetries:         sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		RepoRoot:                 sc.Req.RepoRoot,
+	}
+	summary, run, err := sc.Engine.SummarizeOverall(ctx, overall, opts)
+	if err != nil {
+		sc.Engine.logf(ctx, "Summarize failed for overall explanation, using verdict text: error=%v", err)
+		run.Name = "summarize"
+		run.Role = "summarize"
+		run.Status = model.AgentRunStatusFailed
+		run.Error = err.Error()
+		return overall, &run, []string{fmt.Sprintf("Summarize failed: %v; using finalized result", err)}
+	}
+	return summary, &run, nil
+}
+
+func appendClusterFindings(clusters [][]model.Finding) []model.Finding {
+	var out []model.Finding
+	for _, findings := range clusters {
+		out = append(out, findings...)
+	}
+	return out
+}
+
+func singletonFindingClusters(n int) [][]int {
+	clusters := make([][]int, n)
+	for i := 0; i < n; i++ {
+		clusters[i] = []int{i}
+	}
+	return clusters
+}
+
+func orderedRuns(runs []*model.AgentRun) []model.AgentRun {
+	out := make([]model.AgentRun, 0, len(runs))
+	for _, run := range runs {
+		if run != nil {
+			out = append(out, *run)
+		}
+	}
+	return out
+}
+
+func appendClusterWarnings(clusters [][]string) []string {
+	var out []string
+	for _, warnings := range clusters {
+		out = append(out, warnings...)
+	}
+	return out
+}
+
+func tokenUsageForRuns(runs []model.AgentRun) model.TokenUsage {
+	usage := model.TokenUsage{}
+	for _, run := range runs {
+		usage = addTokenUsage(usage, run.TokensUsed)
+	}
+	return usage
+}
+
 // finalizeStepFunc runs the finalizer over the flat result. When findings are
 // injected, they become the flat result first; otherwise the merged result (or a
 // materialized fallback) is used. Finalize failure is soft.
@@ -485,7 +864,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			finalizeRun.Role = "finalize"
 			finalizeRun.Status = model.AgentRunStatusFailed
 			finalizeRun.Error = err.Error()
-			st.finalizeRun = &finalizeRun
+			st.finalizeRuns = append(st.finalizeRuns, finalizeRun)
 			st.finalizeUsage = finalizeRun.TokensUsed
 			return nil
 		}
@@ -496,8 +875,74 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			finalized.Warnings = nil
 		}
 		st.result = finalized
-		st.finalizeRun = &finalizeRun
+		st.finalizeRuns = append(st.finalizeRuns, finalizeRun)
 		st.finalizeUsage = finalizeRun.TokensUsed
+		return nil
+	}
+}
+
+// verdictStepFunc runs the verdict agent over all finalized findings. Verdict
+// failure is soft: merge-derived overall fields are kept.
+func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		if len(findingsFrom) > 0 {
+			groups, err := loadFindingsFiles(findingsFrom)
+			if err != nil {
+				return err
+			}
+			flat := flattenInjectedGroups(groups)
+			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
+			st.mu.Lock()
+			st.result = &model.ReviewResult{
+				Findings:               findings,
+				OverallCorrectness:     flat.overallCorrectness,
+				OverallExplanation:     flat.overallExplanation,
+				OverallConfidenceScore: flat.overallConfidence,
+			}
+			st.mu.Unlock()
+		}
+		st.mu.Lock()
+		if st.result == nil {
+			st.result = st.materializeFromGroupsLocked(sc.Req)
+		}
+		in := st.result
+		contextNotes := st.contextNotes
+		st.mu.Unlock()
+
+		if in == nil {
+			return nil
+		}
+		opts := VerdictOptions{
+			UseJSONSchema:            sc.Req.UseJSONSchema,
+			MaxOutputRetries:         sc.Req.MaxOutputRetries,
+			MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
+			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
+			DisablePatchSummary:      sc.Req.DisablePatchSummary,
+			RepoRoot:                 sc.Req.RepoRoot,
+			ContextNotes:             contextNotes,
+		}
+		verdict, verdictRun, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if err != nil {
+			sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
+			st.warnings = append(st.warnings, fmt.Sprintf("Verdict failed: %v; using merged overall fields", err))
+			verdictRun.Name = "verdict"
+			verdictRun.Role = "verdict"
+			verdictRun.Status = model.AgentRunStatusFailed
+			verdictRun.Error = err.Error()
+			st.verdictRun = &verdictRun
+			st.verdictUsage = verdictRun.TokensUsed
+			return nil
+		}
+		if len(verdict.Warnings) > 0 {
+			st.warnings = append(st.warnings, verdict.Warnings...)
+			verdict.Warnings = nil
+		}
+		st.result = verdict
+		st.verdictRun = &verdictRun
+		st.verdictUsage = verdictRun.TokensUsed
 		return nil
 	}
 }
@@ -553,7 +998,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			summarizeRun.Role = "summarize"
 			summarizeRun.Status = model.AgentRunStatusFailed
 			summarizeRun.Error = err.Error()
-			st.summarizeRun = &summarizeRun
+			st.summarizeRuns = append(st.summarizeRuns, summarizeRun)
 			st.summarizeUsage = summarizeRun.TokensUsed
 			return nil
 		}
@@ -564,7 +1009,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			summarized.Warnings = nil
 		}
 		st.result = summarized
-		st.summarizeRun = &summarizeRun
+		st.summarizeRuns = append(st.summarizeRuns, summarizeRun)
 		st.summarizeUsage = summarizeRun.TokensUsed
 		return nil
 	}

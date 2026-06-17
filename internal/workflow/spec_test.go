@@ -27,8 +27,11 @@ func TestDefaultSpecsValidate(t *testing.T) {
 	if last := full.Steps[len(full.Steps)-1]; last.Type != StepSummarize {
 		t.Fatalf("DefaultSpec last step = %q, want summarize", last.Type)
 	}
-	if penult := full.Steps[len(full.Steps)-2]; penult.Type != StepFinalize {
-		t.Fatalf("DefaultSpec second-to-last step = %q, want finalize", penult.Type)
+	if penult := full.Steps[len(full.Steps)-2]; penult.Type != StepVerdict {
+		t.Fatalf("DefaultSpec second-to-last step = %q, want verdict", penult.Type)
+	}
+	if beforeVerdict := full.Steps[len(full.Steps)-3]; beforeVerdict.Type != StepFinalize {
+		t.Fatalf("DefaultSpec pre-verdict step = %q, want finalize", beforeVerdict.Type)
 	}
 }
 
@@ -57,6 +60,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 		{Parallel: parallel},
 		{Type: StepMerge},
 		{Type: StepFinalize, Config: &StepOverride{Model: &small}},
+		{Type: StepVerdict, Config: &StepOverride{Model: &small}},
 		{Type: StepSummarize, Config: &StepOverride{Model: &small}},
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {

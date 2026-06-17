@@ -1,8 +1,9 @@
 package llm
 
-import "slices"
-
-import "encoding/json"
+import (
+	"encoding/json"
+	"slices"
+)
 
 // finalizeSchemaDefinition extends the findings schema with required
 // per-finding verifier input and finalizer output. The finalizer preserves
@@ -24,7 +25,7 @@ var finalizationSchemaDefinition = map[string]any{
 }
 
 func buildFinalizeSchemaDefinition() map[string]any {
-	return extendFindingsForFinalize(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any))
+	return stripOverallFields(extendFindingsForFinalize(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any)))
 }
 
 func extendFindingsForVerification(root map[string]any) map[string]any {
@@ -105,7 +106,7 @@ func deepCopySchema(v any) any {
 var FinalizeSchema = mustMarshalCleanSchema(finalizeSchemaDefinition)
 
 // FinalizeSchemaWithConstraints returns the finalize schema narrowed by the
-// given constraints (priority bounds + allowed overall_correctness values).
+// given priority constraints. Finalize no longer emits overall verdict fields.
 func FinalizeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	min, max := 0, 3
 	if c.MinPriority != nil {
@@ -114,10 +115,32 @@ func FinalizeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true)
-	return mustMarshalCleanSchema(extendFindingsForFinalize(root))
+	root := buildFindingsSchemaDefinition(min, max, nil, true)
+	return mustMarshalCleanSchema(stripOverallFields(extendFindingsForFinalize(root)))
 }
 
 func FinalizeExamplePromptSnippet() string {
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeSchemaDefinition)))
+}
+
+func stripOverallFields(root map[string]any) map[string]any {
+	props, ok := root["properties"].(map[string]any)
+	if !ok {
+		panic("llm: schema missing properties")
+	}
+	delete(props, "overall_correctness")
+	delete(props, "overall_explanation")
+	delete(props, "overall_confidence_score")
+	if required, ok := root["required"].([]string); ok {
+		out := required[:0]
+		for _, field := range required {
+			switch field {
+			case "overall_correctness", "overall_explanation", "overall_confidence_score":
+			default:
+				out = append(out, field)
+			}
+		}
+		root["required"] = out
+	}
+	return root
 }

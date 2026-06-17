@@ -17,6 +17,7 @@
 #   dedupe                    de-duplicate findings per reviewer
 #   merge                     merge reviewers' findings into one set
 #   finalize                  finalize priorities/confidence/wording
+#   verdict                   decide top-level correctness/explanation
 #   summarize                 shorten each finalized body for readability
 #
 # A `parallel:` group runs its children concurrently (with a barrier after). A
@@ -67,6 +68,8 @@
 #       model: claude-opus-4-8
 #       reasoning_effort: max
 #   - type: finalize
+#   - type: verdict
+#   - type: summarize
 #
 # Overridable config keys:
 #   model, temperature, top_p, top_k, presence_penalty, max_tokens,
@@ -94,6 +97,8 @@
 #   - type: verify
 #   - type: merge
 #   - type: finalize
+#   - type: verdict
+#   - type: summarize
 
 # ---------------------------------------------------------------------------
 # Findings injection: feed previously-emitted findings JSON back into a step.
@@ -107,8 +112,11 @@
 #       - reviewer_a.json
 #       - reviewer_b.json
 #   - type: finalize
+#   - type: verdict
+#   - type: summarize
 #
 # Or from the CLI, run a single step on imported findings:
 #   nickpit local branch --step merge --findings a.json --findings b.json --json
 #   nickpit local branch --step finalize --findings merged.json --json
+#   nickpit local branch --step verdict --findings finalized.json --json
 #   nickpit local branch --step summarize --findings finalized.json --json

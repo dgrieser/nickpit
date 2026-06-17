@@ -1292,6 +1292,7 @@ func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityR
 		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
 		stepType == workflow.StepMerge,
 		stepType == workflow.StepFinalize,
+		stepType == workflow.StepVerdict,
 		stepType == workflow.StepSummarize:
 		requirements := modelCapabilityRequirements{}
 		requirements.requireJSON(useJSONSchema)

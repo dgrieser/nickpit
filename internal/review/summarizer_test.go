@@ -25,8 +25,8 @@ func TestSummarizeShortensBodyAndCopiesFinalizationFields(t *testing.T) {
 			{
 				Findings: []model.Finding{
 					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short body.\nSecond line."}},
+					{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "Short overall."}},
 				},
-				OverallExplanation: "Short overall.",
 			},
 		},
 	}
@@ -136,8 +136,8 @@ func TestSummarizeShortensOverallExplanation(t *testing.T) {
 			{
 				Findings: []model.Finding{
 					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short."}},
+					{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "Short overall.\nVerdict line."}},
 				},
-				OverallExplanation: "Short overall.\nVerdict line.",
 			},
 		},
 	}
@@ -162,8 +162,8 @@ func TestSummarizeShortensOverallExplanation(t *testing.T) {
 		t.Fatalf("Summarize returned err: %v", err)
 	}
 	// The input overall_explanation is sent to the model to shorten.
-	if up := llmClient.reqs[0].Messages[1].Content; !strings.Contains(up, `"overall_explanation"`) || !strings.Contains(up, "LONG_OVERALL_MARKER") {
-		t.Fatalf("summarize user prompt missing overall_explanation:\n%s", up)
+	if up := llmClient.reqs[0].Messages[1].Content; !strings.Contains(up, overallSummaryID) || !strings.Contains(up, "LONG_OVERALL_MARKER") {
+		t.Fatalf("summarize user prompt missing overall summary item:\n%s", up)
 	}
 	// The shortened overall_explanation is adopted.
 	if out.OverallExplanation != "Short overall.\nVerdict line." {
@@ -178,8 +178,8 @@ func TestSummarizeDisablePatchSummaryInstruction(t *testing.T) {
 			{
 				Findings: []model.Finding{
 					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short."}},
+					{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "Patch is incorrect because the failure remains."}},
 				},
-				OverallExplanation: "Patch is incorrect because the failure remains.",
 			},
 		},
 	}
@@ -212,10 +212,11 @@ func TestSummarizeDisablePatchSummaryInstruction(t *testing.T) {
 	}
 }
 
-// When the input carries an overall_explanation but the model omits it, the
-// validator forces a retry to try to get it. If the model still omits it after
-// retries, the pass soft-accepts and the finalized overall_explanation is kept
-// (apply-guard) — so the shortening is attempted, never silently skipped.
+// When the input carries an overall_explanation but the model omits its
+// synthetic item, the validator forces a retry to try to get it. If the model
+// still omits it after retries, the pass soft-accepts and the finalized
+// overall_explanation is kept (apply-guard) — so the shortening is attempted,
+// never silently skipped.
 func TestSummarizeRetriesThenFallsBackWhenOverallMissing(t *testing.T) {
 	const findingID = "44444444-4444-4444-8444-444444444444"
 	// Two responses, both omitting overall_explanation: the first triggers a
@@ -225,7 +226,7 @@ func TestSummarizeRetriesThenFallsBackWhenOverallMissing(t *testing.T) {
 			Findings: []model.Finding{
 				{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short."}},
 			},
-			// No OverallExplanation emitted.
+			// No synthetic overall summary item emitted.
 		}
 	}
 	llmClient := &capturingLLM{resps: []*llm.ReviewResponse{resp(), resp()}}
@@ -249,7 +250,7 @@ func TestSummarizeRetriesThenFallsBackWhenOverallMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Summarize returned err: %v", err)
 	}
-	// Missing overall forced a retry: 1 initial call + 1 retry.
+	// Missing synthetic overall item forced a retry: 1 initial call + 1 retry.
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("requests = %d, want 2 (overall-missing should trigger a retry)", len(llmClient.reqs))
 	}
@@ -259,37 +260,39 @@ func TestSummarizeRetriesThenFallsBackWhenOverallMissing(t *testing.T) {
 	}
 }
 
-// The overall_explanation requirement is conditional: a standalone summarize
+// The overall summary item requirement is conditional: a standalone summarize
 // over findings with no input overall must not be forced to invent one.
 func TestSummarizerOutputValidatorOverallRequirementIsConditional(t *testing.T) {
 	const findingID = "55555555-5555-4555-8555-555555555555"
-	inputFindings := []model.Finding{
-		{ID: findingID, CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-	}
+	inputItems := []summarizeTextItem{{ID: findingID, Title: "T", Body: "body"}}
+	inputWithOverall := append([]summarizeTextItem(nil), inputItems...)
+	inputWithOverall = append(inputWithOverall, summarizeTextItem{ID: overallSummaryID, Title: "Overall explanation", Body: "long overall"})
 	respWithOverall := &llm.ReviewResponse{
-		Findings:           []model.Finding{{ID: findingID, Summarization: &model.FindingSummarization{Body: "x"}}},
-		OverallExplanation: "short overall",
+		Findings: []model.Finding{
+			{ID: findingID, Summarization: &model.FindingSummarization{Body: "x"}},
+			{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "short overall"}},
+		},
 	}
 	respNoOverall := &llm.ReviewResponse{
 		Findings: []model.Finding{{ID: findingID, Summarization: &model.FindingSummarization{Body: "x"}}},
 	}
 
-	// Input has an overall + response omits it -> invalid, flags overall_explanation.
-	got := summarizerOutputValidator(inputFindings, "long overall")(respNoOverall)
+	// Input has an overall item + response omits it -> invalid.
+	got := summarizerOutputValidator(inputWithOverall)(respNoOverall)
 	if got == nil {
 		t.Fatal("want invalid when input overall present but response omits it")
 	}
-	if !slices.Contains(got.MissingFields, "overall_explanation") {
-		t.Fatalf("MissingFields = %v, want overall_explanation", got.MissingFields)
+	if !slices.Contains(got.MissingFields, "findings") {
+		t.Fatalf("MissingFields = %v, want findings", got.MissingFields)
 	}
 
 	// Input has an overall + response provides it -> valid.
-	if got := summarizerOutputValidator(inputFindings, "long overall")(respWithOverall); got != nil {
+	if got := summarizerOutputValidator(inputWithOverall)(respWithOverall); got != nil {
 		t.Fatalf("want valid when response carries overall, got %q", got.Reason)
 	}
 
 	// Input has NO overall -> not required even when the response omits it.
-	if got := summarizerOutputValidator(inputFindings, "")(respNoOverall); got != nil {
+	if got := summarizerOutputValidator(inputItems)(respNoOverall); got != nil {
 		t.Fatalf("want valid when input has no overall, got %q", got.Reason)
 	}
 }

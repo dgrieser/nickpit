@@ -184,7 +184,7 @@ Reviews run a context agent first, then six specialist reviewer lanes in paralle
 
 ### Workflows
 
-The review pipeline is driven by a portable workflow spec. By default `nickpit local`/`github`/`gitlab` run the built-in workflow (collect context → six reviewer lanes in parallel, each running review → verify → dedupe for its vector → merge → finalize → summarize). You can supply your own spec or run a single step instead, on any of those commands:
+The review pipeline is driven by a portable workflow spec. By default `nickpit local`/`github`/`gitlab` run the built-in workflow (collect context → six reviewer lanes in parallel, each running review → verify → dedupe for its vector → merge → finalize → verdict → summarize). You can supply your own spec or run a single step instead, on any of those commands:
 
 ```bash
 # Run a custom workflow spec (YAML)

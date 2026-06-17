@@ -10,8 +10,8 @@ import (
 )
 
 // defaultSpecYAML is the canonical default workflow: collect context, run the six
-// vector reviewers concurrently, verify, dedupe, merge, finalize, summarize. It
-// carries no per-step overrides, so every step inherits the active profile.
+// vector reviewers concurrently, verify, dedupe, merge, finalize, verdict,
+// summarize.
 //
 //go:embed default.yaml
 var defaultSpecYAML []byte

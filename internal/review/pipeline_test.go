@@ -697,8 +697,8 @@ func TestWorkflowLaneSkipsVerifyAndDedupeNoOps(t *testing.T) {
 	}
 }
 
-// The six-lane shape of the embedded default workflow (minus finalize/summarize)
-// produces the same result shape as the global-step spec.
+// The six-lane shape of the embedded default workflow (minus finalize/verdict/
+// summarize) produces the same result shape as the global-step spec.
 func TestWorkflowSixLaneSpecMatchesGlobalResultShape(t *testing.T) {
 	inner := &multiAgentLLM{}
 	client := &laneEventLLM{inner: inner}

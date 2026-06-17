@@ -100,6 +100,7 @@ const (
 	StagePublish    Stage = "Publish"
 	StageVerify     Stage = "Verify"
 	StageFinalize   Stage = "Finalize"
+	StageVerdict    Stage = "Verdict"
 	StageSummarize  Stage = "Summarize"
 )
 
@@ -107,7 +108,7 @@ const (
 var allStages = []Stage{
 	StageModel, StageAgent, StageReview, StageModelCheck, StageRequest,
 	StageResponse, StageReasoning, StageTool, StageResult, StagePublish,
-	StageVerify, StageFinalize, StageSummarize,
+	StageVerify, StageFinalize, StageVerdict, StageSummarize,
 }
 
 // stageColumnWidth is the width of the stage column: len(StageModelCheck),

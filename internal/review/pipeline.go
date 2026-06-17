@@ -58,10 +58,12 @@ type PipelineState struct {
 	dedupeRuns       []model.AgentRun
 	mergeRuns        []model.AgentRun
 	mergeReasoning   string
-	finalizeRun      *model.AgentRun
-	summarizeRun     *model.AgentRun
+	finalizeRuns     []model.AgentRun
+	verdictRun       *model.AgentRun
+	summarizeRuns    []model.AgentRun
 	verifyUsage      model.TokenUsage
 	finalizeUsage    model.TokenUsage
+	verdictUsage     model.TokenUsage
 	summarizeUsage   model.TokenUsage
 	warnings         []string
 }
@@ -238,7 +240,14 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 	manual := manualReviewVectors(spec)
 	reviewOrder := reviewVectorOrder(spec)
 	p := &Pipeline{engine: e, reviewOrder: reviewOrder}
-	for _, entry := range spec.Steps {
+	for i := 0; i < len(spec.Steps); i++ {
+		entry := spec.Steps[i]
+		if fused, consumed, ok := postMergeFusedChain(spec.Steps, i); ok {
+			bs := boundStep{label: strings.Join(fused.labels, "→"), run: e.postMergeFusedStepFunc(fused)}
+			p.units = append(p.units, planUnit{lanes: [][]boundStep{{bs}}})
+			i += consumed - 1
+			continue
+		}
 		if entry.IsParallel() {
 			unit := planUnit{}
 			for _, sub := range entry.Parallel {
@@ -264,6 +273,45 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 		p.needsSource = p.needsSource || bs.needsSource
 	}
 	return p, nil
+}
+
+type postMergeFusedSpec struct {
+	merge        workflow.StepEntry
+	finalize     workflow.StepEntry
+	verdict      workflow.StepEntry
+	summarize    workflow.StepEntry
+	hasSummarize bool
+	labels       []string
+}
+
+func postMergeFusedChain(entries []workflow.StepEntry, start int) (postMergeFusedSpec, int, bool) {
+	if start+2 >= len(entries) || !plainStepOf(entries[start], workflow.StepMerge) {
+		return postMergeFusedSpec{}, 0, false
+	}
+	if !plainStepOf(entries[start+1], workflow.StepFinalize) || len(entries[start+1].FindingsFrom) > 0 {
+		return postMergeFusedSpec{}, 0, false
+	}
+	if !plainStepOf(entries[start+2], workflow.StepVerdict) || len(entries[start+2].FindingsFrom) > 0 {
+		return postMergeFusedSpec{}, 0, false
+	}
+	fused := postMergeFusedSpec{
+		merge:    entries[start],
+		finalize: entries[start+1],
+		verdict:  entries[start+2],
+		labels:   []string{workflow.StepMerge, workflow.StepFinalize, workflow.StepVerdict},
+	}
+	consumed := 3
+	if start+3 < len(entries) && plainStepOf(entries[start+3], workflow.StepSummarize) && len(entries[start+3].FindingsFrom) == 0 {
+		fused.summarize = entries[start+3]
+		fused.hasSummarize = true
+		fused.labels = append(fused.labels, workflow.StepSummarize)
+		consumed = 4
+	}
+	return fused, consumed, true
+}
+
+func plainStepOf(entry workflow.StepEntry, stepType string) bool {
+	return !entry.IsParallel() && !entry.IsLane() && entry.Type == stepType
 }
 
 // Run executes the pipeline against the given context, returning the assembled
@@ -348,6 +396,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	res.TokensUsed = usage
 	res.VerifyTokensUsed = st.verifyUsage
 	res.FinalizeTokensUsed = st.finalizeUsage
+	res.VerdictTokensUsed = st.verdictUsage
 	res.SummarizeTokensUsed = st.summarizeUsage
 	res.TotalToolCalls = toolCalls
 	res.ReasoningEffort = reasoning
@@ -391,11 +440,20 @@ func (st *PipelineState) aggregateTelemetry() ([]model.AgentRun, model.TokenUsag
 	if st.mergeReasoning != "" {
 		reasoning = st.mergeReasoning
 	}
-	if st.finalizeRun != nil {
-		runs = append(runs, *st.finalizeRun)
+	for _, run := range st.finalizeRuns {
+		runs = append(runs, run)
+		usage = addTokenUsage(usage, run.TokensUsed)
+		toolCalls += run.ToolCalls
 	}
-	if st.summarizeRun != nil {
-		runs = append(runs, *st.summarizeRun)
+	if st.verdictRun != nil {
+		runs = append(runs, *st.verdictRun)
+		usage = addTokenUsage(usage, st.verdictRun.TokensUsed)
+		toolCalls += st.verdictRun.ToolCalls
+	}
+	for _, run := range st.summarizeRuns {
+		runs = append(runs, run)
+		usage = addTokenUsage(usage, run.TokensUsed)
+		toolCalls += run.ToolCalls
 	}
 	return runs, usage, toolCalls, reasoning
 }
@@ -439,6 +497,8 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 		return boundStep{label: t, override: entry.Config, run: e.mergeStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepFinalize:
 		return boundStep{label: t, override: entry.Config, run: e.finalizeStepFunc(entry.FindingsFrom)}, nil
+	case workflow.StepVerdict:
+		return boundStep{label: t, override: entry.Config, run: e.verdictStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepSummarize:
 		return boundStep{label: t, override: entry.Config, run: e.summarizeStepFunc(entry.FindingsFrom)}, nil
 	}

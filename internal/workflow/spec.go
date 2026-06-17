@@ -37,6 +37,7 @@ const (
 	StepDedupe         = "dedupe"
 	StepMerge          = "merge"
 	StepFinalize       = "finalize"
+	StepVerdict        = "verdict"
 	StepSummarize      = "summarize"
 
 	StepReviewPrefix  = "review:"
@@ -348,8 +349,8 @@ func resolveModelAlias(p config.Profile, model string) config.Profile {
 
 // DefaultSpec is the embedded workflow that reproduces the tool's standard
 // review end to end: collect context, run the six vector reviewers concurrently,
-// verify, dedupe, merge, finalize, summarize. Most steps inherit the active
-// profile/request; final polish steps may carry cheap-model overrides. This is
+// verify, dedupe, merge, finalize, verdict, summarize. Most steps inherit the
+// active profile/request; final polish steps may carry cheap-model overrides. This is
 // the single spec the engine runs for an ordinary (no --spec/--step) review,
 // and the canonical full workflow shown to users.
 //
@@ -619,9 +620,9 @@ func (s Spec) Validate() error {
 		}
 		// Only per-vector steps are safe to run concurrently — each touches only
 		// its own vector's group/session. Every global step (collect-context,
-		// verify, dedupe, merge, finalize, summarize) mutates shared pipeline
-		// state (the enriched context, the flat result, or all groups) and must
-		// run sequentially.
+		// verify, dedupe, merge, finalize, verdict, summarize) mutates shared
+		// pipeline state (the enriched context, the flat result, or all groups)
+		// and must run sequentially.
 		if inParallel && !isPerVectorStep(entry.Type) {
 			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only per-vector steps (review:/verify:/dedupe:/nudge:/reasoning-extract:) may run concurrently", idx, entry.Type)
 		}
@@ -699,7 +700,7 @@ func isPerVectorStep(t string) bool {
 
 func validateStepType(t string) error {
 	switch t {
-	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepSummarize:
+	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
 		return nil
 	case "":
 		return fmt.Errorf("missing step type")
@@ -769,7 +770,7 @@ func (s *Spec) FlatSteps() []*StepEntry {
 // and review/nudge/reasoning-extract steps ignore them.
 func StepConsumesFindings(stepType string) bool {
 	switch stepType {
-	case StepVerify, StepDedupe, StepMerge, StepFinalize, StepSummarize:
+	case StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
 		return true
 	default:
 		return false
