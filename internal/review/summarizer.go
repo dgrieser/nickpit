@@ -11,7 +11,12 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-const overallSummaryID = "__overall_explanation__"
+// overallSummaryID is the sentinel id for the overall-explanation text item the
+// summarizer shortens alongside findings. It must be a valid UUID because the
+// summarize schema constrains every item id to format: uuid; this reserved v4
+// UUID is distinct from any real finding id and is stripped before findings are
+// applied (it never escapes into output).
+const overallSummaryID = "00000000-0000-4000-8000-0000000a11ee"
 
 // SummarizeOptions mirrors FinalizeOptions: the per-step model/budget knobs the
 // summarize pass forwards into its single batch agent run.
