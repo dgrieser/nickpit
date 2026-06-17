@@ -726,6 +726,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
 		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
+		applyVerdictConstraintFallback(in)
 		run.Name = "verdict"
 		run.Role = "verdict"
 		run.Status = model.AgentRunStatusFailed
@@ -927,7 +928,9 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 }
 
 // verdictStepFunc runs the verdict agent over all finalized findings. Verdict
-// failure is soft: merge-derived overall fields are kept.
+// failure is soft: merge-derived overall fields are kept, coerced to satisfy the
+// priority-derived correctness constraint so a transient failure never emits a
+// blocking verdict for non-blocking findings.
 func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
 		if len(findingsFrom) > 0 {
@@ -973,6 +976,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 		if err != nil {
 			sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 			st.warnings = append(st.warnings, fmt.Sprintf("Verdict failed: %v; using merged overall fields", err))
+			applyVerdictConstraintFallback(in)
 			verdictRun.Name = "verdict"
 			verdictRun.Role = "verdict"
 			verdictRun.Status = model.AgentRunStatusFailed

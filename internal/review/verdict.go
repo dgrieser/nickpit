@@ -218,6 +218,23 @@ func verdictConstraintsFor(in []model.Finding) llm.ResponseConstraints {
 	}
 }
 
+// applyVerdictConstraintFallback coerces a result's overall correctness to the
+// priority-derived verdict constraint when the verdict agent did not produce one
+// (failure or skip fallback). The merge-derived overall fields can disagree with
+// the constraint — "patch is incorrect" for findings whose floor is only P2/P3,
+// or the reverse for a P0 — so a transient verdict failure must not emit a
+// blocking verdict for non-blocking findings (or a non-blocking one when a P0 is
+// present). When the constraint is open (a P1 is present with no P0) the
+// merge-derived fallback is kept.
+func applyVerdictConstraintFallback(result *model.ReviewResult) {
+	if result == nil {
+		return
+	}
+	if allowed := verdictConstraintsFor(result.Findings).AllowedCorrectness; len(allowed) == 1 {
+		result.OverallCorrectness = allowed[0]
+	}
+}
+
 func verdictOutputSchemaSnippetFor(useJSONSchema bool) string {
 	if useJSONSchema {
 		return ""

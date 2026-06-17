@@ -431,6 +431,42 @@ func TestWorkflowFusedPostMergeVerdictFailureFallsBack(t *testing.T) {
 	}
 }
 
+func TestWorkflowFusedPostMergeVerdictFailureCoercesNonBlocking(t *testing.T) {
+	// Only-P2 findings: verdictConstraintsFor requires "patch is correct". The
+	// merge-derived fallback is "patch is incorrect" (findings present), so a
+	// verdict failure must NOT emit a blocking verdict for non-blocking findings.
+	client := &multiAgentLLM{verdictFailErr: errors.New("verdict down")}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "input.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("66666666-6666-4666-8666-666666666666", "Fix fallback issue", "a.go", 1, 2),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+		}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OverallCorrectness != "patch is correct" {
+		t.Fatalf("overall correctness = %q, want constraint-coerced \"patch is correct\"", result.OverallCorrectness)
+	}
+	if !slices.ContainsFunc(result.AgentRuns, func(run model.AgentRun) bool {
+		return run.Role == "verdict" && run.Status == model.AgentRunStatusFailed
+	}) {
+		t.Fatalf("agent runs missing failed verdict: %+v", result.AgentRuns)
+	}
+}
+
 func verifiedPipelineFinding(id, title, file string, line int, priority int) model.Finding {
 	return model.Finding{
 		ID:              id,
