@@ -1,11 +1,34 @@
 package review
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
 )
+
+func TestVerdictEmptyFindingsResetsStaleExplanation(t *testing.T) {
+	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "Merged 3 reviewer finding lists into 2 findings.",
+	}
+	out, run, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{})
+	if err != nil {
+		t.Fatalf("Verdict returned err: %v", err)
+	}
+	if run.Status != model.AgentRunStatusSkipped {
+		t.Fatalf("run status = %v, want skipped", run.Status)
+	}
+	if out.OverallCorrectness != "patch is correct" {
+		t.Fatalf("correctness = %q, want \"patch is correct\"", out.OverallCorrectness)
+	}
+	if out.OverallExplanation != "No finalized findings remained." {
+		t.Fatalf("explanation = %q, want stale text reset", out.OverallExplanation)
+	}
+}
 
 func TestOverallConfidenceFor(t *testing.T) {
 	// finalized builds a finalized finding whose priority floor and confidence are

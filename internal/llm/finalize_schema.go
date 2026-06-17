@@ -118,7 +118,9 @@ func stripOverallFields(root map[string]any) map[string]any {
 	if !ok {
 		panic("llm: schema missing required")
 	}
-	out := required[:0]
+	// Build a fresh slice rather than filtering required[:0] in place, so this
+	// never depends on root["required"] being an unshared copy.
+	out := make([]string, 0, len(required))
 	for _, field := range required {
 		switch field {
 		case "overall_correctness", "overall_explanation", "overall_confidence_score":

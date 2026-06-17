@@ -37,9 +37,11 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		}
 		out.OverallCorrectness = "patch is correct"
 		out.OverallConfidenceScore = overallConfidenceFor("patch is correct", nil)
-		if strings.TrimSpace(out.OverallExplanation) == "" {
-			out.OverallExplanation = "No finalized findings remained."
-		}
+		// Reset any pre-filter explanation rather than preserving it: with no
+		// findings the verdict owns a fresh rationale, and a stale merge summary or
+		// old "incorrect" explanation would contradict the empty, correct result
+		// (e.g. --priority-threshold dropping every finding in the fused pipeline).
+		out.OverallExplanation = "No finalized findings remained."
 		return out, model.AgentRun{Name: "Verdict Review", Role: "verdict", Status: model.AgentRunStatusSkipped}, nil
 	}
 
