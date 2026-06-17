@@ -794,7 +794,7 @@ func appendClusterFindings(clusters [][]model.Finding) []model.Finding {
 
 func singletonFindingClusters(n int) [][]int {
 	clusters := make([][]int, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		clusters[i] = []int{i}
 	}
 	return clusters
