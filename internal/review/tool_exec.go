@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -22,7 +23,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCall
 	groups := make(map[string][]int, len(toolCalls))
 	groupOrder := make([]string, 0, len(toolCalls))
 	for i, toolCall := range toolCalls {
-		key := toolCallConcurrencyKey(toolCall, i)
+		key := e.toolCallConcurrencyKey(toolCall, i, repoRoot)
 		if _, ok := groups[key]; !ok {
 			groupOrder = append(groupOrder, key)
 		}
@@ -51,7 +52,25 @@ func (e *Engine) executeToolCalls(ctx context.Context, repoRoot string, toolCall
 	return results
 }
 
-func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
+// supportsStructuralAnalysis memoizes retrieval.SupportsStructuralAnalysis for a
+// (repoRoot, normalizedPath) pair. Both the dedup-key computation and executeSearch
+// consult it for every search call, and each underlying check performs an os.Stat;
+// the result is deterministic over a review's fixed checkout, so caching it halves
+// the filesystem I/O for high-frequency search operations.
+func (e *Engine) supportsStructuralAnalysis(repoRoot, normalizedPath string) bool {
+	if e.structuralSupport == nil {
+		return retrieval.SupportsStructuralAnalysis(repoRoot, normalizedPath)
+	}
+	key := repoRoot + "\x00" + normalizedPath
+	if v, ok := e.structuralSupport.Load(key); ok {
+		return v.(bool)
+	}
+	v := retrieval.SupportsStructuralAnalysis(repoRoot, normalizedPath)
+	e.structuralSupport.Store(key, v)
+	return v
+}
+
+func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRoot string) string {
 	uniqueKey := fmt.Sprintf("unique\x00%d\x00%s", index, toolCall.ID)
 	switch toolCall.Name {
 	case "inspect_file":
@@ -96,8 +115,14 @@ func toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string {
 			return uniqueKey
 		}
 		query := strings.TrimSpace(args.Query)
-		if matches := searchFunctionQueryPattern.FindStringSubmatch(query); len(matches) == 2 {
-			return callHierarchyDedupKey("find_callers", normalizeToolPath(args.Path), matches[1], defaultCallHierarchyDepth)
+		// Mirror executeSearch's rewrite condition so the dedup key matches how the
+		// call actually executes: a function-name search only collapses into the
+		// find_callers key when the optimization is on AND a backend supports the
+		// target language; otherwise it runs as its own literal search.
+		if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizeToolPath(args.Path)) {
+			if matches := searchFunctionQueryPattern.FindStringSubmatch(query); len(matches) == 2 {
+				return callHierarchyDedupKey("find_callers", normalizeToolPath(args.Path), matches[1], defaultCallHierarchyDepth)
+			}
 		}
 		return uniqueKey
 	default:
@@ -255,7 +280,11 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		args.ContextLines = defaultSearchContextLines
 	}
 	normalizedPath := normalizeToolPath(args.Path)
-	if e.searchToolOptimization {
+	// Only rewrite a function-name search into a structural call-graph lookup when a
+	// backend can actually resolve the target language. Otherwise (e.g. a Rust file)
+	// run the literal/regex search the model asked for, so `redirect_allowed(` is
+	// found by grep instead of routed into a lookup that can only fail.
+	if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizedPath) {
 		if matches := searchFunctionQueryPattern.FindStringSubmatch(args.Query); len(matches) == 2 {
 			symbol := matches[1]
 			key := callHierarchyDedupKey("find_callers", normalizedPath, symbol, defaultCallHierarchyDepth)
@@ -387,6 +416,23 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		hierarchy, err = e.retrieval.FindCallees(ctx, repoRoot, symbol, args.Depth)
 	}
 	if err != nil {
+		// A language with no structural backend can't be analyzed as a call graph, but
+		// the code still exists. Rather than failing, degrade to a literal search for the
+		// symbol so the model gets the definition and its call sites for any file type.
+		// The scope is widened to repo-wide for a single file (mirroring the structural
+		// backends) so callers/uses in other files are still surfaced.
+		var unsupported *retrieval.UnsupportedLanguageError
+		if errors.As(err, &unsupported) {
+			return e.callHierarchySearchFallback(ctx, repoRoot, normalizedPath, args.Symbol, callers, key, state)
+		}
+
+		// Low confidence indicates the analysis ran but has uncertain results due to
+		// dynamic call patterns (closures, function pointers). The LLM should treat
+		// this as partial information rather than complete failure.
+		var lowConf *retrieval.LowConfidenceError
+		if errors.As(err, &lowConf) {
+			return toolError(normalizedPath, "low_confidence", err.Error())
+		}
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
 	state.mu.Lock()
@@ -398,6 +444,38 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		"mode":   hierarchy.Mode,
 		"depth":  hierarchy.Depth,
 		"root":   hierarchy.Root,
+	})
+}
+
+// callHierarchySearchFallback runs a literal search for symbol when no structural
+// backend can analyze its file type, returning a search-style payload tagged as a
+// fallback. The search scope mirrors scopeForHierarchy: a single file is widened to a
+// repo-wide search so callers/uses in other files are still found. The symbol is a
+// plain identifier, so the regex-metachar handling that executeSearch performs is not
+// needed here.
+func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, normalizedPath, symbol string, callers bool, key string, state *toolRoundState) string {
+	mode := "callees"
+	if callers {
+		mode = "callers"
+	}
+	searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
+	e.logf(ctx, "Falling back to literal search for unsupported call hierarchy: mode=%s path=%s symbol=%q search_scope=%q", mode, normalizedPath, symbol, searchScope)
+	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, defaultSearchContextLines, 0, false)
+	if err != nil {
+		return toolError(normalizedPath, "retrieval_failed", err.Error())
+	}
+	state.mu.Lock()
+	state.seenToolCalls[key] = struct{}{}
+	state.mu.Unlock()
+	return mustToolResultJSON(map[string]any{
+		"symbol":       symbol,
+		"path":         normalizedPath,
+		"mode":         mode,
+		"fallback":     "search",
+		"note":         "structural call hierarchy is unavailable for this file type; showing literal search matches for the symbol instead",
+		"query":        results.Query,
+		"result_count": results.ResultCount,
+		"results":      results.Results,
 	})
 }
 

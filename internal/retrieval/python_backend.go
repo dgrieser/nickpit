@@ -95,7 +95,10 @@ func (pythonBackend) findSymbols(_ context.Context, repoRoot, name string, scope
 }
 
 func (pythonBackend) findCallers(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	graph, err := buildPythonGraph(repoRoot, scopeForHierarchy(scope))
+	hierScope := scopeForHierarchy(scope)
+	graph, err := buildStaticGraphCached("python", repoRoot, hierScope, func() (*staticGraph, error) {
+		return buildPythonGraph(repoRoot, hierScope)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +106,10 @@ func (pythonBackend) findCallers(_ context.Context, repoRoot string, symbol *Sym
 }
 
 func (pythonBackend) findCallees(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	graph, err := buildPythonGraph(repoRoot, scopeForHierarchy(scope))
+	hierScope := scopeForHierarchy(scope)
+	graph, err := buildStaticGraphCached("python", repoRoot, hierScope, func() (*staticGraph, error) {
+		return buildPythonGraph(repoRoot, hierScope)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -429,11 +435,4 @@ func stripPythonComment(line string) string {
 		return before
 	}
 	return line
-}
-
-func scopeForHierarchy(scope lookupScope) lookupScope {
-	if scope.IsDir {
-		return scope
-	}
-	return lookupScope{}
 }

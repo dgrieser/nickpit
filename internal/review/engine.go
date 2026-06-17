@@ -36,6 +36,14 @@ type Engine struct {
 	logger                 *logging.Logger
 	searchToolOptimization bool
 	toolchainCapture       func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion
+	// structuralSupport memoizes retrieval.SupportsStructuralAnalysis per
+	// (repoRoot, path). The result is deterministic over a review's fixed
+	// checkout, so caching it avoids a redundant os.Stat on every search call
+	// (the check runs in both toolCallConcurrencyKey and executeSearch). It is a
+	// pointer so withConfig's shallow clones share one cache (and so the Engine
+	// stays copyable — a sync.Map value must not be copied). Its values are bools,
+	// so it is trivially small and intentionally left uncapped.
+	structuralSupport *sync.Map // repoRoot\x00path -> bool
 }
 
 var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
@@ -83,6 +91,7 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		config:                 profile,
 		searchToolOptimization: true,
 		toolchainCapture:       toolchain.Capture,
+		structuralSupport:      &sync.Map{},
 	}
 }
 
