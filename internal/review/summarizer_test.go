@@ -171,46 +171,10 @@ func TestSummarizeShortensOverallExplanation(t *testing.T) {
 	}
 }
 
-func TestSummarizeDisablePatchSummaryInstruction(t *testing.T) {
-	const findingID = "44444444-4444-4444-8444-444444444444"
-	llmClient := &capturingLLM{
-		resps: []*llm.ReviewResponse{
-			{
-				Findings: []model.Finding{
-					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short."}},
-					{ID: overallSummaryID, Summarization: &model.FindingSummarization{Body: "Patch is incorrect because the failure remains."}},
-				},
-			},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	in := &model.ReviewResult{
-		Findings: []model.Finding{
-			{
-				ID:           findingID,
-				Title:        "Fix issue",
-				Body:         "body",
-				Priority:     intPtr(1),
-				CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Finalization: &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
-			},
-		},
-		OverallCorrectness: "patch is incorrect",
-		OverallExplanation: "The patch appears intended to update auth. Patch is incorrect because the failure remains.",
-	}
-
-	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{DisablePatchSummary: true})
-	if err != nil {
-		t.Fatalf("Summarize returned err: %v", err)
-	}
-	sys := llmClient.reqs[0].Messages[0].Content
-	if !strings.Contains(sys, "do NOT include an assumption about what the patch is intended to do") {
-		t.Fatalf("summarize system prompt missing disabled-summary instruction:\n%s", sys)
-	}
-	if out.OverallExplanation != "Patch is incorrect because the failure remains." {
-		t.Fatalf("out.OverallExplanation = %q, want response adopted", out.OverallExplanation)
-	}
-}
+// The summarize prompt no longer carries patch-summary handling — overall
+// explanation (and the DisablePatchSummary instruction) moved to the verdict
+// agent (see the verdict prompt test in finalizer_test.go). Summarize-side
+// overall-explanation shortening is covered by TestSummarizeShortensOverallExplanation.
 
 // When the input carries an overall_explanation but the model omits its
 // synthetic item, the validator forces a retry to try to get it. If the model
