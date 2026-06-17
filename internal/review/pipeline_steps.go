@@ -569,6 +569,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				summarizeWG.Add(1)
 			}
 			go func(idx int, shard []model.Finding) {
+				defer finalizeWG.Done()
 				if fused.hasSummarize {
 					defer summarizeWG.Done()
 				}
@@ -583,14 +584,11 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				finalizeWarningsByCluster[idx] = finalizeWarnings
 				resultMu.Unlock()
 
-				// Signal finalize completion now, before summarize, so verdict
-				// (which gates on finalizeWG.Wait) starts as soon as all finalizes
-				// are done and runs concurrently with the still-running per-cluster
-				// summaries. Verdict reads only the finalized findings, never the
-				// summaries, so this is safe. Reached on every path (runFinalizeShard
-				// never returns early), so the count stays balanced.
-				finalizeWG.Done()
-
+				// finalizeWG.Done() is deferred until after this cluster's summarize
+				// completes: the post-finalize stage (ID normalization, verdict
+				// prompt) reads the finalized findings, which the summarize pass
+				// also reads, so verdict must not overlap the cluster summaries.
+				// Summarize still starts the instant this cluster's finalize ends.
 				if fused.hasSummarize {
 					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(ctx, summarizeSC, finalized)
 					resultMu.Lock()
