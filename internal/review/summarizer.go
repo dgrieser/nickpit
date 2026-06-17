@@ -42,6 +42,15 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: nil review result")
 	}
+	// With no findings the overall explanation is a short static message (e.g.
+	// "No finalized findings remained."), so there is nothing worth an LLM call.
+	if len(in.Findings) == 0 {
+		out, err := in.Clone()
+		if err != nil {
+			return nil, model.AgentRun{}, fmt.Errorf("summarize: cloning input result: %w", err)
+		}
+		return out, model.AgentRun{Name: "Summarize Review", Role: "summarize", Status: model.AgentRunStatusSkipped}, nil
+	}
 	items := summarizeItemsForResult(in, strings.TrimSpace(in.OverallExplanation) != "")
 	if len(items) == 0 {
 		out, err := in.Clone()

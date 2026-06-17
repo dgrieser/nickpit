@@ -619,7 +619,9 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 		var overallSummarizeRun *model.AgentRun
 		overallSummarizeWarnings := []string(nil)
-		if fused.hasSummarize {
+		// With no finalized findings the verdict's overall explanation is a short
+		// static message, so skip the overall-summary LLM call entirely.
+		if fused.hasSummarize && len(finalizedFindings) > 0 {
 			overall, run, warnings := runOverallSummarize(ctx, summarizeSC, verdict.OverallExplanation)
 			verdict.OverallExplanation = overall
 			overallSummarizeRun = run
