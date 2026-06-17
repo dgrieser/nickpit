@@ -569,10 +569,6 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				summarizeWG.Add(1)
 			}
 			go func(idx int, shard []model.Finding) {
-				defer finalizeWG.Done()
-				if fused.hasSummarize {
-					defer summarizeWG.Done()
-				}
 				shardResult := &model.ReviewResult{Findings: append([]model.Finding(nil), shard...)}
 				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(ctx, finalizeSC, st, shardResult)
 
@@ -584,13 +580,30 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				finalizeWarningsByCluster[idx] = finalizeWarnings
 				resultMu.Unlock()
 
-				// finalizeWG.Done() is deferred until after this cluster's summarize
-				// completes: the post-finalize stage (ID normalization, verdict
-				// prompt) reads the finalized findings, which the summarize pass
-				// also reads, so verdict must not overlap the cluster summaries.
-				// Summarize still starts the instant this cluster's finalize ends.
+				// Snapshot the summarize input before releasing the finalize barrier.
+				// After the barrier the verdict path normalizes finalized finding IDs
+				// (which mutates the shared Verification pointers), and that runs
+				// concurrently with this summary — so summarize must read an
+				// independent deep copy, not the finalized findings themselves.
+				var summarizeInput *model.ReviewResult
 				if fused.hasSummarize {
-					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(ctx, summarizeSC, finalized)
+					clone, err := finalized.Clone()
+					if err != nil {
+						clone = finalized
+						mergeSC.Engine.logf(ctx, "Summarize input clone failed; using shared finalized result: error=%v", err)
+					}
+					summarizeInput = clone
+				}
+
+				// Release the finalize barrier now (not deferred to after summarize)
+				// so the verdict and overall summary overlap the remaining per-cluster
+				// summaries. Reached on every path — runFinalizeShard never returns
+				// early — so the count stays balanced.
+				finalizeWG.Done()
+
+				if fused.hasSummarize {
+					defer summarizeWG.Done()
+					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(ctx, summarizeSC, summarizeInput)
 					resultMu.Lock()
 					summarizedByCluster[idx] = append([]model.Finding(nil), summarized.Findings...)
 					if summarizeRun != nil {
