@@ -790,6 +790,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 			}
 			ctx := logging.WithProgressInfo(cmd.Context(), profileProgressInfo(profile))
 			a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, checkReq))
+			a.logSmallModelReady(ctx, profile, checkReq)
 			a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, checkReq))
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
@@ -908,6 +909,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
 	}
 	a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, req))
+	a.logSmallModelReady(ctx, profile, req)
 	a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
@@ -1703,6 +1705,19 @@ func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
 		Effort:  profile.ReasoningEffort,
 		BaseURL: profile.BaseURL,
 	}
+}
+
+// logSmallModelReady prints a Model ready line for the profile's small model
+// when it resolves to a model different from the primary, so --show-progress
+// surfaces the second model in play (the one @small steps run on). When the
+// small config inherits the primary model there is nothing extra to show.
+func (a *app) logSmallModelReady(ctx context.Context, profile config.Profile, req model.ReviewRequest) {
+	small := config.EffectiveSmallProfile(profile)
+	if small.Model == profile.Model {
+		return
+	}
+	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(small))
+	a.logProgress(smallCtx, logging.StageModel, logging.StateReady, modelSummary(small, req))
 }
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {

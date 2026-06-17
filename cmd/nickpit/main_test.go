@@ -661,6 +661,77 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 	}
 }
 
+func TestRunReviewShowProgressPrintsSmallModelWhenDifferent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	stderr := captureStderr(t, func() {
+		_ = (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
+			Model:            "Primary-Big",
+			BaseURL:          server.URL,
+			APIKey:           "token",
+			ReasoningEffort:  "high",
+			MaxContextTokens: 120000,
+			UseJSONSchema:    true,
+			Small:            config.SmallModelConfig{Model: "Small-Fast", ReasoningEffort: "low"},
+		}, model.ReviewRequest{
+			Mode:              model.ModeLocal,
+			RepoRoot:          t.TempDir(),
+			UseJSONSchema:     true,
+			PriorityThreshold: "p3",
+		})
+	})
+
+	wantPrimary := "Model      [Primary-Big:high @ " + server.URL + "] ready 120k context"
+	if !strings.Contains(stderr, wantPrimary) {
+		t.Fatalf("stderr missing primary model line\nwant: %s\nstderr:\n%s", wantPrimary, stderr)
+	}
+	wantSmall := "Model      [Small-Fast:low @ " + server.URL + "] ready 120k context"
+	if !strings.Contains(stderr, wantSmall) {
+		t.Fatalf("stderr missing small model line\nwant: %s\nstderr:\n%s", wantSmall, stderr)
+	}
+}
+
+func TestRunReviewShowProgressOmitsSmallModelWhenSame(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	stderr := captureStderr(t, func() {
+		_ = (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
+			Model:            "Primary-Big",
+			BaseURL:          server.URL,
+			APIKey:           "token",
+			ReasoningEffort:  "high",
+			MaxContextTokens: 120000,
+			UseJSONSchema:    true,
+		}, model.ReviewRequest{
+			Mode:              model.ModeLocal,
+			RepoRoot:          t.TempDir(),
+			UseJSONSchema:     true,
+			PriorityThreshold: "p3",
+		})
+	})
+
+	// No small config → small inherits the primary model → only one Model line.
+	if got := strings.Count(stderr, "] ready 120k context"); got != 1 {
+		t.Fatalf("model ready lines = %d, want 1 (no separate small model)\nstderr:\n%s", got, stderr)
+	}
+}
+
 func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
 	wantErr := errors.New("source called")
 	source := &recordingSource{err: wantErr}
