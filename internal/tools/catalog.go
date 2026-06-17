@@ -78,7 +78,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "find_callers",
 		APIDescription:     "Resolve function by symbol name and return caller hierarchy including method bodies",
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function",
-		Note:               "For Go, Python, JavaScript/TypeScript, or Rust code, prefer this over `search` when locating a function by name (other languages are not supported; use `search` there)",
+		Note:               "Prefer this over `search` when locating a function by name (other languages are not supported; use `search` there)",
 		Parameters:         callHierarchyParameters(),
 	},
 	{
