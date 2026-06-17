@@ -106,14 +106,13 @@ func TestBuildStaticGraphCachedReusesAndIsConcurrencySafe(t *testing.T) {
 
 	// Concurrent callers share the cached value without data races.
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
-		wg.Add(1)
-		go func() {
+	for range 16 {
+		wg.Go(func() {
 			defer wg.Done()
 			if _, err := buildStaticGraphCached("rust-reuse", repoRoot, scope, build); err != nil {
 				t.Errorf("concurrent buildStaticGraphCached: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 }
