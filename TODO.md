@@ -1,6 +1,5 @@
 # TODO
 
-- Print Small Model also
 - FindingMarker(id) = <!-- nickpit:finding:<uuid> --> (reviewmd/render.go:30); existingMarkers (gitlab/publish.go:94, github too) skips already-posted findings on re-run.
   But the marker key is the finding UUID, minted randomly per run. Run v3 can never match v2's markers → every re-run reposts everything as new comments.
   Only protects re-publish of the same run.
