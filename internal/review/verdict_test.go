@@ -41,6 +41,12 @@ func TestOverallConfidenceFor(t *testing.T) {
 			want:        0.6,
 		},
 		{
+			name:        "correct: a justified P1 override tempers (not ignored)",
+			correctness: "patch is correct",
+			findings:    []model.Finding{finalized(1, 0.9), finalized(2, 0.3)},
+			want:        0.55,
+		},
+		{
 			name:        "correct: no findings is 1.0",
 			correctness: "patch is correct",
 			findings:    nil,

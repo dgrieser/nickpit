@@ -248,8 +248,8 @@ func applyVerdictFallback(result *model.ReviewResult) {
 //
 //   - "patch is incorrect": max confidence over the deciding findings — those at
 //     floor 0, or (if none) floor 1. Defensive fallback to all findings.
-//   - "patch is correct":   1 - 0.5*max(confidence over non-blocking findings,
-//     floor >= 2); no findings => 1.0.
+//   - "patch is correct":   1 - 0.5*max(confidence over all findings); no findings
+//     => 1.0.
 func overallConfidenceFor(correctness string, findings []model.Finding) float64 {
 	if correctness == "patch is incorrect" {
 		deciding := findingsAtFloor(findings, 0)
@@ -261,14 +261,12 @@ func overallConfidenceFor(correctness string, findings []model.Finding) float64 
 		}
 		return roundConfidenceScore(maxFindingConfidence(deciding))
 	}
-	// "patch is correct": only non-blocking (floor >= 2) findings remain.
-	var nonBlocking []model.Finding
-	for _, f := range findings {
-		if findingPriorityFloor(f) >= 2 {
-			nonBlocking = append(nonBlocking, f)
-		}
-	}
-	return roundConfidenceScore(1 - 0.5*maxFindingConfidence(nonBlocking))
+	// "patch is correct": temper by the strongest finding the verdict chose NOT to
+	// treat as blocking. A floor-0 finding cannot occur here (the constraint forces
+	// "incorrect"), but a floor-1 (P1) can — the prompt allows a justified "correct"
+	// verdict over a P1 — so it must temper too, not be filtered out. No findings
+	// => max is 0 => 1.0.
+	return roundConfidenceScore(1 - 0.5*maxFindingConfidence(findings))
 }
 
 func findingsAtFloor(findings []model.Finding, floor int) []model.Finding {
