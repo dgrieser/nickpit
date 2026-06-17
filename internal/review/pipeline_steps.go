@@ -587,12 +587,16 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				// independent deep copy, not the finalized findings themselves.
 				var summarizeInput *model.ReviewResult
 				if fused.hasSummarize {
-					clone, err := finalized.Clone()
-					if err != nil {
-						clone = finalized
-						mergeSC.Engine.logf(ctx, "Summarize input clone failed; using shared finalized result: error=%v", err)
+					if clone, err := finalized.Clone(); err == nil {
+						summarizeInput = clone
+					} else {
+						// Clone of an in-memory result effectively never fails, but if
+						// it does, fall back to a manual deep copy rather than sharing
+						// the finalized findings — the post-barrier ID normalization
+						// mutates Verification.ID through those pointers concurrently.
+						mergeSC.Engine.logf(ctx, "Summarize input clone failed; manual-copying to avoid a data race: error=%v", err)
+						summarizeInput = &model.ReviewResult{Findings: deepCopyFindingsForSummarize(finalized.Findings)}
 					}
-					summarizeInput = clone
 				}
 
 				// Release the finalize barrier now (not deferred to after summarize)
@@ -645,7 +649,21 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		finalFindings := finalizedFindings
 		if fused.hasSummarize {
 			finalFindings = appendClusterFindings(summarizedByCluster)
-			normalizeFindingIDsWithSeen(finalFindings, nil)
+			// Summarize ran on a pre-normalization clone, so adopt the IDs already
+			// assigned to finalizedFindings (same findings, same per-cluster order)
+			// rather than re-normalizing — re-normalizing would generate fresh random
+			// IDs and drift from the verdict's view. Fall back to normalization only
+			// if the counts somehow disagree.
+			if len(finalFindings) == len(finalizedFindings) {
+				for i := range finalFindings {
+					finalFindings[i].ID = finalizedFindings[i].ID
+					if finalFindings[i].Verification != nil {
+						finalFindings[i].Verification.ID = finalizedFindings[i].ID
+					}
+				}
+			} else {
+				normalizeFindingIDsWithSeen(finalFindings, nil)
+			}
 		}
 		verdict.Findings = finalFindings
 
@@ -801,6 +819,27 @@ func appendClusterFindings(clusters [][]model.Finding) []model.Finding {
 	var out []model.Finding
 	for _, findings := range clusters {
 		out = append(out, findings...)
+	}
+	return out
+}
+
+// deepCopyFindingsForSummarize copies findings with their Verification and
+// Finalization pointers detached, so a concurrent post-finalize ID normalization
+// (which writes Verification.ID through those pointers) cannot race the summarize
+// pass reading this copy. Fallback for the effectively-impossible case where
+// ReviewResult.Clone fails.
+func deepCopyFindingsForSummarize(in []model.Finding) []model.Finding {
+	out := make([]model.Finding, len(in))
+	for i, f := range in {
+		out[i] = f
+		if f.Verification != nil {
+			v := *f.Verification
+			out[i].Verification = &v
+		}
+		if f.Finalization != nil {
+			fin := *f.Finalization
+			out[i].Finalization = &fin
+		}
 	}
 	return out
 }

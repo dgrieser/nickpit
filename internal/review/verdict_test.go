@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/model"
@@ -59,6 +60,37 @@ func TestOverallConfidenceFor(t *testing.T) {
 				t.Fatalf("overallConfidenceFor = %.2f, want %.2f", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestApplyVerdictFallbackSynthesizesEmptyOverall(t *testing.T) {
+	p1 := func(conf float64) model.Finding {
+		return model.Finding{
+			Priority:     intPtr(1),
+			Verification: &model.FindingVerification{Priority: 1, ConfidenceScore: conf},
+			Finalization: &model.FindingFinalization{Priority: 1, ConfidenceScore: conf},
+		}
+	}
+
+	// Open constraint (P1, no P0), no preliminary overall fields: must synthesize a
+	// valid, non-empty verdict rather than emit empty correctness/explanation.
+	res := &model.ReviewResult{Findings: []model.Finding{p1(0.8)}}
+	applyVerdictFallback(res)
+	if res.OverallCorrectness != "patch is incorrect" {
+		t.Fatalf("correctness = %q, want conservative \"patch is incorrect\"", res.OverallCorrectness)
+	}
+	if strings.TrimSpace(res.OverallExplanation) == "" {
+		t.Fatal("explanation should be synthesized, got empty")
+	}
+	if res.OverallConfidenceScore != 0.8 {
+		t.Fatalf("confidence = %.2f, want 0.8", res.OverallConfidenceScore)
+	}
+
+	// A preliminary correctness under an open constraint is preserved, not overwritten.
+	kept := &model.ReviewResult{Findings: []model.Finding{p1(0.8)}, OverallCorrectness: "patch is correct", OverallExplanation: "preliminary"}
+	applyVerdictFallback(kept)
+	if kept.OverallCorrectness != "patch is correct" || kept.OverallExplanation != "preliminary" {
+		t.Fatalf("preliminary overall fields not preserved: %q / %q", kept.OverallCorrectness, kept.OverallExplanation)
 	}
 }
 

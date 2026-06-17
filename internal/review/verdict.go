@@ -134,7 +134,7 @@ func verdictOutputValidator() func(*llm.ReviewResponse) *llm.InvalidResponseErro
 		return &llm.InvalidResponseError{
 			RawContent:      raw,
 			Reason:          "verdict_output_mismatch",
-			MissingFields:   []string{"overall_correctness", "overall_explanation", "overall_confidence_score"},
+			MissingFields:   []string{"overall_correctness", "overall_explanation"},
 			ReasoningEffort: reasoningEffort,
 		}
 	}
@@ -237,6 +237,15 @@ func applyVerdictFallback(result *model.ReviewResult) {
 	}
 	if allowed := verdictConstraintsFor(result.Findings).AllowedCorrectness; len(allowed) == 1 {
 		result.OverallCorrectness = allowed[0]
+	} else if strings.TrimSpace(result.OverallCorrectness) == "" {
+		// Open constraint (a P1 with no P0) and no preliminary correctness to keep
+		// — e.g. verdict run directly on a bare findings array. Default
+		// conservatively to "patch is incorrect" (the prompt's P1 default) so the
+		// soft-failure path never emits an empty verdict.
+		result.OverallCorrectness = "patch is incorrect"
+	}
+	if strings.TrimSpace(result.OverallExplanation) == "" {
+		result.OverallExplanation = "Verdict agent unavailable; overall correctness inferred from finding priorities."
 	}
 	result.OverallConfidenceScore = overallConfidenceFor(result.OverallCorrectness, result.Findings)
 }
