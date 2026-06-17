@@ -726,7 +726,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
 		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
-		applyVerdictConstraintFallback(in)
+		applyVerdictFallback(in)
 		run.Name = "verdict"
 		run.Role = "verdict"
 		run.Status = model.AgentRunStatusFailed
@@ -976,7 +976,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 		if err != nil {
 			sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 			st.warnings = append(st.warnings, fmt.Sprintf("Verdict failed: %v; using merged overall fields", err))
-			applyVerdictConstraintFallback(in)
+			applyVerdictFallback(in)
 			verdictRun.Name = "verdict"
 			verdictRun.Role = "verdict"
 			verdictRun.Status = model.AgentRunStatusFailed

@@ -28,7 +28,7 @@ Your job:
    - do not iterate every finding
    - only reference findings as evidence for the final verdict
    - write one continuous markdown body without headings
-2. Decide final `overall_correctness` and `overall_confidence_score`.
+2. Decide final `overall_correctness`.
 
 DO NOT introduce new findings.
 
@@ -42,8 +42,7 @@ Overall correctness rules:
 ## OUTPUT FORMAT
 {{.OutputFormatSnippet}}
 {{if .OutputSchemaSnippet}}
-- output only `overall_correctness`, `overall_explanation`, and `overall_confidence_score`
+- output only `overall_correctness` and `overall_explanation`
 - `overall_correctness` is one of `"patch is correct"` or `"patch is incorrect"`
 - `overall_explanation` is non-empty markdown
-- `overall_confidence_score` is a number from 0 to 1
 {{end}}

@@ -252,8 +252,10 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 			t.Fatalf("finding %s summarization = %#v, want summarized finalized body", finding.ID, finding.Summarization)
 		}
 	}
-	if result.OverallCorrectness != "patch is incorrect" || result.OverallConfidenceScore != 0.88 {
-		t.Fatalf("overall = %q %.2f, want verdict-owned values", result.OverallCorrectness, result.OverallConfidenceScore)
+	// overall_confidence_score is code-computed: verdict "patch is incorrect" with
+	// floor-1 deciding findings → max finalization confidence (0.6*0.9 + 0.4*0.7 = 0.82).
+	if result.OverallCorrectness != "patch is incorrect" || result.OverallConfidenceScore != 0.82 {
+		t.Fatalf("overall = %q %.2f, want patch is incorrect / 0.82", result.OverallCorrectness, result.OverallConfidenceScore)
 	}
 	if !strings.Contains(result.OverallExplanation, "SUMMARY_MARKER VERDICT_MARKER findings=3") {
 		t.Fatalf("overall explanation = %q, want summarized verdict text", result.OverallExplanation)
@@ -416,6 +418,11 @@ func TestWorkflowFusedPostMergeVerdictFailureFallsBack(t *testing.T) {
 	if result.OverallCorrectness != "patch is incorrect" {
 		t.Fatalf("overall correctness = %q, want merge-derived fallback", result.OverallCorrectness)
 	}
+	// Confidence is code-computed even on verdict failure: floor-1 deciding finding,
+	// max finalization confidence 0.6*0.9 + 0.4*0.7 = 0.82.
+	if result.OverallConfidenceScore != 0.82 {
+		t.Fatalf("overall confidence = %.2f, want code-computed 0.82", result.OverallConfidenceScore)
+	}
 	if !strings.Contains(result.OverallExplanation, "Merged 1 reviewer finding lists") {
 		t.Fatalf("overall explanation = %q, want merge-derived fallback", result.OverallExplanation)
 	}
@@ -459,6 +466,11 @@ func TestWorkflowFusedPostMergeVerdictFailureCoercesNonBlocking(t *testing.T) {
 	}
 	if result.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall correctness = %q, want constraint-coerced \"patch is correct\"", result.OverallCorrectness)
+	}
+	// Code-computed confidence for a non-blocking verdict: 1 - 0.5*max(non-blocking
+	// finalization confidence 0.82) = 0.59.
+	if result.OverallConfidenceScore != 0.59 {
+		t.Fatalf("overall confidence = %.2f, want code-computed 0.59", result.OverallConfidenceScore)
 	}
 	if !slices.ContainsFunc(result.AgentRuns, func(run model.AgentRun) bool {
 		return run.Role == "verdict" && run.Status == model.AgentRunStatusFailed

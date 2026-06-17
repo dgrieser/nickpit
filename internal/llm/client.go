@@ -2117,7 +2117,7 @@ func parseVerdictResponse(content string, constraints ResponseConstraints) (*Rev
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
 	}
-	if missing := missingVerdictFields(&parsed, content, constraints); len(missing) > 0 {
+	if missing := missingVerdictFields(&parsed, constraints); len(missing) > 0 {
 		return &parsed, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
@@ -2127,8 +2127,7 @@ func parseVerdictResponse(content string, constraints ResponseConstraints) (*Rev
 	return &parsed, nil
 }
 
-func missingVerdictFields(parsed *ReviewResponse, content string, constraints ResponseConstraints) []string {
-	raw, _ := mergedRawReviewBlocks(content)
+func missingVerdictFields(parsed *ReviewResponse, constraints ResponseConstraints) []string {
 	var missing []string
 	allowed := constraints.AllowedCorrectness
 	if len(allowed) == 0 {
@@ -2142,9 +2141,7 @@ func missingVerdictFields(parsed *ReviewResponse, content string, constraints Re
 	if strings.TrimSpace(parsed.OverallExplanation) == "" {
 		missing = append(missing, "overall_explanation")
 	}
-	if _, ok := raw["overall_confidence_score"]; !ok {
-		missing = append(missing, "overall_confidence_score")
-	}
+	// overall_confidence_score is computed in code, not required from the model.
 	return missing
 }
 

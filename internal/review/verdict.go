@@ -36,6 +36,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 			return nil, model.AgentRun{}, fmt.Errorf("verdict: cloning input result: %w", err)
 		}
 		out.OverallCorrectness = "patch is correct"
+		out.OverallConfidenceScore = overallConfidenceFor("patch is correct", nil)
 		if strings.TrimSpace(out.OverallExplanation) == "" {
 			out.OverallExplanation = "No finalized findings remained."
 		}
@@ -112,7 +113,9 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	}
 	out.OverallCorrectness = result.resp.OverallCorrectness
 	out.OverallExplanation = result.resp.OverallExplanation
-	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
+	// overall_confidence_score is computed deterministically in code (not emitted
+	// by the LLM), anchored to the deciding findings' confidence.
+	out.OverallConfidenceScore = overallConfidenceFor(out.OverallCorrectness, out.Findings)
 	e.logProgress(logging.StageVerdict, logging.StateDone, fmt.Sprintf("findings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s runtime=%s", len(in.Findings), model.HumanTokens(result.run.TokensUsed.PromptTokens), model.HumanTokens(result.run.TokensUsed.CompletionTokens), model.HumanTokens(result.run.TokensUsed.TotalTokens), model.HumanDuration(time.Since(verdictStart))))
 	return out, result.run, nil
 }
@@ -218,21 +221,86 @@ func verdictConstraintsFor(in []model.Finding) llm.ResponseConstraints {
 	}
 }
 
-// applyVerdictConstraintFallback coerces a result's overall correctness to the
-// priority-derived verdict constraint when the verdict agent did not produce one
-// (failure or skip fallback). The merge-derived overall fields can disagree with
-// the constraint — "patch is incorrect" for findings whose floor is only P2/P3,
-// or the reverse for a P0 — so a transient verdict failure must not emit a
-// blocking verdict for non-blocking findings (or a non-blocking one when a P0 is
-// present). When the constraint is open (a P1 is present with no P0) the
-// merge-derived fallback is kept.
-func applyVerdictConstraintFallback(result *model.ReviewResult) {
+// applyVerdictFallback fixes up a result's overall fields when the verdict agent
+// did not produce them (failure or skip fallback). It first coerces overall
+// correctness to the priority-derived constraint: the merge-derived value can
+// disagree with the constraint — "patch is incorrect" for findings whose floor is
+// only P2/P3, or the reverse for a P0 — so a transient verdict failure must not
+// emit a blocking verdict for non-blocking findings (or a non-blocking one when a
+// P0 is present). When the constraint is open (a P1 with no P0) the merge-derived
+// correctness is kept. It then recomputes overall confidence from the (possibly
+// coerced) correctness so the fallback matches the success path rather than
+// carrying the merge-derived maxOverallConfidence.
+func applyVerdictFallback(result *model.ReviewResult) {
 	if result == nil {
 		return
 	}
 	if allowed := verdictConstraintsFor(result.Findings).AllowedCorrectness; len(allowed) == 1 {
 		result.OverallCorrectness = allowed[0]
 	}
+	result.OverallConfidenceScore = overallConfidenceFor(result.OverallCorrectness, result.Findings)
+}
+
+// overallConfidenceFor computes the top-line verdict confidence deterministically
+// from the finalized findings, anchored to the priority floor that drove the
+// correctness decision. Like the per-finding finalization.confidence_score, this
+// is computed in code rather than emitted by the LLM.
+//
+//   - "patch is incorrect": max confidence over the deciding findings — those at
+//     floor 0, or (if none) floor 1. Defensive fallback to all findings.
+//   - "patch is correct":   1 - 0.5*max(confidence over non-blocking findings,
+//     floor >= 2); no findings => 1.0.
+func overallConfidenceFor(correctness string, findings []model.Finding) float64 {
+	if correctness == "patch is incorrect" {
+		deciding := findingsAtFloor(findings, 0)
+		if len(deciding) == 0 {
+			deciding = findingsAtFloor(findings, 1)
+		}
+		if len(deciding) == 0 {
+			deciding = findings
+		}
+		return roundConfidenceScore(maxFindingConfidence(deciding))
+	}
+	// "patch is correct": only non-blocking (floor >= 2) findings remain.
+	var nonBlocking []model.Finding
+	for _, f := range findings {
+		if findingPriorityFloor(f) >= 2 {
+			nonBlocking = append(nonBlocking, f)
+		}
+	}
+	return roundConfidenceScore(1 - 0.5*maxFindingConfidence(nonBlocking))
+}
+
+func findingsAtFloor(findings []model.Finding, floor int) []model.Finding {
+	var out []model.Finding
+	for _, f := range findings {
+		if findingPriorityFloor(f) == floor {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func maxFindingConfidence(findings []model.Finding) float64 {
+	max := 0.0
+	for _, f := range findings {
+		if c := findingConfidence(f); c > max {
+			max = c
+		}
+	}
+	return max
+}
+
+// findingConfidence reads a finding's authoritative confidence: the code-computed
+// finalization score, falling back to the verifier's, then the reviewer's.
+func findingConfidence(f model.Finding) float64 {
+	if f.Finalization != nil {
+		return f.Finalization.ConfidenceScore
+	}
+	if f.Verification != nil {
+		return f.Verification.ConfidenceScore
+	}
+	return f.ConfidenceScore
 }
 
 func verdictOutputSchemaSnippetFor(useJSONSchema bool) string {
