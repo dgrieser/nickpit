@@ -65,7 +65,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder",
 		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches",
-		Note:               "For Go, Python, JavaScript/TypeScript, or Rust code, prefer `find_callers` over `search` when locating a function by name; for other languages use `search` directly",
+		Note:               "Prefer `find_callers` over `search` when locating a function by name; for other languages use `search` directly",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
