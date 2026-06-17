@@ -117,6 +117,57 @@ func TestApplyVerdictFallbackSynthesizesEmptyOverall(t *testing.T) {
 	}
 }
 
+func TestApplyVerdictFallbackReplacesStaleExplanationOnCoercion(t *testing.T) {
+	fin := func(priority int, conf float64) model.Finding {
+		return model.Finding{
+			Priority:     intPtr(priority),
+			Verification: &model.FindingVerification{Priority: priority, ConfidenceScore: conf},
+			Finalization: &model.FindingFinalization{Priority: priority, ConfidenceScore: conf},
+		}
+	}
+	const synthesized = "inferred from finding priorities"
+
+	// P2/P3 only → forced "patch is correct"; the stale "incorrect" explanation
+	// must be replaced so it doesn't contradict the coerced verdict.
+	toCorrect := &model.ReviewResult{
+		Findings:           []model.Finding{fin(2, 0.8)},
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "patch is incorrect because the failure remains",
+	}
+	applyVerdictFallback(toCorrect)
+	if toCorrect.OverallCorrectness != "patch is correct" {
+		t.Fatalf("correctness = %q, want patch is correct", toCorrect.OverallCorrectness)
+	}
+	if !strings.Contains(toCorrect.OverallExplanation, synthesized) {
+		t.Fatalf("explanation = %q, want stale text replaced", toCorrect.OverallExplanation)
+	}
+
+	// P0 → forced "patch is incorrect"; stale "correct" explanation must be replaced.
+	toIncorrect := &model.ReviewResult{
+		Findings:           []model.Finding{fin(0, 0.9)},
+		OverallCorrectness: "patch is correct",
+		OverallExplanation: "patch is correct; no blocking issues",
+	}
+	applyVerdictFallback(toIncorrect)
+	if toIncorrect.OverallCorrectness != "patch is incorrect" {
+		t.Fatalf("correctness = %q, want patch is incorrect", toIncorrect.OverallCorrectness)
+	}
+	if !strings.Contains(toIncorrect.OverallExplanation, synthesized) {
+		t.Fatalf("explanation = %q, want stale text replaced", toIncorrect.OverallExplanation)
+	}
+
+	// Verdict unchanged (already matches the P0 constraint): explanation preserved.
+	kept := &model.ReviewResult{
+		Findings:           []model.Finding{fin(0, 0.9)},
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "valid incorrect rationale",
+	}
+	applyVerdictFallback(kept)
+	if kept.OverallExplanation != "valid incorrect rationale" {
+		t.Fatalf("explanation = %q, want preserved when verdict unchanged", kept.OverallExplanation)
+	}
+}
+
 func TestOverallConfidenceForConfidenceSourceFallback(t *testing.T) {
 	// No finalization → verifier confidence.
 	verifyOnly := model.Finding{

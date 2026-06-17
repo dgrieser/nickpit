@@ -472,6 +472,11 @@ func TestWorkflowFusedPostMergeVerdictFailureCoercesNonBlocking(t *testing.T) {
 	if result.OverallConfidenceScore != 0.59 {
 		t.Fatalf("overall confidence = %.2f, want code-computed 0.59", result.OverallConfidenceScore)
 	}
+	// Coercing the verdict to "patch is correct" must drop the merge-derived
+	// explanation, which would otherwise read as a "patch is incorrect" rationale.
+	if strings.Contains(result.OverallExplanation, "Merged") {
+		t.Fatalf("overall explanation = %q, want stale merge text replaced after coercion", result.OverallExplanation)
+	}
 	if !slices.ContainsFunc(result.AgentRuns, func(run model.AgentRun) bool {
 		return run.Role == "verdict" && run.Status == model.AgentRunStatusFailed
 	}) {

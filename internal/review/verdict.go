@@ -237,6 +237,7 @@ func applyVerdictFallback(result *model.ReviewResult) {
 	if result == nil {
 		return
 	}
+	before := result.OverallCorrectness
 	if allowed := verdictConstraintsFor(result.Findings).AllowedCorrectness; len(allowed) == 1 {
 		result.OverallCorrectness = allowed[0]
 	} else if strings.TrimSpace(result.OverallCorrectness) == "" {
@@ -246,7 +247,10 @@ func applyVerdictFallback(result *model.ReviewResult) {
 		// soft-failure path never emits an empty verdict.
 		result.OverallCorrectness = "patch is incorrect"
 	}
-	if strings.TrimSpace(result.OverallExplanation) == "" {
+	// Replace the explanation whenever the fallback changed the verdict — a kept
+	// stale explanation would state the opposite of the coerced correctness — or
+	// when none was provided.
+	if result.OverallCorrectness != before || strings.TrimSpace(result.OverallExplanation) == "" {
 		result.OverallExplanation = "Verdict agent unavailable; overall correctness inferred from finding priorities."
 	}
 	result.OverallConfidenceScore = overallConfidenceFor(result.OverallCorrectness, result.Findings)
