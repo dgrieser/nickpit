@@ -108,7 +108,6 @@ func TestBuildStaticGraphCachedReusesAndIsConcurrencySafe(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
-			defer wg.Done()
 			if _, err := buildStaticGraphCached("rust-reuse", repoRoot, scope, build); err != nil {
 				t.Errorf("concurrent buildStaticGraphCached: %v", err)
 			}
