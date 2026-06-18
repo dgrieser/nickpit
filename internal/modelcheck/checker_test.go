@@ -391,6 +391,18 @@ func schemaProbeRequestCount(client *scriptedClient) int {
 	return count
 }
 
+func TestProbeInfoPrefixesModelAlias(t *testing.T) {
+	checker := NewForModel(nil, config.Profile{}, "Qwen-Model", "none")
+	checker.SetModelAlias("@small")
+	if got, want := checker.probeInfo("configured_json_schema", "none").Model, "@small Qwen-Model"; got != want {
+		t.Fatalf("probe model = %q, want %q", got, want)
+	}
+	checker.SetModelAlias("")
+	if got, want := checker.probeInfo("configured_json_schema", "none").Model, "Qwen-Model"; got != want {
+		t.Fatalf("probe model without alias = %q, want %q", got, want)
+	}
+}
+
 func TestResultSummaryIncludesCompatibility(t *testing.T) {
 	result := Result{
 		Probes: []ProbeResult{

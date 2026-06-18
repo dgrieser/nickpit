@@ -725,7 +725,7 @@ func TestRunReviewShowProgressPrintsSmallModelWhenDifferent(t *testing.T) {
 	if !strings.Contains(stderr, wantPrimary) {
 		t.Fatalf("stderr missing primary model line\nwant: %s\nstderr:\n%s", wantPrimary, stderr)
 	}
-	wantSmall := "Model      [Small-Fast:low @ " + server.URL + " · @small] ready 120k context"
+	wantSmall := "Model      [@small Small-Fast:low @ " + server.URL + "] ready 120k context"
 	if !strings.Contains(stderr, wantSmall) {
 		t.Fatalf("stderr missing small model line\nwant: %s\nstderr:\n%s", wantSmall, stderr)
 	}

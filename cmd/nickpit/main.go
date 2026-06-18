@@ -804,7 +804,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-			result, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, a.refreshModelCheck)
+			result, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, "", a.refreshModelCheck)
 			if err != nil {
 				return err
 			}
@@ -931,7 +931,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	if needsLLMSetup && !a.skipModelCheck {
-		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, false)
+		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, "", false)
 		if err != nil {
 			return err
 		}
@@ -1142,7 +1142,7 @@ func (a *app) specProfile() (string, error) {
 	return spec.Profile, nil
 }
 
-func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort string, refresh bool) (modelcheck.Result, error) {
+func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort, alias string, refresh bool) (modelcheck.Result, error) {
 	settings := requestSettingsFingerprint(profile)
 	if !refresh {
 		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
@@ -1169,6 +1169,10 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	checker := modelcheck.NewForModel(client, profile, model, effort)
 	checker.SetLogger(a.logger)
 	checker.SetParallel(!a.disableParallelToolCalls)
+	// alias ("@small" for the small model, empty for the primary) is shown before
+	// the model in probe progress lines so they name which configured model is
+	// being checked.
+	checker.SetModelAlias(alias)
 	result := checker.Run(ctx)
 	if err := validatePreReviewModelCheck(result); err != nil {
 		return result, nil
@@ -1355,7 +1359,7 @@ func (a *app) checkSmallModel(ctx context.Context, client llm.Client, profile co
 	}
 	smallProfile := config.EffectiveSmallProfile(profile)
 	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(smallProfile))
-	result, err := a.resolveModelCapabilities(smallCtx, client, smallProfile, smallProfile.Model, smallProfile.ReasoningEffort, refresh)
+	result, err := a.resolveModelCapabilities(smallCtx, client, smallProfile, smallProfile.Model, smallProfile.ReasoningEffort, workflow.SmallModelAlias, refresh)
 	if err != nil {
 		return result, true, err
 	}
@@ -1731,14 +1735,14 @@ func profileProgressInfo(profile config.Profile) logging.ProgressInfo {
 }
 
 // smallModelProgressInfo mirrors profileProgressInfo for the profile's small
-// model, so the small-model line renders its own model and effort and is tagged
-// "@small" (the alias steps reference it by) to set it apart from the primary.
+// model, so the small-model line renders its own model and effort and prefixes
+// the model with "@small" (the alias steps reference it by) to set it apart from
+// the primary.
 func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
 	return logging.ProgressInfo{
-		Model:   profile.Model,
+		Model:   workflow.SmallModelAlias + " " + profile.Model,
 		Effort:  profile.ReasoningEffort,
 		BaseURL: profile.BaseURL,
-		Detail:  workflow.SmallModelAlias,
 	}
 }
 

@@ -141,6 +141,7 @@ type Checker struct {
 	client          llm.Client
 	profile         config.Profile
 	model           string
+	modelAlias      string
 	reasoningEffort string
 	logger          *logging.Logger
 	parallel        bool
@@ -173,6 +174,13 @@ func (c *Checker) SetParallel(enabled bool) {
 	c.parallel = enabled
 }
 
+// SetModelAlias sets a short alias (e.g. "@small") shown before the model name
+// in probe progress logging, so the user can tell which configured model a
+// model check is exercising. Empty disables the prefix.
+func (c *Checker) SetModelAlias(alias string) {
+	c.modelAlias = strings.TrimSpace(alias)
+}
+
 func (c *Checker) openSection(name, effort string) *logging.ReasoningSection {
 	if c.logger == nil {
 		return nil
@@ -201,10 +209,14 @@ func probeDisplayName(name string) string {
 // the probe label (AgentName), so the Effort field stays empty to avoid
 // rendering it twice.
 func (c *Checker) probeInfo(name, effort string) logging.ProgressInfo {
+	model := c.model
+	if c.modelAlias != "" {
+		model = c.modelAlias + " " + model
+	}
 	return logging.ProgressInfo{
 		AgentRole: "probe",
 		AgentName: probeLabel(probeDisplayName(name), effort),
-		Model:     c.model,
+		Model:     model,
 	}
 }
 
