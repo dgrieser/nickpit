@@ -101,6 +101,12 @@ func (ps *publishServer) adapter() *Adapter {
 
 func intPtr(v int) *int { return &v }
 
+// fpMarker builds the hidden carrier marker a posted finding comment carries, so
+// tests can assert on (or seed) it the same way the renderer emits it.
+func fpMarker(id, file, title string) string {
+	return reviewmd.FingerprintMarker(model.Finding{ID: id, CodeLocation: model.CodeLocation{FilePath: file}}, title)
+}
+
 func sampleResult() *model.ReviewResult {
 	return &model.ReviewResult{
 		OverallCorrectness:     "patch is incorrect",
@@ -151,12 +157,12 @@ func TestPublishReviewHappyPath(t *testing.T) {
 	if disc.position["new_line"].(float64) != 1 {
 		t.Fatalf("new_line = %v, want 1", disc.position["new_line"])
 	}
-	if !strings.Contains(disc.body, reviewmd.FindingMarker("finding-a")) {
+	if !strings.Contains(disc.body, fpMarker("finding-a", "main.go", "Inline issue")) {
 		t.Fatalf("discussion missing finding marker: %q", disc.body)
 	}
 	// out-of-diff note carries file:line prefix
 	fallback := ps.notePosts[1]
-	if !strings.Contains(fallback.body, "`other.go:5`") || !strings.Contains(fallback.body, reviewmd.FindingMarker("finding-b")) {
+	if !strings.Contains(fallback.body, "`other.go:5`") || !strings.Contains(fallback.body, fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
 		t.Fatalf("fallback note missing prefix/marker: %q", fallback.body)
 	}
 }
@@ -176,7 +182,7 @@ func TestPublishReview422FallsBackToNote(t *testing.T) {
 	}
 	var sawA bool
 	for _, n := range ps.notePosts {
-		if strings.Contains(n.body, reviewmd.FindingMarker("finding-a")) && strings.Contains(n.body, "`main.go:1`") {
+		if strings.Contains(n.body, fpMarker("finding-a", "main.go", "Inline issue")) && strings.Contains(n.body, "`main.go:1`") {
 			sawA = true
 		}
 	}
@@ -187,7 +193,7 @@ func TestPublishReview422FallsBackToNote(t *testing.T) {
 
 func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	ps := newPublishServer(t)
-	ps.noteBody = []byte(`[{"body":"` + reviewmd.SummaryMarker + `"},{"body":"prefix ` + reviewmd.FindingMarker("finding-a") + ` suffix"}]`)
+	ps.noteBody = []byte(`[{"body":"` + reviewmd.SummaryMarker + `"},{"body":"prefix ` + fpMarker("finding-a", "main.go", "Inline issue") + ` suffix"}]`)
 	if err := ps.adapter().PublishReview(context.Background(), req(), sampleResult()); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -198,8 +204,24 @@ func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	if len(ps.notePosts) != 1 {
 		t.Fatalf("note posts = %d, want 1 (only finding-b)", len(ps.notePosts))
 	}
-	if !strings.Contains(ps.notePosts[0].body, reviewmd.FindingMarker("finding-b")) {
+	if !strings.Contains(ps.notePosts[0].body, fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
 		t.Fatalf("expected only finding-b note, got %q", ps.notePosts[0].body)
+	}
+}
+
+// TestPublishReviewDedupeCrossRun proves the file+title fingerprint skips a
+// finding posted on a PRIOR run, whose random id differs from this run's.
+func TestPublishReviewDedupeCrossRun(t *testing.T) {
+	ps := newPublishServer(t)
+	ps.noteBody = []byte(`[{"body":"` + reviewmd.SummaryMarker + `"},{"body":"x ` + fpMarker("prior-run-id", "main.go", "Inline issue") + ` y"}]`)
+	if err := ps.adapter().PublishReview(context.Background(), req(), sampleResult()); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(ps.discPosts) != 0 {
+		t.Fatalf("finding-a should match across runs by file+title; got %d discussions", len(ps.discPosts))
+	}
+	if len(ps.notePosts) != 1 || !strings.Contains(ps.notePosts[0].body, fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
+		t.Fatalf("expected only finding-b note, got %v", ps.notePosts)
 	}
 }
 
@@ -223,7 +245,7 @@ func TestPublishFindingNon422Propagates(t *testing.T) {
 		t.Fatalf("note posts = %d, want 2 (summary + finding-b)", len(ps.notePosts))
 	}
 	for _, n := range ps.notePosts {
-		if strings.Contains(n.body, reviewmd.FindingMarker("finding-a")) {
+		if strings.Contains(n.body, fpMarker("finding-a", "main.go", "Inline issue")) {
 			t.Fatalf("finding-a must not fall back on a non-422 error: %q", n.body)
 		}
 	}

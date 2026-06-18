@@ -27,20 +27,21 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	notesPath := fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escaped, req.Identifier)
 	discussionsPath := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escaped, req.Identifier)
 
-	posted := a.existingMarkers(ctx, req.Repo, req.Identifier)
+	prior := a.existingComments(ctx, req.Repo, req.Identifier)
 	changesByPath := make(map[string]MRChange, len(info.Changes))
 	for _, change := range info.Changes {
 		changesByPath[change.NewPath] = change
 	}
 
 	var errs []error
-	if _, ok := posted[reviewmd.SummaryMarker]; !ok {
+	if _, ok := prior.Markers[reviewmd.SummaryMarker]; !ok {
 		if err := a.client.Post(ctx, notesPath, map[string]string{"body": a.render.SummaryBody(result)}, nil); err != nil {
 			errs = append(errs, fmt.Errorf("summary: %w", err))
 		}
 	}
 	for _, finding := range result.Findings {
-		if _, ok := posted[reviewmd.FindingMarker(finding.ID)]; ok {
+		title, _, _, _ := reviewmd.FindingDisplay(finding)
+		if reviewmd.AlreadyPosted(finding, title, prior) {
 			continue
 		}
 		change, hasChange := changesByPath[finding.CodeLocation.FilePath]
@@ -88,11 +89,11 @@ func isUnprocessable(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.Status == http.StatusUnprocessableEntity
 }
 
-// existingMarkers collects the nickpit markers already present in the MR's notes
-// and discussions so re-runs skip findings that were posted before. Fetch errors
-// are tolerated (worst case: a duplicate comment).
-func (a *Adapter) existingMarkers(ctx context.Context, project string, iid int) map[string]struct{} {
-	markers := map[string]struct{}{}
+// existingComments collects the markers and finding fingerprints already present
+// in the MR's notes and discussions so re-runs skip findings posted before. Fetch
+// errors are tolerated (worst case: a duplicate comment).
+func (a *Adapter) existingComments(ctx context.Context, project string, iid int) reviewmd.Priors {
+	prior := reviewmd.Priors{Markers: map[string]struct{}{}}
 	escaped := escapeProject(project)
 
 	var notes []struct {
@@ -100,16 +101,16 @@ func (a *Adapter) existingMarkers(ctx context.Context, project string, iid int) 
 	}
 	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escaped, iid), &notes); err == nil {
 		for _, note := range notes {
-			reviewmd.CollectMarkers(note.Body, markers)
+			reviewmd.ScanComment(note.Body, &prior)
 		}
 	}
 	var discussions discussionsResponse
 	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escaped, iid), &discussions); err == nil {
 		for _, discussion := range discussions {
 			for _, note := range discussion.Notes {
-				reviewmd.CollectMarkers(note.Body, markers)
+				reviewmd.ScanComment(note.Body, &prior)
 			}
 		}
 	}
-	return markers
+	return prior
 }

@@ -6,9 +6,12 @@
 package reviewmd
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/dedupe"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/textsan"
 )
@@ -25,10 +28,36 @@ const MarkerOpen = "<!-- nickpit:"
 // SummaryMarker tags the overall-verdict comment so re-runs do not repost it.
 const SummaryMarker = MarkerOpen + "summary -->"
 
-// FindingMarker tags a per-finding comment with the finding's stable ID so
-// re-runs skip findings already posted.
-func FindingMarker(id string) string {
-	return MarkerOpen + "finding:" + id + " -->"
+// FingerprintPrefix opens the per-finding carrier marker; its base64 payload is
+// an fpPayload. Re-runs decode it from existing comments to recover prior
+// findings and skip the ones already posted.
+const FingerprintPrefix = MarkerOpen + "fp:"
+
+// fpPayload is the structured finding identity carried in each finding comment.
+// id is used only for exact same-run matching; f and t drive cross-run fuzzy
+// matching (dedupe.Compare on file + title). Line range and body are deliberately
+// left out of cross-run identity because they drift between runs; the optional
+// s/e/b fields exist so a later version can carry them without a grammar change.
+type fpPayload struct {
+	ID string `json:"id"`
+	F  string `json:"f"`
+	T  string `json:"t"`
+	S  int    `json:"s,omitempty"`
+	E  int    `json:"e,omitempty"`
+	B  string `json:"b,omitempty"`
+}
+
+// FingerprintMarker renders the hidden carrier marker for a finding. displayTitle
+// is the title actually shown in the comment (FindingDisplay output), so the next
+// run compares like-for-like. base64.StdEncoding keeps the payload free of "-->"
+// and the MarkerOpen token, so a payload can neither close the marker early nor
+// be forged from untrusted finding text.
+func FingerprintMarker(finding model.Finding, displayTitle string) string {
+	payload, err := json.Marshal(fpPayload{ID: finding.ID, F: finding.CodeLocation.FilePath, T: displayTitle})
+	if err != nil {
+		return ""
+	}
+	return FingerprintPrefix + base64.StdEncoding.EncodeToString(payload) + " -->"
 }
 
 // CollectMarkers scans body for every nickpit marker (`<!-- nickpit:... -->`)
@@ -48,6 +77,80 @@ func CollectMarkers(body string, out map[string]struct{}) {
 		out[strings.TrimSpace(rest[:j+3])] = struct{}{}
 		rest = rest[j+3:]
 	}
+}
+
+// CollectPriorFindings scans body for finding carrier markers (FingerprintPrefix)
+// and appends a reconstructed finding shell (id, file path, displayed title) for
+// each. A marker that fails to decode is skipped, so one corrupt comment can
+// never abort dedup or the publish.
+func CollectPriorFindings(body string, out *[]model.Finding) {
+	rest := body
+	for {
+		i := strings.Index(rest, FingerprintPrefix)
+		if i < 0 {
+			return
+		}
+		rest = rest[i+len(FingerprintPrefix):]
+		j := strings.Index(rest, "-->")
+		if j < 0 {
+			return
+		}
+		raw := strings.TrimSpace(rest[:j])
+		rest = rest[j+3:]
+		decoded, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			continue
+		}
+		var p fpPayload
+		if err := json.Unmarshal(decoded, &p); err != nil {
+			continue
+		}
+		*out = append(*out, model.Finding{
+			ID:           p.ID,
+			Title:        p.T,
+			Body:         p.B,
+			CodeLocation: model.CodeLocation{FilePath: p.F, LineRange: model.LineRange{Start: p.S, End: p.E}},
+		})
+	}
+}
+
+// Priors holds what a prior run left on a pull/merge request: the raw markers
+// (for the exact summary-marker check) and the reconstructed finding shells (for
+// per-finding dedup). Both SCM publishers build it from the existing comments.
+type Priors struct {
+	Markers  map[string]struct{}
+	Findings []model.Finding
+}
+
+// ScanComment folds one existing comment body into p, collecting both its markers
+// and its finding fingerprints.
+func ScanComment(body string, p *Priors) {
+	if p.Markers == nil {
+		p.Markers = map[string]struct{}{}
+	}
+	CollectMarkers(body, p.Markers)
+	CollectPriorFindings(body, &p.Findings)
+}
+
+// AlreadyPosted reports whether finding was already published in p. A finding
+// from the same run matches exactly on its id; across runs, identity is the
+// deterministic file+title fuzzy match at dedupe.Duplicate (cross-file pairs are
+// capped below Duplicate by dedupe.Compare, so a different file never matches).
+// displayTitle is the title shown in the comment so the comparison is
+// like-for-like with the title each prior carries. Two distinct same-file
+// findings with ~identical displayed titles can collide; the Duplicate floor
+// keeps that rare, and a missed match only reposts a comment, never drops a
+// finding.
+func AlreadyPosted(finding model.Finding, displayTitle string, p Priors) bool {
+	for i := range p.Findings {
+		if p.Findings[i].ID != "" && p.Findings[i].ID == finding.ID {
+			return true
+		}
+	}
+	probe := finding
+	probe.Title = displayTitle
+	idx, _ := dedupe.FindBest(probe, p.Findings, dedupe.Duplicate)
+	return idx >= 0
 }
 
 // Sanitize prepares untrusted, LLM-generated text for posting as markdown. It
@@ -176,14 +279,14 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 	return b.String()
 }
 
-// FindingBody renders a finding as markdown, tagged with its FindingMarker. When
+// FindingBody renders a finding as markdown, tagged with its FingerprintMarker. When
 // locationPrefix is non-empty (the general-comment fallback used when a finding
 // cannot be anchored inline) it is shown after the badge/confidence block so the
 // location is still visible without an inline anchor.
 func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) string {
 	title, body, rank, confidence := FindingDisplay(finding)
 	var b strings.Builder
-	b.WriteString(FindingMarker(finding.ID))
+	b.WriteString(FingerprintMarker(finding, title))
 	b.WriteString("\n\n")
 	// Trailing two spaces: markdown hard break stacking badge over confidence.
 	fmt.Fprintf(&b, "%s  \n%s  \n\n", r.PriorityBadge(rank), ConfidenceLine(confidence))

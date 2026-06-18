@@ -26,13 +26,14 @@ func TestSanitize(t *testing.T) {
 }
 
 func TestCollectMarkers(t *testing.T) {
+	fp := FingerprintMarker(model.Finding{ID: "x"}, "t")
 	markers := map[string]struct{}{}
-	CollectMarkers("prefix "+SummaryMarker+" mid "+FindingMarker("x")+" end", markers)
+	CollectMarkers("prefix "+SummaryMarker+" mid "+fp+" end", markers)
 	if _, ok := markers[SummaryMarker]; !ok {
 		t.Fatalf("summary marker not collected: %v", markers)
 	}
-	if _, ok := markers[FindingMarker("x")]; !ok {
-		t.Fatalf("finding marker not collected: %v", markers)
+	if _, ok := markers[fp]; !ok {
+		t.Fatalf("fingerprint marker not collected: %v", markers)
 	}
 	if len(markers) != 2 {
 		t.Fatalf("collected %d markers, want 2: %v", len(markers), markers)
@@ -120,18 +121,21 @@ func TestHardBreakParagraphsNormalizesCRLF(t *testing.T) {
 
 func TestFindingBodyPrefixAndMarker(t *testing.T) {
 	r := NewRenderer("https://host/")
-	body := r.FindingBody(model.Finding{
+	finding := model.Finding{
 		ID:              "f1",
 		Title:           "Title",
 		Body:            "Detail",
 		ConfidenceScore: 0.91,
 		Priority:        func() *int { p := 1; return &p }(),
+		CodeLocation:    model.CodeLocation{FilePath: "file.go", LineRange: model.LineRange{Start: 5, End: 5}},
 		Suggestions:     []model.Suggestion{{Body: "do x"}},
-	}, "`file.go:5`")
-	if !strings.HasPrefix(body, FindingMarker("f1")) {
-		t.Fatalf("finding not tagged: %q", body)
 	}
-	wantPrefix := FindingMarker("f1") + "\n\n" +
+	body := r.FindingBody(finding, "`file.go:5`")
+	marker := FingerprintMarker(finding, "Title")
+	if !strings.HasPrefix(body, marker) {
+		t.Fatalf("finding not tagged with fingerprint: %q", body)
+	}
+	wantPrefix := marker + "\n\n" +
 		"![P1](https://host/p1.svg)  \n" +
 		"_(91% confidence)_  \n\n" +
 		"`file.go:5`  \n\n" +
@@ -140,11 +144,107 @@ func TestFindingBodyPrefixAndMarker(t *testing.T) {
 	if !strings.HasPrefix(body, wantPrefix) {
 		t.Fatalf("finding body order = %q, want prefix %q", body, wantPrefix)
 	}
+	// The embedded fingerprint round-trips back to the finding's identity.
+	var priors []model.Finding
+	CollectPriorFindings(body, &priors)
+	if len(priors) != 1 || priors[0].ID != "f1" || priors[0].CodeLocation.FilePath != "file.go" || priors[0].Title != "Title" {
+		t.Fatalf("fingerprint did not round-trip from body: %+v", priors)
+	}
 	if !strings.Contains(body, "`file.go:5`") || !strings.Contains(body, "### Title") || !strings.Contains(body, "- do x") {
 		t.Fatalf("finding body missing prefix/title/suggestion: %q", body)
 	}
 	if !strings.Contains(body, "\n\n**Suggestions**  \n\n- do x  ") {
 		t.Fatalf("finding suggestions missing hard breaks: %q", body)
+	}
+}
+
+func TestFingerprintRoundTrip(t *testing.T) {
+	f := model.Finding{ID: "id-1", CodeLocation: model.CodeLocation{FilePath: "pkg/a.go"}}
+	marker := FingerprintMarker(f, "Some title")
+	if !strings.HasPrefix(marker, FingerprintPrefix) || !strings.HasSuffix(marker, " -->") {
+		t.Fatalf("marker shape wrong: %q", marker)
+	}
+	// The base64 payload must never contain the marker terminator.
+	payload := strings.TrimSuffix(strings.TrimPrefix(marker, FingerprintPrefix), " -->")
+	if strings.Contains(payload, "-->") {
+		t.Fatalf("payload contains terminator: %q", payload)
+	}
+	var priors []model.Finding
+	CollectPriorFindings("noise "+marker+" tail", &priors)
+	if len(priors) != 1 {
+		t.Fatalf("recovered %d findings, want 1", len(priors))
+	}
+	if priors[0].ID != "id-1" || priors[0].CodeLocation.FilePath != "pkg/a.go" || priors[0].Title != "Some title" {
+		t.Fatalf("round-trip mismatch: %+v", priors[0])
+	}
+}
+
+func TestFingerprintMarkerUsesDisplayTitle(t *testing.T) {
+	f := model.Finding{
+		ID:            "id-2",
+		Title:         "raw title",
+		Summarization: &model.FindingSummarization{Title: "summarized title", Body: "b"},
+	}
+	displayTitle, _, _, _ := FindingDisplay(f)
+	var priors []model.Finding
+	CollectPriorFindings(FingerprintMarker(f, displayTitle), &priors)
+	if len(priors) != 1 || priors[0].Title != "summarized title" {
+		t.Fatalf("fp should carry the displayed title, got %+v", priors)
+	}
+}
+
+func TestCollectPriorFindingsTolerant(t *testing.T) {
+	valid := FingerprintMarker(model.Finding{ID: "ok", CodeLocation: model.CodeLocation{FilePath: "x.go"}}, "t")
+	body := FingerprintPrefix + "!!!not-base64!!! -->" + // invalid base64
+		FingerprintPrefix + "Zm9v -->" + // base64 of "foo", not JSON
+		valid // a well-formed marker still recovered after the bad ones
+	var priors []model.Finding
+	CollectPriorFindings(body, &priors)
+	if len(priors) != 1 || priors[0].ID != "ok" {
+		t.Fatalf("tolerant scan should recover only the valid fp, got %+v", priors)
+	}
+}
+
+// priorsFrom builds a Priors as if the given finding had been posted with the
+// given displayed title (the cross-run dedup input).
+func priorsFrom(f model.Finding, displayTitle string) Priors {
+	var p Priors
+	ScanComment(FingerprintMarker(f, displayTitle), &p)
+	return p
+}
+
+func TestAlreadyPostedSameRunID(t *testing.T) {
+	prior := priorsFrom(model.Finding{ID: "same", CodeLocation: model.CodeLocation{FilePath: "a.go"}}, "Title A")
+	// Different file and title, but the same id => exact same-run match.
+	f := model.Finding{ID: "same", CodeLocation: model.CodeLocation{FilePath: "z.go"}}
+	if !AlreadyPosted(f, "totally different", prior) {
+		t.Fatal("same id should match exactly regardless of content")
+	}
+}
+
+func TestAlreadyPostedHeuristicSkip(t *testing.T) {
+	// Same file, titles that normalize to the same tokens but differ as raw
+	// strings => fuzzy Duplicate via the title-strong rule (not the Identical case).
+	prior := priorsFrom(model.Finding{ID: "old", CodeLocation: model.CodeLocation{FilePath: "a.go"}}, "Null pointer dereference in the handler")
+	f := model.Finding{ID: "new", CodeLocation: model.CodeLocation{FilePath: "a.go"}}
+	if !AlreadyPosted(f, "Null pointer dereference in handler", prior) {
+		t.Fatal("same file + near-identical title should match across runs")
+	}
+}
+
+func TestAlreadyPostedDistinctSameFile(t *testing.T) {
+	prior := priorsFrom(model.Finding{ID: "old", CodeLocation: model.CodeLocation{FilePath: "a.go"}}, "Null pointer dereference in handler")
+	f := model.Finding{ID: "new", CodeLocation: model.CodeLocation{FilePath: "a.go"}}
+	if AlreadyPosted(f, "Race condition in cache eviction", prior) {
+		t.Fatal("a clearly different title on the same file must not match")
+	}
+}
+
+func TestAlreadyPostedCrossFileNeverSkips(t *testing.T) {
+	prior := priorsFrom(model.Finding{ID: "old", CodeLocation: model.CodeLocation{FilePath: "a.go"}}, "Null pointer dereference in handler")
+	f := model.Finding{ID: "new", CodeLocation: model.CodeLocation{FilePath: "b.go"}}
+	if AlreadyPosted(f, "Null pointer dereference in handler", prior) {
+		t.Fatal("identical title on a different file must not match (cross-file capped below Duplicate)")
 	}
 }
 
