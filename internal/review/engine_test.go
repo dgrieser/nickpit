@@ -237,27 +237,31 @@ type capturingLLM struct {
 var uuidRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 type multiAgentLLM struct {
-	mu              sync.Mutex
-	context         int
-	vectorCalls     map[string]int
-	verifyCalls     int
-	mergeTools      int
-	mergePayload    map[string]any
-	mergeSchema     []byte
-	mergeRequests   []*llm.ReviewRequest
-	contextSystem   string
-	vectorContext   map[string]string
-	vectorSystem    map[string]string
-	vectorNudge     map[string]string
-	events          []string
-	contextFailErr  error
-	vectorFailErr   map[string]error
-	verifyInvalid   map[string]bool
-	vectorFindings  map[string]int
-	dedupeResponses []*llm.ReviewResponse
-	dedupeFailErr   error
-	mergeResponses  []*llm.ReviewResponse
-	mergeFailErr    error
+	mu                sync.Mutex
+	context           int
+	vectorCalls       map[string]int
+	verifyCalls       int
+	mergeTools        int
+	mergePayload      map[string]any
+	mergeSchema       []byte
+	mergeRequests     []*llm.ReviewRequest
+	contextSystem     string
+	vectorContext     map[string]string
+	vectorSystem      map[string]string
+	vectorNudge       map[string]string
+	events            []string
+	contextFailErr    error
+	vectorFailErr     map[string]error
+	verifyInvalid     map[string]bool
+	vectorFindings    map[string]int
+	dedupeResponses   []*llm.ReviewResponse
+	dedupeFailErr     error
+	mergeResponses    []*llm.ReviewResponse
+	mergeFailErr      error
+	finalizeRequests  []*llm.ReviewRequest
+	verdictRequests   []*llm.ReviewRequest
+	summarizeRequests []*llm.ReviewRequest
+	verdictFailErr    error
 }
 
 func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -369,6 +373,61 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 			OverallExplanation:     name,
 			OverallConfidenceScore: 0.9,
 			TokensUsed:             model.TokenUsage{PromptTokens: 2, CompletionTokens: 1, TotalTokens: 3},
+		}, nil
+	}
+	if req.SchemaKind == llm.SchemaKindFinalize {
+		cloned := *req
+		cloned.Messages = cloneTestMessages(req.Messages)
+		s.finalizeRequests = append(s.finalizeRequests, &cloned)
+		findings := testPayloadFindingsFromJSON(req.Messages[1].Content)
+		for i := range findings {
+			if findings[i].Verification == nil {
+				findings[i].Verification = &model.FindingVerification{ID: findings[i].ID, Verdict: model.VerdictConfirmed, Priority: model.PriorityRank(findings[i].Priority), ConfidenceScore: 0.9, Remarks: "verified"}
+			}
+			findings[i].Finalization = &model.FindingFinalization{
+				Title:           "Final " + findings[i].Title,
+				Body:            "FINALIZED_MARKER " + findings[i].Body,
+				Priority:        model.PriorityRank(findings[i].Priority),
+				ConfidenceScore: 0.8,
+				Remarks:         "finalized",
+			}
+		}
+		return &llm.ReviewResponse{
+			Findings:   findings,
+			TokensUsed: model.TokenUsage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
+		}, nil
+	}
+	if req.SchemaKind == llm.SchemaKindVerdict {
+		cloned := *req
+		cloned.Messages = cloneTestMessages(req.Messages)
+		s.verdictRequests = append(s.verdictRequests, &cloned)
+		if s.verdictFailErr != nil {
+			return nil, s.verdictFailErr
+		}
+		findings := testPayloadFindingsFromJSON(req.Messages[1].Content)
+		return &llm.ReviewResponse{
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     fmt.Sprintf("VERDICT_MARKER findings=%d", len(findings)),
+			OverallConfidenceScore: 0.88,
+			TokensUsed:             model.TokenUsage{PromptTokens: 6, CompletionTokens: 2, TotalTokens: 8},
+		}, nil
+	}
+	if req.SchemaKind == llm.SchemaKindSummarize {
+		cloned := *req
+		cloned.Messages = cloneTestMessages(req.Messages)
+		s.summarizeRequests = append(s.summarizeRequests, &cloned)
+		items := testPayloadFindingsFromJSON(req.Messages[1].Content)
+		out := make([]model.Finding, 0, len(items))
+		for _, item := range items {
+			body := item.Body
+			if body == "" {
+				body = item.Title
+			}
+			out = append(out, model.Finding{ID: item.ID, Summarization: &model.FindingSummarization{Body: "SUMMARY_MARKER " + body}})
+		}
+		return &llm.ReviewResponse{
+			Findings:   out,
+			TokensUsed: model.TokenUsage{PromptTokens: 4, CompletionTokens: 1, TotalTokens: 5},
 		}, nil
 	}
 	s.mergeTools = len(req.Tools)
@@ -497,6 +556,16 @@ func testPayloadFindingIDsFromJSON(data string) []model.Finding {
 		})
 	}
 	return findings
+}
+
+func testPayloadFindingsFromJSON(data string) []model.Finding {
+	var payload struct {
+		Findings []model.Finding `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return nil
+	}
+	return payload.Findings
 }
 
 func vectorNameFromSystem(system string) string {
@@ -1355,11 +1424,6 @@ func TestToolErrorMessagesComeFromCatalog(t *testing.T) {
 			name: "encoding failed",
 			data: toolErrorData{Code: "encoding_failed"},
 			want: "failed to encode tool result",
-		},
-		{
-			name: "unsupported language",
-			data: toolErrorData{Code: "unsupported_language"},
-			want: "structural analysis (find_callers/find_callees) is not available for this file type; this is NOT evidence the symbol is missing — use inspect_file or search (literal/regex) to locate the code instead",
 		},
 	}
 	for _, tt := range tests {

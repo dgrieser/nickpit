@@ -416,12 +416,14 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		hierarchy, err = e.retrieval.FindCallees(ctx, repoRoot, symbol, args.Depth)
 	}
 	if err != nil {
-		// A language with no structural backend is reported distinctly so the model
-		// treats it as "can't analyze this file type" (fall back to inspect_file /
-		// search) rather than "the symbol does not exist".
+		// A language with no structural backend can't be analyzed as a call graph, but
+		// the code still exists. Rather than failing, degrade to a literal search for the
+		// symbol so the model gets the definition and its call sites for any file type.
+		// The scope is widened to repo-wide for a single file (mirroring the structural
+		// backends) so callers/uses in other files are still surfaced.
 		var unsupported *retrieval.UnsupportedLanguageError
 		if errors.As(err, &unsupported) {
-			return toolError(normalizedPath, "unsupported_language", toolErrorMessage(toolErrorData{Code: "unsupported_language"}))
+			return e.callHierarchySearchFallback(ctx, repoRoot, normalizedPath, args.Symbol, callers, key, state)
 		}
 
 		// Low confidence indicates the analysis ran but has uncertain results due to
@@ -442,6 +444,38 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		"mode":   hierarchy.Mode,
 		"depth":  hierarchy.Depth,
 		"root":   hierarchy.Root,
+	})
+}
+
+// callHierarchySearchFallback runs a literal search for symbol when no structural
+// backend can analyze its file type, returning a search-style payload tagged as a
+// fallback. The search scope mirrors scopeForHierarchy: a single file is widened to a
+// repo-wide search so callers/uses in other files are still found. The symbol is a
+// plain identifier, so the regex-metachar handling that executeSearch performs is not
+// needed here.
+func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, normalizedPath, symbol string, callers bool, key string, state *toolRoundState) string {
+	mode := "callees"
+	if callers {
+		mode = "callers"
+	}
+	searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
+	e.logf(ctx, "Falling back to literal search for unsupported call hierarchy: mode=%s path=%s symbol=%q search_scope=%q", mode, normalizedPath, symbol, searchScope)
+	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, defaultSearchContextLines, 0, false)
+	if err != nil {
+		return toolError(normalizedPath, "retrieval_failed", err.Error())
+	}
+	state.mu.Lock()
+	state.seenToolCalls[key] = struct{}{}
+	state.mu.Unlock()
+	return mustToolResultJSON(map[string]any{
+		"symbol":       symbol,
+		"path":         normalizedPath,
+		"mode":         mode,
+		"fallback":     "search",
+		"note":         "structural call hierarchy is unavailable for this file type; showing literal search matches for the symbol instead",
+		"query":        results.Query,
+		"result_count": results.ResultCount,
+		"results":      results.Results,
 	})
 }
 

@@ -337,6 +337,38 @@ func TestCheckerUsesDiscoveredEffortForSimpleProbes(t *testing.T) {
 	}
 }
 
+func TestNewForModelProbesGivenModelAndEffort(t *testing.T) {
+	client := &scriptedClient{}
+	profile := config.Profile{Model: "big-model", ReasoningEffort: "high"}
+	checker := NewForModel(client, profile, "small-model", "low")
+	checker.SetParallel(false)
+	result := checker.Run(context.Background())
+
+	if result.Model != "small-model" {
+		t.Fatalf("result model = %q, want small-model", result.Model)
+	}
+	if result.ConfiguredEffort != "low" {
+		t.Fatalf("configured effort = %q, want low", result.ConfiguredEffort)
+	}
+	for _, req := range client.reqs {
+		if req.Model != "small-model" {
+			t.Fatalf("probe request model = %q, want small-model", req.Model)
+		}
+	}
+	if !sawEffort(client.reqs, "low") {
+		t.Fatal("expected a probe at the configured effort \"low\"")
+	}
+}
+
+func sawEffort(reqs []*llm.ReviewRequest, effort string) bool {
+	for _, req := range reqs {
+		if req.ReasoningEffort == effort {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCheckerCanDisableParallelProbes(t *testing.T) {
 	client := &concurrentClient{}
 	checker := New(client, config.Profile{Model: "model", ReasoningEffort: "high"})

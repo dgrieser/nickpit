@@ -99,16 +99,41 @@ func TestLoadConfigUsesSmallModelEnv(t *testing.T) {
 	t.Setenv("NICKPIT_MODEL", "primary-model")
 	t.Setenv("NICKPIT_SMALL_MODEL", "small-model")
 	t.Setenv("NICKPIT_SMALL_REASONING_EFFORT", "low")
+	t.Setenv("NICKPIT_SMALL_MAX_TOKENS", "2048")
+	t.Setenv("NICKPIT_SMALL_TEMPERATURE", "0.25")
+	t.Setenv("NICKPIT_SMALL_TOP_P", "0.85")
+	t.Setenv("NICKPIT_SMALL_TOP_K", "40")
+	t.Setenv("NICKPIT_SMALL_PRESENCE_PENALTY", "0.1")
+	t.Setenv("NICKPIT_SMALL_EXTRA_BODY", `{"chat_template_kwargs":{"enable_thinking":false}}`)
 
 	_, profile, err := Load("", Overrides{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.SmallModel != "small-model" {
-		t.Fatalf("small model = %q", profile.SmallModel)
+	if profile.Small.Model != "small-model" {
+		t.Fatalf("small model = %q", profile.Small.Model)
 	}
-	if profile.SmallReasoningEffort != "low" {
-		t.Fatalf("small reasoning effort = %q", profile.SmallReasoningEffort)
+	if profile.Small.ReasoningEffort != "low" {
+		t.Fatalf("small reasoning effort = %q", profile.Small.ReasoningEffort)
+	}
+	if profile.Small.MaxTokens == nil || *profile.Small.MaxTokens != 2048 {
+		t.Fatalf("small max tokens = %v", profile.Small.MaxTokens)
+	}
+	if profile.Small.Temperature == nil || *profile.Small.Temperature != 0.25 {
+		t.Fatalf("small temperature = %v", profile.Small.Temperature)
+	}
+	if profile.Small.TopP == nil || *profile.Small.TopP != 0.85 {
+		t.Fatalf("small top_p = %v", profile.Small.TopP)
+	}
+	if profile.Small.TopK == nil || *profile.Small.TopK != 40 {
+		t.Fatalf("small top_k = %v", profile.Small.TopK)
+	}
+	if profile.Small.PresencePenalty == nil || *profile.Small.PresencePenalty != 0.1 {
+		t.Fatalf("small presence penalty = %v", profile.Small.PresencePenalty)
+	}
+	chatTemplateKwargs, ok := profile.Small.ExtraBody["chat_template_kwargs"].(map[string]any)
+	if !ok || chatTemplateKwargs["enable_thinking"] != false {
+		t.Fatalf("small extra body = %#v", profile.Small.ExtraBody)
 	}
 }
 
@@ -169,9 +194,18 @@ func TestLoadConfigUsesConfiguredSmallModel(t *testing.T) {
 profiles:
   default:
     model: primary-model
-    small_model: small-model
     reasoning_effort: high
-    small_reasoning_effort: low
+    small:
+      model: small-model
+      reasoning_effort: low
+      max_tokens: 2048
+      temperature: 0.25
+      top_p: 0.85
+      top_k: 40
+      presence_penalty: 0.1
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -181,11 +215,30 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.SmallModel != "small-model" {
-		t.Fatalf("small model = %q", profile.SmallModel)
+	if profile.Small.Model != "small-model" {
+		t.Fatalf("small model = %q", profile.Small.Model)
 	}
-	if profile.SmallReasoningEffort != "low" {
-		t.Fatalf("small reasoning effort = %q", profile.SmallReasoningEffort)
+	if profile.Small.ReasoningEffort != "low" {
+		t.Fatalf("small reasoning effort = %q", profile.Small.ReasoningEffort)
+	}
+	if profile.Small.MaxTokens == nil || *profile.Small.MaxTokens != 2048 {
+		t.Fatalf("small max tokens = %v", profile.Small.MaxTokens)
+	}
+	if profile.Small.Temperature == nil || *profile.Small.Temperature != 0.25 {
+		t.Fatalf("small temperature = %v", profile.Small.Temperature)
+	}
+	if profile.Small.TopP == nil || *profile.Small.TopP != 0.85 {
+		t.Fatalf("small top_p = %v", profile.Small.TopP)
+	}
+	if profile.Small.TopK == nil || *profile.Small.TopK != 40 {
+		t.Fatalf("small top_k = %v", profile.Small.TopK)
+	}
+	if profile.Small.PresencePenalty == nil || *profile.Small.PresencePenalty != 0.1 {
+		t.Fatalf("small presence penalty = %v", profile.Small.PresencePenalty)
+	}
+	chatTemplateKwargs, ok := profile.Small.ExtraBody["chat_template_kwargs"].(map[string]any)
+	if !ok || chatTemplateKwargs["enable_thinking"] != false {
+		t.Fatalf("small extra body = %#v", profile.Small.ExtraBody)
 	}
 }
 
@@ -698,6 +751,50 @@ profiles:
 	}
 	if *profile.TopP != 0.85 {
 		t.Fatalf("top_p = %v", *profile.TopP)
+	}
+}
+
+func TestLoadConfigTopKAndPresencePenaltyFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    top_k: 40
+    presence_penalty: 0.1
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TopK == nil || *profile.TopK != 40 {
+		t.Fatalf("top_k = %v", profile.TopK)
+	}
+	if profile.PresencePenalty == nil || *profile.PresencePenalty != 0.1 {
+		t.Fatalf("presence_penalty = %v", profile.PresencePenalty)
+	}
+}
+
+func TestLoadConfigTopKAndPresencePenaltyFromEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "test-model")
+	t.Setenv("NICKPIT_TOP_K", "50")
+	t.Setenv("NICKPIT_PRESENCE_PENALTY", "0.2")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.TopK == nil || *profile.TopK != 50 {
+		t.Fatalf("top_k = %v", profile.TopK)
+	}
+	if profile.PresencePenalty == nil || *profile.PresencePenalty != 0.2 {
+		t.Fatalf("presence_penalty = %v", profile.PresencePenalty)
 	}
 }
 

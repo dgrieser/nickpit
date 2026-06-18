@@ -42,7 +42,14 @@ func NormalizeModel(model string) string {
 }
 
 func FindProfileCapability(profile config.Profile) (config.ModelCapabilities, bool) {
-	model := NormalizeModel(profile.Model)
+	return FindProfileCapabilityFor(profile, profile.Model)
+}
+
+// FindProfileCapabilityFor looks up a pre-declared capability for an explicit
+// model in the profile's supported_models list, rather than the profile's
+// primary model. Used to resolve configured small-profile aliases.
+func FindProfileCapabilityFor(profile config.Profile, model string) (config.ModelCapabilities, bool) {
+	model = NormalizeModel(model)
 	for _, capability := range profile.SupportedModels {
 		if NormalizeModel(capability.Model) == model {
 			return cloneCapability(capability), true

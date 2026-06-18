@@ -73,27 +73,15 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 	}
 }
 
-func TestFinalizeContextNotesInPrompt(t *testing.T) {
+func TestVerdictContextNotesInPrompt(t *testing.T) {
 	const findingID = "11111111-1111-4111-8111-111111111111"
-	const notes = "## Notes\n\nCONTEXT_NOTES_MARKER the patch wires notes into the finalizer."
+	const notes = "## Notes\n\nCONTEXT_NOTES_MARKER the patch wires notes into the verdict."
 	newClient := func() *capturingLLM {
 		return &capturingLLM{
 			resps: []*llm.ReviewResponse{
 				{
-					Findings: []model.Finding{
-						{
-							ID:              findingID,
-							Title:           "Fix issue",
-							Body:            "body",
-							ConfidenceScore: 0.7,
-							Priority:        intPtr(1),
-							CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-							Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
-							Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
-						},
-					},
 					OverallCorrectness:     "patch is correct",
-					OverallExplanation:     "ok",
+					OverallExplanation:     "CONTEXT_NOTES_MARKER summary.",
 					OverallConfidenceScore: 0.7,
 				},
 			},
@@ -118,50 +106,53 @@ func TestFinalizeContextNotesInPrompt(t *testing.T) {
 		}
 	}
 
-	// With notes: the finalize user prompt carries `notes`.
+	// With notes: the verdict user prompt carries `notes`.
 	withNotes := newClient()
 	engine := NewEngine(stubSource{}, withNotes, stubRetrieval{}, config.Profile{Model: "test"})
-	if _, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), newInput(), FinalizeOptions{ContextNotes: notes}); err != nil {
-		t.Fatalf("Finalize (with notes) returned err: %v", err)
+	if _, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), newInput(), VerdictOptions{ContextNotes: notes}); err != nil {
+		t.Fatalf("Verdict (with notes) returned err: %v", err)
 	}
 	userPrompt := withNotes.reqs[0].Messages[1].Content
 	if !strings.Contains(userPrompt, `"notes"`) || !strings.Contains(userPrompt, "CONTEXT_NOTES_MARKER") {
-		t.Fatalf("finalize user prompt missing notes:\n%s", userPrompt)
+		t.Fatalf("verdict user prompt missing notes:\n%s", userPrompt)
+	}
+	if !strings.Contains(userPrompt, `"priority_floor": 1`) {
+		t.Fatalf("verdict user prompt missing priority_floor:\n%s", userPrompt)
 	}
 	// The system prompt tasks the model to merge notes into overall_explanation.
-	if sys := withNotes.reqs[0].Messages[0].Content; !strings.Contains(sys, "notes") {
-		t.Fatalf("finalize system prompt does not mention notes:\n%s", sys)
+	if sys := withNotes.reqs[0].Messages[0].Content; !strings.Contains(sys, "notes") || !strings.Contains(sys, "priority_floor") || !strings.Contains(sys, "even if `finalization.priority` downgraded it") {
+		t.Fatalf("verdict system prompt does not mention notes:\n%s", sys)
 	}
 
 	// Without notes: the `notes` key is omitted entirely.
 	withoutNotes := newClient()
 	engine = NewEngine(stubSource{}, withoutNotes, stubRetrieval{}, config.Profile{Model: "test"})
-	if _, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), newInput(), FinalizeOptions{}); err != nil {
-		t.Fatalf("Finalize (no notes) returned err: %v", err)
+	if _, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), newInput(), VerdictOptions{}); err != nil {
+		t.Fatalf("Verdict (no notes) returned err: %v", err)
 	}
 	if up := withoutNotes.reqs[0].Messages[1].Content; strings.Contains(up, `"notes"`) {
-		t.Fatalf("finalize user prompt should omit notes when none provided:\n%s", up)
+		t.Fatalf("verdict user prompt should omit notes when none provided:\n%s", up)
 	}
 
 	// Disabled patch summary: notes remain available as internal context, but
-	// the finalizer is told not to surface the patch-purpose assumption.
+	// the verdict is told not to surface the patch-purpose assumption.
 	disabledSummary := newClient()
 	engine = NewEngine(stubSource{}, disabledSummary, stubRetrieval{}, config.Profile{Model: "test"})
-	if _, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), newInput(), FinalizeOptions{ContextNotes: notes, DisablePatchSummary: true}); err != nil {
-		t.Fatalf("Finalize (disabled patch summary) returned err: %v", err)
+	if _, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), newInput(), VerdictOptions{ContextNotes: notes, DisablePatchSummary: true}); err != nil {
+		t.Fatalf("Verdict (disabled patch summary) returned err: %v", err)
 	}
 	if up := disabledSummary.reqs[0].Messages[1].Content; !strings.Contains(up, `"notes"`) || !strings.Contains(up, "CONTEXT_NOTES_MARKER") {
-		t.Fatalf("finalize user prompt should still carry internal notes:\n%s", up)
+		t.Fatalf("verdict user prompt should still carry internal notes:\n%s", up)
 	}
 	sys := disabledSummary.reqs[0].Messages[0].Content
 	if !strings.Contains(sys, "preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score`") {
-		t.Fatalf("finalize system prompt missing preliminary field description:\n%s", sys)
+		t.Fatalf("verdict system prompt missing preliminary field description:\n%s", sys)
 	}
 	if !strings.Contains(sys, "do not include the patch-purpose assumption") {
-		t.Fatalf("finalize system prompt missing disabled-summary instruction:\n%s", sys)
+		t.Fatalf("verdict system prompt missing disabled-summary instruction:\n%s", sys)
 	}
 	if strings.Contains(sys, "first state the patch's intended purpose") {
-		t.Fatalf("finalize system prompt should not require patch purpose when disabled:\n%s", sys)
+		t.Fatalf("verdict system prompt should not require patch purpose when disabled:\n%s", sys)
 	}
 }
 
@@ -947,11 +938,11 @@ func TestFinalizeEarlySkipsOnEmptyFindings(t *testing.T) {
 	}
 }
 
-// Covers the three regimes of finalizeConstraintsFor based on the priority
+// Covers the three regimes of verdictConstraintsFor based on the priority
 // floor = min(finding.priority, verification.priority): P0 → must be
 // "patch is incorrect", P1-only → unconstrained, no critical → must be
 // "patch is correct".
-func TestFinalizeConstraintsForPriorityFloor(t *testing.T) {
+func TestVerdictConstraintsForPriorityFloor(t *testing.T) {
 	cases := []struct {
 		name string
 		in   []model.Finding
@@ -1011,7 +1002,7 @@ func TestFinalizeConstraintsForPriorityFloor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := finalizeConstraintsFor(tc.in).AllowedCorrectness
+			got := verdictConstraintsFor(tc.in).AllowedCorrectness
 			if len(tc.want) == 0 {
 				if len(got) != 0 {
 					t.Fatalf("AllowedCorrectness = %#v, want unconstrained", got)

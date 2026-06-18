@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,7 +41,22 @@ type app struct {
 	temperatureSet                bool
 	topP                          float64
 	topPSet                       bool
+	topK                          int
+	topKSet                       bool
+	presencePenalty               float64
+	presencePenaltySet            bool
 	extraBody                     string
+	smallMaxTokens                int
+	smallMaxTokensSet             bool
+	smallTemperature              float64
+	smallTemperatureSet           bool
+	smallTopP                     float64
+	smallTopPSet                  bool
+	smallTopK                     int
+	smallTopKSet                  bool
+	smallPresencePenalty          float64
+	smallPresencePenaltySet       bool
+	smallExtraBody                string
 	maxContextTokens              int
 	maxContextTokensSet           bool
 	includeFullFiles              bool
@@ -154,7 +170,15 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.profile, "profile", "default", "Config profile name")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.temperature, &cli.temperatureSet), "temperature", "Sampling temperature")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.topP, &cli.topPSet), "top-p", "Nucleus sampling probability")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.topK, &cli.topKSet), "top-k", "Top-k sampling cutoff")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.presencePenalty, &cli.presencePenaltySet), "presence-penalty", "Presence penalty")
 	root.PersistentFlags().StringVar(&cli.extraBody, "extra-body", "", "Additional JSON object fields to merge into the LLM request body")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallMaxTokens, &cli.smallMaxTokensSet), "small-max-tokens", "Max tokens for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallTemperature, &cli.smallTemperatureSet), "small-temperature", "Sampling temperature for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallTopP, &cli.smallTopPSet), "small-top-p", "Nucleus sampling probability for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallTopK, &cli.smallTopKSet), "small-top-k", "Top-k sampling cutoff for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallPresencePenalty, &cli.smallPresencePenaltySet), "small-presence-penalty", "Presence penalty for workflow steps using model: \"@small\"")
+	root.PersistentFlags().StringVar(&cli.smallExtraBody, "small-extra-body", "", "Additional JSON object fields for workflow steps using model: \"@small\"")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxContextTokens, &cli.maxContextTokensSet), "max-context-tokens", "Context token budget")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
@@ -193,7 +217,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
-	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, summarize, review:security); mutually exclusive with --spec")
+	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
 	root.AddCommand(cli.newCheckCmd())
@@ -245,14 +269,49 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.topPSet {
 		topP = &a.topP
 	}
+	var topK *int
+	if a.topKSet {
+		topK = &a.topK
+	}
+	var presencePenalty *float64
+	if a.presencePenaltySet {
+		presencePenalty = &a.presencePenalty
+	}
 	var extraBody map[string]any
 	if strings.TrimSpace(a.extraBody) != "" {
-		if err := json.Unmarshal([]byte(a.extraBody), &extraBody); err != nil {
-			return "", config.Profile{}, fmt.Errorf("parsing --extra-body JSON object: %w", err)
+		parsed, err := parseExtraBodyFlag("--extra-body", a.extraBody)
+		if err != nil {
+			return "", config.Profile{}, err
 		}
-		if extraBody == nil {
-			return "", config.Profile{}, fmt.Errorf("--extra-body must be a JSON object")
+		extraBody = parsed
+	}
+	var smallMaxTokens *int
+	if a.smallMaxTokensSet {
+		smallMaxTokens = &a.smallMaxTokens
+	}
+	var smallTemperature *float64
+	if a.smallTemperatureSet {
+		smallTemperature = &a.smallTemperature
+	}
+	var smallTopP *float64
+	if a.smallTopPSet {
+		smallTopP = &a.smallTopP
+	}
+	var smallTopK *int
+	if a.smallTopKSet {
+		smallTopK = &a.smallTopK
+	}
+	var smallPresencePenalty *float64
+	if a.smallPresencePenaltySet {
+		smallPresencePenalty = &a.smallPresencePenalty
+	}
+	var smallExtraBody map[string]any
+	if strings.TrimSpace(a.smallExtraBody) != "" {
+		parsed, err := parseExtraBodyFlag("--small-extra-body", a.smallExtraBody)
+		if err != nil {
+			return "", config.Profile{}, err
 		}
+		smallExtraBody = parsed
 	}
 	var includePaths *[]string
 	if a.includePathsSet {
@@ -271,15 +330,25 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		excludeContent = &a.excludeContent
 	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile:               a.profile,
-		Model:                 a.model,
-		SmallModel:            a.smallModel,
+		Profile: a.profile,
+		Model:   a.model,
+		Small: config.SmallModelConfig{
+			Model:           a.smallModel,
+			MaxTokens:       smallMaxTokens,
+			Temperature:     smallTemperature,
+			TopP:            smallTopP,
+			TopK:            smallTopK,
+			PresencePenalty: smallPresencePenalty,
+			ExtraBody:       smallExtraBody,
+			ReasoningEffort: a.smallReasoningEffort,
+		},
 		BaseURL:               a.baseURL,
 		APIKey:                a.apiKey,
 		ReasoningEffort:       a.reasoningEffort,
-		SmallReasoningEffort:  a.smallReasoningEffort,
 		Temperature:           temperature,
 		TopP:                  topP,
+		TopK:                  topK,
+		PresencePenalty:       presencePenalty,
 		ExtraBody:             extraBody,
 		UseJSONSchema:         a.useJSONSchema,
 		IncludePaths:          includePaths,
@@ -304,6 +373,17 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		return "", config.Profile{}, err
 	}
 	return cfg.ActiveProfile, profile, nil
+}
+
+func parseExtraBodyFlag(name, raw string) (map[string]any, error) {
+	var extraBody map[string]any
+	if err := json.Unmarshal([]byte(raw), &extraBody); err != nil {
+		return nil, fmt.Errorf("parsing %s JSON object: %w", name, err)
+	}
+	if extraBody == nil {
+		return nil, fmt.Errorf("%s must be a JSON object", name)
+	}
+	return extraBody, nil
 }
 
 type trackedIntValue struct {
@@ -710,27 +790,60 @@ func (a *app) newCheckCmd() *cobra.Command {
 			}
 			ctx := logging.WithProgressInfo(cmd.Context(), profileProgressInfo(profile))
 			a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, checkReq))
+			a.logSmallModelReady(ctx, profile, checkReq)
 			a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, checkReq))
 			client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 			client.SetLogger(logger)
 			client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-			result, err := a.resolveModelCapabilities(ctx, client, profile, a.refreshModelCheck)
+			result, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, a.refreshModelCheck)
 			if err != nil {
 				return err
 			}
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
-			if a.jsonOutput {
-				if err := writeJSON(struct {
-					Check modelcheck.CheckSummary `json:"check"`
-				}{Check: result.Summary()}); err != nil {
-					return err
-				}
-				return validatePreReviewModelCheck(result)
-			}
-			if err := a.writeModelCheckOutput(result); err != nil {
+			spec, err := a.resolveActiveSpec()
+			if err != nil {
 				return err
 			}
-			return validatePreReviewModelCheck(result)
+			smallRequirements := smallModelRequirementsForSpec(spec, checkReq)
+			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, a.refreshModelCheck)
+			if err != nil {
+				return err
+			}
+			if a.jsonOutput {
+				out := struct {
+					Check modelcheck.CheckSummary  `json:"check"`
+					Small *modelcheck.CheckSummary `json:"small,omitempty"`
+				}{Check: result.Summary()}
+				if smallChecked {
+					summary := smallResult.Summary()
+					out.Small = &summary
+				}
+				if err := writeJSON(out); err != nil {
+					return err
+				}
+				if err := validatePreReviewModelCheck(result); err != nil {
+					return err
+				}
+				if smallChecked {
+					return validateSmallModelCheck(smallResult, smallRequirements)
+				}
+				return nil
+			}
+			if err := a.writeModelCheckOutput(profile.Model, result); err != nil {
+				return err
+			}
+			if smallChecked {
+				if err := a.writeModelCheckOutput(config.EffectiveSmallProfile(profile).Model, smallResult); err != nil {
+					return err
+				}
+			}
+			if err := validatePreReviewModelCheck(result); err != nil {
+				return err
+			}
+			if smallChecked {
+				return validateSmallModelCheck(smallResult, smallRequirements)
+			}
+			return nil
 		},
 	}
 	modelCmd.Flags().BoolVar(&a.refreshModelCheck, "refresh", false, "Refresh stored model capabilities by running live probes")
@@ -750,15 +863,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	// explicit --spec/--step, or the embedded DefaultSpec otherwise. There is no
 	// separate "default" code path. The profile was already applied by the caller
 	// via loadProfileForSpec, before the source adapter and request were built.
-	var spec workflow.Spec
-	if a.specPath != "" || a.stepName != "" {
-		resolved, err := a.resolveSpec()
-		if err != nil {
-			return err
-		}
-		spec = resolved
-	} else {
-		spec = workflow.DefaultSpec()
+	spec, err := a.resolveActiveSpec()
+	if err != nil {
+		return err
 	}
 
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
@@ -802,13 +909,14 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
 	}
 	a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, req))
+	a.logSmallModelReady(ctx, profile, req)
 	a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	if needsLLMSetup && !a.skipModelCheck {
-		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, false)
+		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, false)
 		if err != nil {
 			return err
 		}
@@ -816,8 +924,20 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			return err
 		}
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
-		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
+		smallRequirements := smallModelRequirementsForSpec(spec, req)
+		if smallRequirements.Uses() {
+			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, false)
+			if err != nil {
+				return err
+			}
+			if smallChecked {
+				if err := validateSmallModelCheck(smallResult, smallRequirements); err != nil {
+					return err
+				}
+			}
+		}
+		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 	} else {
 		req.ModelEmitsReasoning = true
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
@@ -940,11 +1060,18 @@ func (a *app) resolveSpec() (workflow.Spec, error) {
 	return spec, nil
 }
 
+func (a *app) resolveActiveSpec() (workflow.Spec, error) {
+	if a.specPath != "" || a.stepName != "" {
+		return a.resolveSpec()
+	}
+	return workflow.DefaultSpec(), nil
+}
+
 // seedFindings attaches top-level --findings to the first step that actually
-// consumes findings (verify/dedupe/merge/finalize) and does not already declare
-// findings_from, so `--spec w.yaml --findings f.json` lands where it is read
-// instead of being silently dropped on a collect-context/review step. Returns an
-// error when findings are supplied but no step would consume them.
+// consumes findings (verify/dedupe/merge/finalize/verdict/summarize) and does
+// not already declare findings_from, so `--spec w.yaml --findings f.json` lands
+// where it is read instead of being silently dropped on a collect-context/review
+// step. Returns an error when findings are supplied but no step would consume them.
 func seedFindings(spec *workflow.Spec, findings []string) error {
 	if len(findings) == 0 {
 		return nil
@@ -955,7 +1082,7 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize/summarize step to consume them; add findings_from to a specific step")
+	return fmt.Errorf("--findings given but the spec has no verify/dedupe/merge/finalize/verdict/summarize step to consume them; add findings_from to a specific step")
 }
 
 // loadProfileNamed loads a profile by name (e.g. a spec's `profile:` field),
@@ -1000,9 +1127,9 @@ func (a *app) specProfile() (string, error) {
 	return spec.Profile, nil
 }
 
-func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, error) {
+func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort string, refresh bool) (modelcheck.Result, error) {
 	if !refresh {
-		if capability, ok := modelcheck.FindProfileCapability(profile); ok {
+		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
 			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=profile")
 			return result, nil
@@ -1011,7 +1138,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		if err != nil {
 			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
-			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, profile.Model)
+			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model)
 			if err == nil && ok {
 				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
@@ -1023,7 +1150,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		}
 	}
 
-	checker := modelcheck.New(client, profile)
+	checker := modelcheck.NewForModel(client, profile, model, effort)
 	checker.SetLogger(a.logger)
 	checker.SetParallel(!a.disableParallelToolCalls)
 	result := checker.Run(ctx)
@@ -1040,6 +1167,167 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		a.logf(ctx, "Model capability cache write failed: %v", err)
 	}
 	return result, nil
+}
+
+// smallModelConfigured reports whether @small has distinct request settings and
+// therefore warrants its own capability check.
+func smallModelConfigured(profile config.Profile) bool {
+	return !reflect.DeepEqual(modelCheckProfileSignature(profile), modelCheckProfileSignature(config.EffectiveSmallProfile(profile)))
+}
+
+type modelCheckProfile struct {
+	Model           string
+	MaxTokens       *int
+	Temperature     *float64
+	TopP            *float64
+	TopK            *int
+	PresencePenalty *float64
+	ExtraBody       map[string]any
+	ReasoningEffort string
+}
+
+func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
+	return modelCheckProfile{
+		Model:           strings.TrimSpace(profile.Model),
+		MaxTokens:       profile.MaxTokens,
+		Temperature:     profile.Temperature,
+		TopP:            profile.TopP,
+		TopK:            profile.TopK,
+		PresencePenalty: profile.PresencePenalty,
+		ExtraBody:       profile.ExtraBody,
+		ReasoningEffort: profile.ReasoningEffort,
+	}
+}
+
+type modelCapabilityRequirements struct {
+	Response   bool
+	Tools      bool
+	JSONOutput bool
+	JSONSchema bool
+}
+
+func (r modelCapabilityRequirements) Uses() bool {
+	return r.Response || r.Tools || r.JSONOutput || r.JSONSchema
+}
+
+func (r *modelCapabilityRequirements) merge(other modelCapabilityRequirements) {
+	r.Response = r.Response || other.Response
+	r.Tools = r.Tools || other.Tools
+	r.JSONOutput = r.JSONOutput || other.JSONOutput
+	r.JSONSchema = r.JSONSchema || other.JSONSchema
+}
+
+func (r *modelCapabilityRequirements) requireJSON(useSchema bool) {
+	r.Response = true
+	if useSchema {
+		r.JSONSchema = true
+	} else {
+		r.JSONOutput = true
+	}
+}
+
+func smallModelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest) modelCapabilityRequirements {
+	var requirements modelCapabilityRequirements
+	for _, entry := range spec.FlatSteps() {
+		stepReq := req
+		stepUsesSmall := entry.Config != nil && usesSmallAlias(entry.Config.Model)
+		if entry.Config != nil && entry.Config.UseJSONSchema != nil {
+			stepReq.UseJSONSchema = *entry.Config.UseJSONSchema
+		}
+		if stepUsesSmall {
+			requirements.merge(stepModelRequirements(entry.Type, stepReq.UseJSONSchema))
+		}
+		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) || entry.Config == nil {
+			continue
+		}
+		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) {
+			requirements.merge(textModelRequirements())
+		}
+		if agentUsesSmall(stepUsesSmall, entry.Config.CompileFindings) {
+			requirements.merge(textModelRequirements())
+		}
+		if agentUsesSmall(stepUsesSmall, entry.Config.Nudge) {
+			requirements.merge(reviewerModelRequirements(agentUseJSONSchema(stepReq, entry.Config.Nudge)))
+		}
+	}
+	return requirements
+}
+
+func usesSmallAlias(model *string) bool {
+	return model != nil && strings.TrimSpace(*model) == workflow.SmallModelAlias
+}
+
+func agentModel(override *workflow.AgentOverride) *string {
+	if override == nil {
+		return nil
+	}
+	return override.Model
+}
+
+func agentUsesSmall(stepUsesSmall bool, override *workflow.AgentOverride) bool {
+	if override == nil || override.Model == nil {
+		return stepUsesSmall
+	}
+	return usesSmallAlias(agentModel(override))
+}
+
+func textModelRequirements() modelCapabilityRequirements {
+	return modelCapabilityRequirements{Response: true}
+}
+
+func reviewerModelRequirements(useJSONSchema bool) modelCapabilityRequirements {
+	requirements := modelCapabilityRequirements{Response: true, Tools: true}
+	requirements.requireJSON(useJSONSchema)
+	return requirements
+}
+
+func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityRequirements {
+	switch {
+	case stepType == workflow.StepCollectContext:
+		return modelCapabilityRequirements{Response: true, Tools: true}
+	case strings.HasPrefix(stepType, workflow.StepReviewPrefix),
+		stepType == workflow.StepVerify,
+		strings.HasPrefix(stepType, workflow.StepVerifyPrefix),
+		strings.HasPrefix(stepType, workflow.StepNudgePrefix):
+		return reviewerModelRequirements(useJSONSchema)
+	case stepType == workflow.StepDedupe,
+		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
+		stepType == workflow.StepMerge,
+		stepType == workflow.StepFinalize,
+		stepType == workflow.StepVerdict,
+		stepType == workflow.StepSummarize:
+		requirements := modelCapabilityRequirements{}
+		requirements.requireJSON(useJSONSchema)
+		return requirements
+	case strings.HasPrefix(stepType, workflow.StepExtractPrefix):
+		return textModelRequirements()
+	default:
+		return textModelRequirements()
+	}
+}
+
+func agentUseJSONSchema(stepReq model.ReviewRequest, override *workflow.AgentOverride) bool {
+	if override != nil && override.UseJSONSchema != nil {
+		return *override.UseJSONSchema
+	}
+	return stepReq.UseJSONSchema
+}
+
+// checkSmallModel runs (or loads cached) capabilities for the effective small
+// profile when it differs from the primary model request config, mirroring the
+// primary check. The bool reports whether a check was actually performed.
+func (a *app) checkSmallModel(ctx context.Context, client llm.Client, profile config.Profile, refresh bool) (modelcheck.Result, bool, error) {
+	if !smallModelConfigured(profile) {
+		return modelcheck.Result{}, false, nil
+	}
+	smallProfile := config.EffectiveSmallProfile(profile)
+	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(smallProfile))
+	result, err := a.resolveModelCapabilities(smallCtx, client, smallProfile, smallProfile.Model, smallProfile.ReasoningEffort, refresh)
+	if err != nil {
+		return result, true, err
+	}
+	a.logProgress(smallCtx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(result))
+	return result, true, nil
 }
 
 // reviewProducedNothing reports whether the review pipeline collapsed: every
@@ -1171,7 +1459,7 @@ func isTerminal(f *os.File) bool {
 	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
 }
 
-func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
+func (a *app) writeModelCheckOutput(modelName string, result modelcheck.Result) error {
 	s := result.Summary()
 	useANSI := isTerminal(os.Stdout)
 
@@ -1207,6 +1495,7 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	}
 
 	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s\n", label(modelName))
 	fmt.Fprintf(&sb, "%s %s\n", mark(s.Compatible), label("Model is compatible"))
 	fmt.Fprintf(&sb, "\n")
 	fmt.Fprintf(&sb, "%s Response\n", mark(s.Response))
@@ -1228,18 +1517,40 @@ func (a *app) writeModelCheckOutput(result modelcheck.Result) error {
 	return err
 }
 
+// validateSmallModelCheck applies only the gates required by the workflow uses
+// of @small, then labels failures so the user can tell which model is
+// incompatible.
+func validateSmallModelCheck(result modelcheck.Result, requirements modelCapabilityRequirements) error {
+	if err := validateModelCheckRequirements(result, requirements); err != nil {
+		return fmt.Errorf("small model: %w", err)
+	}
+	return nil
+}
+
 func validatePreReviewModelCheck(result modelcheck.Result) error {
+	requirements := modelCapabilityRequirements{Response: true, Tools: true}
+	requirements.requireJSON(result.UseJSONSchema)
+	return validateModelCheckRequirements(result, requirements)
+}
+
+func validateModelCheckRequirements(result modelcheck.Result, requirements modelCapabilityRequirements) error {
+	if !requirements.Uses() {
+		return nil
+	}
 	if len(result.PassedEfforts) == 0 {
 		return fmt.Errorf("model check failed: no reasoning efforts passed")
 	}
-	if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
-		return fmt.Errorf("model check failed for tool use at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+	if requirements.Tools {
+		if probe := result.ConfiguredTools(); probe.Status != modelcheck.StatusOK {
+			return fmt.Errorf("model check failed for tool use at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
+		}
 	}
-	if result.UseJSONSchema {
+	if requirements.JSONSchema {
 		if probe := result.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
 			return fmt.Errorf("model check failed for JSON schema output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
 		}
-	} else {
+	}
+	if requirements.JSONOutput {
 		if probe := result.ConfiguredJSONOutput(); probe.Status != modelcheck.StatusOK {
 			return fmt.Errorf("model check failed for JSON text output at reasoning effort %q: status=%s error=%s", probe.ReasoningEffort, probe.Status, probe.Error)
 		}
@@ -1386,6 +1697,29 @@ func profileProgressInfo(profile config.Profile) logging.ProgressInfo {
 	}
 }
 
+// smallModelProgressInfo mirrors profileProgressInfo for the profile's small
+// model, so the small-model capability check renders its own model and effort.
+func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
+	return logging.ProgressInfo{
+		Model:   profile.Model,
+		Effort:  profile.ReasoningEffort,
+		BaseURL: profile.BaseURL,
+	}
+}
+
+// logSmallModelReady prints a Model ready line for the profile's small model
+// when it resolves to a model different from the primary, so --show-progress
+// surfaces the second model in play (the one @small steps run on). When the
+// small config inherits the primary model there is nothing extra to show.
+func (a *app) logSmallModelReady(ctx context.Context, profile config.Profile, req model.ReviewRequest) {
+	small := config.EffectiveSmallProfile(profile)
+	if small.Model == profile.Model {
+		return
+	}
+	smallCtx := logging.WithProgressInfo(ctx, smallModelProgressInfo(small))
+	a.logProgress(smallCtx, logging.StageModel, logging.StateReady, modelSummary(small, req))
+}
+
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	flags := []string{fmt.Sprintf("%dk context", req.MaxContextTokens/1000)}
 	if profile.Temperature != nil {
@@ -1393,6 +1727,12 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	}
 	if profile.TopP != nil {
 		flags = append(flags, fmt.Sprintf("top_p=%g", *profile.TopP))
+	}
+	if profile.TopK != nil {
+		flags = append(flags, fmt.Sprintf("top_k=%d", *profile.TopK))
+	}
+	if profile.PresencePenalty != nil {
+		flags = append(flags, fmt.Sprintf("presence_penalty=%g", *profile.PresencePenalty))
 	}
 	return strings.Join(flags, ", ")
 }

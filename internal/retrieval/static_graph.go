@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
@@ -49,15 +51,53 @@ type staticGraphCacheEntry struct {
 	graph *staticGraph
 }
 
-// staticGraphCache memoizes a regex-built call graph per (language, repoRoot,
+// defaultMaxStaticGraphCacheEntries bounds how many distinct (language, repoRoot,
+// scope) graphs staticGraphCache will memoize within a single run. Of the three
+// key dimensions, language (python/nodejs/rust — Go uses goparser.BuildGraphCached)
+// and repoRoot (one repo per CLI run) are bounded by code; only the scope is not.
+// scopeForHierarchy yields either the repo-wide empty scope or a directory scope,
+// and directory paths come solely from find_callers/find_callees tool arguments,
+// so a pathological agent could query arbitrarily many distinct directories. This
+// cap turns that one unbounded axis into a hard bound.
+const defaultMaxStaticGraphCacheEntries = 64
+
+// staticGraphCacheCap resolves the admission cap on each cache miss. Misses are
+// rare, so reading the env at point of use is cheap and mirrors modelcheck/cache.go;
+// NICKPIT_GRAPH_CACHE_MAX_ENTRIES lets large monorepos tune it, and a value <= 0
+// disables the cap entirely (unbounded — the pre-cap behavior).
+func staticGraphCacheCap() int {
+	raw := strings.TrimSpace(os.Getenv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES"))
+	if raw == "" {
+		return defaultMaxStaticGraphCacheEntries
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultMaxStaticGraphCacheEntries
+	}
+	return n
+}
+
+// staticGraphCacheStore memoizes a regex-built call graph per (language, repoRoot,
 // scope). The graph is immutable after construction and find() only reads it, so
-// the cached value is shared safely across the concurrent reviewer/verifier
-// agents that previously each re-read and re-parsed every source file. It mirrors
-// goparser.BuildGraphCached; the regex backends (rust/python/node) are far
-// cheaper to build than Go's type-checked graph, but the redundant file I/O and
-// parsing still add up across calls (e.g. find_callers + find_callees for the
-// same symbol run as separate tool calls).
-var staticGraphCache sync.Map // key -> *staticGraphCacheEntry
+// the cached value is shared safely across the concurrent reviewer/verifier agents
+// that previously each re-read and re-parsed every source file. It mirrors
+// goparser.BuildGraphCached; the regex backends (rust/python/node) are far cheaper
+// to build than Go's type-checked graph, but the redundant file I/O and parsing
+// still add up across calls (e.g. find_callers + find_callees for the same symbol
+// run as separate tool calls).
+//
+// The cache is intentionally append-only within a single short-lived run: the CLI
+// reviews one repo and exits, reclaiming everything. The soft cap (see
+// staticGraphCacheCap) is a backstop against the unbounded directory-scope axis —
+// once full, a new directory scope is rebuilt without caching, exactly the
+// pre-cache behavior and never a failure. The repo-wide scope is exempt because it
+// is the dominant per-graph cost (a full-repo parse) and the most-reused key.
+type staticGraphCacheStore struct {
+	entries sync.Map     // key -> *staticGraphCacheEntry
+	count   atomic.Int64 // number of admitted (stored) keys
+}
+
+var staticGraphCache = &staticGraphCacheStore{} // one cache for the whole run
 
 // buildStaticGraphCached returns the graph for (language, repoRoot, scope),
 // invoking build at most once per key. The scope participates in the key because
@@ -70,8 +110,30 @@ func buildStaticGraphCached(language, repoRoot string, scope lookupScope, build 
 		root = abs
 	}
 	key := fmt.Sprintf("%s\x00%s\x00%s\x00%t", language, root, scope.Path, scope.IsDir)
-	actual, _ := staticGraphCache.LoadOrStore(key, &staticGraphCacheEntry{})
-	entry := actual.(*staticGraphCacheEntry)
+	repoWide := scope.Path == "" && !scope.IsDir
+	return staticGraphCache.getOrBuild(key, repoWide, build)
+}
+
+// getOrBuild serves an already-cached key unconditionally, and admits a new key
+// only while under the cap (the repo-wide scope is always admitted). A refused key
+// is built and returned without being cached, so correctness is unaffected.
+func (c *staticGraphCacheStore) getOrBuild(key string, repoWide bool, build func() (*staticGraph, error)) (*staticGraph, error) {
+	if actual, ok := c.entries.Load(key); ok {
+		return buildLocked(actual.(*staticGraphCacheEntry), build)
+	}
+	if max := staticGraphCacheCap(); !repoWide && max > 0 && c.count.Load() >= int64(max) {
+		return build()
+	}
+	actual, loaded := c.entries.LoadOrStore(key, &staticGraphCacheEntry{})
+	if !loaded {
+		c.count.Add(1) // count only genuine stores, so lost races never overcount
+	}
+	return buildLocked(actual.(*staticGraphCacheEntry), build)
+}
+
+// buildLocked runs build at most once per entry and shares the immutable result;
+// errors are NOT cached, so a transient failure retries on the next call.
+func buildLocked(entry *staticGraphCacheEntry, build func() (*staticGraph, error)) (*staticGraph, error) {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	if entry.graph != nil {

@@ -3,9 +3,12 @@
 # NickPit workflow spec — a portable, file-driven definition of the review
 # pipeline. Run with: nickpit local branch --spec workflow.yaml
 #
-# The steps below reproduce the default review exactly. Anything a step does not
-# override inherits the active profile / CLI flags, so a spec with no `config`
-# blocks behaves identically to a plain `nickpit local branch`.
+# The spec is the single source of truth for execution: every decision about how
+# a step's work is divided (`scope`) and whether the post-review tail streams
+# (`pipeline:`) is written here, not inferred in code. There is no auto-fusion.
+# Anything a step does not override inherits the active profile / CLI flags, so a
+# spec with no `config` blocks behaves identically to a plain `nickpit local
+# branch` for the parameters it omits.
 #
 # Step types:
 #   collect-context           gather supplemental context (needs a source)
@@ -19,6 +22,7 @@
 #   dedupe                    de-duplicate findings per reviewer
 #   merge                     merge reviewers' findings into one set
 #   finalize                  finalize priorities/confidence/wording
+#   verdict                   decide top-level correctness/explanation
 #   summarize                 shorten each finalized body for readability
 #
 # A `parallel:` group runs its children concurrently (with a barrier after). A
@@ -26,8 +30,35 @@
 # group — so each reviewer's findings are verified and deduped as soon as that
 # reviewer finishes. Each vector may be used by at most one lane per group.
 #
+# A `pipeline:` group is the explicit, streamed post-review tail:
+#   merge → finalize → verdict, optionally followed by summarize.
+# Its steps overlap with no barriers between them: each merge cluster flows
+# straight into finalize (and summarize) as soon as it is ready, while other
+# clusters are still merging; verdict gates on all finalizes and runs once.
+# Listing those steps flat (outside a `pipeline:`) instead runs them strictly
+# sequentially, each over the whole finding set, with a barrier between.
+#
+# `scope` makes a step's fan-out explicit — the work unit each agent operates on
+# (not parallelism; concurrency is the run-level --concurrency cap). Values:
+#   all       one agent over the whole finding set (merge?/finalize/summarize/
+#             verdict/verify/dedupe → see allowed set below)
+#   cluster   one agent per merge cluster   (merge, finalize, summarize)
+#   finding   one agent per finding         (verify)
+#   reviewer  one agent per reviewer group  (dedupe)
+# Allowed scope per step:
+#   merge     cluster
+#   finalize  all (flat) | cluster (inside a pipeline:)
+#   summarize all (flat) | cluster (inside a pipeline:)
+#   verdict   all
+#   verify    finding
+#   dedupe    reviewer
+# scope is optional; an omitted scope uses the value shown for that step in its
+# context. collect-context / review: / reasoning-extract: / nudge: run as a
+# single agent and do not take scope.
+#
 # LLM concurrency is run-level only (--concurrency, default 10, 0 = unlimited):
-# one shared cap across every agent loop in the run.
+# one shared cap across every agent loop in the run. It is intentionally not in
+# the spec — the same workflow runs on different machines with different caps.
 version: 1
 # profile: default          # optional; same as --profile
 
@@ -42,7 +73,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:codequality
+            config:
+              scope: finding
           - type: dedupe:codequality
+            config:
+              scope: reviewer
       - lane:
           - type: review:security
             config:
@@ -51,7 +86,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:security
+            config:
+              scope: finding
           - type: dedupe:security
+            config:
+              scope: reviewer
       - lane:
           - type: review:architecture
             config:
@@ -60,7 +99,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:architecture
+            config:
+              scope: finding
           - type: dedupe:architecture
+            config:
+              scope: reviewer
       - lane:
           - type: review:performance
             config:
@@ -69,7 +112,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:performance
+            config:
+              scope: finding
           - type: dedupe:performance
+            config:
+              scope: reviewer
       - lane:
           - type: review:testing
             config:
@@ -78,7 +125,11 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:testing
+            config:
+              scope: finding
           - type: dedupe:testing
+            config:
+              scope: reviewer
       - lane:
           - type: review:bestpractices
             config:
@@ -87,21 +138,34 @@ steps:
               compile_findings:
                 model: "@small"
           - type: verify:bestpractices
+            config:
+              scope: finding
           - type: dedupe:bestpractices
-  - type: merge
-  - type: finalize
-    config:
-      model: "@small"
-  - type: summarize
-    config:
-      model: "@small"
+            config:
+              scope: reviewer
+  - pipeline:
+      - type: merge
+        config:
+          scope: cluster
+      - type: finalize
+        config:
+          model: "@small"
+          scope: cluster
+      - type: verdict
+        config:
+          model: "@small"
+          scope: all
+      - type: summarize
+        config:
+          model: "@small"
+          scope: cluster
 
 # ---------------------------------------------------------------------------
 # Per-step overrides: every model parameter and budget can be set per step.
 # Unset = inherit from the active profile / CLI flags. (base_url / api_key are
 # profile-level only — the LLM client is created once per run.)
-# Use `model: "@small"` to select profile.small_model, falling back to
-# profile.model when no small model is configured.
+# Use `model: "@small"` to select profile.small, with unset small fields
+# falling back to the primary profile config.
 #
 # steps:
 #   - type: collect-context
@@ -125,20 +189,34 @@ steps:
 #                 model: "@small"
 #           - type: verify:security
 #             config:
+#               scope: finding
 #               verify_drop_policy: refuted-and-unverified
 #               verify_drop_confidence: 0.6
 #           - type: dedupe:security
+#             config:
+#               scope: reviewer
 #       - type: review:performance
 #         config:
 #           model: "@small"
-#   - type: merge
-#     config:
-#       model: claude-opus-4-8
-#       reasoning_effort: max
-#   - type: finalize
+#   - pipeline:
+#       - type: merge
+#         config:
+#           scope: cluster
+#           model: claude-opus-4-8
+#           reasoning_effort: max
+#       - type: finalize
+#         config:
+#           scope: cluster
+#       - type: verdict
+#         config:
+#           scope: all
+#       - type: summarize
+#         config:
+#           scope: cluster
 #
 # Overridable config keys:
-#   model, temperature, top_p, max_tokens, extra_body, reasoning_effort,
+#   model, temperature, top_p, top_k, presence_penalty, max_tokens,
+#   extra_body, reasoning_effort, scope,
 #   max_tool_calls, max_duplicate_tool_calls,
 #   max_output_retries, max_reasoning_seconds, max_reasoning_loop_repeats,
 #   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
@@ -148,7 +226,19 @@ steps:
 # compile_findings, nudge.
 # (max_context_tokens is profile/CLI-level only — the context is trimmed once,
 #  before any step runs.)
-
+#
+# ---------------------------------------------------------------------------
+# Engine guarantees (correctness/efficiency behavior, not execution-shape knobs,
+# so they are not configurable from the spec):
+#   - mechanical de-duplication absorbs clear duplicates before any LLM agent;
+#   - a cluster that reduces to one finding skips its LLM merge;
+#   - merge is skipped (empty result) when no verified findings remain, all
+#     reviewers failed, or only one reviewer produced findings;
+#   - findings with missing/invalid IDs are assigned IDs; unknown drop policies
+#     normalize to refuted-only;
+#   - reasoning collection is enabled automatically when standalone
+#     reasoning-extract:/nudge: steps are present.
+#
 # ---------------------------------------------------------------------------
 # Manual nudge / reasoning-extract (set the reviewer's nudge_count to 0 so it
 # only does its initial pass, then drive extra rounds yourself):
@@ -160,14 +250,23 @@ steps:
 #   - type: reasoning-extract:security
 #   - type: nudge:security
 #   - type: verify
-#   - type: merge
-#   - type: finalize
-
+#     config: { scope: finding }
+#   - pipeline:
+#       - type: merge
+#         config: { scope: cluster }
+#       - type: finalize
+#         config: { scope: cluster }
+#       - type: verdict
+#         config: { scope: all }
+#       - type: summarize
+#         config: { scope: cluster }
+#
 # ---------------------------------------------------------------------------
 # Findings injection: feed previously-emitted findings JSON back into a step.
 # The format is unchanged — it is exactly what NickPit emits with --json.
 # One file = one merge group; pass several to merge across them. A single file
-# into merge is a passthrough (nothing to merge against).
+# into merge is a passthrough (nothing to merge against). Injected steps run
+# flat (whole-set); only the merge step of a pipeline may carry findings_from.
 #
 # steps:
 #   - type: merge
@@ -175,8 +274,11 @@ steps:
 #       - reviewer_a.json
 #       - reviewer_b.json
 #   - type: finalize
+#   - type: verdict
+#   - type: summarize
 #
 # Or from the CLI, run a single step on imported findings:
 #   nickpit local branch --step merge --findings a.json --findings b.json --json
 #   nickpit local branch --step finalize --findings merged.json --json
+#   nickpit local branch --step verdict --findings finalized.json --json
 #   nickpit local branch --step summarize --findings finalized.json --json

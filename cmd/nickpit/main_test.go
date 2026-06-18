@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
+	"github.com/dgrieser/nickpit/internal/workflow"
 )
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
@@ -111,29 +112,68 @@ func TestLoadProfileAppliesSmallModelCLIOverrides(t *testing.T) {
 profiles:
   default:
     model: primary-model
-    small_model: file-small-model
     reasoning_effort: high
-    small_reasoning_effort: medium
+    small:
+      model: file-small-model
+      reasoning_effort: medium
+      max_tokens: 1024
+      temperature: 0.25
+      top_p: 0.75
+      top_k: 20
+      presence_penalty: 0.05
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	app := &app{
-		profile:              "default",
-		configPath:           path,
-		smallModel:           "cli-small-model",
-		smallReasoningEffort: "low",
+		profile:                 "default",
+		configPath:              path,
+		smallModel:              "cli-small-model",
+		smallReasoningEffort:    "low",
+		smallMaxTokens:          2048,
+		smallMaxTokensSet:       true,
+		smallTemperature:        0.5,
+		smallTemperatureSet:     true,
+		smallTopP:               0.9,
+		smallTopPSet:            true,
+		smallTopK:               40,
+		smallTopKSet:            true,
+		smallPresencePenalty:    0.1,
+		smallPresencePenaltySet: true,
+		smallExtraBody:          `{"chat_template_kwargs":{"enable_thinking":true}}`,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.SmallModel != "cli-small-model" {
-		t.Fatalf("small model = %q", profile.SmallModel)
+	if profile.Small.Model != "cli-small-model" {
+		t.Fatalf("small model = %q", profile.Small.Model)
 	}
-	if profile.SmallReasoningEffort != "low" {
-		t.Fatalf("small reasoning effort = %q", profile.SmallReasoningEffort)
+	if profile.Small.ReasoningEffort != "low" {
+		t.Fatalf("small reasoning effort = %q", profile.Small.ReasoningEffort)
+	}
+	if profile.Small.MaxTokens == nil || *profile.Small.MaxTokens != 2048 {
+		t.Fatalf("small max tokens = %v", profile.Small.MaxTokens)
+	}
+	if profile.Small.Temperature == nil || *profile.Small.Temperature != 0.5 {
+		t.Fatalf("small temperature = %v", profile.Small.Temperature)
+	}
+	if profile.Small.TopP == nil || *profile.Small.TopP != 0.9 {
+		t.Fatalf("small top_p = %v", profile.Small.TopP)
+	}
+	if profile.Small.TopK == nil || *profile.Small.TopK != 40 {
+		t.Fatalf("small top_k = %v", profile.Small.TopK)
+	}
+	if profile.Small.PresencePenalty == nil || *profile.Small.PresencePenalty != 0.1 {
+		t.Fatalf("small presence penalty = %v", profile.Small.PresencePenalty)
+	}
+	chatTemplateKwargs, ok := profile.Small.ExtraBody["chat_template_kwargs"].(map[string]any)
+	if !ok || chatTemplateKwargs["enable_thinking"] != true {
+		t.Fatalf("small extra body = %#v", profile.Small.ExtraBody)
 	}
 }
 
@@ -252,6 +292,8 @@ profiles:
     model: test-model
     temperature: 0.25
     top_p: 0.75
+    top_k: 20
+    presence_penalty: 0.05
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
@@ -261,13 +303,17 @@ profiles:
 	}
 
 	app := &app{
-		profile:        "default",
-		configPath:     path,
-		temperature:    1,
-		temperatureSet: true,
-		topP:           1,
-		topPSet:        true,
-		extraBody:      `{"chat_template_kwargs":{"enable_thinking":true,"clear_thinking":false}}`,
+		profile:            "default",
+		configPath:         path,
+		temperature:        1,
+		temperatureSet:     true,
+		topP:               1,
+		topPSet:            true,
+		topK:               40,
+		topKSet:            true,
+		presencePenalty:    0.1,
+		presencePenaltySet: true,
+		extraBody:          `{"chat_template_kwargs":{"enable_thinking":true,"clear_thinking":false}}`,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -284,6 +330,12 @@ profiles:
 	}
 	if *profile.TopP != 1 {
 		t.Fatalf("top_p = %v", *profile.TopP)
+	}
+	if profile.TopK == nil || *profile.TopK != 40 {
+		t.Fatalf("top_k = %v", profile.TopK)
+	}
+	if profile.PresencePenalty == nil || *profile.PresencePenalty != 0.1 {
+		t.Fatalf("presence penalty = %v", profile.PresencePenalty)
 	}
 	chatTemplateKwargs, ok := profile.ExtraBody["chat_template_kwargs"].(map[string]any)
 	if !ok {
@@ -347,6 +399,20 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	if cmd.PersistentFlags().Lookup("small-reasoning-effort") == nil {
 		t.Fatal("small-reasoning-effort flag missing")
 	}
+	for _, name := range []string{
+		"top-k",
+		"presence-penalty",
+		"small-max-tokens",
+		"small-temperature",
+		"small-top-p",
+		"small-top-k",
+		"small-presence-penalty",
+		"small-extra-body",
+	} {
+		if cmd.PersistentFlags().Lookup(name) == nil {
+			t.Fatalf("%s flag missing", name)
+		}
+	}
 	if cmd.PersistentFlags().Lookup("disable-reasoning-extract") == nil {
 		t.Fatal("disable-reasoning-extract flag missing")
 	}
@@ -368,7 +434,7 @@ func TestRootCmdHasCheckModel(t *testing.T) {
 
 func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 	out := captureStdout(t, func() {
-		err := (&app{}).writeModelCheckOutput(modelcheck.Result{
+		err := (&app{}).writeModelCheckOutput("test-model", modelcheck.Result{
 			Probes: []modelcheck.ProbeResult{
 				{Name: "configured_no_tools", ReasoningEffort: "high", Reasoned: true, Status: modelcheck.StatusOK},
 				{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: modelcheck.StatusOK},
@@ -382,6 +448,7 @@ func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 		}
 	})
 	for _, want := range []string{
+		"test-model",
 		"✓ Model is compatible",
 		"✓ Tool Use",
 		"✓ Structured Output",
@@ -397,6 +464,116 @@ func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 	}
 	if strings.Contains(out, "check:") || strings.Contains(out, "json_response:") {
 		t.Fatalf("output should not use YAML style\n%s", out)
+	}
+}
+
+func TestSmallModelRequirementsForDefaultSpecDoNotRequireTools(t *testing.T) {
+	requirements := smallModelRequirementsForSpec(workflow.DefaultSpec(), model.ReviewRequest{})
+	if !requirements.Uses() {
+		t.Fatal("default spec should use the small model")
+	}
+	if requirements.Tools {
+		t.Fatalf("default small-model requirements should not require tools: %+v", requirements)
+	}
+	if !requirements.JSONOutput || requirements.JSONSchema {
+		t.Fatalf("default small-model requirements = %+v, want JSON output only", requirements)
+	}
+
+	result := modelcheck.Result{
+		Probes: []modelcheck.ProbeResult{
+			{Name: "configured_no_tools", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+			{Name: "configured_tools", ReasoningEffort: "low", Status: modelcheck.StatusUnsupported, Error: "tools unsupported"},
+			{Name: "configured_json_output", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+		},
+		PassedEfforts: []string{"low"},
+	}
+	if err := validateSmallModelCheck(result, requirements); err != nil {
+		t.Fatalf("validateSmallModelCheck returned %v, want nil", err)
+	}
+}
+
+func TestSmallModelRequirementsSkipSpecWithoutAlias(t *testing.T) {
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Type: workflow.StepReviewPrefix + "security"},
+		{Type: workflow.StepFinalize},
+	}}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if requirements.Uses() {
+		t.Fatalf("small-model requirements = %+v, want unused", requirements)
+	}
+}
+
+func TestResolveActiveSpecUsesCustomSpecForSmallRequirements(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "workflow.yaml")
+	if err := os.WriteFile(path, []byte(`
+version: 1
+steps:
+  - type: review:security
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := (&app{specPath: path}).resolveActiveSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if requirements.Uses() {
+		t.Fatalf("small-model requirements = %+v, want custom spec without @small to be unused", requirements)
+	}
+}
+
+func TestSmallModelRequirementsRequireToolsForReviewAlias(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
+		Type:   workflow.StepReviewPrefix + "security",
+		Config: &workflow.StepOverride{Model: &alias},
+	}}}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if !requirements.Tools || !requirements.JSONOutput || requirements.JSONSchema {
+		t.Fatalf("review small-model requirements = %+v, want tools and JSON output", requirements)
+	}
+
+	result := modelcheck.Result{
+		Probes: []modelcheck.ProbeResult{
+			{Name: "configured_no_tools", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+			{Name: "configured_tools", ReasoningEffort: "low", Status: modelcheck.StatusUnsupported, Error: "tools unsupported"},
+			{Name: "configured_json_output", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+		},
+		PassedEfforts: []string{"low"},
+	}
+	err := validateSmallModelCheck(result, requirements)
+	if err == nil || !strings.Contains(err.Error(), "tool use") {
+		t.Fatalf("validateSmallModelCheck error = %v, want tool-use failure", err)
+	}
+}
+
+func TestSmallModelRequirementsHonorSchemaOverride(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	useSchema := true
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
+		Type: workflow.StepFinalize,
+		Config: &workflow.StepOverride{
+			Model:         &alias,
+			UseJSONSchema: &useSchema,
+		},
+	}}}
+	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if !requirements.JSONSchema || requirements.JSONOutput || requirements.Tools {
+		t.Fatalf("schema override requirements = %+v, want schema only", requirements)
+	}
+}
+
+func TestSmallModelConfiguredForSamplingOverride(t *testing.T) {
+	topK := 40
+	profile := config.Profile{
+		Model:           "same-model",
+		ReasoningEffort: "low",
+		Small:           config.SmallModelConfig{TopK: &topK},
+	}
+	if !smallModelConfigured(profile) {
+		t.Fatal("expected small sampling override to require a small-model check")
 	}
 }
 
@@ -481,6 +658,77 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ tool calls, ≤5 duplicates, ∞ concurrency, parallel"
 	if !strings.Contains(stderr, wantAgent) {
 		t.Fatalf("stderr missing agent progress line\nwant: %s\nstderr:\n%s", wantAgent, stderr)
+	}
+}
+
+func TestRunReviewShowProgressPrintsSmallModelWhenDifferent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	stderr := captureStderr(t, func() {
+		_ = (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
+			Model:            "Primary-Big",
+			BaseURL:          server.URL,
+			APIKey:           "token",
+			ReasoningEffort:  "high",
+			MaxContextTokens: 120000,
+			UseJSONSchema:    true,
+			Small:            config.SmallModelConfig{Model: "Small-Fast", ReasoningEffort: "low"},
+		}, model.ReviewRequest{
+			Mode:              model.ModeLocal,
+			RepoRoot:          t.TempDir(),
+			UseJSONSchema:     true,
+			PriorityThreshold: "p3",
+		})
+	})
+
+	wantPrimary := "Model      [Primary-Big:high @ " + server.URL + "] ready 120k context"
+	if !strings.Contains(stderr, wantPrimary) {
+		t.Fatalf("stderr missing primary model line\nwant: %s\nstderr:\n%s", wantPrimary, stderr)
+	}
+	wantSmall := "Model      [Small-Fast:low @ " + server.URL + "] ready 120k context"
+	if !strings.Contains(stderr, wantSmall) {
+		t.Fatalf("stderr missing small model line\nwant: %s\nstderr:\n%s", wantSmall, stderr)
+	}
+}
+
+func TestRunReviewShowProgressOmitsSmallModelWhenSame(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{"message": "reasoning_effort unsupported"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	stderr := captureStderr(t, func() {
+		_ = (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
+			Model:            "Primary-Big",
+			BaseURL:          server.URL,
+			APIKey:           "token",
+			ReasoningEffort:  "high",
+			MaxContextTokens: 120000,
+			UseJSONSchema:    true,
+		}, model.ReviewRequest{
+			Mode:              model.ModeLocal,
+			RepoRoot:          t.TempDir(),
+			UseJSONSchema:     true,
+			PriorityThreshold: "p3",
+		})
+	})
+
+	// No small config → small inherits the primary model → only one Model line.
+	if got := strings.Count(stderr, "] ready 120k context"); got != 1 {
+		t.Fatalf("model ready lines = %d, want 1 (no separate small model)\nstderr:\n%s", got, stderr)
 	}
 }
 

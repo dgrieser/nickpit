@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -47,10 +48,16 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 	profile = exampleProfile(profile)
 	entries := []yamlNodeEntry{
 		yamlEntry("model", yamlScalar(profile.Model)),
-		yamlEntry("small_model", yamlScalar(profile.SmallModel)),
+		yamlEntry("small", smallModelNode(profile.Small)),
 		yamlEntry("base_url", yamlScalar(profile.BaseURL)),
 		yamlEntry("api_key", yamlScalar(profile.APIKey)),
 		yamlEntry("supported_models", supportedModelsNode(profile.SupportedModels)),
+		yamlEntry("max_tokens", optionalIntNode(profile.MaxTokens)),
+		yamlEntry("temperature", optionalFloatNode(profile.Temperature)),
+		yamlEntry("top_p", optionalFloatNode(profile.TopP)),
+		yamlEntry("top_k", optionalIntNode(profile.TopK)),
+		yamlEntry("presence_penalty", optionalFloatNode(profile.PresencePenalty)),
+		yamlEntry("extra_body", mapNode(profile.ExtraBody)),
 		yamlEntry("include_paths", stringSliceNode(profile.IncludePaths)),
 		yamlEntry("exclude_paths", stringSliceNode(profile.ExcludePaths)),
 		yamlEntry("include_content", stringSliceNode(profile.IncludeContent)),
@@ -65,13 +72,25 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("nudge_count", yamlInt(profile.NudgeCount)),
 		yamlEntry("disable_patch_summary", yamlBool(profile.DisablePatchSummary)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
-		yamlEntry("small_reasoning_effort", yamlScalar(profile.SmallReasoningEffort)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
 		yamlEntry("gitlab_base_url", yamlScalar(profile.GitLabBaseURL)),
 		yamlEntry("asset_base_url", yamlScalar(profile.AssetBaseURL)),
 	}
 	return yamlMapping(entries...)
+}
+
+func smallModelNode(small SmallModelConfig) *yaml.Node {
+	return yamlMapping(
+		yamlEntry("model", yamlScalar(small.Model)),
+		yamlEntry("max_tokens", optionalIntNode(small.MaxTokens)),
+		yamlEntry("temperature", optionalFloatNode(small.Temperature)),
+		yamlEntry("top_p", optionalFloatNode(small.TopP)),
+		yamlEntry("top_k", optionalIntNode(small.TopK)),
+		yamlEntry("presence_penalty", optionalFloatNode(small.PresencePenalty)),
+		yamlEntry("extra_body", mapNode(small.ExtraBody)),
+		yamlEntry("reasoning_effort", yamlScalar(small.ReasoningEffort)),
+	)
 }
 
 func supportedModelsNode(models []ModelCapabilities) *yaml.Node {
@@ -104,6 +123,41 @@ func stringSliceNode(values []string) *yaml.Node {
 		seq.Content = append(seq.Content, yamlScalar(value))
 	}
 	return seq
+}
+
+func optionalIntNode(value *int) *yaml.Node {
+	if value == nil {
+		return yamlNull()
+	}
+	return yamlInt(*value)
+}
+
+func optionalFloatNode(value *float64) *yaml.Node {
+	if value == nil {
+		return yamlNull()
+	}
+	return yamlFloat(*value)
+}
+
+func mapNode(values map[string]any) *yaml.Node {
+	node := yamlMapping()
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		node.Content = append(node.Content, yamlScalar(key), anyNode(values[key]))
+	}
+	return node
+}
+
+func anyNode(value any) *yaml.Node {
+	node := &yaml.Node{}
+	if err := node.Encode(value); err != nil {
+		return yamlScalar(fmt.Sprint(value))
+	}
+	return node
 }
 
 func exampleProfile(profile Profile) Profile {
@@ -168,11 +222,27 @@ func yamlScalar(value string) *yaml.Node {
 	}
 }
 
+func yamlNull() *yaml.Node {
+	return &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!null",
+		Value: "",
+	}
+}
+
 func yamlInt(value int) *yaml.Node {
 	return &yaml.Node{
 		Kind:  yaml.ScalarNode,
 		Tag:   "!!int",
 		Value: fmt.Sprintf("%d", value),
+	}
+}
+
+func yamlFloat(value float64) *yaml.Node {
+	return &yaml.Node{
+		Kind:  yaml.ScalarNode,
+		Tag:   "!!float",
+		Value: fmt.Sprintf("%g", value),
 	}
 }
 

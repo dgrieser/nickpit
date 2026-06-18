@@ -33,6 +33,10 @@ type graphCacheEntry struct {
 // graph is immutable after construction and Find only reads it, so the cached
 // value is shared safely across the concurrent reviewer/verifier agents that
 // previously each triggered a full packages.Load("./...") type-check.
+//
+// Keyed solely by repoRoot, it holds exactly one entry per single-repo CLI run,
+// so it is intentionally left unbounded — unlike retrieval.staticGraphCache, whose
+// directory-scope axis is not code-bounded and therefore carries a soft cap.
 var graphCache sync.Map // abs repoRoot -> *graphCacheEntry
 
 // BuildGraphCached returns the call graph for repoRoot, building it at most

@@ -1,12 +1,14 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -43,13 +45,15 @@ type Config struct {
 
 type Profile struct {
 	Model                              string              `yaml:"model"`
-	SmallModel                         string              `yaml:"small_model"`
+	Small                              SmallModelConfig    `yaml:"small"`
 	BaseURL                            string              `yaml:"base_url"`
 	APIKey                             string              `yaml:"api_key"`
 	SupportedModels                    []ModelCapabilities `yaml:"supported_models"`
 	MaxTokens                          *int                `yaml:"max_tokens"`
 	Temperature                        *float64            `yaml:"temperature"`
 	TopP                               *float64            `yaml:"top_p"`
+	TopK                               *int                `yaml:"top_k"`
+	PresencePenalty                    *float64            `yaml:"presence_penalty"`
 	ExtraBody                          map[string]any      `yaml:"extra_body"`
 	UseJSONSchema                      bool                `yaml:"use_json_schema"`
 	IncludePaths                       []string            `yaml:"include_paths"`
@@ -66,7 +70,6 @@ type Profile struct {
 	NudgeCount                         int                 `yaml:"nudge_count"`
 	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
 	ReasoningEffort                    string              `yaml:"reasoning_effort"`
-	SmallReasoningEffort               string              `yaml:"small_reasoning_effort"`
 	Workdir                            string              `yaml:"workdir"`
 	GitHubToken                        string              `yaml:"github_token"`
 	GitLabToken                        string              `yaml:"gitlab_token"`
@@ -81,6 +84,17 @@ type Profile struct {
 	MaxReasoningLoopRepeatsConfigured  bool                `yaml:"-"`
 	MaxRateLimitDelaySecondsConfigured bool                `yaml:"-"`
 	NudgeCountConfigured               bool                `yaml:"-"`
+}
+
+type SmallModelConfig struct {
+	Model           string         `yaml:"model"`
+	MaxTokens       *int           `yaml:"max_tokens"`
+	Temperature     *float64       `yaml:"temperature"`
+	TopP            *float64       `yaml:"top_p"`
+	TopK            *int           `yaml:"top_k"`
+	PresencePenalty *float64       `yaml:"presence_penalty"`
+	ExtraBody       map[string]any `yaml:"extra_body"`
+	ReasoningEffort string         `yaml:"reasoning_effort"`
 }
 
 type ModelCapabilities struct {
@@ -101,12 +115,14 @@ type ReasoningCapabilities struct {
 type Overrides struct {
 	Profile               string
 	Model                 string
-	SmallModel            string
+	Small                 SmallModelConfig
 	BaseURL               string
 	APIKey                string
 	MaxTokens             *int
 	Temperature           *float64
 	TopP                  *float64
+	TopK                  *int
+	PresencePenalty       *float64
 	ExtraBody             map[string]any
 	UseJSONSchema         bool
 	IncludePaths          *[]string
@@ -123,7 +139,6 @@ type Overrides struct {
 	NudgeCount            *int
 	DisablePatchSummary   bool
 	ReasoningEffort       string
-	SmallReasoningEffort  string
 	Workdir               string
 	GitHubToken           string
 	GitLabToken           string
@@ -148,13 +163,28 @@ var defaultProfiles = []defaultProfile{
 	{
 		name: "mittwald",
 		profile: Profile{
-			BaseURL:              "https://llm.aihosting.mittwald.de/v1",
-			Model:                "Qwen3.5-122B-A10B-FP8",
-			SmallModel:           "Qwen3.6-35B-A3B-FP8",
-			ReasoningEffort:      "high",
-			SmallReasoningEffort: "low",
-			UseJSONSchema:        true,
-			APIKey:               "$MITTWALD_LLM_API_KEY",
+			BaseURL:         "https://llm.aihosting.mittwald.de/v1",
+			Model:           "Qwen3.5-122B-A10B-FP8",
+			ReasoningEffort: "high",
+			Temperature:     ptrTo(0.6),
+			TopP:            ptrTo(0.95),
+			TopK:            ptrTo(20),
+			PresencePenalty: ptrTo(0.0),
+			Small: SmallModelConfig{
+				Model:           "Qwen3.6-35B-A3B-FP8",
+				ReasoningEffort: "none",
+				Temperature:     ptrTo(0.7),
+				TopP:            ptrTo(1.0),
+				TopK:            ptrTo(40),
+				PresencePenalty: ptrTo(2.0),
+				ExtraBody: map[string]any{
+					"chat_template_kwargs": map[string]any{
+						"enable_thinking": false,
+					},
+				},
+			},
+			UseJSONSchema: true,
+			APIKey:        "$MITTWALD_LLM_API_KEY",
 		},
 	},
 	{
@@ -216,12 +246,104 @@ func cloneProfile(profile Profile) Profile {
 		value := *profile.TopP
 		profile.TopP = &value
 	}
+	if profile.TopK != nil {
+		value := *profile.TopK
+		profile.TopK = &value
+	}
+	if profile.PresencePenalty != nil {
+		value := *profile.PresencePenalty
+		profile.PresencePenalty = &value
+	}
 	profile.ExtraBody = cloneMap(profile.ExtraBody)
+	profile.Small = cloneSmallModelConfig(profile.Small)
 	profile.SupportedModels = cloneSupportedModels(profile.SupportedModels)
 	profile.IncludePaths = slices.Clone(profile.IncludePaths)
 	profile.ExcludePaths = slices.Clone(profile.ExcludePaths)
 	profile.IncludeContent = slices.Clone(profile.IncludeContent)
 	profile.ExcludeContent = slices.Clone(profile.ExcludeContent)
+	return profile
+}
+
+func cloneSmallModelConfig(small SmallModelConfig) SmallModelConfig {
+	if small.MaxTokens != nil {
+		value := *small.MaxTokens
+		small.MaxTokens = &value
+	}
+	if small.Temperature != nil {
+		value := *small.Temperature
+		small.Temperature = &value
+	}
+	if small.TopP != nil {
+		value := *small.TopP
+		small.TopP = &value
+	}
+	if small.TopK != nil {
+		value := *small.TopK
+		small.TopK = &value
+	}
+	if small.PresencePenalty != nil {
+		value := *small.PresencePenalty
+		small.PresencePenalty = &value
+	}
+	small.ExtraBody = cloneMap(small.ExtraBody)
+	return small
+}
+
+func mergeSmallModelConfig(base, override SmallModelConfig) SmallModelConfig {
+	if override.Model != "" {
+		base.Model = override.Model
+	}
+	if override.MaxTokens != nil {
+		base.MaxTokens = override.MaxTokens
+	}
+	if override.Temperature != nil {
+		base.Temperature = override.Temperature
+	}
+	if override.TopP != nil {
+		base.TopP = override.TopP
+	}
+	if override.TopK != nil {
+		base.TopK = override.TopK
+	}
+	if override.PresencePenalty != nil {
+		base.PresencePenalty = override.PresencePenalty
+	}
+	if override.ExtraBody != nil {
+		base.ExtraBody = override.ExtraBody
+	}
+	if override.ReasoningEffort != "" {
+		base.ReasoningEffort = override.ReasoningEffort
+	}
+	return base
+}
+
+func EffectiveSmallProfile(profile Profile) Profile {
+	profile = cloneProfile(profile)
+	small := profile.Small
+	if small.Model != "" {
+		profile.Model = small.Model
+	}
+	if small.MaxTokens != nil {
+		profile.MaxTokens = small.MaxTokens
+	}
+	if small.Temperature != nil {
+		profile.Temperature = small.Temperature
+	}
+	if small.TopP != nil {
+		profile.TopP = small.TopP
+	}
+	if small.TopK != nil {
+		profile.TopK = small.TopK
+	}
+	if small.PresencePenalty != nil {
+		profile.PresencePenalty = small.PresencePenalty
+	}
+	if small.ExtraBody != nil {
+		profile.ExtraBody = small.ExtraBody
+	}
+	if small.ReasoningEffort != "" {
+		profile.ReasoningEffort = small.ReasoningEffort
+	}
 	return profile
 }
 
@@ -289,7 +411,9 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 		activeProfile = DefaultProfileName
 	}
 	resolvedProfile := resolveProfileName(cfg, activeProfile)
-	applyEnv(cfg, resolvedProfile)
+	if err := applyEnv(cfg, resolvedProfile); err != nil {
+		return nil, Profile{}, err
+	}
 
 	profile, err := ResolveProfile(cfg, resolvedProfile)
 	if err != nil {
@@ -349,16 +473,72 @@ func loadFile(cfg *Config, path string) (bool, error) {
 	return true, nil
 }
 
-func applyEnv(cfg *Config, profileName string) {
+func applyEnv(cfg *Config, profileName string) error {
 	profile := cfg.Profiles[profileName]
 	if value := os.Getenv("NICKPIT_MODEL"); value != "" {
 		profile.Model = value
 	}
 	if value := os.Getenv("NICKPIT_SMALL_MODEL"); value != "" {
-		profile.SmallModel = value
+		profile.Small.Model = value
 	}
 	if value := os.Getenv("NICKPIT_SMALL_REASONING_EFFORT"); value != "" {
-		profile.SmallReasoningEffort = value
+		profile.Small.ReasoningEffort = value
+	}
+	if value := os.Getenv("NICKPIT_TOP_K"); value != "" {
+		parsed, err := parseEnvInt("NICKPIT_TOP_K", value)
+		if err != nil {
+			return err
+		}
+		profile.TopK = &parsed
+	}
+	if value := os.Getenv("NICKPIT_PRESENCE_PENALTY"); value != "" {
+		parsed, err := parseEnvFloat("NICKPIT_PRESENCE_PENALTY", value)
+		if err != nil {
+			return err
+		}
+		profile.PresencePenalty = &parsed
+	}
+	if value := os.Getenv("NICKPIT_SMALL_MAX_TOKENS"); value != "" {
+		parsed, err := parseEnvInt("NICKPIT_SMALL_MAX_TOKENS", value)
+		if err != nil {
+			return err
+		}
+		profile.Small.MaxTokens = &parsed
+	}
+	if value := os.Getenv("NICKPIT_SMALL_TEMPERATURE"); value != "" {
+		parsed, err := parseEnvFloat("NICKPIT_SMALL_TEMPERATURE", value)
+		if err != nil {
+			return err
+		}
+		profile.Small.Temperature = &parsed
+	}
+	if value := os.Getenv("NICKPIT_SMALL_TOP_P"); value != "" {
+		parsed, err := parseEnvFloat("NICKPIT_SMALL_TOP_P", value)
+		if err != nil {
+			return err
+		}
+		profile.Small.TopP = &parsed
+	}
+	if value := os.Getenv("NICKPIT_SMALL_TOP_K"); value != "" {
+		parsed, err := parseEnvInt("NICKPIT_SMALL_TOP_K", value)
+		if err != nil {
+			return err
+		}
+		profile.Small.TopK = &parsed
+	}
+	if value := os.Getenv("NICKPIT_SMALL_PRESENCE_PENALTY"); value != "" {
+		parsed, err := parseEnvFloat("NICKPIT_SMALL_PRESENCE_PENALTY", value)
+		if err != nil {
+			return err
+		}
+		profile.Small.PresencePenalty = &parsed
+	}
+	if value := os.Getenv("NICKPIT_SMALL_EXTRA_BODY"); strings.TrimSpace(value) != "" {
+		extraBody, err := parseEnvExtraBody("NICKPIT_SMALL_EXTRA_BODY", value)
+		if err != nil {
+			return err
+		}
+		profile.Small.ExtraBody = extraBody
 	}
 	if value := os.Getenv("NICKPIT_BASE_URL"); value != "" {
 		profile.BaseURL = value
@@ -385,15 +565,14 @@ func applyEnv(cfg *Config, profileName string) {
 		profile.GitLabBaseURL = value
 	}
 	cfg.Profiles[profileName] = profile
+	return nil
 }
 
 func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.Model != "" {
 		profile.Model = overrides.Model
 	}
-	if overrides.SmallModel != "" {
-		profile.SmallModel = overrides.SmallModel
-	}
+	profile.Small = mergeSmallModelConfig(profile.Small, overrides.Small)
 	if overrides.BaseURL != "" {
 		profile.BaseURL = overrides.BaseURL
 	}
@@ -408,6 +587,12 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	if overrides.TopP != nil {
 		profile.TopP = overrides.TopP
+	}
+	if overrides.TopK != nil {
+		profile.TopK = overrides.TopK
+	}
+	if overrides.PresencePenalty != nil {
+		profile.PresencePenalty = overrides.PresencePenalty
 	}
 	if overrides.ExtraBody != nil {
 		profile.ExtraBody = overrides.ExtraBody
@@ -465,9 +650,6 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort
 	}
-	if overrides.SmallReasoningEffort != "" {
-		profile.SmallReasoningEffort = overrides.SmallReasoningEffort
-	}
 	if overrides.Workdir != "" {
 		profile.Workdir = overrides.Workdir
 	}
@@ -481,6 +663,33 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.GitLabBaseURL = overrides.GitLabBaseURL
 	}
 	return normalizeProfile(profile)
+}
+
+func parseEnvInt(name, value string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("config: %s must be an integer: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func parseEnvFloat(name, value string) (float64, error) {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s must be a number: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func parseEnvExtraBody(name, value string) (map[string]any, error) {
+	var extraBody map[string]any
+	if err := json.Unmarshal([]byte(value), &extraBody); err != nil {
+		return nil, fmt.Errorf("config: parsing %s JSON object: %w", name, err)
+	}
+	if extraBody == nil {
+		return nil, fmt.Errorf("config: %s must be a JSON object", name)
+	}
+	return extraBody, nil
 }
 
 // applyProfileDefaults fills tunables that are unset (zero and not explicitly

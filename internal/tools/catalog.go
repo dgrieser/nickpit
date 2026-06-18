@@ -65,7 +65,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder",
 		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches",
-		Note:               "For Go, Python, JavaScript/TypeScript, or Rust code, prefer `find_callers` over `search` when locating a function by name; for other languages use `search` directly",
+		Note:               "Prefer `find_callers` over `search` when locating a function by name; for other languages use `search` directly",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
@@ -78,7 +78,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "find_callers",
 		APIDescription:     "Resolve function by symbol name and return caller hierarchy including method bodies",
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function",
-		Note:               "For Go, Python, JavaScript/TypeScript, or Rust code, prefer this over `search` when locating a function by name (other languages are not supported; use `search` there)",
+		Note:               "Prefer this over `search` when locating a function by name; for file types without structural analysis it automatically falls back to a literal search for the symbol",
 		Parameters:         callHierarchyParameters(),
 	},
 	{
@@ -96,7 +96,6 @@ var errorDefinitions = map[string]errorDefinition{
 	"already_requested_file": {Code: "already_requested_file", Message: "file contents were already provided for this review"},
 	"already_requested_tool": {Code: "already_requested_tool", Message: "tool result was already provided for this review"},
 	"encoding_failed":        {Code: "encoding_failed", Message: "failed to encode tool result"},
-	"unsupported_language":   {Code: "unsupported_language", Message: "structural analysis (find_callers/find_callees) is not available for this file type; this is NOT evidence the symbol is missing — use inspect_file or search (literal/regex) to locate the code instead"},
 }
 
 func intPtr(value int) *int {

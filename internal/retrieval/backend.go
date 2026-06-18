@@ -111,6 +111,23 @@ func SupportsStructuralAnalysis(repoRoot, path string) bool {
 	return err == nil
 }
 
+// FallbackSearchScope returns the repo-relative path a literal search should use
+// when call-hierarchy analysis is unavailable for path. It mirrors scopeForHierarchy:
+// a single file widens to the repo-wide scope ("") so callers/uses in other files are
+// still found; a directory (or the already repo-wide scope) is kept as-is. Used by the
+// review layer to degrade find_callers/find_callees into a literal search for
+// languages with no structural backend instead of failing.
+func FallbackSearchScope(repoRoot, path string) string {
+	scope, err := resolveLookupScope(repoRoot, path)
+	if err != nil {
+		return path
+	}
+	if scope.IsFile {
+		return ""
+	}
+	return scope.Path
+}
+
 // scopeForHierarchy converts a lookup scope into the scope used to build a call
 // graph. A file scope is widened to repo-wide (the empty scope), because call
 // hierarchy traversal is not meaningful when restricted to a single file's

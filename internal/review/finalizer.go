@@ -27,9 +27,8 @@ type FinalizeOptions struct {
 	DisableParallelToolCalls bool
 	DisablePatchSummary      bool
 	RepoRoot                 string
-	// ContextNotes is the context agent's markdown summary of the patch's
-	// intended purpose. When set, it is sent to the finalizer as `notes` so it
-	// can be merged into overall_explanation.
+	// ContextNotes is kept for option-shape compatibility with the post-merge
+	// pipeline, but final correctness/explanation notes are handled by Verdict.
 	ContextNotes string
 }
 
@@ -89,10 +88,6 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
-	constraints := finalizeConstraintsFor(in.Findings)
-	if opts.UseJSONSchema && len(constraints.AllowedCorrectness) > 0 {
-		schema = llm.FinalizeSchemaWithConstraints(constraints)
-	}
 	finalizeStart := time.Now()
 	e.logProgress(logging.StageFinalize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
@@ -103,7 +98,6 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		user:             userPrompt,
 		schema:           schema,
 		schemaKind:       llm.SchemaKindFinalize,
-		constraints:      constraints,
 		hasTools:         false,
 		validateResponse: finalizerOutputValidator(in.Findings),
 	}, req)
@@ -121,9 +115,6 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
 	}
 	stats := applyFinalizerOutput(out.Findings, result.resp.Findings)
-	out.OverallCorrectness = result.resp.OverallCorrectness
-	out.OverallExplanation = result.resp.OverallExplanation
-	out.OverallConfidenceScore = result.resp.OverallConfidenceScore
 	mergeInputSuggestions(out.Findings, in.Findings)
 	// Last-resort repair after retry exhaustion or direct non-parser callers.
 	// Normal schema/parser paths require `verification` in the finalizer output.
@@ -214,16 +205,8 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 	}
 
 	payloadMap := map[string]any{
-		"review_context":           json.RawMessage(contextJSON),
-		"overall_correctness":      in.OverallCorrectness,
-		"overall_explanation":      in.OverallExplanation,
-		"overall_confidence_score": in.OverallConfidenceScore,
-		"findings":                 findings,
-	}
-	// Only send notes when present so finalize-from-file / no-context runs do
-	// not include an empty field for the model to merge.
-	if strings.TrimSpace(contextNotes) != "" {
-		payloadMap["notes"] = contextNotes
+		"review_context": json.RawMessage(contextJSON),
+		"findings":       findings,
 	}
 	user, err := llm.RenderJSON(payloadMap)
 	if err != nil {
@@ -467,41 +450,6 @@ func applyWeightedConfidence(out, in []model.Finding) {
 
 func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
-}
-
-// finalizeConstraintsFor returns the constraints to apply to the finalizer
-// based on the verified findings. Three regimes, computed from the priority
-// floor = min(finding.priority, verification.priority):
-//   - any P0 floor: AllowedCorrectness = ["patch is incorrect"]. The schema
-//     forces the finalizer's hand because a critical finding by definition
-//     blocks the patch.
-//   - any P1 floor, no P0: unconstrained. The prompt asks the finalizer to
-//     default to "patch is incorrect" but lets it claim "patch is correct"
-//     with strong justification — schema cannot judge justification quality.
-//   - no P0/P1 floor: AllowedCorrectness = ["patch is correct"]. Without a
-//     critical finding the finalizer cannot fabricate a blocker.
-func finalizeConstraintsFor(in []model.Finding) llm.ResponseConstraints {
-	hasP0, hasP1 := false, false
-	for _, f := range in {
-		floor := model.PriorityRank(f.Priority)
-		if f.Verification != nil && f.Verification.Priority < floor {
-			floor = f.Verification.Priority
-		}
-		switch floor {
-		case 0:
-			hasP0 = true
-		case 1:
-			hasP1 = true
-		}
-	}
-	switch {
-	case hasP0:
-		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is incorrect"}}
-	case hasP1:
-		return llm.ResponseConstraints{}
-	default:
-		return llm.ResponseConstraints{AllowedCorrectness: []string{"patch is correct"}}
-	}
 }
 
 func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {
