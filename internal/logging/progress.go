@@ -18,6 +18,14 @@ type ProgressInfo struct {
 	Effort    string
 	BaseURL   string // rendered as "@ url" after model:effort
 	Turn      int    // LLM call number, 0 = absent
+
+	// Workflow identifies the running workflow on the top-level Agent line, in
+	// place of the model (the Model line above already shows that). Source is
+	// "embedded", a --spec file path, or "step"; Steps is the flattened step
+	// count. Set only on the Agent line and mutually exclusive with Model there.
+	Workflow       string
+	WorkflowSource string
+	WorkflowSteps  int
 }
 
 func (p ProgressInfo) IsZero() bool {
@@ -289,6 +297,7 @@ func formatProgressBracket(useANSI bool, info ProgressInfo) string {
 	if modelPart := formatProgressModel(useANSI, info, len(parts) > 0); modelPart != "" {
 		parts = append(parts, modelPart)
 	}
+	parts = append(parts, formatProgressWorkflow(useANSI, info)...)
 	if info.Detail != "" {
 		detail := info.Detail
 		if useANSI {
@@ -376,6 +385,38 @@ func formatProgressModel(useANSI bool, info ProgressInfo, scoped bool) string {
 		b.WriteString(" @ " + info.BaseURL)
 	}
 	return b.String()
+}
+
+// formatProgressWorkflow renders the Agent-line workflow identity as bracket
+// parts (name, source, step count), joined by the caller's " · " separator.
+// Returns nil when no workflow is set, so non-Agent lines are unaffected.
+func formatProgressWorkflow(useANSI bool, info ProgressInfo) []string {
+	if info.Workflow == "" {
+		return nil
+	}
+	name := info.Workflow
+	source := info.WorkflowSource
+	if useANSI {
+		name = progressStyle(progressColorKeyTeal, name)
+		source = progressLight(source)
+	}
+	parts := []string{name}
+	if info.WorkflowSource != "" {
+		parts = append(parts, source)
+	}
+	if info.WorkflowSteps > 0 {
+		unit := "steps"
+		if info.WorkflowSteps == 1 {
+			unit = "step"
+		}
+		count := fmt.Sprintf("%d", info.WorkflowSteps)
+		steps := count + " " + unit
+		if useANSI {
+			steps = progressStyle(progressColorNumberGreen, count) + " " + progressLight(unit)
+		}
+		parts = append(parts, steps)
+	}
+	return parts
 }
 
 func formatProgressTurn(useANSI bool, turn int) string {

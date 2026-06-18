@@ -681,9 +681,14 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 	if !strings.Contains(stderr, wantModel) {
 		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", wantModel, stderr)
 	}
-	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ tool calls, ≤5 duplicates, ∞ concurrency, parallel"
+	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ concurrency, ∞ tool calls, parallel, ≤5 duplicates"
 	if !strings.Contains(stderr, wantAgent) {
 		t.Fatalf("stderr missing agent progress line\nwant: %s\nstderr:\n%s", wantAgent, stderr)
+	}
+	// The Agent bracket describes the workflow (embedded default), not the model.
+	wantWorkflow := "Agent      [default · embedded · "
+	if !strings.Contains(stderr, wantWorkflow) || !strings.Contains(stderr, " steps] Structured no nudges") {
+		t.Fatalf("stderr missing agent workflow bracket\nwant prefix: %s\nstderr:\n%s", wantWorkflow, stderr)
 	}
 }
 
@@ -719,7 +724,7 @@ func TestRunReviewShowProgressPrintsSmallModelWhenDifferent(t *testing.T) {
 	if !strings.Contains(stderr, wantPrimary) {
 		t.Fatalf("stderr missing primary model line\nwant: %s\nstderr:\n%s", wantPrimary, stderr)
 	}
-	wantSmall := "Model      [Small-Fast:low @ " + server.URL + "] ready 120k context"
+	wantSmall := "Model      [Small-Fast:low @ " + server.URL + " · @small] ready 120k context"
 	if !strings.Contains(stderr, wantSmall) {
 		t.Fatalf("stderr missing small model line\nwant: %s\nstderr:\n%s", wantSmall, stderr)
 	}
@@ -755,6 +760,91 @@ func TestRunReviewShowProgressOmitsSmallModelWhenSame(t *testing.T) {
 	// No small config → small inherits the primary model → only one Model line.
 	if got := strings.Count(stderr, "] ready 120k context"); got != 1 {
 		t.Fatalf("model ready lines = %d, want 1 (no separate small model)\nstderr:\n%s", got, stderr)
+	}
+}
+
+func TestAgentSummaryFlagsAndOrder(t *testing.T) {
+	profile := config.Profile{MaxRateLimitDelaySeconds: 300}
+	req := model.ReviewRequest{
+		UseJSONSchema:           true,
+		NudgeCount:              3,
+		MaxOutputRetries:        5,
+		MaxReasoningSeconds:     300,
+		MaxReasoningLoopRepeats: 5,
+		MaxDuplicateToolCalls:   5,
+		Concurrency:             15,
+		SkipSuggestions:         true,
+		DisablePatchSummary:     true,
+		DisableReasoningExtract: true,
+		VerifyDropPolicy:        "refuted-only",
+		VerifyDropConfidence:    0.8,
+		PriorityThreshold:       "p1",
+	}
+	got := agentSummary(profile, req)
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only ≥0.8, ≥p1"
+	if got != want {
+		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAgentSummaryOmitsDefaultsAndSerial(t *testing.T) {
+	req := model.ReviewRequest{
+		DisableParallelToolCalls: true,
+		Concurrency:              10,
+		VerifyDropPolicy:         "none",
+		PriorityThreshold:        "p3",
+	}
+	got := agentSummary(config.Profile{}, req)
+	want := "Unstructured no nudges, no retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ≤10 concurrency, ∞ tool calls, ∞ duplicates"
+	if got != want {
+		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestModelSummaryRendersExtraBody(t *testing.T) {
+	temp := 0.6
+	maxTokens := 16384
+	profile := config.Profile{
+		MaxTokens:   &maxTokens,
+		Temperature: &temp,
+		ExtraBody: map[string]any{
+			"chat_template_kwargs": map[string]any{"enable_thinking": true},
+			"min_p":                0.05,
+		},
+	}
+	got := modelSummary(profile, model.ReviewRequest{MaxContextTokens: 120000})
+	want := "120k context, 16k output, temp=0.6, enable_thinking=true, min_p=0.05"
+	if got != want {
+		t.Fatalf("modelSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestModelSummaryOmitsOutputWhenUnset(t *testing.T) {
+	got := modelSummary(config.Profile{}, model.ReviewRequest{MaxContextTokens: 120000})
+	if want := "120k context"; got != want {
+		t.Fatalf("modelSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatExtraBody(t *testing.T) {
+	tests := []struct {
+		name string
+		in   map[string]any
+		want string // entries joined with "|"
+	}{
+		{name: "nil", in: nil, want: ""},
+		{name: "scalars sorted", in: map[string]any{"repetition_penalty": 1.05, "min_p": 0.05}, want: "min_p=0.05|repetition_penalty=1.05"},
+		{name: "nested unique leaf", in: map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true}, "min_p": 0.05}, want: "enable_thinking=true|min_p=0.05"},
+		{name: "colliding leaf uses full path", in: map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true}, "chat_template_kwargs2": map[string]any{"enable_thinking": true}}, want: "chat_template_kwargs.enable_thinking=true|chat_template_kwargs2.enable_thinking=true"},
+		{name: "array and bool", in: map[string]any{"stop": []any{"a", "b"}, "flag": false}, want: "flag=false|stop=[a, b]"},
+		{name: "empty nested map", in: map[string]any{"opts": map[string]any{}}, want: "opts={}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Join(formatExtraBody(tt.in), "|"); got != tt.want {
+				t.Fatalf("formatExtraBody() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
