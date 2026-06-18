@@ -43,6 +43,12 @@ func TestReasoningLoopDetectorRepeatedRuneRate(t *testing.T) {
 	if strings.Count(err.RepeatedContent, "\n") != loopRepeatedRuneMinCount {
 		t.Fatalf("repeated content = %q, want %d newlines", err.RepeatedContent, loopRepeatedRuneMinCount)
 	}
+	if err.RepeatedChunk {
+		t.Fatal("reasoning-content loop should not be flagged as a repeated chunk")
+	}
+	if got, want := err.Error(), "llm: reasoning loop detected during streaming"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
 }
 
 func TestReasoningLoopDetectorIgnoresFormattingRunes(t *testing.T) {
@@ -71,6 +77,13 @@ func TestReasoningLoopDetectorProviderRepeatedChunkError(t *testing.T) {
 	if got := strings.Count(d.MakeError().RepeatedContent, "\n"); got != 3 {
 		t.Fatalf("repeated content newline count = %d, want 3", got)
 	}
+	loopErr := d.MakeError()
+	if !loopErr.RepeatedChunk {
+		t.Fatal("provider repeated-chunk error should set RepeatedChunk")
+	}
+	if got, want := loopErr.Error(), "llm: model repeated output chunk during streaming"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
 }
 
 func TestReasoningLoopDetectorProviderRepeatedChunkErrorIncludesPartialLine(t *testing.T) {
@@ -82,6 +95,9 @@ func TestReasoningLoopDetectorProviderRepeatedChunkErrorIncludesPartialLine(t *t
 	}
 	if got, want := d.MakeError().LoopStartContent, "completed reasoning\npartial reasoning before provider error"; got != want {
 		t.Fatalf("loop start content = %q, want %q", got, want)
+	}
+	if !d.MakeError().RepeatedChunk {
+		t.Fatal("provider repeated-chunk error should set RepeatedChunk")
 	}
 }
 

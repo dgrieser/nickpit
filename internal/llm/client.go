@@ -389,6 +389,14 @@ func KnownReasoningEfforts() []string {
 	return append([]string(nil), reasoningEffortFallbackOrder...)
 }
 
+// LowerReasoningEfforts returns the known efforts strictly below effort, in the
+// order the runtime falls back through them (down to the terminal "off"). The
+// model check probes the configured effort plus exactly these so it validates
+// every effort the runtime can fall back to, and never a higher one.
+func LowerReasoningEfforts(effort string) []string {
+	return fallbackReasoningEfforts(effort)
+}
+
 func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (map[string]any, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -1183,12 +1191,18 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			var loopErr *ReasoningLoopDetectedError
 			if errors.As(streamErr, &loopErr) {
 				loopErr.ReasoningEffort = payload.ReasoningEffort
-				c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
+				prefix := "Reasoning loop"
+				if loopErr.RepeatedChunk {
+					prefix = "Repeated chunk"
+					c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
+				} else {
+					c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
+				}
 				if c.logger != nil {
 					if loopErr.LoopStartContent != "" {
-						c.logBlock(ctx, "Reasoning loop - content before repeat:", loopErr.LoopStartContent)
+						c.logBlock(ctx, prefix+" - content before repeat:", loopErr.LoopStartContent)
 					}
-					c.logBlock(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
+					c.logBlock(ctx, prefix+" - repeated portion (aborted):", loopErr.RepeatedContent)
 				}
 				return nil, loopErr
 			}

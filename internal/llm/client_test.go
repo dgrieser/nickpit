@@ -1489,6 +1489,29 @@ func TestFallbackReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestLowerReasoningEfforts(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   []string
+	}{
+		{name: "high", effort: "high", want: []string{"medium", "low", "minimal", "none", "off"}},
+		{name: "medium", effort: "medium", want: []string{"low", "minimal", "none", "off"}},
+		{name: "none", effort: "none", want: []string{"off"}},
+		{name: "off", effort: "off", want: []string{}},
+		{name: "empty", effort: "", want: []string{"low", "minimal", "none", "off"}},
+		{name: "unknown", effort: "provider-max", want: []string{"low", "minimal", "none", "off"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := LowerReasoningEfforts(tt.effort)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("LowerReasoningEfforts(%q) = %v, want %v", tt.effort, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestKnownReasoningEfforts(t *testing.T) {
 	want := []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 	got := KnownReasoningEfforts()

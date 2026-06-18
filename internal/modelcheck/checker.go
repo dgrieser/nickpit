@@ -64,6 +64,11 @@ type probeRetryMode int
 const (
 	probeRetryReviewLike probeRetryMode = iota
 	probeRetrySameEffort
+	// probeRetryAnyError retries up to MaxOutputRetries on any error that is not
+	// a definitive reasoning-effort rejection. It keeps reasoning-effort fallback
+	// enabled (review-like). Used by the capability probes so a flaky upstream
+	// loop or transient failure self-heals instead of aborting the run.
+	probeRetryAnyError
 )
 
 var jsonProbeSchema = json.RawMessage(`{
@@ -250,8 +255,18 @@ func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *
 }
 
 func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection, probe ProbeResult, mode probeRetryMode) (*llm.ReviewResponse, error) {
-	if mode != probeRetrySameEffort {
+	if mode == probeRetryReviewLike {
 		return c.reviewProbe(ctx, req, sec, probe)
+	}
+	retryable := func(err error) bool {
+		switch mode {
+		case probeRetrySameEffort:
+			return sameEffortRetryable(err)
+		case probeRetryAnyError:
+			return anyErrorRetryable(err, probe.ReasoningEffort)
+		default:
+			return false
+		}
 	}
 	maxRetries := c.profile.MaxOutputRetries
 	for attempt := 0; ; attempt++ {
@@ -259,7 +274,7 @@ func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewReques
 		if err == nil {
 			return resp, nil
 		}
-		if !sameEffortRetryable(err) || attempt >= maxRetries {
+		if !retryable(err) || attempt >= maxRetries {
 			return resp, err
 		}
 		c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageModelCheck, logging.StateRetry, fmt.Sprintf("attempt=%d reason=%q", attempt+1, err.Error()))
@@ -287,11 +302,7 @@ func (c *Checker) Run(ctx context.Context) Result {
 	effortProbes := []func() ProbeResult{
 		func() ProbeResult { return c.noToolsProbe(ctx, "configured_no_tools", configured) },
 	}
-	for _, effort := range llm.KnownReasoningEfforts() {
-		if effort == configured {
-			continue
-		}
-		effort := effort
+	for _, effort := range llm.LowerReasoningEfforts(configured) {
 		effortProbes = append(effortProbes, func() ProbeResult { return c.noToolsProbe(ctx, "fallback_no_tools", effort) })
 	}
 	result.Probes = c.runProbes(effortProbes)
@@ -357,13 +368,26 @@ func (r Result) probeByName(name string) ProbeResult {
 }
 
 func (r Result) simpleProbeEffort() string {
-	if probe := r.ConfiguredNoTools(); probe.Status == StatusOK {
-		return probe.ReasoningEffort
+	configured := r.ConfiguredNoTools()
+	if configured.Status == StatusOK {
+		return configured.ReasoningEffort
 	}
 	if len(r.PassedEfforts) == 0 {
+		// No effort passed at any level; validateModelCheckRequirements will
+		// reject the model regardless. Skip the simple probes (and their retries)
+		// so a bad endpoint or credential does not trigger many futile requests.
 		return ""
 	}
-	return r.PassedEfforts[0]
+	if configured.Status == StatusUnsupported {
+		// The configured effort is permanently unsupported, so the runtime falls
+		// back to the highest passing lower effort. Probe capabilities there to
+		// mirror runtime. After the lower-only discovery, PassedEfforts never
+		// holds an effort above the configured one.
+		return r.PassedEfforts[0]
+	}
+	// Transient failure (StatusFailed) at a supported effort: probe at the
+	// configured effort, which is the one the runtime will use.
+	return r.ConfiguredEffort
 }
 
 func (c *Checker) noToolsProbe(ctx context.Context, name, effort string) ProbeResult {
@@ -419,11 +443,11 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 	}
 	allowedTools := toolSet(tools)
 	for range 8 {
-		req := c.baseRequest(effort, messages, tools, probeRetryReviewLike)
+		req := c.baseRequest(effort, messages, tools, probeRetryAnyError)
 		if sec != nil {
 			req.ReasoningSink = sec
 		}
-		resp, err := c.reviewProbe(ctx, req, sec, probe)
+		resp, err := c.reviewProbeWithMode(ctx, req, sec, probe, probeRetryAnyError)
 		if err != nil {
 			probe = classifyProbeError(probe, err)
 			return probe
@@ -470,12 +494,12 @@ func (c *Checker) jsonOutputProbe(ctx context.Context, effort string) ProbeResul
 		{Role: "system", Content: mustRenderCheckPrompt("check_json_output_system.tmpl", struct{ ReasoningSnippet string }{rs})},
 		{Role: "user", Content: mustRenderCheckPrompt("check_json_output_user.tmpl", struct{ OutputSchemaSnippet string }{jsonProbeExample})},
 	}
-	req := c.baseRequest(effort, messages, nil, probeRetryReviewLike)
+	req := c.baseRequest(effort, messages, nil, probeRetryAnyError)
 	req.SchemaKind = llm.SchemaKindJSON
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
-	resp, err := c.reviewProbe(ctx, req, sec, probe)
+	resp, err := c.reviewProbeWithMode(ctx, req, sec, probe, probeRetryAnyError)
 	if err != nil {
 		probe = classifyProbeError(probe, err)
 		return probe
@@ -505,13 +529,13 @@ func (c *Checker) jsonSchemaProbe(ctx context.Context, effort string) ProbeResul
 		{Role: "system", Content: mustRenderCheckPrompt("check_json_schema_system.tmpl", struct{ ReasoningSnippet string }{rs})},
 		{Role: "user", Content: mustRenderCheckPrompt("check_json_schema_user.tmpl", struct{ OutputSchemaSnippet string }{jsonProbeExample})},
 	}
-	req := c.baseRequest(effort, messages, nil, probeRetryReviewLike)
+	req := c.baseRequest(effort, messages, nil, probeRetryAnyError)
 	req.Schema = jsonProbeSchema
 	req.SchemaKind = llm.SchemaKindJSON
 	if sec != nil {
 		req.ReasoningSink = sec
 	}
-	resp, err := c.reviewProbe(ctx, req, sec, probe)
+	resp, err := c.reviewProbeWithMode(ctx, req, sec, probe, probeRetryAnyError)
 	if err != nil {
 		probe = classifyProbeError(probe, err)
 		return probe
@@ -539,6 +563,9 @@ func (c *Checker) retryJSONProbe(ctx context.Context, sec *logging.ReasoningSect
 		messages = append(messages, llm.Message{Role: "user", Content: jsonProbeRetryFeedback})
 		retryReq := *req
 		retryReq.Messages = messages
+		// Plain reviewProbe on purpose: this loop already owns the MaxOutputRetries
+		// budget for validation retries. Routing it through reviewProbeWithMode
+		// would nest two retry loops and multiply the request budget.
 		retryResp, err := c.reviewProbe(ctx, &retryReq, sec, probe)
 		if err != nil {
 			probe = classifyProbeError(probe, err)
@@ -590,6 +617,18 @@ func sameEffortRetryable(err error) bool {
 	}
 	var budgetErr *llm.ReasoningBudgetExhaustedError
 	return errors.As(err, &budgetErr)
+}
+
+// anyErrorRetryable reports whether a capability probe should retry after err.
+// A definitive reasoning-effort rejection is not retried (it yields a stable
+// StatusUnsupported verdict), and a canceled or expired context is futile to
+// retry; every other error is treated as potentially transient (upstream loops,
+// repeated chunks, network blips) and retried.
+func anyErrorRetryable(err error, effort string) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return !llm.IsReasoningEffortRejection(err, effort)
 }
 
 func classifyProbeError(probe ProbeResult, err error) ProbeResult {

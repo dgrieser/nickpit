@@ -61,9 +61,17 @@ type ReasoningLoopDetectedError struct {
 	ReasoningEffort  string
 	LoopStartContent string // reasoning before the loop began
 	RepeatedContent  string // the repeating line(s)
+	// RepeatedChunk is true when the loop was reported by the upstream provider
+	// as a repeated output chunk (LiteLLM marker) rather than detected in the
+	// model's own reasoning content. Such loops occur in the completion stream
+	// even when the model emits no reasoning at all.
+	RepeatedChunk bool
 }
 
 func (e *ReasoningLoopDetectedError) Error() string {
+	if e.RepeatedChunk {
+		return "llm: model repeated output chunk during streaming"
+	}
 	return "llm: reasoning loop detected during streaming"
 }
 
@@ -72,6 +80,7 @@ type reasoningLoopDetector struct {
 	cancel            context.CancelFunc
 	maxRepeats        int
 	detected          bool
+	repeatedChunk     bool
 	loopStartContent  string
 	repeatedContent   string
 	lines             []string
@@ -107,6 +116,7 @@ func (d *reasoningLoopDetector) MakeError() *ReasoningLoopDetectedError {
 	return &ReasoningLoopDetectedError{
 		LoopStartContent: d.loopStartContent,
 		RepeatedContent:  d.repeatedContent,
+		RepeatedChunk:    d.repeatedChunk,
 	}
 }
 
@@ -147,6 +157,7 @@ func (d *reasoningLoopDetector) detectRepeatedChunkError(err error) bool {
 		d.lines = append(d.lines, d.currentLine.String())
 		d.currentLine.Reset()
 	}
+	d.repeatedChunk = true
 	d.trigger(chunk, len(d.lines))
 	return true
 }
