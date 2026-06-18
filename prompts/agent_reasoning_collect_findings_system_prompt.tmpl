@@ -5,19 +5,27 @@ You receive the complete notes an engineer made during a thorough code review.
 
 The engineer might have seen findings, but maybe decided to not flag them.
 
+Definition:
+A finding is a potential PROBLEM the engineer noticed:
+- a bug
+- risk
+- defect
+- concern
+- gap
+- or anything questionable about the code under review
+
+A finding is NOT:
+- a positive or reassuring observation, e.g.:
+  - "... is properly done"
+  - "... is safe"
+  - "... works correctly"
+  - "no performance issues"
+  - "behavior is intentional/expected"
+- a statement that something is fine, correct, or that no issue exists
+
 Your job:
 - extract every distinct finding the engineer mentions in their notes
 - summarize the finding in one or two sentences, mentioning code location, files, if available
-
-A finding is a potential PROBLEM the engineer noticed: a bug, risk, defect, concern, gap, or anything questionable about the code under review.
-
-A finding is NOT:
-- a positive or reassuring observation (e.g. "variables are properly quoted", "the find command is safe", "signal handling works correctly", "no performance issues", "behavior is intentional/expected", "removed as expected")
-- a statement that something is fine, correct, or that no issue exists
-- the engineer's own process or workflow narration (e.g. "needs to review the test file", "intends to examine the script", "searched for X", "will verify Y")
-- meta-commentary about the review task itself, the grading rubric, the output schema, priorities, or fields like overall_correctness
-
-Extract ONLY the problems. If a note merely confirms something is correct, safe, or not an issue, DO NOT extract it.
 
 DO NOT introduce new findings that the engineer did not mention.
 DO NOT make up code locations or files, if the engineer did not mention them.
@@ -30,7 +38,5 @@ Please return the findings as:
 - DO NOT format as JSON
 - DO NOT use markdown
 
-When the notes contain no actual problems (only confirmations, process steps, or meta-commentary):
+When the notes contain no actual problems:
 - output exactly NONE
-- output nothing else — no explanation, no "No findings mentioned", no extra lines
-NEVER combine NONE with any other line. NEVER paraphrase NONE.
