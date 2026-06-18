@@ -41,14 +41,15 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	reviewsPath := fmt.Sprintf("/repos/%s/pulls/%d/reviews", escaped, req.Identifier)
 	issueCommentsPath := fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, req.Identifier)
 
-	posted := a.existingMarkers(ctx, req.Repo, req.Identifier)
+	prior := a.existingComments(ctx, req.Repo, req.Identifier)
 
 	// Partition not-yet-posted findings: those whose line maps to the diff become
 	// inline review comments; the rest become general comments.
 	var inline []inlineItem
 	var overflow []model.Finding
 	for _, finding := range result.Findings {
-		if _, ok := posted[reviewmd.FindingMarker(finding.ID)]; ok {
+		title, _, _, _ := reviewmd.FindingDisplay(finding)
+		if reviewmd.AlreadyPosted(finding, title, prior) {
 			continue
 		}
 		body := a.render.FindingBody(finding, "")
@@ -60,7 +61,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	}
 
 	summaryBody := ""
-	if _, ok := posted[reviewmd.SummaryMarker]; !ok {
+	if _, ok := prior.Markers[reviewmd.SummaryMarker]; !ok {
 		summaryBody = a.render.SummaryBody(result)
 	}
 
@@ -134,30 +135,31 @@ func (a *Adapter) postIssueComment(ctx context.Context, path string, finding mod
 	return a.client.Post(ctx, path, map[string]string{"body": a.render.FindingBody(finding, prefix)}, nil)
 }
 
-// existingMarkers collects the nickpit markers already present in the PR's
-// reviews, review comments, and issue comments so re-runs skip findings posted
-// before. Fetch errors are tolerated (worst case: a duplicate comment).
-func (a *Adapter) existingMarkers(ctx context.Context, repo string, number int) map[string]struct{} {
-	markers := map[string]struct{}{}
+// existingComments collects the markers and finding fingerprints already present
+// in the PR's reviews, review comments, and issue comments so re-runs skip
+// findings posted before. Fetch errors are tolerated (worst case: a duplicate
+// comment).
+func (a *Adapter) existingComments(ctx context.Context, repo string, number int) reviewmd.Priors {
+	prior := reviewmd.Priors{Markers: map[string]struct{}{}}
 	escaped := escapeRepo(repo)
 
 	var reviews []reviewResponse
 	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/reviews", escaped, number), &reviews); err == nil {
 		for _, review := range reviews {
-			reviewmd.CollectMarkers(review.Body, markers)
+			reviewmd.ScanComment(review.Body, &prior)
 		}
 	}
 	var comments []commentResponse
 	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/comments", escaped, number), &comments); err == nil {
 		for _, comment := range comments {
-			reviewmd.CollectMarkers(comment.Body, markers)
+			reviewmd.ScanComment(comment.Body, &prior)
 		}
 	}
 	var issueComments []issueCommentResponse
 	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, number), &issueComments); err == nil {
 		for _, comment := range issueComments {
-			reviewmd.CollectMarkers(comment.Body, markers)
+			reviewmd.ScanComment(comment.Body, &prior)
 		}
 	}
-	return markers
+	return prior
 }

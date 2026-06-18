@@ -134,6 +134,12 @@ func (ps *publishServer) adapter() *Adapter {
 
 func intPtr(v int) *int { return &v }
 
+// fpMarker builds the hidden carrier marker a posted finding comment carries, so
+// tests can assert on (or seed) it the same way the renderer emits it.
+func fpMarker(id, file, title string) string {
+	return reviewmd.FingerprintMarker(model.Finding{ID: id, CodeLocation: model.CodeLocation{FilePath: file}}, title)
+}
+
 func sampleResult() *model.ReviewResult {
 	return &model.ReviewResult{
 		OverallCorrectness:     "patch is incorrect",
@@ -188,13 +194,13 @@ func TestPublishReviewHappyPath(t *testing.T) {
 	if c.Path != "main.go" || c.Line != 1 || c.Side != "RIGHT" {
 		t.Fatalf("inline comment anchor wrong: %+v", c)
 	}
-	if !strings.Contains(c.Body, reviewmd.FindingMarker("finding-a")) {
+	if !strings.Contains(c.Body, fpMarker("finding-a", "main.go", "Inline issue")) {
 		t.Fatalf("inline comment missing finding marker: %q", c.Body)
 	}
 	if len(ps.issuePosts) != 1 {
 		t.Fatalf("issue comments = %d, want 1 (finding-b)", len(ps.issuePosts))
 	}
-	if !strings.Contains(ps.issuePosts[0], "`other.go:5`") || !strings.Contains(ps.issuePosts[0], reviewmd.FindingMarker("finding-b")) {
+	if !strings.Contains(ps.issuePosts[0], "`other.go:5`") || !strings.Contains(ps.issuePosts[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
 		t.Fatalf("overflow comment missing prefix/marker: %q", ps.issuePosts[0])
 	}
 }
@@ -203,7 +209,7 @@ func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	ps := newPublishServer(t)
 	// Summary already posted as a prior review; finding-a already an inline comment.
 	ps.reviewsBody = []byte(`[{"body":"` + reviewmd.SummaryMarker + `"}]`)
-	ps.commentsB = []byte(`[{"body":"prefix ` + reviewmd.FindingMarker("finding-a") + ` suffix"}]`)
+	ps.commentsB = []byte(`[{"body":"prefix ` + fpMarker("finding-a", "main.go", "Inline issue") + ` suffix"}]`)
 	if err := ps.adapter().PublishReview(context.Background(), req(), sampleResult()); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -211,7 +217,24 @@ func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	if len(ps.reviewPosts) != 0 {
 		t.Fatalf("review posts = %d, want 0 (all inline deduped)", len(ps.reviewPosts))
 	}
-	if len(ps.issuePosts) != 1 || !strings.Contains(ps.issuePosts[0], reviewmd.FindingMarker("finding-b")) {
+	if len(ps.issuePosts) != 1 || !strings.Contains(ps.issuePosts[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
+		t.Fatalf("expected only finding-b issue comment, got %v", ps.issuePosts)
+	}
+}
+
+// TestPublishReviewDedupeCrossRun proves the file+title fingerprint skips a
+// finding posted on a PRIOR run, whose random id differs from this run's.
+func TestPublishReviewDedupeCrossRun(t *testing.T) {
+	ps := newPublishServer(t)
+	ps.reviewsBody = []byte(`[{"body":"` + reviewmd.SummaryMarker + `"}]`)
+	ps.commentsB = []byte(`[{"body":"x ` + fpMarker("prior-run-id", "main.go", "Inline issue") + ` y"}]`)
+	if err := ps.adapter().PublishReview(context.Background(), req(), sampleResult()); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(ps.reviewPosts) != 0 {
+		t.Fatalf("review posts = %d, want 0 (finding-a matched across runs)", len(ps.reviewPosts))
+	}
+	if len(ps.issuePosts) != 1 || !strings.Contains(ps.issuePosts[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
 		t.Fatalf("expected only finding-b issue comment, got %v", ps.issuePosts)
 	}
 }
@@ -255,7 +278,7 @@ func TestPublishReview422FallsBackToIssueComments(t *testing.T) {
 	}
 	var sawA bool
 	for _, body := range ps.issuePosts {
-		if strings.Contains(body, reviewmd.FindingMarker("finding-a")) && strings.Contains(body, "`main.go:1`") {
+		if strings.Contains(body, fpMarker("finding-a", "main.go", "Inline issue")) && strings.Contains(body, "`main.go:1`") {
 			sawA = true
 		}
 	}
@@ -278,7 +301,7 @@ func TestPublishReviewNon422Propagates(t *testing.T) {
 		t.Fatalf("error should name the review step, got %v", err)
 	}
 	for _, body := range ps.issuePosts {
-		if strings.Contains(body, reviewmd.FindingMarker("finding-a")) {
+		if strings.Contains(body, fpMarker("finding-a", "main.go", "Inline issue")) {
 			t.Fatalf("finding-a must not fall back on a non-422 error: %q", body)
 		}
 	}
