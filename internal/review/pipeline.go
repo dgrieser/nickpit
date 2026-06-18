@@ -399,7 +399,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	res.TotalToolCalls = toolCalls
 	res.ReasoningEffort = reasoning
 	if req.SkipSuggestions {
-		stripResultSuggestions(res)
+		res.StripSuggestions()
 	}
 	return res
 }
@@ -480,7 +480,7 @@ func (st *PipelineState) materializeFromGroupsLocked(req model.ReviewRequest) *m
 	}
 	findings = filterByPriority(findings, req.PriorityThreshold)
 	if req.SkipSuggestions {
-		stripFindingSuggestions(findings)
+		model.StripSuggestions(findings)
 	}
 	model.EnsureFindingIDs(findings)
 	return &model.ReviewResult{Findings: findings}

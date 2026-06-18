@@ -359,7 +359,7 @@ func (s *reviewerSession) result(req model.ReviewRequest) agentResult {
 	latest := *s.latestResp
 	latest.Findings = s.totalFindings
 	if req.SkipSuggestions {
-		stripFindingSuggestions(latest.Findings)
+		model.StripSuggestions(latest.Findings)
 	}
 	run := model.AgentRun{
 		Name:                  s.agent.name,

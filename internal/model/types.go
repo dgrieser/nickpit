@@ -97,6 +97,14 @@ type ReviewResult struct {
 	TotalToolCalls  int              `json:"total_tool_calls,omitempty"`
 }
 
+// StripSuggestions removes code suggestions from every finding in the result.
+func (r *ReviewResult) StripSuggestions() {
+	if r == nil {
+		return
+	}
+	StripSuggestions(r.Findings)
+}
+
 type AgentRun struct {
 	Name                  string     `json:"name"`
 	Role                  string     `json:"role"`
@@ -239,6 +247,13 @@ type Finding struct {
 	// dropped findings; the merge step strips it before findings leave the
 	// step, so it never reaches results or posted reviews.
 	MergedFrom []string `json:"merged_from,omitempty"`
+}
+
+// StripSuggestions removes code suggestions from every finding.
+func StripSuggestions(findings []Finding) {
+	for i := range findings {
+		findings[i].Suggestions = nil
+	}
 }
 
 func EnsureFindingIDs(findings []Finding) int {

@@ -1408,7 +1408,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	start := time.Now()
 	result, err := e.runAgentOnce(ctx, agent, req)
 	if req.SkipSuggestions && result.resp != nil {
-		stripFindingSuggestions(result.resp.Findings)
+		model.StripSuggestions(result.resp.Findings)
 	}
 	// Reviewer sessions stamp their own runtime (anchored at session start);
 	// every other role is timed here.
@@ -1416,19 +1416,6 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 		result.run.RuntimeSeconds = model.RuntimeSeconds(time.Since(start))
 	}
 	return result, err
-}
-
-func stripFindingSuggestions(findings []model.Finding) {
-	for i := range findings {
-		findings[i].Suggestions = nil
-	}
-}
-
-func stripResultSuggestions(result *model.ReviewResult) {
-	if result == nil {
-		return
-	}
-	stripFindingSuggestions(result.Findings)
 }
 
 func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {

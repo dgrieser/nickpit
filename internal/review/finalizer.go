@@ -123,7 +123,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	}
 	stats := applyFinalizerOutput(out.Findings, result.resp.Findings)
 	if opts.SkipSuggestions {
-		stripFindingSuggestions(out.Findings)
+		model.StripSuggestions(out.Findings)
 	} else {
 		mergeInputSuggestions(out.Findings, in.Findings)
 	}

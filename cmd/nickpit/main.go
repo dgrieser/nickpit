@@ -970,7 +970,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 // origin, and reports the "all reviewers errored" CI failure.
 func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
 	if req.SkipSuggestions {
-		stripResultSuggestions(result)
+		result.StripSuggestions()
 	}
 	var formatter output.Formatter
 	if a.jsonOutput {
@@ -1010,15 +1010,6 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
-}
-
-func stripResultSuggestions(result *model.ReviewResult) {
-	if result == nil {
-		return
-	}
-	for i := range result.Findings {
-		result.Findings[i].Suggestions = nil
-	}
 }
 
 // runWorkflow executes a spec through the pipeline: the embedded DefaultSpec for

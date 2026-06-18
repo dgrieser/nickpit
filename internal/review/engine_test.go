@@ -2444,7 +2444,7 @@ func TestStripResultSuggestions(t *testing.T) {
 		Suggestions: []model.Suggestion{{Body: "fix"}},
 	}}}
 
-	stripResultSuggestions(result)
+	result.StripSuggestions()
 
 	if len(result.Findings[0].Suggestions) != 0 {
 		t.Fatalf("suggestions = %+v, want stripped", result.Findings[0].Suggestions)

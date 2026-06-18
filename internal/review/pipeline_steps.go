@@ -930,7 +930,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			// effective for finalize-from-file workflows.
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
 			if sc.Req.SkipSuggestions {
-				stripFindingSuggestions(findings)
+				model.StripSuggestions(findings)
 			}
 			st.mu.Lock()
 			st.result = &model.ReviewResult{
@@ -1004,7 +1004,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			flat := flattenInjectedGroups(groups)
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
 			if sc.Req.SkipSuggestions {
-				stripFindingSuggestions(findings)
+				model.StripSuggestions(findings)
 			}
 			st.mu.Lock()
 			st.result = &model.ReviewResult{
@@ -1076,7 +1076,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			flat := flattenInjectedGroups(groups)
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
 			if sc.Req.SkipSuggestions {
-				stripFindingSuggestions(findings)
+				model.StripSuggestions(findings)
 			}
 			st.mu.Lock()
 			st.result = &model.ReviewResult{
@@ -1155,6 +1155,6 @@ func injectGroups(st *PipelineState, findingsFrom []string, skipSuggestions bool
 
 func stripInjectedGroupSuggestions(groups []injectedGroup) {
 	for gi := range groups {
-		stripFindingSuggestions(groups[gi].findings)
+		model.StripSuggestions(groups[gi].findings)
 	}
 }
