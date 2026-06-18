@@ -40,6 +40,13 @@ func TestCollectMarkers(t *testing.T) {
 	}
 }
 
+func TestCollectorsNilSafe(t *testing.T) {
+	// A nil out slice / nil Priors must be a no-op, never a panic — even when the
+	// body carries a valid fingerprint that would otherwise be appended.
+	CollectPriorFindings(FingerprintMarker(model.Finding{ID: "x"}, "t"), nil)
+	ScanComment("anything", nil)
+}
+
 func TestFindingDisplayPrefersSummarization(t *testing.T) {
 	finding := model.Finding{
 		Title:           "Original title",

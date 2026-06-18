@@ -88,6 +88,9 @@ func CollectMarkers(body string, out map[string]struct{}) {
 // each. A marker that fails to decode is skipped, so one corrupt comment can
 // never abort dedup or the publish.
 func CollectPriorFindings(body string, out *[]model.Finding) {
+	if out == nil {
+		return
+	}
 	rest := body
 	for {
 		i := strings.Index(rest, FingerprintPrefix)
@@ -129,6 +132,9 @@ type Priors struct {
 // ScanComment folds one existing comment body into p, collecting both its markers
 // and its finding fingerprints.
 func ScanComment(body string, p *Priors) {
+	if p == nil {
+		return
+	}
 	if p.Markers == nil {
 		p.Markers = map[string]struct{}{}
 	}
