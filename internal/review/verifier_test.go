@@ -309,6 +309,32 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	}
 }
 
+// TestVerifySystemPromptHasNonFindingRule pins the detection guidance: the
+// verifier is told to return non-finding "findings" (affirmations / "no issue"
+// items) as `refuted` so the code demotes or drops them (never blocking).
+func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{
+		responses: []*llm.ReviewResponse{
+			{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 3, ConfidenceScore: 0.0, Remarks: "no issue"}},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{
+		ReviewCtx:     sampleReviewCtx(),
+		Finding:       model.Finding{Title: "No issue", Body: "x", Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		UseJSONSchema: true,
+	})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	sysPrompt := llmClient.requests[0].Messages[0].Content
+	for _, want := range []string{"non-findings", "no issue", "is sound"} {
+		if !strings.Contains(sysPrompt, want) {
+			t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
+		}
+	}
+}
+
 func TestVerifyRetriesMissingVerification(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{

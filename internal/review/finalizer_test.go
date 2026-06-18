@@ -768,12 +768,12 @@ func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
 	}
 }
 
-func TestFinalizeWeightedConfidenceFallsBackWhenNoVerification(t *testing.T) {
+func TestFinalizeWeightedConfidenceZeroesWhenNoVerification(t *testing.T) {
 	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	out := []model.Finding{
 		{
 			Title: "Issue", Body: "b", Priority: intPtr(1), CodeLocation: loc,
-			Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.0, Remarks: "keep"},
+			Finalization: &model.FindingFinalization{Title: "Issue", Body: "b", Priority: 1, ConfidenceScore: 0.9, Remarks: "keep"},
 		},
 	}
 	in := []model.Finding{
@@ -782,10 +782,98 @@ func TestFinalizeWeightedConfidenceFallsBackWhenNoVerification(t *testing.T) {
 		},
 	}
 
+	// Missing verification => missing confidence => 0.0; the reviewer's own
+	// self-assessment is not trusted as a confidence signal.
 	applyWeightedConfidence(out, in)
 	got := out[0].Finalization.ConfidenceScore
-	if math.Abs(got-0.65) > 1e-9 {
-		t.Fatalf("confidence = %v, want 0.65 (review fallback)", got)
+	if math.Abs(got-0.0) > 1e-9 {
+		t.Fatalf("confidence = %v, want 0.0 (missing verification)", got)
+	}
+}
+
+// TestEnforcePriorityFloorDemotesRefutedNonFinding covers the demote: a verifier
+// `refuted` finding (an affirmation / non-finding the reviewer mislabeled P0) is
+// floored at the configured threshold and its confidence zeroed, so it never
+// renders blocking regardless of the reviewer's priority.
+func TestEnforcePriorityFloorDemotesRefutedNonFinding(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	mk := func() ([]model.Finding, []model.Finding) {
+		ver := &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.0, Remarks: "no issue: code is sound"}
+		in := []model.Finding{{Title: "No issue", Priority: intPtr(0), ConfidenceScore: 0.7, CodeLocation: loc, Verification: ver}}
+		out := []model.Finding{{Title: "No issue", Priority: intPtr(0), CodeLocation: loc, Verification: ver,
+			Finalization: &model.FindingFinalization{Priority: 0, ConfidenceScore: 0.9}}}
+		return out, in
+	}
+	// p3: demote to the lowest allowed = 3 (LOW).
+	out, in := mk()
+	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p3"))
+	if got := out[0].Finalization.Priority; got != 3 {
+		t.Fatalf("p3 refuted priority = %d, want 3 (demoted)", got)
+	}
+	// p2: demote to the lowest allowed = 2.
+	out, in = mk()
+	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p2"))
+	if got := out[0].Finalization.Priority; got != 2 {
+		t.Fatalf("p2 refuted priority = %d, want 2 (demoted)", got)
+	}
+	// Confidence zeroed for the refuted non-finding.
+	out, in = mk()
+	applyWeightedConfidence(out, in)
+	if got := out[0].Finalization.ConfidenceScore; got != 0.0 {
+		t.Fatalf("refuted confidence = %v, want 0.0", got)
+	}
+}
+
+// TestEnforcePriorityFloorKeepsGenuineRefutation guards the P1 review concern: a
+// real finding the verifier refuted with low confidence is kept by the verify
+// filter for review (its remarks cite code, not the "no issue" sentinel). It must
+// NOT be demoted or zeroed, so a surviving P0 still forces a blocking verdict.
+func TestEnforcePriorityFloorKeepsGenuineRefutation(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	ver := &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.5, Remarks: "the guard at a.go:42 may not cover the empty path"}
+	in := []model.Finding{{Title: "Real bug", Priority: intPtr(0), ConfidenceScore: 0.6, CodeLocation: loc, Verification: ver}}
+	out := []model.Finding{{Title: "Real bug", Priority: intPtr(0), CodeLocation: loc, Verification: ver,
+		Finalization: &model.FindingFinalization{Priority: 0, ConfidenceScore: 0.0}}}
+	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p3"))
+	if got := out[0].Finalization.Priority; got != 0 {
+		t.Fatalf("genuine refuted P0 priority = %d, want 0 (kept for review, not demoted)", got)
+	}
+	applyWeightedConfidence(out, in)
+	// 0.6*0.5 + 0.4*0.6 = 0.54 (divergence 0.1 <= 0.3, no clamp): not zeroed.
+	if got := out[0].Finalization.ConfidenceScore; math.Abs(got-0.54) > 1e-9 {
+		t.Fatalf("genuine refuted confidence = %v, want 0.54 (blended, not zeroed)", got)
+	}
+}
+
+// TestEnforcePriorityFloorKeepsConfirmedP0 guards that a genuine confirmed P0 is
+// untouched by the demote path and keeps its blended confidence.
+func TestEnforcePriorityFloorKeepsConfirmedP0(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	ver := &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0, ConfidenceScore: 0.9}
+	in := []model.Finding{{Title: "Real bug", Priority: intPtr(0), ConfidenceScore: 0.8, CodeLocation: loc, Verification: ver}}
+	out := []model.Finding{{Title: "Real bug", Priority: intPtr(0), CodeLocation: loc, Verification: ver,
+		Finalization: &model.FindingFinalization{Priority: 0, ConfidenceScore: 0.0}}}
+	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p3"))
+	if got := out[0].Finalization.Priority; got != 0 {
+		t.Fatalf("confirmed P0 priority = %d, want 0 (untouched)", got)
+	}
+	applyWeightedConfidence(out, in)
+	// 0.6*0.9 + 0.4*0.8 = 0.86 (divergence 0.1 <= 0.3, no clamp).
+	if got := out[0].Finalization.ConfidenceScore; math.Abs(got-0.86) > 1e-9 {
+		t.Fatalf("confirmed P0 confidence = %v, want 0.86 (blended)", got)
+	}
+}
+
+// TestEnforcePriorityFloorMissingPriorityDefaultsToThreshold proves a missing
+// (nil) priority now defaults to the configured threshold rather than the
+// hardcoded P3 floor of model.PriorityRank.
+func TestEnforcePriorityFloorMissingPriorityDefaultsToThreshold(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	in := []model.Finding{{Title: "x", CodeLocation: loc}}
+	out := []model.Finding{{Title: "x", CodeLocation: loc, Finalization: &model.FindingFinalization{Priority: 0}}}
+	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p2"))
+	if got := out[0].Finalization.Priority; got != 2 {
+		t.Fatalf("nil-priority floor = %d, want 2 (threshold), not hardcoded 3", got)
 	}
 }
 
@@ -1002,7 +1090,7 @@ func TestVerdictConstraintsForPriorityFloor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := verdictConstraintsFor(tc.in).AllowedCorrectness
+			got := verdictConstraintsFor(tc.in, 3).AllowedCorrectness
 			if len(tc.want) == 0 {
 				if len(got) != 0 {
 					t.Fatalf("AllowedCorrectness = %#v, want unconstrained", got)

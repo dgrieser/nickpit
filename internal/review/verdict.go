@@ -21,6 +21,11 @@ type VerdictOptions struct {
 	DisablePatchSummary      bool
 	RepoRoot                 string
 	ContextNotes             string
+	// PriorityThreshold is the configured "lowest currently allowed priority"
+	// (p0..p3). It anchors the priority floor so a verifier-refuted non-finding is
+	// classified at the threshold (not blocking) and never forces the overall
+	// verdict to "patch is incorrect". Empty defaults to p3.
+	PriorityThreshold string
 }
 
 func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts VerdictOptions) (*model.ReviewResult, model.AgentRun, error) {
@@ -30,13 +35,14 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: nil review result")
 	}
+	thresholdRank := model.PriorityThresholdRank(opts.PriorityThreshold)
 	if len(in.Findings) == 0 {
 		out, err := in.Clone()
 		if err != nil {
 			return nil, model.AgentRun{}, fmt.Errorf("verdict: cloning input result: %w", err)
 		}
 		out.OverallCorrectness = "patch is correct"
-		out.OverallConfidenceScore = overallConfidenceFor("patch is correct", nil)
+		out.OverallConfidenceScore = overallConfidenceFor("patch is correct", nil, thresholdRank)
 		// Reset any pre-filter explanation rather than preserving it: with no
 		// findings the verdict owns a fresh rationale, and a stale merge summary or
 		// old "incorrect" explanation would contradict the empty, correct result
@@ -66,13 +72,13 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes)
+	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
 
 	var schema []byte
-	constraints := verdictConstraintsFor(in.Findings)
+	constraints := verdictConstraintsFor(in.Findings, thresholdRank)
 	if opts.UseJSONSchema {
 		if hasResponseConstraints(constraints) {
 			schema = llm.VerdictSchemaWithConstraints(constraints)
@@ -117,7 +123,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	out.OverallExplanation = result.resp.OverallExplanation
 	// overall_confidence_score is computed deterministically in code (not emitted
 	// by the LLM), anchored to the deciding findings' confidence.
-	out.OverallConfidenceScore = overallConfidenceFor(out.OverallCorrectness, out.Findings)
+	out.OverallConfidenceScore = overallConfidenceFor(out.OverallCorrectness, out.Findings, thresholdRank)
 	e.logProgress(logging.StageVerdict, logging.StateDone, fmt.Sprintf("findings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s runtime=%s", len(in.Findings), model.HumanTokens(result.run.TokensUsed.PromptTokens), model.HumanTokens(result.run.TokensUsed.CompletionTokens), model.HumanTokens(result.run.TokensUsed.TotalTokens), model.HumanDuration(time.Since(verdictStart))))
 	return out, result.run, nil
 }
@@ -142,7 +148,7 @@ func verdictOutputValidator() func(*llm.ReviewResponse) *llm.InvalidResponseErro
 	}
 }
 
-func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string) (string, error) {
+func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
@@ -160,7 +166,7 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 			"title":                   finding.Title,
 			"body":                    finding.Body,
 			"priority":                model.PriorityRank(finding.Priority),
-			"priority_floor":          findingPriorityFloor(finding),
+			"priority_floor":          priorityFloor(finding, thresholdRank),
 			"code_location":           finding.CodeLocation,
 			"review_confidence_score": finding.ConfidenceScore,
 		}
@@ -191,22 +197,15 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 	return user, nil
 }
 
-func findingPriorityFloor(finding model.Finding) int {
-	floor := model.PriorityRank(finding.Priority)
-	if finding.Verification != nil && finding.Verification.Priority < floor {
-		floor = finding.Verification.Priority
-	}
-	return floor
-}
-
 // verdictConstraintsFor returns the correctness constraints implied by the
-// verified finding priority floor = min(finding.priority, verification.priority).
-// P0 blocks the patch, no P0/P1 cannot block it, and P1 remains prompt-judged
-// because justification quality cannot be expressed in JSON schema.
-func verdictConstraintsFor(in []model.Finding) llm.ResponseConstraints {
+// verified finding priority floor (see priorityFloor). P0 blocks the patch, no
+// P0/P1 cannot block it, and P1 remains prompt-judged because justification
+// quality cannot be expressed in JSON schema. A verifier-refuted non-finding is
+// demoted to the threshold floor, so it cannot force a blocking verdict.
+func verdictConstraintsFor(in []model.Finding, thresholdRank int) llm.ResponseConstraints {
 	hasP0, hasP1 := false, false
 	for _, f := range in {
-		switch findingPriorityFloor(f) {
+		switch priorityFloor(f, thresholdRank) {
 		case 0:
 			hasP0 = true
 		case 1:
@@ -233,12 +232,12 @@ func verdictConstraintsFor(in []model.Finding) llm.ResponseConstraints {
 // correctness is kept. It then recomputes overall confidence from the (possibly
 // coerced) correctness so the fallback matches the success path rather than
 // carrying the merge-derived maxOverallConfidence.
-func applyVerdictFallback(result *model.ReviewResult) {
+func applyVerdictFallback(result *model.ReviewResult, thresholdRank int) {
 	if result == nil {
 		return
 	}
 	before := result.OverallCorrectness
-	if allowed := verdictConstraintsFor(result.Findings).AllowedCorrectness; len(allowed) == 1 {
+	if allowed := verdictConstraintsFor(result.Findings, thresholdRank).AllowedCorrectness; len(allowed) == 1 {
 		result.OverallCorrectness = allowed[0]
 	} else if strings.TrimSpace(result.OverallCorrectness) == "" {
 		// Open constraint (a P1 with no P0) and no preliminary correctness to keep
@@ -253,7 +252,7 @@ func applyVerdictFallback(result *model.ReviewResult) {
 	if result.OverallCorrectness != before || strings.TrimSpace(result.OverallExplanation) == "" {
 		result.OverallExplanation = "Verdict agent unavailable; overall correctness inferred from finding priorities."
 	}
-	result.OverallConfidenceScore = overallConfidenceFor(result.OverallCorrectness, result.Findings)
+	result.OverallConfidenceScore = overallConfidenceFor(result.OverallCorrectness, result.Findings, thresholdRank)
 }
 
 // overallConfidenceFor computes the top-line verdict confidence deterministically
@@ -265,11 +264,11 @@ func applyVerdictFallback(result *model.ReviewResult) {
 //     floor 0, or (if none) floor 1. Defensive fallback to all findings.
 //   - "patch is correct":   1 - 0.5*max(confidence over all findings); no findings
 //     => 1.0.
-func overallConfidenceFor(correctness string, findings []model.Finding) float64 {
+func overallConfidenceFor(correctness string, findings []model.Finding, thresholdRank int) float64 {
 	if correctness == "patch is incorrect" {
-		deciding := findingsAtFloor(findings, 0)
+		deciding := findingsAtFloor(findings, 0, thresholdRank)
 		if len(deciding) == 0 {
-			deciding = findingsAtFloor(findings, 1)
+			deciding = findingsAtFloor(findings, 1, thresholdRank)
 		}
 		if len(deciding) == 0 {
 			deciding = findings
@@ -284,10 +283,10 @@ func overallConfidenceFor(correctness string, findings []model.Finding) float64 
 	return roundConfidenceScore(1 - 0.5*maxFindingConfidence(findings))
 }
 
-func findingsAtFloor(findings []model.Finding, floor int) []model.Finding {
+func findingsAtFloor(findings []model.Finding, floor, thresholdRank int) []model.Finding {
 	var out []model.Finding
 	for _, f := range findings {
-		if findingPriorityFloor(f) == floor {
+		if priorityFloor(f, thresholdRank) == floor {
 			out = append(out, f)
 		}
 	}

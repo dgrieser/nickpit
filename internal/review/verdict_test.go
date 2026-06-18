@@ -79,7 +79,7 @@ func TestOverallConfidenceFor(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := overallConfidenceFor(tc.correctness, tc.findings); got != tc.want {
+			if got := overallConfidenceFor(tc.correctness, tc.findings, 3); got != tc.want {
 				t.Fatalf("overallConfidenceFor = %.2f, want %.2f", got, tc.want)
 			}
 		})
@@ -98,7 +98,7 @@ func TestApplyVerdictFallbackSynthesizesEmptyOverall(t *testing.T) {
 	// Open constraint (P1, no P0), no preliminary overall fields: must synthesize a
 	// valid, non-empty verdict rather than emit empty correctness/explanation.
 	res := &model.ReviewResult{Findings: []model.Finding{p1(0.8)}}
-	applyVerdictFallback(res)
+	applyVerdictFallback(res, 3)
 	if res.OverallCorrectness != "patch is incorrect" {
 		t.Fatalf("correctness = %q, want conservative \"patch is incorrect\"", res.OverallCorrectness)
 	}
@@ -111,7 +111,7 @@ func TestApplyVerdictFallbackSynthesizesEmptyOverall(t *testing.T) {
 
 	// A preliminary correctness under an open constraint is preserved, not overwritten.
 	kept := &model.ReviewResult{Findings: []model.Finding{p1(0.8)}, OverallCorrectness: "patch is correct", OverallExplanation: "preliminary"}
-	applyVerdictFallback(kept)
+	applyVerdictFallback(kept, 3)
 	if kept.OverallCorrectness != "patch is correct" || kept.OverallExplanation != "preliminary" {
 		t.Fatalf("preliminary overall fields not preserved: %q / %q", kept.OverallCorrectness, kept.OverallExplanation)
 	}
@@ -134,7 +134,7 @@ func TestApplyVerdictFallbackReplacesStaleExplanationOnCoercion(t *testing.T) {
 		OverallCorrectness: "patch is incorrect",
 		OverallExplanation: "patch is incorrect because the failure remains",
 	}
-	applyVerdictFallback(toCorrect)
+	applyVerdictFallback(toCorrect, 3)
 	if toCorrect.OverallCorrectness != "patch is correct" {
 		t.Fatalf("correctness = %q, want patch is correct", toCorrect.OverallCorrectness)
 	}
@@ -148,7 +148,7 @@ func TestApplyVerdictFallbackReplacesStaleExplanationOnCoercion(t *testing.T) {
 		OverallCorrectness: "patch is correct",
 		OverallExplanation: "patch is correct; no blocking issues",
 	}
-	applyVerdictFallback(toIncorrect)
+	applyVerdictFallback(toIncorrect, 3)
 	if toIncorrect.OverallCorrectness != "patch is incorrect" {
 		t.Fatalf("correctness = %q, want patch is incorrect", toIncorrect.OverallCorrectness)
 	}
@@ -162,7 +162,7 @@ func TestApplyVerdictFallbackReplacesStaleExplanationOnCoercion(t *testing.T) {
 		OverallCorrectness: "patch is incorrect",
 		OverallExplanation: "valid incorrect rationale",
 	}
-	applyVerdictFallback(kept)
+	applyVerdictFallback(kept, 3)
 	if kept.OverallExplanation != "valid incorrect rationale" {
 		t.Fatalf("explanation = %q, want preserved when verdict unchanged", kept.OverallExplanation)
 	}
@@ -174,12 +174,39 @@ func TestOverallConfidenceForConfidenceSourceFallback(t *testing.T) {
 		Priority:     intPtr(0),
 		Verification: &model.FindingVerification{Priority: 0, ConfidenceScore: 0.66},
 	}
-	if got := overallConfidenceFor("patch is incorrect", []model.Finding{verifyOnly}); got != 0.66 {
+	if got := overallConfidenceFor("patch is incorrect", []model.Finding{verifyOnly}, 3); got != 0.66 {
 		t.Fatalf("verification-fallback confidence = %.2f, want 0.66", got)
 	}
 	// No finalization, no verification → reviewer confidence.
 	reviewOnly := model.Finding{Priority: intPtr(0), ConfidenceScore: 0.42}
-	if got := overallConfidenceFor("patch is incorrect", []model.Finding{reviewOnly}); got != 0.42 {
+	if got := overallConfidenceFor("patch is incorrect", []model.Finding{reviewOnly}, 3); got != 0.42 {
 		t.Fatalf("review-fallback confidence = %.2f, want 0.42", got)
+	}
+}
+
+// TestVerdictConstraintsForDemotesRefutedNonFinding proves a refuted non-finding
+// the reviewer mislabeled P0 is classified at the threshold floor, so it does not
+// force the overall verdict to "patch is incorrect"; a genuine confirmed P0 still does.
+func TestVerdictConstraintsForDemotesRefutedNonFinding(t *testing.T) {
+	// A refuted non-finding (the "no issue" sentinel) the reviewer mislabeled P0
+	// is demoted to the threshold floor, so it cannot force a blocking verdict.
+	nonFinding := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, Remarks: "no issue: intentional change"}}
+	got := verdictConstraintsFor([]model.Finding{nonFinding}, 3).AllowedCorrectness
+	if len(got) != 1 || got[0] != "patch is correct" {
+		t.Fatalf("non-finding constraints = %v, want [patch is correct]", got)
+	}
+
+	// A genuine refutation kept for review (cites code, no sentinel) keeps its P0
+	// floor and still forces "patch is incorrect" — the P1 review concern.
+	genuineRefuted := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.5, Remarks: "the guard at a.go:42 may not cover the empty path"}}
+	got = verdictConstraintsFor([]model.Finding{genuineRefuted}, 3).AllowedCorrectness
+	if len(got) != 1 || got[0] != "patch is incorrect" {
+		t.Fatalf("genuine-refuted-P0 constraints = %v, want [patch is incorrect]", got)
+	}
+
+	real := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0}}
+	got = verdictConstraintsFor([]model.Finding{real}, 3).AllowedCorrectness
+	if len(got) != 1 || got[0] != "patch is incorrect" {
+		t.Fatalf("confirmed-P0 constraints = %v, want [patch is incorrect]", got)
 	}
 }
