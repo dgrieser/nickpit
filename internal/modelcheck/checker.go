@@ -368,12 +368,25 @@ func (r Result) probeByName(name string) ProbeResult {
 }
 
 func (r Result) simpleProbeEffort() string {
-	if probe := r.ConfiguredNoTools(); probe.Status == StatusOK {
-		return probe.ReasoningEffort
+	configured := r.ConfiguredNoTools()
+	if configured.Status == StatusOK {
+		return configured.ReasoningEffort
 	}
-	// The configured no-tools probe did not pass. Run the simple probes at the
-	// configured effort anyway: that is the effort the runtime will use, so a
-	// higher passing effort is irrelevant. Never fall back to a higher effort.
+	if len(r.PassedEfforts) == 0 {
+		// No effort passed at any level; validateModelCheckRequirements will
+		// reject the model regardless. Skip the simple probes (and their retries)
+		// so a bad endpoint or credential does not trigger many futile requests.
+		return ""
+	}
+	if configured.Status == StatusUnsupported {
+		// The configured effort is permanently unsupported, so the runtime falls
+		// back to the highest passing lower effort. Probe capabilities there to
+		// mirror runtime. After the lower-only discovery, PassedEfforts never
+		// holds an effort above the configured one.
+		return r.PassedEfforts[0]
+	}
+	// Transient failure (StatusFailed) at a supported effort: probe at the
+	// configured effort, which is the one the runtime will use.
 	return r.ConfiguredEffort
 }
 

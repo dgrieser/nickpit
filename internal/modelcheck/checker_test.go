@@ -302,6 +302,36 @@ func TestSimpleProbeEffortFallsBackToConfiguredWhenNoToolsFails(t *testing.T) {
 	}
 }
 
+func TestSimpleProbeEffortUsesHighestPassingWhenConfiguredUnsupported(t *testing.T) {
+	result := Result{
+		ConfiguredEffort: "high",
+		Probes: []ProbeResult{
+			{Name: "configured_no_tools", ReasoningEffort: "high", Status: StatusUnsupported},
+		},
+		// Configured effort is permanently unsupported; runtime falls back to the
+		// highest passing lower effort, so simple probes must run there.
+		PassedEfforts: []string{"medium", "low"},
+	}
+	if got := result.simpleProbeEffort(); got != "medium" {
+		t.Fatalf("simpleProbeEffort() = %q, want medium (highest passing fallback)", got)
+	}
+}
+
+func TestSimpleProbeEffortEmptyWhenNoEffortPassed(t *testing.T) {
+	for _, status := range []Status{StatusFailed, StatusUnsupported} {
+		result := Result{
+			ConfiguredEffort: "high",
+			Probes: []ProbeResult{
+				{Name: "configured_no_tools", ReasoningEffort: "high", Status: status},
+			},
+			PassedEfforts: nil,
+		}
+		if got := result.simpleProbeEffort(); got != "" {
+			t.Fatalf("simpleProbeEffort() with status %s and no passed efforts = %q, want empty", status, got)
+		}
+	}
+}
+
 func TestAnyErrorRetryable(t *testing.T) {
 	if !anyErrorRetryable(errors.New("transient upstream blip"), "high") {
 		t.Fatal("plain non-rejection error should be retryable")
