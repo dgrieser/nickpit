@@ -394,7 +394,7 @@ func KnownReasoningEfforts() []string {
 // model check probes the configured effort plus exactly these so it validates
 // every effort the runtime can fall back to, and never a higher one.
 func LowerReasoningEfforts(effort string) []string {
-	return append([]string(nil), fallbackReasoningEfforts(effort)...)
+	return fallbackReasoningEfforts(effort)
 }
 
 func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (map[string]any, error) {
