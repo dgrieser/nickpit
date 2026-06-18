@@ -389,20 +389,12 @@ func KnownReasoningEfforts() []string {
 	return append([]string(nil), reasoningEffortFallbackOrder...)
 }
 
-// LowerReasoningEfforts returns the known efforts strictly below effort, down to
-// and including "none", excluding the terminal "off". Used by the model check to
-// probe only the configured effort and the lower efforts the runtime can fall
-// back to, never higher ones.
+// LowerReasoningEfforts returns the known efforts strictly below effort, in the
+// order the runtime falls back through them (down to the terminal "off"). The
+// model check probes the configured effort plus exactly these so it validates
+// every effort the runtime can fall back to, and never a higher one.
 func LowerReasoningEfforts(effort string) []string {
-	lower := fallbackReasoningEfforts(effort)
-	out := make([]string, 0, len(lower))
-	for _, e := range lower {
-		if e == "off" {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
+	return append([]string(nil), fallbackReasoningEfforts(effort)...)
 }
 
 func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (map[string]any, error) {
@@ -1199,22 +1191,18 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			var loopErr *ReasoningLoopDetectedError
 			if errors.As(streamErr, &loopErr) {
 				loopErr.ReasoningEffort = payload.ReasoningEffort
+				prefix := "Reasoning loop"
 				if loopErr.RepeatedChunk {
+					prefix = "Repeated chunk"
 					c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
-					if c.logger != nil {
-						if loopErr.LoopStartContent != "" {
-							c.logBlock(ctx, "Repeated chunk - content before repeat:", loopErr.LoopStartContent)
-						}
-						c.logBlock(ctx, "Repeated chunk - repeated portion (aborted):", loopErr.RepeatedContent)
-					}
 				} else {
 					c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
-					if c.logger != nil {
-						if loopErr.LoopStartContent != "" {
-							c.logBlock(ctx, "Reasoning loop - content before repeat:", loopErr.LoopStartContent)
-						}
-						c.logBlock(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
+				}
+				if c.logger != nil {
+					if loopErr.LoopStartContent != "" {
+						c.logBlock(ctx, prefix+" - content before repeat:", loopErr.LoopStartContent)
 					}
+					c.logBlock(ctx, prefix+" - repeated portion (aborted):", loopErr.RepeatedContent)
 				}
 				return nil, loopErr
 			}

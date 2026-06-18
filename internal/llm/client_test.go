@@ -1495,12 +1495,12 @@ func TestLowerReasoningEfforts(t *testing.T) {
 		effort string
 		want   []string
 	}{
-		{name: "high", effort: "high", want: []string{"medium", "low", "minimal", "none"}},
-		{name: "medium", effort: "medium", want: []string{"low", "minimal", "none"}},
-		{name: "none", effort: "none", want: []string{}},
+		{name: "high", effort: "high", want: []string{"medium", "low", "minimal", "none", "off"}},
+		{name: "medium", effort: "medium", want: []string{"low", "minimal", "none", "off"}},
+		{name: "none", effort: "none", want: []string{"off"}},
 		{name: "off", effort: "off", want: []string{}},
-		{name: "empty", effort: "", want: []string{"low", "minimal", "none"}},
-		{name: "unknown", effort: "provider-max", want: []string{"low", "minimal", "none"}},
+		{name: "empty", effort: "", want: []string{"low", "minimal", "none", "off"}},
+		{name: "unknown", effort: "provider-max", want: []string{"low", "minimal", "none", "off"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

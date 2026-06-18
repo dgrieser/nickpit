@@ -399,8 +399,9 @@ func TestCheckerRunsSimpleProbesAtConfiguredEffort(t *testing.T) {
 		responses: []scriptedResponse{
 			// configured_no_tools (high) fails
 			{err: errors.New("configured effort unavailable")},
-			// fallback_no_tools: medium passes, low/minimal/none fail
+			// fallback_no_tools: medium passes, low/minimal/none/off fail
 			{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			{err: errors.New("effort unavailable")},
 			{err: errors.New("effort unavailable")},
 			{err: errors.New("effort unavailable")},
 			{err: errors.New("effort unavailable")},

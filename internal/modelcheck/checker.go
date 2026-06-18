@@ -255,6 +255,9 @@ func (c *Checker) reviewProbe(ctx context.Context, req *llm.ReviewRequest, sec *
 }
 
 func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection, probe ProbeResult, mode probeRetryMode) (*llm.ReviewResponse, error) {
+	if mode == probeRetryReviewLike {
+		return c.reviewProbe(ctx, req, sec, probe)
+	}
 	retryable := func(err error) bool {
 		switch mode {
 		case probeRetrySameEffort:
@@ -264,9 +267,6 @@ func (c *Checker) reviewProbeWithMode(ctx context.Context, req *llm.ReviewReques
 		default:
 			return false
 		}
-	}
-	if mode == probeRetryReviewLike {
-		return c.reviewProbe(ctx, req, sec, probe)
 	}
 	maxRetries := c.profile.MaxOutputRetries
 	for attempt := 0; ; attempt++ {
@@ -608,9 +608,13 @@ func sameEffortRetryable(err error) bool {
 
 // anyErrorRetryable reports whether a capability probe should retry after err.
 // A definitive reasoning-effort rejection is not retried (it yields a stable
-// StatusUnsupported verdict); every other error is treated as potentially
-// transient (upstream loops, repeated chunks, network blips) and retried.
+// StatusUnsupported verdict), and a canceled or expired context is futile to
+// retry; every other error is treated as potentially transient (upstream loops,
+// repeated chunks, network blips) and retried.
 func anyErrorRetryable(err error, effort string) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
 	return !llm.IsReasoningEffortRejection(err, effort)
 }
 
