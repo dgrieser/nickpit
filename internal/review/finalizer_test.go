@@ -798,7 +798,7 @@ func TestFinalizeWeightedConfidenceZeroesWhenNoVerification(t *testing.T) {
 func TestEnforcePriorityFloorDemotesRefutedNonFinding(t *testing.T) {
 	loc := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	mk := func() ([]model.Finding, []model.Finding) {
-		ver := &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.0}
+		ver := &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.0, Remarks: "no issue: code is sound"}
 		in := []model.Finding{{Title: "No issue", Priority: intPtr(0), ConfidenceScore: 0.7, CodeLocation: loc, Verification: ver}}
 		out := []model.Finding{{Title: "No issue", Priority: intPtr(0), CodeLocation: loc, Verification: ver,
 			Finalization: &model.FindingFinalization{Priority: 0, ConfidenceScore: 0.9}}}
@@ -821,6 +821,27 @@ func TestEnforcePriorityFloorDemotesRefutedNonFinding(t *testing.T) {
 	applyWeightedConfidence(out, in)
 	if got := out[0].Finalization.ConfidenceScore; got != 0.0 {
 		t.Fatalf("refuted confidence = %v, want 0.0", got)
+	}
+}
+
+// TestEnforcePriorityFloorKeepsGenuineRefutation guards the P1 review concern: a
+// real finding the verifier refuted with low confidence is kept by the verify
+// filter for review (its remarks cite code, not the "no issue" sentinel). It must
+// NOT be demoted or zeroed, so a surviving P0 still forces a blocking verdict.
+func TestEnforcePriorityFloorKeepsGenuineRefutation(t *testing.T) {
+	loc := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	ver := &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.5, Remarks: "the guard at a.go:42 may not cover the empty path"}
+	in := []model.Finding{{Title: "Real bug", Priority: intPtr(0), ConfidenceScore: 0.6, CodeLocation: loc, Verification: ver}}
+	out := []model.Finding{{Title: "Real bug", Priority: intPtr(0), CodeLocation: loc, Verification: ver,
+		Finalization: &model.FindingFinalization{Priority: 0, ConfidenceScore: 0.0}}}
+	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p3"))
+	if got := out[0].Finalization.Priority; got != 0 {
+		t.Fatalf("genuine refuted P0 priority = %d, want 0 (kept for review, not demoted)", got)
+	}
+	applyWeightedConfidence(out, in)
+	// 0.6*0.5 + 0.4*0.6 = 0.54 (divergence 0.1 <= 0.3, no clamp): not zeroed.
+	if got := out[0].Finalization.ConfidenceScore; math.Abs(got-0.54) > 1e-9 {
+		t.Fatalf("genuine refuted confidence = %v, want 0.54 (blended, not zeroed)", got)
 	}
 }
 

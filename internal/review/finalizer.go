@@ -429,15 +429,31 @@ func enforcePriorityFloor(out, in []model.Finding, thresholdRank int) {
 	}
 }
 
+// nonFindingRemark is the sentinel the verify prompt requires in a verification's
+// remarks when a "finding" is actually a non-finding (an affirmation / "no issue"
+// item) returned as `refuted`. It separates those from a genuine refutation, which
+// instead cites the contradicting code.
+const nonFindingRemark = "no issue"
+
+// isNonFindingVerification reports whether a verification marks its finding as a
+// non-finding: `refuted` with the "no issue" sentinel in remarks. Only these are
+// demoted/zeroed. A real finding the verifier refuted with low confidence — kept by
+// shouldDropFinding for downstream review, or under --verify-drop-policy=none —
+// cites code instead, so it keeps its priority and confidence and can still force a
+// blocking verdict.
+func isNonFindingVerification(v *model.FindingVerification) bool {
+	return v != nil && v.Verdict == model.VerdictRefuted && strings.Contains(strings.ToLower(v.Remarks), nonFindingRemark)
+}
+
 // priorityFloor computes a finding's priority floor: the most-critical (lowest) integer it is
-// allowed to take. A finding the verifier marked `refuted` is a non-finding the verifier
-// rejected (an affirmation / "no issue" item); it is demoted to thresholdRank — the lowest
-// currently allowed priority — so it never renders blocking, ignoring the reviewer's (often
-// template) priority. A missing priority also defaults to thresholdRank rather than the
-// hardcoded floor of model.PriorityRank. Otherwise the floor is the most critical of the
-// reviewer and verifier priorities, as before.
+// allowed to take. A non-finding (a verifier-refuted affirmation carrying the "no issue"
+// sentinel; see isNonFindingVerification) is demoted to thresholdRank — the lowest currently
+// allowed priority — so it never renders blocking, ignoring the reviewer's (often template)
+// priority. A missing priority also defaults to thresholdRank rather than the hardcoded floor
+// of model.PriorityRank. Otherwise the floor is the most critical of the reviewer and verifier
+// priorities, as before — so a genuine refutation kept for review keeps its severity.
 func priorityFloor(f model.Finding, thresholdRank int) int {
-	if f.Verification != nil && f.Verification.Verdict == model.VerdictRefuted {
+	if isNonFindingVerification(f.Verification) {
 		return thresholdRank
 	}
 	floor := priorityRankOrThreshold(f.Priority, thresholdRank)
@@ -460,11 +476,12 @@ func priorityRankOrThreshold(priority *int, thresholdRank int) int {
 // applyWeightedConfidence overwrites finalization.confidence_score with a
 // deterministic weighted average of the review confidence and the verifier's
 // confidence, rounded to two decimals. Moved out of the LLM prompt because LLMs
-// are unreliable at arithmetic. Missing confidence defaults to 0.0: a finding
-// the verifier `refuted` (a demoted non-finding) carries no real confidence, and
-// a finding with no verification has no confidence signal to trust — neither is
-// padded from the reviewer's self-assessment. Hallucinated findings with no
-// input match are skipped (no value applied).
+// are unreliable at arithmetic. Missing confidence defaults to 0.0: a non-finding
+// (a verifier-refuted "no issue" affirmation; see isNonFindingVerification) carries
+// no real confidence, and a finding with no verification has no confidence signal to
+// trust — neither is padded from the reviewer's self-assessment. A genuine refutation
+// kept for review keeps its blended confidence. Hallucinated findings with no input
+// match are skipped (no value applied).
 func applyWeightedConfidence(out, in []model.Finding) {
 	for i := range out {
 		if out[i].Finalization == nil {
@@ -478,7 +495,7 @@ func applyWeightedConfidence(out, in []model.Finding) {
 			out[i].Finalization.ConfidenceScore = 0.0
 			continue
 		}
-		if orig.Verification.Verdict == model.VerdictRefuted {
+		if isNonFindingVerification(orig.Verification) {
 			out[i].Finalization.ConfidenceScore = 0.0
 			continue
 		}

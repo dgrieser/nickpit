@@ -188,10 +188,20 @@ func TestOverallConfidenceForConfidenceSourceFallback(t *testing.T) {
 // the reviewer mislabeled P0 is classified at the threshold floor, so it does not
 // force the overall verdict to "patch is incorrect"; a genuine confirmed P0 still does.
 func TestVerdictConstraintsForDemotesRefutedNonFinding(t *testing.T) {
-	refuted := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0}}
-	got := verdictConstraintsFor([]model.Finding{refuted}, 3).AllowedCorrectness
+	// A refuted non-finding (the "no issue" sentinel) the reviewer mislabeled P0
+	// is demoted to the threshold floor, so it cannot force a blocking verdict.
+	nonFinding := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, Remarks: "no issue: intentional change"}}
+	got := verdictConstraintsFor([]model.Finding{nonFinding}, 3).AllowedCorrectness
 	if len(got) != 1 || got[0] != "patch is correct" {
-		t.Fatalf("refuted-only constraints = %v, want [patch is correct]", got)
+		t.Fatalf("non-finding constraints = %v, want [patch is correct]", got)
+	}
+
+	// A genuine refutation kept for review (cites code, no sentinel) keeps its P0
+	// floor and still forces "patch is incorrect" — the P1 review concern.
+	genuineRefuted := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.5, Remarks: "the guard at a.go:42 may not cover the empty path"}}
+	got = verdictConstraintsFor([]model.Finding{genuineRefuted}, 3).AllowedCorrectness
+	if len(got) != 1 || got[0] != "patch is incorrect" {
+		t.Fatalf("genuine-refuted-P0 constraints = %v, want [patch is incorrect]", got)
 	}
 
 	real := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0}}
