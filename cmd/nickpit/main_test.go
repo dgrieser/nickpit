@@ -838,6 +838,8 @@ func TestFormatExtraBody(t *testing.T) {
 		{name: "colliding leaf uses full path", in: map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true}, "chat_template_kwargs2": map[string]any{"enable_thinking": true}}, want: "chat_template_kwargs.enable_thinking=true|chat_template_kwargs2.enable_thinking=true"},
 		{name: "array and bool", in: map[string]any{"stop": []any{"a", "b"}, "flag": false}, want: "flag=false|stop=[a, b]"},
 		{name: "empty nested map", in: map[string]any{"opts": map[string]any{}}, want: "opts={}"},
+		{name: "non-empty map in slice", in: map[string]any{"items": []any{map[string]any{"k": "v", "n": 1.0}}}, want: "items=[{k=v, n=1}]"},
+		{name: "empty map in slice", in: map[string]any{"items": []any{map[string]any{}}}, want: "items=[{}]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

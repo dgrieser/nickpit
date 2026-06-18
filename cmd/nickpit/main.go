@@ -1855,8 +1855,9 @@ func extraBodyLeafName(path string) string {
 }
 
 // extraBodyValue renders a leaf value compactly: bools as true/false, slices as
-// [a, b], empty maps as {} (non-empty maps are flattened before reaching here),
-// everything else via %v (so float64 uses %g formatting, e.g. 0.05).
+// [a, b], everything else via %v (so float64 uses %g formatting, e.g. 0.05).
+// Top-level maps are flattened by formatExtraBody before reaching here, but a
+// map nested inside a slice is rendered in place as {k=v, ...}.
 func extraBodyValue(v any) string {
 	switch val := v.(type) {
 	case nil:
@@ -1872,7 +1873,7 @@ func extraBodyValue(v any) string {
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	case map[string]any:
-		return "{}"
+		return "{" + strings.Join(formatExtraBody(val), ", ") + "}"
 	default:
 		return fmt.Sprintf("%v", val)
 	}
