@@ -734,6 +734,7 @@ func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, i
 		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
 		RepoRoot:                 sc.Req.RepoRoot,
+		PriorityThreshold:        sc.Req.PriorityThreshold,
 		ContextNotes:             st.contextNotes,
 	}
 	finalized, run, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
@@ -759,12 +760,13 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
 		RepoRoot:                 sc.Req.RepoRoot,
+		PriorityThreshold:        sc.Req.PriorityThreshold,
 		ContextNotes:             st.contextNotes,
 	}
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
 		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
-		applyVerdictFallback(in)
+		applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
 		run.Name = "verdict"
 		run.Role = "verdict"
 		run.Status = model.AgentRunStatusFailed
@@ -961,6 +963,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
 			SkipSuggestions:          sc.Req.SkipSuggestions,
 			RepoRoot:                 sc.Req.RepoRoot,
+			PriorityThreshold:        sc.Req.PriorityThreshold,
 			ContextNotes:             contextNotes,
 		}
 		finalized, finalizeRun, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
@@ -1034,6 +1037,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
 			RepoRoot:                 sc.Req.RepoRoot,
+			PriorityThreshold:        sc.Req.PriorityThreshold,
 			ContextNotes:             contextNotes,
 		}
 		verdict, verdictRun, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
@@ -1042,7 +1046,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 		if err != nil {
 			sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 			st.warnings = append(st.warnings, fmt.Sprintf("Verdict failed: %v; using merged overall fields", err))
-			applyVerdictFallback(in)
+			applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
 			verdictRun.Name = "verdict"
 			verdictRun.Role = "verdict"
 			verdictRun.Status = model.AgentRunStatusFailed

@@ -28,6 +28,11 @@ type FinalizeOptions struct {
 	DisablePatchSummary      bool
 	SkipSuggestions          bool
 	RepoRoot                 string
+	// PriorityThreshold is the configured "lowest currently allowed priority"
+	// (p0..p3). It is the floor a missing priority defaults to and the level a
+	// verifier-refuted non-finding is demoted to, so an affirmation never renders
+	// blocking. Empty defaults to p3 via model.PriorityThresholdRank.
+	PriorityThreshold string
 	// ContextNotes is kept for option-shape compatibility with the post-merge
 	// pipeline, but final correctness/explanation notes are handled by Verdict.
 	ContextNotes string
@@ -130,7 +135,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	// Last-resort repair after retry exhaustion or direct non-parser callers.
 	// Normal schema/parser paths require `verification` in the finalizer output.
 	mergeInputVerification(out.Findings, in.Findings)
-	enforcePriorityFloor(out.Findings, in.Findings)
+	enforcePriorityFloor(out.Findings, in.Findings, model.PriorityThresholdRank(opts.PriorityThreshold))
 	applyWeightedConfidence(out.Findings, in.Findings)
 	if stats.Omitted > 0 || stats.Ignored > 0 || stats.FinalizerFindings != len(in.Findings) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("Finalizer output mismatch: findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d; preserved input findings", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
@@ -403,12 +408,12 @@ func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
 }
 
 // enforcePriorityFloor ensures finalization.priority is not more critical (lower number)
-// than the most critical value among the original finding and its verifier. "Floor" refers
-// to the integer value: lower numbers = more critical, so the floor is the minimum integer
-// the finalizer is allowed to emit. Matching is by code_location, with finding title as a
-// tiebreaker when multiple input findings share the same location, so reordering or dropping
-// by the LLM does not misalign the floor.
-func enforcePriorityFloor(out, in []model.Finding) {
+// than the finding's priority floor (see priorityFloor). "Floor" refers to the integer
+// value: lower numbers = more critical, so the floor is the minimum integer the finalizer
+// is allowed to emit. Matching is by code_location, with finding title as a tiebreaker when
+// multiple input findings share the same location, so reordering or dropping by the LLM does
+// not misalign the floor.
+func enforcePriorityFloor(out, in []model.Finding, thresholdRank int) {
 	for i := range out {
 		if out[i].Finalization == nil {
 			continue
@@ -417,22 +422,49 @@ func enforcePriorityFloor(out, in []model.Finding) {
 		if orig == nil {
 			continue
 		}
-		floor := model.PriorityRank(orig.Priority)
-		if orig.Verification != nil && orig.Verification.Priority < floor {
-			floor = orig.Verification.Priority
-		}
+		floor := priorityFloor(*orig, thresholdRank)
 		if out[i].Finalization.Priority < floor {
 			out[i].Finalization.Priority = floor
 		}
 	}
 }
 
+// priorityFloor computes a finding's priority floor: the most-critical (lowest) integer it is
+// allowed to take. A finding the verifier marked `refuted` is a non-finding the verifier
+// rejected (an affirmation / "no issue" item); it is demoted to thresholdRank — the lowest
+// currently allowed priority — so it never renders blocking, ignoring the reviewer's (often
+// template) priority. A missing priority also defaults to thresholdRank rather than the
+// hardcoded floor of model.PriorityRank. Otherwise the floor is the most critical of the
+// reviewer and verifier priorities, as before.
+func priorityFloor(f model.Finding, thresholdRank int) int {
+	if f.Verification != nil && f.Verification.Verdict == model.VerdictRefuted {
+		return thresholdRank
+	}
+	floor := priorityRankOrThreshold(f.Priority, thresholdRank)
+	if f.Verification != nil && f.Verification.Priority < floor {
+		floor = f.Verification.Priority
+	}
+	return floor
+}
+
+// priorityRankOrThreshold ranks a finding priority, defaulting a missing (nil) priority to
+// thresholdRank (the lowest currently allowed priority) instead of model.PriorityRank's
+// hardcoded 3.
+func priorityRankOrThreshold(priority *int, thresholdRank int) int {
+	if priority == nil {
+		return thresholdRank
+	}
+	return model.PriorityRank(priority)
+}
+
 // applyWeightedConfidence overwrites finalization.confidence_score with a
 // deterministic weighted average of the review confidence and the verifier's
 // confidence, rounded to two decimals. Moved out of the LLM prompt because LLMs
-// are unreliable at arithmetic. If verification is missing, the review
-// confidence is used as-is. Hallucinated findings with no input match are
-// skipped (no value applied).
+// are unreliable at arithmetic. Missing confidence defaults to 0.0: a finding
+// the verifier `refuted` (a demoted non-finding) carries no real confidence, and
+// a finding with no verification has no confidence signal to trust — neither is
+// padded from the reviewer's self-assessment. Hallucinated findings with no
+// input match are skipped (no value applied).
 func applyWeightedConfidence(out, in []model.Finding) {
 	for i := range out {
 		if out[i].Finalization == nil {
@@ -442,11 +474,15 @@ func applyWeightedConfidence(out, in []model.Finding) {
 		if orig == nil {
 			continue
 		}
-		review := orig.ConfidenceScore
 		if orig.Verification == nil {
-			out[i].Finalization.ConfidenceScore = roundConfidenceScore(review)
+			out[i].Finalization.ConfidenceScore = 0.0
 			continue
 		}
+		if orig.Verification.Verdict == model.VerdictRefuted {
+			out[i].Finalization.ConfidenceScore = 0.0
+			continue
+		}
+		review := orig.ConfidenceScore
 		verify := orig.Verification.ConfidenceScore
 		score := finalizeVerificationWeight*verify + finalizeReviewWeight*review
 		if math.Abs(verify-review) > finalizeDivergenceClamp {

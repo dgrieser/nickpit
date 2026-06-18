@@ -1526,11 +1526,19 @@ func reasoningExtractRequest(req model.ReviewRequest) model.ReviewRequest {
 }
 
 func reasoningExtractOutput(messages []string) string {
-	out := strings.TrimSpace(strings.Join(messages, "\n"))
-	if strings.EqualFold(out, "NONE") {
-		return ""
+	raw := strings.Join(messages, "\n")
+	kept := make([]string, 0, strings.Count(raw, "\n")+1)
+	for line := range strings.SplitSeq(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Strip a leading bullet/number prefix before the NONE check so
+		// bulleted placeholders like "+ NONE" are also dropped.
+		bare := strings.TrimSpace(reasoningBulletPrefix.ReplaceAllString(trimmed, ""))
+		if strings.EqualFold(bare, "NONE") {
+			continue
+		}
+		kept = append(kept, line)
 	}
-	return out
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 var reasoningBulletPrefix = regexp.MustCompile(`^(?:[-*+]\s*|\d+[.)]\s+)`)
