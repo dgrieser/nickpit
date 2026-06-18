@@ -886,23 +886,104 @@ func TestRunReviewUsesProfileSupportedModelCapabilities(t *testing.T) {
 func TestRunReviewUsesCachedModelCapabilities(t *testing.T) {
 	cacheDir := t.TempDir()
 	t.Setenv("NICKPIT_CACHE_DIR", cacheDir)
-	if err := modelcheck.WriteCachedCapability(filepath.Join(cacheDir, "model-capabilities.json"), "http://127.0.0.1:1", compatibleCapability("model"), time.Unix(100, 0)); err != nil {
+	profile := config.Profile{
+		Model:           "model",
+		BaseURL:         "http://127.0.0.1:1/",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}
+	// Cache the capability under the same settings fingerprint the resolver
+	// computes, so the hit avoids probing the dead endpoint.
+	if err := modelcheck.WriteCachedCapability(filepath.Join(cacheDir, "model-capabilities.json"), profile.BaseURL, requestSettingsFingerprint(profile), compatibleCapability("model"), time.Unix(100, 0)); err != nil {
 		t.Fatal(err)
 	}
 
 	wantErr := errors.New("source called")
 	source := &recordingSource{err: wantErr}
-	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
-		Model:           "model",
-		BaseURL:         "http://127.0.0.1:1/",
-		APIKey:          "token",
-		ReasoningEffort: "high",
-	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	err := (&app{}).runReview(context.Background(), source, nil, "default", profile, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want source error", err)
 	}
 	if !source.called {
 		t.Fatal("source should run when cached capabilities satisfy model check")
+	}
+}
+
+func TestRunReviewReprobesWhenSettingsChange(t *testing.T) {
+	probes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes++
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "reasoning_effort unsupported"}})
+	}))
+	defer server.Close()
+
+	cacheDir := t.TempDir()
+	t.Setenv("NICKPIT_CACHE_DIR", cacheDir)
+	// Capability cached under a DIFFERENT settings combination (no extra_body).
+	cachedProfile := config.Profile{Model: "model", BaseURL: server.URL, ReasoningEffort: "high"}
+	if err := modelcheck.WriteCachedCapability(filepath.Join(cacheDir, "model-capabilities.json"), cachedProfile.BaseURL, requestSettingsFingerprint(cachedProfile), compatibleCapability("model"), time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same model/base_url but extra_body added → different fingerprint → the
+	// cache must miss and the live probe runs (and fails against the test server).
+	source := &recordingSource{}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:            "model",
+		BaseURL:          server.URL,
+		APIKey:           "token",
+		ReasoningEffort:  "high",
+		MaxContextTokens: 120000,
+		ExtraBody:        map[string]any{"enable_thinking": true},
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected model-check failure from live probe, got nil")
+	}
+	if probes == 0 {
+		t.Fatal("changed settings must trigger a live probe; cache should have missed")
+	}
+	if source.called {
+		t.Fatal("source should not run when the model check fails")
+	}
+}
+
+func TestRequestSettingsFingerprint(t *testing.T) {
+	withProfile := func(p config.Profile, fn func(*config.Profile)) config.Profile {
+		fn(&p)
+		return p
+	}
+	base := config.Profile{
+		Model:           "model",
+		ReasoningEffort: "high",
+		ExtraBody:       map[string]any{"min_p": 0.05},
+	}
+	baseFP := requestSettingsFingerprint(base)
+	if requestSettingsFingerprint(base) != baseFP {
+		t.Fatal("fingerprint not stable for identical settings")
+	}
+
+	temp, topP, pp := 0.6, 0.9, 1.0
+	topK, maxTok := 20, 16384
+	variants := map[string]config.Profile{
+		"model":            withProfile(base, func(p *config.Profile) { p.Model = "other" }),
+		"reasoning_effort": withProfile(base, func(p *config.Profile) { p.ReasoningEffort = "low" }),
+		"temperature":      withProfile(base, func(p *config.Profile) { p.Temperature = &temp }),
+		"top_p":            withProfile(base, func(p *config.Profile) { p.TopP = &topP }),
+		"top_k":            withProfile(base, func(p *config.Profile) { p.TopK = &topK }),
+		"presence_penalty": withProfile(base, func(p *config.Profile) { p.PresencePenalty = &pp }),
+		"max_tokens":       withProfile(base, func(p *config.Profile) { p.MaxTokens = &maxTok }),
+		"extra_body":       withProfile(base, func(p *config.Profile) { p.ExtraBody = map[string]any{"min_p": 0.1} }),
+	}
+	for name, p := range variants {
+		if requestSettingsFingerprint(p) == baseFP {
+			t.Fatalf("changing %s did not change the fingerprint", name)
+		}
+	}
+
+	// Equal extra_body content (independently constructed map) → same fingerprint.
+	if eq := withProfile(base, func(p *config.Profile) { p.ExtraBody = map[string]any{"min_p": 0.05} }); requestSettingsFingerprint(eq) != baseFP {
+		t.Fatal("equal extra_body content produced a different fingerprint")
 	}
 }
 

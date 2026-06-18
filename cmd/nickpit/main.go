@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1142,6 +1143,7 @@ func (a *app) specProfile() (string, error) {
 }
 
 func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort string, refresh bool) (modelcheck.Result, error) {
+	settings := requestSettingsFingerprint(profile)
 	if !refresh {
 		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
 			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
@@ -1152,7 +1154,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		if err != nil {
 			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
-			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model)
+			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model, settings)
 			if err == nil && ok {
 				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
@@ -1177,7 +1179,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		a.logf(ctx, "Model capability cache unavailable: %v", err)
 		return result, nil
 	}
-	if err := modelcheck.WriteCachedCapability(cachePath, profile.BaseURL, capability, time.Now()); err != nil {
+	if err := modelcheck.WriteCachedCapability(cachePath, profile.BaseURL, settings, capability, time.Now()); err != nil {
 		a.logf(ctx, "Model capability cache write failed: %v", err)
 	}
 	return result, nil
@@ -1211,6 +1213,23 @@ func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
 		ExtraBody:       profile.ExtraBody,
 		ReasoningEffort: profile.ReasoningEffort,
 	}
+}
+
+// requestSettingsFingerprint hashes the request settings the model probe runs
+// with, so the capability cache keys on the settings combination (a changed
+// temperature/top_*/presence_penalty/extra_body/max_tokens/reasoning_effort
+// re-probes instead of returning a stale hit). It reuses modelCheckProfile so
+// the cache identity and the small-model-distinct check share one field set.
+// encoding/json sorts map keys, so extra_body ordering does not affect the hash.
+func requestSettingsFingerprint(profile config.Profile) string {
+	data, err := json.Marshal(modelCheckProfileSignature(profile))
+	if err != nil {
+		// modelCheckProfile holds only JSON-encodable fields, so this is
+		// unreachable; fall back to an empty fingerprint rather than panicking.
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 type modelCapabilityRequirements struct {
