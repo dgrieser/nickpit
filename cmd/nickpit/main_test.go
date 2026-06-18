@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -912,9 +913,9 @@ func TestRunReviewUsesCachedModelCapabilities(t *testing.T) {
 }
 
 func TestRunReviewReprobesWhenSettingsChange(t *testing.T) {
-	probes := 0
+	var probes atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		probes++
+		probes.Add(1)
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "reasoning_effort unsupported"}})
 	}))
@@ -942,7 +943,7 @@ func TestRunReviewReprobesWhenSettingsChange(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected model-check failure from live probe, got nil")
 	}
-	if probes == 0 {
+	if probes.Load() == 0 {
 		t.Fatal("changed settings must trigger a live probe; cache should have missed")
 	}
 	if source.called {
