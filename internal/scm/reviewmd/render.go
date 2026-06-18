@@ -34,10 +34,12 @@ const SummaryMarker = MarkerOpen + "summary -->"
 const FingerprintPrefix = MarkerOpen + "fp:"
 
 // fpPayload is the structured finding identity carried in each finding comment.
-// id is used only for exact same-run matching; f and t drive cross-run fuzzy
-// matching (dedupe.Compare on file + title). Line range and body are deliberately
-// left out of cross-run identity because they drift between runs; the optional
-// s/e/b fields exist so a later version can carry them without a grammar change.
+// id is used only for exact same-run matching. Cross-run identity intentionally
+// uses the coarser file + displayed-title signal because line anchors and
+// generated prose drift between runs; preferring that stable key keeps repeated
+// runs idempotent even though rare same-file/same-title findings can collide.
+// The optional s/e/b fields exist so a later version can carry them without a
+// marker grammar change, but current writers deliberately leave them empty.
 type fpPayload struct {
 	ID string `json:"id"`
 	F  string `json:"f"`
@@ -49,9 +51,11 @@ type fpPayload struct {
 
 // FingerprintMarker renders the hidden carrier marker for a finding. displayTitle
 // is the title actually shown in the comment (FindingDisplay output), so the next
-// run compares like-for-like. base64.StdEncoding keeps the payload free of "-->"
-// and the MarkerOpen token, so a payload can neither close the marker early nor
-// be forged from untrusted finding text.
+// run compares like-for-like. Location and body are intentionally omitted from
+// the marker's cross-run key; see fpPayload for the idempotency tradeoff.
+// base64.StdEncoding keeps the payload free of "-->" and the MarkerOpen token,
+// so a payload can neither close the marker early nor be forged from untrusted
+// finding text.
 func FingerprintMarker(finding model.Finding, displayTitle string) string {
 	payload, err := json.Marshal(fpPayload{ID: finding.ID, F: finding.CodeLocation.FilePath, T: displayTitle})
 	if err != nil {
@@ -133,14 +137,15 @@ func ScanComment(body string, p *Priors) {
 }
 
 // AlreadyPosted reports whether finding was already published in p. A finding
-// from the same run matches exactly on its id; across runs, identity is the
-// deterministic file+title fuzzy match at dedupe.Duplicate (cross-file pairs are
-// capped below Duplicate by dedupe.Compare, so a different file never matches).
-// displayTitle is the title shown in the comment so the comparison is
-// like-for-like with the title each prior carries. Two distinct same-file
-// findings with ~identical displayed titles can collide; the Duplicate floor
-// keeps that rare, and a missed match only reposts a comment, never drops a
-// finding.
+// from the same run matches exactly on its id. Across runs, identity is the
+// deterministic file+displayed-title fuzzy match at dedupe.Duplicate; cross-file
+// pairs are capped below Duplicate by dedupe.Compare, so a different file never
+// matches. This intentionally ignores line range and body because SCM anchors
+// and generated text are less stable than the displayed title. Two distinct
+// same-file findings with near-identical displayed titles can collide and the
+// later one can be suppressed; that is the accepted tradeoff for avoiding
+// reposts across repeated runs. displayTitle is the title shown in the comment,
+// so the comparison is like-for-like with the title each prior carries.
 func AlreadyPosted(finding model.Finding, displayTitle string, p Priors) bool {
 	for i := range p.Findings {
 		if p.Findings[i].ID != "" && p.Findings[i].ID == finding.ID {

@@ -159,7 +159,11 @@ func TestFindingBodyPrefixAndMarker(t *testing.T) {
 }
 
 func TestFingerprintRoundTrip(t *testing.T) {
-	f := model.Finding{ID: "id-1", CodeLocation: model.CodeLocation{FilePath: "pkg/a.go"}}
+	f := model.Finding{
+		ID:           "id-1",
+		Body:         "generated body intentionally not part of the marker",
+		CodeLocation: model.CodeLocation{FilePath: "pkg/a.go", LineRange: model.LineRange{Start: 12, End: 14}},
+	}
 	marker := FingerprintMarker(f, "Some title")
 	if !strings.HasPrefix(marker, FingerprintPrefix) || !strings.HasSuffix(marker, " -->") {
 		t.Fatalf("marker shape wrong: %q", marker)
@@ -176,6 +180,9 @@ func TestFingerprintRoundTrip(t *testing.T) {
 	}
 	if priors[0].ID != "id-1" || priors[0].CodeLocation.FilePath != "pkg/a.go" || priors[0].Title != "Some title" {
 		t.Fatalf("round-trip mismatch: %+v", priors[0])
+	}
+	if priors[0].Body != "" || priors[0].CodeLocation.LineRange != (model.LineRange{}) {
+		t.Fatalf("fingerprint should omit body and line range, got %+v", priors[0])
 	}
 }
 
@@ -225,10 +232,22 @@ func TestAlreadyPostedSameRunID(t *testing.T) {
 func TestAlreadyPostedHeuristicSkip(t *testing.T) {
 	// Same file, titles that normalize to the same tokens but differ as raw
 	// strings => fuzzy Duplicate via the title-strong rule (not the Identical case).
-	prior := priorsFrom(model.Finding{ID: "old", CodeLocation: model.CodeLocation{FilePath: "a.go"}}, "Null pointer dereference in the handler")
-	f := model.Finding{ID: "new", CodeLocation: model.CodeLocation{FilePath: "a.go"}}
+	priorFinding := model.Finding{
+		ID:           "old",
+		Body:         "prior generated explanation",
+		CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 10, End: 11}},
+	}
+	prior := priorsFrom(priorFinding, "Null pointer dereference in the handler")
+	if len(prior.Findings) != 1 || prior.Findings[0].Body != "" || prior.Findings[0].CodeLocation.LineRange != (model.LineRange{}) {
+		t.Fatalf("prior fingerprint should carry only id/file/title, got %+v", prior.Findings)
+	}
+	f := model.Finding{
+		ID:           "new",
+		Body:         "different generated explanation",
+		CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 200, End: 201}},
+	}
 	if !AlreadyPosted(f, "Null pointer dereference in handler", prior) {
-		t.Fatal("same file + near-identical title should match across runs")
+		t.Fatal("same file + near-identical title should match across runs without location/body signal")
 	}
 }
 
