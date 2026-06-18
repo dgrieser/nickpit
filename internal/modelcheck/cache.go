@@ -13,7 +13,13 @@ import (
 )
 
 type CachedCapabilities struct {
-	BaseURL    string                   `json:"base_url"`
+	BaseURL string `json:"base_url"`
+	// Settings is a fingerprint of the request settings the probe ran with
+	// (model + sampling params + extra_body + reasoning_effort). It is part of
+	// the cache identity: changing any probed setting yields a different entry
+	// instead of a stale hit. Empty on legacy entries written before settings
+	// awareness, which therefore never match a non-empty fingerprint.
+	Settings   string                   `json:"settings"`
 	DetectedAt time.Time                `json:"detected_at"`
 	Capability config.ModelCapabilities `json:"capability"`
 }
@@ -58,7 +64,7 @@ func FindProfileCapabilityFor(profile config.Profile, model string) (config.Mode
 	return config.ModelCapabilities{}, false
 }
 
-func ReadCachedCapability(path, baseURL, model string) (config.ModelCapabilities, bool, error) {
+func ReadCachedCapability(path, baseURL, model, settings string) (config.ModelCapabilities, bool, error) {
 	file, err := readCacheFile(path)
 	if err != nil {
 		return config.ModelCapabilities{}, false, err
@@ -66,14 +72,14 @@ func ReadCachedCapability(path, baseURL, model string) (config.ModelCapabilities
 	baseURL = NormalizeBaseURL(baseURL)
 	model = NormalizeModel(model)
 	for _, entry := range file.Entries {
-		if NormalizeBaseURL(entry.BaseURL) == baseURL && NormalizeModel(entry.Capability.Model) == model {
+		if NormalizeBaseURL(entry.BaseURL) == baseURL && NormalizeModel(entry.Capability.Model) == model && entry.Settings == settings {
 			return cloneCapability(entry.Capability), true, nil
 		}
 	}
 	return config.ModelCapabilities{}, false, nil
 }
 
-func WriteCachedCapability(path, baseURL string, capability config.ModelCapabilities, detectedAt time.Time) error {
+func WriteCachedCapability(path, baseURL, settings string, capability config.ModelCapabilities, detectedAt time.Time) error {
 	if path == "" {
 		return fmt.Errorf("modelcheck cache: empty path")
 	}
@@ -86,12 +92,13 @@ func WriteCachedCapability(path, baseURL string, capability config.ModelCapabili
 	capability.Model = NormalizeModel(capability.Model)
 	entry := CachedCapabilities{
 		BaseURL:    baseURL,
+		Settings:   settings,
 		DetectedAt: detectedAt.UTC(),
 		Capability: capability,
 	}
 	replaced := false
 	for i, existing := range file.Entries {
-		if NormalizeBaseURL(existing.BaseURL) == baseURL && NormalizeModel(existing.Capability.Model) == capability.Model {
+		if NormalizeBaseURL(existing.BaseURL) == baseURL && NormalizeModel(existing.Capability.Model) == capability.Model && existing.Settings == settings {
 			file.Entries[i] = entry
 			replaced = true
 			break

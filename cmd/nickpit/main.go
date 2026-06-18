@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -892,6 +895,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
 	req.DisableReasoningExtract = a.disableReasoningExtract
 	req.Concurrency = a.concurrency
+	req.VerifyDropPolicy = a.verifyDropPolicy
+	req.VerifyDropConfidence = a.verifyDropConfidence
 	if profile.DisablePatchSummary {
 		req.DisablePatchSummary = true
 	}
@@ -919,7 +924,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, req))
 	a.logSmallModelReady(ctx, profile, req)
-	a.logProgress(ctx, logging.StageAgent, logging.StateNone, agentSummary(profile, req))
+	agentCtx := logging.WithProgressInfo(ctx, workflowProgressInfo(spec, a.specPath, a.stepName))
+	a.logProgress(agentCtx, logging.StageAgent, logging.StateNone, agentSummary(profile, req))
 
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
@@ -951,9 +957,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		req.ModelEmitsReasoning = true
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
 	}
-
-	req.VerifyDropPolicy = a.verifyDropPolicy
-	req.VerifyDropConfidence = a.verifyDropConfidence
 
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
@@ -1140,6 +1143,7 @@ func (a *app) specProfile() (string, error) {
 }
 
 func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, profile config.Profile, model, effort string, refresh bool) (modelcheck.Result, error) {
+	settings := requestSettingsFingerprint(profile)
 	if !refresh {
 		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
 			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
@@ -1150,7 +1154,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		if err != nil {
 			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
-			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model)
+			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model, settings)
 			if err == nil && ok {
 				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
@@ -1175,7 +1179,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		a.logf(ctx, "Model capability cache unavailable: %v", err)
 		return result, nil
 	}
-	if err := modelcheck.WriteCachedCapability(cachePath, profile.BaseURL, capability, time.Now()); err != nil {
+	if err := modelcheck.WriteCachedCapability(cachePath, profile.BaseURL, settings, capability, time.Now()); err != nil {
 		a.logf(ctx, "Model capability cache write failed: %v", err)
 	}
 	return result, nil
@@ -1209,6 +1213,23 @@ func modelCheckProfileSignature(profile config.Profile) modelCheckProfile {
 		ExtraBody:       profile.ExtraBody,
 		ReasoningEffort: profile.ReasoningEffort,
 	}
+}
+
+// requestSettingsFingerprint hashes the request settings the model probe runs
+// with, so the capability cache keys on the settings combination (a changed
+// temperature/top_*/presence_penalty/extra_body/max_tokens/reasoning_effort
+// re-probes instead of returning a stale hit). It reuses modelCheckProfile so
+// the cache identity and the small-model-distinct check share one field set.
+// encoding/json sorts map keys, so extra_body ordering does not affect the hash.
+func requestSettingsFingerprint(profile config.Profile) string {
+	data, err := json.Marshal(modelCheckProfileSignature(profile))
+	if err != nil {
+		// modelCheckProfile holds only JSON-encodable fields, so this is
+		// unreachable; fall back to an empty fingerprint rather than panicking.
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 type modelCapabilityRequirements struct {
@@ -1710,13 +1731,37 @@ func profileProgressInfo(profile config.Profile) logging.ProgressInfo {
 }
 
 // smallModelProgressInfo mirrors profileProgressInfo for the profile's small
-// model, so the small-model capability check renders its own model and effort.
+// model, so the small-model line renders its own model and effort and is tagged
+// "@small" (the alias steps reference it by) to set it apart from the primary.
 func smallModelProgressInfo(profile config.Profile) logging.ProgressInfo {
 	return logging.ProgressInfo{
 		Model:   profile.Model,
 		Effort:  profile.ReasoningEffort,
 		BaseURL: profile.BaseURL,
+		Detail:  workflow.SmallModelAlias,
 	}
+}
+
+// workflowProgressInfo builds the Agent-line bracket identity: the workflow
+// name, where it came from (the embedded default, a --spec file, or a single
+// --step), and its flattened step count. It deliberately omits the model — the
+// Model line above already shows that — so the Agent line answers "which
+// workflow, from where" instead of repeating model:effort @ url.
+func workflowProgressInfo(spec workflow.Spec, specPath, stepName string) logging.ProgressInfo {
+	info := logging.ProgressInfo{WorkflowSteps: len(spec.FlatSteps())}
+	switch {
+	case specPath != "":
+		base := filepath.Base(specPath)
+		info.Workflow = strings.TrimSuffix(base, filepath.Ext(base))
+		info.WorkflowSource = specPath
+	case stepName != "":
+		info.Workflow = stepName
+		info.WorkflowSource = "step"
+	default:
+		info.Workflow = "default"
+		info.WorkflowSource = "embedded"
+	}
+	return info
 }
 
 // logSmallModelReady prints a Model ready line for the profile's small model
@@ -1733,7 +1778,10 @@ func (a *app) logSmallModelReady(ctx context.Context, profile config.Profile, re
 }
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {
-	flags := []string{fmt.Sprintf("%dk context", req.MaxContextTokens/1000)}
+	flags := []string{model.HumanTokens(req.MaxContextTokens) + " context"}
+	if profile.MaxTokens != nil {
+		flags = append(flags, model.HumanTokens(*profile.MaxTokens)+" output")
+	}
 	if profile.Temperature != nil {
 		flags = append(flags, fmt.Sprintf("temp=%g", *profile.Temperature))
 	}
@@ -1746,7 +1794,89 @@ func modelSummary(profile config.Profile, req model.ReviewRequest) string {
 	if profile.PresencePenalty != nil {
 		flags = append(flags, fmt.Sprintf("presence_penalty=%g", *profile.PresencePenalty))
 	}
+	flags = append(flags, formatExtraBody(profile.ExtraBody)...)
 	return strings.Join(flags, ", ")
+}
+
+// formatExtraBody renders a profile's extra_body entries for the Model progress
+// line. Nested maps are flattened to dotted leaf paths; each leaf shows by its
+// bare final segment when that segment is unique across all entries, or by its
+// full dotted path when the segment collides. Output is sorted so the line is
+// stable across runs.
+func formatExtraBody(m map[string]any) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	type leaf struct{ path, value string }
+	var leaves []leaf
+	var walk func(prefix string, v any)
+	walk = func(prefix string, v any) {
+		if sub, ok := v.(map[string]any); ok && len(sub) > 0 {
+			keys := make([]string, 0, len(sub))
+			for k := range sub {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				child := k
+				if prefix != "" {
+					child = prefix + "." + k
+				}
+				walk(child, sub[k])
+			}
+			return
+		}
+		leaves = append(leaves, leaf{path: prefix, value: extraBodyValue(v)})
+	}
+	walk("", m)
+
+	nameCount := map[string]int{}
+	for _, lf := range leaves {
+		nameCount[extraBodyLeafName(lf.path)]++
+	}
+	out := make([]string, 0, len(leaves))
+	for _, lf := range leaves {
+		key := lf.path
+		if name := extraBodyLeafName(lf.path); nameCount[name] == 1 {
+			key = name
+		}
+		out = append(out, key+"="+lf.value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// extraBodyLeafName returns the final dotted segment of a flattened key.
+func extraBodyLeafName(path string) string {
+	if i := strings.LastIndex(path, "."); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+// extraBodyValue renders a leaf value compactly: bools as true/false, slices as
+// [a, b], everything else via %v (so float64 uses %g formatting, e.g. 0.05).
+// Top-level maps are flattened by formatExtraBody before reaching here, but a
+// map nested inside a slice is rendered in place as {k=v, ...}.
+func extraBodyValue(v any) string {
+	switch val := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return strconv.FormatBool(val)
+	case string:
+		return val
+	case []any:
+		parts := make([]string, len(val))
+		for i, e := range val {
+			parts[i] = extraBodyValue(e)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case map[string]any:
+		return "{" + strings.Join(formatExtraBody(val), ", ") + "}"
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 func agentSummary(profile config.Profile, req model.ReviewRequest) string {
@@ -1760,12 +1890,29 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 		unlimited(req.MaxReasoningSeconds, "s", "reasoning"),
 		unlimited(req.MaxReasoningLoopRepeats, "", "loop repeats"),
 		disablable(profile.MaxRateLimitDelaySeconds, "s", "rate-limit-delay"),
-		unlimited(req.MaxToolCalls, "", "tool calls"),
-		unlimited(req.MaxDuplicateToolCalls, "", "duplicates"),
 		unlimited(req.Concurrency, "", "concurrency"),
+		unlimited(req.MaxToolCalls, "", "tool calls"),
 	}
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")
+	}
+	flags = append(flags, unlimited(req.MaxDuplicateToolCalls, "", "duplicates"))
+	if req.SkipSuggestions {
+		flags = append(flags, "skip suggestions")
+	}
+	if req.DisablePatchSummary {
+		flags = append(flags, "no patch summary")
+	}
+	if req.DisableReasoningExtract {
+		flags = append(flags, "no reasoning extract")
+	}
+	if req.VerifyDropPolicy != "" && req.VerifyDropPolicy != review.DropPolicyNone {
+		flags = append(flags, fmt.Sprintf("drop %s ≥%g", req.VerifyDropPolicy, req.VerifyDropConfidence))
+	}
+	// p3 is the lowest rank (--priority-threshold default): everything shown, so
+	// the filter is only worth surfacing when set above it.
+	if req.PriorityThreshold != "" && req.PriorityThreshold != "p3" {
+		flags = append(flags, "≥"+req.PriorityThreshold)
 	}
 	return fmt.Sprintf("%s %s", kind, strings.Join(flags, ", "))
 }

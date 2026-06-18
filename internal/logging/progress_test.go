@@ -83,6 +83,30 @@ func TestFormatProgressPlain(t *testing.T) {
 			want:  "Response   [review #1 · gpt-5:high] #1 done\n",
 		},
 		{
+			name:  "workflow bracket embedded",
+			info:  ProgressInfo{Workflow: "default", WorkflowSource: "embedded", WorkflowSteps: 6},
+			stage: StageAgent,
+			state: StateNone,
+			msg:   "Structured no nudges",
+			want:  "Agent      [default · embedded · 6 steps] Structured no nudges\n",
+		},
+		{
+			name:  "workflow bracket single step",
+			info:  ProgressInfo{Workflow: "merge", WorkflowSource: "step", WorkflowSteps: 1},
+			stage: StageAgent,
+			state: StateNone,
+			msg:   "Structured",
+			want:  "Agent      [merge · step · 1 step] Structured\n",
+		},
+		{
+			name:  "workflow bracket spec file",
+			info:  ProgressInfo{Workflow: "security", WorkflowSource: "security.yaml", WorkflowSteps: 4},
+			stage: StageAgent,
+			state: StateNone,
+			msg:   "Unstructured",
+			want:  "Agent      [security · security.yaml · 4 steps] Unstructured\n",
+		},
+		{
 			name: "named agent uses colon join",
 			info: ProgressInfo{
 				AgentRole: "summarize",
@@ -232,6 +256,17 @@ func TestFormatProgressANSI(t *testing.T) {
 			want: progressTestStyle(progressStageStyles[StageResult], "Result    ") + " " + progressTestLight("ok") + " " +
 				progressTestStyle(progressColorKeyTurquoise, "findings") + progressTestGrey("=") +
 				progressTestStyle(progressColorNumberGreen, "3") + "\n",
+		},
+		{
+			name:  "workflow bracket colorized",
+			info:  ProgressInfo{Workflow: "default", WorkflowSource: "embedded", WorkflowSteps: 6},
+			stage: StageAgent,
+			state: StateNone,
+			want: progressTestStyle(progressStageStyles[StageAgent], "Agent     ") + " " +
+				progressTestGrey("[") + progressTestStyle(progressColorKeyTeal, "default") + progressTestGrey(" · ") +
+				progressTestLight("embedded") + progressTestGrey(" · ") +
+				progressTestStyle(progressColorNumberGreen, "6") + " " + progressTestLight("steps") +
+				progressTestGrey("]") + "\n",
 		},
 	}
 	for _, tt := range tests {

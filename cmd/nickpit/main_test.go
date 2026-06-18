@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -681,9 +682,14 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 	if !strings.Contains(stderr, wantModel) {
 		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", wantModel, stderr)
 	}
-	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ tool calls, ≤5 duplicates, ∞ concurrency, parallel"
+	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ concurrency, ∞ tool calls, parallel, ≤5 duplicates"
 	if !strings.Contains(stderr, wantAgent) {
 		t.Fatalf("stderr missing agent progress line\nwant: %s\nstderr:\n%s", wantAgent, stderr)
+	}
+	// The Agent bracket describes the workflow (embedded default), not the model.
+	wantWorkflow := "Agent      [default · embedded · "
+	if !strings.Contains(stderr, wantWorkflow) || !strings.Contains(stderr, " steps] Structured no nudges") {
+		t.Fatalf("stderr missing agent workflow bracket\nwant prefix: %s\nstderr:\n%s", wantWorkflow, stderr)
 	}
 }
 
@@ -719,7 +725,7 @@ func TestRunReviewShowProgressPrintsSmallModelWhenDifferent(t *testing.T) {
 	if !strings.Contains(stderr, wantPrimary) {
 		t.Fatalf("stderr missing primary model line\nwant: %s\nstderr:\n%s", wantPrimary, stderr)
 	}
-	wantSmall := "Model      [Small-Fast:low @ " + server.URL + "] ready 120k context"
+	wantSmall := "Model      [Small-Fast:low @ " + server.URL + " · @small] ready 120k context"
 	if !strings.Contains(stderr, wantSmall) {
 		t.Fatalf("stderr missing small model line\nwant: %s\nstderr:\n%s", wantSmall, stderr)
 	}
@@ -755,6 +761,101 @@ func TestRunReviewShowProgressOmitsSmallModelWhenSame(t *testing.T) {
 	// No small config → small inherits the primary model → only one Model line.
 	if got := strings.Count(stderr, "] ready 120k context"); got != 1 {
 		t.Fatalf("model ready lines = %d, want 1 (no separate small model)\nstderr:\n%s", got, stderr)
+	}
+}
+
+func TestAgentSummaryFlagsAndOrder(t *testing.T) {
+	profile := config.Profile{MaxRateLimitDelaySeconds: 300}
+	req := model.ReviewRequest{
+		UseJSONSchema:           true,
+		NudgeCount:              3,
+		MaxOutputRetries:        5,
+		MaxReasoningSeconds:     300,
+		MaxReasoningLoopRepeats: 5,
+		MaxDuplicateToolCalls:   5,
+		Concurrency:             15,
+		SkipSuggestions:         true,
+		DisablePatchSummary:     true,
+		DisableReasoningExtract: true,
+		VerifyDropPolicy:        "refuted-only",
+		VerifyDropConfidence:    0.8,
+		PriorityThreshold:       "p1",
+	}
+	got := agentSummary(profile, req)
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only ≥0.8, ≥p1"
+	if got != want {
+		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAgentSummaryOmitsDefaultsAndSerial(t *testing.T) {
+	req := model.ReviewRequest{
+		DisableParallelToolCalls: true,
+		Concurrency:              10,
+		VerifyDropPolicy:         "none",
+		PriorityThreshold:        "p3",
+	}
+	got := agentSummary(config.Profile{}, req)
+	want := "Unstructured no nudges, no retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ≤10 concurrency, ∞ tool calls, ∞ duplicates"
+	if got != want {
+		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestModelSummaryRendersExtraBody(t *testing.T) {
+	temp := 0.6
+	maxTokens := 16384
+	profile := config.Profile{
+		MaxTokens:   &maxTokens,
+		Temperature: &temp,
+		ExtraBody: map[string]any{
+			"chat_template_kwargs": map[string]any{"enable_thinking": true},
+			"min_p":                0.05,
+		},
+	}
+	got := modelSummary(profile, model.ReviewRequest{MaxContextTokens: 120000})
+	want := "120k context, 16.4k output, temp=0.6, enable_thinking=true, min_p=0.05"
+	if got != want {
+		t.Fatalf("modelSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestModelSummaryOmitsOutputWhenUnset(t *testing.T) {
+	got := modelSummary(config.Profile{}, model.ReviewRequest{MaxContextTokens: 120000})
+	if want := "120k context"; got != want {
+		t.Fatalf("modelSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestModelSummarySmallOutputBudgetNotTruncated(t *testing.T) {
+	mt := 512
+	got := modelSummary(config.Profile{MaxTokens: &mt}, model.ReviewRequest{MaxContextTokens: 120000})
+	if want := "120k context, 512 output"; got != want {
+		t.Fatalf("modelSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatExtraBody(t *testing.T) {
+	tests := []struct {
+		name string
+		in   map[string]any
+		want string // entries joined with "|"
+	}{
+		{name: "nil", in: nil, want: ""},
+		{name: "scalars sorted", in: map[string]any{"repetition_penalty": 1.05, "min_p": 0.05}, want: "min_p=0.05|repetition_penalty=1.05"},
+		{name: "nested unique leaf", in: map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true}, "min_p": 0.05}, want: "enable_thinking=true|min_p=0.05"},
+		{name: "colliding leaf uses full path", in: map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": true}, "chat_template_kwargs2": map[string]any{"enable_thinking": true}}, want: "chat_template_kwargs.enable_thinking=true|chat_template_kwargs2.enable_thinking=true"},
+		{name: "array and bool", in: map[string]any{"stop": []any{"a", "b"}, "flag": false}, want: "flag=false|stop=[a, b]"},
+		{name: "empty nested map", in: map[string]any{"opts": map[string]any{}}, want: "opts={}"},
+		{name: "non-empty map in slice", in: map[string]any{"items": []any{map[string]any{"k": "v", "n": 1.0}}}, want: "items=[{k=v, n=1}]"},
+		{name: "empty map in slice", in: map[string]any{"items": []any{map[string]any{}}}, want: "items=[{}]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Join(formatExtraBody(tt.in), "|"); got != tt.want {
+				t.Fatalf("formatExtraBody() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -796,23 +897,104 @@ func TestRunReviewUsesProfileSupportedModelCapabilities(t *testing.T) {
 func TestRunReviewUsesCachedModelCapabilities(t *testing.T) {
 	cacheDir := t.TempDir()
 	t.Setenv("NICKPIT_CACHE_DIR", cacheDir)
-	if err := modelcheck.WriteCachedCapability(filepath.Join(cacheDir, "model-capabilities.json"), "http://127.0.0.1:1", compatibleCapability("model"), time.Unix(100, 0)); err != nil {
+	profile := config.Profile{
+		Model:           "model",
+		BaseURL:         "http://127.0.0.1:1/",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}
+	// Cache the capability under the same settings fingerprint the resolver
+	// computes, so the hit avoids probing the dead endpoint.
+	if err := modelcheck.WriteCachedCapability(filepath.Join(cacheDir, "model-capabilities.json"), profile.BaseURL, requestSettingsFingerprint(profile), compatibleCapability("model"), time.Unix(100, 0)); err != nil {
 		t.Fatal(err)
 	}
 
 	wantErr := errors.New("source called")
 	source := &recordingSource{err: wantErr}
-	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
-		Model:           "model",
-		BaseURL:         "http://127.0.0.1:1/",
-		APIKey:          "token",
-		ReasoningEffort: "high",
-	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	err := (&app{}).runReview(context.Background(), source, nil, "default", profile, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want source error", err)
 	}
 	if !source.called {
 		t.Fatal("source should run when cached capabilities satisfy model check")
+	}
+}
+
+func TestRunReviewReprobesWhenSettingsChange(t *testing.T) {
+	var probes atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "reasoning_effort unsupported"}})
+	}))
+	defer server.Close()
+
+	cacheDir := t.TempDir()
+	t.Setenv("NICKPIT_CACHE_DIR", cacheDir)
+	// Capability cached under a DIFFERENT settings combination (no extra_body).
+	cachedProfile := config.Profile{Model: "model", BaseURL: server.URL, ReasoningEffort: "high"}
+	if err := modelcheck.WriteCachedCapability(filepath.Join(cacheDir, "model-capabilities.json"), cachedProfile.BaseURL, requestSettingsFingerprint(cachedProfile), compatibleCapability("model"), time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same model/base_url but extra_body added → different fingerprint → the
+	// cache must miss and the live probe runs (and fails against the test server).
+	source := &recordingSource{}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:            "model",
+		BaseURL:          server.URL,
+		APIKey:           "token",
+		ReasoningEffort:  "high",
+		MaxContextTokens: 120000,
+		ExtraBody:        map[string]any{"enable_thinking": true},
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected model-check failure from live probe, got nil")
+	}
+	if probes.Load() == 0 {
+		t.Fatal("changed settings must trigger a live probe; cache should have missed")
+	}
+	if source.called {
+		t.Fatal("source should not run when the model check fails")
+	}
+}
+
+func TestRequestSettingsFingerprint(t *testing.T) {
+	withProfile := func(p config.Profile, fn func(*config.Profile)) config.Profile {
+		fn(&p)
+		return p
+	}
+	base := config.Profile{
+		Model:           "model",
+		ReasoningEffort: "high",
+		ExtraBody:       map[string]any{"min_p": 0.05},
+	}
+	baseFP := requestSettingsFingerprint(base)
+	if requestSettingsFingerprint(base) != baseFP {
+		t.Fatal("fingerprint not stable for identical settings")
+	}
+
+	temp, topP, pp := 0.6, 0.9, 1.0
+	topK, maxTok := 20, 16384
+	variants := map[string]config.Profile{
+		"model":            withProfile(base, func(p *config.Profile) { p.Model = "other" }),
+		"reasoning_effort": withProfile(base, func(p *config.Profile) { p.ReasoningEffort = "low" }),
+		"temperature":      withProfile(base, func(p *config.Profile) { p.Temperature = &temp }),
+		"top_p":            withProfile(base, func(p *config.Profile) { p.TopP = &topP }),
+		"top_k":            withProfile(base, func(p *config.Profile) { p.TopK = &topK }),
+		"presence_penalty": withProfile(base, func(p *config.Profile) { p.PresencePenalty = &pp }),
+		"max_tokens":       withProfile(base, func(p *config.Profile) { p.MaxTokens = &maxTok }),
+		"extra_body":       withProfile(base, func(p *config.Profile) { p.ExtraBody = map[string]any{"min_p": 0.1} }),
+	}
+	for name, p := range variants {
+		if requestSettingsFingerprint(p) == baseFP {
+			t.Fatalf("changing %s did not change the fingerprint", name)
+		}
+	}
+
+	// Equal extra_body content (independently constructed map) → same fingerprint.
+	if eq := withProfile(base, func(p *config.Profile) { p.ExtraBody = map[string]any{"min_p": 0.05} }); requestSettingsFingerprint(eq) != baseFP {
+		t.Fatal("equal extra_body content produced a different fingerprint")
 	}
 }
 
