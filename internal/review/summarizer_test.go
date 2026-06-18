@@ -295,7 +295,7 @@ func TestApplySummarizedFindingIgnoresEmptyLLMBody(t *testing.T) {
 }
 
 func TestExampleSnippetForSummarizeIncludesSummarization(t *testing.T) {
-	snippet := exampleSnippetFor(llm.SchemaKindSummarize)
+	snippet := exampleSnippetFor(llm.SchemaKindSummarize, false)
 	if !strings.Contains(snippet, "summarization") {
 		t.Fatalf("summarize retry example missing summarization: %s", snippet)
 	}

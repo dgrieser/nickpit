@@ -2407,11 +2407,11 @@ func TestDedupeValidationRejectsDuplicateOutputIDs(t *testing.T) {
 
 func TestNoToolsMessagesUsesAgentRoleForCommonSnippets(t *testing.T) {
 	messages := []llm.Message{{Role: "system", Content: "old"}}
-	reviewerMessages, err := noToolsMessages("review", "{{.FindingInstructionsSnippet}}", messages, "", "")
+	reviewerMessages, err := noToolsMessages("review", "{{.FindingInstructionsSnippet}}", messages, "", "", false)
 	if err != nil {
 		t.Fatalf("reviewer noToolsMessages returned err: %v", err)
 	}
-	verifyMessages, err := noToolsMessages("verify", "{{.FindingInstructionsSnippet}}", messages, "", "")
+	verifyMessages, err := noToolsMessages("verify", "{{.FindingInstructionsSnippet}}", messages, "", "", false)
 	if err != nil {
 		t.Fatalf("verify noToolsMessages returned err: %v", err)
 	}
@@ -2420,6 +2420,34 @@ func TestNoToolsMessagesUsesAgentRoleForCommonSnippets(t *testing.T) {
 	}
 	if strings.Contains(verifyMessages[0].Content, "suggestions") {
 		t.Fatalf("verify no-tools prompt used reviewer snippet: %q", verifyMessages[0].Content)
+	}
+}
+
+func TestNoToolsMessagesCanSkipSuggestions(t *testing.T) {
+	messages := []llm.Message{{Role: "system", Content: "old"}}
+	reviewerMessages, err := noToolsMessages("review", "{{.FindingInstructionsSnippet}}", messages, "", "", true)
+	if err != nil {
+		t.Fatalf("reviewer noToolsMessages returned err: %v", err)
+	}
+	system := reviewerMessages[0].Content
+	if !strings.Contains(system, "do not output `suggestions`") {
+		t.Fatalf("reviewer no-tools prompt missing skip instruction: %q", system)
+	}
+	if strings.Contains(system, "generate one or more `suggestions`") {
+		t.Fatalf("reviewer no-tools prompt still asks for suggestions: %q", system)
+	}
+}
+
+func TestStripResultSuggestions(t *testing.T) {
+	result := &model.ReviewResult{Findings: []model.Finding{{
+		Title:       "t",
+		Suggestions: []model.Suggestion{{Body: "fix"}},
+	}}}
+
+	stripResultSuggestions(result)
+
+	if len(result.Findings[0].Suggestions) != 0 {
+		t.Fatalf("suggestions = %+v, want stripped", result.Findings[0].Suggestions)
 	}
 }
 

@@ -101,6 +101,7 @@ type app struct {
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
 	disablePatchSummary           bool
+	skipSuggestions               bool
 	concurrency                   int
 	verifyDropPolicy              string
 	verifyDropConfidence          float64
@@ -212,6 +213,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
+	root.PersistentFlags().BoolVar(&cli.skipSuggestions, "skip-suggestions", false, "Omit code suggestions from prompts and review output")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.8, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
@@ -364,6 +366,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		RateLimitDelaySeconds: rateLimitDelaySeconds,
 		NudgeCount:            nudgeCount,
 		DisablePatchSummary:   a.disablePatchSummary,
+		SkipSuggestions:       a.skipSuggestions,
 		Workdir:               a.workDir,
 		GitHubToken:           a.githubToken,
 		GitLabToken:           a.gitlabToken,
@@ -493,6 +496,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				NudgeCount:              profile.NudgeCount,
 				DisablePatchSummary:     profile.DisablePatchSummary,
+				SkipSuggestions:         profile.SkipSuggestions,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Submode:                 submode,
@@ -553,6 +557,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				NudgeCount:              profile.NudgeCount,
 				DisablePatchSummary:     profile.DisablePatchSummary,
+				SkipSuggestions:         profile.SkipSuggestions,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Offline:                 a.offline,
@@ -611,6 +616,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
 				NudgeCount:              profile.NudgeCount,
 				DisablePatchSummary:     profile.DisablePatchSummary,
+				SkipSuggestions:         profile.SkipSuggestions,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
 				Offline:                 a.offline,
@@ -889,6 +895,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if profile.DisablePatchSummary {
 		req.DisablePatchSummary = true
 	}
+	if profile.SkipSuggestions {
+		req.SkipSuggestions = true
+	}
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
 		req.MaxContextTokens = profile.MaxContextTokens
@@ -960,6 +969,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 // emitResult formats the result to stdout, optionally publishes it back to the
 // origin, and reports the "all reviewers errored" CI failure.
 func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
+	if req.SkipSuggestions {
+		stripResultSuggestions(result)
+	}
 	var formatter output.Formatter
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
@@ -998,6 +1010,15 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
+}
+
+func stripResultSuggestions(result *model.ReviewResult) {
+	if result == nil {
+		return
+	}
+	for i := range result.Findings {
+		result.Findings[i].Suggestions = nil
+	}
 }
 
 // runWorkflow executes a spec through the pipeline: the embedded DefaultSpec for

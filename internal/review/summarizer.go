@@ -96,7 +96,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.UseJSONSchema))
+	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.UseJSONSchema), false)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}

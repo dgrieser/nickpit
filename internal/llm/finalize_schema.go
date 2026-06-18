@@ -7,6 +7,8 @@ import "slices"
 // `verification` and records its own decision in `finalization`.
 var finalizeSchemaDefinition = buildFinalizeSchemaDefinition()
 
+var finalizeWithoutSuggestionsSchemaDefinition = buildFinalizeWithoutSuggestionsSchemaDefinition()
+
 // confidence_score is intentionally omitted: it is computed deterministically
 // in code (see applyWeightedConfidence in internal/review/finalizer.go) rather
 // than emitted by the LLM.
@@ -23,6 +25,10 @@ var finalizationSchemaDefinition = map[string]any{
 
 func buildFinalizeSchemaDefinition() map[string]any {
 	return stripOverallFields(extendFindingsForFinalize(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any)))
+}
+
+func buildFinalizeWithoutSuggestionsSchemaDefinition() map[string]any {
+	return stripOverallFields(extendFindingsForFinalize(deepCopySchema(findingsWithIDWithoutSuggestionsSchemaDefinition).(map[string]any)))
 }
 
 func extendFindingsForVerification(root map[string]any) map[string]any {
@@ -102,7 +108,16 @@ func deepCopySchema(v any) any {
 
 var FinalizeSchema = mustMarshalCleanSchema(finalizeSchemaDefinition)
 
+var FinalizeSchemaWithoutSuggestions = mustMarshalCleanSchema(finalizeWithoutSuggestionsSchemaDefinition)
+
 func FinalizeExamplePromptSnippet() string {
+	return FinalizeExamplePromptSnippetFor(false)
+}
+
+func FinalizeExamplePromptSnippetFor(skipSuggestions bool) string {
+	if skipSuggestions {
+		return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeWithoutSuggestionsSchemaDefinition)))
+	}
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeSchemaDefinition)))
 }
 

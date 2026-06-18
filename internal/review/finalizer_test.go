@@ -157,7 +157,7 @@ func TestVerdictContextNotesInPrompt(t *testing.T) {
 }
 
 func TestExampleSnippetForFinalizeIncludesFinalization(t *testing.T) {
-	snippet := exampleSnippetFor(llm.SchemaKindFinalize)
+	snippet := exampleSnippetFor(llm.SchemaKindFinalize, false)
 	if !strings.Contains(snippet, `"finalization"`) {
 		t.Fatalf("finalize retry example missing finalization: %s", snippet)
 	}

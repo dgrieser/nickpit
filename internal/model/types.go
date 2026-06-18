@@ -58,6 +58,7 @@ type ReviewRequest struct {
 	DisableParallelToolCalls bool
 	DisableReasoningExtract  bool
 	DisablePatchSummary      bool
+	SkipSuggestions          bool
 	ModelEmitsReasoning      bool
 	UseJSONSchema            bool
 	PriorityThreshold        string

@@ -93,6 +93,32 @@ func TestFindingsExamplePromptSnippetIncludesSuggestions(t *testing.T) {
 	}
 }
 
+func TestFindingsSchemaWithoutSuggestionsOmitsSuggestions(t *testing.T) {
+	if schemaContainsKey(FindingsSchemaWithoutSuggestions, "suggestions") {
+		t.Fatalf("schema unexpectedly contains suggestions: %s", FindingsSchemaWithoutSuggestions)
+	}
+	if strings.Contains(FindingsExamplePromptSnippetFor(true), `"suggestions"`) {
+		t.Fatalf("snippet unexpectedly contains suggestions: %s", FindingsExamplePromptSnippetFor(true))
+	}
+}
+
+func TestMergeAndFinalizeSchemasWithoutSuggestionsOmitSuggestions(t *testing.T) {
+	if schemaContainsKey(MergeSchemaWithoutSuggestions, "suggestions") {
+		t.Fatalf("merge schema unexpectedly contains suggestions: %s", MergeSchemaWithoutSuggestions)
+	}
+	if schemaContainsKey(FinalizeSchemaWithoutSuggestions, "suggestions") {
+		t.Fatalf("finalize schema unexpectedly contains suggestions: %s", FinalizeSchemaWithoutSuggestions)
+	}
+	for name, snippet := range map[string]string{
+		"merge":    MergeExamplePromptSnippetFor(true),
+		"finalize": FinalizeExamplePromptSnippetFor(true),
+	} {
+		if strings.Contains(snippet, `"suggestions"`) {
+			t.Fatalf("%s snippet unexpectedly contains suggestions: %s", name, snippet)
+		}
+	}
+}
+
 func TestFindingsSchemaRequiresPriorityWithoutID(t *testing.T) {
 	var schema map[string]any
 	if err := json.Unmarshal(FindingsSchema, &schema); err != nil {

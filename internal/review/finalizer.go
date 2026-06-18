@@ -26,6 +26,7 @@ type FinalizeOptions struct {
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	DisablePatchSummary      bool
+	SkipSuggestions          bool
 	RepoRoot                 string
 	// ContextNotes is kept for option-shape compatibility with the post-merge
 	// pipeline, but final correctness/explanation notes are handled by Verdict.
@@ -51,7 +52,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.UseJSONSchema))
+	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.UseJSONSchema, opts.SkipSuggestions), opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -60,11 +61,13 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		OutputSchemaSnippet string
 		OutputFormatSnippet string
 		DisablePatchSummary bool
+		SkipSuggestions     bool
 	}{
 		PrioritySnippet:     commonSnippets.priority,
-		OutputSchemaSnippet: finalizeOutputSchemaSnippetFor(opts.UseJSONSchema),
+		OutputSchemaSnippet: finalizeOutputSchemaSnippetFor(opts.UseJSONSchema, opts.SkipSuggestions),
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
+		SkipSuggestions:     opts.SkipSuggestions,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
@@ -78,6 +81,9 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	var schema []byte
 	if opts.UseJSONSchema {
 		schema = llm.FinalizeSchema
+		if opts.SkipSuggestions {
+			schema = llm.FinalizeSchemaWithoutSuggestions
+		}
 	}
 
 	req := model.ReviewRequest{
@@ -86,6 +92,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
+		SkipSuggestions:          opts.SkipSuggestions,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
 	finalizeStart := time.Now()
@@ -115,7 +122,11 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
 	}
 	stats := applyFinalizerOutput(out.Findings, result.resp.Findings)
-	mergeInputSuggestions(out.Findings, in.Findings)
+	if opts.SkipSuggestions {
+		stripFindingSuggestions(out.Findings)
+	} else {
+		mergeInputSuggestions(out.Findings, in.Findings)
+	}
 	// Last-resort repair after retry exhaustion or direct non-parser callers.
 	// Normal schema/parser paths require `verification` in the finalizer output.
 	mergeInputVerification(out.Findings, in.Findings)
@@ -452,9 +463,9 @@ func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
 }
 
-func finalizeOutputSchemaSnippetFor(useJSONSchema bool) string {
+func finalizeOutputSchemaSnippetFor(useJSONSchema bool, skipSuggestions bool) string {
 	if useJSONSchema {
 		return ""
 	}
-	return llm.FinalizeExamplePromptSnippet()
+	return llm.FinalizeExamplePromptSnippetFor(skipSuggestions)
 }

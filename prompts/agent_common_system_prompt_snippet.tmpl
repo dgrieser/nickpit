@@ -15,7 +15,8 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
   - split into logical paragraphs where it aids readability
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
-{{if eq .AgentRole "review"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
+{{if .SkipSuggestions}}- do not output `suggestions`
+{{else if eq .AgentRole "review"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
 {{else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}- copy `suggestions` from the source findings, each including `body`, `line_range.start` and `line_range.end`; merge them only when it makes sense and DO NOT invent new suggestions
 {{end}}{{end}}
 {{if eq .Snippet "priority"}}

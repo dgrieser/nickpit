@@ -8,6 +8,12 @@ func buildMergeSchemaDefinition() map[string]any {
 	return extendFindingsForMergeProvenance(extendFindingsForVerification(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any)))
 }
 
+var mergeWithoutSuggestionsSchemaDefinition = buildMergeWithoutSuggestionsSchemaDefinition()
+
+func buildMergeWithoutSuggestionsSchemaDefinition() map[string]any {
+	return extendFindingsForMergeProvenance(extendFindingsForVerification(deepCopySchema(findingsWithIDWithoutSuggestionsSchemaDefinition).(map[string]any)))
+}
+
 // extendFindingsForMergeProvenance adds the optional merged_from array the
 // cluster merge agent uses to account for absorbed duplicates: a finding that
 // folds others into itself lists their ids. Intentionally not required —
@@ -38,9 +44,17 @@ func extendFindingsForMergeProvenance(root map[string]any) map[string]any {
 
 var MergeSchema = mustMarshalCleanSchema(mergeSchemaDefinition)
 
+var MergeSchemaWithoutSuggestions = mustMarshalCleanSchema(mergeWithoutSuggestionsSchemaDefinition)
+
 // MergeSchemaWithConstraints returns the merge schema narrowed by the given
 // constraints (priority bounds + allowed overall_correctness values).
 func MergeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
+	return MergeSchemaWithConstraintsFor(c, false)
+}
+
+// MergeSchemaWithConstraintsFor returns the merge schema narrowed by the given
+// constraints (priority bounds + allowed overall_correctness values).
+func MergeSchemaWithConstraintsFor(c ResponseConstraints, skipSuggestions bool) json.RawMessage {
 	min, max := 0, 3
 	if c.MinPriority != nil {
 		min = *c.MinPriority
@@ -48,10 +62,17 @@ func MergeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true)
+	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true, !skipSuggestions)
 	return mustMarshalCleanSchema(extendFindingsForMergeProvenance(extendFindingsForVerification(root)))
 }
 
 func MergeExamplePromptSnippet() string {
+	return MergeExamplePromptSnippetFor(false)
+}
+
+func MergeExamplePromptSnippetFor(skipSuggestions bool) string {
+	if skipSuggestions {
+		return mustIndentJSON(mustMarshalJSON(exampleFromSchema(mergeWithoutSuggestionsSchemaDefinition)))
+	}
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(mergeSchemaDefinition)))
 }
