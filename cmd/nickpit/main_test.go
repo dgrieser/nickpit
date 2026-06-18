@@ -814,7 +814,7 @@ func TestModelSummaryRendersExtraBody(t *testing.T) {
 		},
 	}
 	got := modelSummary(profile, model.ReviewRequest{MaxContextTokens: 120000})
-	want := "120k context, 16k output, temp=0.6, enable_thinking=true, min_p=0.05"
+	want := "120k context, 16.4k output, temp=0.6, enable_thinking=true, min_p=0.05"
 	if got != want {
 		t.Fatalf("modelSummary() = %q, want %q", got, want)
 	}
@@ -823,6 +823,14 @@ func TestModelSummaryRendersExtraBody(t *testing.T) {
 func TestModelSummaryOmitsOutputWhenUnset(t *testing.T) {
 	got := modelSummary(config.Profile{}, model.ReviewRequest{MaxContextTokens: 120000})
 	if want := "120k context"; got != want {
+		t.Fatalf("modelSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestModelSummarySmallOutputBudgetNotTruncated(t *testing.T) {
+	mt := 512
+	got := modelSummary(config.Profile{MaxTokens: &mt}, model.ReviewRequest{MaxContextTokens: 120000})
+	if want := "120k context, 512 output"; got != want {
 		t.Fatalf("modelSummary() = %q, want %q", got, want)
 	}
 }

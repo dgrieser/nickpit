@@ -1778,9 +1778,9 @@ func (a *app) logSmallModelReady(ctx context.Context, profile config.Profile, re
 }
 
 func modelSummary(profile config.Profile, req model.ReviewRequest) string {
-	flags := []string{fmt.Sprintf("%dk context", req.MaxContextTokens/1000)}
+	flags := []string{model.HumanTokens(req.MaxContextTokens) + " context"}
 	if profile.MaxTokens != nil {
-		flags = append(flags, fmt.Sprintf("%dk output", *profile.MaxTokens/1000))
+		flags = append(flags, model.HumanTokens(*profile.MaxTokens)+" output")
 	}
 	if profile.Temperature != nil {
 		flags = append(flags, fmt.Sprintf("temp=%g", *profile.Temperature))
