@@ -75,7 +75,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet, false)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -160,7 +160,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           exampleSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet)
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, false)
 			},
 		})
 		if err != nil {

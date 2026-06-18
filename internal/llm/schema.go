@@ -7,7 +7,7 @@ import (
 	"sort"
 )
 
-func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectness []string, requireID bool) map[string]any {
+func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectness []string, requireID bool, includeSuggestions bool) map[string]any {
 	if len(allowedCorrectness) == 0 {
 		allowedCorrectness = []string{"patch is correct", "patch is incorrect"}
 	}
@@ -31,7 +31,9 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 			},
 			"required": []string{"file_path", "line_range"},
 		},
-		"suggestions": map[string]any{
+	}
+	if includeSuggestions {
+		findingProperties["suggestions"] = map[string]any{
 			"type": "array",
 			"items": map[string]any{
 				"type": "object",
@@ -48,7 +50,7 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 				},
 				"required": []string{"body", "line_range"},
 			},
-		},
+		}
 	}
 	requiredFindingFields := []string{"title", "body", "confidence_score", "priority", "code_location"}
 	if requireID {
@@ -74,14 +76,25 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 	}
 }
 
-var findingsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, false)
+var findingsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, false, true)
 
-var findingsWithIDSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, true)
+var findingsWithoutSuggestionsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, false, false)
+
+var findingsWithIDSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, true, true)
+
+var findingsWithIDWithoutSuggestionsSchemaDefinition = buildFindingsSchemaDefinition(0, 3, nil, true, false)
 
 var FindingsSchema = mustMarshalCleanSchema(findingsSchemaDefinition)
 
+var FindingsSchemaWithoutSuggestions = mustMarshalCleanSchema(findingsWithoutSuggestionsSchemaDefinition)
+
 // FindingsSchemaWithConstraints returns a findings schema narrowed by the given constraints.
 func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
+	return FindingsSchemaWithConstraintsFor(c, false)
+}
+
+// FindingsSchemaWithConstraintsFor returns a findings schema narrowed by the given constraints.
+func FindingsSchemaWithConstraintsFor(c ResponseConstraints, skipSuggestions bool) json.RawMessage {
 	min, max := 0, 3
 	if c.MinPriority != nil {
 		min = *c.MinPriority
@@ -89,10 +102,17 @@ func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, false))
+	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, false, !skipSuggestions))
 }
 
 func FindingsExamplePromptSnippet() string {
+	return FindingsExamplePromptSnippetFor(false)
+}
+
+func FindingsExamplePromptSnippetFor(skipSuggestions bool) string {
+	if skipSuggestions {
+		return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsWithoutSuggestionsSchemaDefinition)))
+	}
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsSchemaDefinition)))
 }
 

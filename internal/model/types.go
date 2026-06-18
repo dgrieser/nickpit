@@ -58,6 +58,7 @@ type ReviewRequest struct {
 	DisableParallelToolCalls bool
 	DisableReasoningExtract  bool
 	DisablePatchSummary      bool
+	SkipSuggestions          bool
 	ModelEmitsReasoning      bool
 	UseJSONSchema            bool
 	PriorityThreshold        string
@@ -94,6 +95,14 @@ type ReviewResult struct {
 	Model           string           `json:"model,omitempty"`
 	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 	TotalToolCalls  int              `json:"total_tool_calls,omitempty"`
+}
+
+// StripSuggestions removes code suggestions from every finding in the result.
+func (r *ReviewResult) StripSuggestions() {
+	if r == nil {
+		return
+	}
+	StripSuggestions(r.Findings)
 }
 
 type AgentRun struct {
@@ -238,6 +247,13 @@ type Finding struct {
 	// dropped findings; the merge step strips it before findings leave the
 	// step, so it never reaches results or posted reviews.
 	MergedFrom []string `json:"merged_from,omitempty"`
+}
+
+// StripSuggestions removes code suggestions from every finding.
+func StripSuggestions(findings []Finding) {
+	for i := range findings {
+		findings[i].Suggestions = nil
+	}
 }
 
 func EnsureFindingIDs(findings []Finding) int {

@@ -117,6 +117,9 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.DisablePatchSummary {
 		base.DisablePatchSummary = true
 	}
+	if override.SkipSuggestions {
+		base.SkipSuggestions = true
+	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}

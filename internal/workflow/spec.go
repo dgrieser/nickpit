@@ -202,6 +202,7 @@ type StepOverride struct {
 	DisableReasoningExtract  *bool    `yaml:"disable_reasoning_extract"`
 	DisableParallelToolCalls *bool    `yaml:"disable_parallel_tool_calls"`
 	DisablePatchSummary      *bool    `yaml:"disable_patch_summary"`
+	SkipSuggestions          *bool    `yaml:"skip_suggestions"`
 	UseJSONSchema            *bool    `yaml:"use_json_schema"`
 	VerifyDropPolicy         *string  `yaml:"verify_drop_policy"`
 	VerifyDropConfidence     *float64 `yaml:"verify_drop_confidence"`
@@ -221,7 +222,7 @@ var stepOverrideKeys = []string{
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
-	"disable_patch_summary", "use_json_schema", "verify_drop_policy",
+	"disable_patch_summary", "skip_suggestions", "use_json_schema", "verify_drop_policy",
 	"verify_drop_confidence", "priority_threshold",
 }
 
@@ -328,6 +329,9 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	}
 	if o.DisablePatchSummary != nil {
 		req.DisablePatchSummary = *o.DisablePatchSummary
+	}
+	if o.SkipSuggestions != nil {
+		req.SkipSuggestions = *o.SkipSuggestions
 	}
 	if o.VerifyDropPolicy != nil {
 		req.VerifyDropPolicy = *o.VerifyDropPolicy

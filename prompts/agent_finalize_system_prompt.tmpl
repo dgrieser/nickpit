@@ -23,7 +23,9 @@ For each finding, you will:
     - either copy from the current `finding.body`
     - or refine based on `verification.remarks`
     - make sure code references and symbol names are put in backticks or code blocks
-- copy `suggestions` verbatim from the input finding into the output if any are present; DO NOT invent new suggestions or drop existing ones
+{{if .SkipSuggestions}}- do not output `suggestions`
+{{else}}- copy `suggestions` verbatim from the input finding into the output if any are present; DO NOT invent new suggestions or drop existing ones
+{{end}}
 - copy `verification` verbatim from the input finding into the output; finalization must NEVER drop verification
 - output the same top-level `id` as the input finding; do not invent IDs
 - explain what you did in `finalization.remarks`

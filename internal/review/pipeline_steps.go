@@ -124,8 +124,11 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	var schema []byte
 	if req.UseJSONSchema {
 		schema = llm.FindingsSchema
+		if req.SkipSuggestions {
+			schema = llm.FindingsSchemaWithoutSuggestions
+		}
 		if vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil || len(vector.constraints.AllowedCorrectness) > 0 {
-			schema = llm.FindingsSchemaWithConstraints(vector.constraints)
+			schema = llm.FindingsSchemaWithConstraintsFor(vector.constraints, req.SkipSuggestions)
 		}
 	}
 	return agentSpec{
@@ -270,7 +273,7 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 // is fatal, mirroring the legacy pipeline.
 func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		if err := injectGroups(st, findingsFrom); err != nil {
+		if err := injectGroups(st, findingsFrom, sc.Req.SkipSuggestions); err != nil {
 			return err
 		}
 		vr := st.vectorResults()
@@ -344,7 +347,7 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 // dedupeStepFunc runs the per-group dedupe pass.
 func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		if err := injectGroups(st, findingsFrom); err != nil {
+		if err := injectGroups(st, findingsFrom, sc.Req.SkipSuggestions); err != nil {
 			return err
 		}
 		vr := st.vectorResults()
@@ -362,7 +365,7 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 // normalized) consumed by finalize and output.
 func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		if err := injectGroups(st, findingsFrom); err != nil {
+		if err := injectGroups(st, findingsFrom, sc.Req.SkipSuggestions); err != nil {
 			return err
 		}
 		req := sc.Req
@@ -375,7 +378,9 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		if req.UseJSONSchema {
 			mergeConstraints = mergeConstraintsForRequest(req)
 			if hasResponseConstraints(mergeConstraints) {
-				mergeSchema = llm.MergeSchemaWithConstraints(mergeConstraints)
+				mergeSchema = llm.MergeSchemaWithConstraintsFor(mergeConstraints, req.SkipSuggestions)
+			} else if req.SkipSuggestions {
+				mergeSchema = llm.MergeSchemaWithoutSuggestions
 			} else {
 				mergeSchema = llm.MergeSchema
 			}
@@ -457,7 +462,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			summarizeSC = e.stepContext(fused.summarize.Config, sc.Req)
 		}
 
-		if err := injectGroups(st, fused.merge.FindingsFrom); err != nil {
+		if err := injectGroups(st, fused.merge.FindingsFrom, mergeSC.Req.SkipSuggestions); err != nil {
 			return err
 		}
 		vr := st.vectorResults()
@@ -710,7 +715,9 @@ func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byt
 	if req.UseJSONSchema {
 		constraints = mergeConstraintsForRequest(req)
 		if hasResponseConstraints(constraints) {
-			schema = llm.MergeSchemaWithConstraints(constraints)
+			schema = llm.MergeSchemaWithConstraintsFor(constraints, req.SkipSuggestions)
+		} else if req.SkipSuggestions {
+			schema = llm.MergeSchemaWithoutSuggestions
 		} else {
 			schema = llm.MergeSchema
 		}
@@ -922,6 +929,9 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			// merge and materializeFromGroups do, so --priority-threshold stays
 			// effective for finalize-from-file workflows.
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
+			if sc.Req.SkipSuggestions {
+				model.StripSuggestions(findings)
+			}
 			st.mu.Lock()
 			st.result = &model.ReviewResult{
 				Findings:               findings,
@@ -949,6 +959,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
+			SkipSuggestions:          sc.Req.SkipSuggestions,
 			RepoRoot:                 sc.Req.RepoRoot,
 			ContextNotes:             contextNotes,
 		}
@@ -992,6 +1003,9 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			}
 			flat := flattenInjectedGroups(groups)
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
+			if sc.Req.SkipSuggestions {
+				model.StripSuggestions(findings)
+			}
 			st.mu.Lock()
 			st.result = &model.ReviewResult{
 				Findings:               findings,
@@ -1061,6 +1075,9 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			}
 			flat := flattenInjectedGroups(groups)
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
+			if sc.Req.SkipSuggestions {
+				model.StripSuggestions(findings)
+			}
 			st.mu.Lock()
 			st.result = &model.ReviewResult{
 				Findings:               findings,
@@ -1118,7 +1135,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 
 // injectGroups loads findings files (one group per file) and registers them as
 // synthetic reviewer groups, used to seed verify/dedupe/merge from disk.
-func injectGroups(st *PipelineState, findingsFrom []string) error {
+func injectGroups(st *PipelineState, findingsFrom []string, skipSuggestions bool) error {
 	if len(findingsFrom) == 0 {
 		return nil
 	}
@@ -1126,9 +1143,18 @@ func injectGroups(st *PipelineState, findingsFrom []string) error {
 	if err != nil {
 		return err
 	}
+	if skipSuggestions {
+		stripInjectedGroupSuggestions(groups)
+	}
 	seq := st.nextInjectSeq()
 	for i, g := range groups {
 		st.setGroup(fmt.Sprintf("injected-%d-%d", seq, i), injectedAgentResult(g), nil)
 	}
 	return nil
+}
+
+func stripInjectedGroupSuggestions(groups []injectedGroup) {
+	for gi := range groups {
+		model.StripSuggestions(groups[gi].findings)
+	}
 }
