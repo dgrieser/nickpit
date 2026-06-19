@@ -341,6 +341,34 @@ func TestCompareCrossFileRootCauseTier(t *testing.T) {
 	}
 }
 
+func TestIsTestLikeFileCommonPatterns(t *testing.T) {
+	cases := []struct {
+		file string
+		want bool
+	}{
+		{file: "pkg/policy/policy_test.go", want: true},
+		{file: "pkg/policy/policy.test.ts", want: true},
+		{file: "pkg/policy/test_policy.py", want: true},
+		{file: "pkg/policy/test-policy.rb", want: true},
+		{file: "pkg/policy/policy_spec.rb", want: true},
+		{file: "pkg/policy/policy.spec.ts", want: true},
+		{file: "pkg/__tests__/policy.js", want: true},
+		{file: "pkg/Spec/policy.rb", want: true},
+		{file: "pkg/specs/policy.rb", want: true},
+		{file: "pkg/policy/contest.go", want: false},
+		{file: "pkg/policy/latest_specimen.rb", want: false},
+		{file: "pkg/policy/policy.go", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			if got := isTestLikeFile(tc.file); got != tc.want {
+				t.Fatalf("isTestLikeFile(%q) = %v, want %v", tc.file, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCompareIdentical(t *testing.T) {
 	f := finding("Title", "Body", "a.go", 1, 2)
 	if got := Compare(f, f); got.Verdict != Identical {

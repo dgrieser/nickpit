@@ -89,17 +89,21 @@ const (
 func Compare(a, b model.Finding) Match {
 	if a.CodeLocation.FilePath != b.CodeLocation.FilePath {
 		m := Match{
-			TitleSim:     textSimilarity(a.Title, b.Title),
-			BodySim:      textSimilarity(a.Body, b.Body),
-			RootCauseSim: rootCauseSimilarity(a, b),
+			TitleSim: textSimilarity(a.Title, b.Title),
+			BodySim:  textSimilarity(a.Body, b.Body),
 		}
 		if m.TitleSim >= TitleStrong {
 			m.Verdict, m.Reason = Possible, "near-identical title across files"
 		} else if m.TitleSim >= TitleModerate && m.BodySim >= BodyModerate {
 			m.Verdict, m.Reason = Possible, "related title and body across files"
 		} else if sameReviewFileKind(a.CodeLocation.FilePath, b.CodeLocation.FilePath) &&
-			relatedFiles(a.CodeLocation.FilePath, b.CodeLocation.FilePath) && m.RootCauseSim >= RootCauseStrong {
-			m.Verdict, m.Reason = Possible, "same root-cause signals across related files"
+			relatedFiles(a.CodeLocation.FilePath, b.CodeLocation.FilePath) {
+			m.RootCauseSim = rootCauseSimilarity(a, b)
+			if m.RootCauseSim >= RootCauseStrong {
+				m.Verdict, m.Reason = Possible, "same root-cause signals across related files"
+			} else {
+				m.Verdict, m.Reason = Distinct, "different file"
+			}
 		} else {
 			m.Verdict, m.Reason = Distinct, "different file"
 		}
@@ -107,10 +111,9 @@ func Compare(a, b model.Finding) Match {
 	}
 
 	m := Match{
-		TitleSim:     textSimilarity(a.Title, b.Title),
-		BodySim:      textSimilarity(a.Body, b.Body),
-		LocationSim:  lineSimilarity(a.CodeLocation.LineRange, b.CodeLocation.LineRange),
-		RootCauseSim: rootCauseSimilarity(a, b),
+		TitleSim:    textSimilarity(a.Title, b.Title),
+		BodySim:     textSimilarity(a.Body, b.Body),
+		LocationSim: lineSimilarity(a.CodeLocation.LineRange, b.CodeLocation.LineRange),
 	}
 
 	switch {
@@ -314,12 +317,16 @@ func sameReviewFileKind(a, b string) bool {
 }
 
 func isTestLikeFile(file string) bool {
-	base := path.Base(file)
-	if strings.Contains(base, "_test.") || strings.Contains(base, ".test.") {
+	base := strings.ToLower(path.Base(file))
+	if strings.Contains(base, "_test.") || strings.Contains(base, ".test.") ||
+		strings.HasPrefix(base, "test_") || strings.HasPrefix(base, "test-") ||
+		strings.Contains(base, "_spec.") || strings.Contains(base, ".spec.") {
 		return true
 	}
 	for _, segment := range pathSegments(path.Dir(file)) {
-		if segment == "test" || segment == "tests" || segment == "__tests__" {
+		segment = strings.ToLower(segment)
+		if segment == "test" || segment == "tests" || segment == "__tests__" ||
+			segment == "spec" || segment == "specs" {
 			return true
 		}
 	}
@@ -329,7 +336,7 @@ func isTestLikeFile(file string) bool {
 func commonDirPrefixSegments(a, b string) int {
 	partsA, partsB := pathSegments(a), pathSegments(b)
 	n := min(len(partsA), len(partsB))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if partsA[i] != partsB[i] {
 			return i
 		}
