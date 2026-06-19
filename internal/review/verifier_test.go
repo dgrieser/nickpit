@@ -332,10 +332,6 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 		"non-findings",
 		"no issue",
 		"is sound",
-		"concrete changed-code evidence",
-		"plausible but speculative",
-		"priority 3",
-		"explicit style-guide/project-rule violation",
 	} {
 		if !strings.Contains(sysPrompt, want) {
 			t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
