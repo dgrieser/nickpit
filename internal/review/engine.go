@@ -432,7 +432,6 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		finding.ID = findings[i].ID
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
-		finding.Verification = &v
 		drop, reason := shouldDropFinding(&v, opts.DropPolicy, opts.DropConfidence)
 		if drop {
 			if droppedIdxByVector[ref.vectorIdx] == nil {
@@ -450,10 +449,12 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			continue
 		}
 		if reason == "below_confidence" {
+			downgradeLowConfidenceRefutation(&v)
 			counts := dropsByVector[ref.vectorIdx]
 			counts.belowConfidence++
 			dropsByVector[ref.vectorIdx] = counts
 		}
+		finding.Verification = &v
 		keptByVector[ref.vectorIdx] = append(keptByVector[ref.vectorIdx], finding)
 	}
 	for vectorIdx := range vectorResults {
@@ -518,6 +519,14 @@ func shouldDropFinding(v *model.FindingVerification, policy string, threshold fl
 		return false, "below_confidence"
 	}
 	return true, verdict
+}
+
+func downgradeLowConfidenceRefutation(v *model.FindingVerification) {
+	if v == nil || v.Verdict != model.VerdictRefuted {
+		return
+	}
+	v.Verdict = model.VerdictUnverified
+	v.Remarks = ""
 }
 
 // Drop policies for --verify-drop-policy. Defined as constants so the accepted

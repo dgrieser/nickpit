@@ -437,10 +437,9 @@ const nonFindingRemark = "no issue"
 
 // isNonFindingVerification reports whether a verification marks its finding as a
 // non-finding: `refuted` with the "no issue" sentinel in remarks. Only these are
-// demoted/zeroed. A real finding the verifier refuted with low confidence — kept by
-// shouldDropFinding for downstream review, or under --verify-drop-policy=none —
-// cites code instead, so it keeps its priority and confidence and can still force a
-// blocking verdict.
+// demoted/zeroed. A real finding kept as `refuted` under --verify-drop-policy=none
+// cites code instead, so it keeps its priority and confidence and can still force
+// a blocking verdict.
 func isNonFindingVerification(v *model.FindingVerification) bool {
 	return v != nil && v.Verdict == model.VerdictRefuted && strings.Contains(strings.ToLower(v.Remarks), nonFindingRemark)
 }

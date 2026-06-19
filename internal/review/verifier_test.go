@@ -236,6 +236,43 @@ func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
 	}
 }
 
+func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
+	reviewerFindings := []model.Finding{
+		{Title: "low refuted", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{Title: "high refuted", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+		{Title: "unverified", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "c.go", LineRange: model.LineRange{Start: 3, End: 3}}},
+	}
+	llmClient := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{
+		{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.69, Remarks: "contradicted"}},
+		{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 2, ConfidenceScore: 0.7, Remarks: "drop"}},
+		{Verification: &model.FindingVerification{Verdict: model.VerdictUnverified, Priority: 2, ConfidenceScore: 0.69, Remarks: "uncertain"}},
+	}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: reviewerFindings},
+		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
+	}}
+	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly, VerifyDropConfidence: 0.7}
+	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
+	if err != nil {
+		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
+	}
+
+	kept := vectorResults[0].resp.Findings
+	if len(kept) != 2 {
+		t.Fatalf("kept findings = %d, want 2", len(kept))
+	}
+	if kept[0].Title != "low refuted" || kept[0].Verification == nil ||
+		kept[0].Verification.Verdict != model.VerdictUnverified || kept[0].Verification.Remarks != "" {
+		t.Fatalf("kept low-confidence refuted = %#v, want unverified with empty remarks", kept[0])
+	}
+	if kept[1].Title != "unverified" || kept[1].Verification == nil ||
+		kept[1].Verification.Verdict != model.VerdictUnverified || kept[1].Verification.Remarks != "uncertain" {
+		t.Fatalf("kept unverified = %#v, want unchanged unverified", kept[1])
+	}
+}
+
 func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{
