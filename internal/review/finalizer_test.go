@@ -825,9 +825,10 @@ func TestEnforcePriorityFloorDemotesRefutedNonFinding(t *testing.T) {
 }
 
 // TestEnforcePriorityFloorKeepsGenuineRefutation guards the P1 review concern: a
-// real finding the verifier refuted with low confidence is kept by the verify
-// filter for review (its remarks cite code, not the "no issue" sentinel). It must
-// NOT be demoted or zeroed, so a surviving P0 still forces a blocking verdict.
+// real finding the verifier refuted under --verify-drop-policy=none can still
+// reach finalization as refuted (its remarks cite code, not the "no issue"
+// sentinel). It must NOT be demoted or zeroed, so a surviving P0 still forces a
+// blocking verdict.
 func TestEnforcePriorityFloorKeepsGenuineRefutation(t *testing.T) {
 	loc := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	ver := &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0.5, Remarks: "the guard at a.go:42 may not cover the empty path"}

@@ -957,11 +957,11 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		DisablePatchSummary:     true,
 		DisableReasoningExtract: true,
 		VerifyDropPolicy:        "refuted-only",
-		VerifyDropConfidence:    0.8,
+		VerifyDropConfidence:    0.7,
 		PriorityThreshold:       "p1",
 	}
 	got := agentSummary(profile, req)
-	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only ≥0.8, ≥p1"
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only ≥0.7, ≥p1"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}

@@ -3233,6 +3233,8 @@ func TestShouldDropFinding(t *testing.T) {
 		{"refuted above floor drops", model.VerdictRefuted, 0.85, "refuted-only", 0.8, true, model.VerdictRefuted},
 		{"refuted at floor drops", model.VerdictRefuted, 0.80, "refuted-only", 0.8, true, model.VerdictRefuted},
 		{"refuted below floor kept", model.VerdictRefuted, 0.79, "refuted-only", 0.8, false, "below_confidence"},
+		{"refuted below new default floor kept", model.VerdictRefuted, 0.69, "refuted-only", 0.7, false, "below_confidence"},
+		{"refuted at new default floor drops", model.VerdictRefuted, 0.70, "refuted-only", 0.7, true, model.VerdictRefuted},
 		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", 0.8, false, "kept"},
 		{"unverified above floor drops (both)", model.VerdictUnverified, 0.9, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
 		{"unverified below floor kept (both)", model.VerdictUnverified, 0.5, "refuted-and-unverified", 0.8, false, "below_confidence"},
@@ -3251,6 +3253,49 @@ func TestShouldDropFinding(t *testing.T) {
 			}
 			if reason != tc.wantReason {
 				t.Fatalf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestDowngradeLowConfidenceRefutation(t *testing.T) {
+	cases := []struct {
+		name         string
+		verification model.FindingVerification
+		reason       string
+		wantVerdict  string
+		wantRemarks  string
+	}{
+		{
+			name:         "low-confidence refuted becomes unverified and clears remarks",
+			verification: model.FindingVerification{Verdict: model.VerdictRefuted, ConfidenceScore: 0.69, Priority: 2, Remarks: "contradicted by x"},
+			reason:       "below_confidence",
+			wantVerdict:  model.VerdictUnverified,
+			wantRemarks:  "",
+		},
+		{
+			name:         "unverified below confidence stays unverified with remarks",
+			verification: model.FindingVerification{Verdict: model.VerdictUnverified, ConfidenceScore: 0.69, Priority: 2, Remarks: "not enough evidence"},
+			reason:       "below_confidence",
+			wantVerdict:  model.VerdictUnverified,
+			wantRemarks:  "not enough evidence",
+		},
+		{
+			name:         "policy none keeps refuted unchanged",
+			verification: model.FindingVerification{Verdict: model.VerdictRefuted, ConfidenceScore: 0.69, Priority: 2, Remarks: "contradicted by x"},
+			reason:       "kept",
+			wantVerdict:  model.VerdictRefuted,
+			wantRemarks:  "contradicted by x",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := tc.verification
+			downgradeLowConfidenceRefutation(&v, tc.reason)
+			if v.Verdict != tc.wantVerdict || v.Remarks != tc.wantRemarks {
+				t.Fatalf("verification after downgrade = verdict %q remarks %q, want verdict %q remarks %q",
+					v.Verdict, v.Remarks, tc.wantVerdict, tc.wantRemarks)
 			}
 		})
 	}
