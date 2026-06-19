@@ -341,6 +341,19 @@ func TestCompareCrossFileRootCauseTier(t *testing.T) {
 	}
 }
 
+func TestRootCauseSimilarityShortTermSets(t *testing.T) {
+	a := finding("Timeout request", "`RetryAfter`", "pkg/client/http_retry.go", 10, 12)
+	b := finding("Request timeout", "`RetryAfter`", "pkg/client/http_retry_v2.go", 14, 16)
+	if got := rootCauseSimilarity(a, b); got < RootCauseStrong {
+		t.Fatalf("rootCauseSimilarity short shared terms = %.2f, want >= %.2f", got, RootCauseStrong)
+	}
+
+	c := finding("Timeout cleanup", "`RetryAfter`", "pkg/client/http_retry_v2.go", 14, 16)
+	if got := rootCauseSimilarity(a, c); got != 0 {
+		t.Fatalf("rootCauseSimilarity one shared term = %.2f, want 0", got)
+	}
+}
+
 func TestIsTestLikeFileCommonPatterns(t *testing.T) {
 	cases := []struct {
 		file string

@@ -250,7 +250,10 @@ func rootCauseSimilarity(a, b model.Finding) float64 {
 	for term := range anchorsB {
 		delete(termsB, term)
 	}
-	if intersectionCount(termsA, termsB) < 3 || intersectionCount(anchorsA, anchorsB) == 0 {
+	sharedTerms := intersectionCount(termsA, termsB)
+	sharedAnchors := intersectionCount(anchorsA, anchorsB)
+	requiredTerms := min(3, min(len(termsA), len(termsB)))
+	if requiredTerms < 2 || sharedTerms < requiredTerms || sharedAnchors == 0 {
 		return 0
 	}
 	termScore := setSimilarity(termsA, termsB)
@@ -278,6 +281,7 @@ func codeAnchors(f model.Finding) map[string]struct{} {
 			}
 		}
 	}
+	addStructuredIdentifierAnchors(out, text)
 	return out
 }
 
@@ -285,6 +289,25 @@ func addAnchorTerms(out map[string]struct{}, raw string) {
 	for term := range tokens(raw) {
 		out[term] = struct{}{}
 	}
+}
+
+func addStructuredIdentifierAnchors(out map[string]struct{}, text string) {
+	for field := range strings.FieldsSeq(text) {
+		field = strings.Trim(field, " \t\r\n,;:()[]{}<>")
+		if !strings.ContainsAny(field, "._") || !hasLetter(field) {
+			continue
+		}
+		addAnchorTerms(out, field)
+	}
+}
+
+func hasLetter(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func intersectionCount(a, b map[string]struct{}) int {
@@ -393,7 +416,6 @@ var anchorRegexps = []*regexp.Regexp{
 	regexp.MustCompile(`(\$[A-Za-z_][A-Za-z0-9_]*)`),
 	regexp.MustCompile(`\b([A-Z][A-Z0-9_]{1,})\b`),
 	regexp.MustCompile(`\b([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)\b`),
-	regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*(?:[._][A-Za-z0-9_]+)+)\b`),
 }
 
 func tokens(s string) map[string]struct{} {
