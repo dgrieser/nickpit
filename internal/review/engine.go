@@ -1350,7 +1350,8 @@ func repairClusterMergeProvenance(resp *llm.ReviewResponse, cluster []model.Find
 func mergeProvenanceRepairMatch(match dedupe.Match) bool {
 	return match.Verdict >= dedupe.Duplicate ||
 		match.TitleSim >= dedupe.TitleStrong ||
-		(match.TitleSim >= dedupe.TitleModerate && match.BodySim >= dedupe.BodyModerate)
+		(match.TitleSim >= dedupe.TitleModerate && match.BodySim >= dedupe.BodyModerate) ||
+		match.RootCauseSim >= dedupe.RootCauseStrong
 }
 
 func findMergeInputMatch(target model.Finding, in []model.Finding) *model.Finding {

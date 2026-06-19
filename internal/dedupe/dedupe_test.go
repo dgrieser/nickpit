@@ -245,6 +245,143 @@ func TestCompareCrossFileCapsAtPossible(t *testing.T) {
 	}
 }
 
+func TestCompareCrossFileRootCauseTier(t *testing.T) {
+	cases := []struct {
+		name       string
+		a, b       model.Finding
+		want       Verdict
+		wantReason string
+	}{
+		{
+			name: "same root cause across related templates routes to LLM",
+			a: finding(
+				"Unquoted path expansion breaks target-dir restore",
+				"The target-dir template leaves `$TMP` unquoted in `find`; `mkdir` and `chown` also receive unquoted paths. Paths containing spaces split into separate arguments and the restore fails.",
+				"pkg/restore/restore-directory-target-dir.tpl", 10, 18,
+			),
+			b: finding(
+				"Directory template mishandles paths containing spaces",
+				"The directory template passes `$TMP` to `find` without quotes, then calls `mkdir` and `chown` with unquoted destination paths. Whitespace in a path causes word splitting and command failure.",
+				"pkg/restore/restore-directory.tpl", 12, 20,
+			),
+			want:       Possible,
+			wantReason: "same root-cause signals across related files",
+		},
+		{
+			name: "same test gap across unit and integration tests routes to LLM",
+			a: finding(
+				"Tests miss nested policy inheritance",
+				"Unit tests only cover flat fixtures, so missing `PolicyID` propagation through `resolvePolicy` for nested objects is not exercised.",
+				"pkg/policy/policy_test.go", 40, 80,
+			),
+			b: finding(
+				"Integration coverage omits nested policy propagation",
+				"Integration tests never build nested objects, leaving the missing `PolicyID` propagation through `resolvePolicy` untested.",
+				"pkg/policy/policy_integration_test.go", 20, 65,
+			),
+			want:       Possible,
+			wantReason: "same root-cause signals across related files",
+		},
+		{
+			name: "same directory but different causes stays distinct",
+			a: finding(
+				"Unquoted path expansion breaks target-dir restore",
+				"The target-dir template leaves `$TMP` unquoted in `find`; `mkdir` and `chown` also receive unquoted paths. Paths containing spaces split into separate arguments and the restore fails.",
+				"pkg/restore/restore-directory-target-dir.tpl", 10, 18,
+			),
+			b: finding(
+				"Dot directory target escapes validation",
+				"`lastPathElement` returns `.` for a dot-only input, so `validateTarget` accepts the current directory as a restore target.",
+				"pkg/restore/restore-directory.tpl", 42, 50,
+			),
+			want: Distinct,
+		},
+		{
+			name: "shared generic words without anchors stays distinct",
+			a: finding(
+				"Template path handling issue",
+				"The template path handling is inconsistent and may surprise callers in unusual cases.",
+				"pkg/render/item.tpl", 10, 12,
+			),
+			b: finding(
+				"Rendering output needs cleanup",
+				"The rendering output is hard to follow and could be improved for maintainability.",
+				"pkg/render/item_alt.tpl", 14, 16,
+			),
+			want: Distinct,
+		},
+		{
+			name: "security scope and cleanup scope stay distinct",
+			a: finding(
+				"Template command injection through untrusted arguments",
+				"`CommandArgs` are concatenated into `renderCommand` without escaping, allowing shell metacharacters to execute unintended commands.",
+				"pkg/render/command.tpl", 20, 28,
+			),
+			b: finding(
+				"Template cleanup leaves temporary arguments behind",
+				"`CommandArgs` temporary files are not removed after `renderCommand` succeeds, leaving stale cleanup state.",
+				"pkg/render/command_cleanup.tpl", 30, 36,
+			),
+			want: Distinct,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Compare(tc.a, tc.b)
+			if got.Verdict != tc.want {
+				t.Fatalf("Compare() verdict = %s, want %s (title=%.2f body=%.2f root=%.2f loc=%.2f reason=%q)",
+					got.Verdict, tc.want, got.TitleSim, got.BodySim, got.RootCauseSim, got.LocationSim, got.Reason)
+			}
+			if tc.wantReason != "" && got.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q (title=%.2f body=%.2f root=%.2f)",
+					got.Reason, tc.wantReason, got.TitleSim, got.BodySim, got.RootCauseSim)
+			}
+		})
+	}
+}
+
+func TestRootCauseSimilarityShortTermSets(t *testing.T) {
+	a := finding("Timeout request", "`RetryAfter`", "pkg/client/http_retry.go", 10, 12)
+	b := finding("Request timeout", "`RetryAfter`", "pkg/client/http_retry_v2.go", 14, 16)
+	if got := rootCauseSimilarity(a, b); got < RootCauseStrong {
+		t.Fatalf("rootCauseSimilarity short shared terms = %.2f, want >= %.2f", got, RootCauseStrong)
+	}
+
+	c := finding("Timeout cleanup", "`RetryAfter`", "pkg/client/http_retry_v2.go", 14, 16)
+	if got := rootCauseSimilarity(a, c); got != 0 {
+		t.Fatalf("rootCauseSimilarity one shared term = %.2f, want 0", got)
+	}
+}
+
+func TestIsTestLikeFileCommonPatterns(t *testing.T) {
+	cases := []struct {
+		file string
+		want bool
+	}{
+		{file: "pkg/policy/policy_test.go", want: true},
+		{file: "pkg/policy/policy.test.ts", want: true},
+		{file: "pkg/policy/test_policy.py", want: true},
+		{file: "pkg/policy/test-policy.rb", want: true},
+		{file: "pkg/policy/policy_spec.rb", want: true},
+		{file: "pkg/policy/policy.spec.ts", want: true},
+		{file: "pkg/__tests__/policy.js", want: true},
+		{file: "pkg/Spec/policy.rb", want: true},
+		{file: "pkg/specs/policy.rb", want: true},
+		{file: "pkg/policy/contest.go", want: false},
+		{file: "pkg/policy/latest_specimen.rb", want: false},
+		{file: "pkg/policy/policy.go", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			if got := isTestLikeFile(tc.file); got != tc.want {
+				t.Fatalf("isTestLikeFile(%q) = %v, want %v", tc.file, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCompareIdentical(t *testing.T) {
 	f := finding("Title", "Body", "a.go", 1, 2)
 	if got := Compare(f, f); got.Verdict != Identical {

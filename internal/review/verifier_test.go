@@ -328,7 +328,11 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 		t.Fatalf("Verify returned err: %v", err)
 	}
 	sysPrompt := llmClient.requests[0].Messages[0].Content
-	for _, want := range []string{"non-findings", "no issue", "is sound"} {
+	for _, want := range []string{
+		"non-findings",
+		"no issue",
+		"is sound",
+	} {
 		if !strings.Contains(sysPrompt, want) {
 			t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
 		}

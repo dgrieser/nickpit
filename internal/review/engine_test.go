@@ -1963,6 +1963,44 @@ func TestClusterMergeCrossFileRelatedTitleAndBodyRouteToLLM(t *testing.T) {
 	}
 }
 
+func TestClusterMergeCrossFileRootCauseRouteToLLM(t *testing.T) {
+	a := clusterTestFinding("Unquoted path expansion breaks target-dir restore", 10)
+	a.Body = "The target-dir template leaves `$TMP` unquoted in `find`; `mkdir` and `chown` also receive unquoted paths. Paths containing spaces split into separate arguments and the restore fails."
+	a.CodeLocation.FilePath = "pkg/restore/restore-directory-target-dir.tpl"
+	b := clusterTestFinding("Directory template mishandles paths containing spaces", 12)
+	b.Body = "The directory template passes `$TMP` to `find` without quotes, then calls `mkdir` and `chown` with unquoted destination paths. Whitespace in a path causes word splitting and command failure."
+	b.CodeLocation.FilePath = "pkg/restore/restore-directory.tpl"
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want one micro-merge for the root-cause cross-file cluster", len(llmClient.mergeRequests))
+	}
+	payload := mergePayloadFromRequest(t, llmClient.mergeRequests[0])
+	cluster, _ := payload["cluster_findings"].([]any)
+	if len(cluster) != 2 {
+		t.Fatalf("cluster payload = %d findings, want both root-cause findings", len(cluster))
+	}
+	system := llmClient.mergeRequests[0].Messages[0].Content
+	for _, want := range []string{"root-cause signals", "same root cause and fix pattern", "affected files/variants"} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("merge system prompt missing %q:\n%s", want, system)
+		}
+	}
+	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
+		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
+	}
+	if len(result.resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want echo of both", len(result.resp.Findings))
+	}
+}
+
 func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.T) {
 	finding := mergeTestFinding("Fix A", 1)
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
@@ -2106,6 +2144,33 @@ func TestClusterMergeRepairMissingMergedFrom(t *testing.T) {
 	merged.Title = "Nested rotated assets remain after cleanup"
 	merged.Body = "Cleanup leaves nested rotated assets behind after log rotation and misses rotated logs."
 	merged.CodeLocation.LineRange = model.LineRange{Start: 1, End: 22}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
+	cluster := []model.Finding{a, b}
+
+	if invalid := validateClusterMergeResponse(resp, cluster); invalid == nil {
+		t.Fatal("validateClusterMergeResponse accepted response before provenance repair")
+	}
+	if repaired := repairClusterMergeProvenance(resp, cluster); repaired != 1 {
+		t.Fatalf("repairClusterMergeProvenance = %d, want 1", repaired)
+	}
+	if !slices.Contains(resp.Findings[0].MergedFrom, b.ID) {
+		t.Fatalf("merged_from = %#v, want %q", resp.Findings[0].MergedFrom, b.ID)
+	}
+	if invalid := validateClusterMergeResponse(resp, cluster); invalid != nil {
+		t.Fatalf("validateClusterMergeResponse = %v, want nil after provenance repair", invalid)
+	}
+}
+
+func TestClusterMergeRepairMissingMergedFromForRootCauseMatch(t *testing.T) {
+	a := mergeTestFindingWithID("Unquoted path expansion breaks target-dir restore", 10)
+	a.Body = "The target-dir template leaves `$TMP` unquoted in `find`; `mkdir` and `chown` also receive unquoted paths. Paths containing spaces split into separate arguments and the restore fails."
+	a.CodeLocation = model.CodeLocation{FilePath: "pkg/restore/restore-directory-target-dir.tpl", LineRange: model.LineRange{Start: 10, End: 18}}
+	b := mergeTestFindingWithID("Directory template mishandles paths containing spaces", 12)
+	b.Body = "The directory template passes `$TMP` to `find` without quotes, then calls `mkdir` and `chown` with unquoted destination paths. Whitespace in a path causes word splitting and command failure."
+	b.CodeLocation = model.CodeLocation{FilePath: "pkg/restore/restore-directory.tpl", LineRange: model.LineRange{Start: 12, End: 20}}
+	merged := a
+	merged.Title = "Unquoted restore paths break destinations containing spaces"
+	merged.Body = "Related restore templates pass `$TMP` to `find` and call `mkdir` and `chown` with unquoted paths, so destinations containing spaces are split into separate arguments."
 	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
 	cluster := []model.Finding{a, b}
 
