@@ -11,12 +11,9 @@ usage: ${APP_NAME} --workdir WORKDIR [OPTIONS]
 Run repeated local branch reviews against a working tree.
 
 Options:
-  -w, --workdir WORKDIR     Working directory to review (required)
-  --base BRANCH             Branch to review against
-  --head BRANCH             Branch to review
-  -m, --model MODEL         Model to use (default: ${DEFAULT_MODEL})
-  -e, --effort EFFORT       Reasoning effort to use (default: ${DEFAULT_EFFORT})
   -p, --profile PROFILE     Config profile to use (default: ${DEFAULT_PROFILE})
+  --gitlab-id ID            GitLab Merge Request ID
+  --gitlab-repo REPO        GitLab repository
   --log-file-prefix PREFIX  Prefix for log file names (default: ${DEFAULT_LOG_FILE_PREFIX})
   --log-file-suffix SUFFIX  Suffix for log file names (default: ${DEFAULT_LOG_FILE_SUFFIX})
   --review-count COUNT      Number of reviews to run (default: ${DEFAULT_REVIEW_COUNT})
@@ -43,19 +40,14 @@ abort() {
     exit 1
 }
 
-DEFAULT_MODEL="Qwen3.5-122B-A10B-FP8"
-DEFAULT_EFFORT="high"
 DEFAULT_PROFILE="mittwald"
 DEFAULT_LOG_FILE_PREFIX="${script_dir}/review_test-"
 DEFAULT_LOG_FILE_SUFFIX="log"
 DEFAULT_REVIEW_COUNT=10
 
-workdir=""
-base_branch=""
-head_branch=""
-model="${DEFAULT_MODEL}"
-effort="${DEFAULT_EFFORT}"
 profile="${DEFAULT_PROFILE}"
+gitlab_id=""
+gitlab_repo=""
 log_file_prefix="${DEFAULT_LOG_FILE_PREFIX}"
 log_file_suffix="${DEFAULT_LOG_FILE_SUFFIX}"
 review_count="${DEFAULT_REVIEW_COUNT}"
@@ -65,30 +57,15 @@ while [ "${#}" -gt 0 ]; do
         -h|--help)
             usage
             ;;
-        -w|--workdir)
+        --gitlab-id)
             shift
             [ -z "${1}" ] && usage
-            workdir="${1}"
+            gitlab_id="${1}"
             ;;
-        --base)
+        --gitlab-repo)
             shift
             [ -z "${1}" ] && usage
-            base_branch="${1}"
-            ;;
-        --head)
-            shift
-            [ -z "${1}" ] && usage
-            head_branch="${1}"
-            ;;
-        -m|--model)
-            shift
-            [ -z "${1}" ] && usage
-            model="${1}"
-            ;;
-        -e|--effort)
-            shift
-            [ -z "${1}" ] && usage
-            effort="${1}"
+            gitlab_repo="${1}"
             ;;
         -p|--profile)
             shift
@@ -124,27 +101,21 @@ while [ "${#}" -gt 0 ]; do
     shift
 done
 
-[ -z "${workdir}" ] && usage
-[ -d "${workdir}" ] || fail "Workdir does not exist: ${workdir}"
+[ -z "${gitlab_id}" ] || [ -z "${gitlab_repo}" ] && usage
 
 make
 
 nickpit_args=(
-    local
-    branch
-    --workdir "${workdir}"
-    --show-progress
-    --json
+    gitlab
+    mr
+    --id "${gitlab_id}"
+    --repo "${gitlab_repo}"
     --profile "${profile}"
-    --model "${model}"
+    --show-progress
     --show-reasoning
-    --use-json-schema
-    --reasoning-effort "${effort}"
+    --concurrency 15
     --verbose
 )
-
-[ -n "${base_branch}" ] && nickpit_args+=(--base "${base_branch}")
-[ -n "${head_branch}" ] && nickpit_args+=(--head "${head_branch}")
 
 for i in $(seq 1 ${review_count}); do
     log_file="${log_file_prefix}$(date +%Y-%m-%d-%H-%M-%S).${log_file_suffix}"
