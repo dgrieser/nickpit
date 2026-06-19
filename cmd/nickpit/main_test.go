@@ -493,6 +493,11 @@ func TestParseGitHubPRURL(t *testing.T) {
 			repo: "dgrieser/nickpit",
 			id:   60,
 		},
+		{
+			raw:  "https://www.github.com/dgrieser/nickpit/pull/60",
+			repo: "dgrieser/nickpit",
+			id:   60,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.raw, func(t *testing.T) {

@@ -1744,8 +1744,8 @@ func parseGitHubPRURL(raw string) (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("parsing --url: %w", err)
 	}
-	if u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") {
-		return "", 0, fmt.Errorf("--url must use https://github.com")
+	if u.Scheme != "https" || (!strings.EqualFold(u.Host, "github.com") && !strings.EqualFold(u.Host, "www.github.com")) {
+		return "", 0, fmt.Errorf("--url must use https://github.com or https://www.github.com")
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	if len(parts) < 4 || parts[0] == "" || parts[1] == "" || parts[2] != "pull" {
