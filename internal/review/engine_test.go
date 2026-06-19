@@ -2161,6 +2161,33 @@ func TestClusterMergeRepairMissingMergedFrom(t *testing.T) {
 	}
 }
 
+func TestClusterMergeRepairMissingMergedFromForRootCauseMatch(t *testing.T) {
+	a := mergeTestFindingWithID("Unquoted path expansion breaks target-dir restore", 10)
+	a.Body = "The target-dir template leaves `$TMP` unquoted in `find`; `mkdir` and `chown` also receive unquoted paths. Paths containing spaces split into separate arguments and the restore fails."
+	a.CodeLocation = model.CodeLocation{FilePath: "pkg/restore/restore-directory-target-dir.tpl", LineRange: model.LineRange{Start: 10, End: 18}}
+	b := mergeTestFindingWithID("Directory template mishandles paths containing spaces", 12)
+	b.Body = "The directory template passes `$TMP` to `find` without quotes, then calls `mkdir` and `chown` with unquoted destination paths. Whitespace in a path causes word splitting and command failure."
+	b.CodeLocation = model.CodeLocation{FilePath: "pkg/restore/restore-directory.tpl", LineRange: model.LineRange{Start: 12, End: 20}}
+	merged := a
+	merged.Title = "Unquoted restore paths break destinations containing spaces"
+	merged.Body = "Related restore templates pass `$TMP` to `find` and call `mkdir` and `chown` with unquoted paths, so destinations containing spaces are split into separate arguments."
+	resp := &llm.ReviewResponse{Findings: []model.Finding{merged}}
+	cluster := []model.Finding{a, b}
+
+	if invalid := validateClusterMergeResponse(resp, cluster); invalid == nil {
+		t.Fatal("validateClusterMergeResponse accepted response before provenance repair")
+	}
+	if repaired := repairClusterMergeProvenance(resp, cluster); repaired != 1 {
+		t.Fatalf("repairClusterMergeProvenance = %d, want 1", repaired)
+	}
+	if !slices.Contains(resp.Findings[0].MergedFrom, b.ID) {
+		t.Fatalf("merged_from = %#v, want %q", resp.Findings[0].MergedFrom, b.ID)
+	}
+	if invalid := validateClusterMergeResponse(resp, cluster); invalid != nil {
+		t.Fatalf("validateClusterMergeResponse = %v, want nil after provenance repair", invalid)
+	}
+}
+
 func TestClusterMergeRepairMissingMergedFromSkipsAmbiguousAbsorber(t *testing.T) {
 	a := mergeTestFindingWithID("Shared cleanup leak in temp files", 1)
 	a.Body = "Shared cleanup leak leaves rotated files behind."
