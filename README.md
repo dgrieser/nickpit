@@ -145,12 +145,14 @@ nickpit local uncommitted
 # Review PR in GitHub
 nickpit github pr --repo owner/repo --id 123
 nickpit github pr --repo owner/repo --id 123 --local-repo ~/src/repo
+nickpit github pr --url https://github.com/owner/repo/pull/123
 
 # Review a GitHub PR and post the result back as a review (summary + one comment per finding)
 nickpit github pr --repo owner/repo --id 123 --publish
 
 # Review MR in GitLab
 nickpit gitlab mr --repo group/project --id 456
+nickpit gitlab mr --url https://gitlab.example.com/group/project/-/merge_requests/456
 
 # Review a GitLab MR and post the result back as comments (summary + one per finding)
 nickpit gitlab mr --repo group/project --id 456 --publish
