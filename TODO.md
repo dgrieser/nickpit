@@ -5,7 +5,6 @@
   - Some agents treat “pre-existing but adjacent” bugs as review findings. Example file templates not modified but same root cause. This may be desired,
     but if not, prompt needs stricter “introduced or directly left inconsistent by this patch”.
 
-3. Some reasoning shows mild uncertainty around shell quoting semantics, especially prefix stripping.
 
 ---
 - Add formatting hints from summarize to review, verify, finalize

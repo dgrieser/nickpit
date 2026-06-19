@@ -41,6 +41,50 @@ cp "$source" "$dest"
 : "${REQUIRED_VAR:?REQUIRED_VAR is not set}"
 ```
 
+## Parameter Expansion and Prefix/Suffix Stripping
+
+`${var#word}`, `${var##word}`, `${var%word}`, and `${var%%word}` remove shell
+patterns, not literal strings. `word` can contain glob metacharacters such as
+`*`, `?`, and `[...]`.
+
+Outer quotes quote only the expansion result:
+
+```bash
+rest="${value#$prefix}"   # WRONG for literal prefixes: $prefix is a pattern
+```
+
+Quote variable parts inside the expansion when the prefix or suffix must be
+literal:
+
+```bash
+rest="${value#"$prefix"}"     # literal prefix
+rel="${path#"$root"/}"        # literal directory prefix plus slash
+```
+
+Static prefix stripping is usually fine:
+
+```bash
+value="${arg#--name=}"        # static pattern, no data-controlled glob chars
+```
+
+If the prefix must be present, check it explicitly before stripping:
+
+```bash
+case "$path" in
+    "$root"/*) rel="${path#"$root"/}" ;;
+    *) echo "ERROR: path is outside root: $path" >&2; return 1 ;;
+esac
+```
+
+In `[[ ... ]]`, the right side of `==` is also a pattern unless quoted. To test a
+literal prefix followed by anything, quote the prefix and leave the wildcard
+outside:
+
+```bash
+[[ $path == "$root"/* ]]   # literal root prefix, wildcard after slash
+[[ $path == $root/* ]]     # WRONG if root contains glob characters
+```
+
 ## Array Handling
 
 ```bash
