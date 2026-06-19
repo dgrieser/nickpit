@@ -12,7 +12,10 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
 - keep the body matter-of-fact and EXPLICIT about the scenario where it fails
   - write it as one continuous body
   - NO headers, NO titles
-  - split into logical paragraphs where it aids readability
+  - add paragraphs, e.g. an empty line, between distinct points to improve readability
+  {{if eq .AgentRole "review"}}- put code references and symbol names in backticks or code blocks
+  - format bold or italic when it makes sense to emphasize a point
+  {{end}}
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
 {{if .SkipSuggestions}}- do not output `suggestions`

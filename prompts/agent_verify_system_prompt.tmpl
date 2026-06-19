@@ -56,5 +56,8 @@ Set `priority` to the same value as the original finding's `priority` UNLESS you
 - `verification.verdict` is one of `confirmed`, `refuted`, `unverified`
 - `verification.priority` is an integer 0-3
 - `verification.confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
-- `verification.remarks` is one short paragraph explaining the verdict; when `refuted`, MUST cite the concrete code or invariant that contradicts the finding
+- `verification.remarks` is a short markdown explanation of the verdict; when `refuted`, MUST cite the concrete code or invariant that contradicts the finding
+  - add paragraphs, e.g. an empty line, between distinct points to improve readability
+  - put code references and symbol names in backticks or code blocks
+  - format bold or italic when it makes sense to emphasize a point
 {{end}}

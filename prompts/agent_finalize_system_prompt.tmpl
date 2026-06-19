@@ -22,7 +22,9 @@ For each finding, you will:
 - produce final `finalization.body`:
     - either copy from the current `finding.body`
     - or refine based on `verification.remarks`
-    - make sure code references and symbol names are put in backticks or code blocks
+    - add paragraphs, e.g. an empty line, between distinct points to improve readability
+    - put code references and symbol names in backticks or code blocks
+    - format bold or italic when it makes sense to emphasize a point
 {{if .SkipSuggestions}}- do not output `suggestions`
 {{else}}- copy `suggestions` verbatim from the input finding into the output if any are present; DO NOT invent new suggestions or drop existing ones
 {{end}}
