@@ -11,6 +11,13 @@ compatible risk class. This includes repeated reports across related files,
 templates, tests, variants, or code/test anchors; keep one finding and describe
 the affected files/variants in its body.
 
+Do not split findings only because the affected variable, file, template, test,
+or variant differs. Same vulnerability/failure class + same mitigation/fix
+class = one finding; list the affected variants in the body.
+Use advisory `cluster_signals` as routing context for why these findings were
+sent together, but verify the finding text before merging; the signals are not
+proof of duplication.
+
 Keep findings separate when they address different aspects, have different
 failure modes or risk classes, or require genuinely different fixes.
 
@@ -33,12 +40,9 @@ When merging duplicate findings:
   findings kept unchanged need no `merged_from`
 - account for every input `id`: it must survive as the `id` of an output finding or be listed
   in `merged_from` of the finding that absorbed it; no `id` may disappear
-- DO NOT merge findings that address different aspects
+- DO NOT merge findings that you ARE SURE address different issues
 
 DO NOT introduce new findings that no reviewer raised.
-
-Bias toward inclusion:
-- when unsure whether two findings describe the same issue, DO NOT merge them; keep both unchanged.
 
 {{.FindingInstructionsSnippet}}
 
