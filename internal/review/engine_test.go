@@ -1963,6 +1963,44 @@ func TestClusterMergeCrossFileRelatedTitleAndBodyRouteToLLM(t *testing.T) {
 	}
 }
 
+func TestClusterMergeCrossFileRootCauseRouteToLLM(t *testing.T) {
+	a := clusterTestFinding("Unquoted path expansion breaks target-dir restore", 10)
+	a.Body = "The target-dir template leaves `$TMP` unquoted in `find`; `mkdir` and `chown` also receive unquoted paths. Paths containing spaces split into separate arguments and the restore fails."
+	a.CodeLocation.FilePath = "pkg/restore/restore-directory-target-dir.tpl"
+	b := clusterTestFinding("Directory template mishandles paths containing spaces", 12)
+	b.Body = "The directory template passes `$TMP` to `find` without quotes, then calls `mkdir` and `chown` with unquoted destination paths. Whitespace in a path causes word splitting and command failure."
+	b.CodeLocation.FilePath = "pkg/restore/restore-directory.tpl"
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want one micro-merge for the root-cause cross-file cluster", len(llmClient.mergeRequests))
+	}
+	payload := mergePayloadFromRequest(t, llmClient.mergeRequests[0])
+	cluster, _ := payload["cluster_findings"].([]any)
+	if len(cluster) != 2 {
+		t.Fatalf("cluster payload = %d findings, want both root-cause findings", len(cluster))
+	}
+	system := llmClient.mergeRequests[0].Messages[0].Content
+	for _, want := range []string{"root-cause signals", "same root cause and fix pattern", "affected files/variants"} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("merge system prompt missing %q:\n%s", want, system)
+		}
+	}
+	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
+		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
+	}
+	if len(result.resp.Findings) != 2 {
+		t.Fatalf("findings = %d, want echo of both", len(result.resp.Findings))
+	}
+}
+
 func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.T) {
 	finding := mergeTestFinding("Fix A", 1)
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
