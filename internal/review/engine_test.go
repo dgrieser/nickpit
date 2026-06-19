@@ -3292,7 +3292,9 @@ func TestDowngradeLowConfidenceRefutation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := tc.verification
-			downgradeLowConfidenceRefutation(&v, tc.reason)
+			if tc.reason == "below_confidence" {
+				downgradeLowConfidenceRefutation(&v)
+			}
 			if v.Verdict != tc.wantVerdict || v.Remarks != tc.wantRemarks {
 				t.Fatalf("verification after downgrade = verdict %q remarks %q, want verdict %q remarks %q",
 					v.Verdict, v.Remarks, tc.wantVerdict, tc.wantRemarks)

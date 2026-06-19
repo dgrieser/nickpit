@@ -449,7 +449,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			continue
 		}
 		if reason == "below_confidence" {
-			downgradeLowConfidenceRefutation(&v, reason)
+			downgradeLowConfidenceRefutation(&v)
 			counts := dropsByVector[ref.vectorIdx]
 			counts.belowConfidence++
 			dropsByVector[ref.vectorIdx] = counts
@@ -521,8 +521,8 @@ func shouldDropFinding(v *model.FindingVerification, policy string, threshold fl
 	return true, verdict
 }
 
-func downgradeLowConfidenceRefutation(v *model.FindingVerification, reason string) {
-	if v == nil || reason != "below_confidence" || v.Verdict != model.VerdictRefuted {
+func downgradeLowConfidenceRefutation(v *model.FindingVerification) {
+	if v == nil || v.Verdict != model.VerdictRefuted {
 		return
 	}
 	v.Verdict = model.VerdictUnverified
