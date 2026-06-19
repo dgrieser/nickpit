@@ -8,7 +8,7 @@
 3. Some reasoning shows mild uncertainty around shell quoting semantics, especially prefix stripping.
 
 ---
-
+- Add formatting hints from summarize to review, verify, finalize
 - Add feature to give additional instructions to agents
 - Add max turns for agents; unlimited by default
 - Add suggestion agent to format suggestions for gitlab/github
