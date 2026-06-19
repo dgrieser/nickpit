@@ -1987,8 +1987,36 @@ func TestClusterMergeCrossFileRootCauseRouteToLLM(t *testing.T) {
 	if len(cluster) != 2 {
 		t.Fatalf("cluster payload = %d findings, want both root-cause findings", len(cluster))
 	}
+	signals, ok := payload["cluster_signals"].([]any)
+	if !ok {
+		t.Fatalf("cluster_signals = %#v", payload["cluster_signals"])
+	}
+	if len(signals) != 1 || signals[0] != "same root-cause signals across related files" {
+		t.Fatalf("cluster_signals = %#v, want root-cause routing reason", signals)
+	}
+	for _, raw := range cluster {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("cluster entry = %#v", raw)
+		}
+		if _, ok := entry["root_cause_key"]; ok {
+			t.Fatalf("cluster entry should not include content-specific root_cause_key: %#v", entry)
+		}
+		if _, ok := entry["fix_pattern"]; ok {
+			t.Fatalf("cluster entry should not include content-specific fix_pattern: %#v", entry)
+		}
+		if _, ok := entry["finding"].(map[string]any); !ok {
+			t.Fatalf("cluster entry missing finding payload: %#v", entry)
+		}
+	}
 	system := llmClient.mergeRequests[0].Messages[0].Content
-	for _, want := range []string{"root-cause signals", "same root cause and fix pattern", "affected files/variants"} {
+	for _, want := range []string{
+		"root-cause signals",
+		"same root cause and fix pattern",
+		"Do not split findings only because the affected variable",
+		"Same vulnerability/failure class + same mitigation/fix",
+		"`cluster_signals`",
+	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("merge system prompt missing %q:\n%s", want, system)
 		}

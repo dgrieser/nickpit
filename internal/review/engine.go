@@ -1071,6 +1071,7 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 	mergeUser, err := llm.RenderJSON(map[string]any{
 		"review_context":      json.RawMessage(userPrompt),
 		"context_agent_notes": contextNotes,
+		"cluster_signals":     clusterMergeSignals(cluster),
 		"cluster_findings":    clusterMergePayload(cluster, reviewerByID),
 	})
 	if err != nil {
@@ -1102,6 +1103,28 @@ func clusterMergePayload(cluster []model.Finding, reviewerByID map[string]string
 			"reviewer": reviewerByID[f.ID],
 			"finding":  f,
 		})
+	}
+	return out
+}
+
+func clusterMergeSignals(cluster []model.Finding) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for i := range cluster {
+		for j := i + 1; j < len(cluster); j++ {
+			match := dedupe.Compare(cluster[i], cluster[j])
+			if match.Verdict < dedupe.Possible || match.Reason == "" {
+				continue
+			}
+			if _, ok := seen[match.Reason]; ok {
+				continue
+			}
+			seen[match.Reason] = struct{}{}
+			out = append(out, match.Reason)
+		}
+	}
+	if len(out) == 0 && len(cluster) > 1 {
+		return []string{"possible duplicate cluster"}
 	}
 	return out
 }
