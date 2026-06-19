@@ -459,6 +459,180 @@ func TestRootCmdHasCheckModel(t *testing.T) {
 	}
 }
 
+func TestPRAndMRCommandsHaveURLFlag(t *testing.T) {
+	cmd := newRootCmd()
+	for _, args := range [][]string{{"github", "pr"}, {"gitlab", "mr"}} {
+		found, _, err := cmd.Find(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found.Flags().Lookup("url") == nil {
+			t.Fatalf("%s command missing --url flag", strings.Join(args, " "))
+		}
+	}
+}
+
+func TestParseGitHubPRURL(t *testing.T) {
+	tests := []struct {
+		raw  string
+		repo string
+		id   int
+	}{
+		{
+			raw:  "https://github.com/dgrieser/nickpit/pull/60",
+			repo: "dgrieser/nickpit",
+			id:   60,
+		},
+		{
+			raw:  "https://github.com/dgrieser/nickpit/pull/60/changes#diff-97bc82c1e601dde3195cc516a4ce8e58bb37ce0904b143123cc284fa568debe7L11",
+			repo: "dgrieser/nickpit",
+			id:   60,
+		},
+		{
+			raw:  "https://github.com/dgrieser/nickpit/pull/60/files?plain=1",
+			repo: "dgrieser/nickpit",
+			id:   60,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			repo, id, err := parseGitHubPRURL(tt.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if repo != tt.repo || id != tt.id {
+				t.Fatalf("parseGitHubPRURL() = %q, %d; want %q, %d", repo, id, tt.repo, tt.id)
+			}
+		})
+	}
+}
+
+func TestParseGitHubPRURLRejectsInvalid(t *testing.T) {
+	tests := []string{
+		"",
+		"http://github.com/dgrieser/nickpit/pull/60",
+		"https://git.example.com/dgrieser/nickpit/pull/60",
+		"https://github.com/dgrieser/nickpit/issues/60",
+		"https://github.com/dgrieser/pull/60",
+		"https://github.com/dgrieser/nickpit/pull/not-a-number",
+		"https://github.com/dgrieser/nickpit/pull/0",
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if _, _, err := parseGitHubPRURL(raw); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestParseGitLabMRURL(t *testing.T) {
+	tests := []struct {
+		raw     string
+		repo    string
+		id      int
+		baseURL string
+	}{
+		{
+			raw:     "https://gitlab.mittwald.it/asylum/services/kopieerapparaat/-/merge_requests/366",
+			repo:    "asylum/services/kopieerapparaat",
+			id:      366,
+			baseURL: "https://gitlab.mittwald.it",
+		},
+		{
+			raw:     "https://gitlab.mittwald.it/asylum/services/kopieerapparaat/-/merge_requests/366/diffs?file_path=pkg%2Frestic%2Frestic-cmd-directory-target-dir-overwrite.tpl#line_5578594d5_3",
+			repo:    "asylum/services/kopieerapparaat",
+			id:      366,
+			baseURL: "https://gitlab.mittwald.it",
+		},
+		{
+			raw:     "http://localhost:8080/group/project/-/merge_requests/7/commits",
+			repo:    "group/project",
+			id:      7,
+			baseURL: "http://localhost:8080",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			repo, id, baseURL, err := parseGitLabMRURL(tt.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if repo != tt.repo || id != tt.id || baseURL != tt.baseURL {
+				t.Fatalf("parseGitLabMRURL() = %q, %d, %q; want %q, %d, %q", repo, id, baseURL, tt.repo, tt.id, tt.baseURL)
+			}
+		})
+	}
+}
+
+func TestParseGitLabMRURLRejectsInvalid(t *testing.T) {
+	tests := []string{
+		"",
+		"ssh://gitlab.mittwald.it/group/project/-/merge_requests/366",
+		"https:///group/project/-/merge_requests/366",
+		"https://gitlab.mittwald.it/group/project/merge_requests/366",
+		"https://gitlab.mittwald.it/-/merge_requests/366",
+		"https://gitlab.mittwald.it/group/project/-/merge_requests/not-a-number",
+		"https://gitlab.mittwald.it/group/project/-/merge_requests/0",
+	}
+	for _, raw := range tests {
+		t.Run(raw, func(t *testing.T) {
+			if _, _, _, err := parseGitLabMRURL(raw); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestRemoteURLFlagValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "github url with id",
+			args: []string{"github", "pr", "--url", "https://github.com/dgrieser/nickpit/pull/60", "--id", "60"},
+			want: "--url can not be combined with --id",
+		},
+		{
+			name: "github url with repo",
+			args: []string{"github", "pr", "--url", "https://github.com/dgrieser/nickpit/pull/60", "--repo", "dgrieser/nickpit"},
+			want: "--url can not be combined with --repo",
+		},
+		{
+			name: "github missing id",
+			args: []string{"github", "pr", "--repo", "dgrieser/nickpit"},
+			want: "--id must be a positive integer",
+		},
+		{
+			name: "gitlab url with id",
+			args: []string{"gitlab", "mr", "--url", "https://gitlab.mittwald.it/asylum/services/kopieerapparaat/-/merge_requests/366", "--id", "366"},
+			want: "--url can not be combined with --id",
+		},
+		{
+			name: "gitlab url with repo",
+			args: []string{"gitlab", "mr", "--url", "https://gitlab.mittwald.it/asylum/services/kopieerapparaat/-/merge_requests/366", "--repo", "asylum/services/kopieerapparaat"},
+			want: "--url can not be combined with --repo",
+		},
+		{
+			name: "gitlab missing id",
+			args: []string{"gitlab", "mr", "--repo", "asylum/services/kopieerapparaat"},
+			want: "--id must be a positive integer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 	out := captureStdout(t, func() {
 		err := (&app{}).writeModelCheckOutput("test-model", modelcheck.Result{

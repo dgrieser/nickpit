@@ -521,6 +521,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 func (a *app) newGitHubCmd() *cobra.Command {
 	var repo string
 	var pr int
+	var rawURL string
 	var publish bool
 	cmd := &cobra.Command{
 		Use:   "github",
@@ -530,6 +531,23 @@ func (a *app) newGitHubCmd() *cobra.Command {
 		Use:   "pr",
 		Short: "Review a GitHub PR",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("url") {
+				if cmd.Flags().Changed("id") {
+					return fmt.Errorf("--url can not be combined with --id")
+				}
+				if cmd.Flags().Changed("repo") {
+					return fmt.Errorf("--url can not be combined with --repo")
+				}
+				var err error
+				repo, pr, err = parseGitHubPRURL(rawURL)
+				if err != nil {
+					return err
+				}
+			} else {
+				if pr <= 0 {
+					return fmt.Errorf("--id must be a positive integer")
+				}
+			}
 			if repo == "" {
 				repo = inferRepo()
 				if repo == "" {
@@ -571,8 +589,8 @@ func (a *app) newGitHubCmd() *cobra.Command {
 	}
 	prCmd.Flags().StringVar(&repo, "repo", "", "GitHub repo owner/name (inferred from git remote if omitted)")
 	prCmd.Flags().IntVar(&pr, "id", 0, "Pull request number")
+	prCmd.Flags().StringVar(&rawURL, "url", "", "GitHub pull request URL")
 	prCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitHub PR as a review (summary + one comment per finding)")
-	_ = prCmd.MarkFlagRequired("id")
 	cmd.AddCommand(prCmd)
 	return cmd
 }
@@ -580,6 +598,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 func (a *app) newGitLabCmd() *cobra.Command {
 	var project string
 	var mr int
+	var rawURL string
 	var publish bool
 	cmd := &cobra.Command{
 		Use:   "gitlab",
@@ -589,6 +608,25 @@ func (a *app) newGitLabCmd() *cobra.Command {
 		Use:   "mr",
 		Short: "Review a GitLab merge request",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("url") {
+				if cmd.Flags().Changed("id") {
+					return fmt.Errorf("--url can not be combined with --id")
+				}
+				if cmd.Flags().Changed("repo") {
+					return fmt.Errorf("--url can not be combined with --repo")
+				}
+				var gitlabBaseURL string
+				var err error
+				project, mr, gitlabBaseURL, err = parseGitLabMRURL(rawURL)
+				if err != nil {
+					return err
+				}
+				a.gitlabBaseURL = gitlabBaseURL
+			} else {
+				if mr <= 0 {
+					return fmt.Errorf("--id must be a positive integer")
+				}
+			}
 			if project == "" {
 				project = inferRepo()
 				if project == "" {
@@ -630,8 +668,8 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	}
 	mrCmd.Flags().StringVar(&project, "repo", "", "GitLab project group/name (inferred from git remote if omitted)")
 	mrCmd.Flags().IntVar(&mr, "id", 0, "Merge request IID")
+	mrCmd.Flags().StringVar(&rawURL, "url", "", "GitLab merge request URL")
 	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
-	_ = mrCmd.MarkFlagRequired("id")
 	cmd.AddCommand(mrCmd)
 	return cmd
 }
@@ -1699,6 +1737,61 @@ func parseRepoFromRemoteURL(raw string) string {
 		return strings.TrimSuffix(after, ".git")
 	}
 	return ""
+}
+
+func parseGitHubPRURL(raw string) (string, int, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", 0, fmt.Errorf("parsing --url: %w", err)
+	}
+	if u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") {
+		return "", 0, fmt.Errorf("--url must use https://github.com")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 4 || parts[0] == "" || parts[1] == "" || parts[2] != "pull" {
+		return "", 0, fmt.Errorf("--url must be a GitHub PR URL like https://github.com/owner/repo/pull/123")
+	}
+	pr, err := parsePositiveURLID(parts[3], "pull request number")
+	if err != nil {
+		return "", 0, err
+	}
+	return parts[0] + "/" + parts[1], pr, nil
+}
+
+func parseGitLabMRURL(raw string) (string, int, string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", 0, "", fmt.Errorf("parsing --url: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", 0, "", fmt.Errorf("--url must use http or https")
+	}
+	if u.Host == "" {
+		return "", 0, "", fmt.Errorf("--url must include a GitLab host")
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] != "-" || parts[i+1] != "merge_requests" {
+			continue
+		}
+		if i == 0 {
+			return "", 0, "", fmt.Errorf("--url must include a GitLab project path before /-/merge_requests/")
+		}
+		mr, err := parsePositiveURLID(parts[i+2], "merge request IID")
+		if err != nil {
+			return "", 0, "", err
+		}
+		return strings.Join(parts[:i], "/"), mr, u.Scheme + "://" + u.Host, nil
+	}
+	return "", 0, "", fmt.Errorf("--url must be a GitLab MR URL like https://gitlab.example.com/group/project/-/merge_requests/123")
+}
+
+func parsePositiveURLID(raw, label string) (int, error) {
+	id, err := strconv.Atoi(raw)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("--url has invalid %s %q", label, raw)
+	}
+	return id, nil
 }
 
 func firstNonEmpty(values ...string) string {
