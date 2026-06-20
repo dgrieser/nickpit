@@ -2454,6 +2454,50 @@ func TestDedupeAgentRejectsUnknownIDsAndFallsBack(t *testing.T) {
 	}
 }
 
+func TestDedupeRetryGuidanceListsAllowedAndUnknownIDs(t *testing.T) {
+	const (
+		id1       = "11111111-1111-4111-8111-111111111111"
+		id2       = "22222222-2222-4222-8222-222222222222"
+		unknownID = "af5fc1a4-fd98-40a3-95ad-ba44f9852efd"
+	)
+	a := mergeTestFinding("Fix A", 1)
+	a.ID = id1
+	a.Verification.ID = id1
+	b := mergeTestFinding("Fix B", 2)
+	b.ID = id2
+	b.Verification.ID = id2
+	unknown := mergeTestFinding("Fix A", 1)
+	unknown.ID = unknownID
+	unknown.Verification.ID = unknownID
+	blank := mergeTestFinding("Fix B", 2)
+	blank.ID = ""
+	blank.Verification.ID = ""
+
+	invalid := validateDedupeResponse(
+		&llm.ReviewResponse{Findings: []model.Finding{unknown, blank}},
+		&llm.ReviewResponse{Findings: []model.Finding{a, b}},
+	)
+	if invalid == nil {
+		t.Fatal("want invalid response")
+	}
+	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Allowed input IDs, in order:",
+		"`" + id1 + "`",
+		"`" + id2 + "`",
+		"Unknown output IDs:",
+		"`" + unknownID + "`",
+		"<empty id>",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("retry guidance missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestDedupeValidationRejectsTooMuchDrop(t *testing.T) {
 	var input []model.Finding
 	for i := range 10 {

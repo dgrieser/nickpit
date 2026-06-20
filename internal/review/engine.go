@@ -1147,11 +1147,13 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	}
 	inputCount := 0
 	inputIDs := map[string]struct{}{}
+	allowedIDs := []string{}
 	if input != nil {
 		inputCount = len(input.Findings)
 		for _, finding := range input.Findings {
 			id := strings.TrimSpace(finding.ID)
 			if id != "" {
+				allowedIDs = append(allowedIDs, id)
 				inputIDs[id] = struct{}{}
 			}
 		}
@@ -1160,6 +1162,7 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	countTooLow := len(resp.Findings) < minCount
 	countTooHigh := len(resp.Findings) > inputCount
 	unknownIDs := 0
+	unknownIDValues := []string{}
 	duplicateIDs := 0
 	verificationMismatch := 0
 	seen := map[string]struct{}{}
@@ -1167,9 +1170,11 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 		id := strings.TrimSpace(finding.ID)
 		if id == "" {
 			unknownIDs++
+			unknownIDValues = append(unknownIDValues, "")
 		} else {
 			if _, ok := inputIDs[id]; !ok {
 				unknownIDs++
+				unknownIDValues = append(unknownIDValues, id)
 			}
 			if _, ok := seen[id]; ok {
 				duplicateIDs++
@@ -1211,6 +1216,8 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 			InputCount           int
 			MinCount             int
 			UnknownIDs           int
+			AllowedIDs           []string
+			UnknownIDValues      []string
 			DuplicateIDs         int
 			VerificationMismatch int
 		}{
@@ -1219,6 +1226,8 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 			InputCount:           inputCount,
 			MinCount:             minCount,
 			UnknownIDs:           unknownIDs,
+			AllowedIDs:           allowedIDs,
+			UnknownIDValues:      unknownIDValues,
 			DuplicateIDs:         duplicateIDs,
 			VerificationMismatch: verificationMismatch,
 		},
