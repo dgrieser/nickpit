@@ -1147,11 +1147,15 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	}
 	inputCount := 0
 	inputIDs := map[string]struct{}{}
+	var allowedIDs []string
 	if input != nil {
 		inputCount = len(input.Findings)
+		inputIDs = make(map[string]struct{}, inputCount)
+		allowedIDs = make([]string, 0, inputCount)
 		for _, finding := range input.Findings {
 			id := strings.TrimSpace(finding.ID)
 			if id != "" {
+				allowedIDs = append(allowedIDs, id)
 				inputIDs[id] = struct{}{}
 			}
 		}
@@ -1160,6 +1164,7 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	countTooLow := len(resp.Findings) < minCount
 	countTooHigh := len(resp.Findings) > inputCount
 	unknownIDs := 0
+	var unknownIDValues []string
 	duplicateIDs := 0
 	verificationMismatch := 0
 	seen := map[string]struct{}{}
@@ -1167,9 +1172,11 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 		id := strings.TrimSpace(finding.ID)
 		if id == "" {
 			unknownIDs++
+			unknownIDValues = append(unknownIDValues, "")
 		} else {
 			if _, ok := inputIDs[id]; !ok {
 				unknownIDs++
+				unknownIDValues = append(unknownIDValues, id)
 			}
 			if _, ok := seen[id]; ok {
 				duplicateIDs++
@@ -1211,6 +1218,8 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 			InputCount           int
 			MinCount             int
 			UnknownIDs           int
+			AllowedIDs           []string
+			UnknownIDValues      []string
 			DuplicateIDs         int
 			VerificationMismatch int
 		}{
@@ -1219,6 +1228,8 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 			InputCount:           inputCount,
 			MinCount:             minCount,
 			UnknownIDs:           unknownIDs,
+			AllowedIDs:           allowedIDs,
+			UnknownIDValues:      unknownIDValues,
 			DuplicateIDs:         duplicateIDs,
 			VerificationMismatch: verificationMismatch,
 		},
@@ -1256,12 +1267,23 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			MissingFields: []string{"findings"},
 		}
 	}
+	inputIDs := make(map[string]struct{}, len(cluster))
+	allowedIDs := make([]string, 0, len(cluster))
+	for _, finding := range cluster {
+		id := strings.TrimSpace(finding.ID)
+		if id == "" {
+			continue
+		}
+		inputIDs[id] = struct{}{}
+		allowedIDs = append(allowedIDs, id)
+	}
 	var problems []string
 	countMismatch := len(resp.Findings) < 1 || len(resp.Findings) > len(cluster)
 	if countMismatch {
 		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=1 max=%d", len(resp.Findings), len(cluster)))
 	}
 	unmatched := 0
+	var unknownOutputIDs []string
 	covered := make(map[string]struct{})
 	for i, finding := range resp.Findings {
 		if findMergeInputMatch(finding, cluster) == nil {
@@ -1269,7 +1291,12 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			problems = append(problems, fmt.Sprintf("unmatched_finding index=%d", i))
 		}
 		if id := strings.TrimSpace(finding.ID); id != "" {
+			if _, ok := inputIDs[id]; !ok {
+				unknownOutputIDs = append(unknownOutputIDs, id)
+			}
 			covered[id] = struct{}{}
+		} else {
+			unknownOutputIDs = append(unknownOutputIDs, "")
 		}
 		for _, src := range finding.MergedFrom {
 			if src = strings.TrimSpace(src); src != "" {
@@ -1277,6 +1304,7 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			}
 		}
 	}
+	var droppedIDs []string
 	var droppedTitles []string
 	for _, in := range cluster {
 		id := strings.TrimSpace(in.ID)
@@ -1290,6 +1318,9 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 		// accounts for the input via location+title attribution.
 		if findMergeInputMatch(in, resp.Findings) != nil {
 			continue
+		}
+		if id != "" {
+			droppedIDs = append(droppedIDs, id)
 		}
 		droppedTitles = append(droppedTitles, in.Title)
 	}
@@ -1310,14 +1341,20 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			GotCount      int
 			MaxCount      int
 			Unmatched     int
+			AllowedIDs    []string
+			UnknownIDs    []string
 			Dropped       int
+			DroppedIDs    []string
 			DroppedTitles string
 		}{
 			CountMismatch: countMismatch,
 			GotCount:      len(resp.Findings),
 			MaxCount:      len(cluster),
 			Unmatched:     unmatched,
+			AllowedIDs:    allowedIDs,
+			UnknownIDs:    unknownOutputIDs,
 			Dropped:       len(droppedTitles),
+			DroppedIDs:    droppedIDs,
 			DroppedTitles: strings.Join(droppedTitles, "; "),
 		},
 	}

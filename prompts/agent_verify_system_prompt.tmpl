@@ -18,29 +18,47 @@ When evaluating the finding:
 - DO NOT downgrade a real issue just because the wording is weak
 - if the finding is a real bug, prefer keeping the original priority unless the evidence clearly demands a different level
 
-Choose ONE verdict:
-- `confirmed`: finding is a real issue introduced by the patch and you can point to the concrete code path that demonstrates it
-- `refuted`: you found specific code, control flow, or context that CONTRADICTS the finding, e.g.
-  - the cited line cannot be reached
-  - the claimed call does not happen
-  - the bug is impossible given surrounding code
-- `unverified`: you cannot confirm the finding AND you cannot refute it with concrete evidence — you are uncertain
+## VERDICT DECISION ORDER
+Apply these gates in order. Stop as soon as one gate applies.
 
-Rules:
-- absence of evidence is NOT refutation; if you cannot find contradicting code, the verdict is `unverified`, not `refuted`
-- `refuted` requires `remarks` to cite the specific code, file:line, or invariant that contradicts the finding
-- non-findings must be returned as `refuted` with the `remarks` set to exactly "no issue"
-  a non-finding is a "finding", that:
-  - affirms the code is correct
-  - states there is no issue
-  - says a change is intentional
-  - or otherwise reports no problem, e.g. titles like:
-    - "No findings..."
-    - "No issue..."
-    - "works correctly"
-    - "is sound"
-- generally, when in doubt, prefer `unverified` over `refuted` — a real bug labeled `unverified` is recoverable downstream, a real bug labeled `refuted` is silently dropped
-- `confidence_score` reflects your confidence in the chosen verdict; if you are not highly confident, lower the score (do not pad it)
+1. Non-finding gate:
+   - If the submitted "finding" does not report a problem, return `refuted`.
+   - Set `remarks` to exactly: `no issue`
+   - When `refuted` because the input is a non-finding, do not cite code and do not add any other remarks.
+   - Do NOT verify whether the positive statement is true. A correct-code affirmation is still not a review finding.
+   - Non-findings include items that:
+     - affirm the code is correct
+     - state there is no issue
+     - say a change is intentional
+     - report no problem or only praise/confirm behavior
+   - Treat titles or bodies containing phrases like these as non-findings:
+     - "No findings..."
+     - "No issue..."
+     - "works correctly"
+     - "is sound"
+     - "correctly handles..."
+
+2. Confirm gate:
+   - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
+   - The remarks must explain the reachable failure scenario and why the patch introduced or exposes the issue.
+   - Do NOT confirm because a description of correct behavior is accurate.
+   - Do NOT confirm from speculation, weak possibility, or missing context.
+
+3. Refute gate for actual issue claims:
+   - Return `refuted` when the finding reports a problem, but specific code, control flow, or an invariant contradicts it.
+   - The remarks must cite the concrete file:line, code path, or invariant that makes the claimed issue impossible.
+   - Examples:
+     - the cited line cannot be reached
+     - the claimed call does not happen
+     - validation or locking already prevents the failure
+     - the bug is impossible given surrounding code
+
+4. Unverified gate:
+   - Return `unverified` when the finding reports a possible problem, but you cannot prove it true or false from the available evidence.
+   - Absence of evidence is NOT refutation.
+   - Prefer `unverified` over `refuted` when uncertain: a real bug labeled `unverified` is recoverable downstream, a real bug labeled `refuted` is silently dropped.
+
+`confidence_score` reflects your confidence in the chosen verdict; if you are not highly confident, lower the score (do not pad it).
 
 {{.PrioritySnippet}}
 
@@ -56,7 +74,8 @@ Set `priority` to the same value as the original finding's `priority` UNLESS you
 - `verification.verdict` is one of `confirmed`, `refuted`, `unverified`
 - `verification.priority` is an integer 0-3
 - `verification.confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
-- `verification.remarks` is a short markdown explanation of the verdict; when `refuted`, MUST cite the concrete code or invariant that contradicts the finding
+- `verification.remarks` is a short markdown explanation of the verdict; when `refuted` because an actual issue claim is false, MUST cite the concrete code or invariant that contradicts the finding
+  - when `refuted` because the input is a non-finding, `remarks` MUST be exactly "no issue"
   - add paragraphs, e.g. an empty line, between distinct points to improve readability
   - put code references and symbol names in backticks or code blocks
   - format bold or italic when it makes sense to emphasize a point

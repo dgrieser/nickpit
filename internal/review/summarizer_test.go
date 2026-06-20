@@ -261,6 +261,225 @@ func TestSummarizerOutputValidatorOverallRequirementIsConditional(t *testing.T) 
 	}
 }
 
+func TestSummarizeRecoversMutatedIDByPosition(t *testing.T) {
+	const (
+		id1       = "11111111-1111-4111-8111-111111111111"
+		id2       = "22222222-2222-4222-8222-222222222222"
+		id3       = "33333333-3333-4333-8333-333333333333"
+		mutatedID = "af5fc1a4-fd98-40a3-95ad-ba44f9852efd"
+	)
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: id1, Summarization: &model.FindingSummarization{Body: "short 1"}},
+					{ID: id2, Summarization: &model.FindingSummarization{Body: "short 2"}},
+					{ID: mutatedID, Summarization: &model.FindingSummarization{Body: "short 3"}},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			summarizerTestFinding(id1, "final 1"),
+			summarizerTestFinding(id2, "final 2"),
+			summarizerTestFinding(id3, "final 3"),
+		},
+		OverallCorrectness: "patch is incorrect",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{MaxOutputRetries: 2})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want 1 (position recovery should avoid retry)", len(llmClient.reqs))
+	}
+	for i, want := range []string{"short 1", "short 2", "short 3"} {
+		if got := out.Findings[i].Summarization.Body; got != want {
+			t.Fatalf("finding %d summarization.body = %q, want %q", i, got, want)
+		}
+	}
+	if len(out.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", out.Warnings)
+	}
+}
+
+func TestSummarizerPositionRecoveryIgnoresBlankInputIDs(t *testing.T) {
+	const (
+		id2       = "22222222-2222-4222-8222-222222222222"
+		mutatedID = "af5fc1a4-fd98-40a3-95ad-ba44f9852efd"
+	)
+	items := []summarizeTextItem{
+		{ID: "  ", Title: "blank", Body: "body 1"},
+		{ID: id2, Title: "two", Body: "body 2"},
+	}
+	out := []model.Finding{
+		{ID: "", Summarization: &model.FindingSummarization{Body: "short 1"}},
+		{ID: mutatedID, Summarization: &model.FindingSummarization{Body: "short 2"}},
+	}
+
+	if recovered, ok := recoverSummarizerFindingsByPosition(items, out); ok {
+		t.Fatalf("recoverSummarizerFindingsByPosition = %#v, want no recovery from blank ID anchor", recovered)
+	}
+}
+
+func TestSummarizeAcceptsWhitespaceWrappedIDsWithoutPositionRecovery(t *testing.T) {
+	const (
+		id1 = "11111111-1111-4111-8111-111111111111"
+		id2 = "22222222-2222-4222-8222-222222222222"
+	)
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: "  " + id2 + "\n", Summarization: &model.FindingSummarization{Body: "short 2"}},
+					{ID: "\t" + id1 + "  ", Summarization: &model.FindingSummarization{Body: "short 1"}},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			summarizerTestFinding(id1, "final 1"),
+			summarizerTestFinding(id2, "final 2"),
+		},
+		OverallCorrectness: "patch is incorrect",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(llmClient.reqs))
+	}
+	for i, want := range []string{"short 1", "short 2"} {
+		if got := out.Findings[i].Summarization.Body; got != want {
+			t.Fatalf("finding %d summarization.body = %q, want %q", i, got, want)
+		}
+	}
+	if len(out.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", out.Warnings)
+	}
+}
+
+func TestSummarizerRetryGuidanceListsAllowedOmittedAndIgnoredIDs(t *testing.T) {
+	const (
+		id1       = "11111111-1111-4111-8111-111111111111"
+		id2       = "22222222-2222-4222-8222-222222222222"
+		mutatedID = "af5fc1a4-fd98-40a3-95ad-ba44f9852efd"
+	)
+	inputItems := []summarizeTextItem{
+		{ID: id1, Title: "one", Body: "body 1"},
+		{ID: id2, Title: "two", Body: "body 2"},
+	}
+	resp := &llm.ReviewResponse{
+		Findings: []model.Finding{
+			{ID: "  " + mutatedID + "\n", Summarization: &model.FindingSummarization{Body: "short"}},
+		},
+	}
+
+	invalid := summarizerOutputValidator(inputItems)(resp)
+	if invalid == nil {
+		t.Fatal("want invalid response")
+	}
+	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Allowed input IDs, in order:",
+		"`" + id1 + "`",
+		"`" + id2 + "`",
+		"Omitted input IDs:",
+		"Ignored output IDs:",
+		"`" + mutatedID + "`",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("retry guidance missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "code_location") {
+		t.Fatalf("retry guidance should not mention code_location:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "  "+mutatedID) || strings.Contains(rendered, mutatedID+"\n`") {
+		t.Fatalf("retry guidance should trim ignored IDs:\n%s", rendered)
+	}
+}
+
+func TestSummarizeRetriesThenFallsBackWhenFindingMissing(t *testing.T) {
+	const (
+		id1 = "11111111-1111-4111-8111-111111111111"
+		id2 = "22222222-2222-4222-8222-222222222222"
+	)
+	resp := func() *llm.ReviewResponse {
+		return &llm.ReviewResponse{
+			Findings: []model.Finding{
+				{ID: id1, Summarization: &model.FindingSummarization{Body: "short 1"}},
+			},
+		}
+	}
+	llmClient := &capturingLLM{resps: []*llm.ReviewResponse{resp(), resp()}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			summarizerTestFinding(id1, "final 1"),
+			summarizerTestFinding(id2, "final 2"),
+		},
+		OverallCorrectness: "patch is incorrect",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("requests = %d, want 2 (count mismatch should retry once)", len(llmClient.reqs))
+	}
+	if got := out.Findings[0].Summarization.Body; got != "short 1" {
+		t.Fatalf("first body = %q, want shortened body", got)
+	}
+	if got := out.Findings[1].Summarization.Body; got != "final 2" {
+		t.Fatalf("second body = %q, want finalized fallback", got)
+	}
+	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "Summarizer output mismatch") {
+		t.Fatalf("warnings = %v, want summarizer mismatch warning", out.Warnings)
+	}
+}
+
+func TestSummarizerPositionRecoveryRequiresAnchorForMultipleItems(t *testing.T) {
+	inputItems := []summarizeTextItem{
+		{ID: "11111111-1111-4111-8111-111111111111", Title: "one", Body: "body 1"},
+		{ID: "22222222-2222-4222-8222-222222222222", Title: "two", Body: "body 2"},
+	}
+	resp := &llm.ReviewResponse{
+		Findings: []model.Finding{
+			{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Summarization: &model.FindingSummarization{Body: "short 1"}},
+			{ID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Summarization: &model.FindingSummarization{Body: "short 2"}},
+		},
+	}
+
+	if got := summarizerOutputValidator(inputItems)(resp); got == nil {
+		t.Fatal("want invalid response when no multi-item output ID anchors input order")
+	}
+}
+
+func TestSummarizerPositionRecoveryAllowsSingleUnknownID(t *testing.T) {
+	inputItems := []summarizeTextItem{{ID: "11111111-1111-4111-8111-111111111111", Title: "one", Body: "body"}}
+	resp := &llm.ReviewResponse{
+		Findings: []model.Finding{
+			{ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Summarization: &model.FindingSummarization{Body: "short"}},
+		},
+	}
+
+	if got := summarizerOutputValidator(inputItems)(resp); got != nil {
+		t.Fatalf("want single-item unknown ID to recover by position, got %q", got.Reason)
+	}
+}
+
 func TestSummarizeEmptyFindingsIsNoOp(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
@@ -298,5 +517,17 @@ func TestExampleSnippetForSummarizeIncludesSummarization(t *testing.T) {
 	snippet := exampleSnippetFor(llm.SchemaKindSummarize, false)
 	if !strings.Contains(snippet, "summarization") {
 		t.Fatalf("summarize retry example missing summarization: %s", snippet)
+	}
+}
+
+func summarizerTestFinding(id, finalBody string) model.Finding {
+	return model.Finding{
+		ID:              id,
+		Title:           "Fix issue",
+		Body:            "original body",
+		ConfidenceScore: 0.7,
+		Priority:        intPtr(1),
+		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Finalization:    &model.FindingFinalization{Title: "Final issue", Body: finalBody, Priority: 1, ConfidenceScore: 0.75, Remarks: "keep"},
 	}
 }

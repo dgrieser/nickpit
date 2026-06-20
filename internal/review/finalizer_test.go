@@ -625,6 +625,46 @@ func TestFinalizeRetriesWhenSameCountOutputMisidentifiesFinding(t *testing.T) {
 	}
 }
 
+func TestFinalizerRetryGuidanceListsAllowedOmittedAndIgnoredIDs(t *testing.T) {
+	const (
+		id1       = "11111111-1111-4111-8111-111111111111"
+		id2       = "22222222-2222-4222-8222-222222222222"
+		unknownID = "af5fc1a4-fd98-40a3-95ad-ba44f9852efd"
+	)
+	input := []model.Finding{
+		{ID: id1, Title: "Issue A", CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		{ID: id2, Title: "Issue B", CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
+	}
+	resp := &llm.ReviewResponse{
+		Findings: []model.Finding{
+			{ID: unknownID, Title: "Ghost", CodeLocation: model.CodeLocation{FilePath: "ghost.go", LineRange: model.LineRange{Start: 9, End: 9}}},
+			{ID: "", Title: "Blank ghost", CodeLocation: model.CodeLocation{FilePath: "blank.go", LineRange: model.LineRange{Start: 10, End: 10}}},
+		},
+	}
+
+	invalid := finalizerOutputValidator(input)(resp)
+	if invalid == nil {
+		t.Fatal("want invalid response")
+	}
+	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Allowed input IDs, in order:",
+		"`" + id1 + "`",
+		"`" + id2 + "`",
+		"Omitted input IDs:",
+		"Ignored output IDs:",
+		"`" + unknownID + "`",
+		"<empty id>",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("retry guidance missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestFinalizePreservesInputsWhenCountRetryExhausted(t *testing.T) {
 	locA := model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	locB := model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}
