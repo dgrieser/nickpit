@@ -306,6 +306,47 @@ func TestSummarizeRecoversMutatedIDByPosition(t *testing.T) {
 	}
 }
 
+func TestSummarizeAcceptsWhitespaceWrappedIDsWithoutPositionRecovery(t *testing.T) {
+	const (
+		id1 = "11111111-1111-4111-8111-111111111111"
+		id2 = "22222222-2222-4222-8222-222222222222"
+	)
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: "  " + id2 + "\n", Summarization: &model.FindingSummarization{Body: "short 2"}},
+					{ID: "\t" + id1 + "  ", Summarization: &model.FindingSummarization{Body: "short 1"}},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			summarizerTestFinding(id1, "final 1"),
+			summarizerTestFinding(id2, "final 2"),
+		},
+		OverallCorrectness: "patch is incorrect",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(llmClient.reqs))
+	}
+	for i, want := range []string{"short 1", "short 2"} {
+		if got := out.Findings[i].Summarization.Body; got != want {
+			t.Fatalf("finding %d summarization.body = %q, want %q", i, got, want)
+		}
+	}
+	if len(out.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", out.Warnings)
+	}
+}
+
 func TestSummarizerRetryGuidanceListsAllowedOmittedAndIgnoredIDs(t *testing.T) {
 	const (
 		id1       = "11111111-1111-4111-8111-111111111111"
@@ -318,7 +359,7 @@ func TestSummarizerRetryGuidanceListsAllowedOmittedAndIgnoredIDs(t *testing.T) {
 	}
 	resp := &llm.ReviewResponse{
 		Findings: []model.Finding{
-			{ID: mutatedID, Summarization: &model.FindingSummarization{Body: "short"}},
+			{ID: "  " + mutatedID + "\n", Summarization: &model.FindingSummarization{Body: "short"}},
 		},
 	}
 
@@ -344,6 +385,9 @@ func TestSummarizerRetryGuidanceListsAllowedOmittedAndIgnoredIDs(t *testing.T) {
 	}
 	if strings.Contains(rendered, "code_location") {
 		t.Fatalf("retry guidance should not mention code_location:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "  "+mutatedID) || strings.Contains(rendered, mutatedID+"\n`") {
+		t.Fatalf("retry guidance should trim ignored IDs:\n%s", rendered)
 	}
 }
 

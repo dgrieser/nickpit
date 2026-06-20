@@ -268,7 +268,7 @@ func summarizerBodiesForOutput(items []summarizeTextItem, out []model.Finding) m
 		if finding.Summarization == nil {
 			continue
 		}
-		bodies[finding.ID] = finding.Summarization.Body
+		bodies[strings.TrimSpace(finding.ID)] = finding.Summarization.Body
 	}
 	return bodies
 }
@@ -345,8 +345,9 @@ func summarizerTextOutputStats(items []summarizeTextItem, out []model.Finding) s
 	}
 	stats := summarizerApplyStats{SummarizerFindings: len(out)}
 	for _, finding := range out {
-		if want[finding.ID] > 0 {
-			want[finding.ID]--
+		id := strings.TrimSpace(finding.ID)
+		if want[id] > 0 {
+			want[id]--
 			stats.Matched++
 		} else {
 			stats.Ignored++
@@ -366,8 +367,9 @@ func summarizerOutputIDDiagnostics(items []summarizeTextItem, out []model.Findin
 	}
 	for _, finding := range out {
 		found := false
+		findingID := strings.TrimSpace(finding.ID)
 		for i, item := range items {
-			if matched[i] || finding.ID != item.ID {
+			if matched[i] || findingID != item.ID {
 				continue
 			}
 			matched[i] = true
@@ -375,7 +377,7 @@ func summarizerOutputIDDiagnostics(items []summarizeTextItem, out []model.Findin
 			break
 		}
 		if !found {
-			ids.IgnoredIDs = append(ids.IgnoredIDs, finding.ID)
+			ids.IgnoredIDs = append(ids.IgnoredIDs, findingID)
 		}
 	}
 	for i, item := range items {
