@@ -155,6 +155,7 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 		if stats.FinalizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0 {
 			return nil
 		}
+		ids := finalizerOutputIDDiagnostics(inputFindings, finalizerFindings)
 		raw := ""
 		reasoningEffort := ""
 		if resp != nil {
@@ -170,17 +171,23 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 		if stats.FinalizerFindings != expected || stats.Matched != expected || stats.Omitted != 0 || stats.Ignored != 0 {
 			invalid.RetryGuidanceTemplate = "finalizer_count_retry_guidance.tmpl"
 			invalid.RetryGuidanceData = struct {
-				Expected int
-				Got      int
-				Matched  int
-				Omitted  int
-				Ignored  int
+				Expected   int
+				Got        int
+				Matched    int
+				Omitted    int
+				Ignored    int
+				AllowedIDs []string
+				OmittedIDs []string
+				IgnoredIDs []string
 			}{
-				Expected: expected,
-				Got:      stats.FinalizerFindings,
-				Matched:  stats.Matched,
-				Omitted:  stats.Omitted,
-				Ignored:  stats.Ignored,
+				Expected:   expected,
+				Got:        stats.FinalizerFindings,
+				Matched:    stats.Matched,
+				Omitted:    stats.Omitted,
+				Ignored:    stats.Ignored,
+				AllowedIDs: ids.AllowedIDs,
+				OmittedIDs: ids.OmittedIDs,
+				IgnoredIDs: ids.IgnoredIDs,
 			}
 		}
 		return invalid
@@ -238,6 +245,12 @@ type finalizerApplyStats struct {
 	Ignored           int
 }
 
+type finalizerIDDiagnostics struct {
+	AllowedIDs []string
+	OmittedIDs []string
+	IgnoredIDs []string
+}
+
 // applyFinalizerOutput copies finalization-only data from finalizer output
 // onto input-owned findings. The finalizer is not allowed to add, remove,
 // reorder, or relocate findings; unmatched output is ignored, and omitted
@@ -279,6 +292,33 @@ func finalizerOutputStats(inOut, finalizer []model.Finding, onMatch func(inIdx, 
 		}
 	}
 	return stats
+}
+
+func finalizerOutputIDDiagnostics(inOut, finalizer []model.Finding) finalizerIDDiagnostics {
+	ids := finalizerIDDiagnostics{AllowedIDs: make([]string, 0, len(inOut))}
+	for _, finding := range inOut {
+		if id := strings.TrimSpace(finding.ID); id != "" {
+			ids.AllowedIDs = append(ids.AllowedIDs, id)
+		}
+	}
+	matchedInput := make([]bool, len(inOut))
+	for outIdx := range finalizer {
+		inIdx := findFinalizerInputIndex(finalizer[outIdx], inOut, matchedInput)
+		if inIdx < 0 {
+			ids.IgnoredIDs = append(ids.IgnoredIDs, strings.TrimSpace(finalizer[outIdx].ID))
+			continue
+		}
+		matchedInput[inIdx] = true
+	}
+	for i := range inOut {
+		if matchedInput[i] {
+			continue
+		}
+		if id := strings.TrimSpace(inOut[i].ID); id != "" {
+			ids.OmittedIDs = append(ids.OmittedIDs, id)
+		}
+	}
+	return ids
 }
 
 func findFinalizerInputIndex(target model.Finding, in []model.Finding, matched []bool) int {
