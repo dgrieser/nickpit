@@ -152,13 +152,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	if result.resp == nil {
 		return nil, result.run, fmt.Errorf("summarize: agent returned nil response")
 	}
-	bodies := make(map[string]string, len(result.resp.Findings))
-	for _, finding := range result.resp.Findings {
-		if finding.Summarization == nil {
-			continue
-		}
-		bodies[finding.ID] = finding.Summarization.Body
-	}
+	bodies := summarizerBodiesForOutput(items, result.resp.Findings)
 	e.logProgress(logging.StageSummarize, logging.StateDone, fmt.Sprintf("items_in=%d items_out=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s runtime=%s", len(items), len(bodies), model.HumanTokens(result.run.TokensUsed.PromptTokens), model.HumanTokens(result.run.TokensUsed.CompletionTokens), model.HumanTokens(result.run.TokensUsed.TotalTokens), model.HumanDuration(time.Since(summarizeStart))))
 	return bodies, result.run, nil
 }
@@ -170,11 +164,15 @@ func summarizerOutputValidator(items []summarizeTextItem) func(*llm.ReviewRespon
 		if resp != nil {
 			summarizerFindings = resp.Findings
 		}
+		if recovered, ok := recoverSummarizerFindingsByPosition(items, summarizerFindings); ok {
+			summarizerFindings = recovered
+		}
 		stats := summarizerTextOutputStats(items, summarizerFindings)
 		countOK := stats.SummarizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0
 		if countOK {
 			return nil
 		}
+		ids := summarizerOutputIDDiagnostics(items, summarizerFindings)
 		raw := ""
 		reasoningEffort := ""
 		if resp != nil {
@@ -189,17 +187,23 @@ func summarizerOutputValidator(items []summarizeTextItem) func(*llm.ReviewRespon
 		}
 		invalid.RetryGuidanceTemplate = "summarizer_count_retry_guidance.tmpl"
 		invalid.RetryGuidanceData = struct {
-			Expected int
-			Got      int
-			Matched  int
-			Omitted  int
-			Ignored  int
+			Expected   int
+			Got        int
+			Matched    int
+			Omitted    int
+			Ignored    int
+			AllowedIDs []string
+			OmittedIDs []string
+			IgnoredIDs []string
 		}{
-			Expected: expected,
-			Got:      stats.SummarizerFindings,
-			Matched:  stats.Matched,
-			Omitted:  stats.Omitted,
-			Ignored:  stats.Ignored,
+			Expected:   expected,
+			Got:        stats.SummarizerFindings,
+			Matched:    stats.Matched,
+			Omitted:    stats.Omitted,
+			Ignored:    stats.Ignored,
+			AllowedIDs: ids.AllowedIDs,
+			OmittedIDs: ids.OmittedIDs,
+			IgnoredIDs: ids.IgnoredIDs,
 		}
 		return invalid
 	}
@@ -249,6 +253,26 @@ type summarizerApplyStats struct {
 	Ignored            int
 }
 
+type summarizerIDDiagnostics struct {
+	AllowedIDs []string
+	OmittedIDs []string
+	IgnoredIDs []string
+}
+
+func summarizerBodiesForOutput(items []summarizeTextItem, out []model.Finding) map[string]string {
+	if recovered, ok := recoverSummarizerFindingsByPosition(items, out); ok {
+		out = recovered
+	}
+	bodies := make(map[string]string, len(out))
+	for _, finding := range out {
+		if finding.Summarization == nil {
+			continue
+		}
+		bodies[finding.ID] = finding.Summarization.Body
+	}
+	return bodies
+}
+
 func applySummarizerBodies(inOut []model.Finding, bodies map[string]string) summarizerApplyStats {
 	matched := make([]bool, len(inOut))
 	stats := summarizerApplyStats{SummarizerFindings: 0}
@@ -284,6 +308,36 @@ func applySummarizerBodies(inOut []model.Finding, bodies map[string]string) summ
 	return stats
 }
 
+func recoverSummarizerFindingsByPosition(items []summarizeTextItem, out []model.Finding) ([]model.Finding, bool) {
+	if len(items) == 0 || len(out) != len(items) {
+		return nil, false
+	}
+	knownIDs := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		knownIDs[item.ID] = struct{}{}
+	}
+	samePositionKnown := 0
+	recovered := make([]model.Finding, len(out))
+	for i := range out {
+		if out[i].Summarization == nil || strings.TrimSpace(out[i].Summarization.Body) == "" {
+			return nil, false
+		}
+		id := strings.TrimSpace(out[i].ID)
+		if _, known := knownIDs[id]; known {
+			if id != items[i].ID {
+				return nil, false
+			}
+			samePositionKnown++
+		}
+		recovered[i] = out[i]
+		recovered[i].ID = items[i].ID
+	}
+	if len(items) > 1 && samePositionKnown == 0 {
+		return nil, false
+	}
+	return recovered, true
+}
+
 func summarizerTextOutputStats(items []summarizeTextItem, out []model.Finding) summarizerApplyStats {
 	want := make(map[string]int, len(items))
 	for _, item := range items {
@@ -302,6 +356,34 @@ func summarizerTextOutputStats(items []summarizeTextItem, out []model.Finding) s
 		stats.Omitted += count
 	}
 	return stats
+}
+
+func summarizerOutputIDDiagnostics(items []summarizeTextItem, out []model.Finding) summarizerIDDiagnostics {
+	ids := summarizerIDDiagnostics{AllowedIDs: make([]string, 0, len(items))}
+	matched := make([]bool, len(items))
+	for _, item := range items {
+		ids.AllowedIDs = append(ids.AllowedIDs, item.ID)
+	}
+	for _, finding := range out {
+		found := false
+		for i, item := range items {
+			if matched[i] || finding.ID != item.ID {
+				continue
+			}
+			matched[i] = true
+			found = true
+			break
+		}
+		if !found {
+			ids.IgnoredIDs = append(ids.IgnoredIDs, finding.ID)
+		}
+	}
+	for i, item := range items {
+		if !matched[i] {
+			ids.OmittedIDs = append(ids.OmittedIDs, item.ID)
+		}
+	}
+	return ids
 }
 
 // applySummarizedFinding sets dst.Summarization to a copy of dst.Finalization
