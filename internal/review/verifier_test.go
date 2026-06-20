@@ -366,8 +366,12 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 	}
 	sysPrompt := llmClient.requests[0].Messages[0].Content
 	for _, want := range []string{
+		"Non-finding gate",
 		"non-findings",
 		"no issue",
+		"Do NOT verify whether the positive statement is true",
+		"Do NOT confirm because a description of correct behavior is accurate",
+		"When `refuted` because the input is a non-finding",
 		"is sound",
 	} {
 		if !strings.Contains(sysPrompt, want) {
