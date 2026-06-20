@@ -1147,9 +1147,11 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	}
 	inputCount := 0
 	inputIDs := map[string]struct{}{}
-	allowedIDs := []string{}
+	var allowedIDs []string
 	if input != nil {
 		inputCount = len(input.Findings)
+		inputIDs = make(map[string]struct{}, inputCount)
+		allowedIDs = make([]string, 0, inputCount)
 		for _, finding := range input.Findings {
 			id := strings.TrimSpace(finding.ID)
 			if id != "" {
@@ -1162,7 +1164,7 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	countTooLow := len(resp.Findings) < minCount
 	countTooHigh := len(resp.Findings) > inputCount
 	unknownIDs := 0
-	unknownIDValues := []string{}
+	var unknownIDValues []string
 	duplicateIDs := 0
 	verificationMismatch := 0
 	seen := map[string]struct{}{}
@@ -1265,8 +1267,8 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			MissingFields: []string{"findings"},
 		}
 	}
-	inputIDs := map[string]struct{}{}
-	allowedIDs := []string{}
+	inputIDs := make(map[string]struct{}, len(cluster))
+	allowedIDs := make([]string, 0, len(cluster))
 	for _, finding := range cluster {
 		id := strings.TrimSpace(finding.ID)
 		if id == "" {
@@ -1281,7 +1283,7 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 		problems = append(problems, fmt.Sprintf("count_mismatch got=%d min=1 max=%d", len(resp.Findings), len(cluster)))
 	}
 	unmatched := 0
-	unknownOutputIDs := []string{}
+	var unknownOutputIDs []string
 	covered := make(map[string]struct{})
 	for i, finding := range resp.Findings {
 		if findMergeInputMatch(finding, cluster) == nil {

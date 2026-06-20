@@ -306,6 +306,25 @@ func TestSummarizeRecoversMutatedIDByPosition(t *testing.T) {
 	}
 }
 
+func TestSummarizerPositionRecoveryIgnoresBlankInputIDs(t *testing.T) {
+	const (
+		id2       = "22222222-2222-4222-8222-222222222222"
+		mutatedID = "af5fc1a4-fd98-40a3-95ad-ba44f9852efd"
+	)
+	items := []summarizeTextItem{
+		{ID: "  ", Title: "blank", Body: "body 1"},
+		{ID: id2, Title: "two", Body: "body 2"},
+	}
+	out := []model.Finding{
+		{ID: "", Summarization: &model.FindingSummarization{Body: "short 1"}},
+		{ID: mutatedID, Summarization: &model.FindingSummarization{Body: "short 2"}},
+	}
+
+	if recovered, ok := recoverSummarizerFindingsByPosition(items, out); ok {
+		t.Fatalf("recoverSummarizerFindingsByPosition = %#v, want no recovery from blank ID anchor", recovered)
+	}
+}
+
 func TestSummarizeAcceptsWhitespaceWrappedIDsWithoutPositionRecovery(t *testing.T) {
 	const (
 		id1 = "11111111-1111-4111-8111-111111111111"

@@ -314,7 +314,9 @@ func recoverSummarizerFindingsByPosition(items []summarizeTextItem, out []model.
 	}
 	knownIDs := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		knownIDs[item.ID] = struct{}{}
+		if id := strings.TrimSpace(item.ID); id != "" {
+			knownIDs[id] = struct{}{}
+		}
 	}
 	samePositionKnown := 0
 	recovered := make([]model.Finding, len(out))
@@ -324,7 +326,7 @@ func recoverSummarizerFindingsByPosition(items []summarizeTextItem, out []model.
 		}
 		id := strings.TrimSpace(out[i].ID)
 		if _, known := knownIDs[id]; known {
-			if id != items[i].ID {
+			if id != strings.TrimSpace(items[i].ID) {
 				return nil, false
 			}
 			samePositionKnown++
