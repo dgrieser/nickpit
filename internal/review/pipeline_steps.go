@@ -10,6 +10,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/google/uuid"
 )
 
@@ -146,6 +147,88 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	}, nil
 }
 
+func reviewPhaseContexts(ctx context.Context, override *workflow.StepOverride, req model.ReviewRequest, collectAnyway bool) (context.Context, context.CancelFunc, context.Context, context.CancelFunc, context.Context, context.CancelFunc, context.Context, context.CancelFunc, bool) {
+	noop := func() {}
+	if req.SkipWorkflowTimeBudget || override == nil || !hasReviewPhaseBudget(override) {
+		return ctx, noop, ctx, noop, ctx, noop, ctx, noop, false
+	}
+	extractEnabled := !req.DisableReasoningExtract && req.ModelEmitsReasoning && (req.NudgeCount > 0 || collectAnyway)
+
+	type phase struct {
+		name string
+		tb   *workflow.TimeBudget
+	}
+	phases := []phase{{name: "main", tb: mainReviewTimeBudget(override.TimeBudget)}}
+	mineTB := agentTimeBudget(override.MineReasoning)
+	compileTB := agentTimeBudget(override.CompileFindings)
+	nudgeTB := agentTimeBudget(override.Nudge)
+	if extractEnabled || mineTB != nil {
+		phases = append(phases, phase{name: "mine", tb: mineTB})
+	}
+	if (extractEnabled && req.NudgeCount > 0) || compileTB != nil {
+		phases = append(phases, phase{name: "compile", tb: compileTB})
+	}
+	if req.NudgeCount > 0 || nudgeTB != nil {
+		phases = append(phases, phase{name: "nudge", tb: nudgeTB})
+	}
+	budgets := make([]*workflow.TimeBudget, len(phases))
+	for i := range phases {
+		budgets[i] = phases[i].tb
+	}
+	plans := childTimePlans(ctx, budgets)
+
+	mainCtx, mineCtx, compileCtx, nudgeCtx := ctx, ctx, ctx, ctx
+	mainCancel, mineCancel, compileCancel, nudgeCancel := noop, noop, noop, noop
+	mainSkipped := false
+	for i, phase := range phases {
+		phaseCtx, cancel, skipped := withConfiguredTimeBudget(ctx, phase.tb, plans[i])
+		if skipped {
+			phaseCtx, cancel = alreadyCanceledContext(ctx)
+		}
+		switch phase.name {
+		case "main":
+			mainCtx, mainCancel, mainSkipped = phaseCtx, cancel, skipped
+		case "mine":
+			mineCtx, mineCancel = phaseCtx, cancel
+		case "compile":
+			compileCtx, compileCancel = phaseCtx, cancel
+		case "nudge":
+			nudgeCtx, nudgeCancel = phaseCtx, cancel
+		}
+	}
+	return mainCtx, mainCancel, mineCtx, mineCancel, compileCtx, compileCancel, nudgeCtx, nudgeCancel, mainSkipped
+}
+
+func hasReviewPhaseBudget(override *workflow.StepOverride) bool {
+	if override == nil {
+		return false
+	}
+	if tb := mainReviewTimeBudget(override.TimeBudget); tb != nil {
+		return true
+	}
+	return agentTimeBudget(override.MineReasoning) != nil || agentTimeBudget(override.CompileFindings) != nil || agentTimeBudget(override.Nudge) != nil
+}
+
+func mainReviewTimeBudget(tb *workflow.TimeBudget) *workflow.TimeBudget {
+	if tb == nil || (tb.Weight == nil && tb.SpeedupThreshold == nil) {
+		return nil
+	}
+	return &workflow.TimeBudget{SpeedupThreshold: tb.SpeedupThreshold, Weight: tb.Weight}
+}
+
+func agentTimeBudget(override *workflow.AgentOverride) *workflow.TimeBudget {
+	if override == nil {
+		return nil
+	}
+	return override.TimeBudget
+}
+
+func alreadyCanceledContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+	return ctx, func() {}
+}
+
 // reviewStepFunc runs one vector reviewer: its initial pass plus any configured
 // nudge rounds, leaving the session open in state for standalone nudge/extract
 // steps. A reviewer failure is soft (recorded as a failed group), matching the
@@ -178,7 +261,19 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 				nudge = sc.internalAgentContext(sc.Override.Nudge)
 			}
 		}
-		if err := sc.Engine.reviewerInitial(ctx, session, sc.Req, mine.Engine, mine.Req); err != nil {
+		mainCtx, mainCancel, mineCtx, mineCancel, compileCtx, compileCancel, nudgeCtx, nudgeCancel, mainSkipped := reviewPhaseContexts(ctx, sc.Override, sc.Req, collectAnyway)
+		defer mainCancel()
+		defer mineCancel()
+		defer compileCancel()
+		defer nudgeCancel()
+		if mainSkipped {
+			res := session.partialResult(sc.Req)
+			res.run.Status = model.AgentRunStatusSkipped
+			res.run.Error = "main review skipped because its time budget was exhausted"
+			st.setGroup(vectorID, res, nil)
+			return nil
+		}
+		if err := sc.Engine.reviewerInitial(mainCtx, session, sc.Req, mineCtx, mine.Engine, mine.Req); err != nil {
 			// Preserve the partial telemetry (tokens/tool calls) of the failed
 			// initial pass instead of discarding it with a bare failed result.
 			// Store NO session: the initial pass never populated it, so a later
@@ -191,7 +286,7 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 			st.setGroup(vectorID, res, nil)
 			return nil
 		}
-		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req, compile.Engine, compile.Req, nudge.Engine, nudge.Req); err != nil {
+		if err := sc.Engine.reviewerNudges(ctx, session, sc.Req, compileCtx, compile.Engine, compile.Req, nudgeCtx, nudge.Engine, nudge.Req); err != nil {
 			// The initial pass already produced findings; keep them (and their
 			// telemetry) as a partial result rather than throwing them away.
 			sc.Engine.logf(ctx, "Vector reviewer nudges failed, keeping initial findings: vector=%s error=%v", vector.name, err)
@@ -445,6 +540,37 @@ type clusterMergeOutcome struct {
 	hasRun   bool
 }
 
+func pipelinePhaseContexts(ctx context.Context, fused postMergeFusedSpec, skip bool) (context.Context, context.CancelFunc, context.Context, context.CancelFunc, context.Context, context.CancelFunc, context.Context, context.CancelFunc) {
+	noop := func() {}
+	if skip {
+		return ctx, noop, ctx, noop, ctx, noop, ctx, noop
+	}
+	budgets := []*workflow.TimeBudget{
+		timeBudgetOf(fused.merge.Config),
+		timeBudgetOf(fused.finalize.Config),
+		timeBudgetOf(fused.verdict.Config),
+	}
+	if fused.hasSummarize {
+		budgets = append(budgets, timeBudgetOf(fused.summarize.Config))
+	}
+	plans := childTimePlans(ctx, budgets)
+	contexts := make([]context.Context, len(budgets))
+	cancels := make([]context.CancelFunc, len(budgets))
+	for i, budget := range budgets {
+		phaseCtx, cancel, skipped := withConfiguredTimeBudget(ctx, budget, plans[i])
+		if skipped {
+			phaseCtx, cancel = alreadyCanceledContext(ctx)
+		}
+		contexts[i] = phaseCtx
+		cancels[i] = cancel
+	}
+	summarizeCtx, summarizeCancel := ctx, noop
+	if fused.hasSummarize {
+		summarizeCtx, summarizeCancel = contexts[3], cancels[3]
+	}
+	return contexts[0], cancels[0], contexts[1], cancels[1], contexts[2], cancels[2], summarizeCtx, summarizeCancel
+}
+
 // postMergeFusedStepFunc optimizes the normal post-review tail:
 // merge -> finalize -> verdict -> summarize. Cluster merge is still the
 // grouped->flat boundary, but each resolved cluster is immediately finalized
@@ -461,6 +587,11 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		if fused.hasSummarize {
 			summarizeSC = e.stepContext(fused.summarize.Config, sc.Req)
 		}
+		mergeCtx, mergeCancel, finalizeCtx, finalizeCancel, verdictCtx, verdictCancel, summarizeCtx, summarizeCancel := pipelinePhaseContexts(ctx, fused, sc.Req.SkipWorkflowTimeBudget)
+		defer mergeCancel()
+		defer finalizeCancel()
+		defer verdictCancel()
+		defer summarizeCancel()
 
 		if err := injectGroups(st, fused.merge.FindingsFrom, mergeSC.Req.SkipSuggestions); err != nil {
 			return err
@@ -488,11 +619,11 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				OverallConfidenceScore: mergeResult.resp.OverallConfidenceScore,
 			}
 			st.mu.Unlock()
-			if err := e.verdictStepFunc(nil)(ctx, verdictSC, st); err != nil {
+			if err := e.verdictStepFunc(nil)(verdictCtx, verdictSC, st); err != nil {
 				return err
 			}
 			if fused.hasSummarize {
-				return e.summarizeStepFunc(nil)(ctx, summarizeSC, st)
+				return e.summarizeStepFunc(nil)(summarizeCtx, summarizeSC, st)
 			}
 			return nil
 		}
@@ -527,7 +658,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			mergeWG.Add(1)
 			go func(ci int, reduced []model.Finding) {
 				defer mergeWG.Done()
-				merged, run := mergeSC.Engine.runClusterMergeAgent(ctx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req)
+				merged, run := mergeSC.Engine.runClusterMergeAgent(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req)
 				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
 			}(ci, reduced)
 		}
@@ -575,7 +706,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			}
 			go func(idx int, shard []model.Finding) {
 				shardResult := &model.ReviewResult{Findings: append([]model.Finding(nil), shard...)}
-				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(ctx, finalizeSC, st, shardResult)
+				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(finalizeCtx, finalizeSC, st, shardResult)
 
 				resultMu.Lock()
 				finalizedByCluster[idx] = append([]model.Finding(nil), finalized.Findings...)
@@ -612,7 +743,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 
 				if fused.hasSummarize {
 					defer summarizeWG.Done()
-					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(ctx, summarizeSC, summarizeInput)
+					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(summarizeCtx, summarizeSC, summarizeInput)
 					resultMu.Lock()
 					summarizedByCluster[idx] = append([]model.Finding(nil), summarized.Findings...)
 					if summarizeRun != nil {
@@ -637,14 +768,14 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			OverallExplanation:     fmt.Sprintf("Merged %d reviewer finding lists (%d findings) into %d findings: %d absorbed mechanically, %d clusters judged by merge agents.", len(mergeInputs), len(findings), rawMergedCount, absorbed, llmClusters),
 			OverallConfidenceScore: maxOverallConfidence(mergeInputs),
 		}
-		verdict, verdictRun, verdictWarnings := runVerdictShard(ctx, verdictSC, st, base)
+		verdict, verdictRun, verdictWarnings := runVerdictShard(verdictCtx, verdictSC, st, base)
 
 		var overallSummarizeRun *model.AgentRun
 		overallSummarizeWarnings := []string(nil)
 		// With no finalized findings the verdict's overall explanation is a short
 		// static message, so skip the overall-summary LLM call entirely.
 		if fused.hasSummarize && len(finalizedFindings) > 0 {
-			overall, run, warnings := runOverallSummarize(ctx, summarizeSC, verdict.OverallExplanation)
+			overall, run, warnings := runOverallSummarize(summarizeCtx, summarizeSC, verdict.OverallExplanation)
 			verdict.OverallExplanation = overall
 			overallSummarizeRun = run
 			overallSummarizeWarnings = warnings

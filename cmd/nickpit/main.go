@@ -105,6 +105,7 @@ type app struct {
 	disableReasoningExtract       bool
 	disablePatchSummary           bool
 	skipSuggestions               bool
+	skipWorkflowTimeBudget        bool
 	concurrency                   int
 	verifyDropPolicy              string
 	verifyDropConfidence          float64
@@ -217,6 +218,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
 	root.PersistentFlags().BoolVar(&cli.skipSuggestions, "skip-suggestions", false, "Omit code suggestions from prompts and review output")
+	root.PersistentFlags().BoolVar(&cli.skipWorkflowTimeBudget, "skip-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.7, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
@@ -347,33 +349,34 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 			ExtraBody:       smallExtraBody,
 			ReasoningEffort: a.smallReasoningEffort,
 		},
-		BaseURL:               a.baseURL,
-		APIKey:                a.apiKey,
-		ReasoningEffort:       a.reasoningEffort,
-		Temperature:           temperature,
-		TopP:                  topP,
-		TopK:                  topK,
-		PresencePenalty:       presencePenalty,
-		ExtraBody:             extraBody,
-		UseJSONSchema:         a.useJSONSchema,
-		IncludePaths:          includePaths,
-		ExcludePaths:          excludePaths,
-		IncludeContent:        includeContent,
-		ExcludeContent:        excludeContent,
-		MaxContextTokens:      maxContextTokens,
-		ToolCalls:             toolCalls,
-		DuplicateToolCalls:    duplicateToolCalls,
-		OutputRetries:         outputRetries,
-		ReasoningSeconds:      reasoningSeconds,
-		ReasoningLoopRepeats:  reasoningLoopRepeats,
-		RateLimitDelaySeconds: rateLimitDelaySeconds,
-		NudgeCount:            nudgeCount,
-		DisablePatchSummary:   a.disablePatchSummary,
-		SkipSuggestions:       a.skipSuggestions,
-		Workdir:               a.workDir,
-		GitHubToken:           a.githubToken,
-		GitLabToken:           a.gitlabToken,
-		GitLabBaseURL:         a.gitlabBaseURL,
+		BaseURL:                a.baseURL,
+		APIKey:                 a.apiKey,
+		ReasoningEffort:        a.reasoningEffort,
+		Temperature:            temperature,
+		TopP:                   topP,
+		TopK:                   topK,
+		PresencePenalty:        presencePenalty,
+		ExtraBody:              extraBody,
+		UseJSONSchema:          a.useJSONSchema,
+		IncludePaths:           includePaths,
+		ExcludePaths:           excludePaths,
+		IncludeContent:         includeContent,
+		ExcludeContent:         excludeContent,
+		MaxContextTokens:       maxContextTokens,
+		ToolCalls:              toolCalls,
+		DuplicateToolCalls:     duplicateToolCalls,
+		OutputRetries:          outputRetries,
+		ReasoningSeconds:       reasoningSeconds,
+		ReasoningLoopRepeats:   reasoningLoopRepeats,
+		RateLimitDelaySeconds:  rateLimitDelaySeconds,
+		NudgeCount:             nudgeCount,
+		DisablePatchSummary:    a.disablePatchSummary,
+		SkipSuggestions:        a.skipSuggestions,
+		SkipWorkflowTimeBudget: a.skipWorkflowTimeBudget,
+		Workdir:                a.workDir,
+		GitHubToken:            a.githubToken,
+		GitLabToken:            a.gitlabToken,
+		GitLabBaseURL:          a.gitlabBaseURL,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -940,6 +943,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	if profile.SkipSuggestions {
 		req.SkipSuggestions = true
+	}
+	if profile.SkipWorkflowTimeBudget {
+		req.SkipWorkflowTimeBudget = true
 	}
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {

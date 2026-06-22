@@ -193,12 +193,12 @@ func (s *reviewerSession) launchCollect(ctx context.Context, e *Engine, agentNam
 // reviewerInitial runs the reviewer's initial pass, wiring reasoning collection
 // when enabled, and populates the session. The reasoning-collect goroutines are
 // awaited before returning so collectedLists is frozen for later extraction.
-func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineEngine *Engine, mineReq model.ReviewRequest) error {
+func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineCtx context.Context, mineEngine *Engine, mineReq model.ReviewRequest) error {
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
 	if s.extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
-			s.launchCollect(ctx, mineEngine, agentName, iterIdx, reasoning, mineReq)
+			s.launchCollect(mineCtx, mineEngine, agentName, iterIdx, reasoning, mineReq)
 		}
 	}
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
@@ -331,14 +331,19 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 // error only for the rare reasoning-findings marshalling failure; a failed nudge
 // round stops the loop and is reported via the session's nudgeErr (a partial,
 // not a hard error), matching the legacy behavior.
-func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest, compileEngine *Engine, compileReq model.ReviewRequest, nudgeEngine *Engine, nudgeReq model.ReviewRequest) error {
+func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest, compileCtx context.Context, compileEngine *Engine, compileReq model.ReviewRequest, nudgeCtxBase context.Context, nudgeEngine *Engine, nudgeReq model.ReviewRequest) error {
 	for i := 0; i < req.NudgeCount; i++ {
+		if compileCtx.Err() != nil || nudgeCtxBase.Err() != nil {
+			e.logf(ctx, "Nudge phase skipped or stopped by time budget: completed=%d/%d", i, req.NudgeCount)
+			return nil
+		}
 		nudgeName := fmt.Sprintf("%s · Nudge %d/%d", s.agent.name, i+1, req.NudgeCount)
-		nudgeCtx := logging.WithProgressInfo(ctx, nudgeEngine.progressInfo(s.agent.role, nudgeName, ""))
-		delta, err := compileEngine.reviewerComputeExtractDelta(nudgeCtx, s, compileReq)
+		compileProgressCtx := logging.WithProgressInfo(compileCtx, nudgeEngine.progressInfo(s.agent.role, nudgeName, ""))
+		delta, err := compileEngine.reviewerComputeExtractDelta(compileProgressCtx, s, compileReq)
 		if err != nil {
 			return err
 		}
+		nudgeCtx := logging.WithProgressInfo(nudgeCtxBase, nudgeEngine.progressInfo(s.agent.role, nudgeName, ""))
 		if !nudgeEngine.reviewerNudgeTurn(nudgeCtx, s, i, req.NudgeCount, nudgeName, delta, nudgeReq) {
 			break
 		}

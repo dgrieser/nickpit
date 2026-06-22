@@ -286,6 +286,28 @@ profiles:
 	}
 }
 
+func TestLoadConfigSkipWorkflowTimeBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    skip_workflow_time_budget: true
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.SkipWorkflowTimeBudget {
+		t.Fatal("expected skip_workflow_time_budget to be enabled")
+	}
+}
+
 func TestLoadConfigTracksEmptyConfiguredAPIKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
 	t.Setenv("NICKPIT_API_KEY", "")

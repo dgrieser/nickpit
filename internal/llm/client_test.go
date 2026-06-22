@@ -1512,6 +1512,34 @@ func TestLowerReasoningEfforts(t *testing.T) {
 	}
 }
 
+func TestUrgentReasoningEffortsStartLow(t *testing.T) {
+	tests := []struct {
+		name    string
+		effort  string
+		allowed []string
+		want    []string
+	}{
+		{name: "unknown support tries lowest first", effort: "high", want: []string{"off", "none", "minimal", "low", "medium", "high"}},
+		{name: "allowed support filters", effort: "high", allowed: []string{"medium", "low"}, want: []string{"low", "medium"}},
+		{name: "custom effort kept as fallback", effort: "provider-high", want: []string{"off", "none", "minimal", "low", "provider-high"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var allowed map[string]struct{}
+			if tt.allowed != nil {
+				allowed = map[string]struct{}{}
+				for _, effort := range tt.allowed {
+					allowed[effort] = struct{}{}
+				}
+			}
+			got := urgentReasoningEfforts(tt.effort, allowed)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("urgentReasoningEfforts(%q) = %v, want %v", tt.effort, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestKnownReasoningEfforts(t *testing.T) {
 	want := []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 	got := KnownReasoningEfforts()

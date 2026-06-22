@@ -1491,10 +1491,10 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	if agent.role == "review" {
 		s := e.newReviewerSession(agent, req, false)
-		if err := e.reviewerInitial(ctx, s, req, e, req); err != nil {
+		if err := e.reviewerInitial(ctx, s, req, ctx, e, req); err != nil {
 			return s.partialResult(req), err
 		}
-		if err := e.reviewerNudges(ctx, s, req, e, req, e, req); err != nil {
+		if err := e.reviewerNudges(ctx, s, req, ctx, e, req, ctx, e, req); err != nil {
 			return agentResult{}, err
 		}
 		return s.result(req), nil
@@ -2644,7 +2644,7 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 		callSec.End()
 	}()
 	start := time.Now()
-	resp, err := e.llm.Review(ctx, req)
+	resp, err := e.reviewWithTimeBudget(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
 	if ok && e.logger != nil {
 		if resp != nil && resp.Reasoned {
@@ -2653,6 +2653,32 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 		e.logger.ProgressFor(turnInfo, logging.StageResponse, logging.StateDone, elapsed.String())
 	}
 	return resp, err
+}
+
+func (e *Engine) reviewWithTimeBudget(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	if timeBudgetUrgentNow(ctx) && !req.Urgent {
+		urgentReq := *req
+		urgentReq.Urgent = true
+		e.logf(ctx, "Workflow time budget speed-up threshold already reached; sending urgent request")
+		return e.llm.Review(ctx, &urgentReq)
+	}
+	softDeadline, ok := timeBudgetSpeedupDeadline(ctx)
+	if !ok || req.Urgent {
+		return e.llm.Review(ctx, req)
+	}
+	softCtx, cancel := context.WithDeadline(ctx, softDeadline)
+	resp, err := e.llm.Review(softCtx, req)
+	cancel()
+	if err == nil {
+		return resp, nil
+	}
+	if softCtx.Err() == nil || ctx.Err() != nil {
+		return resp, err
+	}
+	urgentReq := *req
+	urgentReq.Urgent = true
+	e.logf(ctx, "Workflow time budget speed-up threshold reached; retrying urgently")
+	return e.llm.Review(ctx, &urgentReq)
 }
 
 func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {

@@ -446,6 +446,112 @@ steps:
 	}
 }
 
+func TestLoadParsesTimeBudgetConfig(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - parallel:
+      - lane:
+          - type: review:testing
+            config:
+              time_budget:
+                max_seconds: 900
+                weight: 70
+              mine_reasoning:
+                model: "@small"
+                time_budget:
+                  weight: 10
+                  speedup_threshold: 100
+              compile_findings:
+                model: "@small"
+                time_budget:
+                  weight: 10
+              nudge:
+                model: "@small"
+                time_budget:
+                  weight: 10
+          - type: verify:testing
+            config:
+              time_budget:
+                weight: 0
+          - type: dedupe:testing
+        config:
+          time_budget:
+            max_seconds: 1200
+            speedup_threshold: 80
+  - pipeline:
+      - type: merge
+        config:
+          scope: cluster
+          time_budget:
+            weight: 40
+      - type: finalize
+        config:
+          scope: cluster
+      - type: verdict
+        config:
+          scope: all
+      - type: summarize
+        config:
+          scope: cluster
+    config:
+      time_budget:
+        max_seconds: 300
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	lane := spec.Steps[0].Parallel[0]
+	if lane.Config == nil || lane.Config.TimeBudget == nil || *lane.Config.TimeBudget.MaxSeconds != 1200 {
+		t.Fatalf("lane time budget not parsed: %+v", lane.Config)
+	}
+	review := lane.Lane[0]
+	if review.Config == nil || review.Config.TimeBudget == nil || *review.Config.TimeBudget.MaxSeconds != 900 || *review.Config.TimeBudget.Weight != 70 {
+		t.Fatalf("review time budget not parsed: %+v", review.Config)
+	}
+	if review.Config.MineReasoning == nil || review.Config.MineReasoning.TimeBudget == nil || *review.Config.MineReasoning.TimeBudget.SpeedupThreshold != 100 {
+		t.Fatalf("mine_reasoning time budget not parsed: %+v", review.Config.MineReasoning)
+	}
+	verify := lane.Lane[1]
+	if verify.Config == nil || verify.Config.TimeBudget == nil || *verify.Config.TimeBudget.Weight != 0 {
+		t.Fatalf("verify weight not parsed: %+v", verify.Config)
+	}
+	pipeline := spec.Steps[1]
+	if pipeline.Config == nil || pipeline.Config.TimeBudget == nil || *pipeline.Config.TimeBudget.MaxSeconds != 300 {
+		t.Fatalf("pipeline time budget not parsed: %+v", pipeline.Config)
+	}
+	if merge := pipeline.Pipeline[0]; merge.Config == nil || merge.Config.TimeBudget == nil || *merge.Config.TimeBudget.Weight != 40 {
+		t.Fatalf("pipeline child weight not parsed: %+v", merge.Config)
+	}
+}
+
+func TestLoadRejectsBadTimeBudgetConfig(t *testing.T) {
+	cases := map[string]string{
+		"bad threshold low":       "version: 1\nsteps:\n  - type: merge\n    config:\n      time_budget: { speedup_threshold: 49 }\n",
+		"bad threshold high":      "version: 1\nsteps:\n  - type: merge\n    config:\n      time_budget: { speedup_threshold: 101 }\n",
+		"bad max seconds":         "version: 1\nsteps:\n  - type: merge\n    config:\n      time_budget: { max_seconds: 0 }\n",
+		"bad weight":              "version: 1\nsteps:\n  - type: merge\n    config:\n      time_budget: { weight: 101 }\n",
+		"lane weights over 100":   "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - type: review:security\n            config: { time_budget: { weight: 80 } }\n          - type: verify:security\n            config: { time_budget: { weight: 30 } }\n",
+		"review weights over 100": "version: 1\nsteps:\n  - type: review:security\n    config:\n      time_budget: { weight: 90 }\n      mine_reasoning:\n        time_budget: { weight: 20 }\n",
+		"group unknown config":    "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - type: review:security\n        config:\n          model: small\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			spec, err := Load(writeSpec(t, body))
+			if err != nil {
+				return
+			}
+			if err := spec.Validate(); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsBadLanes(t *testing.T) {
 	cases := map[string]string{
 		"top-level lane":     "version: 1\nsteps:\n  - lane:\n      - type: review:security\n",

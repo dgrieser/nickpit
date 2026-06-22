@@ -72,6 +72,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("nudge_count", yamlInt(profile.NudgeCount)),
 		yamlEntry("disable_patch_summary", yamlBool(profile.DisablePatchSummary)),
 		yamlEntry("skip_suggestions", yamlBool(profile.SkipSuggestions)),
+		yamlEntry("skip_workflow_time_budget", yamlBool(profile.SkipWorkflowTimeBudget)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),

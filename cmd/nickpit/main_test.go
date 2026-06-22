@@ -310,6 +310,32 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesSkipWorkflowTimeBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:                "default",
+		configPath:             path,
+		skipWorkflowTimeBudget: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.SkipWorkflowTimeBudget {
+		t.Fatal("expected skip workflow time budget CLI override")
+	}
+}
+
 func TestLoadProfileAppliesSamplingCLIOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
