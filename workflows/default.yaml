@@ -3,6 +3,9 @@ version: 1
 
 steps:
   - type: collect-context
+    config:
+      time_budget:
+        max_seconds: 180
   - parallel:
       - lane:
           - type: review:codequality
@@ -14,9 +17,16 @@ steps:
           - type: verify:codequality
             config:
               scope: finding
+              time_budget:
+                weight: 25
           - type: dedupe:codequality
             config:
               scope: reviewer
+              time_budget:
+                weight: 20
+        config:
+          time_budget:
+            max_seconds: 900
       - lane:
           - type: review:security
             config:
@@ -27,9 +37,16 @@ steps:
           - type: verify:security
             config:
               scope: finding
+              time_budget:
+                weight: 25
           - type: dedupe:security
             config:
               scope: reviewer
+              time_budget:
+                weight: 20
+        config:
+          time_budget:
+            max_seconds: 900
       - lane:
           - type: review:architecture
             config:
@@ -40,9 +57,16 @@ steps:
           - type: verify:architecture
             config:
               scope: finding
+              time_budget:
+                weight: 25
           - type: dedupe:architecture
             config:
               scope: reviewer
+              time_budget:
+                weight: 20
+        config:
+          time_budget:
+            max_seconds: 900
       - lane:
           - type: review:performance
             config:
@@ -53,9 +77,16 @@ steps:
           - type: verify:performance
             config:
               scope: finding
+              time_budget:
+                weight: 25
           - type: dedupe:performance
             config:
               scope: reviewer
+              time_budget:
+                weight: 20
+        config:
+          time_budget:
+            max_seconds: 900
       - lane:
           - type: review:testing
             config:
@@ -66,9 +97,16 @@ steps:
           - type: verify:testing
             config:
               scope: finding
+              time_budget:
+                weight: 25
           - type: dedupe:testing
             config:
               scope: reviewer
+              time_budget:
+                weight: 20
+        config:
+          time_budget:
+            max_seconds: 900
       - lane:
           - type: review:bestpractices
             config:
@@ -79,22 +117,40 @@ steps:
           - type: verify:bestpractices
             config:
               scope: finding
+              time_budget:
+                weight: 25
           - type: dedupe:bestpractices
             config:
               scope: reviewer
+              time_budget:
+                weight: 20
+        config:
+          time_budget:
+            max_seconds: 900
   - pipeline:
       - type: merge
         config:
           scope: cluster
+          time_budget:
+            weight: 35
       - type: finalize
         config:
           model: "@small"
           scope: cluster
+          time_budget:
+            weight: 40
       - type: verdict
         config:
           model: "@small"
           scope: all
+          time_budget:
+            weight: 10
       - type: summarize
         config:
           model: "@small"
           scope: cluster
+          time_budget:
+            weight: 15
+    config:
+      time_budget:
+        max_seconds: 600

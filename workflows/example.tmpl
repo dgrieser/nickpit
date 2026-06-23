@@ -122,25 +122,25 @@
 #           model: claude-opus-4-8
 #           reasoning_effort: max
 #           time_budget:
-#             weight: 40
+#             weight: 35
 #       - type: finalize
 #         config:
 #           scope: cluster
 #           time_budget:
-#             weight: 25
+#             weight: 40
 #       - type: verdict
 #         config:
 #           scope: all
 #           time_budget:
-#             weight: 15
+#             weight: 10
 #       - type: summarize
 #         config:
 #           scope: cluster
 #           time_budget:
-#             weight: 20
+#             weight: 15
 #     config:
 #       time_budget:
-#         max_seconds: 300
+#         max_seconds: 600
 #
 # Overridable config keys:
 #   model, temperature, top_p, top_k, presence_penalty, max_tokens,
