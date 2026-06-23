@@ -18,12 +18,12 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 25
+                weight: 35
           - type: dedupe:codequality
             config:
               scope: reviewer
               time_budget:
-                weight: 20
+                weight: 10
         config:
           time_budget:
             max_seconds: 900
@@ -38,12 +38,12 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 25
+                weight: 35
           - type: dedupe:security
             config:
               scope: reviewer
               time_budget:
-                weight: 20
+                weight: 10
         config:
           time_budget:
             max_seconds: 900
@@ -58,12 +58,12 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 25
+                weight: 35
           - type: dedupe:architecture
             config:
               scope: reviewer
               time_budget:
-                weight: 20
+                weight: 10
         config:
           time_budget:
             max_seconds: 900
@@ -78,12 +78,12 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 25
+                weight: 35
           - type: dedupe:performance
             config:
               scope: reviewer
               time_budget:
-                weight: 20
+                weight: 10
         config:
           time_budget:
             max_seconds: 900
@@ -98,12 +98,12 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 25
+                weight: 35
           - type: dedupe:testing
             config:
               scope: reviewer
               time_budget:
-                weight: 20
+                weight: 10
         config:
           time_budget:
             max_seconds: 900
@@ -118,12 +118,12 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 25
+                weight: 35
           - type: dedupe:bestpractices
             config:
               scope: reviewer
               time_budget:
-                weight: 20
+                weight: 10
         config:
           time_budget:
             max_seconds: 900
@@ -132,25 +132,25 @@ steps:
         config:
           scope: cluster
           time_budget:
-            weight: 35
+            weight: 40
       - type: finalize
         config:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 40
+            weight: 10
       - type: verdict
         config:
           model: "@small"
           scope: all
           time_budget:
-            weight: 10
+            weight: 40
       - type: summarize
         config:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 15
+            weight: 10
     config:
       time_budget:
-        max_seconds: 600
+        max_seconds: 900
