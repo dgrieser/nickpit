@@ -831,8 +831,8 @@ func urgentReasoningEfforts(effort string, allowed map[string]struct{}) []string
 		seen[normalized] = struct{}{}
 		out = append(out, normalized)
 	}
-	for i := len(candidates) - 1; i >= 0; i-- {
-		add(candidates[i])
+	for _, candidate := range slices.Backward(candidates) {
+		add(candidate)
 	}
 	add(effort)
 	if len(out) == 0 {

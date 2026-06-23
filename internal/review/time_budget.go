@@ -126,10 +126,7 @@ func resolvedTimeWeights(budgets []*workflow.TimeBudget) []float64 {
 		return weights
 	}
 	if unset > 0 {
-		remaining := 100 - explicitSum
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining := max(100-explicitSum, 0)
 		each := float64(remaining) / float64(unset)
 		for i, budget := range budgets {
 			if budget == nil || budget.Weight == nil {
