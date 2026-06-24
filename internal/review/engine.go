@@ -2670,17 +2670,18 @@ func (e *Engine) reviewWithTimeBudget(ctx context.Context, req *llm.ReviewReques
 	}
 	softCtx, cancel := context.WithDeadline(ctx, softDeadline)
 	resp, err := e.llm.Review(softCtx, req)
+	softErr := softCtx.Err()
 	cancel()
 	if err == nil {
 		return resp, nil
 	}
-	if softCtx.Err() == nil || ctx.Err() != nil {
+	if softErr != context.DeadlineExceeded || ctx.Err() != nil {
 		e.logTimeBudgetDeadlineIfExpired(ctx)
 		return resp, err
 	}
 	urgentReq := *req
 	urgentReq.Urgent = true
-	e.logTimeBudgetRetry(ctx)
+	e.logTimeBudgetRetry(ctx, err, softErr)
 	return e.reviewLLMWithTimeBudgetLog(ctx, &urgentReq)
 }
 
@@ -2703,15 +2704,15 @@ func (e *Engine) logTimeBudgetUrgentNow(ctx context.Context) {
 		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)))
 }
 
-func (e *Engine) logTimeBudgetRetry(ctx context.Context) {
+func (e *Engine) logTimeBudgetRetry(ctx context.Context, firstErr error, softErr error) {
 	budget, ok := timeBudgetFromContext(ctx)
 	if !ok {
-		e.logf(ctx, "Workflow time budget speed-up threshold reached; retrying urgently")
+		e.logf(ctx, "Workflow time budget speed-up threshold reached; retrying urgently first_error=%v soft_err=%v", firstErr, softErr)
 		return
 	}
 	now := time.Now()
-	e.logf(ctx, "Workflow time budget speed-up threshold reached: scope=%s elapsed=%s limit=%s remaining=%s; retrying urgently",
-		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetRemaining(budget, now)))
+	e.logf(ctx, "Workflow time budget speed-up threshold reached: scope=%s elapsed=%s limit=%s remaining=%s; retrying urgently first_error=%v soft_err=%v",
+		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetRemaining(budget, now)), firstErr, softErr)
 }
 
 func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {

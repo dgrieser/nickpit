@@ -3,6 +3,7 @@ package review
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ type urgentRecordingLLM struct {
 	mu     sync.Mutex
 	calls  []bool
 	wait   bool
+	err    error
 	result *llm.ReviewResponse
 }
 
@@ -29,6 +31,9 @@ func (u *urgentRecordingLLM) Review(ctx context.Context, req *llm.ReviewRequest)
 	if u.wait && !req.Urgent {
 		<-ctx.Done()
 		return nil, ctx.Err()
+	}
+	if u.err != nil {
+		return nil, u.err
 	}
 	if u.result != nil {
 		return u.result, nil
@@ -64,6 +69,35 @@ func TestReviewWithTimeBudgetRetriesUrgentlyAtThreshold(t *testing.T) {
 	}
 	if log := logs.String(); !strings.Contains(log, "Workflow time budget speed-up threshold reached: scope=unit:soft") || !strings.Contains(log, "retrying urgently") {
 		t.Fatalf("log = %q, want soft threshold retry with scope", log)
+	}
+	if log := logs.String(); !strings.Contains(log, "first_error=context deadline exceeded") || !strings.Contains(log, "soft_err=context deadline exceeded") {
+		t.Fatalf("log = %q, want soft threshold retry error details", log)
+	}
+}
+
+func TestReviewWithTimeBudgetDoesNotRetryUrgentlyOnRequestErrorBeforeThreshold(t *testing.T) {
+	requestErr := errors.New("temporary transport failure")
+	client := &urgentRecordingLLM{err: requestErr}
+	engine := pipelineTestEngine(client)
+	var logs bytes.Buffer
+	engine.SetLogger(logging.New(&logs, true, false))
+	now := time.Now()
+	ctx := context.WithValue(context.Background(), timeBudgetContextKey{}, activeTimeBudget{
+		scope:            "unit:error",
+		start:            now,
+		deadline:         now.Add(time.Second),
+		speedupThreshold: 80,
+	})
+
+	if _, err := engine.reviewWithTimeBudget(ctx, &llm.ReviewRequest{}); !errors.Is(err, requestErr) {
+		t.Fatalf("error = %v, want %v", err, requestErr)
+	}
+	got := client.snapshot()
+	if len(got) != 1 || got[0] {
+		t.Fatalf("urgent calls = %v, want [false]", got)
+	}
+	if log := logs.String(); strings.Contains(log, "Workflow time budget speed-up threshold reached") || strings.Contains(log, "retrying urgently") {
+		t.Fatalf("log = %q, want no soft threshold retry", log)
 	}
 }
 
