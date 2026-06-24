@@ -421,15 +421,15 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	dropsByVector := make(map[int]dropCounts, len(vectorResults))
 	for i, verification := range verifications {
 		ref := refs[i]
-		if verification == nil {
-			return usage, warnings, fmt.Errorf("review: verifier returned no result for finding #%d %q", i+1, findings[i].Title)
-		}
 		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
 		// findings[i].ID holds the normalized ID after EnsureFindingIDs above,
 		// which may have replaced an invalid or duplicate reviewer ID. Always
 		// adopt it so corrected IDs survive into downstream dedupe/merge
 		// validation and stay in sync with Verification.ID.
 		finding.ID = findings[i].ID
+		if verification == nil {
+			verification = fallbackUnverifiedVerification(finding)
+		}
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
 		drop, reason := shouldDropFinding(&v, opts.DropPolicy, opts.DropConfidence)

@@ -66,6 +66,19 @@ func sampleReviewCtx() *model.ReviewContext {
 	}
 }
 
+func assertFallbackUnverified(t *testing.T, v *model.FindingVerification, priority int) {
+	t.Helper()
+	if v == nil {
+		t.Fatal("verification = nil, want fallback unverified verification")
+	}
+	if _, err := uuid.Parse(v.ID); err != nil {
+		t.Fatalf("verification ID = %q, want valid UUID", v.ID)
+	}
+	if v.Verdict != model.VerdictUnverified || v.Priority != priority || v.ConfidenceScore != 0 || v.Remarks != "" {
+		t.Fatalf("verification = %#v, want unverified priority %d confidence 0 with empty remarks", v, priority)
+	}
+}
+
 func TestVerifyAllAttachesByIndex(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{
@@ -120,9 +133,7 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	if len(verifications) != 1 {
 		t.Fatalf("verifications len = %d", len(verifications))
 	}
-	if verifications[0] != nil {
-		t.Fatalf("verification = %#v, want nil", verifications[0])
-	}
+	assertFallbackUnverified(t, verifications[0], 1)
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %#v, want 1", warnings)
 	}
@@ -152,10 +163,8 @@ func TestVerifyAllCancelledContextWarnsOnceAndStops(t *testing.T) {
 	if !strings.Contains(warnings[0], "skipped 3 remaining") {
 		t.Fatalf("warning content = %q", warnings[0])
 	}
-	for i, v := range verifications {
-		if v != nil {
-			t.Fatalf("verifications[%d] = %#v, want nil", i, v)
-		}
+	for _, v := range verifications {
+		assertFallbackUnverified(t, v, 1)
 	}
 	if llmClient.calls != 0 {
 		t.Fatalf("LLM calls = %d, want 0 after cancellation", llmClient.calls)
@@ -270,6 +279,35 @@ func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
 	if kept[1].Title != "unverified" || kept[1].Verification == nil ||
 		kept[1].Verification.Verdict != model.VerdictUnverified || kept[1].Verification.Remarks != "uncertain" {
 		t.Fatalf("kept unverified = %#v, want unchanged unverified", kept[1])
+	}
+}
+
+func TestVerifyAndFilterKeepsVerifierFailuresAsUnverified(t *testing.T) {
+	reviewerFindings := []model.Finding{
+		{Title: "timeout", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+	}
+	llmClient := &scriptedVerifyLLM{err: errors.New("context deadline exceeded")}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: reviewerFindings},
+		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
+	}}
+	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly, VerifyDropConfidence: 0.7}
+	_, warnings, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
+	if err != nil {
+		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Verify failed") || !strings.Contains(warnings[0], "context deadline exceeded") {
+		t.Fatalf("warnings = %#v, want verifier failure warning", warnings)
+	}
+	kept := vectorResults[0].resp.Findings
+	if len(kept) != 1 {
+		t.Fatalf("kept findings = %d, want 1", len(kept))
+	}
+	assertFallbackUnverified(t, kept[0].Verification, 2)
+	if kept[0].Verification.ID != kept[0].ID {
+		t.Fatalf("verification ID = %q, finding ID = %q, want matching IDs", kept[0].Verification.ID, kept[0].ID)
 	}
 }
 

@@ -951,9 +951,9 @@ func TestVerifyUnlimitedRunsLanesConcurrently(t *testing.T) {
 	}
 }
 
-// A fatal verify failure aborts only its own lane; sibling lanes run to the
-// barrier, then the run fails and merge never executes.
-func TestWorkflowLaneVerifyFailureFailsRunAfterSiblingCompletes(t *testing.T) {
+// A per-finding verify failure is downgraded to an unverified finding, so the
+// lane continues through dedupe and still reaches merge with its siblings.
+func TestWorkflowLaneVerifyFailureContinuesAsUnverified(t *testing.T) {
 	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
 	client := &laneEventLLM{inner: inner, verifyErrFor: "Security"}
 	engine := pipelineTestEngine(client)
@@ -961,19 +961,29 @@ func TestWorkflowLaneVerifyFailureFailsRunAfterSiblingCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
-	if err == nil {
-		t.Fatal("expected run to fail on security verify error")
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
+	if err != nil {
+		t.Fatalf("RunSpecPipeline returned err: %v", err)
 	}
 	events := client.snapshot()
-	if firstEventIndex(events, "dedupe:Security") >= 0 {
-		t.Fatalf("security dedupe ran after fatal verify: %v", events)
+	if firstEventIndex(events, "dedupe:Security") < 0 {
+		t.Fatalf("security dedupe did not run after soft verify failure: %v", events)
 	}
 	if firstEventIndex(events, "dedupe:Performance") < 0 {
 		t.Fatalf("sibling performance lane did not complete: %v", events)
 	}
-	if firstEventIndex(events, "merge") >= 0 {
-		t.Fatalf("merge ran despite failed lane: %v", events)
+	if firstEventIndex(events, "merge") < 0 {
+		t.Fatalf("merge did not run after soft verify failure: %v", events)
+	}
+	foundWarning := false
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "Verify failed") && strings.Contains(warning, "verify upstream down") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("warnings = %#v, want verify failure warning", result.Warnings)
 	}
 }
 

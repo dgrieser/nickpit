@@ -364,8 +364,8 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 }
 
 // verifyStepFunc verifies and filters the current groups' findings in place.
-// When findings are injected, they seed a single group first. A verifier failure
-// is fatal, mirroring the legacy pipeline.
+// When findings are injected, they seed a single group first. Per-finding
+// verifier failures are kept as unverified findings with warnings.
 func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
 		if err := injectGroups(st, findingsFrom, sc.Req.SkipSuggestions); err != nil {
@@ -387,9 +387,9 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 }
 
 // verifyVectorStepFunc verifies and filters one reviewer group's findings in
-// place, admitted through the run-shared verify limiter. Verifier failure is
-// fatal, matching the global verify step; a soft-failed or empty reviewer is a
-// graceful no-op.
+// place, admitted through the run-shared verify limiter. Per-finding verifier
+// failures are kept as unverified findings with warnings; a soft-failed or
+// empty reviewer is a graceful no-op.
 func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
 		vr, ok := st.vectorResult(vectorID)

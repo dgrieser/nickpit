@@ -264,8 +264,25 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		}(i, finding, verifyCtx, release)
 	}
 	wg.Wait()
+	for i := range verifications {
+		if verifications[i] == nil {
+			verifications[i] = fallbackUnverifiedVerification(findings[i])
+		}
+	}
 	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("%sfindings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", verifyReviewerPrefix(opts.ReviewerName), len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(verifyStart))))
 	return verifications, usageSum, warnings, nil
+}
+
+func fallbackUnverifiedVerification(f model.Finding) *model.FindingVerification {
+	v := &model.FindingVerification{
+		ID:              f.ID,
+		Verdict:         model.VerdictUnverified,
+		Priority:        model.PriorityRank(f.Priority),
+		ConfidenceScore: 0,
+		Remarks:         "",
+	}
+	model.EnsureVerificationID(v, f.ID)
+	return v
 }
 
 // verifyReviewerPrefix labels per-reviewer verify progress lines; the global
