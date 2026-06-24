@@ -147,12 +147,12 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	}, nil
 }
 
-func reviewPhaseBudgetStarters(ctx context.Context, override *workflow.StepOverride, req model.ReviewRequest, collectAnyway bool) (timeBudgetStarter, timeBudgetStarter, timeBudgetStarter, timeBudgetStarter) {
+func reviewPhaseBudgetStarters(ctx context.Context, vectorID string, override *workflow.StepOverride, req model.ReviewRequest, collectAnyway bool, logf timeBudgetLogFunc) (timeBudgetStarter, timeBudgetStarter, timeBudgetStarter, timeBudgetStarter) {
 	if req.SkipWorkflowTimeBudget || override == nil || !hasReviewPhaseBudget(override) {
-		return newTimeBudgetStarter(ctx, nil, childTimePlan{}, false),
-			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false),
-			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false),
-			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
+		return newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
+			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
+			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
+			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
 	}
 	extractEnabled := !req.DisableReasoningExtract && req.ModelEmitsReasoning && (req.NudgeCount > 0 || collectAnyway)
 
@@ -165,10 +165,10 @@ func reviewPhaseBudgetStarters(ctx context.Context, override *workflow.StepOverr
 	compileTB := agentTimeBudget(override.CompileFindings)
 	nudgeTB := agentTimeBudget(override.Nudge)
 	if extractEnabled || mineTB != nil {
-		phases = append(phases, phase{name: "mine", tb: mineTB})
+		phases = append(phases, phase{name: "mine_reasoning", tb: mineTB})
 	}
 	if (extractEnabled && req.NudgeCount > 0) || compileTB != nil {
-		phases = append(phases, phase{name: "compile", tb: compileTB})
+		phases = append(phases, phase{name: "compile_findings", tb: compileTB})
 	}
 	if req.NudgeCount > 0 || nudgeTB != nil {
 		phases = append(phases, phase{name: "nudge", tb: nudgeTB})
@@ -179,18 +179,18 @@ func reviewPhaseBudgetStarters(ctx context.Context, override *workflow.StepOverr
 	}
 	plans := childTimePlans(ctx, budgets)
 
-	main := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
-	mine := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
-	compile := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
-	nudge := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
+	main := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
+	mine := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
+	compile := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
+	nudge := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
 	for i, phase := range phases {
-		starter := newTimeBudgetStarter(ctx, phase.tb, plans[i], true)
+		starter := newTimeBudgetStarter(ctx, phase.tb, plans[i], true, "review:"+vectorID+":"+phase.name, logf)
 		switch phase.name {
 		case "main":
 			main = starter
-		case "mine":
+		case "mine_reasoning":
 			mine = starter
-		case "compile":
+		case "compile_findings":
 			compile = starter
 		case "nudge":
 			nudge = starter
@@ -255,7 +255,7 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 				nudge = sc.internalAgentContext(sc.Override.Nudge)
 			}
 		}
-		mainBudget, mineBudget, compileBudget, nudgeBudget := reviewPhaseBudgetStarters(ctx, sc.Override, sc.Req, collectAnyway)
+		mainBudget, mineBudget, compileBudget, nudgeBudget := reviewPhaseBudgetStarters(ctx, vectorID, sc.Override, sc.Req, collectAnyway, sc.Engine.logf)
 		mainCtx, mainCancel, mainSkipped := mainBudget.start()
 		if mainSkipped {
 			mainCtx, mainCancel = alreadyCanceledContext(ctx)
@@ -535,12 +535,12 @@ type clusterMergeOutcome struct {
 	hasRun   bool
 }
 
-func pipelinePhaseBudgets(ctx context.Context, fused postMergeFusedSpec, skip bool) (timeBudgetStarter, timeBudgetStarter, timeBudgetStarter, timeBudgetStarter) {
+func pipelinePhaseBudgets(ctx context.Context, fused postMergeFusedSpec, skip bool, logf timeBudgetLogFunc) (timeBudgetStarter, timeBudgetStarter, timeBudgetStarter, timeBudgetStarter) {
 	if skip {
-		return newTimeBudgetStarter(ctx, nil, childTimePlan{}, false),
-			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false),
-			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false),
-			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
+		return newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
+			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
+			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
+			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
 	}
 	budgets := []*workflow.TimeBudget{
 		timeBudgetOf(fused.merge.Config),
@@ -552,10 +552,14 @@ func pipelinePhaseBudgets(ctx context.Context, fused postMergeFusedSpec, skip bo
 	}
 	plans := childTimePlans(ctx, budgets)
 	starters := make([]timeBudgetStarter, len(budgets))
-	for i, budget := range budgets {
-		starters[i] = newTimeBudgetStarter(ctx, budget, plans[i], true)
+	scopes := []string{"post_merge:merge", "post_merge:finalize", "post_merge:verdict"}
+	if fused.hasSummarize {
+		scopes = append(scopes, "post_merge:summarize")
 	}
-	summarize := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
+	for i, budget := range budgets {
+		starters[i] = newTimeBudgetStarter(ctx, budget, plans[i], true, scopes[i], logf)
+	}
+	summarize := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
 	if fused.hasSummarize {
 		summarize = starters[3]
 	}
@@ -578,7 +582,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		if fused.hasSummarize {
 			summarizeSC = e.stepContext(fused.summarize.Config, sc.Req)
 		}
-		mergeBudget, finalizeBudget, verdictBudget, summarizeBudget := pipelinePhaseBudgets(ctx, fused, sc.Req.SkipWorkflowTimeBudget)
+		mergeBudget, finalizeBudget, verdictBudget, summarizeBudget := pipelinePhaseBudgets(ctx, fused, sc.Req.SkipWorkflowTimeBudget, e.logf)
 
 		if err := injectGroups(st, fused.merge.FindingsFrom, mergeSC.Req.SkipSuggestions); err != nil {
 			return err

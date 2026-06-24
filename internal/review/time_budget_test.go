@@ -1,12 +1,16 @@
 package review
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/workflow"
 )
@@ -41,8 +45,11 @@ func (u *urgentRecordingLLM) snapshot() []bool {
 func TestReviewWithTimeBudgetRetriesUrgentlyAtThreshold(t *testing.T) {
 	client := &urgentRecordingLLM{wait: true}
 	engine := pipelineTestEngine(client)
+	var logs bytes.Buffer
+	engine.SetLogger(logging.New(&logs, true, false))
 	now := time.Now()
 	ctx := context.WithValue(context.Background(), timeBudgetContextKey{}, activeTimeBudget{
+		scope:            "unit:soft",
 		start:            now,
 		deadline:         now.Add(80 * time.Millisecond),
 		speedupThreshold: 50,
@@ -55,15 +62,21 @@ func TestReviewWithTimeBudgetRetriesUrgentlyAtThreshold(t *testing.T) {
 	if len(got) != 2 || got[0] || !got[1] {
 		t.Fatalf("urgent calls = %v, want [false true]", got)
 	}
+	if log := logs.String(); !strings.Contains(log, "Workflow time budget speed-up threshold reached: scope=unit:soft") || !strings.Contains(log, "retrying urgently") {
+		t.Fatalf("log = %q, want soft threshold retry with scope", log)
+	}
 }
 
 func TestReviewWithTimeBudgetThreshold100DoesNotRetryUrgently(t *testing.T) {
 	client := &urgentRecordingLLM{wait: true}
 	engine := pipelineTestEngine(client)
+	var logs bytes.Buffer
+	engine.SetLogger(logging.New(&logs, true, false))
 	now := time.Now()
 	ctx, cancel := context.WithDeadline(context.Background(), now.Add(20*time.Millisecond))
 	defer cancel()
 	ctx = context.WithValue(ctx, timeBudgetContextKey{}, activeTimeBudget{
+		scope:            "unit:hard",
 		start:            now,
 		deadline:         now.Add(20 * time.Millisecond),
 		speedupThreshold: 100,
@@ -75,6 +88,73 @@ func TestReviewWithTimeBudgetThreshold100DoesNotRetryUrgently(t *testing.T) {
 	got := client.snapshot()
 	if len(got) != 1 || got[0] {
 		t.Fatalf("urgent calls = %v, want [false]", got)
+	}
+	if log := logs.String(); !strings.Contains(log, "Workflow time budget deadline reached: scope=unit:hard") || !strings.Contains(log, "call aborted") {
+		t.Fatalf("log = %q, want hard deadline with scope", log)
+	}
+}
+
+type budgetLogRecorder struct {
+	lines []string
+}
+
+func (r *budgetLogRecorder) logf(_ context.Context, format string, args ...any) {
+	r.lines = append(r.lines, fmt.Sprintf(format, args...))
+}
+
+func (r *budgetLogRecorder) contains(fragment string) bool {
+	for _, line := range r.lines {
+		if strings.Contains(line, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestTimeBudgetStartLogsScopeLimitAndThreshold(t *testing.T) {
+	rec := &budgetLogRecorder{}
+	ctx, cancel, skipped := withConfiguredTimeBudget(
+		context.Background(),
+		&workflow.TimeBudget{MaxSeconds: intPtr(2), SpeedupThreshold: intPtr(75)},
+		childTimePlan{},
+		"unit:start",
+		rec.logf,
+	)
+	defer cancel()
+	if skipped {
+		t.Fatal("budget was skipped")
+	}
+	if _, ok := timeBudgetFromContext(ctx); !ok {
+		t.Fatal("budget missing from context")
+	}
+	for _, fragment := range []string{
+		"Workflow time budget started: scope=unit:start",
+		"limit=",
+		"deadline_in=",
+		"speedup_threshold=75%",
+		"speedup_in=",
+	} {
+		if !rec.contains(fragment) {
+			t.Fatalf("logs = %#v, missing %q", rec.lines, fragment)
+		}
+	}
+}
+
+func TestOptionalTimeBudgetSkipLogsScope(t *testing.T) {
+	rec := &budgetLogRecorder{}
+	now := time.Now()
+	parent := context.WithValue(context.Background(), timeBudgetContextKey{}, activeTimeBudget{
+		scope:            "unit:parent",
+		start:            now.Add(-time.Second),
+		deadline:         now.Add(-time.Millisecond),
+		speedupThreshold: 80,
+	})
+	_, _, skipped := withConfiguredTimeBudget(parent, nil, childTimePlan{optional: true}, "unit:optional", rec.logf)
+	if !skipped {
+		t.Fatal("budget was not skipped")
+	}
+	if !rec.contains("Workflow time budget skipped: scope=unit:optional reason=parent_deadline_exhausted") {
+		t.Fatalf("logs = %#v, want skip with scope", rec.lines)
 	}
 }
 
@@ -93,7 +173,7 @@ func TestWeightedChildBudgetStartsWhenActivated(t *testing.T) {
 
 	time.Sleep(60 * time.Millisecond)
 	activatedAt := time.Now()
-	child, cancel, skipped := newTimeBudgetStarter(parent, budget, plans[0], true).start()
+	child, cancel, skipped := newTimeBudgetStarter(parent, budget, plans[0], true, "unit:child", nil).start()
 	defer cancel()
 	if skipped {
 		t.Fatal("child budget was skipped")
@@ -124,7 +204,7 @@ func TestPipelinePhaseBudgetStartsWhenPhaseStarts(t *testing.T) {
 		summarize:    workflow.StepEntry{Config: &workflow.StepOverride{TimeBudget: &workflow.TimeBudget{Weight: intPtr(10)}}},
 		hasSummarize: true,
 	}
-	_, _, _, summarizeBudget := pipelinePhaseBudgets(parent, fused, false)
+	_, _, _, summarizeBudget := pipelinePhaseBudgets(parent, fused, false, nil)
 
 	time.Sleep(60 * time.Millisecond)
 	activatedAt := time.Now()
@@ -156,7 +236,7 @@ func TestReviewSubphaseBudgetStartsWhenSubphaseStarts(t *testing.T) {
 		TimeBudget: &workflow.TimeBudget{Weight: intPtr(70)},
 		Nudge:      &workflow.AgentOverride{TimeBudget: &workflow.TimeBudget{Weight: intPtr(10)}},
 	}
-	_, _, _, nudgeBudget := reviewPhaseBudgetStarters(parent, override, modelReviewRequestWithNudges(), false)
+	_, _, _, nudgeBudget := reviewPhaseBudgetStarters(parent, "testing", override, modelReviewRequestWithNudges(), false, nil)
 
 	time.Sleep(60 * time.Millisecond)
 	activatedAt := time.Now()

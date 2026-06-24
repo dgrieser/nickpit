@@ -375,7 +375,7 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 	laneCancel := func() {}
 	if !req.SkipWorkflowTimeBudget {
 		var skipped bool
-		laneCtx, laneCancel, skipped = withConfiguredTimeBudget(ctx, lane.timeBudget, childTimePlan{})
+		laneCtx, laneCancel, skipped = withConfiguredTimeBudget(ctx, lane.timeBudget, childTimePlan{}, "lane:"+laneLabel(lane), p.engine.logf)
 		if skipped {
 			st.addWarningf("Skipped lane %q because its time budget was exhausted", laneLabel(lane))
 			return nil
@@ -400,7 +400,7 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 				plan = plans[i]
 			}
 			var skipped bool
-			stepCtx, stepCancel, skipped = withConfiguredTimeBudget(laneCtx, bs.timeBudget, plan)
+			stepCtx, stepCancel, skipped = withConfiguredTimeBudget(laneCtx, bs.timeBudget, plan, "step:"+bs.label, p.engine.logf)
 			if skipped {
 				st.addWarningf("Skipped step %q because its time budget was exhausted", bs.label)
 				continue

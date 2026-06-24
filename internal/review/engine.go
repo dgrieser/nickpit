@@ -1492,7 +1492,7 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	if agent.role == "review" {
 		s := e.newReviewerSession(agent, req, false)
-		budget := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false)
+		budget := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
 		if err := e.reviewerInitial(ctx, s, req, budget, e, req); err != nil {
 			return s.partialResult(req), err
 		}
@@ -2661,12 +2661,12 @@ func (e *Engine) reviewWithTimeBudget(ctx context.Context, req *llm.ReviewReques
 	if timeBudgetUrgentNow(ctx) && !req.Urgent {
 		urgentReq := *req
 		urgentReq.Urgent = true
-		e.logf(ctx, "Workflow time budget speed-up threshold already reached; sending urgent request")
-		return e.llm.Review(ctx, &urgentReq)
+		e.logTimeBudgetUrgentNow(ctx)
+		return e.reviewLLMWithTimeBudgetLog(ctx, &urgentReq)
 	}
 	softDeadline, ok := timeBudgetSpeedupDeadline(ctx)
 	if !ok || req.Urgent {
-		return e.llm.Review(ctx, req)
+		return e.reviewLLMWithTimeBudgetLog(ctx, req)
 	}
 	softCtx, cancel := context.WithDeadline(ctx, softDeadline)
 	resp, err := e.llm.Review(softCtx, req)
@@ -2675,12 +2675,59 @@ func (e *Engine) reviewWithTimeBudget(ctx context.Context, req *llm.ReviewReques
 		return resp, nil
 	}
 	if softCtx.Err() == nil || ctx.Err() != nil {
+		e.logTimeBudgetDeadlineIfExpired(ctx)
 		return resp, err
 	}
 	urgentReq := *req
 	urgentReq.Urgent = true
-	e.logf(ctx, "Workflow time budget speed-up threshold reached; retrying urgently")
-	return e.llm.Review(ctx, &urgentReq)
+	e.logTimeBudgetRetry(ctx)
+	return e.reviewLLMWithTimeBudgetLog(ctx, &urgentReq)
+}
+
+func (e *Engine) reviewLLMWithTimeBudgetLog(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	resp, err := e.llm.Review(ctx, req)
+	if err != nil {
+		e.logTimeBudgetDeadlineIfExpired(ctx)
+	}
+	return resp, err
+}
+
+func (e *Engine) logTimeBudgetUrgentNow(ctx context.Context) {
+	budget, ok := timeBudgetFromContext(ctx)
+	if !ok {
+		e.logf(ctx, "Workflow time budget speed-up threshold already reached; sending urgent request")
+		return
+	}
+	now := time.Now()
+	e.logf(ctx, "Workflow time budget speed-up threshold already reached: scope=%s elapsed=%s limit=%s; sending urgent request",
+		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)))
+}
+
+func (e *Engine) logTimeBudgetRetry(ctx context.Context) {
+	budget, ok := timeBudgetFromContext(ctx)
+	if !ok {
+		e.logf(ctx, "Workflow time budget speed-up threshold reached; retrying urgently")
+		return
+	}
+	now := time.Now()
+	e.logf(ctx, "Workflow time budget speed-up threshold reached: scope=%s elapsed=%s limit=%s remaining=%s; retrying urgently",
+		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetRemaining(budget, now)))
+}
+
+func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {
+	if ctx.Err() == nil {
+		return
+	}
+	budget, ok := timeBudgetFromContext(ctx)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if budget.deadline.After(now) {
+		return
+	}
+	e.logf(ctx, "Workflow time budget deadline reached: scope=%s elapsed=%s limit=%s overrun=%s; call aborted",
+		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetOverrun(budget, now)))
 }
 
 func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {

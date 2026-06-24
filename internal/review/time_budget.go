@@ -10,6 +10,7 @@ import (
 const defaultSpeedupThreshold = 80
 
 type activeTimeBudget struct {
+	scope            string
 	start            time.Time
 	deadline         time.Time
 	speedupThreshold int
@@ -28,22 +29,26 @@ type timeBudgetStarter struct {
 	cfg     *workflow.TimeBudget
 	plan    childTimePlan
 	enabled bool
+	scope   string
+	logf    timeBudgetLogFunc
 }
+
+type timeBudgetLogFunc func(context.Context, string, ...any)
 
 func timeBudgetFromContext(ctx context.Context) (activeTimeBudget, bool) {
 	budget, ok := ctx.Value(timeBudgetContextKey{}).(activeTimeBudget)
 	return budget, ok
 }
 
-func newTimeBudgetStarter(ctx context.Context, cfg *workflow.TimeBudget, plan childTimePlan, enabled bool) timeBudgetStarter {
-	return timeBudgetStarter{ctx: ctx, cfg: cfg, plan: plan, enabled: enabled}
+func newTimeBudgetStarter(ctx context.Context, cfg *workflow.TimeBudget, plan childTimePlan, enabled bool, scope string, logf timeBudgetLogFunc) timeBudgetStarter {
+	return timeBudgetStarter{ctx: ctx, cfg: cfg, plan: plan, enabled: enabled, scope: scope, logf: logf}
 }
 
 func (s timeBudgetStarter) start() (context.Context, context.CancelFunc, bool) {
 	if !s.enabled {
 		return s.ctx, func() {}, false
 	}
-	return withConfiguredTimeBudget(s.ctx, s.cfg, s.plan)
+	return withConfiguredTimeBudget(s.ctx, s.cfg, s.plan, s.scope, s.logf)
 }
 
 func (s timeBudgetStarter) startOrCanceled() (context.Context, context.CancelFunc) {
@@ -60,10 +65,11 @@ func alreadyCanceledContext(parent context.Context) (context.Context, context.Ca
 	return ctx, func() {}
 }
 
-func withConfiguredTimeBudget(ctx context.Context, cfg *workflow.TimeBudget, plan childTimePlan) (context.Context, context.CancelFunc, bool) {
+func withConfiguredTimeBudget(ctx context.Context, cfg *workflow.TimeBudget, plan childTimePlan, scope string, logf timeBudgetLogFunc) (context.Context, context.CancelFunc, bool) {
 	parent, hasParent := timeBudgetFromContext(ctx)
 	now := time.Now()
 	if plan.optional && hasParent && !parent.deadline.After(now) {
+		logTimeBudgetf(ctx, logf, "Workflow time budget skipped: scope=%s reason=parent_deadline_exhausted", budgetScope(scope))
 		return ctx, func() {}, true
 	}
 
@@ -93,13 +99,70 @@ func withConfiguredTimeBudget(ctx context.Context, cfg *workflow.TimeBudget, pla
 	}
 
 	budget := activeTimeBudget{
+		scope:            budgetScope(scope),
 		start:            now,
 		deadline:         deadline,
 		speedupThreshold: threshold,
 	}
 	deadlineCtx, cancel := context.WithDeadline(ctx, deadline)
 	deadlineCtx = context.WithValue(deadlineCtx, timeBudgetContextKey{}, budget)
+	logTimeBudgetStart(deadlineCtx, logf, budget)
 	return deadlineCtx, cancel, false
+}
+
+func budgetScope(scope string) string {
+	if scope == "" {
+		return "unspecified"
+	}
+	return scope
+}
+
+func logTimeBudgetStart(ctx context.Context, logf timeBudgetLogFunc, budget activeTimeBudget) {
+	limit := budget.deadline.Sub(budget.start)
+	speedupIn := "disabled"
+	if budget.speedupThreshold < 100 {
+		speedupIn = budgetDuration(time.Duration(float64(limit) * float64(budget.speedupThreshold) / 100))
+	}
+	logTimeBudgetf(ctx, logf,
+		"Workflow time budget started: scope=%s limit=%s deadline_in=%s speedup_threshold=%d%% speedup_in=%s",
+		budget.scope, budgetDuration(limit), budgetDuration(time.Until(budget.deadline)), budget.speedupThreshold, speedupIn)
+}
+
+func logTimeBudgetf(ctx context.Context, logf timeBudgetLogFunc, format string, args ...any) {
+	if logf == nil {
+		return
+	}
+	logf(ctx, format, args...)
+}
+
+func timeBudgetLimit(budget activeTimeBudget) time.Duration {
+	return budget.deadline.Sub(budget.start)
+}
+
+func timeBudgetElapsed(budget activeTimeBudget, now time.Time) time.Duration {
+	return now.Sub(budget.start)
+}
+
+func timeBudgetRemaining(budget activeTimeBudget, now time.Time) time.Duration {
+	return budget.deadline.Sub(now)
+}
+
+func timeBudgetOverrun(budget activeTimeBudget, now time.Time) time.Duration {
+	overrun := now.Sub(budget.deadline)
+	if overrun < 0 {
+		return 0
+	}
+	return overrun
+}
+
+func budgetDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	return d.Truncate(time.Second).String()
 }
 
 func inheritedSpeedupThreshold(ctx context.Context) int {
