@@ -50,14 +50,11 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	finding := ScopeFinding
 	reviewer := ScopeReviewer
 	max180 := 180
-	max600 := 600
-	max900 := 900
+	max1200 := 1200
 	weight10 := 10
 	weight15 := 15
 	weight20 := 20
-	weight25 := 25
 	weight35 := 35
-	weight40 := 40
 	reviewConfig := func() *StepOverride {
 		return &StepOverride{
 			MineReasoning:   &AgentOverride{Model: &small},
@@ -68,19 +65,19 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
-			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight25}}},
-			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight20}}},
-		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max900}}}
+			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight35}}},
+			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
+		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1200}}}
 	}
 	want := Spec{Version: SpecVersion, Steps: []StepEntry{
 		{Type: StepCollectContext, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
 		{Parallel: parallel},
 		{Pipeline: []StepEntry{
 			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight35}}},
-			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight40}}},
-			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight10}}},
-			{Type: StepSummarize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight15}}},
-		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max600}}},
+			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight35}}},
+			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight20}}},
+			{Type: StepSummarize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight10}}},
+		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1200}}},
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)
@@ -464,7 +461,7 @@ steps:
           - type: review:testing
             config:
               time_budget:
-                max_seconds: 900
+                max_seconds: 1200
                 weight: 70
               mine_reasoning:
                 model: "@small"
@@ -519,7 +516,7 @@ steps:
 		t.Fatalf("lane time budget not parsed: %+v", lane.Config)
 	}
 	review := lane.Lane[0]
-	if review.Config == nil || review.Config.TimeBudget == nil || *review.Config.TimeBudget.MaxSeconds != 900 || *review.Config.TimeBudget.Weight != 70 {
+	if review.Config == nil || review.Config.TimeBudget == nil || *review.Config.TimeBudget.MaxSeconds != 1200 || *review.Config.TimeBudget.Weight != 70 {
 		t.Fatalf("review time budget not parsed: %+v", review.Config)
 	}
 	if review.Config.MineReasoning == nil || review.Config.MineReasoning.TimeBudget == nil || *review.Config.MineReasoning.TimeBudget.SpeedupThreshold != 100 {

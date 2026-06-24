@@ -23,10 +23,10 @@ steps:
             config:
               scope: reviewer
               time_budget:
-                weight: 10
+                weight: 15
         config:
           time_budget:
-            max_seconds: 900
+            max_seconds: 1200
       - lane:
           - type: review:security
             config:
@@ -43,10 +43,10 @@ steps:
             config:
               scope: reviewer
               time_budget:
-                weight: 10
+                weight: 15
         config:
           time_budget:
-            max_seconds: 900
+            max_seconds: 1200
       - lane:
           - type: review:architecture
             config:
@@ -63,10 +63,10 @@ steps:
             config:
               scope: reviewer
               time_budget:
-                weight: 10
+                weight: 15
         config:
           time_budget:
-            max_seconds: 900
+            max_seconds: 1200
       - lane:
           - type: review:performance
             config:
@@ -83,10 +83,10 @@ steps:
             config:
               scope: reviewer
               time_budget:
-                weight: 10
+                weight: 15
         config:
           time_budget:
-            max_seconds: 900
+            max_seconds: 1200
       - lane:
           - type: review:testing
             config:
@@ -103,10 +103,10 @@ steps:
             config:
               scope: reviewer
               time_budget:
-                weight: 10
+                weight: 15
         config:
           time_budget:
-            max_seconds: 900
+            max_seconds: 1200
       - lane:
           - type: review:bestpractices
             config:
@@ -123,34 +123,34 @@ steps:
             config:
               scope: reviewer
               time_budget:
-                weight: 10
+                weight: 15
         config:
           time_budget:
-            max_seconds: 900
+            max_seconds: 1200
   - pipeline:
       - type: merge
         config:
           scope: cluster
           time_budget:
-            weight: 30
+            weight: 35
       - type: finalize
         config:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 25
+            weight: 35
       - type: verdict
         config:
           model: "@small"
           scope: all
           time_budget:
-            weight: 30
+            weight: 20
       - type: summarize
         config:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 15
+            weight: 10
     config:
       time_budget:
-        max_seconds: 900
+        max_seconds: 1200

@@ -113,7 +113,6 @@ nickpit_args=(
     --profile "${profile}"
     --show-progress
     --show-reasoning
-    --concurrency 12
     --verbose
 )
 
