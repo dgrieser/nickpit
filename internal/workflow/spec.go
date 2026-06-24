@@ -261,7 +261,8 @@ var agentOverrideKeys = []string{
 
 // TimeBudget controls wall-clock budgeting for workflow steps and groups.
 // max_seconds sets a local cap, speedup_threshold controls when urgent retries
-// begin (50..100), and weight allocates a share of a parent budget.
+// begin (50..100), and weight allocates a lazily-started duration share of a
+// parent budget, still capped by the parent deadline.
 type TimeBudget struct {
 	MaxSeconds       *int `yaml:"max_seconds"`
 	SpeedupThreshold *int `yaml:"speedup_threshold"`

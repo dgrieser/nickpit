@@ -155,7 +155,9 @@
 # time_budget keys:
 #   max_seconds       max wall-clock seconds for the step/lane/pipeline
 #   speedup_threshold 50..100; 100 disables early urgent retry
-#   weight            0..100 share of the parent time budget
+#   weight            0..100 duration share of the parent budget; the timer
+#                     starts when that step/part begins and is capped by the
+#                     parent deadline
 # Set skip_workflow_time_budget in the profile or pass
 # --skip-workflow-time-budget to ignore all workflow time budgets.
 # (max_context_tokens is profile/CLI-level only — the context is trimmed once,

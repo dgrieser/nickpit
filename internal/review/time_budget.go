@@ -23,9 +23,41 @@ type childTimePlan struct {
 	optional  bool
 }
 
+type timeBudgetStarter struct {
+	ctx     context.Context
+	cfg     *workflow.TimeBudget
+	plan    childTimePlan
+	enabled bool
+}
+
 func timeBudgetFromContext(ctx context.Context) (activeTimeBudget, bool) {
 	budget, ok := ctx.Value(timeBudgetContextKey{}).(activeTimeBudget)
 	return budget, ok
+}
+
+func newTimeBudgetStarter(ctx context.Context, cfg *workflow.TimeBudget, plan childTimePlan, enabled bool) timeBudgetStarter {
+	return timeBudgetStarter{ctx: ctx, cfg: cfg, plan: plan, enabled: enabled}
+}
+
+func (s timeBudgetStarter) start() (context.Context, context.CancelFunc, bool) {
+	if !s.enabled {
+		return s.ctx, func() {}, false
+	}
+	return withConfiguredTimeBudget(s.ctx, s.cfg, s.plan)
+}
+
+func (s timeBudgetStarter) startOrCanceled() (context.Context, context.CancelFunc) {
+	ctx, cancel, skipped := s.start()
+	if skipped {
+		return alreadyCanceledContext(s.ctx)
+	}
+	return ctx, cancel
+}
+
+func alreadyCanceledContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	cancel()
+	return ctx, func() {}
 }
 
 func withConfiguredTimeBudget(ctx context.Context, cfg *workflow.TimeBudget, plan childTimePlan) (context.Context, context.CancelFunc, bool) {
