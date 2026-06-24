@@ -41,6 +41,23 @@ cp "$source" "$dest"
 : "${REQUIRED_VAR:?REQUIRED_VAR is not set}"
 ```
 
+## Quoted Newlines
+
+Do not treat a newline inside a correctly quoted shell word as a command
+separator. In Bash and POSIX-style shells, single quotes preserve the literal
+value of every character except another single quote; double quotes also keep
+newlines inside the same argument. This is one shell word:
+
+```bash
+printf '<%s>\n' 'a
+b'
+```
+
+Newlines can still be invalid for application semantics, file formats, logs, or
+downstream tools. If a path or argument must be single-line, recommend explicit
+input validation. Phrase that as compatibility/input validation, not shell
+injection, when the value is already correctly quoted.
+
 ## Parameter Expansion and Prefix/Suffix Stripping
 
 `${var#word}`, `${var##word}`, `${var%word}`, and `${var%%word}` remove shell
