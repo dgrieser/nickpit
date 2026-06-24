@@ -132,25 +132,25 @@ steps:
         config:
           scope: cluster
           time_budget:
-            weight: 40
+            weight: 30
       - type: finalize
         config:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 10
+            weight: 25
       - type: verdict
         config:
           model: "@small"
           scope: all
           time_budget:
-            weight: 40
+            weight: 30
       - type: summarize
         config:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 10
+            weight: 15
     config:
       time_budget:
         max_seconds: 900
