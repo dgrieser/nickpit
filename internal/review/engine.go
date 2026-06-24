@@ -429,6 +429,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		finding.ID = findings[i].ID
 		if verification == nil {
 			verification = fallbackUnverifiedVerification(finding)
+			verifications[i] = verification
 		}
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
