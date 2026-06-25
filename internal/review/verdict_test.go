@@ -2,10 +2,12 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -28,6 +30,73 @@ func TestVerdictEmptyFindingsResetsStaleExplanation(t *testing.T) {
 	if out.OverallExplanation != "No finalized findings remained." {
 		t.Fatalf("explanation = %q, want stale text reset", out.OverallExplanation)
 	}
+}
+
+func TestVerdictConfidenceThresholdFiltersPromptAndResult(t *testing.T) {
+	loc := func(line int) model.CodeLocation {
+		return model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}}
+	}
+	low := model.Finding{
+		ID: "11111111-1111-4111-8111-111111111111", Title: "Low confidence", Body: "low", ConfidenceScore: 0.99, Priority: intPtr(1), CodeLocation: loc(1),
+		Finalization: &model.FindingFinalization{Title: "Low final", Body: "low final", Priority: 1, ConfidenceScore: 0.69},
+	}
+	kept := model.Finding{
+		ID: "22222222-2222-4222-8222-222222222222", Title: "Kept confidence", Body: "kept", ConfidenceScore: 0.1, Priority: intPtr(1), CodeLocation: loc(2),
+		Finalization: &model.FindingFinalization{Title: "Kept final", Body: "kept final", Priority: 1, ConfidenceScore: 0.70},
+	}
+	llmClient := &capturingLLM{resps: []*llm.ReviewResponse{{
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "kept issue remains",
+	}}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{Findings: []model.Finding{low, kept}, OverallCorrectness: "patch is incorrect", OverallExplanation: "pre-filter"}
+
+	out, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{ConfidenceThreshold: 0.7})
+	if err != nil {
+		t.Fatalf("Verdict returned err: %v", err)
+	}
+	if len(out.Findings) != 1 || out.Findings[0].ID != kept.ID {
+		t.Fatalf("findings = %#v, want only kept finding", out.Findings)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("verdict requests = %d, want 1", len(llmClient.reqs))
+	}
+	payload := verdictPromptPayload(t, llmClient.reqs[0])
+	findings, ok := payload["findings"].([]any)
+	if !ok || len(findings) != 1 {
+		t.Fatalf("prompt findings = %#v, want one", payload["findings"])
+	}
+	raw, _ := json.Marshal(payload)
+	if strings.Contains(string(raw), low.ID) || !strings.Contains(string(raw), kept.ID) {
+		t.Fatalf("prompt payload did not filter as expected: %s", raw)
+	}
+}
+
+func TestVerdictConfidenceThresholdZeroKeepsZeroConfidence(t *testing.T) {
+	finding := model.Finding{
+		ID: "11111111-1111-4111-8111-111111111111", Title: "Zero", Body: "zero", Priority: intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Finalization: &model.FindingFinalization{Title: "Zero", Body: "zero", Priority: 1, ConfidenceScore: 0},
+	}
+	out, dropped, err := filterByConfidenceThreshold(&model.ReviewResult{Findings: []model.Finding{finding}}, 0)
+	if err != nil {
+		t.Fatalf("filterByConfidenceThreshold returned err: %v", err)
+	}
+	if dropped != 0 || len(out.Findings) != 1 {
+		t.Fatalf("dropped=%d findings=%d, want kept", dropped, len(out.Findings))
+	}
+}
+
+func verdictPromptPayload(t *testing.T, req *llm.ReviewRequest) map[string]any {
+	t.Helper()
+	if req == nil || len(req.Messages) < 2 {
+		t.Fatalf("verdict request messages = %#v", req)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal verdict payload: %v\n%s", err, req.Messages[1].Content)
+	}
+	return payload
 }
 
 func TestOverallConfidenceFor(t *testing.T) {

@@ -101,7 +101,6 @@
 #             config:
 #               scope: finding
 #               verify_drop_policy: refuted-and-unverified
-#               verify_drop_confidence: 0.6
 #               time_budget:
 #                 weight: 20
 #           - type: dedupe:security
@@ -149,7 +148,7 @@
 #   max_output_retries, max_reasoning_seconds, max_reasoning_loop_repeats,
 #   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
 #   disable_patch_summary, skip_suggestions, use_json_schema, verify_drop_policy,
-#   verify_drop_confidence, priority_threshold
+#   confidence_threshold, priority_threshold
 # Review steps also accept internal-agent subconfigs: mine_reasoning,
 # compile_findings, nudge; those subconfigs also accept time_budget.
 # time_budget keys:

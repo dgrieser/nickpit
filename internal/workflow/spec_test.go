@@ -220,6 +220,7 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 		"unknown top key":                 "version: 1\nbogus: x\nsteps:\n  - type: merge\n",
 		"unknown step key":                "version: 1\nsteps:\n  - type: merge\n    bogus: x\n",
 		"unknown config key":              "version: 1\nsteps:\n  - type: merge\n    config:\n      bogus: 1\n",
+		"removed verify_drop_confidence":  "version: 1\nsteps:\n  - type: verdict\n    config:\n      verify_drop_confidence: 0.7\n",
 		"review-only config on merge":     "version: 1\nsteps:\n  - type: merge\n    config:\n      mine_reasoning: {}\n",
 		"unknown review internal key":     "version: 1\nsteps:\n  - type: review:security\n    config:\n      mine_reasoning:\n        bogus: 1\n",
 		"non-mapping review internal key": "version: 1\nsteps:\n  - type: review:security\n    config:\n      nudge: small\n",
@@ -329,7 +330,7 @@ steps:
       - type: finalize
         config: { scope: cluster }
       - type: verdict
-        config: { scope: all }
+        config: { scope: all, confidence_threshold: 0.65 }
       - type: summarize
         config: { scope: cluster }
 `)
@@ -351,6 +352,11 @@ steps:
 		}
 		if got := *child.Config.Scope; got != wantScope[child.Type] {
 			t.Fatalf("pipeline %q scope = %q, want %q", child.Type, got, wantScope[child.Type])
+		}
+		if child.Type == StepVerdict {
+			if child.Config.ConfidenceThreshold == nil || *child.Config.ConfidenceThreshold != 0.65 {
+				t.Fatalf("verdict confidence_threshold = %+v, want 0.65", child.Config.ConfidenceThreshold)
+			}
 		}
 	}
 	lane := spec.Steps[1].Parallel[0].Lane

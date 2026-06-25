@@ -277,6 +277,41 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	}
 }
 
+func TestWorkflowFusedPostMergeVerdictConfidenceFilterOwnsFinalFindings(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "single.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix low confidence issue", "a.go", 1, 1),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, ConfidenceThreshold: 0.83})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %d, want none after verdict confidence filter: %#v", len(result.Findings), result.Findings)
+	}
+	if result.OverallCorrectness != "patch is correct" || result.OverallExplanation != "No findings remained after confidence filtering." {
+		t.Fatalf("overall = %q / %q, want confidence-filtered clean verdict", result.OverallCorrectness, result.OverallExplanation)
+	}
+	if len(client.verdictRequests) != 0 {
+		t.Fatalf("verdict requests = %d, want skipped verdict agent after filter removed all findings", len(client.verdictRequests))
+	}
+}
+
 func TestWorkflowFlatTailRunsUnfused(t *testing.T) {
 	// Without a pipeline: group there is no auto-fusion: the tail runs as four
 	// separate sequential steps, and finalize/summarize each run once over the

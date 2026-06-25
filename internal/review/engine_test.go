@@ -3315,30 +3315,25 @@ func TestShouldDropFinding(t *testing.T) {
 		verdict    string
 		confidence float64
 		policy     string
-		threshold  float64
 		wantDrop   bool
 		wantReason string
 	}{
-		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, "refuted-only", 0.8, false, "kept"},
-		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, "refuted-and-unverified", 0.8, false, "kept"},
-		{"refuted above floor drops", model.VerdictRefuted, 0.85, "refuted-only", 0.8, true, model.VerdictRefuted},
-		{"refuted at floor drops", model.VerdictRefuted, 0.80, "refuted-only", 0.8, true, model.VerdictRefuted},
-		{"refuted below floor kept", model.VerdictRefuted, 0.79, "refuted-only", 0.8, false, "below_confidence"},
-		{"refuted below new default floor kept", model.VerdictRefuted, 0.69, "refuted-only", 0.7, false, "below_confidence"},
-		{"refuted at new default floor drops", model.VerdictRefuted, 0.70, "refuted-only", 0.7, true, model.VerdictRefuted},
-		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", 0.8, false, "kept"},
-		{"unverified above floor drops (both)", model.VerdictUnverified, 0.9, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
-		{"unverified below floor kept (both)", model.VerdictUnverified, 0.5, "refuted-and-unverified", 0.8, false, "below_confidence"},
-		{"refuted policy=none kept", model.VerdictRefuted, 0.99, "none", 0.8, false, "kept"},
-		{"missing verdict treated as unverified (refuted-only)", "", 0.99, "refuted-only", 0.8, false, "kept"},
-		{"missing verdict treated as unverified (both)", "", 0.99, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
-		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", 0.8, true, model.VerdictRefuted},
-		{"threshold zero drops anything refuted", model.VerdictRefuted, 0.0, "refuted-only", 0.0, true, model.VerdictRefuted},
+		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, "refuted-only", false, "kept"},
+		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, "refuted-and-unverified", false, "kept"},
+		{"refuted high confidence drops", model.VerdictRefuted, 0.85, "refuted-only", true, model.VerdictRefuted},
+		{"refuted low confidence drops", model.VerdictRefuted, 0.01, "refuted-only", true, model.VerdictRefuted},
+		{"refuted zero confidence drops", model.VerdictRefuted, 0.0, "refuted-only", true, model.VerdictRefuted},
+		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", false, "kept"},
+		{"unverified drops (both)", model.VerdictUnverified, 0.0, "refuted-and-unverified", true, model.VerdictUnverified},
+		{"refuted policy=none kept", model.VerdictRefuted, 0.99, "none", false, "kept"},
+		{"missing verdict treated as unverified (refuted-only)", "", 0.99, "refuted-only", false, "kept"},
+		{"missing verdict treated as unverified (both)", "", 0.99, "refuted-and-unverified", true, model.VerdictUnverified},
+		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", true, model.VerdictRefuted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := &model.FindingVerification{Verdict: tc.verdict, ConfidenceScore: tc.confidence}
-			drop, reason := shouldDropFinding(v, tc.policy, tc.threshold)
+			drop, reason := shouldDropFinding(v, tc.policy)
 			if drop != tc.wantDrop {
 				t.Fatalf("drop = %v, want %v", drop, tc.wantDrop)
 			}
@@ -3349,53 +3344,8 @@ func TestShouldDropFinding(t *testing.T) {
 	}
 }
 
-func TestDowngradeLowConfidenceRefutation(t *testing.T) {
-	cases := []struct {
-		name         string
-		verification model.FindingVerification
-		reason       string
-		wantVerdict  string
-		wantRemarks  string
-	}{
-		{
-			name:         "low-confidence refuted becomes unverified and clears remarks",
-			verification: model.FindingVerification{Verdict: model.VerdictRefuted, ConfidenceScore: 0.69, Priority: 2, Remarks: "contradicted by x"},
-			reason:       "below_confidence",
-			wantVerdict:  model.VerdictUnverified,
-			wantRemarks:  "",
-		},
-		{
-			name:         "unverified below confidence stays unverified with remarks",
-			verification: model.FindingVerification{Verdict: model.VerdictUnverified, ConfidenceScore: 0.69, Priority: 2, Remarks: "not enough evidence"},
-			reason:       "below_confidence",
-			wantVerdict:  model.VerdictUnverified,
-			wantRemarks:  "not enough evidence",
-		},
-		{
-			name:         "policy none keeps refuted unchanged",
-			verification: model.FindingVerification{Verdict: model.VerdictRefuted, ConfidenceScore: 0.69, Priority: 2, Remarks: "contradicted by x"},
-			reason:       "kept",
-			wantVerdict:  model.VerdictRefuted,
-			wantRemarks:  "contradicted by x",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			v := tc.verification
-			if tc.reason == "below_confidence" {
-				downgradeLowConfidenceRefutation(&v)
-			}
-			if v.Verdict != tc.wantVerdict || v.Remarks != tc.wantRemarks {
-				t.Fatalf("verification after downgrade = verdict %q remarks %q, want verdict %q remarks %q",
-					v.Verdict, v.Remarks, tc.wantVerdict, tc.wantRemarks)
-			}
-		})
-	}
-}
-
 func TestShouldDropFindingNilVerification(t *testing.T) {
-	drop, reason := shouldDropFinding(nil, "refuted-and-unverified", 0.0)
+	drop, reason := shouldDropFinding(nil, "refuted-and-unverified")
 	if drop || reason != "kept" {
 		t.Fatalf("nil verification: drop=%v reason=%q", drop, reason)
 	}

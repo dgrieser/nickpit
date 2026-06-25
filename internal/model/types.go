@@ -53,7 +53,7 @@ type ReviewRequest struct {
 	// summarize); 0 = unlimited.
 	Concurrency              int
 	VerifyDropPolicy         string
-	VerifyDropConfidence     float64
+	ConfidenceThreshold      float64
 	NudgeCount               int
 	DisableParallelToolCalls bool
 	DisableReasoningExtract  bool

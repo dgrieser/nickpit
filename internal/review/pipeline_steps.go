@@ -777,7 +777,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		overallSummarizeWarnings := []string(nil)
 		// With no finalized findings the verdict's overall explanation is a short
 		// static message, so skip the overall-summary LLM call entirely.
-		if fused.hasSummarize && len(finalizedFindings) > 0 {
+		if fused.hasSummarize && len(verdict.Findings) > 0 {
 			summarizeCtx, summarizeCancel := summarizeBudget.startOrCanceled()
 			overall, run, warnings := runOverallSummarize(summarizeCtx, summarizeSC, verdict.OverallExplanation)
 			summarizeCancel()
@@ -787,7 +787,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		}
 		summarizeWG.Wait()
 
-		finalFindings := finalizedFindings
+		finalFindings := verdict.Findings
 		if fused.hasSummarize {
 			finalFindings = appendClusterFindings(summarizedByCluster)
 			// Summarize ran on a pre-normalization clone, so adopt the IDs already
@@ -805,6 +805,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			} else {
 				normalizeFindingIDsWithSeen(finalFindings, nil)
 			}
+			finalFindings = keepFindingsByID(finalFindings, findingIDSet(verdict.Findings))
 		}
 		verdict.Findings = finalFindings
 
@@ -897,10 +898,14 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
 		RepoRoot:                 sc.Req.RepoRoot,
 		PriorityThreshold:        sc.Req.PriorityThreshold,
+		ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
 		ContextNotes:             st.contextNotes,
 	}
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
+		if verdict != nil {
+			in = verdict
+		}
 		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 		applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
 		run.Name = "verdict"
@@ -964,6 +969,30 @@ func appendClusterFindings(clusters [][]model.Finding) []model.Finding {
 	var out []model.Finding
 	for _, findings := range clusters {
 		out = append(out, findings...)
+	}
+	return out
+}
+
+func findingIDSet(findings []model.Finding) map[string]struct{} {
+	ids := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		id := strings.TrimSpace(finding.ID)
+		if id != "" {
+			ids[id] = struct{}{}
+		}
+	}
+	return ids
+}
+
+func keepFindingsByID(findings []model.Finding, ids map[string]struct{}) []model.Finding {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := findings[:0]
+	for _, finding := range findings {
+		if _, ok := ids[strings.TrimSpace(finding.ID)]; ok {
+			out = append(out, finding)
+		}
 	}
 	return out
 }
@@ -1174,12 +1203,16 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
 			RepoRoot:                 sc.Req.RepoRoot,
 			PriorityThreshold:        sc.Req.PriorityThreshold,
+			ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
 			ContextNotes:             contextNotes,
 		}
 		verdict, verdictRun, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
+			if verdict != nil {
+				in = verdict
+			}
 			sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 			st.warnings = append(st.warnings, fmt.Sprintf("Verdict failed: %v; using merged overall fields", err))
 			applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))

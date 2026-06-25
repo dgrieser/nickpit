@@ -206,7 +206,7 @@ type StepOverride struct {
 	SkipSuggestions          *bool    `yaml:"skip_suggestions"`
 	UseJSONSchema            *bool    `yaml:"use_json_schema"`
 	VerifyDropPolicy         *string  `yaml:"verify_drop_policy"`
-	VerifyDropConfidence     *float64 `yaml:"verify_drop_confidence"`
+	ConfidenceThreshold      *float64 `yaml:"confidence_threshold"`
 	PriorityThreshold        *string  `yaml:"priority_threshold"`
 
 	// Review-only internal agent overrides. These keys are accepted only under
@@ -224,7 +224,7 @@ var stepOverrideKeys = []string{
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
 	"disable_patch_summary", "skip_suggestions", "use_json_schema", "verify_drop_policy",
-	"verify_drop_confidence", "priority_threshold",
+	"confidence_threshold", "priority_threshold",
 }
 
 var reviewInternalOverrideKeys = []string{"mine_reasoning", "compile_findings", "nudge"}
@@ -350,8 +350,8 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.VerifyDropPolicy != nil {
 		req.VerifyDropPolicy = *o.VerifyDropPolicy
 	}
-	if o.VerifyDropConfidence != nil {
-		req.VerifyDropConfidence = *o.VerifyDropConfidence
+	if o.ConfidenceThreshold != nil {
+		req.ConfidenceThreshold = *o.ConfidenceThreshold
 	}
 	if o.PriorityThreshold != nil {
 		req.PriorityThreshold = *o.PriorityThreshold

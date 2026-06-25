@@ -26,6 +26,9 @@ type VerdictOptions struct {
 	// classified at the threshold (not blocking) and never forces the overall
 	// verdict to "patch is incorrect". Empty defaults to p3.
 	PriorityThreshold string
+	// ConfidenceThreshold removes low-confidence findings before verdict
+	// reasoning. It uses finalized/display confidence; <=0 disables the filter.
+	ConfidenceThreshold float64
 }
 
 func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts VerdictOptions) (*model.ReviewResult, model.AgentRun, error) {
@@ -35,6 +38,15 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: nil review result")
 	}
+	filtered, dropped, err := filterByConfidenceThreshold(in, opts.ConfidenceThreshold)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	if dropped > 0 {
+		e.logProgress(logging.StageVerdict, logging.StateWarn, fmt.Sprintf("confidence filter dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold))
+		e.logf(ctx, "Verdict confidence filter: dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold)
+	}
+	in = filtered
 	thresholdRank := model.PriorityThresholdRank(opts.PriorityThreshold)
 	if len(in.Findings) == 0 {
 		out, err := in.Clone()
@@ -47,7 +59,11 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		// findings the verdict owns a fresh rationale, and a stale merge summary or
 		// old "incorrect" explanation would contradict the empty, correct result
 		// (e.g. --priority-threshold dropping every finding in the fused pipeline).
-		out.OverallExplanation = "No finalized findings remained."
+		if dropped > 0 {
+			out.OverallExplanation = "No findings remained after confidence filtering."
+		} else {
+			out.OverallExplanation = "No finalized findings remained."
+		}
 		return out, model.AgentRun{Name: "Verdict Review", Role: "verdict", Status: model.AgentRunStatusSkipped}, nil
 	}
 
@@ -109,10 +125,10 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		validateResponse: verdictOutputValidator(),
 	}, req)
 	if err != nil {
-		return nil, result.run, err
+		return in, result.run, err
 	}
 	if result.resp == nil {
-		return nil, result.run, fmt.Errorf("verdict: agent returned nil response")
+		return in, result.run, fmt.Errorf("verdict: agent returned nil response")
 	}
 
 	out, err := in.Clone()
@@ -146,6 +162,38 @@ func verdictOutputValidator() func(*llm.ReviewResponse) *llm.InvalidResponseErro
 			ReasoningEffort: reasoningEffort,
 		}
 	}
+}
+
+func filterByConfidenceThreshold(in *model.ReviewResult, threshold float64) (*model.ReviewResult, int, error) {
+	if in == nil {
+		return nil, 0, fmt.Errorf("verdict: nil review result")
+	}
+	if threshold <= 0 {
+		return in, 0, nil
+	}
+	out, err := in.Clone()
+	if err != nil {
+		return nil, 0, fmt.Errorf("verdict: cloning input result: %w", err)
+	}
+	filtered := out.Findings[:0]
+	for _, finding := range out.Findings {
+		if verdictFilterConfidence(finding) >= threshold {
+			filtered = append(filtered, finding)
+		}
+	}
+	dropped := len(out.Findings) - len(filtered)
+	out.Findings = filtered
+	return out, dropped, nil
+}
+
+func verdictFilterConfidence(finding model.Finding) float64 {
+	if finding.Finalization != nil {
+		return finding.Finalization.ConfidenceScore
+	}
+	if finding.Summarization != nil {
+		return finding.Summarization.ConfidenceScore
+	}
+	return finding.ConfidenceScore
 }
 
 func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int) (string, error) {

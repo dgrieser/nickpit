@@ -262,23 +262,19 @@ func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: reviewerFindings},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
-	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly, VerifyDropConfidence: 0.7}
+	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly}
 	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
 
 	kept := vectorResults[0].resp.Findings
-	if len(kept) != 2 {
-		t.Fatalf("kept findings = %d, want 2", len(kept))
+	if len(kept) != 1 {
+		t.Fatalf("kept findings = %d, want 1", len(kept))
 	}
-	if kept[0].Title != "low refuted" || kept[0].Verification == nil ||
-		kept[0].Verification.Verdict != model.VerdictUnverified || kept[0].Verification.Remarks != "" {
-		t.Fatalf("kept low-confidence refuted = %#v, want unverified with empty remarks", kept[0])
-	}
-	if kept[1].Title != "unverified" || kept[1].Verification == nil ||
-		kept[1].Verification.Verdict != model.VerdictUnverified || kept[1].Verification.Remarks != "uncertain" {
-		t.Fatalf("kept unverified = %#v, want unchanged unverified", kept[1])
+	if kept[0].Title != "unverified" || kept[0].Verification == nil ||
+		kept[0].Verification.Verdict != model.VerdictUnverified || kept[0].Verification.Remarks != "uncertain" {
+		t.Fatalf("kept unverified = %#v, want unchanged unverified", kept[0])
 	}
 }
 
@@ -293,7 +289,7 @@ func TestVerifyAndFilterKeepsVerifierFailuresAsUnverified(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: reviewerFindings},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
-	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly, VerifyDropConfidence: 0.7}
+	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly}
 	_, warnings, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
