@@ -808,6 +808,57 @@ func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
 	}
 }
 
+func TestFinalizePreservesReviewerFieldsWhenVerificationUnverified(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						ID:           findingID,
+						Title:        "Reviewer title",
+						Body:         "reviewer body",
+						Priority:     intPtr(3),
+						CodeLocation: loc,
+						Verification: &model.FindingVerification{
+							ID: findingID, Verdict: model.VerdictUnverified, Priority: 0, ConfidenceScore: 0,
+						},
+						Finalization: &model.FindingFinalization{
+							Title: "Finalizer rewrite", Body: "rewritten body", Priority: 0, ConfidenceScore: 0.99, Remarks: "rewrite",
+						},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID: findingID, Title: "Reviewer title", Body: "reviewer body", ConfidenceScore: 0.65, Priority: intPtr(3), CodeLocation: loc,
+				Verification: &model.FindingVerification{ID: findingID, Verdict: model.VerdictUnverified, Priority: 0, ConfidenceScore: 0},
+			},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	got := out.Findings[0].Finalization
+	if got == nil {
+		t.Fatal("finalization = nil")
+	}
+	if got.Title != "Reviewer title" || got.Body != "reviewer body" || got.Priority != 3 || got.ConfidenceScore != 0.65 || got.Remarks != "" {
+		t.Fatalf("finalization = %#v, want reviewer title/body/priority/confidence", got)
+	}
+	if v := out.Findings[0].Verification; v == nil || v.Verdict != model.VerdictUnverified || v.ConfidenceScore != 0 {
+		t.Fatalf("verification = %#v, want original unverified metadata preserved", v)
+	}
+}
+
 func TestFinalizeWeightedConfidenceZeroesWhenNoVerification(t *testing.T) {
 	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	out := []model.Finding{
@@ -915,6 +966,14 @@ func TestEnforcePriorityFloorMissingPriorityDefaultsToThreshold(t *testing.T) {
 	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p2"))
 	if got := out[0].Finalization.Priority; got != 2 {
 		t.Fatalf("nil-priority floor = %d, want 2 (threshold), not hardcoded 3", got)
+	}
+}
+
+func TestPriorityFloorIgnoresUnverifiedVerifierPriority(t *testing.T) {
+	ver := &model.FindingVerification{Verdict: model.VerdictUnverified, Priority: 0, ConfidenceScore: 0}
+	finding := model.Finding{Priority: intPtr(3), Verification: ver}
+	if got := priorityFloor(finding, model.PriorityThresholdRank("p3")); got != 3 {
+		t.Fatalf("priority floor = %d, want reviewer priority 3", got)
 	}
 }
 

@@ -137,6 +137,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	mergeInputVerification(out.Findings, in.Findings)
 	enforcePriorityFloor(out.Findings, in.Findings, model.PriorityThresholdRank(opts.PriorityThreshold))
 	applyWeightedConfidence(out.Findings, in.Findings)
+	preserveUnverifiedReviewFinalizations(out.Findings, in.Findings)
 	if stats.Omitted > 0 || stats.Ignored > 0 || stats.FinalizerFindings != len(in.Findings) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("Finalizer output mismatch: findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d; preserved input findings", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
 	}
@@ -370,7 +371,7 @@ func applyFinalizedFinding(dst *model.Finding, src model.Finding) {
 func synthesizedFinalization(finding model.Finding) *model.FindingFinalization {
 	priority := model.PriorityRank(finding.Priority)
 	// Verifier-driven escalation is intentional; it mirrors the finalizer floor.
-	if finding.Verification != nil && finding.Verification.Priority < priority {
+	if finding.Verification != nil && !isUnverifiedVerification(finding.Verification) && finding.Verification.Priority < priority {
 		priority = finding.Verification.Priority
 	}
 	return &model.FindingFinalization{
@@ -484,19 +485,24 @@ func isNonFindingVerification(v *model.FindingVerification) bool {
 	return v != nil && v.Verdict == model.VerdictRefuted && strings.Contains(strings.ToLower(v.Remarks), nonFindingRemark)
 }
 
+func isUnverifiedVerification(v *model.FindingVerification) bool {
+	return v != nil && v.Verdict == model.VerdictUnverified
+}
+
 // priorityFloor computes a finding's priority floor: the most-critical (lowest) integer it is
 // allowed to take. A non-finding (a verifier-refuted affirmation carrying the "no issue"
 // sentinel; see isNonFindingVerification) is demoted to thresholdRank — the lowest currently
 // allowed priority — so it never renders blocking, ignoring the reviewer's (often template)
 // priority. A missing priority also defaults to thresholdRank rather than the hardcoded floor
 // of model.PriorityRank. Otherwise the floor is the most critical of the reviewer and verifier
-// priorities, as before — so a genuine refutation kept for review keeps its severity.
+// priorities, as before — so a genuine refutation kept for review keeps its severity. An
+// unverified verifier result is non-authoritative and cannot change priority.
 func priorityFloor(f model.Finding, thresholdRank int) int {
 	if isNonFindingVerification(f.Verification) {
 		return thresholdRank
 	}
 	floor := priorityRankOrThreshold(f.Priority, thresholdRank)
-	if f.Verification != nil && f.Verification.Priority < floor {
+	if f.Verification != nil && !isUnverifiedVerification(f.Verification) && f.Verification.Priority < floor {
 		floor = f.Verification.Priority
 	}
 	return floor
@@ -548,6 +554,25 @@ func applyWeightedConfidence(out, in []model.Finding) {
 			}
 		}
 		out[i].Finalization.ConfidenceScore = roundConfidenceScore(score)
+	}
+}
+
+func preserveUnverifiedReviewFinalizations(out, in []model.Finding) {
+	for i := range out {
+		orig := findInputMatch(out[i], in)
+		if orig == nil || !isUnverifiedVerification(orig.Verification) {
+			continue
+		}
+		out[i].Finalization = reviewFinalization(*orig)
+	}
+}
+
+func reviewFinalization(finding model.Finding) *model.FindingFinalization {
+	return &model.FindingFinalization{
+		Title:           finding.Title,
+		Body:            finding.Body,
+		Priority:        model.PriorityRank(finding.Priority),
+		ConfidenceScore: finding.ConfidenceScore,
 	}
 }
 
