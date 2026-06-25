@@ -51,10 +51,13 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	reviewer := ScopeReviewer
 	max180 := 180
 	max1200 := 1200
+	max1500 := 1500
 	weight10 := 10
 	weight15 := 15
 	weight20 := 20
+	weight30 := 30
 	weight35 := 35
+	weight40 := 40
 	reviewConfig := func() *StepOverride {
 		return &StepOverride{
 			MineReasoning:   &AgentOverride{Model: &small},
@@ -67,14 +70,14 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
 			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight35}}},
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
-		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1200}}}
+		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1500}}}
 	}
 	want := Spec{Version: SpecVersion, Steps: []StepEntry{
 		{Type: StepCollectContext, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
 		{Parallel: parallel},
 		{Pipeline: []StepEntry{
-			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight35}}},
-			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight35}}},
+			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}}},
+			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight40}}},
 			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight20}}},
 			{Type: StepSummarize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight10}}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1200}}},

@@ -87,7 +87,7 @@ steps:
                 weight: 15
         config:
           time_budget:
-            max_seconds: 1200
+            max_seconds: 1500
       - lane:
           - type: review:security
             config:
@@ -107,7 +107,7 @@ steps:
                 weight: 15
         config:
           time_budget:
-            max_seconds: 1200
+            max_seconds: 1500
       - lane:
           - type: review:architecture
             config:
@@ -127,7 +127,7 @@ steps:
                 weight: 15
         config:
           time_budget:
-            max_seconds: 1200
+            max_seconds: 1500
       - lane:
           - type: review:performance
             config:
@@ -147,7 +147,7 @@ steps:
                 weight: 15
         config:
           time_budget:
-            max_seconds: 1200
+            max_seconds: 1500
       - lane:
           - type: review:testing
             config:
@@ -167,7 +167,7 @@ steps:
                 weight: 15
         config:
           time_budget:
-            max_seconds: 1200
+            max_seconds: 1500
       - lane:
           - type: review:bestpractices
             config:
@@ -187,19 +187,19 @@ steps:
                 weight: 15
         config:
           time_budget:
-            max_seconds: 1200
+            max_seconds: 1500
   - pipeline:
       - type: merge
         config:
           scope: cluster
           time_budget:
-            weight: 35
+            weight: 30
       - type: finalize
         config:
           model: "@small"
           scope: cluster
           time_budget:
-            weight: 35
+            weight: 40
       - type: verdict
         config:
           model: "@small"
