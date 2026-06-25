@@ -258,16 +258,13 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 		mainBudget, mineBudget, compileBudget, nudgeBudget := reviewPhaseBudgetStarters(ctx, vectorID, sc.Override, sc.Req, collectAnyway, sc.Engine.logf)
 		mainCtx, mainCancel, mainSkipped := mainBudget.start()
 		if mainSkipped {
-			mainCtx, mainCancel = alreadyCanceledContext(ctx)
-		}
-		defer mainCancel()
-		if mainSkipped {
 			res := session.partialResult(sc.Req)
 			res.run.Status = model.AgentRunStatusSkipped
 			res.run.Error = "main review skipped because its time budget was exhausted"
 			st.setGroup(vectorID, res, nil)
 			return nil
 		}
+		defer mainCancel()
 		if err := sc.Engine.reviewerInitial(mainCtx, session, sc.Req, mineBudget, mine.Engine, mine.Req); err != nil {
 			// Preserve the partial telemetry (tokens/tool calls) of the failed
 			// initial pass instead of discarding it with a bare failed result.
