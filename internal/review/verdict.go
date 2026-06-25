@@ -38,13 +38,17 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: nil review result")
 	}
-	filtered, dropped, err := filterByConfidenceThreshold(in, opts.ConfidenceThreshold)
+	filtered, drops, err := filterByConfidenceThreshold(in, opts.ConfidenceThreshold)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
+	dropped := len(drops)
 	if dropped > 0 {
 		e.logProgress(logging.StageVerdict, logging.StateWarn, fmt.Sprintf("confidence filter dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold))
 		e.logf(ctx, "Verdict confidence filter: dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold)
+		for _, drop := range drops {
+			e.logf(ctx, "Verdict confidence filter dropped finding: id=%s confidence=%.2f source=%s threshold=%.2f title=%q", drop.ID, drop.Confidence, drop.Source, opts.ConfidenceThreshold, drop.Title)
+		}
 	}
 	in = filtered
 	thresholdRank := model.PriorityThresholdRank(opts.PriorityThreshold)
@@ -164,36 +168,51 @@ func verdictOutputValidator() func(*llm.ReviewResponse) *llm.InvalidResponseErro
 	}
 }
 
-func filterByConfidenceThreshold(in *model.ReviewResult, threshold float64) (*model.ReviewResult, int, error) {
+type confidenceFilterDrop struct {
+	ID         string
+	Title      string
+	Confidence float64
+	Source     string
+}
+
+func filterByConfidenceThreshold(in *model.ReviewResult, threshold float64) (*model.ReviewResult, []confidenceFilterDrop, error) {
 	if in == nil {
-		return nil, 0, fmt.Errorf("verdict: nil review result")
+		return nil, nil, fmt.Errorf("verdict: nil review result")
 	}
 	if threshold <= 0 {
-		return in, 0, nil
+		return in, nil, nil
 	}
 	out, err := in.Clone()
 	if err != nil {
-		return nil, 0, fmt.Errorf("verdict: cloning input result: %w", err)
+		return nil, nil, fmt.Errorf("verdict: cloning input result: %w", err)
 	}
 	filtered := out.Findings[:0]
+	drops := make([]confidenceFilterDrop, 0)
 	for _, finding := range out.Findings {
-		if verdictFilterConfidence(finding) >= threshold {
+		confidence, source := verdictFilterConfidence(finding)
+		if confidence >= threshold {
 			filtered = append(filtered, finding)
+			continue
 		}
+		drops = append(drops, confidenceFilterDrop{
+			ID:         finding.ID,
+			Title:      finding.Title,
+			Confidence: confidence,
+			Source:     source,
+		})
 	}
-	dropped := len(out.Findings) - len(filtered)
 	out.Findings = filtered
-	return out, dropped, nil
+	return out, drops, nil
 }
 
-func verdictFilterConfidence(finding model.Finding) float64 {
+func verdictFilterConfidence(finding model.Finding) (float64, string) {
 	if finding.Finalization != nil {
-		return finding.Finalization.ConfidenceScore
+		return finding.Finalization.ConfidenceScore, "finalization"
 	}
 	if finding.Summarization != nil {
-		return finding.Summarization.ConfidenceScore
+		return finding.Summarization.ConfidenceScore, "summarization"
 	}
-	return finding.ConfidenceScore
+	return finding.ConfidenceScore, "review"
 }
 
 func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int) (string, error) {

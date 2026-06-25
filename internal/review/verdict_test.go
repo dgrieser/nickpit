@@ -8,6 +8,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -78,12 +79,87 @@ func TestVerdictConfidenceThresholdZeroKeepsZeroConfidence(t *testing.T) {
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 		Finalization: &model.FindingFinalization{Title: "Zero", Body: "zero", Priority: 1, ConfidenceScore: 0},
 	}
-	out, dropped, err := filterByConfidenceThreshold(&model.ReviewResult{Findings: []model.Finding{finding}}, 0)
+	out, drops, err := filterByConfidenceThreshold(&model.ReviewResult{Findings: []model.Finding{finding}}, 0)
 	if err != nil {
 		t.Fatalf("filterByConfidenceThreshold returned err: %v", err)
 	}
-	if dropped != 0 || len(out.Findings) != 1 {
-		t.Fatalf("dropped=%d findings=%d, want kept", dropped, len(out.Findings))
+	if len(drops) != 0 || len(out.Findings) != 1 {
+		t.Fatalf("dropped=%d findings=%d, want kept", len(drops), len(out.Findings))
+	}
+}
+
+func TestVerdictConfidenceThresholdReportsDroppedFindings(t *testing.T) {
+	loc := func(line int) model.CodeLocation {
+		return model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}}
+	}
+	low := model.Finding{
+		ID:              "11111111-1111-4111-8111-111111111111",
+		Title:           "Low confidence",
+		Body:            "low",
+		ConfidenceScore: 0.99,
+		Priority:        intPtr(1),
+		CodeLocation:    loc(1),
+		Finalization:    &model.FindingFinalization{Title: "Low final", Body: "low final", Priority: 1, ConfidenceScore: 0.69},
+	}
+	kept := model.Finding{
+		ID:              "22222222-2222-4222-8222-222222222222",
+		Title:           "Kept confidence",
+		Body:            "kept",
+		ConfidenceScore: 0.1,
+		Priority:        intPtr(1),
+		CodeLocation:    loc(2),
+		Finalization:    &model.FindingFinalization{Title: "Kept final", Body: "kept final", Priority: 1, ConfidenceScore: 0.70},
+	}
+	llmClient := &capturingLLM{resps: []*llm.ReviewResponse{{
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "kept issue remains",
+	}}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	var buf lockedTestBuffer
+	engine.SetLogger(logging.New(&buf, true, false))
+	in := &model.ReviewResult{Findings: []model.Finding{low, kept}, OverallCorrectness: "patch is incorrect", OverallExplanation: "pre-filter"}
+
+	if _, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{ConfidenceThreshold: 0.7}); err != nil {
+		t.Fatalf("Verdict returned err: %v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "Verdict confidence filter: dropped=1 kept=1 threshold=0.70") {
+		t.Fatalf("verbose log missing aggregate filter line:\n%s", logs)
+	}
+	wantDrop := `Verdict confidence filter dropped finding: id=11111111-1111-4111-8111-111111111111 confidence=0.69 source=finalization threshold=0.70 title="Low confidence"`
+	if !strings.Contains(logs, wantDrop) {
+		t.Fatalf("verbose log missing dropped finding line %q:\n%s", wantDrop, logs)
+	}
+	if strings.Contains(logs, `id=22222222-2222-4222-8222-222222222222 confidence=0.70 source=finalization`) {
+		t.Fatalf("verbose log should not include kept finding as dropped:\n%s", logs)
+	}
+}
+
+func TestVerdictConfidenceThresholdDropMetadataUsesDisplayConfidenceSource(t *testing.T) {
+	findings := []model.Finding{
+		{ID: "review", Title: "Review", ConfidenceScore: 0.4},
+		{ID: "summary", Title: "Summary", ConfidenceScore: 0.9, Summarization: &model.FindingSummarization{ConfidenceScore: 0.3}},
+		{ID: "final", Title: "Final", ConfidenceScore: 0.9, Finalization: &model.FindingFinalization{ConfidenceScore: 0.2}},
+	}
+	out, drops, err := filterByConfidenceThreshold(&model.ReviewResult{Findings: findings}, 0.5)
+	if err != nil {
+		t.Fatalf("filterByConfidenceThreshold returned err: %v", err)
+	}
+	if len(out.Findings) != 0 {
+		t.Fatalf("kept findings = %d, want none", len(out.Findings))
+	}
+	want := []confidenceFilterDrop{
+		{ID: "review", Title: "Review", Confidence: 0.4, Source: "review"},
+		{ID: "summary", Title: "Summary", Confidence: 0.3, Source: "summarization"},
+		{ID: "final", Title: "Final", Confidence: 0.2, Source: "finalization"},
+	}
+	if len(drops) != len(want) {
+		t.Fatalf("drops = %#v, want %#v", drops, want)
+	}
+	for i := range want {
+		if drops[i] != want[i] {
+			t.Fatalf("drop[%d] = %#v, want %#v", i, drops[i], want[i])
+		}
 	}
 }
 
