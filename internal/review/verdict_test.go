@@ -73,6 +73,41 @@ func TestVerdictConfidenceThresholdFiltersPromptAndResult(t *testing.T) {
 	}
 }
 
+func TestVerdictPriorityThresholdUsesFinalizedPriority(t *testing.T) {
+	finding := model.Finding{
+		ID:              "11111111-1111-4111-8111-111111111111",
+		Title:           "Downgraded by finalizer",
+		Body:            "body",
+		ConfidenceScore: 0.9,
+		Priority:        intPtr(1),
+		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Finalization:    &model.FindingFinalization{Title: "Downgraded by finalizer", Body: "body", Priority: 2, ConfidenceScore: 0.8},
+	}
+	llmClient := &capturingLLM{resps: []*llm.ReviewResponse{{
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "should not be called",
+	}}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{Findings: []model.Finding{finding}, OverallCorrectness: "patch is incorrect", OverallExplanation: "pre-filter"}
+
+	out, run, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{PriorityThreshold: "p1"})
+	if err != nil {
+		t.Fatalf("Verdict returned err: %v", err)
+	}
+	if len(out.Findings) != 0 {
+		t.Fatalf("findings = %#v, want downgraded finding filtered", out.Findings)
+	}
+	if run.Status != model.AgentRunStatusSkipped {
+		t.Fatalf("run status = %q, want skipped", run.Status)
+	}
+	if out.OverallCorrectness != "patch is correct" || out.OverallExplanation != "No findings remained after priority filtering." {
+		t.Fatalf("overall = %q / %q, want priority-filtered clean verdict", out.OverallCorrectness, out.OverallExplanation)
+	}
+	if len(llmClient.reqs) != 0 {
+		t.Fatalf("verdict requests = %d, want none after priority filter removed all findings", len(llmClient.reqs))
+	}
+}
+
 func TestVerdictConfidenceThresholdZeroKeepsZeroConfidence(t *testing.T) {
 	finding := model.Finding{
 		ID: "11111111-1111-4111-8111-111111111111", Title: "Zero", Body: "zero", Priority: intPtr(1),

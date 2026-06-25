@@ -38,6 +38,15 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: nil review result")
 	}
+	filtered, priorityDropped, err := filterResultByDisplayPriority(in, opts.PriorityThreshold)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	if priorityDropped > 0 {
+		e.logProgress(logging.StageVerdict, logging.StateWarn, fmt.Sprintf("priority filter dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold)))
+		e.logf(ctx, "Verdict priority filter: dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold))
+	}
+	in = filtered
 	filtered, drops, err := filterByConfidenceThreshold(in, opts.ConfidenceThreshold)
 	if err != nil {
 		return nil, model.AgentRun{}, err
@@ -63,7 +72,11 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		// findings the verdict owns a fresh rationale, and a stale merge summary or
 		// old "incorrect" explanation would contradict the empty, correct result
 		// (e.g. --priority-threshold dropping every finding in the fused pipeline).
-		if dropped > 0 {
+		if priorityDropped > 0 && dropped > 0 {
+			out.OverallExplanation = "No findings remained after priority and confidence filtering."
+		} else if priorityDropped > 0 {
+			out.OverallExplanation = "No findings remained after priority filtering."
+		} else if dropped > 0 {
 			out.OverallExplanation = "No findings remained after confidence filtering."
 		} else {
 			out.OverallExplanation = "No finalized findings remained."
@@ -166,6 +179,29 @@ func verdictOutputValidator() func(*llm.ReviewResponse) *llm.InvalidResponseErro
 			ReasoningEffort: reasoningEffort,
 		}
 	}
+}
+
+func filterResultByDisplayPriority(in *model.ReviewResult, threshold string) (*model.ReviewResult, int, error) {
+	if in == nil {
+		return nil, 0, fmt.Errorf("priority filter: nil review result")
+	}
+	filtered := filterByDisplayPriority(in.Findings, threshold)
+	if len(filtered) == len(in.Findings) {
+		return in, 0, nil
+	}
+	out, err := in.Clone()
+	if err != nil {
+		return nil, 0, fmt.Errorf("priority filter: cloning input result: %w", err)
+	}
+	out.Findings = filterByDisplayPriority(out.Findings, threshold)
+	return out, len(in.Findings) - len(filtered), nil
+}
+
+func priorityThresholdLabel(threshold string) string {
+	if threshold == "" {
+		return "p3"
+	}
+	return threshold
 }
 
 type confidenceFilterDrop struct {

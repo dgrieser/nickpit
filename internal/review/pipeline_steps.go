@@ -707,14 +707,6 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				shardResult := &model.ReviewResult{Findings: append([]model.Finding(nil), shard...)}
 				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(finalizeCtx, finalizeSC, st, shardResult)
 
-				resultMu.Lock()
-				finalizedByCluster[idx] = append([]model.Finding(nil), finalized.Findings...)
-				if finalizeRun != nil {
-					finalizeRunsByCluster[idx] = finalizeRun
-				}
-				finalizeWarningsByCluster[idx] = finalizeWarnings
-				resultMu.Unlock()
-
 				// Snapshot the summarize input before releasing the finalize barrier.
 				// After the barrier the verdict path normalizes finalized finding IDs
 				// (which mutates the shared Verification pointers), and that runs
@@ -722,7 +714,9 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				// independent deep copy, not the finalized findings themselves.
 				var summarizeInput *model.ReviewResult
 				if fused.hasSummarize {
-					if clone, err := finalized.Clone(); err == nil {
+					filtered, priorityWarnings := filterFinalizedByDisplayPriority(ctx, summarizeSC, finalized)
+					finalizeWarnings = append(finalizeWarnings, priorityWarnings...)
+					if clone, err := filtered.Clone(); err == nil {
 						summarizeInput = clone
 					} else {
 						// Clone of an in-memory result effectively never fails, but if
@@ -730,9 +724,17 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 						// the finalized findings — the post-barrier ID normalization
 						// mutates Verification.ID through those pointers concurrently.
 						mergeSC.Engine.logf(ctx, "Summarize input clone failed; manual-copying to avoid a data race: error=%v", err)
-						summarizeInput = &model.ReviewResult{Findings: deepCopyFindingsForSummarize(finalized.Findings)}
+						summarizeInput = &model.ReviewResult{Findings: deepCopyFindingsForSummarize(filtered.Findings)}
 					}
 				}
+
+				resultMu.Lock()
+				finalizedByCluster[idx] = append([]model.Finding(nil), finalized.Findings...)
+				if finalizeRun != nil {
+					finalizeRunsByCluster[idx] = finalizeRun
+				}
+				finalizeWarningsByCluster[idx] = finalizeWarnings
+				resultMu.Unlock()
 
 				// Release the finalize barrier now (not deferred to after summarize)
 				// so the verdict and overall summary overlap the remaining per-cluster
@@ -886,6 +888,18 @@ func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, i
 	warnings := append([]string(nil), finalized.Warnings...)
 	finalized.Warnings = nil
 	return finalized, &run, warnings
+}
+
+func filterFinalizedByDisplayPriority(ctx context.Context, sc *stepContext, in *model.ReviewResult) (*model.ReviewResult, []string) {
+	filtered, dropped, err := filterResultByDisplayPriority(in, sc.Req.PriorityThreshold)
+	if err != nil {
+		sc.Engine.logf(ctx, "Finalize priority filter failed, keeping unfiltered shard: error=%v", err)
+		return in, []string{fmt.Sprintf("Finalize priority filter failed: %v; keeping unfiltered result", err)}
+	}
+	if dropped > 0 {
+		sc.Engine.logf(ctx, "Finalize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+	}
+	return filtered, nil
 }
 
 func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
@@ -1151,6 +1165,12 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			st.warnings = append(st.warnings, finalized.Warnings...)
 			finalized.Warnings = nil
 		}
+		if filtered, dropped, err := filterResultByDisplayPriority(finalized, sc.Req.PriorityThreshold); err != nil {
+			return err
+		} else if dropped > 0 {
+			sc.Engine.logf(ctx, "Finalize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+			finalized = filtered
+		}
 		st.result = finalized
 		st.finalizeRuns = append(st.finalizeRuns, finalizeRun)
 		st.finalizeUsage = finalizeRun.TokensUsed
@@ -1222,6 +1242,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			verdictRun.Error = err.Error()
 			st.verdictRun = &verdictRun
 			st.verdictUsage = verdictRun.TokensUsed
+			st.result = in
 			return nil
 		}
 		if len(verdict.Warnings) > 0 {
@@ -1268,6 +1289,18 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 		st.mu.Unlock()
 
 		if in == nil || len(in.Findings) == 0 {
+			return nil
+		}
+		if filtered, dropped, err := filterResultByDisplayPriority(in, sc.Req.PriorityThreshold); err != nil {
+			return err
+		} else if dropped > 0 {
+			sc.Engine.logf(ctx, "Summarize priority filter: dropped=%d kept=%d threshold=%s", dropped, len(filtered.Findings), priorityThresholdLabel(sc.Req.PriorityThreshold))
+			in = filtered
+			st.mu.Lock()
+			st.result = filtered
+			st.mu.Unlock()
+		}
+		if len(in.Findings) == 0 {
 			return nil
 		}
 		opts := SummarizeOptions{

@@ -2280,6 +2280,29 @@ func filterByPriority(findings []model.Finding, threshold string) []model.Findin
 	return filtered
 }
 
+func filterByDisplayPriority(findings []model.Finding, threshold string) []model.Finding {
+	maxPriority := model.PriorityThresholdRank(threshold)
+	filtered := make([]model.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if displayPriorityRank(finding) <= maxPriority {
+			filtered = append(filtered, finding)
+		}
+	}
+	return filtered
+}
+
+func displayPriorityRank(finding model.Finding) int {
+	if finding.Summarization != nil {
+		priority := finding.Summarization.Priority
+		return model.PriorityRank(&priority)
+	}
+	if finding.Finalization != nil {
+		priority := finding.Finalization.Priority
+		return model.PriorityRank(&priority)
+	}
+	return model.PriorityRank(finding.Priority)
+}
+
 func mergeConstraintsForRequest(req model.ReviewRequest) llm.ResponseConstraints {
 	maxPriority := model.PriorityThresholdRank(req.PriorityThreshold)
 	if maxPriority >= 3 {

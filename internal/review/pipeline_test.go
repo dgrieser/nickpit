@@ -31,6 +31,35 @@ func (c *countingLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewRe
 	return &llm.ReviewResponse{}, nil
 }
 
+type finalizingPriorityDowngradeLLM struct {
+	multiAgentLLM
+}
+
+func (s *finalizingPriorityDowngradeLLM) Review(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	if req.SchemaKind != llm.SchemaKindFinalize {
+		return s.multiAgentLLM.Review(ctx, req)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cloned := *req
+	cloned.Messages = cloneTestMessages(req.Messages)
+	s.finalizeRequests = append(s.finalizeRequests, &cloned)
+	findings := testPayloadFindingsFromJSON(req.Messages[1].Content)
+	for i := range findings {
+		findings[i].Finalization = &model.FindingFinalization{
+			Title:           "Final " + findings[i].Title,
+			Body:            "FINALIZED_MARKER " + findings[i].Body,
+			Priority:        2,
+			ConfidenceScore: 0.8,
+			Remarks:         "downgraded",
+		}
+	}
+	return &llm.ReviewResponse{
+		Findings:   findings,
+		TokensUsed: model.TokenUsage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
+	}, nil
+}
+
 func pipelineTestEngine(client llm.Client) *Engine {
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logging.New(os.Stderr, false, false))
@@ -309,6 +338,44 @@ func TestWorkflowFusedPostMergeVerdictConfidenceFilterOwnsFinalFindings(t *testi
 	}
 	if len(client.verdictRequests) != 0 {
 		t.Fatalf("verdict requests = %d, want skipped verdict agent after filter removed all findings", len(client.verdictRequests))
+	}
+}
+
+func TestWorkflowFusedPostMergePriorityFilterUsesFinalizedPriority(t *testing.T) {
+	client := &finalizingPriorityDowngradeLLM{}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "single.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix downgraded issue", "a.go", 1, 1),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, PriorityThreshold: "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %d, want none after finalized priority filter: %#v", len(result.Findings), result.Findings)
+	}
+	if result.OverallCorrectness != "patch is correct" || result.OverallExplanation != "No findings remained after priority filtering." {
+		t.Fatalf("overall = %q / %q, want priority-filtered clean verdict", result.OverallCorrectness, result.OverallExplanation)
+	}
+	if len(client.verdictRequests) != 0 {
+		t.Fatalf("verdict requests = %d, want skipped verdict after priority filter removed all findings", len(client.verdictRequests))
+	}
+	if len(client.summarizeRequests) != 0 {
+		t.Fatalf("summarize requests = %d, want no summarize request for filtered finding", len(client.summarizeRequests))
 	}
 }
 
