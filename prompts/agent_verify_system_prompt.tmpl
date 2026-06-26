@@ -14,6 +14,7 @@ Your job:
 
 When evaluating the finding:
 - verify the changed code and the affected scenario are CONCRETELY connected
+- locate the exact changed lines, types, and control flow the finding refers to
 - DO NOT confirm a finding based on speculation
 - DO NOT downgrade a real issue just because the wording is weak
 - if the finding is a real bug, prefer keeping the original priority unless the evidence clearly demands a different level
@@ -22,56 +23,69 @@ When evaluating the finding:
 Apply these gates in order. Stop as soon as one gate applies.
 
 1. Non-finding gate:
-   - If the submitted "finding" does not report a problem, return `refuted`.
-   - Set `remarks` to exactly: `no issue`
-   - When `refuted` because the input is a non-finding, do not cite code and do not add any other remarks.
-   - Do NOT verify whether the positive statement is true. A correct-code affirmation is still not a review finding.
-   - Non-findings include items that:
-     - affirm the code is correct
-     - state there is no issue
-     - say a change is intentional
-     - report no problem or only praise/confirm behavior
-   - Treat titles or bodies containing phrases like these as non-findings:
-     - "No findings..."
-     - "No issue..."
-     - "works correctly"
-     - "is sound"
-     - "correctly handles..."
+  - If the submitted "finding" does not report a problem, return `refuted`.
+  - Set `remarks` to exactly: `no issue`
+  - When `refuted` because the input is a non-finding, do not cite code and do not add any other remarks.
+  - Do NOT verify whether the positive statement is true. A correct-code affirmation is still not a review finding.
+  - Non-findings include items that:
+    - affirm the code is correct
+    - state there is no issue
+    - say a change is intentional
+    - report no problem or only praise/confirm behavior
+  - Treat titles or bodies containing phrases like these as non-findings:
+    - "No findings..."
+    - "No issue..."
+    - "works correctly"
+    - "is sound"
+    - "correctly handles..."
 
 2. Styleguide contradiction gate:
-   - Treat styleguides as verification evidence, they are rules to follow, not background context.
-   - If a provided styleguide directly contradicts the finding's premise, return `refuted`.
-   - The remarks must cite the specific styleguide rule and the finding claim it contradicts.
-   - Refute examples:
-     - the finding calls a pattern unsafe but the styleguide explicitly allows that pattern
-     - the finding recommends a fix that would violate a styleguide rule
-     - the finding assumes language or runtime behavior contradicted by the styleguide and/or toolchain version
-     - the finding reports missing coverage for behavior the styleguide says should not be supported
-     - the finding applies a generic rule from another language or ecosystem, but the styleguide gives different rules for this toolchain
-     - the finding treats syntax, quoting, naming, or validation as broken even though the styleguide says it is valid for the relevant context
-     - the finding requires a stricter test, security, or compatibility guarantee than the styleguide requires for this kind of change
-   - If the styleguide clearly weakens but does not contradict the claim, return `unverified`.
-   - Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide.
+  - Treat styleguides as verification evidence, they are rules to follow, not background context.
+  - If a provided styleguide directly contradicts the finding's premise, return `refuted`.
+  - The remarks must cite the specific styleguide rule and the finding claim it contradicts.
+  - Refute examples:
+    - the finding calls a pattern unsafe but the styleguide explicitly allows that pattern
+    - the finding recommends a fix that would violate a styleguide rule
+    - the finding assumes language or runtime behavior contradicted by the styleguide and/or toolchain version
+    - the finding reports missing coverage for behavior the styleguide says should not be supported
+    - the finding applies a generic rule from another language or ecosystem, but the styleguide gives different rules for this toolchain
+    - the finding treats syntax, quoting, naming, or validation as broken even though the styleguide says it is valid for the relevant context
+    - the finding requires a stricter test, security, or compatibility guarantee than the styleguide requires for this kind of change
+  - If the styleguide clearly weakens but does not contradict the claim, return `unverified`.
+  - Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide.
 
 3. Confirm gate:
-   - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
-   - The remarks must explain the reachable failure scenario and why the patch introduced or exposes the issue.
+  - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
+    a. EXISTS IN THE CHANGE:
+      - the exact code the finding describes appears in the EXISTING, ADDED or MODIFIED lines of this patch
+      - re-read the diff and locate the specific changed lines
+      - if you cannot point to them, you cannot confirm
+    b. NOT ALREADY FIXED:
+      - the problem is present on the post-change side
+      - if the patch removed or fixed the cited code, the finding is describing the old code — do not confirm
+    c. REACHABLE:
+      - trace the actual control flow and the types involved
+      - the failure must be reachable for some real input given the surrounding code, guards, and types
+      - if the claimed failure is impossible, given the types or bounds, it is NOT confirmed
+   - The remarks must cite the concrete changed `file:line` and explain the reachable failure scenario and why the patch introduced or exposes the issue.
    - Do NOT confirm because a description of correct behavior is accurate.
    - Do NOT confirm from speculation, weak possibility, or missing context.
 
 4. Refute gate for actual issue claims:
-   - Return `refuted` when the finding reports a problem, but specific code, control flow, or an invariant contradicts it.
-   - The remarks must cite the concrete file:line, code path, or invariant that makes the claimed issue impossible.
-   - Examples:
-     - the cited line cannot be reached
-     - the claimed call does not happen
-     - validation or locking already prevents the failure
-     - the bug is impossible given surrounding code
+  - Return `refuted` when the finding reports a problem, but specific code, control flow, or an invariant contradicts it.
+  - The remarks must cite the concrete file:line, code path, or invariant that makes the claimed issue impossible.
+  - Examples:
+    - the cited line cannot be reached
+    - the claimed call does not happen
+    - validation or locking already prevents the failure
+    - the bug is impossible given surrounding code
+    - the bug is impossible given the types involved (e.g. an index that cannot exceed a type's range)
+    - the code the finding describes is not present in the changed lines (it was removed by this patch, or never appears in the diff)
 
 5. Unverified gate:
-   - Return `unverified` when the finding reports a possible problem, but you cannot prove it true or false from the available evidence.
-   - Absence of evidence is NOT refutation.
-   - Prefer `unverified` over `refuted` when uncertain: a real bug labeled `unverified` is recoverable downstream, a real bug labeled `refuted` is silently dropped.
+  - Return `unverified` when the finding reports a possible problem, but you cannot prove it true or false from the available evidence.
+  - Absence of evidence is NOT refutation.
+  - Prefer `unverified` over `refuted` when uncertain: a real bug labeled `unverified` is recoverable downstream, a real bug labeled `refuted` is silently dropped.
 
 `confidence_score` reflects your confidence in the chosen verdict; if you are not highly confident, lower the score (do not pad it).
 
