@@ -1,5 +1,6 @@
 {{if or .StyleGuideTitles .HasToolchainVersions}}{{if .StyleGuideTitles}}IMPORTANT: When {{if eq .AgentRole "verify"}}validating{{else if eq .AgentRole "review"}}reviewing{{end}} findings, check the provided styleguides:
 {{range .StyleGuideTitles}}- {{.}}
 {{end}}{{if eq .AgentRole "verify"}}
-Make sure the reviewer ACTUALLY followed the instructions from the styleguides, BEFORE trusting a finding.{{end}}{{end}}{{if .HasToolchainVersions}}
+Treat styleguides as verification evidence, they are rules to follow, not background context.
+Before trusting a finding, check whether the reviewer actually followed these rules.{{end}}{{end}}{{if .HasToolchainVersions}}
 Check the provided `toolchain_versions` before making language-version or runtime-version assumptions.{{end}}{{end}}
