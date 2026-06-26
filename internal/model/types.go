@@ -485,6 +485,22 @@ func PriorityRank(priority *int) int {
 	return *priority
 }
 
+// NormalizeConfidence coerces an LLM-provided confidence into [0,1]. Models
+// sometimes emit a 0–100 scale (e.g. 95 or 100); rescale those, then clamp.
+// Values already in [0,1] are returned unchanged.
+func NormalizeConfidence(v float64) float64 {
+	if v > 1 {
+		v /= 100
+	}
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
 func PriorityThresholdRank(value string) int {
 	switch value {
 	case "p0":

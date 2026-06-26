@@ -3421,6 +3421,20 @@ func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 	}
 }
 
+func TestParseReviewResponseRescalesMisscaledConfidence(t *testing.T) {
+	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":90,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":100}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings[0].ConfidenceScore != 0.9 {
+		t.Fatalf("finding confidence = %f, want 0.9 (rescaled from 90)", resp.Findings[0].ConfidenceScore)
+	}
+	if resp.OverallConfidenceScore != 1 {
+		t.Fatalf("overall confidence = %f, want 1 (rescaled from 100)", resp.OverallConfidenceScore)
+	}
+}
+
 func TestParseReviewResponseAcceptsStringSuggestionShorthand(t *testing.T) {
 	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":7,"end":9}},"suggestions":["Add a regression test."]}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})

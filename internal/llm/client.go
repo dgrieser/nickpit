@@ -1933,7 +1933,9 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 	normalizeFindingSuggestions(parsed.Findings)
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
+		parsed.Findings[i].ConfidenceScore = model.NormalizeConfidence(parsed.Findings[i].ConfidenceScore)
 	}
+	parsed.OverallConfidenceScore = model.NormalizeConfidence(parsed.OverallConfidenceScore)
 	if missing := missingResponseFields(&parsed, content, kind, constraints); len(missing) > 0 {
 		return &parsed, 0, &InvalidResponseError{
 			RawContent:    content,
@@ -2067,6 +2069,7 @@ func parseVerifyResponse(content string) (*ReviewResponse, error) {
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
 	}
+	verification.ConfidenceScore = model.NormalizeConfidence(verification.ConfidenceScore)
 	if missing := missingVerifyFields(content); len(missing) > 0 {
 		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
 			RawContent:    content,
