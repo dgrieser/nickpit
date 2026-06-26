@@ -73,6 +73,65 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 	}
 }
 
+func TestFinalizeSkipSuggestionsOmitsAndStripsSuggestions(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						ID:              findingID,
+						Title:           "Fix issue",
+						Body:            "body",
+						ConfidenceScore: 0.7,
+						Priority:        intPtr(1),
+						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+						Finalization: &model.FindingFinalization{
+							Title:           "Final issue",
+							Body:            "final body",
+							Priority:        1,
+							ConfidenceScore: 0.75,
+							Remarks:         "keep",
+							Suggestions:     []model.Suggestion{{Body: "model suggestion should be stripped", LineRange: model.LineRange{Start: 1, End: 1}}},
+						},
+					},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID:              findingID,
+				Title:           "Fix issue",
+				Body:            "body",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Suggestions:     []model.Suggestion{{Body: "input suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}},
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+			},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{SkipSuggestions: true})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	userPrompt := llmClient.reqs[0].Messages[1].Content
+	if strings.Contains(userPrompt, `"suggestions"`) || strings.Contains(userPrompt, "input suggestion should be omitted") {
+		t.Fatalf("finalize user prompt should not include suggestions:\n%s", userPrompt)
+	}
+	if len(out.Findings[0].Suggestions) != 0 {
+		t.Fatalf("top-level suggestions = %+v, want stripped", out.Findings[0].Suggestions)
+	}
+	if out.Findings[0].Finalization != nil && len(out.Findings[0].Finalization.Suggestions) != 0 {
+		t.Fatalf("finalization suggestions = %+v, want stripped", out.Findings[0].Finalization.Suggestions)
+	}
+}
+
 func TestVerdictContextNotesInPrompt(t *testing.T) {
 	const findingID = "11111111-1111-4111-8111-111111111111"
 	const notes = "## Notes\n\nCONTEXT_NOTES_MARKER the patch wires notes into the verdict."

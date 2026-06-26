@@ -30,6 +30,7 @@ type VerifyRequest struct {
 	MaxReasoningSeconds      int
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
+	SkipSuggestions          bool
 }
 
 type VerifyOptions struct {
@@ -47,6 +48,7 @@ type VerifyOptions struct {
 	MaxReasoningSeconds      int
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
+	SkipSuggestions          bool
 	RepoRoot                 string
 	DropPolicy               string
 }
@@ -74,7 +76,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet, false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet, req.SkipSuggestions)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -110,7 +112,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, styleGuides)
+	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, styleGuides, req.SkipSuggestions)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -159,7 +161,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           exampleSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, false)
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.SkipSuggestions)
 			},
 		})
 		if err != nil {
@@ -245,6 +247,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxReasoningSeconds:      opts.MaxReasoningSeconds,
 				MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
 				DisableParallelToolCalls: opts.DisableParallelToolCalls,
+				SkipSuggestions:          opts.SkipSuggestions,
 			}
 			verification, usage, err := e.Verify(ctx, req)
 			mu.Lock()
@@ -325,7 +328,7 @@ func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {
 	return llm.VerifyExamplePromptSnippet()
 }
 
-func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, styleGuides []model.StyleGuide) (string, error) {
+func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, styleGuides []model.StyleGuide, skipSuggestions bool) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	payload.StyleGuides = styleGuides
 	base, err := json.Marshal(payload)
@@ -350,7 +353,9 @@ func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding m
 		Body:         finding.Body,
 		Priority:     model.PriorityRank(finding.Priority),
 		CodeLocation: finding.CodeLocation,
-		Suggestions:  finding.Suggestions,
+	}
+	if !skipSuggestions {
+		findingForVerify.Suggestions = finding.Suggestions
 	}
 	encoded, err := json.Marshal(findingForVerify)
 	if err != nil {

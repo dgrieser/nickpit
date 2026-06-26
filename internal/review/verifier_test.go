@@ -661,3 +661,35 @@ func TestVerifyIncludesSuggestions(t *testing.T) {
 		t.Fatalf("first suggestion = %#v", first)
 	}
 }
+
+func TestVerifySkipSuggestionsOmitsSuggestions(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	finding := model.Finding{
+		ID:           "11111111-1111-4111-8111-111111111111",
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Suggestions: []model.Suggestion{
+			{Body: "replacement one", LineRange: model.LineRange{Start: 1, End: 1}},
+		},
+	}
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding, SkipSuggestions: true})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal user prompt: %v", err)
+	}
+	verifyFinding := payload["finding"].(map[string]any)
+	if _, ok := verifyFinding["suggestions"]; ok {
+		t.Fatalf("suggestions should be omitted from verify payload: %#v", verifyFinding)
+	}
+	if strings.Contains(llmClient.requests[0].Messages[1].Content, "replacement one") {
+		t.Fatalf("verify user prompt should not contain suggestion text:\n%s", llmClient.requests[0].Messages[1].Content)
+	}
+}

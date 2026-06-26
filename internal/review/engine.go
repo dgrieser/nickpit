@@ -555,6 +555,7 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		MaxReasoningSeconds:      req.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: req.DisableParallelToolCalls,
+		SkipSuggestions:          req.SkipSuggestions,
 		RepoRoot:                 req.RepoRoot,
 		DropPolicy:               req.VerifyDropPolicy,
 	}
@@ -734,10 +735,12 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 		FindingInstructionsSnippet string
 		PrioritySnippet            string
 		OutputFormatSnippet        string
+		SkipSuggestions            bool
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
+		SkipSuggestions:            req.SkipSuggestions,
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering dedupe system prompt: %w", err)
@@ -747,7 +750,7 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 		"review_findings": map[string]any{
 			"name":                     input.run.Name,
 			"role":                     input.run.Role,
-			"findings":                 input.resp.Findings,
+			"findings":                 findingsPromptPayload(input.resp.Findings, req.SkipSuggestions),
 			"overall_correctness":      input.resp.OverallCorrectness,
 			"overall_explanation":      input.resp.OverallExplanation,
 			"overall_confidence_score": input.resp.OverallConfidenceScore,
@@ -1048,10 +1051,12 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 		FindingInstructionsSnippet string
 		PrioritySnippet            string
 		OutputFormatSnippet        string
+		SkipSuggestions            bool
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
+		SkipSuggestions:            req.SkipSuggestions,
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
@@ -1060,7 +1065,7 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 		"review_context":      json.RawMessage(userPrompt),
 		"context_agent_notes": contextNotes,
 		"cluster_signals":     clusterMergeSignals(cluster),
-		"cluster_findings":    clusterMergePayload(cluster, reviewerByID),
+		"cluster_findings":    clusterMergePayload(cluster, reviewerByID, req.SkipSuggestions),
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
@@ -1084,15 +1089,44 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 	}, req)
 }
 
-func clusterMergePayload(cluster []model.Finding, reviewerByID map[string]string) []map[string]any {
+func clusterMergePayload(cluster []model.Finding, reviewerByID map[string]string, skipSuggestions bool) []map[string]any {
 	out := make([]map[string]any, 0, len(cluster))
 	for _, f := range cluster {
 		out = append(out, map[string]any{
 			"reviewer": reviewerByID[f.ID],
-			"finding":  f,
+			"finding":  findingPromptPayload(f, skipSuggestions),
 		})
 	}
 	return out
+}
+
+func findingsPromptPayload(findings []model.Finding, skipSuggestions bool) []model.Finding {
+	if !skipSuggestions {
+		return findings
+	}
+	out := make([]model.Finding, len(findings))
+	for i := range findings {
+		out[i] = findingPromptPayload(findings[i], true)
+	}
+	return out
+}
+
+func findingPromptPayload(finding model.Finding, skipSuggestions bool) model.Finding {
+	if !skipSuggestions {
+		return finding
+	}
+	finding.Suggestions = nil
+	if finding.Finalization != nil {
+		finalization := *finding.Finalization
+		finalization.Suggestions = nil
+		finding.Finalization = &finalization
+	}
+	if finding.Summarization != nil {
+		summarization := *finding.Summarization
+		summarization.Suggestions = nil
+		finding.Summarization = &summarization
+	}
+	return finding
 }
 
 func clusterMergeSignals(cluster []model.Finding) []string {

@@ -28,7 +28,9 @@ When merging duplicate findings:
 - set confidence from the combined evidence quality; independent reviewers agreeing increases confidence
 - extend the code location to the largest line range covering all merged findings;
   when merged findings span files, keep the location of the surviving finding
+{{if not .SkipSuggestions}}
 - include suggestions from all duplicate findings, merge only when it makes sense
+{{end}}
 - merge `verification` on duplicate findings:
   - merge the verification `remarks` if both have the same `verdict`;
     otherwise use the `remarks` of the finding with the highest `confidence_score`

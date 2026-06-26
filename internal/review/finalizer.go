@@ -78,7 +78,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes)
+	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes, opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -195,7 +195,7 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 	}
 }
 
-func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string) (string, error) {
+func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, skipSuggestions bool) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
@@ -217,7 +217,7 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 			"code_location":           finding.CodeLocation,
 			"review_confidence_score": finding.ConfidenceScore,
 		}
-		if len(finding.Suggestions) > 0 {
+		if !skipSuggestions && len(finding.Suggestions) > 0 {
 			entry["suggestions"] = finding.Suggestions
 		}
 		if finding.Verification != nil {

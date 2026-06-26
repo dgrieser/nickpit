@@ -1695,6 +1695,107 @@ func clusterMergeRequests(t *testing.T, requests []*llm.ReviewRequest) []*llm.Re
 	return out
 }
 
+func TestFindingPromptPayloadSkipSuggestionsStripsNestedSuggestions(t *testing.T) {
+	original := model.Finding{
+		ID:          "11111111-1111-4111-8111-111111111111",
+		Title:       "Fix issue",
+		Suggestions: []model.Suggestion{{Body: "top-level suggestion", LineRange: model.LineRange{Start: 1, End: 1}}},
+		Finalization: &model.FindingFinalization{
+			Title:       "Final issue",
+			Suggestions: []model.Suggestion{{Body: "final suggestion", LineRange: model.LineRange{Start: 2, End: 2}}},
+		},
+		Summarization: &model.FindingSummarization{
+			Body:        "Short issue",
+			Suggestions: []model.Suggestion{{Body: "summary suggestion", LineRange: model.LineRange{Start: 3, End: 3}}},
+		},
+	}
+
+	kept := findingPromptPayload(original, false)
+	if !reflect.DeepEqual(kept, original) {
+		t.Fatalf("non-skipped payload mutated finding: %+v", kept)
+	}
+	stripped := findingPromptPayload(original, true)
+	if len(stripped.Suggestions) != 0 {
+		t.Fatalf("top-level suggestions = %+v, want stripped", stripped.Suggestions)
+	}
+	if stripped.Finalization == nil || len(stripped.Finalization.Suggestions) != 0 {
+		t.Fatalf("finalization suggestions = %+v, want stripped", stripped.Finalization)
+	}
+	if stripped.Summarization == nil || len(stripped.Summarization.Suggestions) != 0 {
+		t.Fatalf("summarization suggestions = %+v, want stripped", stripped.Summarization)
+	}
+	if len(original.Suggestions) != 1 || len(original.Finalization.Suggestions) != 1 || len(original.Summarization.Suggestions) != 1 {
+		t.Fatalf("original finding was mutated: %+v", original)
+	}
+}
+
+func TestDedupeAgentSkipSuggestionsOmitsSuggestions(t *testing.T) {
+	a := clusterTestFinding("Fix alpha issue", 1)
+	a.Suggestions = []model.Suggestion{{Body: "alpha suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}}
+	b := clusterTestFinding("Fix beta issue", 13)
+	b.Suggestions = []model.Suggestion{{Body: "beta suggestion should be omitted", LineRange: model.LineRange{Start: 13, End: 13}}}
+	llmClient := &multiAgentLLM{
+		dedupeResponses: []*llm.ReviewResponse{{
+			Findings:               []model.Finding{a, b},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "deduped",
+			OverallConfidenceScore: 0.9,
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	input := agentResult{
+		run:  model.AgentRun{Name: "Reviewer A", Role: "review"},
+		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}, OverallConfidenceScore: 0.9},
+	}
+
+	if _, err := engine.callDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{SkipSuggestions: true}); err != nil {
+		t.Fatalf("callDedupeAgent returned err: %v", err)
+	}
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("dedupe requests = %d, want 1", len(llmClient.mergeRequests))
+	}
+	req := llmClient.mergeRequests[0]
+	if strings.Contains(req.Messages[0].Content, "include suggestions") {
+		t.Fatalf("dedupe system prompt should not ask for suggestions when skipped:\n%s", req.Messages[0].Content)
+	}
+	userPrompt := req.Messages[1].Content
+	if strings.Contains(userPrompt, "suggestion should be omitted") || strings.Contains(userPrompt, `"suggestions"`) {
+		t.Fatalf("dedupe user prompt should not include suggestions:\n%s", userPrompt)
+	}
+}
+
+func TestClusterMergeSkipSuggestionsOmitsSuggestions(t *testing.T) {
+	a := clusterTestFinding("Fix alpha issue", 1)
+	a.Suggestions = []model.Suggestion{{Body: "alpha suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}}
+	b := clusterTestFinding("Fix beta issue", 13)
+	b.Suggestions = []model.Suggestion{{Body: "beta suggestion should be omitted", LineRange: model.LineRange{Start: 13, End: 13}}}
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{SkipSuggestions: true})
+
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want 1", len(llmClient.mergeRequests))
+	}
+	req := llmClient.mergeRequests[0]
+	if strings.Contains(req.Messages[0].Content, "include suggestions") {
+		t.Fatalf("merge system prompt should not ask for suggestions when skipped:\n%s", req.Messages[0].Content)
+	}
+	userPrompt := req.Messages[1].Content
+	if strings.Contains(userPrompt, "suggestion should be omitted") || strings.Contains(userPrompt, `"suggestions"`) {
+		t.Fatalf("merge user prompt should not include suggestions:\n%s", userPrompt)
+	}
+	for _, finding := range result.resp.Findings {
+		if len(finding.Suggestions) != 0 {
+			t.Fatalf("merge output suggestions = %+v, want stripped", finding.Suggestions)
+		}
+	}
+}
+
 func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
 	ghost := model.Finding{
 		Title:           "Ghost",
