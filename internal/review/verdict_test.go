@@ -73,6 +73,56 @@ func TestVerdictConfidenceThresholdFiltersPromptAndResult(t *testing.T) {
 	}
 }
 
+func TestVerdictSkipSuggestionsOmitsFinalizationSuggestions(t *testing.T) {
+	finding := model.Finding{
+		ID:           "11111111-1111-4111-8111-111111111111",
+		Title:        "Finding",
+		Body:         "body",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Verification: &model.FindingVerification{ID: "11111111-1111-4111-8111-111111111111", Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+		Finalization: &model.FindingFinalization{
+			Title:           "Final finding",
+			Body:            "final body",
+			Priority:        1,
+			ConfidenceScore: 0.8,
+			Remarks:         "keep",
+			Suggestions:     []model.Suggestion{{Body: "final prose suggestion that should not reach verdict", LineRange: model.LineRange{Start: 1, End: 1}}},
+		},
+	}
+	llmClient := &capturingLLM{resps: []*llm.ReviewResponse{{
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "kept issue remains",
+	}}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{Findings: []model.Finding{finding}, OverallCorrectness: "patch is incorrect", OverallExplanation: "pre-filter"}
+
+	out, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{SkipSuggestions: true})
+	if err != nil {
+		t.Fatalf("Verdict returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("verdict requests = %d, want 1", len(llmClient.reqs))
+	}
+	systemPrompt := llmClient.reqs[0].Messages[0].Content
+	if strings.Contains(systemPrompt, "suggestion") {
+		t.Fatalf("verdict system prompt should not mention suggestions when skipped:\n%s", systemPrompt)
+	}
+	rawPayload := llmClient.reqs[0].Messages[1].Content
+	if strings.Contains(rawPayload, "suggestion") {
+		t.Fatalf("verdict user prompt should not include suggestions:\n%s", rawPayload)
+	}
+	payload := verdictPromptPayload(t, llmClient.reqs[0])
+	findings := payload["findings"].([]any)
+	finalization := findings[0].(map[string]any)["finalization"].(map[string]any)
+	if _, ok := finalization["suggestions"]; ok {
+		t.Fatalf("finalization suggestions should be omitted from prompt: %#v", finalization)
+	}
+	if out.Findings[0].Finalization != nil && len(out.Findings[0].Finalization.Suggestions) != 0 {
+		t.Fatalf("output finalization suggestions = %+v, want stripped", out.Findings[0].Finalization.Suggestions)
+	}
+}
+
 func TestVerdictPriorityThresholdUsesFinalizedPriority(t *testing.T) {
 	finding := model.Finding{
 		ID:              "11111111-1111-4111-8111-111111111111",

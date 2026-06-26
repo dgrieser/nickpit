@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ func TestSummarizeShortensBodyAndCopiesFinalizationFields(t *testing.T) {
 		Priority:        1,
 		ConfidenceScore: 0.75,
 		Remarks:         "keep",
+		Suggestions:     []model.Suggestion{{Body: "final suggestion", LineRange: model.LineRange{Start: 3, End: 4}}},
 	}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -81,8 +83,11 @@ func TestSummarizeShortensBodyAndCopiesFinalizationFields(t *testing.T) {
 	if got.Title != fin.Title || got.Priority != fin.Priority || got.ConfidenceScore != fin.ConfidenceScore || got.Remarks != fin.Remarks {
 		t.Fatalf("summarization fields = %#v, want copied from finalization %#v", got, fin)
 	}
+	if !slices.Equal(got.Suggestions, fin.Suggestions) {
+		t.Fatalf("summarization suggestions = %#v, want copied from finalization %#v", got.Suggestions, fin.Suggestions)
+	}
 	// Finalization itself is untouched.
-	if out.Findings[0].Finalization == nil || *out.Findings[0].Finalization != *fin {
+	if out.Findings[0].Finalization == nil || !reflect.DeepEqual(out.Findings[0].Finalization, fin) {
 		t.Fatalf("finalization mutated: %#v, want %#v", out.Findings[0].Finalization, fin)
 	}
 }
@@ -168,6 +173,173 @@ func TestSummarizeShortensOverallExplanation(t *testing.T) {
 	// The shortened overall_explanation is adopted.
 	if out.OverallExplanation != "Short overall.\nVerdict line." {
 		t.Fatalf("out.OverallExplanation = %q, want shortened", out.OverallExplanation)
+	}
+}
+
+func TestSummarizeShortensProseSuggestionsInSameCall(t *testing.T) {
+	const findingID = "66666666-6666-4666-8666-666666666666"
+	suggestionID := summarizeSuggestionItemID(findingID, 0)
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short body."}},
+					{ID: suggestionID, Summarization: &model.FindingSummarization{Body: "Short suggestion."}},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	codeSuggestion := "if err != nil {\n\treturn err\n}"
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID:              findingID,
+				Title:           "Fix issue",
+				Body:            "original body",
+				ConfidenceScore: 0.6,
+				Priority:        intPtr(2),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Suggestions: []model.Suggestion{
+					{Body: "Replace the repeated setup with a shared helper so each test covers one clear scenario.", LineRange: model.LineRange{Start: 10, End: 12}},
+					{Body: codeSuggestion, LineRange: model.LineRange{Start: 20, End: 22}},
+				},
+				Finalization: &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 2, ConfidenceScore: 0.7, Remarks: "keep"},
+			},
+		},
+		OverallCorrectness: "patch is incorrect",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want one shared summarize call", len(llmClient.reqs))
+	}
+	userPrompt := llmClient.reqs[0].Messages[1].Content
+	if !strings.Contains(userPrompt, `"kind": "suggestion"`) || !strings.Contains(userPrompt, suggestionID) {
+		t.Fatalf("summarize user prompt missing prose suggestion item:\n%s", userPrompt)
+	}
+	if strings.Contains(userPrompt, codeSuggestion) {
+		t.Fatalf("code-like suggestion should not be sent for summarization:\n%s", userPrompt)
+	}
+	if got := out.Findings[0].Summarization.Suggestions[0].Body; got != "Short suggestion." {
+		t.Fatalf("summarization suggestion body = %q, want shortened", got)
+	}
+	if got := out.Findings[0].Summarization.Suggestions[0].LineRange; got != (model.LineRange{Start: 10, End: 12}) {
+		t.Fatalf("summarization suggestion line range = %+v, want preserved", got)
+	}
+	if got := out.Findings[0].Summarization.Suggestions[1].Body; got != codeSuggestion {
+		t.Fatalf("code-like summarization suggestion body = %q, want unchanged", got)
+	}
+	if got := out.Findings[0].Suggestions[0].Body; got == "Short suggestion." {
+		t.Fatalf("top-level suggestion was mutated, want reviewer suggestion preserved")
+	}
+}
+
+func TestSummarizeSkipSuggestionsOmitsSuggestionItems(t *testing.T) {
+	const findingID = "88888888-8888-4888-8888-888888888888"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short body."}},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID:           findingID,
+				Title:        "Fix issue",
+				Body:         "original body",
+				Priority:     intPtr(2),
+				CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Suggestions:  []model.Suggestion{{Body: "reviewer prose suggestion that should not be summarized", LineRange: model.LineRange{Start: 10, End: 12}}},
+				Finalization: &model.FindingFinalization{
+					Title:       "Final issue",
+					Body:        "final body",
+					Priority:    2,
+					Remarks:     "keep",
+					Suggestions: []model.Suggestion{{Body: "final prose suggestion that should not be summarized", LineRange: model.LineRange{Start: 10, End: 12}}},
+				},
+			},
+		},
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{SkipSuggestions: true})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want one summarize call", len(llmClient.reqs))
+	}
+	systemPrompt := llmClient.reqs[0].Messages[0].Content
+	if strings.Contains(systemPrompt, "suggestion") {
+		t.Fatalf("summarize system prompt should not mention suggestions when skipped:\n%s", systemPrompt)
+	}
+	userPrompt := llmClient.reqs[0].Messages[1].Content
+	if strings.Contains(userPrompt, `"kind": "suggestion"`) || strings.Contains(userPrompt, "prose suggestion") {
+		t.Fatalf("summarize user prompt should not carry suggestion items:\n%s", userPrompt)
+	}
+	if len(out.Findings[0].Suggestions) != 0 {
+		t.Fatalf("top-level suggestions = %+v, want stripped", out.Findings[0].Suggestions)
+	}
+	if out.Findings[0].Finalization != nil && len(out.Findings[0].Finalization.Suggestions) != 0 {
+		t.Fatalf("finalization suggestions = %+v, want stripped", out.Findings[0].Finalization.Suggestions)
+	}
+	if out.Findings[0].Summarization != nil && len(out.Findings[0].Summarization.Suggestions) != 0 {
+		t.Fatalf("summarization suggestions = %+v, want stripped", out.Findings[0].Summarization.Suggestions)
+	}
+}
+
+func TestSummarizeDoesNotRetryWhenOptionalSuggestionSummaryMissing(t *testing.T) {
+	const findingID = "77777777-7777-4777-8777-777777777777"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{ID: findingID, Summarization: &model.FindingSummarization{Body: "Short body."}},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	originalSuggestion := "Replace the repeated setup with a shared helper so each test covers one clear scenario."
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID:              findingID,
+				Title:           "Fix issue",
+				Body:            "original body",
+				ConfidenceScore: 0.6,
+				Priority:        intPtr(2),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Suggestions:     []model.Suggestion{{Body: originalSuggestion, LineRange: model.LineRange{Start: 10, End: 12}}},
+				Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 2, ConfidenceScore: 0.7, Remarks: "keep"},
+			},
+		},
+		OverallCorrectness: "patch is incorrect",
+	}
+
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{MaxOutputRetries: 2})
+	if err != nil {
+		t.Fatalf("Summarize returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want no retry for omitted optional suggestion", len(llmClient.reqs))
+	}
+	if len(out.Warnings) != 0 {
+		t.Fatalf("warnings = %v, want none for omitted optional suggestion", out.Warnings)
+	}
+	if got := out.Findings[0].Summarization.Suggestions[0].Body; got != originalSuggestion {
+		t.Fatalf("summarization suggestion body = %q, want original fallback", got)
+	}
+	if got := out.Findings[0].Suggestions[0].Body; got != originalSuggestion {
+		t.Fatalf("top-level suggestion body = %q, want original reviewer suggestion", got)
 	}
 }
 

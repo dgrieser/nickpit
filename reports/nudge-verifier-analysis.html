@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NickPit — Nudge & Verifier Forensics</title>
+<meta name="description" content="Evidence-based analysis of NickPit's nudge feature and verifier agent, from 134 verbose review logs and blind ground-truth judging.">
+<style>
+  :root{
+    --paper:#f3f4f1;      /* warm-cool lab paper */
+    --card:#ffffff;
+    --ink:#191b1c;        /* cool near-black */
+    --muted:#646871;
+    --faint:#8b8f97;
+    --line:#e3e4df;
+    --line-strong:#cfd1cb;
+    --accent:#1f5c5c;     /* deep pine teal */
+    --accent-deep:#143f3f;
+    --wash:#e7efec;       /* accent tint */
+    --good:#2f7a4e;
+    --good-w:#e3f0e7;
+    --warn:#a9741a;
+    --warn-w:#f4ebd9;
+    --bad:#b03b3b;
+    --bad-w:#f4e2e0;
+    --serif:"Charter","Bitstream Charter","Iowan Old Style","Sorts Mill Goudy",Georgia,Cambria,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:var(--sans);line-height:1.6;
+    font-size:17px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:920px;margin:0 auto;padding:0 22px 96px}
+  .tnum{font-variant-numeric:tabular-nums}
+
+  /* ---- masthead ---- */
+  header.mast{padding:64px 0 38px;border-bottom:2px solid var(--ink)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin:0 0 18px}
+  h1{font-family:var(--serif);font-weight:600;font-size:clamp(34px,6vw,56px);line-height:1.04;
+    letter-spacing:-.01em;margin:0;text-wrap:balance}
+  .dek{font-family:var(--serif);font-size:clamp(18px,2.4vw,22px);color:#33363a;
+    margin:20px 0 0;max-width:62ch;font-style:italic}
+  .meta{display:flex;flex-wrap:wrap;gap:26px 40px;margin-top:34px}
+  .meta div{display:flex;flex-direction:column;gap:3px}
+  .meta .n{font-family:var(--mono);font-size:23px;font-weight:600;letter-spacing:-.02em}
+  .meta .l{font-size:12.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+
+  /* ---- sections ---- */
+  section{padding-top:56px}
+  .qkicker{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(26px,4vw,36px);line-height:1.1;margin:0;letter-spacing:-.01em;text-wrap:balance}
+  h3{font-family:var(--sans);font-weight:680;font-size:18px;margin:38px 0 4px;letter-spacing:-.01em}
+  p{margin:14px 0;max-width:68ch}
+  a{color:var(--accent);text-underline-offset:2px}
+  code{font-family:var(--mono);font-size:.86em;background:#eceeea;padding:.1em .38em;border-radius:4px;
+    border:1px solid var(--line);word-break:break-word}
+
+  /* ---- verdict callouts ---- */
+  .verdicts{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:30px}
+  @media(max-width:720px){.verdicts{grid-template-columns:1fr}}
+  .vc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:24px 24px 22px;
+    position:relative;overflow:hidden}
+  .vc::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent)}
+  .vc.warn::before{background:var(--warn)}
+  .vc h4{margin:0 0 2px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .vc .head{font-family:var(--serif);font-size:21px;font-weight:600;margin:6px 0 10px;line-height:1.2}
+  .vc p{font-size:15px;margin:8px 0 0;color:#34373b}
+
+  /* ---- stat tiles ---- */
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:26px 0}
+  @media(max-width:720px){.tiles{grid-template-columns:repeat(2,1fr)}}
+  .tile{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:16px 16px 14px}
+  .tile .big{font-family:var(--mono);font-size:30px;font-weight:600;letter-spacing:-.03em;line-height:1}
+  .tile .cap{font-size:12.5px;color:var(--muted);margin-top:8px;line-height:1.35}
+  .tile.good .big{color:var(--good)} .tile.warn .big{color:var(--warn)} .tile.bad .big{color:var(--bad)}
+
+  /* ---- tables ---- */
+  .tw{overflow-x:auto;margin:22px 0;border:1px solid var(--line);border-radius:9px;background:var(--card)}
+  table{border-collapse:collapse;width:100%;font-size:14.5px}
+  caption{caption-side:top;text-align:left;font-size:12.5px;color:var(--muted);padding:12px 16px 0;font-family:var(--mono);letter-spacing:.03em}
+  th,td{padding:11px 16px;text-align:left;border-bottom:1px solid var(--line)}
+  th{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:680;background:#fafbf9}
+  td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+  tbody tr:last-child td{border-bottom:none}
+  tr.hi td{background:var(--wash)}
+  .strong{font-weight:700}
+
+  /* ---- distribution bar ---- */
+  .bar{display:flex;height:30px;border-radius:6px;overflow:hidden;margin:16px 0 8px;border:1px solid var(--line)}
+  .bar span{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;color:#fff;font-weight:600;min-width:0}
+  .seg-c{background:var(--good)} .seg-r{background:var(--bad)} .seg-u{background:var(--warn)}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--muted);margin-bottom:4px}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:middle}
+
+  /* ---- mini column chart ---- */
+  .cols{display:flex;align-items:flex-end;gap:18px;height:150px;margin:24px 0 6px;padding:0 4px;border-bottom:1px solid var(--line-strong)}
+  .col{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+  .col .fill{width:100%;max-width:96px;background:linear-gradient(180deg,var(--accent),var(--accent-deep));border-radius:5px 5px 0 0;position:relative}
+  .col .v{font-family:var(--mono);font-size:13px;font-weight:600;margin-bottom:6px}
+  .col .x{font-size:12.5px;color:var(--muted);margin-top:9px;text-align:center;line-height:1.25}
+
+  /* ---- pills ---- */
+  .pill{display:inline-block;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;
+    padding:2px 8px;border-radius:20px;text-transform:uppercase;border:1px solid transparent;white-space:nowrap}
+  .p-conf{background:var(--good-w);color:var(--good);border-color:#c5e0cf}
+  .p-ref{background:var(--bad-w);color:var(--bad);border-color:#e8c8c5}
+  .p-unv{background:var(--warn-w);color:var(--warn);border-color:#e6d4ad}
+  .p-gt-no{background:#ecedea;color:#4a4d51;border-color:var(--line-strong)}
+  .p-gt-yes{background:var(--good-w);color:var(--good);border-color:#c5e0cf}
+
+  /* ---- example cards ---- */
+  .ex{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px 22px;margin:16px 0}
+  .ex .top{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
+  .ex .title{font-family:var(--mono);font-size:14px;font-weight:600;color:var(--ink);line-height:1.35}
+  .ex .tags{display:flex;gap:7px;flex-wrap:wrap;flex-shrink:0}
+  .ex .why{font-size:14.5px;color:#34373b;margin:6px 0 0}
+  .ex .why b{color:var(--ink)}
+  .ex .count{font-family:var(--mono);font-size:12px;color:var(--faint)}
+
+  .note{background:var(--wash);border:1px solid #cfe0da;border-radius:9px;padding:16px 20px;font-size:14.5px;color:#2c3b38;margin:24px 0}
+  .note b{color:var(--accent-deep)}
+  ul.rec{list-style:none;padding:0;margin:18px 0;display:flex;flex-direction:column;gap:12px}
+  ul.rec li{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:15px 18px;font-size:15px;display:flex;gap:14px;align-items:flex-start}
+  ul.rec .k{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:5px;padding:3px 9px;flex-shrink:0;margin-top:1px}
+  footer{margin-top:64px;padding-top:24px;border-top:1px solid var(--line);font-size:13px;color:var(--faint)}
+  .divider{height:1px;background:var(--line);margin:0}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">Forensic Review · NickPit Pipeline</p>
+    <h1>The nudge carries the review. The verifier rubber-stamps it.</h1>
+    <p class="dek">What 134 verbose review logs and ~150 blind ground-truth judges say about two of NickPit's load-bearing stages — the multi-round “nudge” and the per-finding verifier.</p>
+    <div class="meta tnum">
+      <div><span class="n">134</span><span class="l">Reviews analysed</span></div>
+      <div><span class="n">2</span><span class="l">MRs (re-run 80× / 57×)</span></div>
+      <div><span class="n">3,732</span><span class="l">Verifier verdicts</span></div>
+      <div><span class="n">70</span><span class="l">Findings judged vs. real diff</span></div>
+    </div>
+  </header>
+
+  <section id="tldr" style="padding-top:44px">
+    <div class="verdicts">
+      <div class="vc">
+        <h4>Q1 · The nudge feature</h4>
+        <div class="head">Not a noise source — the main yield engine. Its cost is wasted compute.</div>
+        <p>Nudges produce <b>75%</b> of all findings, because the base pass finds nothing in <b>60%</b> of reviewer lanes. Nudge findings are <em>no less valid</em> than base findings. But <b>68%</b> of nudge work just re-finds known issues, and round 3 is nearly dead.</p>
+      </div>
+      <div class="vc warn">
+        <h4>Q2 · The verifier agent</h4>
+        <div class="head">A good skeptic, a lenient confirmer — and overconfident.</div>
+        <p>Refutations are right <b>88%</b> of the time. But it confirms <b>73%</b> of everything at <b>0.93</b> confidence, and <b>1 in 3 confirmations is false</b>. Same finding, same code, flips verdict on <b>38–48%</b> of re-runs.</p>
+      </div>
+    </div>
+    <p style="font-size:13.5px;color:var(--muted);margin-top:18px">Method: logs parsed for per-round finding counts and per-finding verdicts; base/nudge provenance recovered from verify index order (engine appends nudge findings after base). Both MR diffs extracted from the logs; recurring findings re-judged <em>blind</em> (verdict hidden) by 2–3 adversarial Opus judges reading the actual code. Two judge workflows, ~150 agents, ~4.2M tokens. “Valid / actionable” = judge ground truth, not the verifier's own gate.</p>
+  </section>
+
+  <div class="divider" style="margin-top:50px"></div>
+
+  <!-- ============ Q1 ============ -->
+  <section id="q1">
+    <p class="qkicker">Question 01</p>
+    <h2>How much noise vs. valid findings does the nudge bring?</h2>
+
+    <div class="tiles">
+      <div class="tile"><div class="big tnum">75.1%</div><div class="cap">of findings reaching verify are nudge-origin (3,054 / 4,066)</div></div>
+      <div class="tile warn"><div class="big tnum">60.0%</div><div class="cap">of base-pass reviewer lanes return <em>zero</em> findings (median 0/lane)</div></div>
+      <div class="tile warn"><div class="big tnum">31.9%</div><div class="cap">of nudge output is non-duplicate; the rest re-finds known issues</div></div>
+      <div class="tile bad"><div class="big tnum">77%</div><div class="cap">of round-3 lanes add <em>no</em> new findings at all</div></div>
+    </div>
+
+    <p>The headline “75% of findings come from nudges” sounds alarming until you see <em>why</em>: the first reviewer pass usually whiffs. In 6 lanes per run, the base pass returns nothing 60% of the time. The nudge rounds aren't piling noise onto a productive base — they're doing the discovery. <span style="color:var(--muted)">(Partly a timing artifact of the <code>reasoning-extract</code> / “Compiling Findings to Nudge” flow: the base reasoning may already hold the issue that only gets <em>compiled</em> during a nudge.)</span></p>
+
+    <h3>Diminishing returns: each round finds less, re-finds more</h3>
+    <p>Across all runs, nudges returned 7,656 findings but only 2,445 were genuinely new. New-yield collapses round over round:</p>
+    <div class="cols tnum" role="img" aria-label="New-finding yield by nudge round: round 1 62.9%, round 2 24.0%, round 3 11.1%">
+      <div class="col"><span class="v">62.9%</span><div class="fill" style="height:100%"></div><span class="x">Round 1<br>1,528 new</span></div>
+      <div class="col"><span class="v">24.0%</span><div class="fill" style="height:38%"></div><span class="x">Round 2<br>626 new</span></div>
+      <div class="col"><span class="v">11.1%</span><div class="fill" style="height:18%"></div><span class="x">Round 3<br>291 new</span></div>
+    </div>
+    <p style="font-size:13.5px;color:var(--muted)">Share of each round's returned findings that were non-duplicate. Round 3 adds 291 findings across 763 lane-runs — and zero in 77% of them.</p>
+
+    <h3>Nudge findings are not noisier than base findings</h3>
+    <p>By the verifier's own gate, nudge-origin findings are confirmed <em>more</em> often and refuted <em>less</em> than base-origin findings — the opposite of what “nudge = noise” would predict:</p>
+    <div class="tw">
+      <table>
+        <caption>Verifier verdict by finding provenance (index-order method)</caption>
+        <thead><tr><th>Origin</th><th class="num">n</th><th class="num">Confirmed</th><th class="num">Refuted</th><th class="num">Unverified</th></tr></thead>
+        <tbody>
+          <tr><td>Base pass</td><td class="num">911</td><td class="num">68.3%</td><td class="num">24.6%</td><td class="num">7.1%</td></tr>
+          <tr class="hi"><td>Nudge rounds</td><td class="num">2,821</td><td class="num strong">74.0%</td><td class="num">20.3%</td><td class="num">5.7%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note"><b>Q1 verdict.</b> Nudge's “noise” is wasted compute (68% duplicate re-finding, a near-dead round 3), not output junk — its findings are as valid as the base pass's. The cheap win: set <code>nudge_count: 3 → 2</code>. Round 3 contributed only 291 of 2,445 new findings (12%) for a full extra reviewer pass per lane. The real quality ceiling is set elsewhere — see Q2, and note that even <em>valid</em> findings are overwhelmingly low-severity test-gaps and style.</div>
+  </section>
+
+  <div class="divider" style="margin-top:50px"></div>
+
+  <!-- ============ Q2 ============ -->
+  <section id="q2">
+    <p class="qkicker">Question 02</p>
+    <h2>How well does the verifier actually verify or refute?</h2>
+
+    <h3>What it does: confirms almost everything, with high confidence</h3>
+    <div class="legend">
+      <span><i style="background:var(--good)"></i>Confirmed — kept</span>
+      <span><i style="background:var(--bad)"></i>Refuted — dropped (policy: refuted-only ≥0.7)</span>
+      <span><i style="background:var(--warn)"></i>Unverified — kept</span>
+    </div>
+    <div class="bar tnum" role="img" aria-label="Verdict distribution: 72.6% confirmed, 21.4% refuted, 6.0% unverified">
+      <span class="seg-c" style="flex:0 0 72.6%">72.6%</span>
+      <span class="seg-r" style="flex:0 0 21.4%">21.4%</span>
+      <span class="seg-u" style="flex:0 0 6.0%">6%</span>
+    </div>
+    <p style="font-size:13.5px;color:var(--muted)">Mean confidence: confirmed <span class="tnum">0.93</span> · refuted <span class="tnum">0.92</span> · unverified <span class="tnum">0.72</span>. Only refutations drop findings, so ~21% of findings are removed at this gate; everything else survives. <span style="color:var(--faint)">(Minor bug: 13 verdicts emitted confidence on a 0–100 scale instead of 0–1.)</span></p>
+
+    <h3>It is non-deterministic on identical input</h3>
+    <p>Because the same two MRs were reviewed 80× and 57×, we can re-verify the <em>same finding</em> many times. It flips verdict on <b>38%</b> (kopieerapparaat) / <b>48%</b> (omvormer) of recurring issues. The flagship:</p>
+    <div class="ex">
+      <div class="top">
+        <span class="title">“File templates use double quotes instead of shellQuote”</span>
+        <span class="count">verified 53×</span>
+      </div>
+      <div class="bar tnum" style="margin:6px 0 0" role="img" aria-label="Same finding: 32 confirmed, 12 refuted, 9 unverified">
+        <span class="seg-c" style="flex:0 0 60%">32 confirmed</span>
+        <span class="seg-r" style="flex:0 0 23%">12 ref.</span>
+        <span class="seg-u" style="flex:0 0 17%">9 unv.</span>
+      </div>
+      <p class="why">Byte-identical input, three different verdicts. High confidence throughout. This is overconfidence, not nuance.</p>
+    </div>
+
+    <h3>Ground truth: precise when it refutes, sloppy when it confirms</h3>
+    <p>Blind judges read the real diffs and ruled each finding actionable or not, without seeing the verifier's verdict:</p>
+    <div class="tiles" style="grid-template-columns:repeat(2,1fr)">
+      <div class="tile bad"><div class="big tnum">66%</div><div class="cap"><b>Confirmation precision.</b> 29 / 44 confirmed findings are actually actionable → <b>34% false-confirms</b></div></div>
+      <div class="tile good"><div class="big tnum">88%</div><div class="cap"><b>Refutation correctness.</b> 23 / 26 refuted findings really are non-issues; the 3 misses were all borderline nits</div></div>
+    </div>
+    <p>The failure is <b>asymmetric</b>. The verifier is a competent skeptic but a credulous confirmer — and since the drop policy only acts on refutations (which are rare), the false-confirms sail straight through to output. The tell: in flip cases, the verifier's <em>minority refutation was often the correct verdict</em>, outvoted by confident-but-wrong confirmations.</p>
+
+    <h4 style="font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:34px 0 0">False confirmations — what slips through</h4>
+
+    <div class="ex">
+      <div class="top">
+        <span class="title">humanReadableBytes panics on values ≥ 1 EiB</span>
+        <span class="tags"><span class="pill p-conf">confirmed 5/6</span><span class="pill p-gt-no">not real</span></span>
+      </div>
+      <p class="why"><b>Impossible.</b> <code>"KMGTPE"</code> is indexed by <code>exp</code>; reaching index 6 needs <code>b ≥ 2⁷⁰</code>, but <code>int64</code> maxes at <code>2⁶³−1</code>, so <code>exp ≤ 5</code> always. No input can panic. The lone refuter was right.</p>
+    </div>
+    <div class="ex">
+      <div class="top">
+        <span class="title">executeResticCMDTemplate swallows template execution errors</span>
+        <span class="tags"><span class="pill p-conf">confirmed 69×</span><span class="pill p-gt-no">not real</span></span>
+      </div>
+      <p class="why"><b>Hallucinated code.</b> The function body isn't in the diff at all — only its call sites, which correctly check the returned error. The verifier confirmed (69 times, across 5 reworded variants) a defect in code it never saw.</p>
+    </div>
+    <div class="ex">
+      <div class="top">
+        <span class="title">Cleanup command uses unquoted $TMP variable</span>
+        <span class="tags"><span class="pill p-conf">confirmed 11×</span><span class="pill p-gt-no">not real</span></span>
+      </div>
+      <p class="why"><b>Inverted reading.</b> The diff <em>fixes</em> the quoting — every added line uses <code>"${TMP}"</code>. The unquoted form exists only on the deleted lines. The finding flags the problem the change removed.</p>
+    </div>
+    <div class="ex">
+      <div class="top">
+        <span class="title">Registry endpoints lack authentication and authorization</span>
+        <span class="tags"><span class="pill p-conf">confirmed 5/6</span><span class="pill p-gt-no">not real</span></span>
+      </div>
+      <p class="why"><b>Location-less generic claim.</b> No HTTP endpoints are added in this diff; it actually adds correctly-scoped Kubernetes RBAC. A plausible-sounding security boilerplate with nothing behind it.</p>
+    </div>
+
+    <h4 style="font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:34px 0 0">Correct refutations — what it rightly kills</h4>
+    <div class="ex">
+      <div class="top">
+        <span class="title">List() is a breaking change to blobstore.Interface</span>
+        <span class="tags"><span class="pill p-ref">refuted</span><span class="pill p-gt-no">correct</span></span>
+      </div>
+      <p class="why">The sole implementer is updated in the same diff, it's an internal package with no external implementors, and the module builds clean. A normal interface evolution dressed as a bug — correctly dismissed.</p>
+    </div>
+    <div class="ex">
+      <div class="top">
+        <span class="title">fmt.Fprintf error handling on bytes.Buffer is overly strict</span>
+        <span class="tags"><span class="pill p-ref">refuted</span><span class="pill p-gt-no">correct</span></span>
+      </div>
+      <p class="why">There is no <code>fmt.Fprintf</code> anywhere in the diff. The verifier correctly refused a finding about a code path that doesn't exist.</p>
+    </div>
+
+    <h3>Even the “valid” findings are low-value</h3>
+    <p>Of the 29 findings judged genuinely actionable, only <b>3</b> reach medium severity or above. The rest are test-gaps and style:</p>
+    <div class="tw">
+      <table>
+        <caption>Category & severity of the 29 ground-truth-actionable findings</caption>
+        <thead><tr><th>Category</th><th class="num">Count</th><th>Severity profile</th></tr></thead>
+        <tbody>
+          <tr><td>Test gap (“add a test for…”)</td><td class="num">17</td><td>low / a couple medium</td></tr>
+          <tr><td>Style / consistency</td><td class="num">7</td><td>low</td></tr>
+          <tr><td>Security</td><td class="num">3</td><td>1 contested high, rest low</td></tr>
+          <tr><td>Bug</td><td class="num">1</td><td>low</td></tr>
+          <tr class="hi"><td class="strong">Medium+ severity total</td><td class="num strong">3 / 29</td><td>the actual high-value catch rate</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note"><b>Q2 verdict.</b> The verifier is a reliable filter against hallucinations and non-issues (88% refute-correct) but a weak quality gate (66% confirm-precision, overconfident, non-deterministic). Because it confirms liberally and the drop policy only removes refutations, roughly <b>1 in 3 surviving findings is a false-confirm</b>. It's catching the wrong errors with the wrong confidence.</div>
+  </section>
+
+  <div class="divider" style="margin-top:50px"></div>
+
+  <section id="rec">
+    <p class="qkicker">So what</p>
+    <h2>Highest-leverage changes</h2>
+    <ul class="rec">
+      <li><span class="k">1</span><div><b>Cut <code>nudge_count</code> 3 → 2.</b> Round 3 yields 12% of new findings for a full extra reviewer pass per lane, empty 77% of the time. Near-free compute saving with negligible recall loss.</div></li>
+      <li><span class="k">2</span><div><b>Make the confirm gate as adversarial as the refute gate.</b> Most false-confirms are mechanically catchable: force “is this code even in the diff?”, “trace the type / index bound”, “is the finding describing the deleted or the added side?” before allowing <code>confirmed</code>.</div></li>
+      <li><span class="k">3</span><div><b>Verify each finding 2–3× and require agreement.</b> The verifier already disagrees with itself 38–48% of the time; majority-vote turns that noise into a signal and would have killed the EiB / registry-auth confirmations.</div></li>
+      <li><span class="k">4</span><div><b>Stop trusting the confidence number.</b> 0.93 on confirmations that are 66% correct means confidence is uncalibrated. Either recalibrate, or extend the drop policy toward <code>refuted-and-unverified</code> and lean harder on the <code>verdict</code> confidence threshold.</div></li>
+      <li><span class="k">5</span><div><b>Separately: raise the finding bar.</b> The reviewer prompt is producing mostly “add a test” / style notes (only 3 of 29 valid findings are medium+). That's a reviewer-prompt/priority issue, independent of nudge and verifier.</div></li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Generated from 134 NickPit verbose review logs (2026-06-19 → 2026-06-25), reviewer Qwen3.5-122B-A10B-FP8 (<code>high</code>) + <code>@small</code> Qwen3.6-35B-A3B-FP8. Ground truth from blind adversarial Opus-judge workflows over the extracted MR diffs. Percentages are over parsed verdicts (3,732) and the judged sample (44 confirmed + 26 refuted recurring findings); the judged sample favours high-frequency findings, which are the ones most likely to reach output. “Actionable” is the majority ruling of independent code-reading judges.</p>
+  </footer>
+
+</div>
+</body>
+</html>

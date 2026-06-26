@@ -227,9 +227,14 @@ func TestWorkflowMergeTwoFilesInvokesMergeAgent(t *testing.T) {
 func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := pipelineTestEngine(client)
+	firstFinding := verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	firstFinding.Suggestions = []model.Suggestion{{
+		Body:      "Replace the repeated cleanup setup with a shared helper so each test covers one clear scenario.",
+		LineRange: model.LineRange{Start: 3, End: 4},
+	}}
 	a := writeFindingsFile(t, "a.json", model.ReviewResult{
 		Findings: []model.Finding{
-			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix cleanup behavior alpha", "m.go", 1, 1),
+			firstFinding,
 		},
 	})
 	b := writeFindingsFile(t, "b.json", model.ReviewResult{
@@ -280,6 +285,18 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 		if finding.Summarization == nil || !strings.Contains(finding.Summarization.Body, "SUMMARY_MARKER FINALIZED_MARKER") {
 			t.Fatalf("finding %s summarization = %#v, want summarized finalized body", finding.ID, finding.Summarization)
 		}
+	}
+	var summarizedSuggestion string
+	for _, finding := range result.Findings {
+		if finding.ID == firstFinding.ID && finding.Summarization != nil && len(finding.Summarization.Suggestions) > 0 {
+			summarizedSuggestion = finding.Summarization.Suggestions[0].Body
+			if finding.Summarization.Suggestions[0].LineRange != firstFinding.Suggestions[0].LineRange {
+				t.Fatalf("suggestion line range = %+v, want %+v", finding.Summarization.Suggestions[0].LineRange, firstFinding.Suggestions[0].LineRange)
+			}
+		}
+	}
+	if !strings.Contains(summarizedSuggestion, "SUMMARY_MARKER") {
+		t.Fatalf("summarized suggestion = %q, want summarized by fused summarize lane", summarizedSuggestion)
 	}
 	// overall_confidence_score is code-computed: verdict "patch is incorrect" with
 	// floor-1 deciding findings → max finalization confidence (0.6*0.9 + 0.4*0.7 = 0.82).

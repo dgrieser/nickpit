@@ -2041,10 +2041,20 @@ func reviewResponseFallbackTypes() []FallbackType {
 
 func normalizeFindingSuggestions(findings []model.Finding) {
 	for i := range findings {
-		for j := range findings[i].Suggestions {
-			if findings[i].Suggestions[j].LineRange == (model.LineRange{}) {
-				findings[i].Suggestions[j].LineRange = findings[i].CodeLocation.LineRange
-			}
+		normalizeSuggestionLineRanges(findings[i].Suggestions, findings[i].CodeLocation.LineRange)
+		if findings[i].Finalization != nil {
+			normalizeSuggestionLineRanges(findings[i].Finalization.Suggestions, findings[i].CodeLocation.LineRange)
+		}
+		if findings[i].Summarization != nil {
+			normalizeSuggestionLineRanges(findings[i].Summarization.Suggestions, findings[i].CodeLocation.LineRange)
+		}
+	}
+}
+
+func normalizeSuggestionLineRanges(suggestions []model.Suggestion, fallback model.LineRange) {
+	for i := range suggestions {
+		if suggestions[i].LineRange == (model.LineRange{}) {
+			suggestions[i].LineRange = fallback
 		}
 	}
 }

@@ -254,6 +254,12 @@ type Finding struct {
 func StripSuggestions(findings []Finding) {
 	for i := range findings {
 		findings[i].Suggestions = nil
+		if findings[i].Finalization != nil {
+			findings[i].Finalization.Suggestions = nil
+		}
+		if findings[i].Summarization != nil {
+			findings[i].Summarization.Suggestions = nil
+		}
 	}
 }
 
@@ -357,24 +363,27 @@ func EnsureVerificationID(v *FindingVerification, fallback string) {
 }
 
 type FindingFinalization struct {
-	Title           string  `json:"title"`
-	Body            string  `json:"body"`
-	Priority        int     `json:"priority"`
-	ConfidenceScore float64 `json:"confidence_score"`
-	Remarks         string  `json:"remarks"`
+	Title           string       `json:"title"`
+	Body            string       `json:"body"`
+	Priority        int          `json:"priority"`
+	ConfidenceScore float64      `json:"confidence_score"`
+	Remarks         string       `json:"remarks"`
+	Suggestions     []Suggestion `json:"suggestions,omitempty"`
 }
 
 // FindingSummarization carries the shortened, more readable body produced by the
 // summarize pass. Its body is the only field the summarizer LLM emits; every
 // other field is copied verbatim in code from the finding's FindingFinalization
 // (see applySummarizedFinding in internal/review/summarizer.go), so a
-// summarization always mirrors the finalization it shortens apart from Body.
+// summarization always mirrors the finalization it shortens apart from Body and
+// any suggestion bodies shortened in the same pass.
 type FindingSummarization struct {
-	Title           string  `json:"title"`
-	Body            string  `json:"body"`
-	Priority        int     `json:"priority"`
-	ConfidenceScore float64 `json:"confidence_score"`
-	Remarks         string  `json:"remarks"`
+	Title           string       `json:"title"`
+	Body            string       `json:"body"`
+	Priority        int          `json:"priority"`
+	ConfidenceScore float64      `json:"confidence_score"`
+	Remarks         string       `json:"remarks"`
+	Suggestions     []Suggestion `json:"suggestions,omitempty"`
 }
 
 type CodeLocation struct {

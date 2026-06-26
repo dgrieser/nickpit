@@ -19,6 +19,7 @@ type VerdictOptions struct {
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	DisablePatchSummary      bool
+	SkipSuggestions          bool
 	RepoRoot                 string
 	ContextNotes             string
 	// PriorityThreshold is the configured "lowest currently allowed priority"
@@ -60,6 +61,14 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		}
 	}
 	in = filtered
+	if opts.SkipSuggestions {
+		stripped, err := in.Clone()
+		if err != nil {
+			return nil, model.AgentRun{}, fmt.Errorf("verdict: cloning input result: %w", err)
+		}
+		model.StripSuggestions(stripped.Findings)
+		in = stripped
+	}
 	thresholdRank := model.PriorityThresholdRank(opts.PriorityThreshold)
 	if len(in.Findings) == 0 {
 		out, err := in.Clone()
@@ -88,7 +97,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.UseJSONSchema), false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.UseJSONSchema), opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -96,16 +105,18 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		OutputSchemaSnippet string
 		OutputFormatSnippet string
 		DisablePatchSummary bool
+		SkipSuggestions     bool
 	}{
 		OutputSchemaSnippet: verdictOutputSchemaSnippetFor(opts.UseJSONSchema),
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
+		SkipSuggestions:     opts.SkipSuggestions,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank)
+	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -125,6 +136,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
+		SkipSuggestions:          opts.SkipSuggestions,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
 	verdictStart := time.Now()
@@ -251,7 +263,7 @@ func verdictFilterConfidence(finding model.Finding) (float64, string) {
 	return finding.ConfidenceScore, "review"
 }
 
-func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int) (string, error) {
+func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, skipSuggestions bool) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
@@ -279,7 +291,11 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 			entry["verification"] = &verification
 		}
 		if finding.Finalization != nil {
-			entry["finalization"] = finding.Finalization
+			finalization := *finding.Finalization
+			if skipSuggestions {
+				finalization.Suggestions = nil
+			}
+			entry["finalization"] = &finalization
 		}
 		findings = append(findings, entry)
 	}

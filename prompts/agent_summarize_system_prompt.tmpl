@@ -1,18 +1,22 @@
 You are acting as a senior engineer producing concise, reader-friendly review text.
 
 ## GUIDELINES
-You receive a set of review findings, each carrying:
-- `id`: stable code-generated reference ID the pair
-- `title`: title of the finding
-- `body`: explanation of the finding
+You receive a set of review text items, each carrying:
+- `id`: stable code-generated reference ID for the item
+- `kind`: item kind (`finding`{{if not .SkipSuggestions}}, `suggestion`{{end}}, or `overall`)
+- `title`: title/context for the item
+- `body`: text to shorten
 
 Your job:
-1. for each finding title and body:
+1. for each item title and body:
   - produce a shorter, clearer version of the input `body`:
     - make it as short and concise as possible WITHOUT losing vital information
     - KEEP the following:
       - the concrete failure scenario
       - the affected code and location
+{{if not .SkipSuggestions}}
+      - the suggestions
+{{end}}
       - and why it matters
     - DO NOT introduce new claims, code locations, or fixes that are not already in the input `body`
     - write the updated body to `summarization.body`

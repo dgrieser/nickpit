@@ -1,9 +1,13 @@
 # TODO
 
+- Improve verify agent:
+  make the confirm gate as adversarial as the refute gate
+  (force "is this code even in the diff?" / "trace the type" checks — most false-confirms are out-of-diff or impossible)
+- Auto fix confidence not 0-1 but 0-100
+
 - Add code line verification agent
 - Add max turns for agents; unlimited by default
 - Add feature to give additional instructions to agents
-- Add suggestion agent to format suggestions for gitlab/github
 - Remove unnecessary arguments/config.
 
 - Add man pages for commands used/called

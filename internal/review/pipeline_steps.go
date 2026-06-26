@@ -869,6 +869,7 @@ func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, i
 		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		SkipSuggestions:          sc.Req.SkipSuggestions,
 		RepoRoot:                 sc.Req.RepoRoot,
 		PriorityThreshold:        sc.Req.PriorityThreshold,
 		ContextNotes:             st.contextNotes,
@@ -907,6 +908,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		SkipSuggestions:          sc.Req.SkipSuggestions,
 		RepoRoot:                 sc.Req.RepoRoot,
 		PriorityThreshold:        sc.Req.PriorityThreshold,
 		ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
@@ -938,6 +940,7 @@ func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewRes
 		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		SkipSuggestions:          sc.Req.SkipSuggestions,
 		RepoRoot:                 sc.Req.RepoRoot,
 	}
 	summarized, run, err := sc.Engine.Summarize(ctx, in, opts)
@@ -962,6 +965,7 @@ func runOverallSummarize(ctx context.Context, sc *stepContext, overall string) (
 		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
+		SkipSuggestions:          sc.Req.SkipSuggestions,
 		RepoRoot:                 sc.Req.RepoRoot,
 	}
 	summary, run, err := sc.Engine.SummarizeOverall(ctx, overall, opts)
@@ -1218,6 +1222,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
+			SkipSuggestions:          sc.Req.SkipSuggestions,
 			RepoRoot:                 sc.Req.RepoRoot,
 			PriorityThreshold:        sc.Req.PriorityThreshold,
 			ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
@@ -1307,6 +1312,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
+			SkipSuggestions:          sc.Req.SkipSuggestions,
 			RepoRoot:                 sc.Req.RepoRoot,
 		}
 		summarized, summarizeRun, err := sc.Engine.Summarize(ctx, in, opts)

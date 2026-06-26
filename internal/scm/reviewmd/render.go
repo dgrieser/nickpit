@@ -310,9 +310,10 @@ func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) stri
 		fmt.Fprintf(&b, "### %s  \n\n", Sanitize(title))
 	}
 	b.WriteString(sanitizeWithHardBreaks(body))
-	if len(finding.Suggestions) > 0 {
+	suggestions := FindingDisplaySuggestions(finding)
+	if len(suggestions) > 0 {
 		b.WriteString("\n\n**Suggestions**  \n")
-		for _, suggestion := range finding.Suggestions {
+		for _, suggestion := range suggestions {
 			text := strings.TrimSpace(suggestion.Body)
 			if text == "" {
 				continue
@@ -356,6 +357,19 @@ func FindingDisplay(finding model.Finding) (title, body string, rank int, confid
 		rank = model.PriorityRank(&priority)
 	}
 	return title, body, rank, confidence
+}
+
+// FindingDisplaySuggestions returns the suggestion text that should be shown in
+// output, preferring the latest downstream pass while keeping the original
+// reviewer suggestions as a fallback.
+func FindingDisplaySuggestions(finding model.Finding) []model.Suggestion {
+	if finding.Summarization != nil && len(finding.Summarization.Suggestions) > 0 {
+		return finding.Summarization.Suggestions
+	}
+	if finding.Finalization != nil && len(finding.Finalization.Suggestions) > 0 {
+		return finding.Finalization.Suggestions
+	}
+	return finding.Suggestions
 }
 
 // LineLoc is where a new-side line sits in the diff: its new-side number, the

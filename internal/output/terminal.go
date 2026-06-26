@@ -157,8 +157,9 @@ func findingMarkdown(finding model.Finding) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString(textsan.StripControl(strings.TrimSpace(body)))
-	suggestions := make([]string, 0, len(finding.Suggestions))
-	for _, suggestion := range finding.Suggestions {
+	displaySuggestions := reviewmd.FindingDisplaySuggestions(finding)
+	suggestions := make([]string, 0, len(displaySuggestions))
+	for _, suggestion := range displaySuggestions {
 		text := strings.TrimSpace(suggestion.Body)
 		if text == "" {
 			continue

@@ -130,7 +130,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if opts.SkipSuggestions {
 		model.StripSuggestions(out.Findings)
 	} else {
-		mergeInputSuggestions(out.Findings, in.Findings)
+		normalizeFinalizedSuggestions(out.Findings, in.Findings)
 	}
 	// Last-resort repair after retry exhaustion or direct non-parser callers.
 	// Normal schema/parser paths require `verification` in the finalizer output.
@@ -357,10 +357,8 @@ func findFinalizerInputIndex(target model.Finding, in []model.Finding, matched [
 func applyFinalizedFinding(dst *model.Finding, src model.Finding) {
 	if src.Finalization != nil {
 		finalization := *src.Finalization
+		finalization.Suggestions = cloneSuggestions(src.Finalization.Suggestions)
 		dst.Finalization = &finalization
-	}
-	if len(src.Suggestions) > 0 {
-		dst.Suggestions = append([]model.Suggestion(nil), src.Suggestions...)
 	}
 	if src.Verification != nil {
 		verification := *src.Verification
@@ -375,27 +373,44 @@ func synthesizedFinalization(finding model.Finding) *model.FindingFinalization {
 		priority = finding.Verification.Priority
 	}
 	return &model.FindingFinalization{
-		Title:    finding.Title,
-		Body:     finding.Body,
-		Priority: priority,
-		Remarks:  "Finalizer omitted or misidentified this finding; preserved original finding.",
+		Title:       finding.Title,
+		Body:        finding.Body,
+		Priority:    priority,
+		Remarks:     "Finalizer omitted or misidentified this finding; preserved original finding.",
+		Suggestions: cloneSuggestions(finding.Suggestions),
 	}
 }
 
-// mergeInputSuggestions defends against the finalizer LLM dropping `suggestions`
-// by restoring them from the matching input finding when the output finding has
-// none. Matching is by code_location, with finding title as a tiebreaker when
-// multiple input findings share the same location.
-func mergeInputSuggestions(out, in []model.Finding) {
+// normalizeFinalizedSuggestions lets the finalizer polish suggestion text in
+// finalization.suggestions while preserving the input suggestion set and line
+// ranges. Top-level suggestions stay as reviewer-provenance input. If the
+// finalizer omits or changes the suggestion count, input suggestions fill the
+// gaps and extras are discarded.
+func normalizeFinalizedSuggestions(out, in []model.Finding) {
 	for i := range out {
-		if len(out[i].Suggestions) > 0 {
-			continue
-		}
 		src := findInputMatch(out[i], in)
-		if src == nil || len(src.Suggestions) == 0 {
+		if src == nil {
 			continue
 		}
-		out[i].Suggestions = append([]model.Suggestion(nil), src.Suggestions...)
+		out[i].Suggestions = cloneSuggestions(src.Suggestions)
+		if len(src.Suggestions) == 0 {
+			if out[i].Finalization != nil {
+				out[i].Finalization.Suggestions = nil
+			}
+			continue
+		}
+		if out[i].Finalization == nil {
+			out[i].Finalization = synthesizedFinalization(out[i])
+		}
+		candidates := out[i].Finalization.Suggestions
+		normalized := make([]model.Suggestion, len(src.Suggestions))
+		for j := range src.Suggestions {
+			normalized[j] = src.Suggestions[j]
+			if j < len(candidates) && strings.TrimSpace(candidates[j].Body) != "" {
+				normalized[j].Body = candidates[j].Body
+			}
+		}
+		out[i].Finalization.Suggestions = normalized
 	}
 }
 
@@ -573,7 +588,17 @@ func reviewFinalization(finding model.Finding) *model.FindingFinalization {
 		Body:            finding.Body,
 		Priority:        model.PriorityRank(finding.Priority),
 		ConfidenceScore: finding.ConfidenceScore,
+		Suggestions:     cloneSuggestions(finding.Suggestions),
 	}
+}
+
+func cloneSuggestions(src []model.Suggestion) []model.Suggestion {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]model.Suggestion, len(src))
+	copy(out, src)
+	return out
 }
 
 func roundConfidenceScore(score float64) float64 {
