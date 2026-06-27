@@ -78,7 +78,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes)
+	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes, opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -130,13 +130,14 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if opts.SkipSuggestions {
 		model.StripSuggestions(out.Findings)
 	} else {
-		mergeInputSuggestions(out.Findings, in.Findings)
+		normalizeFinalizedSuggestions(out.Findings, in.Findings)
 	}
 	// Last-resort repair after retry exhaustion or direct non-parser callers.
 	// Normal schema/parser paths require `verification` in the finalizer output.
 	mergeInputVerification(out.Findings, in.Findings)
 	enforcePriorityFloor(out.Findings, in.Findings, model.PriorityThresholdRank(opts.PriorityThreshold))
 	applyWeightedConfidence(out.Findings, in.Findings)
+	preserveUnverifiedReviewFinalizations(out.Findings, in.Findings)
 	if stats.Omitted > 0 || stats.Ignored > 0 || stats.FinalizerFindings != len(in.Findings) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("Finalizer output mismatch: findings_in=%d finalizer_findings=%d matched=%d omitted=%d ignored=%d; preserved input findings", len(in.Findings), stats.FinalizerFindings, stats.Matched, stats.Omitted, stats.Ignored))
 	}
@@ -194,7 +195,7 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 	}
 }
 
-func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string) (string, error) {
+func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, skipSuggestions bool) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
@@ -216,7 +217,7 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 			"code_location":           finding.CodeLocation,
 			"review_confidence_score": finding.ConfidenceScore,
 		}
-		if len(finding.Suggestions) > 0 {
+		if !skipSuggestions && len(finding.Suggestions) > 0 {
 			entry["suggestions"] = finding.Suggestions
 		}
 		if finding.Verification != nil {
@@ -356,10 +357,8 @@ func findFinalizerInputIndex(target model.Finding, in []model.Finding, matched [
 func applyFinalizedFinding(dst *model.Finding, src model.Finding) {
 	if src.Finalization != nil {
 		finalization := *src.Finalization
+		finalization.Suggestions = cloneSuggestions(src.Finalization.Suggestions)
 		dst.Finalization = &finalization
-	}
-	if len(src.Suggestions) > 0 {
-		dst.Suggestions = append([]model.Suggestion(nil), src.Suggestions...)
 	}
 	if src.Verification != nil {
 		verification := *src.Verification
@@ -370,31 +369,48 @@ func applyFinalizedFinding(dst *model.Finding, src model.Finding) {
 func synthesizedFinalization(finding model.Finding) *model.FindingFinalization {
 	priority := model.PriorityRank(finding.Priority)
 	// Verifier-driven escalation is intentional; it mirrors the finalizer floor.
-	if finding.Verification != nil && finding.Verification.Priority < priority {
+	if finding.Verification != nil && !isUnverifiedVerification(finding.Verification) && finding.Verification.Priority < priority {
 		priority = finding.Verification.Priority
 	}
 	return &model.FindingFinalization{
-		Title:    finding.Title,
-		Body:     finding.Body,
-		Priority: priority,
-		Remarks:  "Finalizer omitted or misidentified this finding; preserved original finding.",
+		Title:       finding.Title,
+		Body:        finding.Body,
+		Priority:    priority,
+		Remarks:     "Finalizer omitted or misidentified this finding; preserved original finding.",
+		Suggestions: cloneSuggestions(finding.Suggestions),
 	}
 }
 
-// mergeInputSuggestions defends against the finalizer LLM dropping `suggestions`
-// by restoring them from the matching input finding when the output finding has
-// none. Matching is by code_location, with finding title as a tiebreaker when
-// multiple input findings share the same location.
-func mergeInputSuggestions(out, in []model.Finding) {
+// normalizeFinalizedSuggestions lets the finalizer polish suggestion text in
+// finalization.suggestions while preserving the input suggestion set and line
+// ranges. Top-level suggestions stay as reviewer-provenance input. If the
+// finalizer omits or changes the suggestion count, input suggestions fill the
+// gaps and extras are discarded.
+func normalizeFinalizedSuggestions(out, in []model.Finding) {
 	for i := range out {
-		if len(out[i].Suggestions) > 0 {
-			continue
-		}
 		src := findInputMatch(out[i], in)
-		if src == nil || len(src.Suggestions) == 0 {
+		if src == nil {
 			continue
 		}
-		out[i].Suggestions = append([]model.Suggestion(nil), src.Suggestions...)
+		out[i].Suggestions = cloneSuggestions(src.Suggestions)
+		if len(src.Suggestions) == 0 {
+			if out[i].Finalization != nil {
+				out[i].Finalization.Suggestions = nil
+			}
+			continue
+		}
+		if out[i].Finalization == nil {
+			out[i].Finalization = synthesizedFinalization(out[i])
+		}
+		candidates := out[i].Finalization.Suggestions
+		normalized := make([]model.Suggestion, len(src.Suggestions))
+		for j := range src.Suggestions {
+			normalized[j] = src.Suggestions[j]
+			if j < len(candidates) && strings.TrimSpace(candidates[j].Body) != "" {
+				normalized[j].Body = candidates[j].Body
+			}
+		}
+		out[i].Finalization.Suggestions = normalized
 	}
 }
 
@@ -484,19 +500,24 @@ func isNonFindingVerification(v *model.FindingVerification) bool {
 	return v != nil && v.Verdict == model.VerdictRefuted && strings.Contains(strings.ToLower(v.Remarks), nonFindingRemark)
 }
 
+func isUnverifiedVerification(v *model.FindingVerification) bool {
+	return v != nil && v.Verdict == model.VerdictUnverified
+}
+
 // priorityFloor computes a finding's priority floor: the most-critical (lowest) integer it is
 // allowed to take. A non-finding (a verifier-refuted affirmation carrying the "no issue"
 // sentinel; see isNonFindingVerification) is demoted to thresholdRank — the lowest currently
 // allowed priority — so it never renders blocking, ignoring the reviewer's (often template)
 // priority. A missing priority also defaults to thresholdRank rather than the hardcoded floor
 // of model.PriorityRank. Otherwise the floor is the most critical of the reviewer and verifier
-// priorities, as before — so a genuine refutation kept for review keeps its severity.
+// priorities, as before — so a genuine refutation kept for review keeps its severity. An
+// unverified verifier result is non-authoritative and cannot change priority.
 func priorityFloor(f model.Finding, thresholdRank int) int {
 	if isNonFindingVerification(f.Verification) {
 		return thresholdRank
 	}
 	floor := priorityRankOrThreshold(f.Priority, thresholdRank)
-	if f.Verification != nil && f.Verification.Priority < floor {
+	if f.Verification != nil && !isUnverifiedVerification(f.Verification) && f.Verification.Priority < floor {
 		floor = f.Verification.Priority
 	}
 	return floor
@@ -549,6 +570,35 @@ func applyWeightedConfidence(out, in []model.Finding) {
 		}
 		out[i].Finalization.ConfidenceScore = roundConfidenceScore(score)
 	}
+}
+
+func preserveUnverifiedReviewFinalizations(out, in []model.Finding) {
+	for i := range out {
+		orig := findInputMatch(out[i], in)
+		if orig == nil || !isUnverifiedVerification(orig.Verification) {
+			continue
+		}
+		out[i].Finalization = reviewFinalization(*orig)
+	}
+}
+
+func reviewFinalization(finding model.Finding) *model.FindingFinalization {
+	return &model.FindingFinalization{
+		Title:           finding.Title,
+		Body:            finding.Body,
+		Priority:        model.PriorityRank(finding.Priority),
+		ConfidenceScore: finding.ConfidenceScore,
+		Suggestions:     cloneSuggestions(finding.Suggestions),
+	}
+}
+
+func cloneSuggestions(src []model.Suggestion) []model.Suggestion {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]model.Suggestion, len(src))
+	copy(out, src)
+	return out
 }
 
 func roundConfidenceScore(score float64) float64 {

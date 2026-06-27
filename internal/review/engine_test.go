@@ -1695,6 +1695,107 @@ func clusterMergeRequests(t *testing.T, requests []*llm.ReviewRequest) []*llm.Re
 	return out
 }
 
+func TestFindingPromptPayloadSkipSuggestionsStripsNestedSuggestions(t *testing.T) {
+	original := model.Finding{
+		ID:          "11111111-1111-4111-8111-111111111111",
+		Title:       "Fix issue",
+		Suggestions: []model.Suggestion{{Body: "top-level suggestion", LineRange: model.LineRange{Start: 1, End: 1}}},
+		Finalization: &model.FindingFinalization{
+			Title:       "Final issue",
+			Suggestions: []model.Suggestion{{Body: "final suggestion", LineRange: model.LineRange{Start: 2, End: 2}}},
+		},
+		Summarization: &model.FindingSummarization{
+			Body:        "Short issue",
+			Suggestions: []model.Suggestion{{Body: "summary suggestion", LineRange: model.LineRange{Start: 3, End: 3}}},
+		},
+	}
+
+	kept := findingPromptPayload(original, false)
+	if !reflect.DeepEqual(kept, original) {
+		t.Fatalf("non-skipped payload mutated finding: %+v", kept)
+	}
+	stripped := findingPromptPayload(original, true)
+	if len(stripped.Suggestions) != 0 {
+		t.Fatalf("top-level suggestions = %+v, want stripped", stripped.Suggestions)
+	}
+	if stripped.Finalization == nil || len(stripped.Finalization.Suggestions) != 0 {
+		t.Fatalf("finalization suggestions = %+v, want stripped", stripped.Finalization)
+	}
+	if stripped.Summarization == nil || len(stripped.Summarization.Suggestions) != 0 {
+		t.Fatalf("summarization suggestions = %+v, want stripped", stripped.Summarization)
+	}
+	if len(original.Suggestions) != 1 || len(original.Finalization.Suggestions) != 1 || len(original.Summarization.Suggestions) != 1 {
+		t.Fatalf("original finding was mutated: %+v", original)
+	}
+}
+
+func TestDedupeAgentSkipSuggestionsOmitsSuggestions(t *testing.T) {
+	a := clusterTestFinding("Fix alpha issue", 1)
+	a.Suggestions = []model.Suggestion{{Body: "alpha suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}}
+	b := clusterTestFinding("Fix beta issue", 13)
+	b.Suggestions = []model.Suggestion{{Body: "beta suggestion should be omitted", LineRange: model.LineRange{Start: 13, End: 13}}}
+	llmClient := &multiAgentLLM{
+		dedupeResponses: []*llm.ReviewResponse{{
+			Findings:               []model.Finding{a, b},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "deduped",
+			OverallConfidenceScore: 0.9,
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	input := agentResult{
+		run:  model.AgentRun{Name: "Reviewer A", Role: "review"},
+		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}, OverallConfidenceScore: 0.9},
+	}
+
+	if _, err := engine.callDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{SkipSuggestions: true}); err != nil {
+		t.Fatalf("callDedupeAgent returned err: %v", err)
+	}
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("dedupe requests = %d, want 1", len(llmClient.mergeRequests))
+	}
+	req := llmClient.mergeRequests[0]
+	if strings.Contains(req.Messages[0].Content, "include suggestions") {
+		t.Fatalf("dedupe system prompt should not ask for suggestions when skipped:\n%s", req.Messages[0].Content)
+	}
+	userPrompt := req.Messages[1].Content
+	if strings.Contains(userPrompt, "suggestion should be omitted") || strings.Contains(userPrompt, `"suggestions"`) {
+		t.Fatalf("dedupe user prompt should not include suggestions:\n%s", userPrompt)
+	}
+}
+
+func TestClusterMergeSkipSuggestionsOmitsSuggestions(t *testing.T) {
+	a := clusterTestFinding("Fix alpha issue", 1)
+	a.Suggestions = []model.Suggestion{{Body: "alpha suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}}
+	b := clusterTestFinding("Fix beta issue", 13)
+	b.Suggestions = []model.Suggestion{{Body: "beta suggestion should be omitted", LineRange: model.LineRange{Start: 13, End: 13}}}
+	llmClient := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+	}
+
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{SkipSuggestions: true})
+
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("merge requests = %d, want 1", len(llmClient.mergeRequests))
+	}
+	req := llmClient.mergeRequests[0]
+	if strings.Contains(req.Messages[0].Content, "include suggestions") {
+		t.Fatalf("merge system prompt should not ask for suggestions when skipped:\n%s", req.Messages[0].Content)
+	}
+	userPrompt := req.Messages[1].Content
+	if strings.Contains(userPrompt, "suggestion should be omitted") || strings.Contains(userPrompt, `"suggestions"`) {
+		t.Fatalf("merge user prompt should not include suggestions:\n%s", userPrompt)
+	}
+	for _, finding := range result.resp.Findings {
+		if len(finding.Suggestions) != 0 {
+			t.Fatalf("merge output suggestions = %+v, want stripped", finding.Suggestions)
+		}
+	}
+}
+
 func TestMultiAgentMergeValidationWarnsAfterRetryExhausted(t *testing.T) {
 	ghost := model.Finding{
 		Title:           "Ghost",
@@ -3315,30 +3416,25 @@ func TestShouldDropFinding(t *testing.T) {
 		verdict    string
 		confidence float64
 		policy     string
-		threshold  float64
 		wantDrop   bool
 		wantReason string
 	}{
-		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, "refuted-only", 0.8, false, "kept"},
-		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, "refuted-and-unverified", 0.8, false, "kept"},
-		{"refuted above floor drops", model.VerdictRefuted, 0.85, "refuted-only", 0.8, true, model.VerdictRefuted},
-		{"refuted at floor drops", model.VerdictRefuted, 0.80, "refuted-only", 0.8, true, model.VerdictRefuted},
-		{"refuted below floor kept", model.VerdictRefuted, 0.79, "refuted-only", 0.8, false, "below_confidence"},
-		{"refuted below new default floor kept", model.VerdictRefuted, 0.69, "refuted-only", 0.7, false, "below_confidence"},
-		{"refuted at new default floor drops", model.VerdictRefuted, 0.70, "refuted-only", 0.7, true, model.VerdictRefuted},
-		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", 0.8, false, "kept"},
-		{"unverified above floor drops (both)", model.VerdictUnverified, 0.9, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
-		{"unverified below floor kept (both)", model.VerdictUnverified, 0.5, "refuted-and-unverified", 0.8, false, "below_confidence"},
-		{"refuted policy=none kept", model.VerdictRefuted, 0.99, "none", 0.8, false, "kept"},
-		{"missing verdict treated as unverified (refuted-only)", "", 0.99, "refuted-only", 0.8, false, "kept"},
-		{"missing verdict treated as unverified (both)", "", 0.99, "refuted-and-unverified", 0.8, true, model.VerdictUnverified},
-		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", 0.8, true, model.VerdictRefuted},
-		{"threshold zero drops anything refuted", model.VerdictRefuted, 0.0, "refuted-only", 0.0, true, model.VerdictRefuted},
+		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, "refuted-only", false, "kept"},
+		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, "refuted-and-unverified", false, "kept"},
+		{"refuted high confidence drops", model.VerdictRefuted, 0.85, "refuted-only", true, model.VerdictRefuted},
+		{"refuted low confidence drops", model.VerdictRefuted, 0.01, "refuted-only", true, model.VerdictRefuted},
+		{"refuted zero confidence drops", model.VerdictRefuted, 0.0, "refuted-only", true, model.VerdictRefuted},
+		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", false, "kept"},
+		{"unverified drops (both)", model.VerdictUnverified, 0.0, "refuted-and-unverified", true, model.VerdictUnverified},
+		{"refuted policy=none kept", model.VerdictRefuted, 0.99, "none", false, "kept"},
+		{"missing verdict treated as unverified (refuted-only)", "", 0.99, "refuted-only", false, "kept"},
+		{"missing verdict treated as unverified (both)", "", 0.99, "refuted-and-unverified", true, model.VerdictUnverified},
+		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", true, model.VerdictRefuted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := &model.FindingVerification{Verdict: tc.verdict, ConfidenceScore: tc.confidence}
-			drop, reason := shouldDropFinding(v, tc.policy, tc.threshold)
+			drop, reason := shouldDropFinding(v, tc.policy)
 			if drop != tc.wantDrop {
 				t.Fatalf("drop = %v, want %v", drop, tc.wantDrop)
 			}
@@ -3349,53 +3445,8 @@ func TestShouldDropFinding(t *testing.T) {
 	}
 }
 
-func TestDowngradeLowConfidenceRefutation(t *testing.T) {
-	cases := []struct {
-		name         string
-		verification model.FindingVerification
-		reason       string
-		wantVerdict  string
-		wantRemarks  string
-	}{
-		{
-			name:         "low-confidence refuted becomes unverified and clears remarks",
-			verification: model.FindingVerification{Verdict: model.VerdictRefuted, ConfidenceScore: 0.69, Priority: 2, Remarks: "contradicted by x"},
-			reason:       "below_confidence",
-			wantVerdict:  model.VerdictUnverified,
-			wantRemarks:  "",
-		},
-		{
-			name:         "unverified below confidence stays unverified with remarks",
-			verification: model.FindingVerification{Verdict: model.VerdictUnverified, ConfidenceScore: 0.69, Priority: 2, Remarks: "not enough evidence"},
-			reason:       "below_confidence",
-			wantVerdict:  model.VerdictUnverified,
-			wantRemarks:  "not enough evidence",
-		},
-		{
-			name:         "policy none keeps refuted unchanged",
-			verification: model.FindingVerification{Verdict: model.VerdictRefuted, ConfidenceScore: 0.69, Priority: 2, Remarks: "contradicted by x"},
-			reason:       "kept",
-			wantVerdict:  model.VerdictRefuted,
-			wantRemarks:  "contradicted by x",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			v := tc.verification
-			if tc.reason == "below_confidence" {
-				downgradeLowConfidenceRefutation(&v)
-			}
-			if v.Verdict != tc.wantVerdict || v.Remarks != tc.wantRemarks {
-				t.Fatalf("verification after downgrade = verdict %q remarks %q, want verdict %q remarks %q",
-					v.Verdict, v.Remarks, tc.wantVerdict, tc.wantRemarks)
-			}
-		})
-	}
-}
-
 func TestShouldDropFindingNilVerification(t *testing.T) {
-	drop, reason := shouldDropFinding(nil, "refuted-and-unverified", 0.0)
+	drop, reason := shouldDropFinding(nil, "refuted-and-unverified")
 	if drop || reason != "kept" {
 		t.Fatalf("nil verification: drop=%v reason=%q", drop, reason)
 	}

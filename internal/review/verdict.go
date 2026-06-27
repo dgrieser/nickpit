@@ -19,6 +19,7 @@ type VerdictOptions struct {
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	DisablePatchSummary      bool
+	SkipSuggestions          bool
 	RepoRoot                 string
 	ContextNotes             string
 	// PriorityThreshold is the configured "lowest currently allowed priority"
@@ -26,6 +27,9 @@ type VerdictOptions struct {
 	// classified at the threshold (not blocking) and never forces the overall
 	// verdict to "patch is incorrect". Empty defaults to p3.
 	PriorityThreshold string
+	// ConfidenceThreshold removes low-confidence findings before verdict
+	// reasoning. It uses finalized/display confidence; <=0 disables the filter.
+	ConfidenceThreshold float64
 }
 
 func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts VerdictOptions) (*model.ReviewResult, model.AgentRun, error) {
@@ -34,6 +38,36 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	}
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: nil review result")
+	}
+	filtered, priorityDropped, err := filterResultByDisplayPriority(in, opts.PriorityThreshold)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	if priorityDropped > 0 {
+		e.logProgress(logging.StageVerdict, logging.StateWarn, fmt.Sprintf("priority filter dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold)))
+		e.logf(ctx, "Verdict priority filter: dropped=%d kept=%d threshold=%s", priorityDropped, len(filtered.Findings), priorityThresholdLabel(opts.PriorityThreshold))
+	}
+	in = filtered
+	filtered, drops, err := filterByConfidenceThreshold(in, opts.ConfidenceThreshold)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	dropped := len(drops)
+	if dropped > 0 {
+		e.logProgress(logging.StageVerdict, logging.StateWarn, fmt.Sprintf("confidence filter dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold))
+		e.logf(ctx, "Verdict confidence filter: dropped=%d kept=%d threshold=%.2f", dropped, len(filtered.Findings), opts.ConfidenceThreshold)
+		for _, drop := range drops {
+			e.logf(ctx, "Verdict confidence filter dropped finding: id=%s confidence=%.2f source=%s threshold=%.2f title=%q", drop.ID, drop.Confidence, drop.Source, opts.ConfidenceThreshold, drop.Title)
+		}
+	}
+	in = filtered
+	if opts.SkipSuggestions {
+		stripped, err := in.Clone()
+		if err != nil {
+			return nil, model.AgentRun{}, fmt.Errorf("verdict: cloning input result: %w", err)
+		}
+		model.StripSuggestions(stripped.Findings)
+		in = stripped
 	}
 	thresholdRank := model.PriorityThresholdRank(opts.PriorityThreshold)
 	if len(in.Findings) == 0 {
@@ -47,7 +81,15 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		// findings the verdict owns a fresh rationale, and a stale merge summary or
 		// old "incorrect" explanation would contradict the empty, correct result
 		// (e.g. --priority-threshold dropping every finding in the fused pipeline).
-		out.OverallExplanation = "No finalized findings remained."
+		if priorityDropped > 0 && dropped > 0 {
+			out.OverallExplanation = "No findings remained after priority and confidence filtering."
+		} else if priorityDropped > 0 {
+			out.OverallExplanation = "No findings remained after priority filtering."
+		} else if dropped > 0 {
+			out.OverallExplanation = "No findings remained after confidence filtering."
+		} else {
+			out.OverallExplanation = "No finalized findings remained."
+		}
 		return out, model.AgentRun{Name: "Verdict Review", Role: "verdict", Status: model.AgentRunStatusSkipped}, nil
 	}
 
@@ -55,7 +97,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.UseJSONSchema), false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.UseJSONSchema), opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -63,16 +105,18 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		OutputSchemaSnippet string
 		OutputFormatSnippet string
 		DisablePatchSummary bool
+		SkipSuggestions     bool
 	}{
 		OutputSchemaSnippet: verdictOutputSchemaSnippetFor(opts.UseJSONSchema),
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
+		SkipSuggestions:     opts.SkipSuggestions,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank)
+	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -92,6 +136,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
+		SkipSuggestions:          opts.SkipSuggestions,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
 	verdictStart := time.Now()
@@ -109,10 +154,10 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		validateResponse: verdictOutputValidator(),
 	}, req)
 	if err != nil {
-		return nil, result.run, err
+		return in, result.run, err
 	}
 	if result.resp == nil {
-		return nil, result.run, fmt.Errorf("verdict: agent returned nil response")
+		return in, result.run, fmt.Errorf("verdict: agent returned nil response")
 	}
 
 	out, err := in.Clone()
@@ -148,7 +193,77 @@ func verdictOutputValidator() func(*llm.ReviewResponse) *llm.InvalidResponseErro
 	}
 }
 
-func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int) (string, error) {
+func filterResultByDisplayPriority(in *model.ReviewResult, threshold string) (*model.ReviewResult, int, error) {
+	if in == nil {
+		return nil, 0, fmt.Errorf("priority filter: nil review result")
+	}
+	filtered := filterByDisplayPriority(in.Findings, threshold)
+	if len(filtered) == len(in.Findings) {
+		return in, 0, nil
+	}
+	out, err := in.Clone()
+	if err != nil {
+		return nil, 0, fmt.Errorf("priority filter: cloning input result: %w", err)
+	}
+	out.Findings = filterByDisplayPriority(out.Findings, threshold)
+	return out, len(in.Findings) - len(filtered), nil
+}
+
+func priorityThresholdLabel(threshold string) string {
+	if threshold == "" {
+		return "p3"
+	}
+	return threshold
+}
+
+type confidenceFilterDrop struct {
+	ID         string
+	Title      string
+	Confidence float64
+	Source     string
+}
+
+func filterByConfidenceThreshold(in *model.ReviewResult, threshold float64) (*model.ReviewResult, []confidenceFilterDrop, error) {
+	if in == nil {
+		return nil, nil, fmt.Errorf("verdict: nil review result")
+	}
+	if threshold <= 0 {
+		return in, nil, nil
+	}
+	out, err := in.Clone()
+	if err != nil {
+		return nil, nil, fmt.Errorf("verdict: cloning input result: %w", err)
+	}
+	filtered := out.Findings[:0]
+	drops := make([]confidenceFilterDrop, 0)
+	for _, finding := range out.Findings {
+		confidence, source := verdictFilterConfidence(finding)
+		if confidence >= threshold {
+			filtered = append(filtered, finding)
+			continue
+		}
+		drops = append(drops, confidenceFilterDrop{
+			ID:         finding.ID,
+			Title:      finding.Title,
+			Confidence: confidence,
+			Source:     source,
+		})
+	}
+	out.Findings = filtered
+	return out, drops, nil
+}
+
+func verdictFilterConfidence(finding model.Finding) (float64, string) {
+	if finding.Finalization != nil {
+		return finding.Finalization.ConfidenceScore, "finalization"
+	}
+	if finding.Summarization != nil {
+		return finding.Summarization.ConfidenceScore, "summarization"
+	}
+	return finding.ConfidenceScore, "review"
+}
+
+func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, skipSuggestions bool) (string, error) {
 	payload := model.PromptPayloadFromContext(reviewCtx)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
@@ -176,7 +291,11 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 			entry["verification"] = &verification
 		}
 		if finding.Finalization != nil {
-			entry["finalization"] = finding.Finalization
+			finalization := *finding.Finalization
+			if skipSuggestions {
+				finalization.Suggestions = nil
+			}
+			entry["finalization"] = &finalization
 		}
 		findings = append(findings, entry)
 	}

@@ -310,6 +310,32 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesSkipWorkflowTimeBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:                "default",
+		configPath:             path,
+		skipWorkflowTimeBudget: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !profile.SkipWorkflowTimeBudget {
+		t.Fatal("expected skip workflow time budget CLI override")
+	}
+}
+
 func TestLoadProfileAppliesSamplingCLIOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -957,11 +983,11 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		DisablePatchSummary:     true,
 		DisableReasoningExtract: true,
 		VerifyDropPolicy:        "refuted-only",
-		VerifyDropConfidence:    0.7,
+		ConfidenceThreshold:     0.7,
 		PriorityThreshold:       "p1",
 	}
 	got := agentSummary(profile, req)
-	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only ≥0.7, ≥p1"
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}
@@ -978,6 +1004,23 @@ func TestAgentSummaryOmitsDefaultsAndSerial(t *testing.T) {
 	want := "Unstructured no nudges, no retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ≤10 concurrency, ∞ tool calls, ∞ duplicates"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestSpecHasStepFindsVerdictInPipeline(t *testing.T) {
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+		}},
+	}}
+	if !specHasStep(spec, workflow.StepVerdict) {
+		t.Fatal("specHasStep did not find verdict inside pipeline")
+	}
+	without := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{Type: workflow.StepMerge}}}
+	if specHasStep(without, workflow.StepVerdict) {
+		t.Fatal("specHasStep found verdict in merge-only spec")
 	}
 }
 

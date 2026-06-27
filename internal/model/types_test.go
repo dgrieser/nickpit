@@ -7,6 +7,25 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestNormalizeConfidence(t *testing.T) {
+	cases := []struct {
+		in, want float64
+	}{
+		{0.85, 0.85},
+		{0, 0},
+		{1, 1},
+		{95, 0.95},
+		{100, 1},
+		{150, 1},
+		{-0.5, 0},
+	}
+	for _, c := range cases {
+		if got := NormalizeConfidence(c.in); got != c.want {
+			t.Errorf("NormalizeConfidence(%v) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestEnsureFindingIDsPreservesUniqueValidIDs(t *testing.T) {
 	findings := []Finding{
 		{ID: "11111111-1111-4111-8111-111111111111"},

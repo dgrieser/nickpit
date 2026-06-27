@@ -70,6 +70,7 @@ type Profile struct {
 	NudgeCount                         int                 `yaml:"nudge_count"`
 	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
 	SkipSuggestions                    bool                `yaml:"skip_suggestions"`
+	SkipWorkflowTimeBudget             bool                `yaml:"skip_workflow_time_budget"`
 	ReasoningEffort                    string              `yaml:"reasoning_effort"`
 	Workdir                            string              `yaml:"workdir"`
 	GitHubToken                        string              `yaml:"github_token"`
@@ -114,37 +115,38 @@ type ReasoningCapabilities struct {
 }
 
 type Overrides struct {
-	Profile               string
-	Model                 string
-	Small                 SmallModelConfig
-	BaseURL               string
-	APIKey                string
-	MaxTokens             *int
-	Temperature           *float64
-	TopP                  *float64
-	TopK                  *int
-	PresencePenalty       *float64
-	ExtraBody             map[string]any
-	UseJSONSchema         bool
-	IncludePaths          *[]string
-	ExcludePaths          *[]string
-	IncludeContent        *[]string
-	ExcludeContent        *[]string
-	MaxContextTokens      *int
-	ToolCalls             *int
-	DuplicateToolCalls    *int
-	OutputRetries         *int
-	ReasoningSeconds      *int
-	ReasoningLoopRepeats  *int
-	RateLimitDelaySeconds *int
-	NudgeCount            *int
-	DisablePatchSummary   bool
-	SkipSuggestions       bool
-	ReasoningEffort       string
-	Workdir               string
-	GitHubToken           string
-	GitLabToken           string
-	GitLabBaseURL         string
+	Profile                string
+	Model                  string
+	Small                  SmallModelConfig
+	BaseURL                string
+	APIKey                 string
+	MaxTokens              *int
+	Temperature            *float64
+	TopP                   *float64
+	TopK                   *int
+	PresencePenalty        *float64
+	ExtraBody              map[string]any
+	UseJSONSchema          bool
+	IncludePaths           *[]string
+	ExcludePaths           *[]string
+	IncludeContent         *[]string
+	ExcludeContent         *[]string
+	MaxContextTokens       *int
+	ToolCalls              *int
+	DuplicateToolCalls     *int
+	OutputRetries          *int
+	ReasoningSeconds       *int
+	ReasoningLoopRepeats   *int
+	RateLimitDelaySeconds  *int
+	NudgeCount             *int
+	DisablePatchSummary    bool
+	SkipSuggestions        bool
+	SkipWorkflowTimeBudget bool
+	ReasoningEffort        string
+	Workdir                string
+	GitHubToken            string
+	GitLabToken            string
+	GitLabBaseURL          string
 }
 
 type defaultProfile struct {
@@ -651,6 +653,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	if overrides.SkipSuggestions {
 		profile.SkipSuggestions = true
+	}
+	if overrides.SkipWorkflowTimeBudget {
+		profile.SkipWorkflowTimeBudget = true
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort

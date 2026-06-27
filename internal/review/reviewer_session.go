@@ -170,11 +170,13 @@ func (s *reviewerSession) combinedCollectedList() string {
 	return strings.TrimSpace(strings.Join(s.collectedLists, "\n"))
 }
 
-func (s *reviewerSession) launchCollect(ctx context.Context, e *Engine, agentName string, iterIdx int, reasoning string, req model.ReviewRequest) {
+func (s *reviewerSession) launchCollect(budget timeBudgetStarter, e *Engine, agentName string, iterIdx int, reasoning string, req model.ReviewRequest) {
 	if strings.TrimSpace(reasoning) == "" {
 		return
 	}
 	s.collectWG.Go(func() {
+		ctx, cancel := budget.startOrCanceled()
+		defer cancel()
 		list, result, err := e.runReasoningCollectFindings(ctx, reasoning, agentName, iterIdx, req)
 		s.addExtractorRun(result.run)
 		if err != nil {
@@ -193,12 +195,12 @@ func (s *reviewerSession) launchCollect(ctx context.Context, e *Engine, agentNam
 // reviewerInitial runs the reviewer's initial pass, wiring reasoning collection
 // when enabled, and populates the session. The reasoning-collect goroutines are
 // awaited before returning so collectedLists is frozen for later extraction.
-func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineEngine *Engine, mineReq model.ReviewRequest) error {
+func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineBudget timeBudgetStarter, mineEngine *Engine, mineReq model.ReviewRequest) error {
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
 	if s.extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
-			s.launchCollect(ctx, mineEngine, agentName, iterIdx, reasoning, mineReq)
+			s.launchCollect(mineBudget, mineEngine, agentName, iterIdx, reasoning, mineReq)
 		}
 	}
 	loopResult, err := e.runAgentLoop(ctx, loopReq)
@@ -331,17 +333,33 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 // error only for the rare reasoning-findings marshalling failure; a failed nudge
 // round stops the loop and is reported via the session's nudgeErr (a partial,
 // not a hard error), matching the legacy behavior.
-func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest, compileEngine *Engine, compileReq model.ReviewRequest, nudgeEngine *Engine, nudgeReq model.ReviewRequest) error {
+func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest, compileBudget timeBudgetStarter, compileEngine *Engine, compileReq model.ReviewRequest, nudgeBudget timeBudgetStarter, nudgeEngine *Engine, nudgeReq model.ReviewRequest) error {
 	for i := 0; i < req.NudgeCount; i++ {
+		compileCtx, compileCancel := compileBudget.startOrCanceled()
+		if compileCtx.Err() != nil {
+			compileCancel()
+			e.logf(ctx, "Nudge phase skipped or stopped by time budget: completed=%d/%d", i, req.NudgeCount)
+			return nil
+		}
 		nudgeName := fmt.Sprintf("%s · Nudge %d/%d", s.agent.name, i+1, req.NudgeCount)
-		nudgeCtx := logging.WithProgressInfo(ctx, nudgeEngine.progressInfo(s.agent.role, nudgeName, ""))
-		delta, err := compileEngine.reviewerComputeExtractDelta(nudgeCtx, s, compileReq)
+		compileProgressCtx := logging.WithProgressInfo(compileCtx, nudgeEngine.progressInfo(s.agent.role, nudgeName, ""))
+		delta, err := compileEngine.reviewerComputeExtractDelta(compileProgressCtx, s, compileReq)
+		compileCancel()
 		if err != nil {
 			return err
 		}
+		nudgeCtxBase, nudgeCancel := nudgeBudget.startOrCanceled()
+		if nudgeCtxBase.Err() != nil {
+			nudgeCancel()
+			e.logf(ctx, "Nudge phase skipped or stopped by time budget: completed=%d/%d", i, req.NudgeCount)
+			return nil
+		}
+		nudgeCtx := logging.WithProgressInfo(nudgeCtxBase, nudgeEngine.progressInfo(s.agent.role, nudgeName, ""))
 		if !nudgeEngine.reviewerNudgeTurn(nudgeCtx, s, i, req.NudgeCount, nudgeName, delta, nudgeReq) {
+			nudgeCancel()
 			break
 		}
+		nudgeCancel()
 	}
 	return nil
 }

@@ -130,6 +130,7 @@ type ReviewRequest struct {
 	MaxReasoningLoopRepeats        int
 	ReasoningSink                  ReasoningSink
 	DisableReasoningEffortFallback bool
+	Urgent                         bool
 }
 
 type Message struct {
@@ -580,7 +581,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 
 	originalEffort := req.ReasoningEffort
 	efforts := []string{originalEffort}
-	if !req.DisableReasoningEffortFallback {
+	if req.Urgent {
+		efforts = urgentReasoningEfforts(originalEffort, c.allowedEfforts)
+	} else if !req.DisableReasoningEffortFallback {
 		for _, effort := range fallbackReasoningEfforts(originalEffort) {
 			if attemptReasoningEffortAllowed(effort, c.allowedEfforts) {
 				efforts = append(efforts, effort)
@@ -597,6 +600,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	for attemptIndex, effort := range efforts {
 		attemptReq := cloneReviewRequest(req)
 		attemptReq.ReasoningEffort = effort
+		if req.Urgent {
+			addReasoningBudgetRetryHint(&attemptReq)
+		}
 		if budgetExhausted {
 			addReasoningBudgetRetryHint(&attemptReq)
 		}
@@ -805,6 +811,34 @@ func fallbackReasoningEfforts(effort string) []string {
 		}
 	}
 	return []string{"low", "minimal", "none", "off"}
+}
+
+func urgentReasoningEfforts(effort string, allowed map[string]struct{}) []string {
+	candidates := fallbackReasoningEfforts(effort)
+	out := make([]string, 0, len(candidates)+1)
+	seen := map[string]struct{}{}
+	add := func(candidate string) {
+		normalized := strings.ToLower(strings.TrimSpace(candidate))
+		if normalized == "" {
+			return
+		}
+		if _, ok := seen[normalized]; ok {
+			return
+		}
+		if !attemptReasoningEffortAllowed(normalized, allowed) {
+			return
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	for _, candidate := range slices.Backward(candidates) {
+		add(candidate)
+	}
+	add(effort)
+	if len(out) == 0 {
+		out = append(out, effort)
+	}
+	return out
 }
 
 func attemptReasoningEffortAllowed(effort string, allowed map[string]struct{}) bool {
@@ -1899,7 +1933,9 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 	normalizeFindingSuggestions(parsed.Findings)
 	for i := range parsed.Findings {
 		parsed.Findings[i].Title = stripPriorityPrefix(parsed.Findings[i].Title)
+		parsed.Findings[i].ConfidenceScore = model.NormalizeConfidence(parsed.Findings[i].ConfidenceScore)
 	}
+	parsed.OverallConfidenceScore = model.NormalizeConfidence(parsed.OverallConfidenceScore)
 	if missing := missingResponseFields(&parsed, content, kind, constraints); len(missing) > 0 {
 		return &parsed, 0, &InvalidResponseError{
 			RawContent:    content,
@@ -2007,10 +2043,20 @@ func reviewResponseFallbackTypes() []FallbackType {
 
 func normalizeFindingSuggestions(findings []model.Finding) {
 	for i := range findings {
-		for j := range findings[i].Suggestions {
-			if findings[i].Suggestions[j].LineRange == (model.LineRange{}) {
-				findings[i].Suggestions[j].LineRange = findings[i].CodeLocation.LineRange
-			}
+		normalizeSuggestionLineRanges(findings[i].Suggestions, findings[i].CodeLocation.LineRange)
+		if findings[i].Finalization != nil {
+			normalizeSuggestionLineRanges(findings[i].Finalization.Suggestions, findings[i].CodeLocation.LineRange)
+		}
+		if findings[i].Summarization != nil {
+			normalizeSuggestionLineRanges(findings[i].Summarization.Suggestions, findings[i].CodeLocation.LineRange)
+		}
+	}
+}
+
+func normalizeSuggestionLineRanges(suggestions []model.Suggestion, fallback model.LineRange) {
+	for i := range suggestions {
+		if suggestions[i].LineRange == (model.LineRange{}) {
+			suggestions[i].LineRange = fallback
 		}
 	}
 }
@@ -2023,6 +2069,7 @@ func parseVerifyResponse(content string) (*ReviewResponse, error) {
 			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
 		}
 	}
+	verification.ConfidenceScore = model.NormalizeConfidence(verification.ConfidenceScore)
 	if missing := missingVerifyFields(content); len(missing) > 0 {
 		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
 			RawContent:    content,

@@ -120,6 +120,9 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.SkipSuggestions {
 		base.SkipSuggestions = true
 	}
+	if override.SkipWorkflowTimeBudget {
+		base.SkipWorkflowTimeBudget = true
+	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}

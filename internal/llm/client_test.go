@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/logging"
+	"github.com/dgrieser/nickpit/internal/model"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -1507,6 +1508,34 @@ func TestLowerReasoningEfforts(t *testing.T) {
 			got := LowerReasoningEfforts(tt.effort)
 			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
 				t.Fatalf("LowerReasoningEfforts(%q) = %v, want %v", tt.effort, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUrgentReasoningEffortsStartLow(t *testing.T) {
+	tests := []struct {
+		name    string
+		effort  string
+		allowed []string
+		want    []string
+	}{
+		{name: "unknown support tries lowest first", effort: "high", want: []string{"off", "none", "minimal", "low", "medium", "high"}},
+		{name: "allowed support filters", effort: "high", allowed: []string{"medium", "low"}, want: []string{"low", "medium"}},
+		{name: "custom effort kept as fallback", effort: "provider-high", want: []string{"off", "none", "minimal", "low", "provider-high"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var allowed map[string]struct{}
+			if tt.allowed != nil {
+				allowed = map[string]struct{}{}
+				for _, effort := range tt.allowed {
+					allowed[effort] = struct{}{}
+				}
+			}
+			got := urgentReasoningEfforts(tt.effort, allowed)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Fatalf("urgentReasoningEfforts(%q) = %v, want %v", tt.effort, got, tt.want)
 			}
 		})
 	}
@@ -3392,6 +3421,20 @@ func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 	}
 }
 
+func TestParseReviewResponseRescalesMisscaledConfidence(t *testing.T) {
+	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":90,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":100}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if resp.Findings[0].ConfidenceScore != 0.9 {
+		t.Fatalf("finding confidence = %f, want 0.9 (rescaled from 90)", resp.Findings[0].ConfidenceScore)
+	}
+	if resp.OverallConfidenceScore != 1 {
+		t.Fatalf("overall confidence = %f, want 1 (rescaled from 100)", resp.OverallConfidenceScore)
+	}
+}
+
 func TestParseReviewResponseAcceptsStringSuggestionShorthand(t *testing.T) {
 	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":7,"end":9}},"suggestions":["Add a regression test."]}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
@@ -3693,7 +3736,7 @@ func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
 }
 
 func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep","suggestions":[{"body":"final suggestion"}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
@@ -3706,6 +3749,13 @@ func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
 	}
 	if resp.Findings[0].Finalization.Title != "Final fix" || resp.Findings[0].Finalization.Body != "final body" {
 		t.Fatalf("finalization title/body = %#v", resp.Findings[0].Finalization)
+	}
+	suggestions := resp.Findings[0].Finalization.Suggestions
+	if len(suggestions) != 1 || suggestions[0].Body != "final suggestion" {
+		t.Fatalf("finalization.suggestions = %#v", suggestions)
+	}
+	if suggestions[0].LineRange != (model.LineRange{Start: 1, End: 1}) {
+		t.Fatalf("finalization.suggestions[0].line_range = %+v, want fallback code location", suggestions[0].LineRange)
 	}
 }
 

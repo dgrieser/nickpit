@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/google/uuid"
 )
 
 // overallSummaryID is the sentinel id for the overall-explanation text item the
@@ -27,13 +29,25 @@ type SummarizeOptions struct {
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	DisablePatchSummary      bool
+	SkipSuggestions          bool
 	RepoRoot                 string
 }
 
+type summarizeItemKind string
+
+const (
+	summarizeItemFinding    summarizeItemKind = "finding"
+	summarizeItemSuggestion summarizeItemKind = "suggestion"
+	summarizeItemOverall    summarizeItemKind = "overall"
+)
+
 type summarizeTextItem struct {
-	ID    string
-	Title string
-	Body  string
+	ID              string
+	Title           string
+	Body            string
+	Kind            summarizeItemKind
+	FindingIndex    int
+	SuggestionIndex int
 }
 
 // Summarize shortens each finding's body and, when present, the overall
@@ -41,6 +55,14 @@ type summarizeTextItem struct {
 func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts SummarizeOptions) (*model.ReviewResult, model.AgentRun, error) {
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: nil review result")
+	}
+	if opts.SkipSuggestions {
+		out, err := in.Clone()
+		if err != nil {
+			return nil, model.AgentRun{}, fmt.Errorf("summarize: cloning input result: %w", err)
+		}
+		model.StripSuggestions(out.Findings)
+		in = out
 	}
 	// With no findings the overall explanation is a short static message (e.g.
 	// "No finalized findings remained."), so there is nothing worth an LLM call.
@@ -51,7 +73,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 		}
 		return out, model.AgentRun{Name: "Summarize Review", Role: "summarize", Status: model.AgentRunStatusSkipped}, nil
 	}
-	items := summarizeItemsForResult(in, strings.TrimSpace(in.OverallExplanation) != "")
+	items := summarizeItemsForResult(in, strings.TrimSpace(in.OverallExplanation) != "", opts.SkipSuggestions)
 	if len(items) == 0 {
 		out, err := in.Clone()
 		if err != nil {
@@ -67,7 +89,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: cloning input result: %w", err)
 	}
-	stats := applySummarizerBodies(out.Findings, bodies)
+	stats := applySummarizerBodies(out.Findings, items, bodies)
 	if body := strings.TrimSpace(bodies[overallSummaryID]); body != "" {
 		out.OverallExplanation = body
 	}
@@ -81,7 +103,7 @@ func (e *Engine) SummarizeOverall(ctx context.Context, overall string, opts Summ
 	if strings.TrimSpace(overall) == "" {
 		return overall, model.AgentRun{Name: "Summarize Review", Role: "summarize", Status: model.AgentRunStatusSkipped}, nil
 	}
-	bodies, run, err := e.summarizeTextItems(ctx, []summarizeTextItem{{ID: overallSummaryID, Title: "Overall explanation", Body: overall}}, opts)
+	bodies, run, err := e.summarizeTextItems(ctx, []summarizeTextItem{{ID: overallSummaryID, Title: "Overall explanation", Body: overall, Kind: summarizeItemOverall}}, opts)
 	if err != nil {
 		return overall, run, err
 	}
@@ -96,7 +118,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.UseJSONSchema), false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.UseJSONSchema), opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -104,10 +126,12 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 		OutputSchemaSnippet string
 		OutputFormatSnippet string
 		DisablePatchSummary bool
+		SkipSuggestions     bool
 	}{
 		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.UseJSONSchema),
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
+		SkipSuggestions:     opts.SkipSuggestions,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: rendering system prompt: %w", err)
@@ -129,6 +153,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
+		SkipSuggestions:          opts.SkipSuggestions,
 		UseJSONSchema:            opts.UseJSONSchema,
 	}
 	summarizeStart := time.Now()
@@ -168,7 +193,7 @@ func summarizerOutputValidator(items []summarizeTextItem) func(*llm.ReviewRespon
 			summarizerFindings = recovered
 		}
 		stats := summarizerTextOutputStats(items, summarizerFindings)
-		countOK := stats.SummarizerFindings == expected && stats.Matched == expected && stats.Omitted == 0 && stats.Ignored == 0
+		countOK := stats.Omitted == 0 && stats.Ignored == 0
 		if countOK {
 			return nil
 		}
@@ -209,14 +234,35 @@ func summarizerOutputValidator(items []summarizeTextItem) func(*llm.ReviewRespon
 	}
 }
 
-func summarizeItemsForResult(in *model.ReviewResult, includeOverall bool) []summarizeTextItem {
+func summarizeItemsForResult(in *model.ReviewResult, includeOverall bool, skipSuggestions bool) []summarizeTextItem {
 	items := make([]summarizeTextItem, 0, len(in.Findings)+1)
-	for _, finding := range in.Findings {
+	for findingIndex, finding := range in.Findings {
 		title, body := sourceTitleBodyForSummary(finding)
-		items = append(items, summarizeTextItem{ID: finding.ID, Title: title, Body: body})
+		items = append(items, summarizeTextItem{
+			ID:           finding.ID,
+			Title:        title,
+			Body:         body,
+			Kind:         summarizeItemFinding,
+			FindingIndex: findingIndex,
+		})
+		if !skipSuggestions {
+			for suggestionIndex, suggestion := range sourceSuggestionsForSummary(finding) {
+				if !shouldSummarizeSuggestionBody(suggestion.Body) {
+					continue
+				}
+				items = append(items, summarizeTextItem{
+					ID:              summarizeSuggestionItemID(finding.ID, suggestionIndex),
+					Title:           fmt.Sprintf("Suggestion for: %s", title),
+					Body:            suggestion.Body,
+					Kind:            summarizeItemSuggestion,
+					FindingIndex:    findingIndex,
+					SuggestionIndex: suggestionIndex,
+				})
+			}
+		}
 	}
 	if includeOverall && strings.TrimSpace(in.OverallExplanation) != "" {
-		items = append(items, summarizeTextItem{ID: overallSummaryID, Title: "Overall explanation", Body: in.OverallExplanation})
+		items = append(items, summarizeTextItem{ID: overallSummaryID, Title: "Overall explanation", Body: in.OverallExplanation, Kind: summarizeItemOverall})
 	}
 	return items
 }
@@ -229,11 +275,19 @@ func sourceTitleBodyForSummary(finding model.Finding) (string, string) {
 	return title, body
 }
 
+func sourceSuggestionsForSummary(finding model.Finding) []model.Suggestion {
+	if finding.Finalization != nil && len(finding.Finalization.Suggestions) > 0 {
+		return finding.Finalization.Suggestions
+	}
+	return finding.Suggestions
+}
+
 func (e *Engine) buildSummarizeUserPrompt(items []summarizeTextItem) (string, error) {
 	findings := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		findings = append(findings, map[string]any{
 			"id":    item.ID,
+			"kind":  summarizeItemKindOrDefault(item),
 			"title": item.Title,
 			"body":  item.Body,
 		})
@@ -273,28 +327,46 @@ func summarizerBodiesForOutput(items []summarizeTextItem, out []model.Finding) m
 	return bodies
 }
 
-func applySummarizerBodies(inOut []model.Finding, bodies map[string]string) summarizerApplyStats {
+func applySummarizerBodies(inOut []model.Finding, items []summarizeTextItem, bodies map[string]string) summarizerApplyStats {
+	itemsByID := make(map[string]summarizeTextItem, len(items))
+	for _, item := range items {
+		itemsByID[strings.TrimSpace(item.ID)] = item
+	}
 	matched := make([]bool, len(inOut))
 	stats := summarizerApplyStats{SummarizerFindings: 0}
 	for id, body := range bodies {
 		if id == overallSummaryID {
 			continue
 		}
-		stats.SummarizerFindings++
-		found := false
-		for i := range inOut {
-			if matched[i] || inOut[i].ID != id {
+		item, ok := itemsByID[id]
+		if !ok {
+			stats.Ignored++
+			continue
+		}
+		switch summarizeItemKindOrDefault(item) {
+		case summarizeItemSuggestion:
+			if strings.TrimSpace(body) == "" || item.FindingIndex < 0 || item.FindingIndex >= len(inOut) {
 				continue
 			}
-			matched[i] = true
-			found = true
+			summary := inOut[item.FindingIndex].Summarization
+			if summary == nil {
+				summary = baseSummarization(&inOut[item.FindingIndex])
+				inOut[item.FindingIndex].Summarization = summary
+			}
+			if item.SuggestionIndex < 0 || item.SuggestionIndex >= len(summary.Suggestions) {
+				continue
+			}
+			summary.Suggestions[item.SuggestionIndex].Body = body
+		case summarizeItemFinding:
+			stats.SummarizerFindings++
+			if item.FindingIndex < 0 || item.FindingIndex >= len(inOut) || matched[item.FindingIndex] || inOut[item.FindingIndex].ID != id {
+				stats.Ignored++
+				continue
+			}
+			matched[item.FindingIndex] = true
 			stats.Matched++
 			src := model.Finding{ID: id, Summarization: &model.FindingSummarization{Body: body}}
-			applySummarizedFinding(&inOut[i], src)
-			break
-		}
-		if !found {
-			stats.Ignored++
+			applySummarizedFinding(&inOut[item.FindingIndex], src)
 		}
 	}
 	for i := range inOut {
@@ -342,14 +414,22 @@ func recoverSummarizerFindingsByPosition(items []summarizeTextItem, out []model.
 
 func summarizerTextOutputStats(items []summarizeTextItem, out []model.Finding) summarizerApplyStats {
 	want := make(map[string]int, len(items))
+	known := make(map[string]int, len(items))
 	for _, item := range items {
-		want[item.ID]++
+		id := strings.TrimSpace(item.ID)
+		known[id]++
+		if summarizeItemRequired(item) {
+			want[id]++
+		}
 	}
 	stats := summarizerApplyStats{SummarizerFindings: len(out)}
 	for _, finding := range out {
 		id := strings.TrimSpace(finding.ID)
-		if want[id] > 0 {
-			want[id]--
+		if known[id] > 0 {
+			known[id]--
+			if want[id] > 0 {
+				want[id]--
+			}
 			stats.Matched++
 		} else {
 			stats.Ignored++
@@ -383,7 +463,7 @@ func summarizerOutputIDDiagnostics(items []summarizeTextItem, out []model.Findin
 		}
 	}
 	for i, item := range items {
-		if !matched[i] {
+		if !matched[i] && summarizeItemRequired(item) {
 			ids.OmittedIDs = append(ids.OmittedIDs, item.ID)
 		}
 	}
@@ -394,7 +474,19 @@ func summarizerOutputIDDiagnostics(items []summarizeTextItem, out []model.Findin
 // (all fields verbatim) with the body replaced by the summarizer's shortened
 // body. An empty/whitespace LLM body is ignored so the finalized body survives.
 func applySummarizedFinding(dst *model.Finding, src model.Finding) {
+	existingSuggestions := []model.Suggestion(nil)
+	if dst.Summarization != nil {
+		existingSuggestions = dst.Summarization.Suggestions
+	}
 	summary := baseSummarization(dst)
+	for i := range existingSuggestions {
+		if i >= len(summary.Suggestions) {
+			break
+		}
+		if strings.TrimSpace(existingSuggestions[i].Body) != "" {
+			summary.Suggestions[i].Body = existingSuggestions[i].Body
+		}
+	}
 	if src.Summarization != nil && strings.TrimSpace(src.Summarization.Body) != "" {
 		summary.Body = src.Summarization.Body
 	}
@@ -412,6 +504,7 @@ func baseSummarization(finding *model.Finding) *model.FindingSummarization {
 			Priority:        finding.Finalization.Priority,
 			ConfidenceScore: finding.Finalization.ConfidenceScore,
 			Remarks:         finding.Finalization.Remarks,
+			Suggestions:     cloneSuggestions(sourceSuggestionsForSummary(*finding)),
 		}
 	}
 	return &model.FindingSummarization{
@@ -419,6 +512,7 @@ func baseSummarization(finding *model.Finding) *model.FindingSummarization {
 		Body:            finding.Body,
 		Priority:        model.PriorityRank(finding.Priority),
 		ConfidenceScore: finding.ConfidenceScore,
+		Suggestions:     cloneSuggestions(finding.Suggestions),
 	}
 }
 
@@ -427,4 +521,77 @@ func summarizeOutputSchemaSnippetFor(useJSONSchema bool) string {
 		return ""
 	}
 	return llm.SummarizeExamplePromptSnippet()
+}
+
+func summarizeItemKindOrDefault(item summarizeTextItem) summarizeItemKind {
+	if item.Kind == "" {
+		return summarizeItemFinding
+	}
+	return item.Kind
+}
+
+func summarizeItemRequired(item summarizeTextItem) bool {
+	return summarizeItemKindOrDefault(item) != summarizeItemSuggestion
+}
+
+func summarizeSuggestionItemID(findingID string, suggestionIndex int) string {
+	data := []byte(fmt.Sprintf("nickpit:summarize:suggestion:%s:%d", strings.TrimSpace(findingID), suggestionIndex))
+	return uuid.NewSHA1(uuid.NameSpaceOID, data).String()
+}
+
+func shouldSummarizeSuggestionBody(body string) bool {
+	text := strings.TrimSpace(body)
+	if text == "" || strings.Contains(text, "```") {
+		return false
+	}
+	if looksCodeLikeSuggestion(text) {
+		return false
+	}
+	return wordCount(text) >= 6
+}
+
+func looksCodeLikeSuggestion(text string) bool {
+	lines := strings.Split(text, "\n")
+	codeSignals := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "@@"),
+			strings.HasPrefix(trimmed, "diff --git"),
+			strings.HasPrefix(trimmed, "+++"),
+			strings.HasPrefix(trimmed, "---"),
+			strings.HasPrefix(trimmed, "+") && !strings.HasPrefix(trimmed, "+ "),
+			strings.HasPrefix(trimmed, "-") && !strings.HasPrefix(trimmed, "- "),
+			strings.Contains(trimmed, ":="),
+			strings.Contains(trimmed, "=>"),
+			strings.Contains(trimmed, "&&"),
+			strings.Contains(trimmed, "||"),
+			strings.Contains(trimmed, "{{"),
+			strings.Contains(trimmed, "}}"):
+			codeSignals++
+		}
+	}
+	if codeSignals > 0 {
+		return true
+	}
+	return len(lines) > 1 && strings.ContainsAny(text, "{};$")
+}
+
+func wordCount(text string) int {
+	words := 0
+	inWord := false
+	for _, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			if !inWord {
+				words++
+				inWord = true
+			}
+			continue
+		}
+		inWord = false
+	}
+	return words
 }

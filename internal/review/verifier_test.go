@@ -66,6 +66,19 @@ func sampleReviewCtx() *model.ReviewContext {
 	}
 }
 
+func assertFallbackUnverified(t *testing.T, v *model.FindingVerification, priority int) {
+	t.Helper()
+	if v == nil {
+		t.Fatal("verification = nil, want fallback unverified verification")
+	}
+	if _, err := uuid.Parse(v.ID); err != nil {
+		t.Fatalf("verification ID = %q, want valid UUID", v.ID)
+	}
+	if v.Verdict != model.VerdictUnverified || v.Priority != priority || v.ConfidenceScore != 0 || v.Remarks != "" {
+		t.Fatalf("verification = %#v, want unverified priority %d confidence 0 with empty remarks", v, priority)
+	}
+}
+
 func TestVerifyAllAttachesByIndex(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{
@@ -120,9 +133,7 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	if len(verifications) != 1 {
 		t.Fatalf("verifications len = %d", len(verifications))
 	}
-	if verifications[0] != nil {
-		t.Fatalf("verification = %#v, want nil", verifications[0])
-	}
+	assertFallbackUnverified(t, verifications[0], 1)
 	if len(warnings) != 1 {
 		t.Fatalf("warnings = %#v, want 1", warnings)
 	}
@@ -152,10 +163,8 @@ func TestVerifyAllCancelledContextWarnsOnceAndStops(t *testing.T) {
 	if !strings.Contains(warnings[0], "skipped 3 remaining") {
 		t.Fatalf("warning content = %q", warnings[0])
 	}
-	for i, v := range verifications {
-		if v != nil {
-			t.Fatalf("verifications[%d] = %#v, want nil", i, v)
-		}
+	for _, v := range verifications {
+		assertFallbackUnverified(t, v, 1)
 	}
 	if llmClient.calls != 0 {
 		t.Fatalf("LLM calls = %d, want 0 after cancellation", llmClient.calls)
@@ -253,23 +262,48 @@ func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: reviewerFindings},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
-	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly, VerifyDropConfidence: 0.7}
+	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly}
 	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
 
 	kept := vectorResults[0].resp.Findings
-	if len(kept) != 2 {
-		t.Fatalf("kept findings = %d, want 2", len(kept))
+	if len(kept) != 1 {
+		t.Fatalf("kept findings = %d, want 1", len(kept))
 	}
-	if kept[0].Title != "low refuted" || kept[0].Verification == nil ||
-		kept[0].Verification.Verdict != model.VerdictUnverified || kept[0].Verification.Remarks != "" {
-		t.Fatalf("kept low-confidence refuted = %#v, want unverified with empty remarks", kept[0])
+	if kept[0].Title != "unverified" || kept[0].Verification == nil ||
+		kept[0].Verification.Verdict != model.VerdictUnverified || kept[0].Verification.Remarks != "uncertain" {
+		t.Fatalf("kept unverified = %#v, want unchanged unverified", kept[0])
 	}
-	if kept[1].Title != "unverified" || kept[1].Verification == nil ||
-		kept[1].Verification.Verdict != model.VerdictUnverified || kept[1].Verification.Remarks != "uncertain" {
-		t.Fatalf("kept unverified = %#v, want unchanged unverified", kept[1])
+}
+
+func TestVerifyAndFilterKeepsVerifierFailuresAsUnverified(t *testing.T) {
+	reviewerFindings := []model.Finding{
+		{Title: "timeout", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+	}
+	llmClient := &scriptedVerifyLLM{err: errors.New("context deadline exceeded")}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: reviewerFindings},
+		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
+	}}
+	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly}
+	_, warnings, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
+	if err != nil {
+		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Verify failed") || !strings.Contains(warnings[0], "context deadline exceeded") {
+		t.Fatalf("warnings = %#v, want verifier failure warning", warnings)
+	}
+	kept := vectorResults[0].resp.Findings
+	if len(kept) != 1 {
+		t.Fatalf("kept findings = %d, want 1", len(kept))
+	}
+	assertFallbackUnverified(t, kept[0].Verification, 2)
+	if kept[0].Verification.ID != kept[0].ID {
+		t.Fatalf("verification ID = %q, finding ID = %q, want matching IDs", kept[0].Verification.ID, kept[0].ID)
 	}
 }
 
@@ -463,6 +497,12 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if !strings.Contains(system, "When validating findings, check the provided styleguides:") {
 		t.Fatalf("verify system prompt missing styleguide reminder: %q", system)
 	}
+	if !strings.Contains(system, "Treat styleguides as verification evidence") || !strings.Contains(system, "they are rules to follow") {
+		t.Fatalf("verify system prompt missing styleguide evidence rule: %q", system)
+	}
+	if !strings.Contains(system, "Styleguide contradiction gate") || !strings.Contains(system, "Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide") {
+		t.Fatalf("verify system prompt missing styleguide contradiction gate: %q", system)
+	}
 	if !strings.Contains(system, "- Go Style Guide") {
 		t.Fatalf("verify system prompt missing Go styleguide title: %q", system)
 	}
@@ -619,5 +659,37 @@ func TestVerifyIncludesSuggestions(t *testing.T) {
 	}
 	if first := suggestions[0].(map[string]any); first["body"] != "replacement one" {
 		t.Fatalf("first suggestion = %#v", first)
+	}
+}
+
+func TestVerifySkipSuggestionsOmitsSuggestions(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	finding := model.Finding{
+		ID:           "11111111-1111-4111-8111-111111111111",
+		Title:        "x",
+		Body:         "x",
+		Priority:     intPtr(1),
+		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Suggestions: []model.Suggestion{
+			{Body: "replacement one", LineRange: model.LineRange{Start: 1, End: 1}},
+		},
+	}
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding, SkipSuggestions: true})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal user prompt: %v", err)
+	}
+	verifyFinding := payload["finding"].(map[string]any)
+	if _, ok := verifyFinding["suggestions"]; ok {
+		t.Fatalf("suggestions should be omitted from verify payload: %#v", verifyFinding)
+	}
+	if strings.Contains(llmClient.requests[0].Messages[1].Content, "replacement one") {
+		t.Fatalf("verify user prompt should not contain suggestion text:\n%s", llmClient.requests[0].Messages[1].Content)
 	}
 }

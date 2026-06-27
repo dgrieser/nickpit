@@ -8,7 +8,7 @@ Each finding carries:
 - `priority`: original reviewer priority
 - `priority_floor`: most critical verified priority floor, computed as `min(priority, verification.priority)`
 - `verification`: second-pass verification verdict, priority, confidence, and remarks
-- `finalization`: final title, body, priority, confidence, and remarks
+- `finalization`: final title, body, priority, confidence, remarks{{if not .SkipSuggestions}}, and suggestions{{end}}
 
 The input also includes preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.
 {{if .DisablePatchSummary}}The input may also include `notes` containing internal context about the patch's intended purpose. Use `notes` only to understand the review context; do not include the patch-purpose assumption in the final `overall_explanation`.{{else}}The input may also include `notes` containing an assumption about what the patch is intended to do.{{end}}

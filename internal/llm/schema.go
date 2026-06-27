@@ -33,24 +33,7 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 		},
 	}
 	if includeSuggestions {
-		findingProperties["suggestions"] = map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"body": map[string]any{"type": "string", "examples": []any{"replacement code"}},
-					"line_range": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"start": map[string]any{"type": "integer", "examples": []any{10}},
-							"end":   map[string]any{"type": "integer", "examples": []any{12}},
-						},
-						"required": []string{"start", "end"},
-					},
-				},
-				"required": []string{"body", "line_range"},
-			},
-		}
+		findingProperties["suggestions"] = suggestionListSchemaDefinition()
 	}
 	requiredFindingFields := []string{"title", "body", "confidence_score", "priority", "code_location"}
 	if requireID {
@@ -73,6 +56,27 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 			"overall_confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
 		},
 		"required": []string{"findings", "overall_correctness", "overall_explanation", "overall_confidence_score"},
+	}
+}
+
+func suggestionListSchemaDefinition() map[string]any {
+	return map[string]any{
+		"type": "array",
+		"items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"body": map[string]any{"type": "string", "examples": []any{"replacement code"}},
+				"line_range": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"start": map[string]any{"type": "integer", "examples": []any{10}},
+						"end":   map[string]any{"type": "integer", "examples": []any{12}},
+					},
+					"required": []string{"start", "end"},
+				},
+			},
+			"required": []string{"body", "line_range"},
+		},
 	}
 }
 

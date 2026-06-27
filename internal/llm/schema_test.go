@@ -206,8 +206,16 @@ func TestFinalizeSchemaRequiresFinalizationAndVerification(t *testing.T) {
 		}
 	}
 	findingProps := findingProperties(t, schema)
-	if _, ok := findingProps["finalization"].(map[string]any); !ok {
+	if _, ok := findingProps["suggestions"]; ok {
+		t.Fatalf("finalize schema should put suggestions under finalization, not top-level: %#v", findingProps["suggestions"])
+	}
+	finalization, ok := findingProps["finalization"].(map[string]any)
+	if !ok {
 		t.Fatalf("finalization schema missing: %#v", findingProps["finalization"])
+	}
+	finalizationProps := finalization["properties"].(map[string]any)
+	if _, ok := finalizationProps["suggestions"].(map[string]any); !ok {
+		t.Fatalf("finalization.suggestions schema missing: %#v", finalizationProps)
 	}
 	if _, ok := findingProps["verification"].(map[string]any); !ok {
 		t.Fatalf("verification schema missing: %#v", findingProps["verification"])
@@ -243,7 +251,7 @@ func findingProperties(t *testing.T, schema map[string]any) map[string]any {
 
 func TestFinalizeExamplePromptSnippetIncludesFinalization(t *testing.T) {
 	snippet := FinalizeExamplePromptSnippet()
-	for _, required := range []string{`"id"`, `"verification"`, `"finalization"`, `"title"`, `"body"`, `"confidence_score"`, `"remarks"`} {
+	for _, required := range []string{`"id"`, `"verification"`, `"finalization"`, `"title"`, `"body"`, `"confidence_score"`, `"remarks"`, `"suggestions"`} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}

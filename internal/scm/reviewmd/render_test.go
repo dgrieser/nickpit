@@ -71,6 +71,29 @@ func TestFindingDisplayPrefersSummarization(t *testing.T) {
 	}
 }
 
+func TestFindingDisplaySuggestionsPreferSummarizationThenFinalization(t *testing.T) {
+	finding := model.Finding{
+		Suggestions: []model.Suggestion{{Body: "reviewer suggestion"}},
+		Finalization: &model.FindingFinalization{
+			Suggestions: []model.Suggestion{{Body: "final suggestion"}},
+		},
+		Summarization: &model.FindingSummarization{
+			Suggestions: []model.Suggestion{{Body: "summary suggestion"}},
+		},
+	}
+	if got := FindingDisplaySuggestions(finding)[0].Body; got != "summary suggestion" {
+		t.Fatalf("display suggestion = %q, want summarized suggestion", got)
+	}
+	finding.Summarization = nil
+	if got := FindingDisplaySuggestions(finding)[0].Body; got != "final suggestion" {
+		t.Fatalf("display suggestion = %q, want finalized suggestion", got)
+	}
+	finding.Finalization = nil
+	if got := FindingDisplaySuggestions(finding)[0].Body; got != "reviewer suggestion" {
+		t.Fatalf("display suggestion = %q, want reviewer fallback", got)
+	}
+}
+
 func TestNewRendererNormalizesAssetBaseURL(t *testing.T) {
 	if r := NewRenderer(""); r.assetBaseURL != DefaultAssetBaseURL {
 		t.Fatalf("empty base = %q, want default %q", r.assetBaseURL, DefaultAssetBaseURL)

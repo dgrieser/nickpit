@@ -105,9 +105,10 @@ type app struct {
 	disableReasoningExtract       bool
 	disablePatchSummary           bool
 	skipSuggestions               bool
+	skipWorkflowTimeBudget        bool
 	concurrency                   int
 	verifyDropPolicy              string
-	verifyDropConfidence          float64
+	confidenceThreshold           float64
 	skipModelCheck                bool
 	refreshModelCheck             bool
 	specPath                      string
@@ -217,9 +218,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
 	root.PersistentFlags().BoolVar(&cli.skipSuggestions, "skip-suggestions", false, "Omit code suggestions from prompts and review output")
+	root.PersistentFlags().BoolVar(&cli.skipWorkflowTimeBudget, "skip-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
-	root.PersistentFlags().Float64Var(&cli.verifyDropConfidence, "verify-drop-confidence", 0.7, "Minimum verifier confidence_score required to drop a finding; verdicts below this floor are kept")
+	root.PersistentFlags().Float64Var(&cli.confidenceThreshold, "confidence-threshold", 0.7, "Minimum finalized confidence_score required for the verdict step to keep a finding (0 = keep all)")
 	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
 	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
@@ -347,33 +349,34 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 			ExtraBody:       smallExtraBody,
 			ReasoningEffort: a.smallReasoningEffort,
 		},
-		BaseURL:               a.baseURL,
-		APIKey:                a.apiKey,
-		ReasoningEffort:       a.reasoningEffort,
-		Temperature:           temperature,
-		TopP:                  topP,
-		TopK:                  topK,
-		PresencePenalty:       presencePenalty,
-		ExtraBody:             extraBody,
-		UseJSONSchema:         a.useJSONSchema,
-		IncludePaths:          includePaths,
-		ExcludePaths:          excludePaths,
-		IncludeContent:        includeContent,
-		ExcludeContent:        excludeContent,
-		MaxContextTokens:      maxContextTokens,
-		ToolCalls:             toolCalls,
-		DuplicateToolCalls:    duplicateToolCalls,
-		OutputRetries:         outputRetries,
-		ReasoningSeconds:      reasoningSeconds,
-		ReasoningLoopRepeats:  reasoningLoopRepeats,
-		RateLimitDelaySeconds: rateLimitDelaySeconds,
-		NudgeCount:            nudgeCount,
-		DisablePatchSummary:   a.disablePatchSummary,
-		SkipSuggestions:       a.skipSuggestions,
-		Workdir:               a.workDir,
-		GitHubToken:           a.githubToken,
-		GitLabToken:           a.gitlabToken,
-		GitLabBaseURL:         a.gitlabBaseURL,
+		BaseURL:                a.baseURL,
+		APIKey:                 a.apiKey,
+		ReasoningEffort:        a.reasoningEffort,
+		Temperature:            temperature,
+		TopP:                   topP,
+		TopK:                   topK,
+		PresencePenalty:        presencePenalty,
+		ExtraBody:              extraBody,
+		UseJSONSchema:          a.useJSONSchema,
+		IncludePaths:           includePaths,
+		ExcludePaths:           excludePaths,
+		IncludeContent:         includeContent,
+		ExcludeContent:         excludeContent,
+		MaxContextTokens:       maxContextTokens,
+		ToolCalls:              toolCalls,
+		DuplicateToolCalls:     duplicateToolCalls,
+		OutputRetries:          outputRetries,
+		ReasoningSeconds:       reasoningSeconds,
+		ReasoningLoopRepeats:   reasoningLoopRepeats,
+		RateLimitDelaySeconds:  rateLimitDelaySeconds,
+		NudgeCount:             nudgeCount,
+		DisablePatchSummary:    a.disablePatchSummary,
+		SkipSuggestions:        a.skipSuggestions,
+		SkipWorkflowTimeBudget: a.skipWorkflowTimeBudget,
+		Workdir:                a.workDir,
+		GitHubToken:            a.githubToken,
+		GitLabToken:            a.gitlabToken,
+		GitLabBaseURL:          a.gitlabBaseURL,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -502,6 +505,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				SkipSuggestions:         profile.SkipSuggestions,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
+				ConfidenceThreshold:     a.confidenceThreshold,
 				Submode:                 submode,
 			}
 			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
@@ -581,6 +585,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				SkipSuggestions:         profile.SkipSuggestions,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
+				ConfidenceThreshold:     a.confidenceThreshold,
 				Offline:                 a.offline,
 				PostReview:              publish,
 			}
@@ -660,6 +665,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				SkipSuggestions:         profile.SkipSuggestions,
 				UseJSONSchema:           profile.UseJSONSchema,
 				PriorityThreshold:       a.priorityThreshold,
+				ConfidenceThreshold:     a.confidenceThreshold,
 				Offline:                 a.offline,
 				PostReview:              publish,
 			}
@@ -934,12 +940,15 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	req.DisableReasoningExtract = a.disableReasoningExtract
 	req.Concurrency = a.concurrency
 	req.VerifyDropPolicy = a.verifyDropPolicy
-	req.VerifyDropConfidence = a.verifyDropConfidence
+	req.ConfidenceThreshold = a.confidenceThreshold
 	if profile.DisablePatchSummary {
 		req.DisablePatchSummary = true
 	}
 	if profile.SkipSuggestions {
 		req.SkipSuggestions = true
+	}
+	if profile.SkipWorkflowTimeBudget {
+		req.SkipWorkflowTimeBudget = true
 	}
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
@@ -1062,6 +1071,11 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 	if err != nil {
 		return err
 	}
+	confidenceWarning := ""
+	if req.ConfidenceThreshold > 0 && !specHasStep(spec, workflow.StepVerdict) {
+		confidenceWarning = fmt.Sprintf("confidence threshold %.2f is configured but workflow has no verdict step; threshold will not be applied", req.ConfidenceThreshold)
+		a.logProgress(ctx, logging.StageVerdict, logging.StateWarn, confidenceWarning)
+	}
 	if pipeline.NeedsSource() {
 		repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
 		if err != nil {
@@ -1087,11 +1101,23 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 	if result == nil {
 		return fmt.Errorf("review: engine returned no result")
 	}
+	if confidenceWarning != "" {
+		result.Warnings = append(result.Warnings, confidenceWarning)
+	}
 	if !a.reviewStart.IsZero() {
 		result.RuntimeSeconds = model.RuntimeSeconds(time.Since(a.reviewStart))
 	}
 	a.logProgress(ctx, logging.StageResult, logging.StateOK, reviewResultSummary(result))
 	return a.emitResult(ctx, source, req, result)
+}
+
+func specHasStep(spec workflow.Spec, stepType string) bool {
+	for _, entry := range spec.FlatSteps() {
+		if entry.Type == stepType {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveSpec builds the workflow spec from --spec or --step, applying any
@@ -2004,7 +2030,10 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 		flags = append(flags, "no reasoning extract")
 	}
 	if req.VerifyDropPolicy != "" && req.VerifyDropPolicy != review.DropPolicyNone {
-		flags = append(flags, fmt.Sprintf("drop %s ≥%g", req.VerifyDropPolicy, req.VerifyDropConfidence))
+		flags = append(flags, fmt.Sprintf("drop %s", req.VerifyDropPolicy))
+	}
+	if req.ConfidenceThreshold > 0 {
+		flags = append(flags, fmt.Sprintf("confidence ≥%g", req.ConfidenceThreshold))
 	}
 	// p3 is the lowest rank (--priority-threshold default): everything shown, so
 	// the filter is only worth surfacing when set above it.

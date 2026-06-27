@@ -104,6 +104,12 @@ func (st *PipelineState) setGroup(id string, result agentResult, session *review
 	g.filled = true
 }
 
+func (st *PipelineState) addWarningf(format string, args ...any) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.warnings = append(st.warnings, fmt.Sprintf(format, args...))
+}
+
 func (st *PipelineState) group(id string) *groupEntry {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -209,13 +215,19 @@ type boundStep struct {
 	label       string
 	needsSource bool
 	override    *workflow.StepOverride
+	timeBudget  *workflow.TimeBudget
 	run         stepFunc
+}
+
+type boundLane struct {
+	steps      []boundStep
+	timeBudget *workflow.TimeBudget
 }
 
 type planUnit struct {
 	// lanes run concurrently; the steps within one lane run sequentially. A
 	// plain sequential step is a single lane of length 1.
-	lanes [][]boundStep
+	lanes []boundLane
 }
 
 // Pipeline is a compiled, runnable workflow.
@@ -246,8 +258,8 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 			// A pipeline group is the explicit, streamed post-review tail. There
 			// is no auto-fusion anywhere — fusion happens only here.
 			fused := fusedSpecFromPipeline(entry)
-			bs := boundStep{label: strings.Join(fused.labels, "→"), run: e.postMergeFusedStepFunc(fused)}
-			p.units = append(p.units, planUnit{lanes: [][]boundStep{{bs}}})
+			bs := boundStep{label: strings.Join(fused.labels, "→"), timeBudget: timeBudgetOf(entry.Config), run: e.postMergeFusedStepFunc(fused)}
+			p.units = append(p.units, planUnit{lanes: []boundLane{{steps: []boundStep{bs}}}})
 			continue
 		}
 		if entry.IsParallel() {
@@ -262,7 +274,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 					lane = append(lane, bs)
 					p.needsSource = p.needsSource || bs.needsSource
 				}
-				unit.lanes = append(unit.lanes, lane)
+				unit.lanes = append(unit.lanes, boundLane{steps: lane, timeBudget: timeBudgetOf(sub.Config)})
 			}
 			p.units = append(p.units, unit)
 			continue
@@ -271,10 +283,17 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.units = append(p.units, planUnit{lanes: [][]boundStep{{bs}}})
+		p.units = append(p.units, planUnit{lanes: []boundLane{{steps: []boundStep{bs}}}})
 		p.needsSource = p.needsSource || bs.needsSource
 	}
 	return p, nil
+}
+
+func timeBudgetOf(override *workflow.StepOverride) *workflow.TimeBudget {
+	if override == nil {
+		return nil
+	}
+	return override.TimeBudget
 }
 
 type postMergeFusedSpec struct {
@@ -327,16 +346,9 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 		var wg sync.WaitGroup
 		for i, lane := range unit.lanes {
 			wg.Add(1)
-			go func(i int, lane []boundStep) {
+			go func(i int, lane boundLane) {
 				defer wg.Done()
-				for _, bs := range lane {
-					if err := bs.run(ctx, p.engine.stepContext(bs.override, req), st); err != nil {
-						// Abort this lane on its first error; sibling lanes run
-						// to the barrier below.
-						errs[i] = err
-						return
-					}
-				}
+				errs[i] = p.runLane(ctx, lane, req, st)
 			}(i, lane)
 		}
 		wg.Wait()
@@ -358,14 +370,60 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 	return result, st.Enriched, nil
 }
 
+func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.ReviewRequest, st *PipelineState) error {
+	laneCtx := ctx
+	laneCancel := func() {}
+	if !req.SkipWorkflowTimeBudget {
+		var skipped bool
+		laneCtx, laneCancel, skipped = withConfiguredTimeBudget(ctx, lane.timeBudget, childTimePlan{}, "lane:"+laneLabel(lane), p.engine.logf)
+		if skipped {
+			st.addWarningf("Skipped lane %q because its time budget was exhausted", laneLabel(lane))
+			return nil
+		}
+	}
+	defer laneCancel()
+
+	budgets := make([]*workflow.TimeBudget, len(lane.steps))
+	for i := range lane.steps {
+		budgets[i] = lane.steps[i].timeBudget
+	}
+	plans := []childTimePlan(nil)
+	if !req.SkipWorkflowTimeBudget {
+		plans = childTimePlans(laneCtx, budgets)
+	}
+	for i, bs := range lane.steps {
+		stepCtx := laneCtx
+		stepCancel := func() {}
+		if !req.SkipWorkflowTimeBudget {
+			plan := childTimePlan{}
+			if i < len(plans) {
+				plan = plans[i]
+			}
+			var skipped bool
+			stepCtx, stepCancel, skipped = withConfiguredTimeBudget(laneCtx, bs.timeBudget, plan, "step:"+bs.label, p.engine.logf)
+			if skipped {
+				st.addWarningf("Skipped step %q because its time budget was exhausted", bs.label)
+				continue
+			}
+		}
+		err := bs.run(stepCtx, p.engine.stepContext(bs.override, req), st)
+		stepCancel()
+		if err != nil {
+			// Abort this lane on its first error; sibling lanes run to the barrier.
+			return err
+		}
+	}
+	return nil
+}
+
 // unitSegment records the wall-clock span of one executed pipeline unit. Each
 // lane becomes one entry; a multi-step lane's labels are joined with "→" so
 // single-step segments keep their plain step label.
 func unitSegment(unit planUnit, start time.Time) model.SegmentRuntime {
 	steps := make([]string, len(unit.lanes))
 	for i, lane := range unit.lanes {
-		labels := make([]string, len(lane))
-		for j, bs := range lane {
+		labels := make([]string, len(lane.steps))
+		for j, bs := range lane.steps {
 			labels[j] = bs.label
 		}
 		steps[i] = strings.Join(labels, "→")
@@ -374,6 +432,14 @@ func unitSegment(unit planUnit, start time.Time) model.SegmentRuntime {
 		Steps:          steps,
 		RuntimeSeconds: model.RuntimeSeconds(time.Since(start)),
 	}
+}
+
+func laneLabel(lane boundLane) string {
+	labels := make([]string, len(lane.steps))
+	for i, bs := range lane.steps {
+		labels[i] = bs.label
+	}
+	return strings.Join(labels, "→")
 }
 
 func (e *Engine) stepContext(override *workflow.StepOverride, req model.ReviewRequest) *stepContext {
@@ -492,34 +558,34 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 	t := entry.Type
 	switch t {
 	case workflow.StepCollectContext:
-		return boundStep{label: t, needsSource: true, override: entry.Config, run: e.collectStepFunc()}, nil
+		return boundStep{label: t, needsSource: true, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.collectStepFunc()}, nil
 	case workflow.StepVerify:
-		return boundStep{label: t, override: entry.Config, run: e.verifyStepFunc(entry.FindingsFrom)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.verifyStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepDedupe:
-		return boundStep{label: t, override: entry.Config, run: e.dedupeStepFunc(entry.FindingsFrom)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.dedupeStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepMerge:
-		return boundStep{label: t, override: entry.Config, run: e.mergeStepFunc(entry.FindingsFrom)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.mergeStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepFinalize:
-		return boundStep{label: t, override: entry.Config, run: e.finalizeStepFunc(entry.FindingsFrom)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.finalizeStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepVerdict:
-		return boundStep{label: t, override: entry.Config, run: e.verdictStepFunc(entry.FindingsFrom)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.verdictStepFunc(entry.FindingsFrom)}, nil
 	case workflow.StepSummarize:
-		return boundStep{label: t, override: entry.Config, run: e.summarizeStepFunc(entry.FindingsFrom)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.summarizeStepFunc(entry.FindingsFrom)}, nil
 	}
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {
-		return boundStep{label: t, needsSource: true, override: entry.Config, run: e.reviewStepFunc(id, manual[id])}, nil
+		return boundStep{label: t, needsSource: true, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.reviewStepFunc(id, manual[id])}, nil
 	}
 	if id, ok := stepVector(t, workflow.StepVerifyPrefix); ok {
-		return boundStep{label: t, override: entry.Config, run: e.verifyVectorStepFunc(id)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.verifyVectorStepFunc(id)}, nil
 	}
 	if id, ok := stepVector(t, workflow.StepDedupePrefix); ok {
-		return boundStep{label: t, override: entry.Config, run: e.dedupeVectorStepFunc(id)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.dedupeVectorStepFunc(id)}, nil
 	}
 	if id, ok := stepVector(t, workflow.StepExtractPrefix); ok {
-		return boundStep{label: t, override: entry.Config, run: e.extractStepFunc(id)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.extractStepFunc(id)}, nil
 	}
 	if id, ok := stepVector(t, workflow.StepNudgePrefix); ok {
-		return boundStep{label: t, override: entry.Config, run: e.nudgeStepFunc(id)}, nil
+		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.nudgeStepFunc(id)}, nil
 	}
 	return boundStep{}, fmt.Errorf("workflow: unknown step type %q", t)
 }

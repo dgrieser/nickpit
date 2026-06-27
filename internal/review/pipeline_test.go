@@ -31,6 +31,35 @@ func (c *countingLLM) Review(context.Context, *llm.ReviewRequest) (*llm.ReviewRe
 	return &llm.ReviewResponse{}, nil
 }
 
+type finalizingPriorityDowngradeLLM struct {
+	multiAgentLLM
+}
+
+func (s *finalizingPriorityDowngradeLLM) Review(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	if req.SchemaKind != llm.SchemaKindFinalize {
+		return s.multiAgentLLM.Review(ctx, req)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cloned := *req
+	cloned.Messages = cloneTestMessages(req.Messages)
+	s.finalizeRequests = append(s.finalizeRequests, &cloned)
+	findings := testPayloadFindingsFromJSON(req.Messages[1].Content)
+	for i := range findings {
+		findings[i].Finalization = &model.FindingFinalization{
+			Title:           "Final " + findings[i].Title,
+			Body:            "FINALIZED_MARKER " + findings[i].Body,
+			Priority:        2,
+			ConfidenceScore: 0.8,
+			Remarks:         "downgraded",
+		}
+	}
+	return &llm.ReviewResponse{
+		Findings:   findings,
+		TokensUsed: model.TokenUsage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
+	}, nil
+}
+
 func pipelineTestEngine(client llm.Client) *Engine {
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logging.New(os.Stderr, false, false))
@@ -198,9 +227,14 @@ func TestWorkflowMergeTwoFilesInvokesMergeAgent(t *testing.T) {
 func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := pipelineTestEngine(client)
+	firstFinding := verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix cleanup behavior alpha", "m.go", 1, 1)
+	firstFinding.Suggestions = []model.Suggestion{{
+		Body:      "Replace the repeated cleanup setup with a shared helper so each test covers one clear scenario.",
+		LineRange: model.LineRange{Start: 3, End: 4},
+	}}
 	a := writeFindingsFile(t, "a.json", model.ReviewResult{
 		Findings: []model.Finding{
-			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix cleanup behavior alpha", "m.go", 1, 1),
+			firstFinding,
 		},
 	})
 	b := writeFindingsFile(t, "b.json", model.ReviewResult{
@@ -252,6 +286,18 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 			t.Fatalf("finding %s summarization = %#v, want summarized finalized body", finding.ID, finding.Summarization)
 		}
 	}
+	var summarizedSuggestion string
+	for _, finding := range result.Findings {
+		if finding.ID == firstFinding.ID && finding.Summarization != nil && len(finding.Summarization.Suggestions) > 0 {
+			summarizedSuggestion = finding.Summarization.Suggestions[0].Body
+			if finding.Summarization.Suggestions[0].LineRange != firstFinding.Suggestions[0].LineRange {
+				t.Fatalf("suggestion line range = %+v, want %+v", finding.Summarization.Suggestions[0].LineRange, firstFinding.Suggestions[0].LineRange)
+			}
+		}
+	}
+	if !strings.Contains(summarizedSuggestion, "SUMMARY_MARKER") {
+		t.Fatalf("summarized suggestion = %q, want summarized by fused summarize lane", summarizedSuggestion)
+	}
 	// overall_confidence_score is code-computed: verdict "patch is incorrect" with
 	// floor-1 deciding findings → max finalization confidence (0.6*0.9 + 0.4*0.7 = 0.82).
 	if result.OverallCorrectness != "patch is incorrect" || result.OverallConfidenceScore != 0.82 {
@@ -274,6 +320,79 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	}
 	if len(result.SegmentRuntimes) != 1 || len(result.SegmentRuntimes[0].Steps) != 1 || result.SegmentRuntimes[0].Steps[0] != "merge→finalize→verdict→summarize" {
 		t.Fatalf("segment runtimes = %+v, want fused post-merge segment", result.SegmentRuntimes)
+	}
+}
+
+func TestWorkflowFusedPostMergeVerdictConfidenceFilterOwnsFinalFindings(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "single.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix low confidence issue", "a.go", 1, 1),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, ConfidenceThreshold: 0.83})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %d, want none after verdict confidence filter: %#v", len(result.Findings), result.Findings)
+	}
+	if result.OverallCorrectness != "patch is correct" || result.OverallExplanation != "No findings remained after confidence filtering." {
+		t.Fatalf("overall = %q / %q, want confidence-filtered clean verdict", result.OverallCorrectness, result.OverallExplanation)
+	}
+	if len(client.verdictRequests) != 0 {
+		t.Fatalf("verdict requests = %d, want skipped verdict agent after filter removed all findings", len(client.verdictRequests))
+	}
+}
+
+func TestWorkflowFusedPostMergePriorityFilterUsesFinalizedPriority(t *testing.T) {
+	client := &finalizingPriorityDowngradeLLM{}
+	engine := pipelineTestEngine(client)
+	path := writeFindingsFile(t, "single.json", model.ReviewResult{
+		Findings: []model.Finding{
+			verifiedPipelineFinding("11111111-1111-4111-8111-111111111111", "Fix downgraded issue", "a.go", 1, 1),
+		},
+	})
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
+		{Pipeline: []workflow.StepEntry{
+			{Type: workflow.StepMerge, FindingsFrom: []string{path}},
+			{Type: workflow.StepFinalize},
+			{Type: workflow.StepVerdict},
+			{Type: workflow.StepSummarize},
+		}},
+	}}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, PriorityThreshold: "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %d, want none after finalized priority filter: %#v", len(result.Findings), result.Findings)
+	}
+	if result.OverallCorrectness != "patch is correct" || result.OverallExplanation != "No findings remained after priority filtering." {
+		t.Fatalf("overall = %q / %q, want priority-filtered clean verdict", result.OverallCorrectness, result.OverallExplanation)
+	}
+	if len(client.verdictRequests) != 0 {
+		t.Fatalf("verdict requests = %d, want skipped verdict after priority filter removed all findings", len(client.verdictRequests))
+	}
+	if len(client.summarizeRequests) != 0 {
+		t.Fatalf("summarize requests = %d, want no summarize request for filtered finding", len(client.summarizeRequests))
 	}
 }
 
@@ -951,9 +1070,9 @@ func TestVerifyUnlimitedRunsLanesConcurrently(t *testing.T) {
 	}
 }
 
-// A fatal verify failure aborts only its own lane; sibling lanes run to the
-// barrier, then the run fails and merge never executes.
-func TestWorkflowLaneVerifyFailureFailsRunAfterSiblingCompletes(t *testing.T) {
+// A per-finding verify failure is downgraded to an unverified finding, so the
+// lane continues through dedupe and still reaches merge with its siblings.
+func TestWorkflowLaneVerifyFailureContinuesAsUnverified(t *testing.T) {
 	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
 	client := &laneEventLLM{inner: inner, verifyErrFor: "Security"}
 	engine := pipelineTestEngine(client)
@@ -961,19 +1080,29 @@ func TestWorkflowLaneVerifyFailureFailsRunAfterSiblingCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
-	if err == nil {
-		t.Fatal("expected run to fail on security verify error")
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest())
+	if err != nil {
+		t.Fatalf("RunSpecPipeline returned err: %v", err)
 	}
 	events := client.snapshot()
-	if firstEventIndex(events, "dedupe:Security") >= 0 {
-		t.Fatalf("security dedupe ran after fatal verify: %v", events)
+	if firstEventIndex(events, "dedupe:Security") < 0 {
+		t.Fatalf("security dedupe did not run after soft verify failure: %v", events)
 	}
 	if firstEventIndex(events, "dedupe:Performance") < 0 {
 		t.Fatalf("sibling performance lane did not complete: %v", events)
 	}
-	if firstEventIndex(events, "merge") >= 0 {
-		t.Fatalf("merge ran despite failed lane: %v", events)
+	if firstEventIndex(events, "merge") < 0 {
+		t.Fatalf("merge did not run after soft verify failure: %v", events)
+	}
+	foundWarning := false
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "Verify failed") && strings.Contains(warning, "verify upstream down") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("warnings = %#v, want verify failure warning", result.Warnings)
 	}
 }
 

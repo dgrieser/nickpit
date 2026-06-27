@@ -412,27 +412,27 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		return usage, warnings, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifications), len(refs))
 	}
 	type dropCounts struct {
-		refuted         int
-		unverified      int
-		belowConfidence int
+		refuted    int
+		unverified int
 	}
 	keptByVector := make(map[int][]model.Finding, len(vectorResults))
 	droppedIdxByVector := make(map[int]map[int]struct{}, len(vectorResults))
 	dropsByVector := make(map[int]dropCounts, len(vectorResults))
 	for i, verification := range verifications {
 		ref := refs[i]
-		if verification == nil {
-			return usage, warnings, fmt.Errorf("review: verifier returned no result for finding #%d %q", i+1, findings[i].Title)
-		}
 		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
 		// findings[i].ID holds the normalized ID after EnsureFindingIDs above,
 		// which may have replaced an invalid or duplicate reviewer ID. Always
 		// adopt it so corrected IDs survive into downstream dedupe/merge
 		// validation and stay in sync with Verification.ID.
 		finding.ID = findings[i].ID
+		if verification == nil {
+			verification = fallbackUnverifiedVerification(finding)
+			verifications[i] = verification
+		}
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
-		drop, reason := shouldDropFinding(&v, opts.DropPolicy, opts.DropConfidence)
+		drop, reason := shouldDropFinding(&v, opts.DropPolicy)
 		if drop {
 			if droppedIdxByVector[ref.vectorIdx] == nil {
 				droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
@@ -448,12 +448,6 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			dropsByVector[ref.vectorIdx] = counts
 			continue
 		}
-		if reason == "below_confidence" {
-			downgradeLowConfidenceRefutation(&v)
-			counts := dropsByVector[ref.vectorIdx]
-			counts.belowConfidence++
-			dropsByVector[ref.vectorIdx] = counts
-		}
 		finding.Verification = &v
 		keptByVector[ref.vectorIdx] = append(keptByVector[ref.vectorIdx], finding)
 	}
@@ -467,16 +461,14 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		vectorResults[vectorIdx].resp.Findings = keptByVector[vectorIdx]
 		dropped := len(droppedIdxByVector[vectorIdx])
 		counts := dropsByVector[vectorIdx]
-		if dropped > 0 || counts.belowConfidence > 0 {
-			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d below_confidence_kept=%d kept=%d policy=%s threshold=%.2f",
+		if dropped > 0 {
+			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d kept=%d policy=%s",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.refuted,
 				counts.unverified,
-				counts.belowConfidence,
 				len(keptByVector[vectorIdx]),
 				normalizeDropPolicy(opts.DropPolicy),
-				opts.DropConfidence,
 			)
 		}
 	}
@@ -488,9 +480,8 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 //
 // Labels:
 //   - "refuted" / "unverified": verdict reason for dropping
-//   - "below_confidence": verdict would drop but confidence_score is under the floor; kept
 //   - "kept": verdict does not warrant dropping (e.g. "confirmed", or policy="none")
-func shouldDropFinding(v *model.FindingVerification, policy string, threshold float64) (bool, string) {
+func shouldDropFinding(v *model.FindingVerification, policy string) (bool, string) {
 	if v == nil {
 		return false, "kept"
 	}
@@ -515,18 +506,7 @@ func shouldDropFinding(v *model.FindingVerification, policy string, threshold fl
 	default:
 		return false, "kept"
 	}
-	if v.ConfidenceScore < threshold {
-		return false, "below_confidence"
-	}
 	return true, verdict
-}
-
-func downgradeLowConfidenceRefutation(v *model.FindingVerification) {
-	if v == nil || v.Verdict != model.VerdictRefuted {
-		return
-	}
-	v.Verdict = model.VerdictUnverified
-	v.Remarks = ""
 }
 
 // Drop policies for --verify-drop-policy. Defined as constants so the accepted
@@ -575,9 +555,9 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		MaxReasoningSeconds:      req.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls: req.DisableParallelToolCalls,
+		SkipSuggestions:          req.SkipSuggestions,
 		RepoRoot:                 req.RepoRoot,
 		DropPolicy:               req.VerifyDropPolicy,
-		DropConfidence:           req.VerifyDropConfidence,
 	}
 }
 
@@ -755,10 +735,12 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 		FindingInstructionsSnippet string
 		PrioritySnippet            string
 		OutputFormatSnippet        string
+		SkipSuggestions            bool
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
+		SkipSuggestions:            req.SkipSuggestions,
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering dedupe system prompt: %w", err)
@@ -768,7 +750,7 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 		"review_findings": map[string]any{
 			"name":                     input.run.Name,
 			"role":                     input.run.Role,
-			"findings":                 input.resp.Findings,
+			"findings":                 findingsPromptPayload(input.resp.Findings, req.SkipSuggestions),
 			"overall_correctness":      input.resp.OverallCorrectness,
 			"overall_explanation":      input.resp.OverallExplanation,
 			"overall_confidence_score": input.resp.OverallConfidenceScore,
@@ -1069,10 +1051,12 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 		FindingInstructionsSnippet string
 		PrioritySnippet            string
 		OutputFormatSnippet        string
+		SkipSuggestions            bool
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
+		SkipSuggestions:            req.SkipSuggestions,
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
@@ -1081,7 +1065,7 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 		"review_context":      json.RawMessage(userPrompt),
 		"context_agent_notes": contextNotes,
 		"cluster_signals":     clusterMergeSignals(cluster),
-		"cluster_findings":    clusterMergePayload(cluster, reviewerByID),
+		"cluster_findings":    clusterMergePayload(cluster, reviewerByID, req.SkipSuggestions),
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering merge prompt json: %w", err)
@@ -1105,15 +1089,44 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 	}, req)
 }
 
-func clusterMergePayload(cluster []model.Finding, reviewerByID map[string]string) []map[string]any {
+func clusterMergePayload(cluster []model.Finding, reviewerByID map[string]string, skipSuggestions bool) []map[string]any {
 	out := make([]map[string]any, 0, len(cluster))
 	for _, f := range cluster {
 		out = append(out, map[string]any{
 			"reviewer": reviewerByID[f.ID],
-			"finding":  f,
+			"finding":  findingPromptPayload(f, skipSuggestions),
 		})
 	}
 	return out
+}
+
+func findingsPromptPayload(findings []model.Finding, skipSuggestions bool) []model.Finding {
+	if !skipSuggestions {
+		return findings
+	}
+	out := make([]model.Finding, len(findings))
+	for i := range findings {
+		out[i] = findingPromptPayload(findings[i], true)
+	}
+	return out
+}
+
+func findingPromptPayload(finding model.Finding, skipSuggestions bool) model.Finding {
+	if !skipSuggestions {
+		return finding
+	}
+	finding.Suggestions = nil
+	if finding.Finalization != nil {
+		finalization := *finding.Finalization
+		finalization.Suggestions = nil
+		finding.Finalization = &finalization
+	}
+	if finding.Summarization != nil {
+		summarization := *finding.Summarization
+		summarization.Suggestions = nil
+		finding.Summarization = &summarization
+	}
+	return finding
 }
 
 func clusterMergeSignals(cluster []model.Finding) []string {
@@ -1491,10 +1504,11 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	if agent.role == "review" {
 		s := e.newReviewerSession(agent, req, false)
-		if err := e.reviewerInitial(ctx, s, req, e, req); err != nil {
+		budget := newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil)
+		if err := e.reviewerInitial(ctx, s, req, budget, e, req); err != nil {
 			return s.partialResult(req), err
 		}
-		if err := e.reviewerNudges(ctx, s, req, e, req, e, req); err != nil {
+		if err := e.reviewerNudges(ctx, s, req, budget, e, req, budget, e, req); err != nil {
 			return agentResult{}, err
 		}
 		return s.result(req), nil
@@ -2300,6 +2314,29 @@ func filterByPriority(findings []model.Finding, threshold string) []model.Findin
 	return filtered
 }
 
+func filterByDisplayPriority(findings []model.Finding, threshold string) []model.Finding {
+	maxPriority := model.PriorityThresholdRank(threshold)
+	filtered := make([]model.Finding, 0, len(findings))
+	for _, finding := range findings {
+		if displayPriorityRank(finding) <= maxPriority {
+			filtered = append(filtered, finding)
+		}
+	}
+	return filtered
+}
+
+func displayPriorityRank(finding model.Finding) int {
+	if finding.Summarization != nil {
+		priority := finding.Summarization.Priority
+		return model.PriorityRank(&priority)
+	}
+	if finding.Finalization != nil {
+		priority := finding.Finalization.Priority
+		return model.PriorityRank(&priority)
+	}
+	return model.PriorityRank(finding.Priority)
+}
+
 func mergeConstraintsForRequest(req model.ReviewRequest) llm.ResponseConstraints {
 	maxPriority := model.PriorityThresholdRank(req.PriorityThreshold)
 	if maxPriority >= 3 {
@@ -2644,7 +2681,7 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 		callSec.End()
 	}()
 	start := time.Now()
-	resp, err := e.llm.Review(ctx, req)
+	resp, err := e.reviewWithTimeBudget(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
 	if ok && e.logger != nil {
 		if resp != nil && resp.Reasoned {
@@ -2653,6 +2690,80 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 		e.logger.ProgressFor(turnInfo, logging.StageResponse, logging.StateDone, elapsed.String())
 	}
 	return resp, err
+}
+
+func (e *Engine) reviewWithTimeBudget(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	if timeBudgetUrgentNow(ctx) && !req.Urgent {
+		urgentReq := *req
+		urgentReq.Urgent = true
+		e.logTimeBudgetUrgentNow(ctx)
+		return e.reviewLLMWithTimeBudgetLog(ctx, &urgentReq)
+	}
+	softDeadline, ok := timeBudgetSpeedupDeadline(ctx)
+	if !ok || req.Urgent {
+		return e.reviewLLMWithTimeBudgetLog(ctx, req)
+	}
+	softCtx, cancel := context.WithDeadline(ctx, softDeadline)
+	resp, err := e.llm.Review(softCtx, req)
+	softErr := softCtx.Err()
+	cancel()
+	if err == nil {
+		return resp, nil
+	}
+	if softErr != context.DeadlineExceeded || ctx.Err() != nil {
+		e.logTimeBudgetDeadlineIfExpired(ctx)
+		return resp, err
+	}
+	urgentReq := *req
+	urgentReq.Urgent = true
+	e.logTimeBudgetRetry(ctx, err, softErr)
+	return e.reviewLLMWithTimeBudgetLog(ctx, &urgentReq)
+}
+
+func (e *Engine) reviewLLMWithTimeBudgetLog(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	resp, err := e.llm.Review(ctx, req)
+	if err != nil {
+		e.logTimeBudgetDeadlineIfExpired(ctx)
+	}
+	return resp, err
+}
+
+func (e *Engine) logTimeBudgetUrgentNow(ctx context.Context) {
+	budget, ok := timeBudgetFromContext(ctx)
+	if !ok {
+		e.logf(ctx, "Workflow time budget speed-up threshold already reached; sending urgent request")
+		return
+	}
+	now := time.Now()
+	e.logf(ctx, "Workflow time budget speed-up threshold already reached: scope=%s elapsed=%s limit=%s; sending urgent request",
+		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)))
+}
+
+func (e *Engine) logTimeBudgetRetry(ctx context.Context, firstErr error, softErr error) {
+	budget, ok := timeBudgetFromContext(ctx)
+	if !ok {
+		e.logf(ctx, "Workflow time budget speed-up threshold reached; retrying urgently first_error=%v soft_err=%v", firstErr, softErr)
+		return
+	}
+	now := time.Now()
+	e.logf(ctx, "Workflow time budget speed-up threshold reached: scope=%s elapsed=%s limit=%s remaining=%s; retrying urgently first_error=%v soft_err=%v",
+		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetRemaining(budget, now)), firstErr, softErr)
+}
+
+func (e *Engine) logTimeBudgetDeadlineIfExpired(ctx context.Context) {
+	if ctx.Err() == nil {
+		return
+	}
+	budget, ok := timeBudgetFromContext(ctx)
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if budget.deadline.After(now) {
+		return
+	}
+	e.logf(ctx, "Workflow time budget deadline reached: scope=%s elapsed=%s limit=%s overrun=%s; call aborted",
+		budget.scope, budgetDuration(timeBudgetElapsed(budget, now)), budgetDuration(timeBudgetLimit(budget)), budgetDuration(timeBudgetOverrun(budget, now)))
 }
 
 func (e *Engine) openReviewRequestReasoningSection(info logging.ProgressInfo, callNum int) *logging.ReasoningSection {

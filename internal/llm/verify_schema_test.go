@@ -98,6 +98,20 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 	}
 }
 
+func TestParseVerifyResponseRescalesMisscaledConfidence(t *testing.T) {
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "confirmed", "priority": 1, "confidence_score": 95, "remarks": "real"}`
+	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if resp.Verification == nil {
+		t.Fatalf("verification nil")
+	}
+	if resp.Verification.ConfidenceScore != 0.95 {
+		t.Fatalf("confidence = %f, want 0.95 (rescaled from 95)", resp.Verification.ConfidenceScore)
+	}
+}
+
 func TestParseVerifyResponseSkipsMarkdownBeforeJSON(t *testing.T) {
 	content := "# Verify Findings\n\n[P1] Finding summary\n\n```json\n" +
 		`{"id": "11111111-1111-4111-8111-111111111111", "verdict": "confirmed", "priority": 1, "confidence_score": 0.91, "remarks": "confirmed"}` +

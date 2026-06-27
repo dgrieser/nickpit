@@ -63,13 +63,72 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 		t.Fatalf("schema kind = %v, want finalize", req.SchemaKind)
 	}
 	systemPrompt := req.Messages[0].Content
-	for _, want := range []string{`"verification"`, `"finalization"`, `"title"`, `"body"`, `"remarks"`} {
+	for _, want := range []string{`"verification"`, `"finalization"`, `"title"`, `"body"`, `"remarks"`, "produce final `finalization.suggestions`", "DO NOT invent new suggestions", "DO NOT drop existing suggestions"} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("finalize system prompt missing %s:\n%s", want, systemPrompt)
 		}
 	}
 	if !strings.Contains(req.Messages[1].Content, `"id": "`+findingID+`"`) {
 		t.Fatalf("finalize user prompt missing finding id:\n%s", req.Messages[1].Content)
+	}
+}
+
+func TestFinalizeSkipSuggestionsOmitsAndStripsSuggestions(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						ID:              findingID,
+						Title:           "Fix issue",
+						Body:            "body",
+						ConfidenceScore: 0.7,
+						Priority:        intPtr(1),
+						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+						Finalization: &model.FindingFinalization{
+							Title:           "Final issue",
+							Body:            "final body",
+							Priority:        1,
+							ConfidenceScore: 0.75,
+							Remarks:         "keep",
+							Suggestions:     []model.Suggestion{{Body: "model suggestion should be stripped", LineRange: model.LineRange{Start: 1, End: 1}}},
+						},
+					},
+				},
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID:              findingID,
+				Title:           "Fix issue",
+				Body:            "body",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Suggestions:     []model.Suggestion{{Body: "input suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}},
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+			},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{SkipSuggestions: true})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	userPrompt := llmClient.reqs[0].Messages[1].Content
+	if strings.Contains(userPrompt, `"suggestions"`) || strings.Contains(userPrompt, "input suggestion should be omitted") {
+		t.Fatalf("finalize user prompt should not include suggestions:\n%s", userPrompt)
+	}
+	if len(out.Findings[0].Suggestions) != 0 {
+		t.Fatalf("top-level suggestions = %+v, want stripped", out.Findings[0].Suggestions)
+	}
+	if out.Findings[0].Finalization != nil && len(out.Findings[0].Finalization.Suggestions) != 0 {
+		t.Fatalf("finalization suggestions = %+v, want stripped", out.Findings[0].Finalization.Suggestions)
 	}
 }
 
@@ -214,14 +273,17 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 	if len(out.Findings) != 1 {
 		t.Fatalf("findings = %d, want 1", len(out.Findings))
 	}
-	got := out.Findings[0].Suggestions
+	got := out.Findings[0].Finalization.Suggestions
 	if len(got) != len(inputSuggestions) {
-		t.Fatalf("suggestions len = %d, want %d (%+v)", len(got), len(inputSuggestions), got)
+		t.Fatalf("finalization suggestions len = %d, want %d (%+v)", len(got), len(inputSuggestions), got)
 	}
 	for i := range inputSuggestions {
 		if got[i] != inputSuggestions[i] {
-			t.Fatalf("suggestions[%d] = %+v, want %+v", i, got[i], inputSuggestions[i])
+			t.Fatalf("finalization suggestions[%d] = %+v, want %+v", i, got[i], inputSuggestions[i])
 		}
+	}
+	if len(out.Findings[0].Suggestions) != len(inputSuggestions) || out.Findings[0].Suggestions[0] != inputSuggestions[0] {
+		t.Fatalf("top-level suggestions = %+v, want original input suggestions", out.Findings[0].Suggestions)
 	}
 }
 
@@ -327,6 +389,9 @@ func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 	llmSuggestions := []model.Suggestion{
 		{Body: "refined fix", LineRange: model.LineRange{Start: 20, End: 21}},
 	}
+	inputSuggestions := []model.Suggestion{
+		{Body: "stale", LineRange: model.LineRange{Start: 99, End: 101}},
+	}
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
 			{
@@ -337,9 +402,8 @@ func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 						ConfidenceScore: 0.7,
 						Priority:        intPtr(1),
 						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-						Suggestions:     llmSuggestions,
 						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
-						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "refined"},
+						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "refined", Suggestions: llmSuggestions},
 					},
 				},
 				OverallCorrectness:     "patch is correct",
@@ -357,7 +421,7 @@ func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 				ConfidenceScore: 0.7,
 				Priority:        intPtr(1),
 				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-				Suggestions:     []model.Suggestion{{Body: "stale", LineRange: model.LineRange{Start: 99, End: 99}}},
+				Suggestions:     inputSuggestions,
 				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
 			},
 		},
@@ -368,9 +432,96 @@ func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	got := out.Findings[0].Suggestions
-	if len(got) != len(llmSuggestions) || got[0] != llmSuggestions[0] {
-		t.Fatalf("suggestions = %+v, want %+v (LLM output must win when present)", got, llmSuggestions)
+	got := out.Findings[0].Finalization.Suggestions
+	want := []model.Suggestion{{Body: "refined fix", LineRange: inputSuggestions[0].LineRange}}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("finalization suggestions = %+v, want %+v (LLM body wins, input line range preserved)", got, want)
+	}
+	if len(out.Findings[0].Suggestions) != len(inputSuggestions) || out.Findings[0].Suggestions[0] != inputSuggestions[0] {
+		t.Fatalf("top-level suggestions = %+v, want original input suggestions", out.Findings[0].Suggestions)
+	}
+}
+
+func TestFinalizeRestoresSuggestionCountWhenLLMPartiallyDropsThem(t *testing.T) {
+	inputSuggestions := []model.Suggestion{
+		{Body: "first stale suggestion", LineRange: model.LineRange{Start: 10, End: 10}},
+		{Body: "second stale suggestion", LineRange: model.LineRange{Start: 12, End: 12}},
+	}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title:           "Fix issue",
+						Body:            "body",
+						ConfidenceScore: 0.7,
+						Priority:        intPtr(1),
+						CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+						Finalization:    &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, ConfidenceScore: 0.75, Remarks: "refined", Suggestions: []model.Suggestion{{Body: "first polished suggestion", LineRange: model.LineRange{Start: 99, End: 99}}}},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title:           "Fix issue",
+				Body:            "body",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+				Suggestions:     inputSuggestions,
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+			},
+		},
+		OverallCorrectness: "patch is correct",
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	got := out.Findings[0].Finalization.Suggestions
+	want := []model.Suggestion{
+		{Body: "first polished suggestion", LineRange: inputSuggestions[0].LineRange},
+		inputSuggestions[1],
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("finalization suggestions = %+v, want %+v", got, want)
+	}
+}
+
+func TestFinalizeIgnoresTopLevelLLMSuggestions(t *testing.T) {
+	inputSuggestions := []model.Suggestion{{Body: "original suggestion", LineRange: model.LineRange{Start: 10, End: 10}}}
+	in := []model.Finding{
+		{
+			ID:           "11111111-1111-4111-8111-111111111111",
+			Title:        "Fix issue",
+			CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+			Suggestions:  inputSuggestions,
+		},
+	}
+	out := []model.Finding{
+		{
+			ID:           in[0].ID,
+			Title:        in[0].Title,
+			CodeLocation: in[0].CodeLocation,
+			Suggestions:  []model.Suggestion{{Body: "old-style top-level polish", LineRange: model.LineRange{Start: 99, End: 99}}},
+			Finalization: &model.FindingFinalization{Title: "Final issue", Body: "final body", Priority: 1, Remarks: "keep"},
+		},
+	}
+
+	normalizeFinalizedSuggestions(out, in)
+
+	if got := out[0].Finalization.Suggestions; len(got) != 1 || got[0] != inputSuggestions[0] {
+		t.Fatalf("finalization suggestions = %+v, want original input suggestion", got)
+	}
+	if got := out[0].Suggestions; len(got) != 1 || got[0] != inputSuggestions[0] {
+		t.Fatalf("top-level suggestions = %+v, want original input suggestion", got)
 	}
 }
 
@@ -808,6 +959,57 @@ func TestFinalizeWeightedConfidenceClampsOnLargeDivergence(t *testing.T) {
 	}
 }
 
+func TestFinalizePreservesReviewerFieldsWhenVerificationUnverified(t *testing.T) {
+	const findingID = "11111111-1111-4111-8111-111111111111"
+	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						ID:           findingID,
+						Title:        "Reviewer title",
+						Body:         "reviewer body",
+						Priority:     intPtr(3),
+						CodeLocation: loc,
+						Verification: &model.FindingVerification{
+							ID: findingID, Verdict: model.VerdictUnverified, Priority: 0, ConfidenceScore: 0,
+						},
+						Finalization: &model.FindingFinalization{
+							Title: "Finalizer rewrite", Body: "rewritten body", Priority: 0, ConfidenceScore: 0.99, Remarks: "rewrite",
+						},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				ID: findingID, Title: "Reviewer title", Body: "reviewer body", ConfidenceScore: 0.65, Priority: intPtr(3), CodeLocation: loc,
+				Verification: &model.FindingVerification{ID: findingID, Verdict: model.VerdictUnverified, Priority: 0, ConfidenceScore: 0},
+			},
+		},
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	got := out.Findings[0].Finalization
+	if got == nil {
+		t.Fatal("finalization = nil")
+	}
+	if got.Title != "Reviewer title" || got.Body != "reviewer body" || got.Priority != 3 || got.ConfidenceScore != 0.65 || got.Remarks != "" {
+		t.Fatalf("finalization = %#v, want reviewer title/body/priority/confidence", got)
+	}
+	if v := out.Findings[0].Verification; v == nil || v.Verdict != model.VerdictUnverified || v.ConfidenceScore != 0 {
+		t.Fatalf("verification = %#v, want original unverified metadata preserved", v)
+	}
+}
+
 func TestFinalizeWeightedConfidenceZeroesWhenNoVerification(t *testing.T) {
 	loc := model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}
 	out := []model.Finding{
@@ -915,6 +1117,14 @@ func TestEnforcePriorityFloorMissingPriorityDefaultsToThreshold(t *testing.T) {
 	enforcePriorityFloor(out, in, model.PriorityThresholdRank("p2"))
 	if got := out[0].Finalization.Priority; got != 2 {
 		t.Fatalf("nil-priority floor = %d, want 2 (threshold), not hardcoded 3", got)
+	}
+}
+
+func TestPriorityFloorIgnoresUnverifiedVerifierPriority(t *testing.T) {
+	ver := &model.FindingVerification{Verdict: model.VerdictUnverified, Priority: 0, ConfidenceScore: 0}
+	finding := model.Finding{Priority: intPtr(3), Verification: ver}
+	if got := priorityFloor(finding, model.PriorityThresholdRank("p3")); got != 3 {
+		t.Fatalf("priority floor = %d, want reviewer priority 3", got)
 	}
 }
 

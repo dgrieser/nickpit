@@ -9,26 +9,32 @@ var finalizeSchemaDefinition = buildFinalizeSchemaDefinition()
 
 var finalizeWithoutSuggestionsSchemaDefinition = buildFinalizeWithoutSuggestionsSchemaDefinition()
 
-// confidence_score is intentionally omitted: it is computed deterministically
-// in code (see applyWeightedConfidence in internal/review/finalizer.go) rather
-// than emitted by the LLM.
-var finalizationSchemaDefinition = map[string]any{
-	"type": "object",
-	"properties": map[string]any{
+func buildFinalizationSchemaDefinition(includeSuggestions bool) map[string]any {
+	// confidence_score is intentionally omitted: it is computed deterministically
+	// in code (see applyWeightedConfidence in internal/review/finalizer.go) rather
+	// than emitted by the LLM.
+	properties := map[string]any{
 		"title":    map[string]any{"type": "string", "examples": []any{"Example final title"}},
 		"body":     map[string]any{"type": "string", "examples": []any{"Example final explanation."}},
 		"priority": map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "examples": []any{1}},
 		"remarks":  map[string]any{"type": "string", "examples": []any{"Example explanation of the final decision."}},
-	},
-	"required": []string{"title", "body", "priority", "remarks"},
+	}
+	if includeSuggestions {
+		properties["suggestions"] = suggestionListSchemaDefinition()
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": properties,
+		"required":   []string{"title", "body", "priority", "remarks"},
+	}
 }
 
 func buildFinalizeSchemaDefinition() map[string]any {
-	return stripOverallFields(extendFindingsForFinalize(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any)))
+	return stripOverallFields(extendFindingsForFinalize(deepCopySchema(findingsWithIDWithoutSuggestionsSchemaDefinition).(map[string]any), true))
 }
 
 func buildFinalizeWithoutSuggestionsSchemaDefinition() map[string]any {
-	return stripOverallFields(extendFindingsForFinalize(deepCopySchema(findingsWithIDWithoutSuggestionsSchemaDefinition).(map[string]any)))
+	return stripOverallFields(extendFindingsForFinalize(deepCopySchema(findingsWithIDWithoutSuggestionsSchemaDefinition).(map[string]any), false))
 }
 
 func extendFindingsForVerification(root map[string]any) map[string]any {
@@ -57,13 +63,13 @@ func extendFindingsForVerification(root map[string]any) map[string]any {
 	return root
 }
 
-func extendFindingsForFinalize(root map[string]any) map[string]any {
+func extendFindingsForFinalize(root map[string]any, includeSuggestions bool) map[string]any {
 	root = extendFindingsForVerification(root)
 	properties := root["properties"].(map[string]any)
 	findings := properties["findings"].(map[string]any)
 	items := findings["items"].(map[string]any)
 	itemProps := items["properties"].(map[string]any)
-	itemProps["finalization"] = deepCopySchema(finalizationSchemaDefinition)
+	itemProps["finalization"] = buildFinalizationSchemaDefinition(includeSuggestions)
 	required, ok := items["required"].([]string)
 	if !ok {
 		panic("llm: findings schema findings.items.required is not []string")

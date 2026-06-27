@@ -179,6 +179,7 @@ type StepOverride struct {
 	MaxTokens       *int           `yaml:"max_tokens"`
 	ExtraBody       map[string]any `yaml:"extra_body"`
 	ReasoningEffort *string        `yaml:"reasoning_effort"`
+	TimeBudget      *TimeBudget    `yaml:"time_budget"`
 
 	// Scope declares the work unit this step's agents operate on (see ScopeAll
 	// etc.). It makes the step's fan-out explicit and is validated against the
@@ -205,7 +206,7 @@ type StepOverride struct {
 	SkipSuggestions          *bool    `yaml:"skip_suggestions"`
 	UseJSONSchema            *bool    `yaml:"use_json_schema"`
 	VerifyDropPolicy         *string  `yaml:"verify_drop_policy"`
-	VerifyDropConfidence     *float64 `yaml:"verify_drop_confidence"`
+	ConfidenceThreshold      *float64 `yaml:"confidence_threshold"`
 	PriorityThreshold        *string  `yaml:"priority_threshold"`
 
 	// Review-only internal agent overrides. These keys are accepted only under
@@ -217,13 +218,13 @@ type StepOverride struct {
 }
 
 var stepOverrideKeys = []string{
-	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort",
+	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort", "time_budget",
 	"scope",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
 	"disable_patch_summary", "skip_suggestions", "use_json_schema", "verify_drop_policy",
-	"verify_drop_confidence", "priority_threshold",
+	"confidence_threshold", "priority_threshold",
 }
 
 var reviewInternalOverrideKeys = []string{"mine_reasoning", "compile_findings", "nudge"}
@@ -239,6 +240,7 @@ type AgentOverride struct {
 	MaxTokens       *int           `yaml:"max_tokens"`
 	ExtraBody       map[string]any `yaml:"extra_body"`
 	ReasoningEffort *string        `yaml:"reasoning_effort"`
+	TimeBudget      *TimeBudget    `yaml:"time_budget"`
 
 	MaxToolCalls            *int `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls   *int `yaml:"max_duplicate_tool_calls"`
@@ -251,11 +253,23 @@ type AgentOverride struct {
 }
 
 var agentOverrideKeys = []string{
-	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort",
+	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort", "time_budget",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"disable_parallel_tool_calls", "use_json_schema",
 }
+
+// TimeBudget controls wall-clock budgeting for workflow steps and groups.
+// max_seconds sets a local cap, speedup_threshold controls when urgent retries
+// begin (50..100), and weight allocates a lazily-started duration share of a
+// parent budget, still capped by the parent deadline.
+type TimeBudget struct {
+	MaxSeconds       *int `yaml:"max_seconds"`
+	SpeedupThreshold *int `yaml:"speedup_threshold"`
+	Weight           *int `yaml:"weight"`
+}
+
+var groupConfigKeys = []string{"time_budget"}
 
 // Resolve layers the override onto the given base profile and request, returning
 // the effective pair for the step. A nil override (or one with no fields set)
@@ -336,8 +350,8 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.VerifyDropPolicy != nil {
 		req.VerifyDropPolicy = *o.VerifyDropPolicy
 	}
-	if o.VerifyDropConfidence != nil {
-		req.VerifyDropConfidence = *o.VerifyDropConfidence
+	if o.ConfidenceThreshold != nil {
+		req.ConfidenceThreshold = *o.ConfidenceThreshold
 	}
 	if o.PriorityThreshold != nil {
 		req.PriorityThreshold = *o.PriorityThreshold
@@ -567,7 +581,7 @@ func decodeParallelChild(node *yaml.Node) (StepEntry, error) {
 }
 
 func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
-	if err := checkAllowedKeys(node, "lane"); err != nil {
+	if err := checkAllowedKeys(node, "lane", "config"); err != nil {
 		return StepEntry{}, err
 	}
 	seq := mappingValue(node, "lane")
@@ -593,6 +607,13 @@ func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
 		}
 		entry.Lane = append(entry.Lane, sub)
 	}
+	if cfg := mappingValue(node, "config"); cfg != nil {
+		override, err := decodeGroupConfig(cfg)
+		if err != nil {
+			return StepEntry{}, fmt.Errorf("config: %w", err)
+		}
+		entry.Config = override
+	}
 	return entry, nil
 }
 
@@ -601,7 +622,7 @@ func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
 // engine streams per cluster. Structural validity (allowed members, order,
 // scopes) is checked in Spec.Validate.
 func decodePipelineEntry(node *yaml.Node) (StepEntry, error) {
-	if err := checkAllowedKeys(node, "pipeline"); err != nil {
+	if err := checkAllowedKeys(node, "pipeline", "config"); err != nil {
 		return StepEntry{}, err
 	}
 	seq := mappingValue(node, "pipeline")
@@ -627,7 +648,25 @@ func decodePipelineEntry(node *yaml.Node) (StepEntry, error) {
 		}
 		entry.Pipeline = append(entry.Pipeline, sub)
 	}
+	if cfg := mappingValue(node, "config"); cfg != nil {
+		override, err := decodeGroupConfig(cfg)
+		if err != nil {
+			return StepEntry{}, fmt.Errorf("config: %w", err)
+		}
+		entry.Config = override
+	}
 	return entry, nil
+}
+
+func decodeGroupConfig(node *yaml.Node) (*StepOverride, error) {
+	if err := checkAllowedKeys(node, groupConfigKeys...); err != nil {
+		return nil, err
+	}
+	var override StepOverride
+	if err := node.Decode(&override); err != nil {
+		return nil, err
+	}
+	return &override, nil
 }
 
 func decodePlainStep(node *yaml.Node) (StepEntry, error) {
@@ -735,6 +774,9 @@ func (s Spec) Validate() error {
 		if err := validateScope(entry.Type, entry.Config); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 		}
+		if err := validateStepTimeBudgets(entry); err != nil {
+			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
+		}
 		// cluster-scoped finalize/summarize is only reachable inside a pipeline
 		// group (the only place the engine shards them). A flat step must be
 		// scope: all (or unset, which defaults to all).
@@ -765,6 +807,12 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("workflow: lane is only allowed inside a parallel group")
 		}
 		if entry.IsPipeline() {
+			if err := validateGroupTimeBudget("pipeline", entry.Config); err != nil {
+				return err
+			}
+			if err := validateChildWeights("pipeline", entry.Pipeline); err != nil {
+				return err
+			}
 			if err := validatePipelineGroup(entry, &idx); err != nil {
 				return err
 			}
@@ -778,6 +826,14 @@ func (s Spec) Validate() error {
 			var produced []string
 			vectorOwner := map[string]int{}
 			for laneIdx, sub := range entry.Parallel {
+				if sub.IsLane() {
+					if err := validateGroupTimeBudget("lane", sub.Config); err != nil {
+						return err
+					}
+					if err := validateChildWeights("lane", sub.Lane); err != nil {
+						return err
+					}
+				}
 				laneReviewed := map[string]bool{}
 				for _, ls := range sub.LaneSteps() {
 					v, err := validate(ls, laneReviewed, true)
@@ -808,6 +864,105 @@ func (s Spec) Validate() error {
 		if v != "" {
 			reviewed[v] = true
 		}
+	}
+	return nil
+}
+
+func validateStepTimeBudgets(entry StepEntry) error {
+	if entry.Config != nil {
+		if err := validateTimeBudget(entry.Config.TimeBudget); err != nil {
+			return fmt.Errorf("time_budget: %w", err)
+		}
+	}
+	if strings.HasPrefix(entry.Type, StepReviewPrefix) && entry.Config != nil {
+		phaseBudgets := []*TimeBudget{nil, nil, nil, nil}
+		if entry.Config.TimeBudget != nil {
+			phaseBudgets[0] = entry.Config.TimeBudget
+		}
+		if entry.Config.MineReasoning != nil {
+			if err := validateTimeBudget(entry.Config.MineReasoning.TimeBudget); err != nil {
+				return fmt.Errorf("mine_reasoning.time_budget: %w", err)
+			}
+			phaseBudgets[1] = entry.Config.MineReasoning.TimeBudget
+		}
+		if entry.Config.CompileFindings != nil {
+			if err := validateTimeBudget(entry.Config.CompileFindings.TimeBudget); err != nil {
+				return fmt.Errorf("compile_findings.time_budget: %w", err)
+			}
+			phaseBudgets[2] = entry.Config.CompileFindings.TimeBudget
+		}
+		if entry.Config.Nudge != nil {
+			if err := validateTimeBudget(entry.Config.Nudge.TimeBudget); err != nil {
+				return fmt.Errorf("nudge.time_budget: %w", err)
+			}
+			phaseBudgets[3] = entry.Config.Nudge.TimeBudget
+		}
+		if err := validateWeightSet("review phases", phaseBudgets); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGroupTimeBudget(kind string, cfg *StepOverride) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := validateTimeBudget(cfg.TimeBudget); err != nil {
+		return fmt.Errorf("workflow: %s config time_budget: %w", kind, err)
+	}
+	return nil
+}
+
+func validateChildWeights(kind string, children []StepEntry) error {
+	budgets := make([]*TimeBudget, 0, len(children))
+	for i := range children {
+		if children[i].Config == nil {
+			budgets = append(budgets, nil)
+			continue
+		}
+		budgets = append(budgets, children[i].Config.TimeBudget)
+	}
+	if err := validateWeightSet(kind+" children", budgets); err != nil {
+		return fmt.Errorf("workflow: %w", err)
+	}
+	return nil
+}
+
+func validateTimeBudget(tb *TimeBudget) error {
+	if tb == nil {
+		return nil
+	}
+	if tb.MaxSeconds != nil && *tb.MaxSeconds <= 0 {
+		return fmt.Errorf("max_seconds must be positive")
+	}
+	if tb.SpeedupThreshold != nil && (*tb.SpeedupThreshold < 50 || *tb.SpeedupThreshold > 100) {
+		return fmt.Errorf("speedup_threshold must be between 50 and 100")
+	}
+	if tb.Weight != nil && (*tb.Weight < 0 || *tb.Weight > 100) {
+		return fmt.Errorf("weight must be between 0 and 100")
+	}
+	return nil
+}
+
+func validateWeightSet(label string, budgets []*TimeBudget) error {
+	explicit := 0
+	sum := 0
+	for _, budget := range budgets {
+		if budget == nil || budget.Weight == nil {
+			continue
+		}
+		explicit++
+		sum += *budget.Weight
+	}
+	if explicit == 0 {
+		return nil
+	}
+	if sum > 100 {
+		return fmt.Errorf("%s time_budget weights sum to %d, must be <= 100", label, sum)
+	}
+	if explicit == len(budgets) && sum != 100 {
+		return fmt.Errorf("%s time_budget weights sum to %d, must be 100 when all weights are set", label, sum)
 	}
 	return nil
 }
@@ -847,6 +1002,9 @@ func validatePipelineGroup(entry StepEntry, idx *int) error {
 			return fmt.Errorf("workflow: step %d: pipeline step %d must be %q, got %q", *idx, i+1, exp.typ, child.Type)
 		}
 		if err := validateScope(child.Type, child.Config); err != nil {
+			return fmt.Errorf("workflow: step %d: %w", *idx, err)
+		}
+		if err := validateStepTimeBudgets(child); err != nil {
 			return fmt.Errorf("workflow: step %d: %w", *idx, err)
 		}
 		if child.Config != nil && child.Config.Scope != nil && *child.Config.Scope != exp.scope {
