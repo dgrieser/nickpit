@@ -14,6 +14,11 @@ import (
 var hunkHeader = regexp.MustCompile(`^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@`)
 
 func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error) {
+	_, hunks, files, err := ParseUnifiedDiffRepresentations(diff)
+	return hunks, files, err
+}
+
+func ParseUnifiedDiffRepresentations(diff string) ([]model.DiffFile, []model.DiffHunk, []model.ChangedFile, error) {
 	var (
 		hunks        []model.DiffHunk
 		files        []model.ChangedFile
@@ -34,8 +39,7 @@ func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error
 			if currentEntry != nil {
 				files = append(files, *currentEntry)
 			}
-			parts := strings.Split(line, " ")
-			currentFile = strings.TrimPrefix(parts[len(parts)-1], "b/")
+			currentFile = parseDiffGitPath(line)
 			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
 		case strings.HasPrefix(line, "new file mode "):
 			if currentEntry != nil {
@@ -57,7 +61,7 @@ func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error
 			}
 			parsed, err := parseHunkHeader(currentFile, line)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			currentHunk = parsed
 		default:
@@ -75,7 +79,7 @@ func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if currentHunk != nil {
 		hunks = append(hunks, *currentHunk)
@@ -83,7 +87,74 @@ func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error
 	if currentEntry != nil {
 		files = append(files, *currentEntry)
 	}
-	return hunks, files, nil
+	return DiffFilesFromUnifiedDiff(diff), hunks, files, nil
+}
+
+func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
+	sections := splitUnifiedDiff(diff)
+	files := make([]model.DiffFile, 0, len(sections))
+	for _, section := range sections {
+		if section.path == "" {
+			continue
+		}
+		files = append(files, model.DiffFile{
+			FilePath: section.path,
+			Language: filetype.DetectLanguage(section.path),
+			Content:  section.text,
+		})
+	}
+	return files
+}
+
+type diffSection struct {
+	path string
+	text string
+}
+
+func splitUnifiedDiff(diff string) []diffSection {
+	var sections []diffSection
+	var current strings.Builder
+	currentPath := ""
+	inSection := false
+	flush := func() {
+		if !inSection {
+			return
+		}
+		sections = append(sections, diffSection{path: currentPath, text: current.String()})
+		current.Reset()
+	}
+	for _, line := range strings.SplitAfter(diff, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			flush()
+			inSection = true
+			currentPath = parseDiffGitPath(line)
+		}
+		if inSection {
+			current.WriteString(line)
+		}
+	}
+	flush()
+	return sections
+}
+
+func parseDiffGitPath(line string) string {
+	const prefix = "diff --git "
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, prefix) {
+		return ""
+	}
+	rest := line[len(prefix):]
+	if idx := strings.LastIndex(rest, " b/"); idx >= 0 {
+		return rest[idx+len(" b/"):]
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	value := fields[len(fields)-1]
+	value = strings.TrimPrefix(value, "b/")
+	value = strings.TrimPrefix(value, "a/")
+	return value
 }
 
 func parseHunkHeader(path, line string) (*model.DiffHunk, error) {

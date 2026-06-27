@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,48 +45,49 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                              string              `yaml:"model"`
-	Small                              SmallModelConfig    `yaml:"small"`
-	BaseURL                            string              `yaml:"base_url"`
-	APIKey                             string              `yaml:"api_key"`
-	SupportedModels                    []ModelCapabilities `yaml:"supported_models"`
-	MaxTokens                          *int                `yaml:"max_tokens"`
-	Temperature                        *float64            `yaml:"temperature"`
-	TopP                               *float64            `yaml:"top_p"`
-	TopK                               *int                `yaml:"top_k"`
-	PresencePenalty                    *float64            `yaml:"presence_penalty"`
-	ExtraBody                          map[string]any      `yaml:"extra_body"`
-	UseJSONSchema                      bool                `yaml:"use_json_schema"`
-	IncludePaths                       []string            `yaml:"include_paths"`
-	ExcludePaths                       []string            `yaml:"exclude_paths"`
-	IncludeContent                     []string            `yaml:"include_content"`
-	ExcludeContent                     []string            `yaml:"exclude_content"`
-	MaxContextTokens                   int                 `yaml:"max_context_tokens"`
-	MaxToolCalls                       int                 `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls              int                 `yaml:"max_duplicate_tool_calls"`
-	MaxOutputRetries                   int                 `yaml:"max_output_retries"`
-	MaxReasoningSeconds                int                 `yaml:"max_reasoning_seconds"`
-	MaxReasoningLoopRepeats            int                 `yaml:"max_reasoning_loop_repeats"`
-	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
-	NudgeCount                         int                 `yaml:"nudge_count"`
-	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
-	SkipSuggestions                    bool                `yaml:"skip_suggestions"`
-	SkipWorkflowTimeBudget             bool                `yaml:"skip_workflow_time_budget"`
-	ReasoningEffort                    string              `yaml:"reasoning_effort"`
-	Workdir                            string              `yaml:"workdir"`
-	GitHubToken                        string              `yaml:"github_token"`
-	GitLabToken                        string              `yaml:"gitlab_token"`
-	GitLabBaseURL                      string              `yaml:"gitlab_base_url"`
-	AssetBaseURL                       string              `yaml:"asset_base_url"`
-	MaxContextTokensConfigured         bool                `yaml:"-"`
-	APIKeyConfigured                   bool                `yaml:"-"`
-	MaxToolCallsConfigured             bool                `yaml:"-"`
-	MaxDuplicateToolCallsConfigured    bool                `yaml:"-"`
-	MaxOutputRetriesConfigured         bool                `yaml:"-"`
-	MaxReasoningSecondsConfigured      bool                `yaml:"-"`
-	MaxReasoningLoopRepeatsConfigured  bool                `yaml:"-"`
-	MaxRateLimitDelaySecondsConfigured bool                `yaml:"-"`
-	NudgeCountConfigured               bool                `yaml:"-"`
+	Model                              string                   `yaml:"model"`
+	Small                              SmallModelConfig         `yaml:"small"`
+	BaseURL                            string                   `yaml:"base_url"`
+	APIKey                             string                   `yaml:"api_key"`
+	SupportedModels                    []ModelCapabilities      `yaml:"supported_models"`
+	MaxTokens                          *int                     `yaml:"max_tokens"`
+	Temperature                        *float64                 `yaml:"temperature"`
+	TopP                               *float64                 `yaml:"top_p"`
+	TopK                               *int                     `yaml:"top_k"`
+	PresencePenalty                    *float64                 `yaml:"presence_penalty"`
+	ExtraBody                          map[string]any           `yaml:"extra_body"`
+	UseJSONSchema                      bool                     `yaml:"use_json_schema"`
+	IncludePaths                       []string                 `yaml:"include_paths"`
+	ExcludePaths                       []string                 `yaml:"exclude_paths"`
+	IncludeContent                     []string                 `yaml:"include_content"`
+	ExcludeContent                     []string                 `yaml:"exclude_content"`
+	DiffRepresentation                 model.DiffRepresentation `yaml:"diff_representation"`
+	MaxContextTokens                   int                      `yaml:"max_context_tokens"`
+	MaxToolCalls                       int                      `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls              int                      `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries                   int                      `yaml:"max_output_retries"`
+	MaxReasoningSeconds                int                      `yaml:"max_reasoning_seconds"`
+	MaxReasoningLoopRepeats            int                      `yaml:"max_reasoning_loop_repeats"`
+	MaxRateLimitDelaySeconds           int                      `yaml:"max_rate_limit_delay_seconds"`
+	NudgeCount                         int                      `yaml:"nudge_count"`
+	DisablePatchSummary                bool                     `yaml:"disable_patch_summary"`
+	SkipSuggestions                    bool                     `yaml:"skip_suggestions"`
+	SkipWorkflowTimeBudget             bool                     `yaml:"skip_workflow_time_budget"`
+	ReasoningEffort                    string                   `yaml:"reasoning_effort"`
+	Workdir                            string                   `yaml:"workdir"`
+	GitHubToken                        string                   `yaml:"github_token"`
+	GitLabToken                        string                   `yaml:"gitlab_token"`
+	GitLabBaseURL                      string                   `yaml:"gitlab_base_url"`
+	AssetBaseURL                       string                   `yaml:"asset_base_url"`
+	MaxContextTokensConfigured         bool                     `yaml:"-"`
+	APIKeyConfigured                   bool                     `yaml:"-"`
+	MaxToolCallsConfigured             bool                     `yaml:"-"`
+	MaxDuplicateToolCallsConfigured    bool                     `yaml:"-"`
+	MaxOutputRetriesConfigured         bool                     `yaml:"-"`
+	MaxReasoningSecondsConfigured      bool                     `yaml:"-"`
+	MaxReasoningLoopRepeatsConfigured  bool                     `yaml:"-"`
+	MaxRateLimitDelaySecondsConfigured bool                     `yaml:"-"`
+	NudgeCountConfigured               bool                     `yaml:"-"`
 }
 
 type SmallModelConfig struct {
@@ -131,6 +133,7 @@ type Overrides struct {
 	ExcludePaths           *[]string
 	IncludeContent         *[]string
 	ExcludeContent         *[]string
+	DiffRepresentation     model.DiffRepresentation
 	MaxContextTokens       *int
 	ToolCalls              *int
 	DuplicateToolCalls     *int
@@ -616,6 +619,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.ExcludeContent != nil {
 		profile.ExcludeContent = slices.Clone(*overrides.ExcludeContent)
 	}
+	if overrides.DiffRepresentation != "" {
+		profile.DiffRepresentation = overrides.DiffRepresentation
+	}
 	if overrides.MaxContextTokens != nil {
 		profile.MaxContextTokens = *overrides.MaxContextTokens
 		profile.MaxContextTokensConfigured = true
@@ -731,6 +737,9 @@ func applyProfileDefaults(profile Profile) Profile {
 	if profile.NudgeCount == 0 && !profile.NudgeCountConfigured {
 		profile.NudgeCount = DefaultNudgeCount
 	}
+	if profile.DiffRepresentation == "" {
+		profile.DiffRepresentation = model.DiffRepresentationFiles
+	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort
 	}
@@ -766,6 +775,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.NudgeCount < 0 {
 		return Profile{}, fmt.Errorf("config: nudge_count must be non-negative")
+	}
+	if profile.DiffRepresentation != model.DiffRepresentationFiles && profile.DiffRepresentation != model.DiffRepresentationHunks {
+		return Profile{}, fmt.Errorf("config: diff_representation must be one of: files, hunks")
 	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)

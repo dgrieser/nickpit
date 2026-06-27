@@ -66,6 +66,9 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.ExcludeContent != nil {
 		base.ExcludeContent = slices.Clone(override.ExcludeContent)
 	}
+	if override.DiffRepresentation != "" {
+		base.DiffRepresentation = override.DiffRepresentation
+	}
 	if override.MaxContextTokensConfigured {
 		base.MaxContextTokensConfigured = true
 		base.MaxContextTokens = override.MaxContextTokens

@@ -558,6 +558,7 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		SkipSuggestions:          req.SkipSuggestions,
 		RepoRoot:                 req.RepoRoot,
 		DropPolicy:               req.VerifyDropPolicy,
+		DiffRepresentation:       req.DiffRepresentation,
 	}
 }
 
@@ -2219,6 +2220,14 @@ func changedLanguages(ctx *model.ReviewContext) []string {
 		return nil
 	}
 	seen := make(map[string]struct{})
+	for _, file := range ctx.DiffFiles {
+		language := styleGuideLanguageForPath(file.FilePath)
+		if language == "" {
+			language = file.Language
+		}
+		addLanguage(seen, language)
+		addDetectorLanguages(seen, file.FilePath, file.Content)
+	}
 	for _, hunk := range ctx.DiffHunks {
 		language := styleGuideLanguageForPath(hunk.FilePath)
 		if language == "" {

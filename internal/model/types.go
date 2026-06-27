@@ -27,6 +27,13 @@ const (
 	FileRenamed  FileStatus = "renamed"
 )
 
+type DiffRepresentation string
+
+const (
+	DiffRepresentationFiles DiffRepresentation = "files"
+	DiffRepresentationHunks DiffRepresentation = "hunks"
+)
+
 type ReviewRequest struct {
 	Mode                    ReviewMode
 	RepoRoot                string
@@ -42,6 +49,7 @@ type ReviewRequest struct {
 	ExcludePaths            []string
 	IncludeContent          []string
 	ExcludeContent          []string
+	DiffRepresentation      DiffRepresentation
 	MaxContextTokens        int
 	MaxToolCalls            int
 	MaxDuplicateToolCalls   int
@@ -150,6 +158,7 @@ type ReviewContext struct {
 	Commits             []CommitSummary    `json:"commits,omitempty"`
 	ChangedFiles        []ChangedFile      `json:"changed_files"`
 	Diff                string             `json:"diff"`
+	DiffFiles           []DiffFile         `json:"diff_files,omitempty"`
 	DiffHunks           []DiffHunk         `json:"diff_hunks,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
@@ -164,6 +173,7 @@ type ReviewPromptPayload struct {
 	Description         string             `json:"description"`
 	Commits             []CommitSummary    `json:"commits,omitempty"`
 	ChangedFiles        []ChangedFile      `json:"changed_files"`
+	DiffFiles           []DiffFile         `json:"diff_files,omitempty"`
 	DiffHunks           []DiffHunk         `json:"diff_hunks,omitempty"`
 	StyleGuides         []StyleGuide       `json:"style_guides,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
@@ -194,6 +204,12 @@ type ChangedFile struct {
 	Additions int        `json:"additions"`
 	Deletions int        `json:"deletions"`
 	PatchURL  string     `json:"patch_url,omitempty"`
+}
+
+type DiffFile struct {
+	FilePath string `json:"file_path"`
+	Language string `json:"language,omitempty"`
+	Content  string `json:"content"`
 }
 
 type DiffHunk struct {
@@ -545,20 +561,34 @@ func (r *ReviewResult) Clone() (*ReviewResult, error) {
 }
 
 func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
+	return PromptPayloadFromContextWithDiffRepresentation(src, DiffRepresentationFiles)
+}
+
+func PromptPayloadFromContextWithDiffRepresentation(src *ReviewContext, representation DiffRepresentation) *ReviewPromptPayload {
 	if src == nil {
 		return nil
 	}
-	return &ReviewPromptPayload{
+	payload := &ReviewPromptPayload{
 		Repository:          src.Repository,
 		Identifier:          src.Identifier,
 		Title:               src.Title,
 		Description:         src.Description,
 		Commits:             src.Commits,
 		ChangedFiles:        src.ChangedFiles,
-		DiffHunks:           src.DiffHunks,
 		Comments:            src.Comments,
 		SupplementalContext: src.SupplementalContext,
 		ToolchainVersions:   src.ToolchainVersions,
 		OmittedSections:     src.OmittedSections,
 	}
+	switch representation {
+	case DiffRepresentationHunks:
+		payload.DiffHunks = src.DiffHunks
+	default:
+		if len(src.DiffFiles) > 0 {
+			payload.DiffFiles = src.DiffFiles
+		} else {
+			payload.DiffHunks = src.DiffHunks
+		}
+	}
+	return payload
 }
