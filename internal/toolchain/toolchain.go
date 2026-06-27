@@ -488,6 +488,9 @@ func relevantLanguages(reviewCtx *model.ReviewContext) []string {
 			seen[language] = struct{}{}
 		}
 	}
+	for _, file := range reviewCtx.DiffFiles {
+		consider(file.FilePath, file.Language)
+	}
 	for _, hunk := range reviewCtx.DiffHunks {
 		consider(hunk.FilePath, hunk.Language)
 	}

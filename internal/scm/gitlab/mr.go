@@ -129,7 +129,8 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		diff.WriteString(change.Diff)
 		diff.WriteByte('\n')
 	}
-	hunks, _, _ := git.ParseUnifiedDiff(diff.String())
+	diffText := diff.String()
+	diffFiles, hunks, _, _ := git.ParseUnifiedDiffFormats(diffText)
 	var omitted []string
 	if changes.Overflow {
 		omitted = append(omitted, "WARNING: GitLab reported this MR's diff as truncated (overflow); the review is based on a partial diff and may miss changes")
@@ -147,7 +148,8 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		Description:     mr.Description,
 		Commits:         normalizeMRCommits(commits),
 		ChangedFiles:    changedFiles,
-		Diff:            diff.String(),
+		Diff:            diffText,
+		DiffFiles:       diffFiles,
 		DiffHunks:       hunks,
 		Comments:        comments,
 		OmittedSections: omitted,

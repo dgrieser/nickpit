@@ -31,6 +31,7 @@ type VerifyRequest struct {
 	MaxReasoningLoopRepeats  int
 	DisableParallelToolCalls bool
 	SkipSuggestions          bool
+	DiffFormat               model.DiffFormat
 }
 
 type VerifyOptions struct {
@@ -51,6 +52,7 @@ type VerifyOptions struct {
 	SkipSuggestions          bool
 	RepoRoot                 string
 	DropPolicy               string
+	DiffFormat               model.DiffFormat
 }
 
 func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {
@@ -112,7 +114,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, styleGuides, req.SkipSuggestions)
+	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, styleGuides, req.SkipSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -248,6 +250,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
 				DisableParallelToolCalls: opts.DisableParallelToolCalls,
 				SkipSuggestions:          opts.SkipSuggestions,
+				DiffFormat:               opts.DiffFormat,
 			}
 			verification, usage, err := e.Verify(ctx, req)
 			mu.Lock()
@@ -328,8 +331,8 @@ func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {
 	return llm.VerifyExamplePromptSnippet()
 }
 
-func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, styleGuides []model.StyleGuide, skipSuggestions bool) (string, error) {
-	payload := model.PromptPayloadFromContext(reviewCtx)
+func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, styleGuides []model.StyleGuide, skipSuggestions bool, format model.DiffFormat) (string, error) {
+	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	payload.StyleGuides = styleGuides
 	base, err := json.Marshal(payload)
 	if err != nil {

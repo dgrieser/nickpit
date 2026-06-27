@@ -29,7 +29,7 @@ func (e *Engine) ensurePrompts(st *PipelineState) error {
 	if err != nil {
 		return err
 	}
-	payload := model.PromptPayloadFromContext(st.Enriched)
+	payload := model.PromptPayloadFromContextWithDiffFormat(st.Enriched, st.diffFormat)
 	payload.StyleGuides, err = e.styleGuidesFor(st.Enriched)
 	if err != nil {
 		return err
@@ -51,7 +51,7 @@ func (e *Engine) ensurePrompts(st *PipelineState) error {
 // recorded and the pipeline continues with the un-enriched context.
 func (e *Engine) collectStepFunc() stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		basePayload := model.PromptPayloadFromContext(st.Base)
+		basePayload := model.PromptPayloadFromContextWithDiffFormat(st.Base, sc.Req.DiffFormat)
 		guides, err := sc.Engine.styleGuidesFor(st.Base)
 		if err != nil {
 			return err
@@ -871,6 +871,7 @@ func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, i
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
 		SkipSuggestions:          sc.Req.SkipSuggestions,
 		RepoRoot:                 sc.Req.RepoRoot,
+		DiffFormat:               sc.Req.DiffFormat,
 		PriorityThreshold:        sc.Req.PriorityThreshold,
 		ContextNotes:             st.contextNotes,
 	}
@@ -910,6 +911,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 		DisablePatchSummary:      sc.Req.DisablePatchSummary,
 		SkipSuggestions:          sc.Req.SkipSuggestions,
 		RepoRoot:                 sc.Req.RepoRoot,
+		DiffFormat:               sc.Req.DiffFormat,
 		PriorityThreshold:        sc.Req.PriorityThreshold,
 		ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
 		ContextNotes:             st.contextNotes,
@@ -1143,6 +1145,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
 			SkipSuggestions:          sc.Req.SkipSuggestions,
 			RepoRoot:                 sc.Req.RepoRoot,
+			DiffFormat:               sc.Req.DiffFormat,
 			PriorityThreshold:        sc.Req.PriorityThreshold,
 			ContextNotes:             contextNotes,
 		}
@@ -1224,6 +1227,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			DisablePatchSummary:      sc.Req.DisablePatchSummary,
 			SkipSuggestions:          sc.Req.SkipSuggestions,
 			RepoRoot:                 sc.Req.RepoRoot,
+			DiffFormat:               sc.Req.DiffFormat,
 			PriorityThreshold:        sc.Req.PriorityThreshold,
 			ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
 			ContextNotes:             contextNotes,

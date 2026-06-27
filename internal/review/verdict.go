@@ -22,6 +22,7 @@ type VerdictOptions struct {
 	SkipSuggestions          bool
 	RepoRoot                 string
 	ContextNotes             string
+	DiffFormat               model.DiffFormat
 	// PriorityThreshold is the configured "lowest currently allowed priority"
 	// (p0..p3). It anchors the priority floor so a verifier-refuted non-finding is
 	// classified at the threshold (not blocking) and never forces the overall
@@ -116,7 +117,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.SkipSuggestions)
+	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.SkipSuggestions, opts.DiffFormat)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -138,6 +139,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
 		SkipSuggestions:          opts.SkipSuggestions,
 		UseJSONSchema:            opts.UseJSONSchema,
+		DiffFormat:               opts.DiffFormat,
 	}
 	verdictStart := time.Now()
 	e.logProgress(logging.StageVerdict, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
@@ -263,8 +265,8 @@ func verdictFilterConfidence(finding model.Finding) (float64, string) {
 	return finding.ConfidenceScore, "review"
 }
 
-func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, skipSuggestions bool) (string, error) {
-	payload := model.PromptPayloadFromContext(reviewCtx)
+func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, skipSuggestions bool, format model.DiffFormat) (string, error) {
+	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
 		return "", err

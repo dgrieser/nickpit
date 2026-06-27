@@ -96,12 +96,13 @@ func (e *Engine) applyReviewContextFilter(ctx context.Context, reviewCtx *model.
 	}
 
 	reviewCtx.ChangedFiles = filterChangedFiles(reviewCtx.ChangedFiles, keepByPath)
+	reviewCtx.DiffFiles = filterDiffFiles(reviewCtx.DiffFiles, keepByPath)
 	reviewCtx.DiffHunks = filterDiffHunks(reviewCtx.DiffHunks, keepByPath)
 	reviewCtx.Comments = filterComments(reviewCtx.Comments, keepByPath)
 	reviewCtx.Diff = filterUnifiedDiff(reviewCtx.Diff, keepByPath)
 	reviewCtx.OmittedSections = append(reviewCtx.OmittedSections, fmt.Sprintf("files omitted by filters: %s", strings.Join(omitted, ", ")))
 
-	allFiltered := len(reviewCtx.ChangedFiles) == 0 && strings.TrimSpace(reviewCtx.Diff) == ""
+	allFiltered := len(reviewCtx.ChangedFiles) == 0 && strings.TrimSpace(reviewCtx.Diff) == "" && len(reviewCtx.DiffFiles) == 0 && len(reviewCtx.DiffHunks) == 0
 	if allFiltered {
 		reviewCtx.OmittedSections = append(reviewCtx.OmittedSections, allChangedFilesFilteredWarning)
 	}
@@ -165,6 +166,9 @@ func collectFilterCandidatePaths(ctx *model.ReviewContext) []string {
 	for _, hunk := range ctx.DiffHunks {
 		add(hunk.FilePath)
 	}
+	for _, file := range ctx.DiffFiles {
+		add(file.FilePath)
+	}
 	for _, section := range splitUnifiedDiff(ctx.Diff) {
 		add(section.path)
 	}
@@ -207,6 +211,16 @@ func filterDiffHunks(hunks []model.DiffHunk, keepByPath map[string]bool) []model
 	for _, hunk := range hunks {
 		if keepByPath[normalizeReviewPath(hunk.FilePath)] {
 			filtered = append(filtered, hunk)
+		}
+	}
+	return filtered
+}
+
+func filterDiffFiles(files []model.DiffFile, keepByPath map[string]bool) []model.DiffFile {
+	filtered := make([]model.DiffFile, 0, len(files))
+	for _, file := range files {
+		if keepByPath[normalizeReviewPath(file.FilePath)] {
+			filtered = append(filtered, file)
 		}
 	}
 	return filtered

@@ -31,6 +31,32 @@ func TestParseUnifiedDiff(t *testing.T) {
 	}
 }
 
+func TestParseUnifiedDiffFormatsBuildsDiffFiles(t *testing.T) {
+	diff := string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff")))
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffFiles) != 1 {
+		t.Fatalf("diff files = %d, want 1", len(diffFiles))
+	}
+	if diffFiles[0].FilePath != "main.go" {
+		t.Fatalf("diff file path = %q", diffFiles[0].FilePath)
+	}
+	if diffFiles[0].Language != "go" {
+		t.Fatalf("diff file language = %q", diffFiles[0].Language)
+	}
+	if !strings.HasPrefix(diffFiles[0].Content, "diff --git a/main.go b/main.go\n") {
+		t.Fatalf("diff file content missing git header: %.80q", diffFiles[0].Content)
+	}
+	if !strings.Contains(diffFiles[0].Content, "@@") {
+		t.Fatalf("diff file content missing hunk header: %.80q", diffFiles[0].Content)
+	}
+	if len(hunks) != 1 || len(files) != 1 {
+		t.Fatalf("hunks/files = %d/%d, want 1/1", len(hunks), len(files))
+	}
+}
+
 type stubGitRunner struct {
 	outputs map[string]string
 	errors  map[string]error
@@ -81,6 +107,9 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 	}
 	if ctx.Repository.HeadRef != "fix/memleak" {
 		t.Fatalf("head ref = %q", ctx.Repository.HeadRef)
+	}
+	if len(ctx.DiffFiles) != 1 || ctx.DiffFiles[0].FilePath != "main.go" {
+		t.Fatalf("diff files = %#v", ctx.DiffFiles)
 	}
 	if len(runner.calls) < 3 {
 		t.Fatalf("calls = %d", len(runner.calls))

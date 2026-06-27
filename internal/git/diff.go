@@ -31,7 +31,7 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 	if err != nil {
 		return nil, err
 	}
-	hunks, files, err := ParseUnifiedDiff(diff)
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormats(diff)
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +52,7 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 		Commits:      commits,
 		ChangedFiles: files,
 		Diff:         diff,
+		DiffFiles:    diffFiles,
 		DiffHunks:    hunks,
 	}, nil
 }

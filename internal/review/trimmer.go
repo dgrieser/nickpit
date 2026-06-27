@@ -61,7 +61,14 @@ func (t *Trimmer) dropGeneratedFiles(ctx *model.ReviewContext) *model.ReviewCont
 	if len(dropped) == 0 {
 		return ctx
 	}
+	keepByPath := make(map[string]bool, len(filtered))
+	for _, file := range filtered {
+		keepByPath[normalizeReviewPath(file.Path)] = true
+	}
 	ctx.ChangedFiles = filtered
+	ctx.DiffFiles = filterDiffFiles(ctx.DiffFiles, keepByPath)
+	ctx.DiffHunks = filterDiffHunks(ctx.DiffHunks, keepByPath)
+	ctx.Diff = filterUnifiedDiff(ctx.Diff, keepByPath)
 	ctx.OmittedSections = append(ctx.OmittedSections, fmt.Sprintf("generated files omitted: %s", strings.Join(dropped, ", ")))
 	return ctx
 }
@@ -101,6 +108,10 @@ func (t *Trimmer) trimSupplemental(ctx *model.ReviewContext) {
 }
 
 func (t *Trimmer) trimDiff(ctx *model.ReviewContext) {
+	if len(ctx.DiffFiles) > 0 {
+		t.trimDiffFiles(ctx)
+		return
+	}
 	if len(ctx.DiffHunks) == 0 {
 		for len(ctx.Diff) > 0 && t.estimator.Estimate(renderContextText(ctx)) > t.maxTokens {
 			cut := len(ctx.Diff) / 4
@@ -111,6 +122,7 @@ func (t *Trimmer) trimDiff(ctx *model.ReviewContext) {
 		}
 		return
 	}
+	ctx.Diff = ""
 
 	fileSizes := map[string]int{}
 	for _, hunk := range ctx.DiffHunks {
@@ -154,11 +166,67 @@ func (t *Trimmer) trimDiff(ctx *model.ReviewContext) {
 	ctx.Diff = diff.String()
 }
 
+func (t *Trimmer) trimDiffFiles(ctx *model.ReviewContext) {
+	ctx.Diff = ""
+	fileSizes := map[string]int{}
+	for _, file := range ctx.DiffFiles {
+		fileSizes[file.FilePath] += len(file.Content)
+	}
+
+	for t.estimator.Estimate(renderContextText(ctx)) > t.maxTokens && len(ctx.DiffFiles) > 1 {
+		var worstPath string
+		worstSize := -1
+		for path, size := range fileSizes {
+			if size > worstSize {
+				worstPath = path
+				worstSize = size
+			}
+		}
+		pruned := make([]model.DiffFile, 0, len(ctx.DiffFiles))
+		removed := false
+		for _, file := range ctx.DiffFiles {
+			if !removed && file.FilePath == worstPath {
+				delete(fileSizes, file.FilePath)
+				removed = true
+				continue
+			}
+			pruned = append(pruned, file)
+		}
+		if !removed {
+			break
+		}
+		ctx.DiffFiles = pruned
+	}
+
+	keepByPath := make(map[string]bool, len(ctx.DiffFiles))
+	var diff strings.Builder
+	for _, file := range ctx.DiffFiles {
+		keepByPath[normalizeReviewPath(file.FilePath)] = true
+		diff.WriteString(file.Content)
+		if !strings.HasSuffix(file.Content, "\n") {
+			diff.WriteByte('\n')
+		}
+	}
+	ctx.Diff = diff.String()
+	ctx.DiffHunks = filterDiffHunks(ctx.DiffHunks, keepByPath)
+}
+
 func renderContextText(ctx *model.ReviewContext) string {
 	var b strings.Builder
 	b.WriteString(ctx.Title)
 	b.WriteString(ctx.Description)
 	b.WriteString(ctx.Diff)
+	if ctx.Diff == "" {
+		if len(ctx.DiffFiles) > 0 {
+			for _, file := range ctx.DiffFiles {
+				b.WriteString(file.Content)
+			}
+		} else {
+			for _, hunk := range ctx.DiffHunks {
+				b.WriteString(hunk.Content)
+			}
+		}
+	}
 	for _, file := range ctx.ChangedFiles {
 		b.WriteString(file.Path)
 	}

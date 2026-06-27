@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dgrieser/nickpit/internal/model"
 )
 
 func intPtr(v int) *int {
@@ -702,6 +704,69 @@ func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
 	}
 	if !profile.UseJSONSchema {
 		t.Fatal("expected use_json_schema override to be enabled")
+	}
+}
+
+func TestLoadConfigDefaultsDiffFormatToFiles(t *testing.T) {
+	_, profile, err := Load("", Overrides{Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.DiffFormat != model.DiffFormatFiles {
+		t.Fatalf("diff format = %q", profile.DiffFormat)
+	}
+}
+
+func TestLoadConfigDiffFormatFromFileAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+active_profile: custom
+profiles:
+  custom:
+    model: test-model
+    base_url: https://example.test/v1
+    diff_format: hunks
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.DiffFormat != model.DiffFormatHunks {
+		t.Fatalf("diff format = %q", profile.DiffFormat)
+	}
+
+	_, profile, err = Load(path, Overrides{DiffFormat: model.DiffFormatFiles})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.DiffFormat != model.DiffFormatFiles {
+		t.Fatalf("override diff format = %q", profile.DiffFormat)
+	}
+}
+
+func TestLoadConfigRejectsInvalidDiffFormat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+active_profile: custom
+profiles:
+  custom:
+    model: test-model
+    base_url: https://example.test/v1
+    diff_format: raw
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "diff_format") {
+		t.Fatalf("err = %v, want diff_format validation error", err)
 	}
 }
 

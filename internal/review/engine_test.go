@@ -40,6 +40,12 @@ func (stubSource) ResolveContext(context.Context, model.ReviewRequest) (*model.R
 			{Path: "main.go", Status: model.FileModified, Additions: 1},
 		},
 		Diff: "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+new\n",
+		DiffFiles: []model.DiffFile{
+			{FilePath: "main.go", Language: "go", Content: "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+new\n"},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "main.go", Language: "go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1, Content: "-old\n+new\n"},
+		},
 	}, nil
 }
 
@@ -50,6 +56,7 @@ func (filteredOutSource) ResolveContext(context.Context, model.ReviewRequest) (*
 		Mode:         model.ModeLocal,
 		ChangedFiles: []model.ChangedFile{{Path: "README.md", Status: model.FileModified}},
 		Diff:         "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
+		DiffFiles:    []model.DiffFile{{FilePath: "README.md", Language: "markdown", Content: "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n"}},
 		DiffHunks:    []model.DiffHunk{{FilePath: "README.md", Content: "+new\n"}},
 	}, nil
 }
@@ -103,6 +110,12 @@ func TestReviewContextFilterPathAndContent(t *testing.T) {
 			{FilePath: "web/app.ts", Content: "+new\n"},
 			{FilePath: "old.go", Content: "-old\n"},
 		},
+		DiffFiles: []model.DiffFile{
+			{FilePath: "app/main.go", Content: "diff --git a/app/main.go b/app/main.go\n@@ -1 +1 @@\n-old\n+new\n"},
+			{FilePath: "app/generated.go", Content: "diff --git a/app/generated.go b/app/generated.go\n@@ -1 +1 @@\n-old\n+new\n"},
+			{FilePath: "web/app.ts", Content: "diff --git a/web/app.ts b/web/app.ts\n@@ -1 +1 @@\n-old\n+new\n"},
+			{FilePath: "old.go", Content: "diff --git a/old.go b/old.go\n@@ -1 +0,0 @@\n-old\n"},
+		},
 		Comments: []model.Comment{
 			{Path: "app/main.go", Body: "keep inline"},
 			{Path: "app/generated.go", Body: "drop inline"},
@@ -134,6 +147,9 @@ func TestReviewContextFilterPathAndContent(t *testing.T) {
 	if len(ctx.DiffHunks) != 1 || ctx.DiffHunks[0].FilePath != "app/main.go" {
 		t.Fatalf("diff hunks = %#v", ctx.DiffHunks)
 	}
+	if len(ctx.DiffFiles) != 1 || ctx.DiffFiles[0].FilePath != "app/main.go" {
+		t.Fatalf("diff files = %#v", ctx.DiffFiles)
+	}
 	if !strings.Contains(ctx.Diff, "app/main.go") || strings.Contains(ctx.Diff, "generated.go") || strings.Contains(ctx.Diff, "web/app.ts") || strings.Contains(ctx.Diff, "old.go") {
 		t.Fatalf("diff = %q", ctx.Diff)
 	}
@@ -149,6 +165,7 @@ func TestReviewContextFilterAllOmitted(t *testing.T) {
 	ctx := &model.ReviewContext{
 		ChangedFiles: []model.ChangedFile{{Path: "README.md", Status: model.FileModified}},
 		Diff:         "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n",
+		DiffFiles:    []model.DiffFile{{FilePath: "README.md", Content: "diff --git a/README.md b/README.md\n@@ -1 +1 @@\n-old\n+new\n"}},
 		DiffHunks:    []model.DiffHunk{{FilePath: "README.md", Content: "+new\n"}},
 	}
 	filter, err := newReviewContextFilter(model.ReviewRequest{IncludePaths: []string{`\.go$`}})
@@ -164,8 +181,8 @@ func TestReviewContextFilterAllOmitted(t *testing.T) {
 	if !allFiltered {
 		t.Fatal("expected all files filtered")
 	}
-	if len(ctx.ChangedFiles) != 0 || strings.TrimSpace(ctx.Diff) != "" || len(ctx.DiffHunks) != 0 {
-		t.Fatalf("context not empty: files=%#v diff=%q hunks=%#v", ctx.ChangedFiles, ctx.Diff, ctx.DiffHunks)
+	if len(ctx.ChangedFiles) != 0 || strings.TrimSpace(ctx.Diff) != "" || len(ctx.DiffFiles) != 0 || len(ctx.DiffHunks) != 0 {
+		t.Fatalf("context not empty: files=%#v diff=%q diffFiles=%#v hunks=%#v", ctx.ChangedFiles, ctx.Diff, ctx.DiffFiles, ctx.DiffHunks)
 	}
 	if !reviewContextAllFiltered(ctx) {
 		t.Fatalf("omitted sections = %#v", ctx.OmittedSections)
@@ -194,6 +211,69 @@ func TestRunSpecPipelineReturnsCleanResultWhenFiltersOmitAll(t *testing.T) {
 	if result.OverallExplanation != "All changed files were omitted by filters." {
 		t.Fatalf("overall explanation = %q", result.OverallExplanation)
 	}
+}
+
+func TestPromptPayloadDefaultsToDiffFiles(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := reviewPromptPayload(t, llmClient.reqs[0])
+	if _, ok := payload["diff_files"]; !ok {
+		t.Fatalf("payload missing diff_files: %#v", payload)
+	}
+	if _, ok := payload["diff_hunks"]; ok {
+		t.Fatalf("payload should not include diff_hunks in default mode: %#v", payload["diff_hunks"])
+	}
+	diffFiles := payload["diff_files"].([]any)
+	first := diffFiles[0].(map[string]any)
+	if first["file_path"] != "main.go" || first["language"] != "go" {
+		t.Fatalf("diff file = %#v", first)
+	}
+	if content, _ := first["content"].(string); !strings.HasPrefix(content, "diff --git a/main.go b/main.go\n") {
+		t.Fatalf("diff file content = %.80q", content)
+	}
+}
+
+func TestPromptPayloadCanUseLegacyDiffHunks(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		DiffFormat:       model.DiffFormatHunks,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := reviewPromptPayload(t, llmClient.reqs[0])
+	if _, ok := payload["diff_hunks"]; !ok {
+		t.Fatalf("payload missing diff_hunks: %#v", payload)
+	}
+	if _, ok := payload["diff_files"]; ok {
+		t.Fatalf("payload should not include diff_files in hunk mode: %#v", payload["diff_files"])
+	}
+}
+
+func reviewPromptPayload(t *testing.T, req *llm.ReviewRequest) map[string]any {
+	t.Helper()
+	if req == nil || len(req.Messages) < 2 {
+		t.Fatalf("review request messages = %#v", req)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
+		t.Fatalf("unmarshal review payload: %v\n%s", err, req.Messages[1].Content)
+	}
+	return payload
 }
 
 func commentBodies(comments []model.Comment) []string {

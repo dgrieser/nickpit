@@ -36,6 +36,7 @@ type PipelineState struct {
 	styleGuides     []model.StyleGuide
 	hasToolchain    bool
 	promptsReady    bool
+	diffFormat      model.DiffFormat
 
 	groupOrder []string
 	groupByID  map[string]*groupEntry
@@ -336,6 +337,7 @@ func fusedSpecFromPipeline(entry workflow.StepEntry) postMergeFusedSpec {
 func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req model.ReviewRequest) (*model.ReviewResult, *model.ReviewContext, error) {
 	st := newPipelineState(reviewCtx, p.reviewOrder)
 	st.limiter = NewLimiter(req.Concurrency)
+	st.diffFormat = req.DiffFormat
 	// Every agent loop in this run acquires admission from the same limiter,
 	// capping LLM concurrency globally (reviewers, verify, dedupe, merge, ...).
 	ctx = WithLimiter(ctx, st.limiter)

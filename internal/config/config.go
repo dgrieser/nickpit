@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -60,6 +61,7 @@ type Profile struct {
 	ExcludePaths                       []string            `yaml:"exclude_paths"`
 	IncludeContent                     []string            `yaml:"include_content"`
 	ExcludeContent                     []string            `yaml:"exclude_content"`
+	DiffFormat                         model.DiffFormat    `yaml:"diff_format"`
 	MaxContextTokens                   int                 `yaml:"max_context_tokens"`
 	MaxToolCalls                       int                 `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls              int                 `yaml:"max_duplicate_tool_calls"`
@@ -131,6 +133,7 @@ type Overrides struct {
 	ExcludePaths           *[]string
 	IncludeContent         *[]string
 	ExcludeContent         *[]string
+	DiffFormat             model.DiffFormat
 	MaxContextTokens       *int
 	ToolCalls              *int
 	DuplicateToolCalls     *int
@@ -616,6 +619,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.ExcludeContent != nil {
 		profile.ExcludeContent = slices.Clone(*overrides.ExcludeContent)
 	}
+	if overrides.DiffFormat != "" {
+		profile.DiffFormat = overrides.DiffFormat
+	}
 	if overrides.MaxContextTokens != nil {
 		profile.MaxContextTokens = *overrides.MaxContextTokens
 		profile.MaxContextTokensConfigured = true
@@ -731,6 +737,9 @@ func applyProfileDefaults(profile Profile) Profile {
 	if profile.NudgeCount == 0 && !profile.NudgeCountConfigured {
 		profile.NudgeCount = DefaultNudgeCount
 	}
+	if profile.DiffFormat == "" {
+		profile.DiffFormat = model.DiffFormatFiles
+	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort
 	}
@@ -766,6 +775,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.NudgeCount < 0 {
 		return Profile{}, fmt.Errorf("config: nudge_count must be non-negative")
+	}
+	if profile.DiffFormat != model.DiffFormatFiles && profile.DiffFormat != model.DiffFormatHunks {
+		return Profile{}, fmt.Errorf("config: diff_format must be one of: files, hunks")
 	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)
