@@ -707,17 +707,17 @@ func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultsDiffRepresentationToFiles(t *testing.T) {
+func TestLoadConfigDefaultsDiffFormatToFiles(t *testing.T) {
 	_, profile, err := Load("", Overrides{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DiffRepresentation != model.DiffRepresentationFiles {
-		t.Fatalf("diff representation = %q", profile.DiffRepresentation)
+	if profile.DiffFormat != model.DiffFormatFiles {
+		t.Fatalf("diff format = %q", profile.DiffFormat)
 	}
 }
 
-func TestLoadConfigDiffRepresentationFromFileAndOverride(t *testing.T) {
+func TestLoadConfigDiffFormatFromFileAndOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -726,7 +726,7 @@ profiles:
   custom:
     model: test-model
     base_url: https://example.test/v1
-    diff_representation: hunks
+    diff_format: hunks
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -736,20 +736,20 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DiffRepresentation != model.DiffRepresentationHunks {
-		t.Fatalf("diff representation = %q", profile.DiffRepresentation)
+	if profile.DiffFormat != model.DiffFormatHunks {
+		t.Fatalf("diff format = %q", profile.DiffFormat)
 	}
 
-	_, profile, err = Load(path, Overrides{DiffRepresentation: model.DiffRepresentationFiles})
+	_, profile, err = Load(path, Overrides{DiffFormat: model.DiffFormatFiles})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DiffRepresentation != model.DiffRepresentationFiles {
-		t.Fatalf("override diff representation = %q", profile.DiffRepresentation)
+	if profile.DiffFormat != model.DiffFormatFiles {
+		t.Fatalf("override diff format = %q", profile.DiffFormat)
 	}
 }
 
-func TestLoadConfigRejectsInvalidDiffRepresentation(t *testing.T) {
+func TestLoadConfigRejectsInvalidDiffFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -758,15 +758,15 @@ profiles:
   custom:
     model: test-model
     base_url: https://example.test/v1
-    diff_representation: raw
+    diff_format: raw
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	_, _, err = Load(path, Overrides{})
-	if err == nil || !strings.Contains(err.Error(), "diff_representation") {
-		t.Fatalf("err = %v, want diff_representation validation error", err)
+	if err == nil || !strings.Contains(err.Error(), "diff_format") {
+		t.Fatalf("err = %v, want diff_format validation error", err)
 	}
 }
 

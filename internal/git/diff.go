@@ -31,7 +31,7 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 	if err != nil {
 		return nil, err
 	}
-	diffFiles, hunks, files, err := ParseUnifiedDiffRepresentations(diff)
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormats(diff)
 	if err != nil {
 		return nil, err
 	}

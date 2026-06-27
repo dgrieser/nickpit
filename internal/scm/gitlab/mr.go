@@ -130,7 +130,7 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		diff.WriteByte('\n')
 	}
 	diffText := diff.String()
-	diffFiles, hunks, _, _ := git.ParseUnifiedDiffRepresentations(diffText)
+	diffFiles, hunks, _, _ := git.ParseUnifiedDiffFormats(diffText)
 	var omitted []string
 	if changes.Overflow {
 		omitted = append(omitted, "WARNING: GitLab reported this MR's diff as truncated (overflow); the review is based on a partial diff and may miss changes")

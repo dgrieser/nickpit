@@ -28,7 +28,7 @@ type FinalizeOptions struct {
 	DisablePatchSummary      bool
 	SkipSuggestions          bool
 	RepoRoot                 string
-	DiffRepresentation       model.DiffRepresentation
+	DiffFormat               model.DiffFormat
 	// PriorityThreshold is the configured "lowest currently allowed priority"
 	// (p0..p3). It is the floor a missing priority defaults to and the level a
 	// verifier-refuted non-finding is demoted to, so an affirmation never renders
@@ -79,7 +79,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes, opts.SkipSuggestions, opts.DiffRepresentation)
+	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes, opts.SkipSuggestions, opts.DiffFormat)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -100,7 +100,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		DisableParallelToolCalls: opts.DisableParallelToolCalls,
 		SkipSuggestions:          opts.SkipSuggestions,
 		UseJSONSchema:            opts.UseJSONSchema,
-		DiffRepresentation:       opts.DiffRepresentation,
+		DiffFormat:               opts.DiffFormat,
 	}
 	finalizeStart := time.Now()
 	e.logProgress(logging.StageFinalize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
@@ -197,8 +197,8 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 	}
 }
 
-func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, skipSuggestions bool, representation model.DiffRepresentation) (string, error) {
-	payload := model.PromptPayloadFromContextWithDiffRepresentation(reviewCtx, representation)
+func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, skipSuggestions bool, format model.DiffFormat) (string, error) {
+	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	guides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
 		return "", err

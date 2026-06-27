@@ -247,9 +247,9 @@ func TestPromptPayloadCanUseLegacyDiffHunks(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
-		Mode:               model.ModeLocal,
-		DiffRepresentation: model.DiffRepresentationHunks,
-		MaxContextTokens:   1000,
+		Mode:             model.ModeLocal,
+		DiffFormat:       model.DiffFormatHunks,
+		MaxContextTokens: 1000,
 	})
 	if err != nil {
 		t.Fatal(err)

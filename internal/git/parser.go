@@ -14,11 +14,11 @@ import (
 var hunkHeader = regexp.MustCompile(`^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@`)
 
 func ParseUnifiedDiff(diff string) ([]model.DiffHunk, []model.ChangedFile, error) {
-	_, hunks, files, err := ParseUnifiedDiffRepresentations(diff)
+	_, hunks, files, err := ParseUnifiedDiffFormats(diff)
 	return hunks, files, err
 }
 
-func ParseUnifiedDiffRepresentations(diff string) ([]model.DiffFile, []model.DiffHunk, []model.ChangedFile, error) {
+func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, []model.ChangedFile, error) {
 	var (
 		hunks        []model.DiffHunk
 		files        []model.ChangedFile

@@ -57,7 +57,7 @@ func TestTrimmerDropsGeneratedFilesFromEmbeddedMappings(t *testing.T) {
 	}
 }
 
-func TestTrimmerDiffFilesPruningUsesPrunedRepresentation(t *testing.T) {
+func TestTrimmerDiffFilesPruningUsesPrunedFormat(t *testing.T) {
 	diffFiles := []model.DiffFile{
 		testDiffFile("a.go", 40),
 		testDiffFile("b.go", 40),
@@ -93,7 +93,7 @@ func TestTrimmerDiffFilesPruningUsesPrunedRepresentation(t *testing.T) {
 	}
 }
 
-func TestTrimmerDiffHunksPruningUsesPrunedRepresentation(t *testing.T) {
+func TestTrimmerDiffHunksPruningUsesPrunedFormat(t *testing.T) {
 	hunks := []model.DiffHunk{
 		{FilePath: "a.go", Content: strings.Repeat("a", 40)},
 		{FilePath: "b.go", Content: strings.Repeat("b", 40)},

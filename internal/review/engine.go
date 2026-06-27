@@ -558,7 +558,7 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		SkipSuggestions:          req.SkipSuggestions,
 		RepoRoot:                 req.RepoRoot,
 		DropPolicy:               req.VerifyDropPolicy,
-		DiffRepresentation:       req.DiffRepresentation,
+		DiffFormat:               req.DiffFormat,
 	}
 }
 

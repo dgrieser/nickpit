@@ -73,7 +73,7 @@ type app struct {
 	includeContentSet             bool
 	excludeContent                []string
 	excludeContentSet             bool
-	diffRepresentation            string
+	diffFormat                    string
 	jsonOutput                    bool
 	useJSONSchema                 bool
 	maxToolCalls                  int
@@ -193,7 +193,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.excludePaths, "exclude-path", nil, "Exclude changed files whose repo-relative path matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.includeContent, "include-content", nil, "Include changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.excludeContent, "exclude-content", nil, "Exclude changed files whose full post-change content matches this regex; repeatable")
-	root.PersistentFlags().StringVar(&cli.diffRepresentation, "diff-representation", "", "Diff representation for agent prompts: files or hunks")
+	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: files or hunks")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
@@ -364,7 +364,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		ExcludePaths:           excludePaths,
 		IncludeContent:         includeContent,
 		ExcludeContent:         excludeContent,
-		DiffRepresentation:     model.DiffRepresentation(a.diffRepresentation),
+		DiffFormat:             model.DiffFormat(a.diffFormat),
 		MaxContextTokens:       maxContextTokens,
 		ToolCalls:              toolCalls,
 		DuplicateToolCalls:     duplicateToolCalls,
@@ -497,7 +497,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				ExcludePaths:            profile.ExcludePaths,
 				IncludeContent:          profile.IncludeContent,
 				ExcludeContent:          profile.ExcludeContent,
-				DiffRepresentation:      profile.DiffRepresentation,
+				DiffFormat:              profile.DiffFormat,
 				MaxContextTokens:        profile.MaxContextTokens,
 				MaxToolCalls:            profile.MaxToolCalls,
 				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
@@ -578,7 +578,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				ExcludePaths:            profile.ExcludePaths,
 				IncludeContent:          profile.IncludeContent,
 				ExcludeContent:          profile.ExcludeContent,
-				DiffRepresentation:      profile.DiffRepresentation,
+				DiffFormat:              profile.DiffFormat,
 				MaxContextTokens:        profile.MaxContextTokens,
 				MaxToolCalls:            profile.MaxToolCalls,
 				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
@@ -659,7 +659,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				ExcludePaths:            profile.ExcludePaths,
 				IncludeContent:          profile.IncludeContent,
 				ExcludeContent:          profile.ExcludeContent,
-				DiffRepresentation:      profile.DiffRepresentation,
+				DiffFormat:              profile.DiffFormat,
 				MaxContextTokens:        profile.MaxContextTokens,
 				MaxToolCalls:            profile.MaxToolCalls,
 				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
@@ -845,7 +845,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 				MaxOutputRetries:        profile.MaxOutputRetries,
 				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
 				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
-				DiffRepresentation:      profile.DiffRepresentation,
+				DiffFormat:              profile.DiffFormat,
 				UseJSONSchema:           profile.UseJSONSchema,
 			}
 			ctx := logging.WithProgressInfo(cmd.Context(), profileProgressInfo(profile))
@@ -948,8 +948,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	req.Concurrency = a.concurrency
 	req.VerifyDropPolicy = a.verifyDropPolicy
 	req.ConfidenceThreshold = a.confidenceThreshold
-	if req.DiffRepresentation == "" {
-		req.DiffRepresentation = profile.DiffRepresentation
+	if req.DiffFormat == "" {
+		req.DiffFormat = profile.DiffFormat
 	}
 	if profile.DisablePatchSummary {
 		req.DisablePatchSummary = true

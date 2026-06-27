@@ -156,7 +156,7 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		})
 	}
 	diff := framedDiff(files)
-	diffFiles, hunks, _, _ := git.ParseUnifiedDiffRepresentations(diff)
+	diffFiles, hunks, _, _ := git.ParseUnifiedDiffFormats(diff)
 	return &model.ReviewContext{
 		Mode:       model.ModeGitHub,
 		Identifier: number,

@@ -27,11 +27,11 @@ const (
 	FileRenamed  FileStatus = "renamed"
 )
 
-type DiffRepresentation string
+type DiffFormat string
 
 const (
-	DiffRepresentationFiles DiffRepresentation = "files"
-	DiffRepresentationHunks DiffRepresentation = "hunks"
+	DiffFormatFiles DiffFormat = "files"
+	DiffFormatHunks DiffFormat = "hunks"
 )
 
 type ReviewRequest struct {
@@ -49,7 +49,7 @@ type ReviewRequest struct {
 	ExcludePaths            []string
 	IncludeContent          []string
 	ExcludeContent          []string
-	DiffRepresentation      DiffRepresentation
+	DiffFormat              DiffFormat
 	MaxContextTokens        int
 	MaxToolCalls            int
 	MaxDuplicateToolCalls   int
@@ -561,10 +561,10 @@ func (r *ReviewResult) Clone() (*ReviewResult, error) {
 }
 
 func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
-	return PromptPayloadFromContextWithDiffRepresentation(src, DiffRepresentationFiles)
+	return PromptPayloadFromContextWithDiffFormat(src, DiffFormatFiles)
 }
 
-func PromptPayloadFromContextWithDiffRepresentation(src *ReviewContext, representation DiffRepresentation) *ReviewPromptPayload {
+func PromptPayloadFromContextWithDiffFormat(src *ReviewContext, format DiffFormat) *ReviewPromptPayload {
 	if src == nil {
 		return nil
 	}
@@ -580,8 +580,8 @@ func PromptPayloadFromContextWithDiffRepresentation(src *ReviewContext, represen
 		ToolchainVersions:   src.ToolchainVersions,
 		OmittedSections:     src.OmittedSections,
 	}
-	switch representation {
-	case DiffRepresentationHunks:
+	switch format {
+	case DiffFormatHunks:
 		payload.DiffHunks = src.DiffHunks
 	default:
 		if len(src.DiffFiles) > 0 {

@@ -62,7 +62,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("exclude_paths", stringSliceNode(profile.ExcludePaths)),
 		yamlEntry("include_content", stringSliceNode(profile.IncludeContent)),
 		yamlEntry("exclude_content", stringSliceNode(profile.ExcludeContent)),
-		yamlEntry("diff_representation", yamlScalar(string(profile.DiffRepresentation))),
+		yamlEntry("diff_format", yamlScalar(string(profile.DiffFormat))),
 		yamlEntry("max_context_tokens", yamlInt(profile.MaxContextTokens)),
 		yamlEntry("max_tool_calls", yamlInt(profile.MaxToolCalls)),
 		yamlEntry("max_duplicate_tool_calls", yamlInt(profile.MaxDuplicateToolCalls)),

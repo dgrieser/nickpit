@@ -31,9 +31,9 @@ func TestParseUnifiedDiff(t *testing.T) {
 	}
 }
 
-func TestParseUnifiedDiffRepresentationsBuildsDiffFiles(t *testing.T) {
+func TestParseUnifiedDiffFormatsBuildsDiffFiles(t *testing.T) {
 	diff := string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff")))
-	diffFiles, hunks, files, err := ParseUnifiedDiffRepresentations(diff)
+	diffFiles, hunks, files, err := ParseUnifiedDiffFormats(diff)
 	if err != nil {
 		t.Fatal(err)
 	}
