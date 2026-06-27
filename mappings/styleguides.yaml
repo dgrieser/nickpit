@@ -1,3 +1,36 @@
+# Styleguide mappings are embedded into the binary and decide which files from
+# prompts/styleguides/ are sent to review, verify, finalize, verdict, and
+# summarize agents.
+#
+# style_guides:
+#   Maps a styleguide language key to a Markdown file under prompts/.
+#   Add a new key here when adding a new styleguide file.
+#
+# style_guide_order:
+#   Stable output order for selected guides. Every entry must exist in
+#   style_guides. Add new guides here if prompt order should be deterministic.
+#
+# extension_overrides:
+#   Overrides language detection only for styleguide selection. This is useful
+#   when the general file language is broader than the guide split, for example
+#   mapping .ts/.tsx to the TypeScript guide while general file detection groups
+#   those extensions as nodejs.
+#
+# detectors:
+#   Adds extra styleguides based on paths or content signals, including embedded
+#   languages such as SQL in Go code or Kubernetes YAML in Helm templates.
+#   `probe_paths` decides which changed or supplemental files are worth reading
+#   for content-based detection. `match_any` adds the guide if any listed
+#   matcher hits. `match_all` adds the guide only if every non-empty matcher
+#   group hits at least once.
+#
+# Supported matcher keys:
+#   extensions, basenames, basename_suffixes, path_segments, path_prefixes,
+#   path_contains, content_contains, content_regex
+#
+# Path matching is lowercased and slash-normalized. content_contains is
+# case-sensitive. content_regex uses Go regular expressions; prefer simple,
+# bounded expressions because detectors run over changed-file content.
 style_guides:
   go: styleguides/go.md
   python: styleguides/python.md

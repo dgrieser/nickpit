@@ -1,3 +1,24 @@
+# Language mappings are embedded into the binary and used by
+# filetype.DetectLanguage. They decide the `language` field attached to changed
+# files, which affects prompt payloads, syntax labels, retrieval backends, and
+# styleguide fallback selection.
+#
+# Detection order:
+#   1. path_rules, in the order listed below
+#   2. extensions, using the file extension from the basename
+#   3. basenames, using the lowercased basename
+#   4. default
+#
+# All path and extension matching is lowercased before comparison. Extensions
+# must include the leading dot. Basenames should be lowercase. Path rules use
+# `match_any`: if any configured path matcher hits, the rule's language wins.
+#
+# Supported path-rule matchers:
+#   extensions, basenames, basename_suffixes, path_segments, path_prefixes,
+#   path_contains, content_contains, content_regex
+#
+# Only path-based matchers are useful here today because DetectLanguage receives
+# only a path, not file content.
 default: text
 
 extensions:

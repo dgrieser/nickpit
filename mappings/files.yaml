@@ -1,3 +1,14 @@
+# File mappings are embedded into the binary and used by the review context
+# trimmer. Keep this file data-only: changing these values changes which files
+# NickPit treats as generated or lockfile-like noise.
+#
+# generated_suffixes:
+#   Any changed file whose path ends with one of these strings is classified as
+#   generated. Generated files are still present in the diff, but context
+#   trimming can deprioritize or omit their full content so reviewers focus on
+#   source changes. Entries may be exact basenames such as "go.sum" or suffixes
+#   such as ".pb.go". Matching is case-sensitive and uses the repository path as
+#   reported by Git.
 generated_suffixes:
   - .pb.go
   - go.sum
