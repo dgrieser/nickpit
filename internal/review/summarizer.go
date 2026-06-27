@@ -535,7 +535,7 @@ func summarizeItemRequired(item summarizeTextItem) bool {
 }
 
 func summarizeSuggestionItemID(findingID string, suggestionIndex int) string {
-	data := []byte(fmt.Sprintf("nickpit:summarize:suggestion:%s:%d", strings.TrimSpace(findingID), suggestionIndex))
+	data := fmt.Appendf(nil, "nickpit:summarize:suggestion:%s:%d", strings.TrimSpace(findingID), suggestionIndex)
 	return uuid.NewSHA1(uuid.NameSpaceOID, data).String()
 }
 
