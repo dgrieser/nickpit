@@ -186,7 +186,7 @@ func (t *Trimmer) trimDiffFiles(ctx *model.ReviewContext) {
 		removed := false
 		for _, file := range ctx.DiffFiles {
 			if !removed && file.FilePath == worstPath {
-				fileSizes[file.FilePath] -= len(file.Content)
+				delete(fileSizes, file.FilePath)
 				removed = true
 				continue
 			}
