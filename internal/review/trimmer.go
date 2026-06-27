@@ -122,6 +122,7 @@ func (t *Trimmer) trimDiff(ctx *model.ReviewContext) {
 		}
 		return
 	}
+	ctx.Diff = ""
 
 	fileSizes := map[string]int{}
 	for _, hunk := range ctx.DiffHunks {
@@ -166,6 +167,7 @@ func (t *Trimmer) trimDiff(ctx *model.ReviewContext) {
 }
 
 func (t *Trimmer) trimDiffFiles(ctx *model.ReviewContext) {
+	ctx.Diff = ""
 	fileSizes := map[string]int{}
 	for _, file := range ctx.DiffFiles {
 		fileSizes[file.FilePath] += len(file.Content)
@@ -215,11 +217,14 @@ func renderContextText(ctx *model.ReviewContext) string {
 	b.WriteString(ctx.Description)
 	b.WriteString(ctx.Diff)
 	if ctx.Diff == "" {
-		for _, file := range ctx.DiffFiles {
-			b.WriteString(file.Content)
-		}
-		for _, hunk := range ctx.DiffHunks {
-			b.WriteString(hunk.Content)
+		if len(ctx.DiffFiles) > 0 {
+			for _, file := range ctx.DiffFiles {
+				b.WriteString(file.Content)
+			}
+		} else {
+			for _, hunk := range ctx.DiffHunks {
+				b.WriteString(hunk.Content)
+			}
 		}
 	}
 	for _, file := range ctx.ChangedFiles {

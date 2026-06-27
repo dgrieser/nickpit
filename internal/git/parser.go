@@ -123,7 +123,17 @@ func splitUnifiedDiff(diff string) []diffSection {
 		sections = append(sections, diffSection{path: currentPath, text: current.String()})
 		current.Reset()
 	}
-	for _, line := range strings.SplitAfter(diff, "\n") {
+	remaining := diff
+	for len(remaining) > 0 {
+		idx := strings.IndexByte(remaining, '\n')
+		var line string
+		if idx == -1 {
+			line = remaining
+			remaining = ""
+		} else {
+			line = remaining[:idx+1]
+			remaining = remaining[idx+1:]
+		}
 		if strings.HasPrefix(line, "diff --git ") {
 			flush()
 			inSection = true
