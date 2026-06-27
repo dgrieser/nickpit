@@ -2448,12 +2448,13 @@ func syntheticToolFollowupEntryFromHistory(index int, entry toolCallHistoryEntry
 }
 
 type toolResultSummary struct {
-	IsError     bool
-	Code        string
-	Message     string
-	Lines       int
-	Files       int
-	ResultCount int
+	IsError        bool
+	Code           string
+	Message        string
+	Lines          int
+	Files          int
+	ResultCount    int
+	HasResultCount bool
 }
 
 type toolCallHistoryEntry struct {
@@ -2515,6 +2516,7 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.Files = len(files)
 	}
 	if results, ok := payload["results"].([]any); ok {
+		summary.HasResultCount = true
 		summary.ResultCount = len(results)
 		distinct := make(map[string]struct{}, len(results))
 		for _, item := range results {
@@ -2531,7 +2533,18 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.Files = len(distinct)
 	}
 	if resultCount, ok := payload["result_count"].(float64); ok {
+		summary.HasResultCount = true
 		summary.ResultCount = int(resultCount)
+	}
+	if matchCount, ok := payload["match_count"].(float64); ok {
+		summary.HasResultCount = true
+		summary.ResultCount = int(matchCount)
+		if matchCount > 0 {
+			summary.Files = 1
+		}
+	}
+	if codeLineCount, ok := payload["code_line_count"].(float64); ok {
+		summary.Lines = int(codeLineCount)
 	}
 	if root, ok := payload["root"].(map[string]any); ok {
 		summary.Files = countCallHierarchyFiles(root)
@@ -2584,11 +2597,12 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 }
 
 // toolCallArgs is the union of arguments across the retrieval tools
-// (inspect_file, list_files, search, find_callers, find_callees). A single
+// (inspect_file, locate_code, list_files, search, find_callers, find_callees). A single
 // named type replaces the 9-field anonymous struct that was previously
 // re-declared verbatim at several call sites.
 type toolCallArgs struct {
 	Path          string `json:"path"`
+	Code          string `json:"code"`
 	LineStart     int    `json:"line_start"`
 	LineEnd       int    `json:"line_end"`
 	Depth         int    `json:"depth"`
@@ -2610,6 +2624,9 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		if args.LineEnd > 0 {
 			parts = append(parts, fmt.Sprintf("line_end=%d", args.LineEnd))
 		}
+	case "locate_code":
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
+		parts = append(parts, fmt.Sprintf("code_line_count=%d", locateCodeLineCount(args.Code)))
 	case "list_files":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {
@@ -2649,11 +2666,11 @@ func syntheticToolOutcome(toolName string, result toolResultSummary) string {
 	if result.Files > 0 || result.ResultCount > 0 {
 		parts = append(parts, fmt.Sprintf("files=%d", result.Files))
 	}
-	if result.ResultCount > 0 {
+	if result.HasResultCount || result.ResultCount > 0 {
 		parts = append(parts, fmt.Sprintf("result_count=%d", result.ResultCount))
 	}
 	if len(parts) == 0 {
-		if toolName == "search" {
+		if toolName == "search" || toolName == "locate_code" {
 			parts = append(parts, "result_count=0")
 			return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
 		}

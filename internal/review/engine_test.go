@@ -1396,7 +1396,7 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
-	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees"}
+	wantNames := []string{"inspect_file", "locate_code", "list_files", "search", "find_callers", "find_callees"}
 	if len(definitions) != len(wantNames) {
 		t.Fatalf("tool definitions = %d", len(definitions))
 	}
@@ -1414,6 +1414,7 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 	definitions := reviewerToolDefinitions()
 	requiredByTool := map[string][]string{
 		"inspect_file": {"path"},
+		"locate_code":  {"path", "code"},
 		"search":       {"query"},
 		"find_callers": {"symbol"},
 		"find_callees": {"symbol"},
@@ -1466,6 +1467,9 @@ func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	}
 	if !strings.Contains(listing, "- `search` tool with a repo-relative `path` and a `query`") {
 		t.Fatalf("generated listing missing search tool: %q", listing)
+	}
+	if !strings.Contains(listing, "- `locate_code` tool with a repo-relative `path` and exact `code`") {
+		t.Fatalf("generated listing missing locate_code tool: %q", listing)
 	}
 }
 

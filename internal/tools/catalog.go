@@ -53,6 +53,16 @@ var catalogDefinition = []catalogEntry{
 		},
 	},
 	{
+		Name:               "locate_code",
+		APIDescription:     "Locate exact code text in a repo-relative file and return line numbers",
+		ListingDescription: "with a repo-relative `path` and exact `code` line or block to return matching line ranges",
+		Note:               "Use this when you know the relevant code but need exact line numbers for a finding",
+		Parameters: []CatalogParameter{
+			{Name: "path", Type: "string", Description: "Repo-relative file path", Example: `"<repo-relative path>"`, Required: true},
+			{Name: "code", Type: "string", Description: "Exact line or contiguous block of code to locate", Example: `"<line or block of code>"`, Required: true},
+		},
+	},
+	{
 		Name:               "list_files",
 		APIDescription:     "List files of repo-relative folder",
 		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively)",
