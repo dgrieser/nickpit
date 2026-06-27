@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-NickPit is a Go 1.25 CLI for LLM-assisted code review. The main binary lives in `cmd/nickpit`; helper generators live in `cmd/nickpit-config-example` and `cmd/nickpit-workflow-example`. Core packages are under `internal/`: review orchestration in `internal/review`, LLM client code in `internal/llm`, SCM adapters in `internal/scm`, retrieval tools in `internal/retrieval`, and shared API types in `internal/model`. Prompt templates live in `prompts/`, style guides in `prompts/styleguides/`, mappings in `mappings/`, built-in workflow specs in `workflows/`, and test fixtures/golden data in `testdata/`. Static assets are in `assets/`.
+NickPit is a Go 1.25 CLI for LLM-assisted code review. The main binary lives in `cmd/nickpit`; helper generators live in `cmd/nickpit-config-example` and `cmd/nickpit-workflow-example`. Core packages are under `internal/`: review orchestration in `internal/review`, LLM client code in `internal/llm`, SCM adapters in `internal/scm`, retrieval tools in `internal/retrieval`, and shared API types in `internal/model`. Prompt templates live in `prompts/`, style guides in `prompts/styleguides/`, mappings in `mappings/`, built-in workflow specs in `workflows/`, and test fixtures/golden data in `testdata/`. Static assets are in `assets/`. See `CODE_STRUCTURE.md` for a file-by-file code map.
 
 ## Build, Test, and Development Commands
 
