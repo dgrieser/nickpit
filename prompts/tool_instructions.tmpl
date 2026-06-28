@@ -5,11 +5,14 @@ In some cases, you might still need more code context, use the following tools, 
 In the rare case that you still need more code context for your verification, use the following tools:{{end}}
 {{.ToolListing}}
 
-Important:{{if eq .AgentRole "context"}}
+Important:
+{{- if eq .AgentRole "context"}}
 - In each turn, first decide whether you already have enough context for a useful code review.
 - If you already have enough context, stop calling tools and return the summary of what you believe the patch is intended to do.
-{{else if or (eq .AgentRole "review") (eq .AgentRole "verify")}}
+{{- else if or (eq .AgentRole "review") (eq .AgentRole "verify")}}
 - Check the provided context first.
-- Only make additional tool calls, if the provided context is really insufficient.{{end}}
-{{if .ParallelToolCallGuidance}}
-- If possible, call multiple tools in parallel, e.g. in one turn.{{end}}
+- Only make additional tool calls, if the provided context is really insufficient.
+{{- end}}
+{{- if .ParallelToolCallGuidance}}
+- If possible, call multiple tools in parallel, e.g. in one turn.
+{{- end}}
