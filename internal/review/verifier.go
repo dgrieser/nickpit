@@ -114,7 +114,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, styleGuides, req.SkipSuggestions, req.DiffFormat)
+	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, req.SkipSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -331,9 +331,8 @@ func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {
 	return llm.VerifyExamplePromptSnippet()
 }
 
-func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, styleGuides []model.StyleGuide, skipSuggestions bool, format model.DiffFormat) (string, error) {
+func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, skipSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
-	payload.StyleGuides = styleGuides
 	base, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("verify: marshalling review payload: %w", err)

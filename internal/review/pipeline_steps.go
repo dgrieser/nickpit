@@ -30,7 +30,7 @@ func (e *Engine) ensurePrompts(st *PipelineState) error {
 		return err
 	}
 	payload := model.PromptPayloadFromContextWithDiffFormat(st.Enriched, st.diffFormat)
-	payload.StyleGuides, err = e.styleGuidesFor(st.Enriched)
+	styleGuides, err := e.styleGuidesFor(st.Enriched)
 	if err != nil {
 		return err
 	}
@@ -40,7 +40,7 @@ func (e *Engine) ensurePrompts(st *PipelineState) error {
 	}
 	st.baseTemplate = baseTemplate
 	st.enrichedPrompt = userPrompt
-	st.styleGuides = payload.StyleGuides
+	st.styleGuides = styleGuides
 	st.hasToolchain = len(payload.ToolchainVersions) > 0
 	st.promptsReady = true
 	return nil
@@ -56,7 +56,6 @@ func (e *Engine) collectStepFunc() stepFunc {
 		if err != nil {
 			return err
 		}
-		basePayload.StyleGuides = guides
 		baseUserPrompt, err := llm.RenderJSON(basePayload)
 		if err != nil {
 			return fmt.Errorf("review: rendering review prompt json: %w", err)
@@ -65,7 +64,7 @@ func (e *Engine) collectStepFunc() stepFunc {
 		if err != nil {
 			return err
 		}
-		contextSystem, err := sc.Engine.renderContextSystem(contextTemplate, sc.Req)
+		contextSystem, err := sc.Engine.renderContextSystem(contextTemplate, sc.Req, guides, len(basePayload.ToolchainVersions) > 0)
 		if err != nil {
 			return err
 		}
@@ -497,7 +496,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 			if strings.TrimSpace(userPrompt) == "" {
 				userPrompt = "{}"
 			}
-			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgents(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req)
+			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgentsWithStyleGuides(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, st.styleGuides, st.hasToolchain)
 		}
 		if mergeResult.resp != nil {
 			mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
@@ -652,7 +651,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				defer mergeWG.Done()
 				mergeCtx, mergeCancel := mergeBudget.startOrCanceled()
 				defer mergeCancel()
-				merged, run := mergeSC.Engine.runClusterMergeAgent(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req)
+				merged, run := mergeSC.Engine.runClusterMergeAgentWithStyleGuides(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, st.styleGuides, st.hasToolchain)
 				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
 			}(ci, reduced)
 		}

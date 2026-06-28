@@ -102,16 +102,26 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
+	styleGuides, err := e.styleGuidesFor(reviewCtx)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("verdict", styleGuides, len(reviewCtx.ToolchainVersions) > 0)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
-		OutputSchemaSnippet string
-		OutputFormatSnippet string
-		DisablePatchSummary bool
-		SkipSuggestions     bool
+		OutputSchemaSnippet        string
+		OutputFormatSnippet        string
+		DisablePatchSummary        bool
+		SkipSuggestions            bool
+		StyleGuideToolchainSnippet string
 	}{
-		OutputSchemaSnippet: verdictOutputSchemaSnippetFor(opts.UseJSONSchema),
-		OutputFormatSnippet: commonSnippets.outputFormat,
-		DisablePatchSummary: opts.DisablePatchSummary,
-		SkipSuggestions:     opts.SkipSuggestions,
+		OutputSchemaSnippet:        verdictOutputSchemaSnippetFor(opts.UseJSONSchema),
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+		DisablePatchSummary:        opts.DisablePatchSummary,
+		SkipSuggestions:            opts.SkipSuggestions,
+		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
@@ -267,11 +277,6 @@ func verdictFilterConfidence(finding model.Finding) (float64, string) {
 
 func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, skipSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
-	guides, err := e.styleGuidesFor(reviewCtx)
-	if err != nil {
-		return "", err
-	}
-	payload.StyleGuides = guides
 	contextJSON, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("verdict: marshalling review payload: %w", err)

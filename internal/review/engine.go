@@ -800,6 +800,10 @@ func markDedupeRun(run model.AgentRun, status string, err error) model.AgentRun 
 // findings unmerged — bias toward inclusion: a rare surviving near-duplicate
 // beats silently losing a reviewer's finding.
 func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, []model.AgentRun) {
+	return e.runClusterMergeAgentsWithStyleGuides(ctx, userPrompt, contextNotes, inputs, schema, constraints, req, nil, false)
+}
+
+func (e *Engine) runClusterMergeAgentsWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, []model.AgentRun) {
 	if len(inputs) == 0 {
 		result := emptyVerifiedMergeResult()
 		return result, []model.AgentRun{result.run}
@@ -839,7 +843,7 @@ func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, c
 		wg.Add(1)
 		go func(ci int, reduced []model.Finding) {
 			defer wg.Done()
-			outcomes[ci], runs[ci] = e.runClusterMergeAgent(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req)
+			outcomes[ci], runs[ci] = e.runClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions)
 		}(ci, reduced)
 	}
 	wg.Wait()
@@ -892,7 +896,11 @@ func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[stri
 // runClusterMergeAgent judges one ambiguous cluster. Any failure path returns
 // the cluster unmerged so reviewer findings are never lost.
 func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) ([]model.Finding, model.AgentRun) {
-	result, err := e.callClusterMergeAgent(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req)
+	return e.runClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, nil, false)
+}
+
+func (e *Engine) runClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) ([]model.Finding, model.AgentRun) {
+	result, err := e.callClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions)
 	run := result.run
 	if err != nil {
 		return cluster, markMergeRun(run, model.AgentRunStatusFailed, err)
@@ -1040,6 +1048,10 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 }
 
 func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
+	return e.callClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, nil, false)
+}
+
+func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_cluster_merge_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
@@ -1048,16 +1060,22 @@ func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, c
 	if err != nil {
 		return agentResult{}, err
 	}
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("merge", styleGuides, hasToolchainVersions)
+	if err != nil {
+		return agentResult{}, err
+	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
 		FindingInstructionsSnippet string
 		PrioritySnippet            string
 		OutputFormatSnippet        string
 		SkipSuggestions            bool
+		StyleGuideToolchainSnippet string
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		SkipSuggestions:            req.SkipSuggestions,
+		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering merge system prompt: %w", err)
@@ -1464,7 +1482,7 @@ func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model
 	}, err
 }
 
-func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (string, error) {
+func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                "context",
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
@@ -1472,10 +1490,16 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest) (
 	if err != nil {
 		return "", err
 	}
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("context", styleGuides, hasToolchainVersions)
+	if err != nil {
+		return "", err
+	}
 	systemPrompt, err := llm.RenderPrompt(template, struct {
-		ToolInstructions string
+		ToolInstructions           string
+		StyleGuideToolchainSnippet string
 	}{
-		ToolInstructions: toolInstructions,
+		ToolInstructions:           toolInstructions,
+		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering context system prompt: %w", err)
@@ -2173,17 +2197,7 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 
 func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
 	agentRole = strings.TrimSpace(agentRole)
-	if agentRole != "review" && agentRole != "verify" {
-		return "", nil
-	}
-	titles := make([]string, 0, len(guides))
-	for _, guide := range guides {
-		title := strings.TrimSpace(guide.Title)
-		if title != "" {
-			titles = append(titles, title)
-		}
-	}
-	if len(titles) == 0 && !hasToolchainVersions {
+	if len(guides) == 0 && !hasToolchainVersions {
 		return "", nil
 	}
 	template, err := e.loadPrompt("agent_styleguide_toolchain_snippet.tmpl")
@@ -2192,11 +2206,11 @@ func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []mod
 	}
 	rendered, err := llm.RenderPrompt(template, struct {
 		AgentRole            string
-		StyleGuideTitles     []string
+		StyleGuides          []model.StyleGuide
 		HasToolchainVersions bool
 	}{
 		AgentRole:            agentRole,
-		StyleGuideTitles:     titles,
+		StyleGuides:          guides,
 		HasToolchainVersions: hasToolchainVersions,
 	})
 	if err != nil {

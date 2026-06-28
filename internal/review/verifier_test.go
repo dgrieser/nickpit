@@ -482,20 +482,12 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
-	styleGuides, ok := payload["style_guides"].([]any)
-	if !ok || len(styleGuides) != 1 {
-		t.Fatalf("style guides = %#v", payload["style_guides"])
-	}
-	goStyleGuide := styleGuides[0].(map[string]any)
-	if goStyleGuide["language"] != "go" {
-		t.Fatalf("style guide language = %#v", goStyleGuide["language"])
-	}
-	if content, _ := goStyleGuide["content"].(string); !strings.Contains(content, "# Go Style Guide") {
-		t.Fatalf("style guide content = %.80q", content)
+	if _, ok := payload["style_guides"]; ok {
+		t.Fatalf("user prompt should not include style_guides: %#v", payload["style_guides"])
 	}
 	system := llmClient.requests[0].Messages[0].Content
-	if !strings.Contains(system, "When validating findings, check the provided styleguides:") {
-		t.Fatalf("verify system prompt missing styleguide reminder: %q", system)
+	if !strings.Contains(system, "## STYLEGUIDES") {
+		t.Fatalf("verify system prompt missing styleguide section: %q", system)
 	}
 	if !strings.Contains(system, "Treat styleguides as verification evidence") || !strings.Contains(system, "they are rules to follow") {
 		t.Fatalf("verify system prompt missing styleguide evidence rule: %q", system)
@@ -503,8 +495,8 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if !strings.Contains(system, "Styleguide contradiction gate") || !strings.Contains(system, "Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide") {
 		t.Fatalf("verify system prompt missing styleguide contradiction gate: %q", system)
 	}
-	if !strings.Contains(system, "- Go Style Guide") {
-		t.Fatalf("verify system prompt missing Go styleguide title: %q", system)
+	if !strings.Contains(system, "### Go Style Guide (go)") || !strings.Contains(system, "# Go Style Guide") {
+		t.Fatalf("verify system prompt missing Go styleguide content: %q", system)
 	}
 }
 
@@ -534,20 +526,12 @@ func TestVerifyIncludesKubernetesStyleGuide(t *testing.T) {
 	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
-	styleGuides := payload["style_guides"].([]any)
-	if len(styleGuides) != 1 {
-		t.Fatalf("style guides = %#v", payload["style_guides"])
-	}
-	kubernetesStyleGuide := styleGuides[0].(map[string]any)
-	if kubernetesStyleGuide["language"] != "kubernetes" {
-		t.Fatalf("style guide language = %#v", kubernetesStyleGuide["language"])
-	}
-	if content, _ := kubernetesStyleGuide["content"].(string); !strings.Contains(content, "# Kubernetes Style Guide") {
-		t.Fatalf("style guide content = %.80q", content)
+	if _, ok := payload["style_guides"]; ok {
+		t.Fatalf("user prompt should not include style_guides: %#v", payload["style_guides"])
 	}
 	system := llmClient.requests[0].Messages[0].Content
-	if !strings.Contains(system, "- Kubernetes Style Guide") {
-		t.Fatalf("verify system prompt missing Kubernetes styleguide title: %q", system)
+	if !strings.Contains(system, "### Kubernetes Style Guide (kubernetes)") || !strings.Contains(system, "# Kubernetes Style Guide") {
+		t.Fatalf("verify system prompt missing Kubernetes styleguide content: %q", system)
 	}
 }
 

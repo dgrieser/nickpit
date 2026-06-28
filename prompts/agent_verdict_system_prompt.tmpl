@@ -32,6 +32,8 @@ Your job:
 
 DO NOT introduce new findings.
 
+{{.StyleGuideToolchainSnippet}}
+
 Overall correctness rules:
 - if ANY finding has `priority_floor` 0, `overall_correctness` MUST be `"patch is incorrect"` even if `finalization.priority` downgraded it
 - if ANY finding has `priority_floor` 1 AND none have `priority_floor` 0, `overall_correctness` SHOULD be `"patch is incorrect"` in most cases, otherwise:
