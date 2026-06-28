@@ -25,6 +25,9 @@ func (e *Engine) ensurePrompts(st *PipelineState) error {
 	if st.promptsReady {
 		return nil
 	}
+	if st.Enriched == nil {
+		return fmt.Errorf("review: nil enriched context")
+	}
 	baseTemplate, err := e.loadPrompt("agent_review_general_system_prompt.tmpl")
 	if err != nil {
 		return err
@@ -51,6 +54,9 @@ func (e *Engine) ensurePrompts(st *PipelineState) error {
 // recorded and the pipeline continues with the un-enriched context.
 func (e *Engine) collectStepFunc() stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		if st.Base == nil {
+			return fmt.Errorf("review: nil base context")
+		}
 		basePayload := model.PromptPayloadFromContextWithDiffFormat(st.Base, sc.Req.DiffFormat)
 		guides, err := sc.Engine.styleGuidesFor(st.Base)
 		if err != nil {
@@ -64,7 +70,8 @@ func (e *Engine) collectStepFunc() stepFunc {
 		if err != nil {
 			return err
 		}
-		contextSystem, err := sc.Engine.renderContextSystem(contextTemplate, sc.Req, guides, len(basePayload.ToolchainVersions) > 0)
+		hasToolchain := basePayload != nil && len(basePayload.ToolchainVersions) > 0
+		contextSystem, err := sc.Engine.renderContextSystem(contextTemplate, sc.Req, guides, hasToolchain)
 		if err != nil {
 			return err
 		}

@@ -2962,6 +2962,25 @@ func TestMultiAgentToleratesContextFailure(t *testing.T) {
 	}
 }
 
+func TestEnsurePromptsRejectsNilEnrichedContext(t *testing.T) {
+	engine := NewEngine(stubSource{}, stubLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+
+	err := engine.ensurePrompts(&PipelineState{})
+	if err == nil || !strings.Contains(err.Error(), "nil enriched context") {
+		t.Fatalf("ensurePrompts error = %v, want nil enriched context", err)
+	}
+}
+
+func TestCollectStepRejectsNilBaseContext(t *testing.T) {
+	engine := NewEngine(stubSource{}, stubLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	step := engine.collectStepFunc()
+
+	err := step(context.Background(), &stepContext{Engine: engine, Req: model.ReviewRequest{}}, &PipelineState{})
+	if err == nil || !strings.Contains(err.Error(), "nil base context") {
+		t.Fatalf("collect step error = %v, want nil base context", err)
+	}
+}
+
 func TestMultiAgentToleratesMergeFailure(t *testing.T) {
 	llmClient := &multiAgentLLM{mergeFailErr: errors.New("merge upstream fail")}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
