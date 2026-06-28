@@ -893,12 +893,8 @@ func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[stri
 	return findings, reviewerByID
 }
 
-// runClusterMergeAgent judges one ambiguous cluster. Any failure path returns
-// the cluster unmerged so reviewer findings are never lost.
-func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) ([]model.Finding, model.AgentRun) {
-	return e.runClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, nil, false)
-}
-
+// runClusterMergeAgentWithStyleGuides judges one ambiguous cluster. Any failure
+// path returns the cluster unmerged so reviewer findings are never lost.
 func (e *Engine) runClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) ([]model.Finding, model.AgentRun) {
 	result, err := e.callClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions)
 	run := result.run
@@ -1045,10 +1041,6 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 		}
 	}
 	return &clone
-}
-
-func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
-	return e.callClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, nil, false)
 }
 
 func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, error) {
