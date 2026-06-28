@@ -30,8 +30,8 @@ const (
 type DiffFormat string
 
 const (
-	DiffFormatFiles DiffFormat = "files"
-	DiffFormatHunks DiffFormat = "hunks"
+	DiffFormatGit     DiffFormat = "git"
+	DiffFormatGitJson DiffFormat = "git-json"
 )
 
 type ReviewRequest struct {
@@ -561,7 +561,7 @@ func (r *ReviewResult) Clone() (*ReviewResult, error) {
 }
 
 func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
-	return PromptPayloadFromContextWithDiffFormat(src, DiffFormatFiles)
+	return PromptPayloadFromContextWithDiffFormat(src, DiffFormatGit)
 }
 
 func PromptPayloadFromContextWithDiffFormat(src *ReviewContext, format DiffFormat) *ReviewPromptPayload {
@@ -581,7 +581,7 @@ func PromptPayloadFromContextWithDiffFormat(src *ReviewContext, format DiffForma
 		OmittedSections:     src.OmittedSections,
 	}
 	switch format {
-	case DiffFormatHunks:
+	case DiffFormatGitJson:
 		payload.DiffHunks = src.DiffHunks
 	default:
 		if len(src.DiffFiles) > 0 {

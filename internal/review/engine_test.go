@@ -248,7 +248,7 @@ func TestPromptPayloadCanUseLegacyDiffHunks(t *testing.T) {
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
 		Mode:             model.ModeLocal,
-		DiffFormat:       model.DiffFormatHunks,
+		DiffFormat:       model.DiffFormatGitJson,
 		MaxContextTokens: 1000,
 	})
 	if err != nil {

@@ -193,7 +193,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.excludePaths, "exclude-path", nil, "Exclude changed files whose repo-relative path matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.includeContent, "include-content", nil, "Include changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.excludeContent, "exclude-content", nil, "Exclude changed files whose full post-change content matches this regex; repeatable")
-	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: files or hunks")
+	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")

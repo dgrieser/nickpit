@@ -738,7 +738,7 @@ func applyProfileDefaults(profile Profile) Profile {
 		profile.NudgeCount = DefaultNudgeCount
 	}
 	if profile.DiffFormat == "" {
-		profile.DiffFormat = model.DiffFormatFiles
+		profile.DiffFormat = model.DiffFormatGit
 	}
 	if profile.ReasoningEffort == "" {
 		profile.ReasoningEffort = DefaultReasoningEffort
@@ -776,8 +776,8 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.NudgeCount < 0 {
 		return Profile{}, fmt.Errorf("config: nudge_count must be non-negative")
 	}
-	if profile.DiffFormat != model.DiffFormatFiles && profile.DiffFormat != model.DiffFormatHunks {
-		return Profile{}, fmt.Errorf("config: diff_format must be one of: files, hunks")
+	if profile.DiffFormat != model.DiffFormatGit && profile.DiffFormat != model.DiffFormatGitJson {
+		return Profile{}, fmt.Errorf("config: diff_format must be one of: git, git-json")
 	}
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)

@@ -707,12 +707,12 @@ func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultsDiffFormatToFiles(t *testing.T) {
+func TestLoadConfigDefaultsDiffFormatToGit(t *testing.T) {
 	_, profile, err := Load("", Overrides{Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DiffFormat != model.DiffFormatFiles {
+	if profile.DiffFormat != model.DiffFormatGit {
 		t.Fatalf("diff format = %q", profile.DiffFormat)
 	}
 }
@@ -726,7 +726,7 @@ profiles:
   custom:
     model: test-model
     base_url: https://example.test/v1
-    diff_format: hunks
+    diff_format: git-json
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -736,15 +736,15 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DiffFormat != model.DiffFormatHunks {
+	if profile.DiffFormat != model.DiffFormatGitJson {
 		t.Fatalf("diff format = %q", profile.DiffFormat)
 	}
 
-	_, profile, err = Load(path, Overrides{DiffFormat: model.DiffFormatFiles})
+	_, profile, err = Load(path, Overrides{DiffFormat: model.DiffFormatGit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.DiffFormat != model.DiffFormatFiles {
+	if profile.DiffFormat != model.DiffFormatGit {
 		t.Fatalf("override diff format = %q", profile.DiffFormat)
 	}
 }

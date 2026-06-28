@@ -62,7 +62,7 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.DisablePatchSummary {
 			t.Fatalf("%s disable patch summary = true, want false default", entry.name)
 		}
-		if profile.DiffFormat != model.DiffFormatFiles {
+		if profile.DiffFormat != model.DiffFormatGit {
 			t.Fatalf("%s diff format = %q", entry.name, profile.DiffFormat)
 		}
 		if profile.ReasoningEffort != DefaultReasoningEffort {
