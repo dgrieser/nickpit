@@ -17,6 +17,10 @@ class = one finding; list the affected variants in the body.
 Use advisory `cluster_signals` as routing context for why these findings were
 sent together, but verify the finding text before merging; the signals are not
 proof of duplication.
+{{- if .StyleGuideToolchainSnippet}}
+
+{{.StyleGuideToolchainSnippet}}
+{{- end}}
 
 Keep findings separate when they address different aspects, have different
 failure modes or risk classes, or require genuinely different fixes.
@@ -28,9 +32,9 @@ When merging duplicate findings:
 - set confidence from the combined evidence quality; independent reviewers agreeing increases confidence
 - extend the code location to the largest line range covering all merged findings;
   when merged findings span files, keep the location of the surviving finding
-{{if not .SkipSuggestions}}
+{{- if not .SkipSuggestions}}
 - include suggestions from all duplicate findings, merge only when it makes sense
-{{end}}
+{{- end}}
 - merge `verification` on duplicate findings:
   - merge the verification `remarks` if both have the same `verdict`;
     otherwise use the `remarks` of the finding with the highest `confidence_score`

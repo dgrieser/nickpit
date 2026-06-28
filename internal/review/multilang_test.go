@@ -128,15 +128,14 @@ func TestEngineAddsPythonStyleGuideForPythonDiffs(t *testing.T) {
 	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
 		t.Fatal(err)
 	}
-	styleGuides := payload["style_guides"].([]any)
-	if len(styleGuides) != 1 {
-		t.Fatalf("style guides = %#v", payload["style_guides"])
+	if _, ok := payload["style_guides"]; ok {
+		t.Fatalf("user prompt should not include style_guides: %#v", payload["style_guides"])
 	}
-	pythonStyleGuide := styleGuides[0].(map[string]any)
-	if pythonStyleGuide["language"] != "python" {
-		t.Fatalf("style guide language = %#v", pythonStyleGuide["language"])
+	contentsByLanguage := styleGuideContentsFromSystem(llmClient.reqs[0].Messages[0].Content)
+	if len(contentsByLanguage) != 1 {
+		t.Fatalf("style guides = %#v", contentsByLanguage)
 	}
-	if content, _ := pythonStyleGuide["content"].(string); !strings.Contains(content, "# Python Style Guide") {
+	if content := contentsByLanguage["python"]; !strings.Contains(content, "# Python Style Guide") {
 		t.Fatalf("style guide content = %.80q", content)
 	}
 }
@@ -178,15 +177,10 @@ func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
 	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
 		t.Fatal(err)
 	}
-	styleGuides := payload["style_guides"].([]any)
-	if len(styleGuides) != 5 {
-		t.Fatalf("style guides = %#v", payload["style_guides"])
+	if _, ok := payload["style_guides"]; ok {
+		t.Fatalf("user prompt should not include style_guides: %#v", payload["style_guides"])
 	}
-	contentsByLanguage := make(map[string]string)
-	for _, item := range styleGuides {
-		styleGuide := item.(map[string]any)
-		contentsByLanguage[styleGuide["language"].(string)] = styleGuide["content"].(string)
-	}
+	contentsByLanguage := styleGuideContentsFromSystem(llmClient.reqs[0].Messages[0].Content)
 	for language, want := range map[string]string{
 		"javascript": "# JavaScript Style Guide",
 		"typescript": "# TypeScript Style Guide",
@@ -604,11 +598,40 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
 		t.Fatal(err)
 	}
-	contentsByLanguage := make(map[string]string)
-	styleGuides, _ := payload["style_guides"].([]any)
-	for _, item := range styleGuides {
-		styleGuide := item.(map[string]any)
-		contentsByLanguage[styleGuide["language"].(string)] = styleGuide["content"].(string)
+	if _, ok := payload["style_guides"]; ok {
+		t.Fatalf("user prompt should not include style_guides: %#v", payload["style_guides"])
 	}
-	return contentsByLanguage
+	return styleGuideContentsFromSystem(llmClient.reqs[0].Messages[0].Content)
+}
+
+func styleGuideContentsFromSystem(system string) map[string]string {
+	knownLanguages := map[string]struct{}{
+		"csharp":     {},
+		"go":         {},
+		"helm":       {},
+		"html":       {},
+		"javascript": {},
+		"kubernetes": {},
+		"python":     {},
+		"shell":      {},
+		"sql":        {},
+		"typescript": {},
+	}
+	out := make(map[string]string)
+	for _, section := range strings.Split(system, "\n### ")[1:] {
+		heading, body, ok := strings.Cut(section, "\n")
+		if !ok {
+			continue
+		}
+		start := strings.LastIndex(heading, " (")
+		if start < 0 || !strings.HasSuffix(heading, ")") {
+			continue
+		}
+		language := heading[start+2 : len(heading)-1]
+		if _, ok := knownLanguages[language]; !ok {
+			continue
+		}
+		out[language] = body
+	}
+	return out
 }

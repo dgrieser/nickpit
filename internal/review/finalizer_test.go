@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -68,8 +69,20 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 			t.Fatalf("finalize system prompt missing %s:\n%s", want, systemPrompt)
 		}
 	}
+	if !strings.Contains(systemPrompt, "### Go Style Guide (go)") || !strings.Contains(systemPrompt, "# Go Style Guide") {
+		t.Fatalf("finalize system prompt missing styleguide content:\n%s", systemPrompt)
+	}
 	if !strings.Contains(req.Messages[1].Content, `"id": "`+findingID+`"`) {
 		t.Fatalf("finalize user prompt missing finding id:\n%s", req.Messages[1].Content)
+	}
+	var userPayload map[string]any
+	if err := json.Unmarshal([]byte(req.Messages[1].Content), &userPayload); err != nil {
+		t.Fatalf("unmarshal finalize user prompt: %v", err)
+	}
+	if reviewContext, ok := userPayload["review_context"].(map[string]any); ok {
+		if _, ok := reviewContext["style_guides"]; ok {
+			t.Fatalf("finalize review_context should not include style_guides: %#v", reviewContext["style_guides"])
+		}
 	}
 }
 
@@ -178,9 +191,20 @@ func TestVerdictContextNotesInPrompt(t *testing.T) {
 	if !strings.Contains(userPrompt, `"priority_floor": 1`) {
 		t.Fatalf("verdict user prompt missing priority_floor:\n%s", userPrompt)
 	}
+	var verdictPayload map[string]any
+	if err := json.Unmarshal([]byte(userPrompt), &verdictPayload); err != nil {
+		t.Fatalf("unmarshal verdict user prompt: %v", err)
+	}
+	if reviewContext, ok := verdictPayload["review_context"].(map[string]any); ok {
+		if _, ok := reviewContext["style_guides"]; ok {
+			t.Fatalf("verdict review_context should not include style_guides: %#v", reviewContext["style_guides"])
+		}
+	}
 	// The system prompt tasks the model to merge notes into overall_explanation.
 	if sys := withNotes.reqs[0].Messages[0].Content; !strings.Contains(sys, "notes") || !strings.Contains(sys, "priority_floor") || !strings.Contains(sys, "even if `finalization.priority` downgraded it") {
 		t.Fatalf("verdict system prompt does not mention notes:\n%s", sys)
+	} else if !strings.Contains(sys, "### Go Style Guide (go)") || !strings.Contains(sys, "# Go Style Guide") {
+		t.Fatalf("verdict system prompt missing styleguide content:\n%s", sys)
 	}
 
 	// Without notes: the `notes` key is omitted entirely.

@@ -1621,6 +1621,9 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if !strings.Contains(llmClient.contextSystem, "DO NOT produce review findings yourself") {
 		t.Fatalf("context prompt missing standalone instructions: %q", llmClient.contextSystem)
 	}
+	if !strings.Contains(llmClient.contextSystem, "### Go Style Guide (go)") || !strings.Contains(llmClient.contextSystem, "# Go Style Guide") {
+		t.Fatalf("context prompt missing styleguide content: %q", llmClient.contextSystem)
+	}
 	if strings.Contains(llmClient.contextSystem, "Make sure to output the findings") {
 		t.Fatalf("context prompt should not include review output instructions: %q", llmClient.contextSystem)
 	}
@@ -1632,6 +1635,17 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	}
 	if notes, _ := llmClient.mergePayload["context_agent_notes"].(string); !strings.Contains(notes, "## Notes") {
 		t.Fatalf("merge payload context_agent_notes = %#v", llmClient.mergePayload["context_agent_notes"])
+	}
+	if reviewContext, ok := llmClient.mergePayload["review_context"].(map[string]any); ok {
+		if _, ok := reviewContext["style_guides"]; ok {
+			t.Fatalf("merge review_context should not include style_guides: %#v", reviewContext["style_guides"])
+		}
+	}
+	if len(llmClient.mergeRequests) == 0 {
+		t.Fatal("missing merge request")
+	}
+	if system := llmClient.mergeRequests[0].Messages[0].Content; !strings.Contains(system, "### Go Style Guide (go)") || !strings.Contains(system, "# Go Style Guide") {
+		t.Fatalf("merge prompt missing styleguide content: %q", system)
 	}
 	clusterEntries, ok := llmClient.mergePayload["cluster_findings"].([]any)
 	if !ok || len(clusterEntries) != len(reviewVectors) {
@@ -1660,8 +1674,8 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 		if !strings.Contains(system, "## FOCUS ON ") {
 			t.Fatalf("%s prompt missing focus snippet", vector.name)
 		}
-		if !strings.Contains(system, "- Go Style Guide") {
-			t.Fatalf("%s prompt missing styleguide reminder: %q", vector.name, system)
+		if !strings.Contains(system, "### Go Style Guide (go)") || !strings.Contains(system, "# Go Style Guide") {
+			t.Fatalf("%s prompt missing styleguide content: %q", vector.name, system)
 		}
 		if !strings.Contains(system, "provided `toolchain_versions`") {
 			t.Fatalf("%s prompt missing toolchain reminder: %q", vector.name, system)
@@ -2945,6 +2959,25 @@ func TestMultiAgentToleratesContextFailure(t *testing.T) {
 		if llmClient.vectorContext[name] != "" {
 			t.Fatalf("%s reviewer received non-empty context notes: %q", name, llmClient.vectorContext[name])
 		}
+	}
+}
+
+func TestEnsurePromptsRejectsNilEnrichedContext(t *testing.T) {
+	engine := NewEngine(stubSource{}, stubLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+
+	err := engine.ensurePrompts(&PipelineState{})
+	if err == nil || !strings.Contains(err.Error(), "nil enriched context") {
+		t.Fatalf("ensurePrompts error = %v, want nil enriched context", err)
+	}
+}
+
+func TestCollectStepRejectsNilBaseContext(t *testing.T) {
+	engine := NewEngine(stubSource{}, stubLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	step := engine.collectStepFunc()
+
+	err := step(context.Background(), &stepContext{Engine: engine, Req: model.ReviewRequest{}}, &PipelineState{})
+	if err == nil || !strings.Contains(err.Error(), "nil base context") {
+		t.Fatalf("collect step error = %v, want nil base context", err)
 	}
 }
 

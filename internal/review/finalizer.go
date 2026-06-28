@@ -62,18 +62,28 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
+	styleGuides, err := e.styleGuidesFor(reviewCtx)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("finalize", styleGuides, len(reviewCtx.ToolchainVersions) > 0)
+	if err != nil {
+		return nil, model.AgentRun{}, err
+	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
-		PrioritySnippet     string
-		OutputSchemaSnippet string
-		OutputFormatSnippet string
-		DisablePatchSummary bool
-		SkipSuggestions     bool
+		PrioritySnippet            string
+		OutputSchemaSnippet        string
+		OutputFormatSnippet        string
+		DisablePatchSummary        bool
+		SkipSuggestions            bool
+		StyleGuideToolchainSnippet string
 	}{
-		PrioritySnippet:     commonSnippets.priority,
-		OutputSchemaSnippet: finalizeOutputSchemaSnippetFor(opts.UseJSONSchema, opts.SkipSuggestions),
-		OutputFormatSnippet: commonSnippets.outputFormat,
-		DisablePatchSummary: opts.DisablePatchSummary,
-		SkipSuggestions:     opts.SkipSuggestions,
+		PrioritySnippet:            commonSnippets.priority,
+		OutputSchemaSnippet:        finalizeOutputSchemaSnippetFor(opts.UseJSONSchema, opts.SkipSuggestions),
+		OutputFormatSnippet:        commonSnippets.outputFormat,
+		DisablePatchSummary:        opts.DisablePatchSummary,
+		SkipSuggestions:            opts.SkipSuggestions,
+		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
@@ -199,11 +209,6 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 
 func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, skipSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
-	guides, err := e.styleGuidesFor(reviewCtx)
-	if err != nil {
-		return "", err
-	}
-	payload.StyleGuides = guides
 	contextJSON, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("finalize: marshalling review payload: %w", err)

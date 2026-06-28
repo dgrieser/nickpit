@@ -14,9 +14,9 @@ Your job:
     - KEEP the following:
       - the concrete failure scenario
       - the affected code and location
-{{if not .SkipSuggestions}}
+{{- if not .SkipSuggestions}}
       - the suggestions
-{{end}}
+{{- end}}
       - and why it matters
     - DO NOT introduce new claims, code locations, or fixes that are not already in the input `body`
     - write the updated body to `summarization.body`
@@ -39,7 +39,7 @@ IMPORTANT: For every summarized body, ONLY use the following writing style:
 
 ## OUTPUT FORMAT
 {{.OutputFormatSnippet}}
-{{if .OutputSchemaSnippet}}
+{{- if .OutputSchemaSnippet}}
 - every output finding includes the same top-level `id` as the input finding; do not invent IDs and NEVER copy the `<uuid-v4>` placeholder
 - every output finding includes a non-empty `summarization.body`
-{{end}}
+{{- end}}

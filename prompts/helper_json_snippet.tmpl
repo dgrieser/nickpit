@@ -1,7 +1,8 @@
 Your previous response could not be parsed as the expected JSON output: {{.Reason}}.{{if .MissingFields}} Missing or invalid fields: {{.MissingFields}}.{{end}}
-{{if .Guidance}}
+{{- if .Guidance}}
+
 {{.Guidance}}
-{{end}}
+{{- end}}
 
 Respond again with ONLY a JSON object (no prose, no markdown fences) matching this shape:
 
