@@ -81,6 +81,15 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 			return uniqueKey
 		}
 		return fmt.Sprintf("inspect_file\x00%s", normalizeToolPath(args.Path))
+	case "locate_code":
+		var args struct {
+			Path string `json:"path"`
+			Code string `json:"code"`
+		}
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
+			return uniqueKey
+		}
+		return locateCodeDedupKey(normalizeToolPath(args.Path), normalizeLocateCodeInput(args.Code))
 	case "list_files":
 		var args struct {
 			Path  string `json:"path"`
@@ -137,6 +146,8 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	switch toolCall.Name {
 	case "inspect_file":
 		return e.executeInspectFile(ctx, repoRoot, toolCall, state)
+	case "locate_code":
+		return e.executeLocateCode(ctx, repoRoot, toolCall, state)
 	case "list_files":
 		return e.executeListFiles(ctx, repoRoot, toolCall, state)
 	case "search":
@@ -148,6 +159,71 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	default:
 		return toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
 	}
+}
+
+type locateCodeMatch struct {
+	StartLine int `json:"start_line"`
+	EndLine   int `json:"end_line"`
+	LineCount int `json:"line_count"`
+}
+
+func (e *Engine) executeLocateCode(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
+	var args struct {
+		Path string `json:"path"`
+		Code string `json:"code"`
+	}
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
+	}
+	args.Path = strings.TrimSpace(args.Path)
+	args.Code = normalizeLocateCodeInput(args.Code)
+	if args.Path == "" {
+		return toolError("", "missing_argument", missingToolArgumentMessage(toolCall.Name, "path"))
+	}
+	normalizedPath := normalizeToolPath(args.Path)
+	if args.Code == "" {
+		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "code"))
+	}
+
+	key := locateCodeDedupKey(normalizedPath, args.Code)
+	unlock := state.toolLocks.lock(key)
+	defer unlock()
+	state.mu.Lock()
+	_, ok := state.seenToolCalls[key]
+	state.mu.Unlock()
+	if ok {
+		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
+		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
+	}
+
+	e.logf(ctx, "Executing tool call: name=%s path=%s code_lines=%d", toolCall.Name, normalizedPath, locateCodeLineCount(args.Code))
+	content, err := e.retrieval.GetFile(ctx, repoRoot, normalizedPath)
+	if err != nil {
+		return toolError(normalizedPath, "retrieval_failed", err.Error())
+	}
+	if content == nil {
+		return toolError(normalizedPath, "retrieval_failed", "retrieved file content is nil")
+	}
+	matches := locateCodeMatches(content.Content, args.Code)
+	if matches == nil {
+		matches = []locateCodeMatch{}
+	}
+	state.mu.Lock()
+	state.seenToolCalls[key] = struct{}{}
+	state.mu.Unlock()
+
+	result := map[string]any{
+		"path":            content.Path,
+		"language":        content.Language,
+		"code_line_count": locateCodeLineCount(args.Code),
+		"match_count":     len(matches),
+		"matches":         matches,
+	}
+	if content.Truncated {
+		result["truncated"] = true
+		result["truncated_note"] = "file was too large and was truncated; matches beyond the retrieved prefix may be absent"
+	}
+	return mustToolResultJSON(result)
 }
 
 func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
@@ -481,6 +557,70 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, norm
 
 func callHierarchyDedupKey(name, path, symbol string, depth int) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", name, path, symbol, depth)
+}
+
+func locateCodeDedupKey(path, code string) string {
+	return fmt.Sprintf("locate_code\x00%s\x00%s", path, code)
+}
+
+func normalizeLocateCodeInput(code string) string {
+	code = strings.ReplaceAll(code, "\r\n", "\n")
+	code = strings.ReplaceAll(code, "\r", "\n")
+	return strings.Trim(code, "\n")
+}
+
+func normalizeLocateFileContent(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return strings.TrimSuffix(content, "\n")
+}
+
+func locateCodeLineCount(code string) int {
+	return lineCount(normalizeLocateCodeInput(code))
+}
+
+func locateCodeMatches(content, code string) []locateCodeMatch {
+	content = normalizeLocateFileContent(content)
+	code = normalizeLocateCodeInput(code)
+	codeLines := splitLocateLines(code)
+	if len(codeLines) == 0 {
+		return nil
+	}
+	fileLines := splitLocateLines(content)
+	if len(codeLines) > len(fileLines) {
+		return nil
+	}
+	matches := make([]locateCodeMatch, 0)
+	for i := 0; i+len(codeLines) <= len(fileLines); i++ {
+		if !linesEqual(fileLines[i:i+len(codeLines)], codeLines) {
+			continue
+		}
+		matches = append(matches, locateCodeMatch{
+			StartLine: i + 1,
+			EndLine:   i + len(codeLines),
+			LineCount: len(codeLines),
+		})
+	}
+	return matches
+}
+
+func splitLocateLines(text string) []string {
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
+}
+
+func linesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func mustToolResultJSON(value any) string {
