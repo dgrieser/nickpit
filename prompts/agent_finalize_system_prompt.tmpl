@@ -25,8 +25,10 @@ For each finding, you will:
     - add paragraphs, e.g. an empty line, between distinct points to improve readability
     - put code references and symbol names in backticks or code blocks
     - format bold or italic when it makes sense to emphasize a point
-{{if .SkipSuggestions}}- do not output `suggestions` anywhere, including under `finalization`
-{{else}}- produce final `finalization.suggestions`, when the input finding has `suggestions`:
+{{- if .SkipSuggestions}}
+- do not output `suggestions` anywhere, including under `finalization`
+{{- else}}
+- produce final `finalization.suggestions`, when the input finding has `suggestions`:
     - keep the same number of suggestions in the same order as the input finding
     - copy each input suggestion's `line_range` verbatim
     - add paragraphs, e.g. an empty line, between distinct points to improve readability
@@ -34,24 +36,28 @@ For each finding, you will:
     - format bold or italic when it makes sense to emphasize a point
     - DO NOT invent new suggestions
     - DO NOT drop existing suggestions
-{{end}}
+{{- end}}
 - copy `verification` verbatim from the input finding into the output; finalization must NEVER drop verification
 - output the same top-level `id` as the input finding; do not invent IDs
 - explain what you did in `finalization.remarks`
 
 DO NOT introduce new findings that no engineer raised
+{{- if .StyleGuideToolchainSnippet}}
 
 {{.StyleGuideToolchainSnippet}}
+{{- end}}
 
 {{.PrioritySnippet}}
 
 ## OUTPUT FORMAT
 {{.OutputFormatSnippet}}
-{{if .OutputSchemaSnippet}}
+{{- if .OutputSchemaSnippet}}
 - every output finding includes the same top-level `id` as the input finding; do not invent IDs and NEVER copy the `<uuid-v4>` placeholder
 - every output finding includes `verification` copied verbatim from the input finding
 - `finalization.priority` is an integer 0-3
 - `finalization.title` and `finalization.body` contain the final title and body you want downstream output to use
 - `finalization.remarks` is a short paragraph explaining what you did
-{{if not .SkipSuggestions}}- `finalization.suggestions` contains the final suggestion text downstream output should use{{end}}
-{{end}}
+{{- if not .SkipSuggestions}}
+- `finalization.suggestions` contains the final suggestion text downstream output should use
+{{- end}}
+{{- end}}

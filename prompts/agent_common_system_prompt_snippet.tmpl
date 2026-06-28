@@ -1,10 +1,11 @@
-{{if eq .Snippet "findings"}}
+{{- if eq .Snippet "findings"}}
 For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merged or not{{end}}:
-{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}- output `id` for every finding; preserve one source `id` when keeping or merging input findings
+{{- if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}
+- output `id` for every finding; preserve one source `id` when keeping or merging input findings
 - DO NOT generate a fresh UUID
 - NEVER copy the `<uuid-v4>` placeholder
 - output `verification` for every finding; keep `verification.id` equal to the output finding `id`
-{{end}}
+{{- end}}
 - use ONE distinct issue per finding
 - make the title imperative and less than 80 characters
 - set `priority` to 0, 1, 2 or 3 (always required)
@@ -13,24 +14,29 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
   - write it as one continuous body
   - NO headers, NO titles
   - add paragraphs, e.g. an empty line, between distinct points to improve readability
-  {{if eq .AgentRole "review"}}- put code references and symbol names in backticks or code blocks
+{{- if eq .AgentRole "review"}}
+  - put code references and symbol names in backticks or code blocks
   - format bold or italic when it makes sense to emphasize a point
-  {{end}}
+{{- end}}
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
-{{if .SkipSuggestions}}- do not output `suggestions`
-{{else if eq .AgentRole "review"}}- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
-{{else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}- copy `suggestions` from the source findings, each including `body`, `line_range.start` and `line_range.end`; merge them only when it makes sense and DO NOT invent new suggestions
-{{end}}{{end}}
-{{if eq .Snippet "priority"}}
+{{- if .SkipSuggestions}}
+- do not output `suggestions`
+{{- else if eq .AgentRole "review"}}
+- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
+{{- else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}
+- copy `suggestions` from the source findings, each including `body`, `line_range.start` and `line_range.end`; merge them only when it makes sense and DO NOT invent new suggestions
+{{- end}}
+{{- end}}
+{{- if eq .Snippet "priority"}}
 ### PRIORITY
 Use these priority levels:
 - 0: blocking release or major universal failure
 - 1: urgent and should be fixed in the next cycle
 - 2: normal bug worth fixing
 - 3: low-priority issue
-{{end}}
-{{if eq .Snippet "output_format"}}
+{{- end}}
+{{- if eq .Snippet "output_format"}}
 Make sure to output the findings in the following JSON format:
 
 ```json
@@ -39,7 +45,7 @@ Make sure to output the findings in the following JSON format:
 
 - DO NOT wrap the JSON in markdown fences or extra prose
 - produce JSON only and match the schema EXACTLY
-{{end}}
-{{if eq .Snippet "response_format"}}
+{{- end}}
+{{- if eq .Snippet "response_format"}}
 Make sure to output the findings using the specified `response_format.json_schema` named `review_response`, which was sent in the API request.
-{{end}}
+{{- end}}

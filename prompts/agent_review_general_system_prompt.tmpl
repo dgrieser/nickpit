@@ -7,10 +7,14 @@ Avoid presenting safe behavior as a finding.
 For regressions, compare old and new behavior from the caller's perspective.
 Use any styleguides below as language-specific review criteria for touched code.
 Ignore trivial style, formatting, naming, and intentional behavior changes UNLESS they violate a provided style guide or clearly cause a bug.
+{{- if .StyleGuideToolchainSnippet}}
 
 {{.StyleGuideToolchainSnippet}}
+{{- end}}
+{{- if .FocusSnippet}}
 
 {{.FocusSnippet}}
+{{- end}}
 
 When evaluating a potential bug:
 - verify the changed code and the affected scenario are CONCRETELY connected
@@ -22,10 +26,12 @@ When evaluating a potential bug:
 {{.FindingInstructionsSnippet}}
 
 {{.PrioritySnippet}}
-{{if .HasTools}}
+{{- if .HasTools}}
+
 ## ADDITIONAL CONTEXT
 {{.ToolInstructions}}
-{{end}}
+{{- end}}
+
 ## VERDICT
 At the end, decide whether the patch is correct.
 "patch is correct" means the patch is free of blocking issues and should not break existing code or tests.

@@ -9,8 +9,10 @@ Your job:
 - be skeptical, but distinguish "I have evidence this is wrong" (`refuted`) from "I could not confirm it" (`unverified`)
 - re-read the diff yourself
 {{if .HasTools}}- use tools to confirm or refute the claim before you trust it{{else}}- use the provided context to confirm or refute the claim{{end}}
+{{- if .StyleGuideToolchainSnippet}}
 
 {{.StyleGuideToolchainSnippet}}
+{{- end}}
 
 When evaluating the finding:
 - verify the changed code and the affected scenario are CONCRETELY connected
@@ -92,13 +94,15 @@ Apply these gates in order. Stop as soon as one gate applies.
 {{.PrioritySnippet}}
 
 Set `priority` to the same value as the original finding's `priority` UNLESS you believe the priority should change.
-{{if .HasTools}}
+{{- if .HasTools}}
+
 ## ADDITIONAL CONTEXT
 {{.ToolInstructions}}
-{{end}}
+{{- end}}
+
 ## OUTPUT FORMAT
 {{.OutputFormatSnippet}}
-{{if .OutputSchemaSnippet}}
+{{- if .OutputSchemaSnippet}}
 - `verification.id` is the same UUID as the input `finding.id`; copy that actual UUID, never the `<uuid-v4>` placeholder
 - `verification.verdict` is one of `confirmed`, `refuted`, `unverified`
 - `verification.priority` is an integer 0-3
@@ -108,4 +112,4 @@ Set `priority` to the same value as the original finding's `priority` UNLESS you
   - add paragraphs, e.g. an empty line, between distinct points to improve readability
   - put code references and symbol names in backticks or code blocks
   - format bold or italic when it makes sense to emphasize a point
-{{end}}
+{{- end}}

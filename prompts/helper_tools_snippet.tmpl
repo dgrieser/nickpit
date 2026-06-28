@@ -1,7 +1,7 @@
 You used the following tools up to now:
-{{range .History}}
-{{.Index}}. {{.Name}}{{if .OptimizedTo}} (replaced by {{.OptimizedTo}}){{end}}: tool_call_id={{printf "%q" .ToolCallID}}, arguments=[{{.Arguments}}]; {{.Outcome}}{{end}}
-
+{{- range .History}}
+{{.Index}}. {{.Name}}{{if .OptimizedTo}} (replaced by {{.OptimizedTo}}){{end}}: tool_call_id={{printf "%q" .ToolCallID}}, arguments=[{{.Arguments}}]; {{.Outcome}}
+{{- end}}
 {{if .RetryLastTool}}
 Please retry the last tool call.
 {{else if eq .AgentRole "context"}}
@@ -12,4 +12,5 @@ Continue calling tools, if the provided context is insufficient.
 If you have enough context for the code review, stop calling tools and return the requested JSON format.
 {{else if eq .AgentRole "verify"}}
 Only make additional tool calls, if the provided context is really insufficient.
-If you have enough context for the verification, stop calling tools and return the requested JSON format.{{end}}
+If you have enough context for the verification, stop calling tools and return the requested JSON format.
+{{end}}

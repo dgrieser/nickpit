@@ -1,11 +1,27 @@
-{{if .CountTooLow}}The deduped `findings` array must keep at least {{.MinCount}} of the original {{.InputCount}} findings. Only merge true duplicates. Copy unclear findings unchanged.
-{{end}}{{if .CountTooHigh}}The deduped `findings` array must not contain more than the original {{.InputCount}} findings. Do not create new findings.
-{{end}}{{if .UnknownIDs}}Every output finding `id` must be copied from one of the original reviewer findings. The previous response used {{.UnknownIDs}} unknown id{{if ne .UnknownIDs 1}}s{{end}}. Do not generate new UUIDs.
-{{end}}{{if .DuplicateIDs}}Each output finding `id` may appear at most once. The previous response repeated {{.DuplicateIDs}} id{{if ne .DuplicateIDs 1}}s{{end}}. Merge duplicate output entries or keep one.
-{{end}}{{if .VerificationMismatch}}Every output finding must include `verification` and `verification.id` must equal the output finding `id`. The previous response had {{.VerificationMismatch}} mismatch{{if ne .VerificationMismatch 1}}es{{end}}.
-{{end}}{{if .AllowedIDs}}
+{{- if .CountTooLow}}
+The deduped `findings` array must keep at least {{.MinCount}} of the original {{.InputCount}} findings. Only merge true duplicates. Copy unclear findings unchanged.
+{{- end}}
+{{- if .CountTooHigh}}
+The deduped `findings` array must not contain more than the original {{.InputCount}} findings. Do not create new findings.
+{{- end}}
+{{- if .UnknownIDs}}
+Every output finding `id` must be copied from one of the original reviewer findings. The previous response used {{.UnknownIDs}} unknown id{{if ne .UnknownIDs 1}}s{{end}}. Do not generate new UUIDs.
+{{- end}}
+{{- if .DuplicateIDs}}
+Each output finding `id` may appear at most once. The previous response repeated {{.DuplicateIDs}} id{{if ne .DuplicateIDs 1}}s{{end}}. Merge duplicate output entries or keep one.
+{{- end}}
+{{- if .VerificationMismatch}}
+Every output finding must include `verification` and `verification.id` must equal the output finding `id`. The previous response had {{.VerificationMismatch}} mismatch{{if ne .VerificationMismatch 1}}es{{end}}.
+{{- end}}
+{{- if .AllowedIDs}}
 Allowed input IDs, in order:
-{{range .AllowedIDs}}- `{{.}}`
-{{end}}{{end}}{{if .UnknownIDValues}}Unknown output IDs:
-{{range .UnknownIDValues}}- {{if .}}`{{.}}`{{else}}<empty id>{{end}}
-{{end}}{{end}}
+{{- range .AllowedIDs}}
+- `{{.}}`
+{{- end}}
+{{- end}}
+{{- if .UnknownIDValues}}
+Unknown output IDs:
+{{- range .UnknownIDValues}}
+- {{if .}}`{{.}}`{{else}}<empty id>{{end}}
+{{- end}}
+{{- end}}

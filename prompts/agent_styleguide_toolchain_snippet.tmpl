@@ -1,10 +1,19 @@
-{{if or .StyleGuides .HasToolchainVersions}}{{if .StyleGuides}}## STYLEGUIDES
+{{- if or .StyleGuides .HasToolchainVersions}}
+{{- if .StyleGuides}}
+## STYLEGUIDES
 Use these styleguides as rules for touched code when judging code, findings, priorities, correctness, or final review text. They are rules to follow, not background context.
-{{if eq .AgentRole "verify"}}
+{{- if eq .AgentRole "verify"}}
+
 Treat styleguides as verification evidence. Before trusting a finding, check whether the reviewer actually followed these rules.
-{{end}}
-{{range .StyleGuides}}
+{{- end}}
+{{- range .StyleGuides}}
+
 ### {{if .Title}}{{.Title}}{{else}}{{.Language}} Style Guide{{end}}{{if .Language}} ({{.Language}}){{end}}
 {{.Content}}
-{{end}}{{end}}{{if .HasToolchainVersions}}
-Check the provided `toolchain_versions` before making language-version or runtime-version assumptions.{{end}}{{end}}
+{{- end}}
+{{- end}}
+{{- if .HasToolchainVersions}}
+
+Check the provided `toolchain_versions` before making language-version or runtime-version assumptions.
+{{- end}}
+{{- end}}
