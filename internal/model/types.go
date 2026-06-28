@@ -168,18 +168,18 @@ type ReviewContext struct {
 
 type ReviewPromptPayload struct {
 	Repository          RepositoryInfo     `json:"repository"`
-	Identifier          int                `json:"identifier,omitempty"`
-	Title               string             `json:"title"`
-	Description         string             `json:"description"`
-	Commits             []CommitSummary    `json:"commits,omitempty"`
+	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`
 	ChangedFiles        []ChangedFile      `json:"changed_files"`
 	DiffFiles           []DiffFile         `json:"diff_files,omitempty"`
 	DiffHunks           []DiffHunk         `json:"diff_hunks,omitempty"`
-	StyleGuides         []StyleGuide       `json:"style_guides,omitempty"`
+	Commits             []CommitSummary    `json:"commits,omitempty"`
+	Identifier          int                `json:"identifier,omitempty"`
+	Title               string             `json:"title"`
+	Description         string             `json:"description"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
-	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`
 	OmittedSections     []string           `json:"omitted_sections,omitempty"`
+	StyleGuides         []StyleGuide       `json:"style_guides,omitempty"`
 }
 
 type ToolchainVersion struct {
@@ -570,14 +570,14 @@ func PromptPayloadFromContextWithDiffFormat(src *ReviewContext, format DiffForma
 	}
 	payload := &ReviewPromptPayload{
 		Repository:          src.Repository,
+		ToolchainVersions:   src.ToolchainVersions,
+		ChangedFiles:        src.ChangedFiles,
+		Commits:             src.Commits,
 		Identifier:          src.Identifier,
 		Title:               src.Title,
 		Description:         src.Description,
-		Commits:             src.Commits,
-		ChangedFiles:        src.ChangedFiles,
 		Comments:            src.Comments,
 		SupplementalContext: src.SupplementalContext,
-		ToolchainVersions:   src.ToolchainVersions,
 		OmittedSections:     src.OmittedSections,
 	}
 	switch format {

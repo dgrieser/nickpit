@@ -2,10 +2,106 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestReviewPromptPayloadJSONFieldOrder(t *testing.T) {
+	cases := []struct {
+		name    string
+		format  DiffFormat
+		diffKey string
+		omitKey string
+	}{
+		{name: "git", format: DiffFormatGit, diffKey: "diff_files", omitKey: "diff_hunks"},
+		{name: "git_json", format: DiffFormatGitJson, diffKey: "diff_hunks", omitKey: "diff_files"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := PromptPayloadFromContextWithDiffFormat(&ReviewContext{
+				Identifier:  42,
+				Repository:  RepositoryInfo{FullName: "owner/repo"},
+				Title:       "Review title",
+				Description: "Review description",
+				Commits: []CommitSummary{{
+					SHA:     "abc123",
+					Message: "commit message",
+					Author:  "author",
+				}},
+				ChangedFiles: []ChangedFile{{
+					Path:      "main.go",
+					Status:    FileModified,
+					Additions: 1,
+					Deletions: 1,
+				}},
+				DiffFiles: []DiffFile{{
+					FilePath: "main.go",
+					Content:  "diff --git a/main.go b/main.go",
+				}},
+				DiffHunks: []DiffHunk{{
+					FilePath: "main.go",
+					NewStart: 1,
+					NewLines: 1,
+					Content:  "@@ -1 +1 @@",
+				}},
+				Comments: []Comment{{
+					Author: "reviewer",
+					Body:   "comment body",
+				}},
+				SupplementalContext: []SupplementalFile{{
+					Path:    "README.md",
+					Content: "context",
+				}},
+				ToolchainVersions: []ToolchainVersion{{
+					Language: "go",
+					Version:  "1.25",
+				}},
+				OmittedSections: []string{"large_diff"},
+			}, tc.format)
+
+			data, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(data)
+			assertJSONKeyOrder(t, got, []string{
+				"repository",
+				"toolchain_versions",
+				"changed_files",
+				tc.diffKey,
+				"commits",
+				"identifier",
+				"title",
+				"description",
+				"comments",
+				"supplemental_context",
+				"omitted_sections",
+			})
+			if strings.Contains(got, `"`+tc.omitKey+`":`) {
+				t.Fatalf("payload should omit %q: %s", tc.omitKey, got)
+			}
+		})
+	}
+}
+
+func assertJSONKeyOrder(t *testing.T, data string, keys []string) {
+	t.Helper()
+	last := -1
+	for _, key := range keys {
+		pattern := `"` + key + `":`
+		idx := strings.Index(data, pattern)
+		if idx < 0 {
+			t.Fatalf("payload missing key %q: %s", key, data)
+		}
+		if idx <= last {
+			t.Fatalf("key %q out of order in payload: %s", key, data)
+		}
+		last = idx
+	}
+}
 
 func TestNormalizeConfidence(t *testing.T) {
 	cases := []struct {
