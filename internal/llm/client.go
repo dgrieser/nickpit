@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -398,21 +399,91 @@ func LowerReasoningEfforts(effort string) []string {
 	return fallbackReasoningEfforts(effort)
 }
 
-func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (map[string]any, error) {
+func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (json.RawMessage, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
+	return mergeOrderedJSONObject(data, extraBody)
+}
 
-	var body map[string]any
-	if err := json.Unmarshal(data, &body); err != nil {
+func mergeOrderedJSONObject(base []byte, extra map[string]any) (json.RawMessage, error) {
+	if len(extra) == 0 {
+		return json.RawMessage(base), nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(base))
+	start, err := decoder.Token()
+	if err != nil {
 		return nil, err
 	}
-	maps.Copy(body, extraBody)
-	if _, err := json.Marshal(body); err != nil {
+	if start != json.Delim('{') {
+		return nil, fmt.Errorf("request payload is not a JSON object")
+	}
+
+	keys := []string{}
+	fields := map[string]json.RawMessage{}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, fmt.Errorf("request payload key %v is not a string", keyToken)
+		}
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+		fields[key] = raw
+	}
+	end, err := decoder.Token()
+	if err != nil {
 		return nil, err
 	}
-	return body, nil
+	if end != json.Delim('}') {
+		return nil, fmt.Errorf("request payload ended with %v", end)
+	}
+
+	extraFields := make(map[string]json.RawMessage, len(extra))
+	for key, value := range extra {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		extraFields[key] = raw
+	}
+	newKeys := make([]string, 0, len(extraFields))
+	for key, raw := range extraFields {
+		if _, exists := fields[key]; !exists {
+			newKeys = append(newKeys, key)
+		}
+		fields[key] = raw
+	}
+	sort.Strings(newKeys)
+	keys = append(keys, newKeys...)
+
+	var out bytes.Buffer
+	out.WriteByte('{')
+	for i, key := range keys {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		encodedKey, err := json.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		out.Write(encodedKey)
+		out.WriteByte(':')
+		out.Write(fields[key])
+	}
+	out.WriteByte('}')
+	if !json.Valid(out.Bytes()) {
+		return nil, fmt.Errorf("merged request payload is invalid JSON")
+	}
+	return json.RawMessage(out.Bytes()), nil
 }
 
 func contextWithExtraBody(ctx context.Context, extraBody map[string]any) context.Context {

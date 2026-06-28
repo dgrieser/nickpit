@@ -19,6 +19,41 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+func TestRequestPayloadForLogPreservesRequestFieldOrder(t *testing.T) {
+	payload := openai.ChatCompletionRequest{
+		Model: "model",
+		Messages: []openai.ChatCompletionMessage{
+			{Role: "system", Content: "system"},
+		},
+		Tools: []openai.Tool{
+			{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name: "inspect_file",
+				},
+			},
+		},
+		StreamOptions:     &openai.StreamOptions{IncludeUsage: true},
+		ParallelToolCalls: true,
+		ReasoningEffort:   "high",
+	}
+
+	logPayload, err := requestPayloadForLog(payload, map[string]any{"top_k": 20})
+	if err != nil {
+		t.Fatalf("requestPayloadForLog returned error: %v", err)
+	}
+
+	assertContainsInOrder(t, string(logPayload), []string{
+		`"model":`,
+		`"messages":`,
+		`"tools":`,
+		`"stream_options":`,
+		`"parallel_tool_calls":`,
+		`"reasoning_effort":`,
+		`"top_k":`,
+	})
+}
+
 func TestClientReview(t *testing.T) {
 	var payload map[string]any
 	var path string
@@ -3274,6 +3309,18 @@ func sseChunk(t *testing.T, payload any) string {
 		t.Fatalf("marshal chunk: %v", err)
 	}
 	return "data: " + string(data) + "\n\n"
+}
+
+func assertContainsInOrder(t *testing.T, got string, wants []string) {
+	t.Helper()
+	offset := 0
+	for _, want := range wants {
+		idx := strings.Index(got[offset:], want)
+		if idx < 0 {
+			t.Fatalf("missing %q after offset %d in:\n%s", want, offset, got)
+		}
+		offset += idx + len(want)
+	}
 }
 
 func writeReasoningLengthSSE(t *testing.T, w http.ResponseWriter) {

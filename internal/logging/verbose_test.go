@@ -236,10 +236,11 @@ func TestVerboseJSONMultilineStringKeepsKeyColor(t *testing.T) {
 func TestVerboseMaybeJSONBothBranches(t *testing.T) {
 	var buf bytes.Buffer
 	l := &Logger{w: &buf, useANSI: false, enabled: true}
-	l.VerboseMaybeJSON(context.Background(), "body:", []byte(`{"a":1}`))
+	l.VerboseMaybeJSON(context.Background(), "body:", []byte(`{"b":2,"a":1}`))
 	if got := buf.String(); !strings.Contains(got, `"a": 1`) {
 		t.Errorf("parseable data should render as JSON: %q", got)
 	}
+	assertSubstringsInOrder(t, buf.String(), []string{`"b": 2`, `"a": 1`})
 	buf.Reset()
 	l.VerboseMaybeJSON(context.Background(), "body:", []byte("not json"))
 	if got := buf.String(); !strings.Contains(got, "+ not json\n") {

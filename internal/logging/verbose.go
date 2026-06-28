@@ -84,9 +84,8 @@ func (l *Logger) VerboseMaybeJSON(ctx context.Context, label string, data []byte
 	if !l.Enabled() {
 		return
 	}
-	var value any
-	if err := json.Unmarshal(data, &value); err == nil {
-		l.VerboseJSON(ctx, label, value)
+	if json.Valid(data) {
+		l.VerboseJSON(ctx, label, json.RawMessage(data))
 		return
 	}
 	l.VerboseBlock(ctx, label, string(data))
@@ -105,8 +104,8 @@ func renderVerboseJSONLines(value any) []renderedJSONLine {
 	if err != nil {
 		return []renderedJSONLine{{text: fmt.Sprintf("failed to encode json: %v", err)}}
 	}
-	var normalized any
-	if err := json.Unmarshal(data, &normalized); err != nil {
+	normalized, err := decodeOrderedJSON(data)
+	if err != nil {
 		return []renderedJSONLine{{text: fmt.Sprintf("failed to decode json: %v", err)}}
 	}
 	normalized = normalizeEmbeddedJSON(normalized)
