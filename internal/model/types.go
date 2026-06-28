@@ -59,22 +59,21 @@ type ReviewRequest struct {
 	// Concurrency caps concurrent LLM agent loops across the whole pipeline
 	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
 	// summarize); 0 = unlimited.
-	Concurrency              int
-	VerifyDropPolicy         string
-	ConfidenceThreshold      float64
-	NudgeCount               int
-	DisableParallelToolCalls bool
-	DisableReasoningExtract  bool
-	DisablePatchSummary      bool
-	SkipSuggestions          bool
-	SkipWorkflowTimeBudget   bool
-	ModelEmitsReasoning      bool
-	UseJSONSchema            bool
-	PriorityThreshold        string
-	Offline                  bool
-	PostReview               bool
-	Submode                  string
-	ProfileName              string
+	Concurrency               int
+	VerifyDropPolicy          string
+	ConfidenceThreshold       float64
+	NudgeCount                int
+	DisableParallelToolCalls  bool
+	DisableReasoningExtract   bool
+	DisablePatchSummary       bool
+	SkipSuggestions           bool
+	SkipWorkflowTimeBudget    bool
+	ModelEmitsReasoning       bool
+	DisableJSONResponseFormat bool
+	PriorityThreshold         string
+	PostReview                bool
+	Submode                   string
+	ProfileName               string
 }
 
 type ReviewResult struct {

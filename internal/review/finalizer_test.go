@@ -52,7 +52,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 		OverallConfidenceScore: 0.7,
 	}
 
-	_, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	_, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{DisableJSONResponseFormat: true})
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}

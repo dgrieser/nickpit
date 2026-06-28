@@ -548,17 +548,17 @@ func normalizeDropPolicy(policy string) string {
 
 func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 	return VerifyOptions{
-		UseJSONSchema:            req.UseJSONSchema,
-		MaxToolCalls:             req.MaxToolCalls,
-		MaxDuplicateToolCalls:    req.MaxDuplicateToolCalls,
-		MaxOutputRetries:         req.MaxOutputRetries,
-		MaxReasoningSeconds:      req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  req.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: req.DisableParallelToolCalls,
-		SkipSuggestions:          req.SkipSuggestions,
-		RepoRoot:                 req.RepoRoot,
-		DropPolicy:               req.VerifyDropPolicy,
-		DiffFormat:               req.DiffFormat,
+		DisableJSONResponseFormat: req.DisableJSONResponseFormat,
+		MaxToolCalls:              req.MaxToolCalls,
+		MaxDuplicateToolCalls:     req.MaxDuplicateToolCalls,
+		MaxOutputRetries:          req.MaxOutputRetries,
+		MaxReasoningSeconds:       req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  req.DisableParallelToolCalls,
+		SkipSuggestions:           req.SkipSuggestions,
+		RepoRoot:                  req.RepoRoot,
+		DropPolicy:                req.VerifyDropPolicy,
+		DiffFormat:                req.DiffFormat,
 	}
 }
 
@@ -609,7 +609,7 @@ type pairwiseMergeInput struct {
 }
 
 func mergeSchemaForDedupe(req model.ReviewRequest) []byte {
-	if !req.UseJSONSchema {
+	if req.DisableJSONResponseFormat {
 		return nil
 	}
 	constraints := mergeConstraintsForRequest(req)
@@ -623,7 +623,7 @@ func mergeSchemaForDedupe(req model.ReviewRequest) []byte {
 }
 
 func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints {
-	if !req.UseJSONSchema {
+	if req.DisableJSONResponseFormat {
 		return llm.ResponseConstraints{}
 	}
 	return mergeConstraintsForRequest(req)
@@ -728,7 +728,7 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 	if err != nil {
 		return agentResult{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", mergeOutputSchemaSnippetFor(req.UseJSONSchema, req.SkipSuggestions), req.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", mergeOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.SkipSuggestions), req.SkipSuggestions)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1048,7 +1048,7 @@ func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userP
 	if err != nil {
 		return agentResult{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(req.UseJSONSchema, req.SkipSuggestions), req.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.SkipSuggestions), req.SkipSuggestions)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1717,7 +1717,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 			return "", err
 		}
 	}
-	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.UseJSONSchema, req.SkipSuggestions)
+	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.SkipSuggestions)
 	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, outputSchemaSnippet, req.SkipSuggestions)
 	if err != nil {
 		return "", err
@@ -2364,37 +2364,37 @@ func hasResponseConstraints(c llm.ResponseConstraints) bool {
 	return c.MinPriority != nil || c.MaxPriority != nil || len(c.AllowedCorrectness) > 0
 }
 
-func reviewOutputSchemaSnippetFor(useJSONSchema bool, skipSuggestions bool) string {
-	if useJSONSchema {
+func reviewOutputSchemaSnippetFor(disableJSONResponseFormat bool, skipSuggestions bool) string {
+	if !disableJSONResponseFormat {
 		return ""
 	}
 	return llm.FindingsExamplePromptSnippetFor(skipSuggestions)
 }
 
-func mergeOutputSchemaSnippetFor(useJSONSchema bool, skipSuggestions bool) string {
-	if useJSONSchema {
+func mergeOutputSchemaSnippetFor(disableJSONResponseFormat bool, skipSuggestions bool) string {
+	if disableJSONResponseFormat {
 		return ""
 	}
 	return llm.MergeExamplePromptSnippetFor(skipSuggestions)
 }
 
-func outputSchemaSnippetFor(kind llm.SchemaKind, useJSONSchema bool, skipSuggestions bool) string {
+func outputSchemaSnippetFor(kind llm.SchemaKind, disableJSONResponseFormat bool, skipSuggestions bool) string {
 	if kind == llm.SchemaKindMerge {
-		return mergeOutputSchemaSnippetFor(useJSONSchema, skipSuggestions)
+		return mergeOutputSchemaSnippetFor(disableJSONResponseFormat, skipSuggestions)
 	}
 	if kind == llm.SchemaKindFinalize {
-		return finalizeOutputSchemaSnippetFor(useJSONSchema, skipSuggestions)
+		return finalizeOutputSchemaSnippetFor(disableJSONResponseFormat, skipSuggestions)
 	}
 	if kind == llm.SchemaKindVerdict {
-		return verdictOutputSchemaSnippetFor(useJSONSchema)
+		return verdictOutputSchemaSnippetFor(disableJSONResponseFormat)
 	}
 	if kind == llm.SchemaKindVerify {
-		return verifyOutputSchemaSnippetFor(useJSONSchema)
+		return verifyOutputSchemaSnippetFor(disableJSONResponseFormat)
 	}
 	if kind == llm.SchemaKindSummarize {
-		return summarizeOutputSchemaSnippetFor(useJSONSchema)
+		return summarizeOutputSchemaSnippetFor(disableJSONResponseFormat)
 	}
-	return reviewOutputSchemaSnippetFor(useJSONSchema, skipSuggestions)
+	return reviewOutputSchemaSnippetFor(disableJSONResponseFormat, skipSuggestions)
 }
 
 // agentLoopKind maps an agentSpec role to the loop kind. Roles are uniform

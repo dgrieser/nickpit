@@ -56,7 +56,7 @@ type Profile struct {
 	TopK                               *int                `yaml:"top_k"`
 	PresencePenalty                    *float64            `yaml:"presence_penalty"`
 	ExtraBody                          map[string]any      `yaml:"extra_body"`
-	UseJSONSchema                      bool                `yaml:"use_json_schema"`
+	DisableJSONResponseFormat          bool                `yaml:"disable_json_response_format"`
 	IncludePaths                       []string            `yaml:"include_paths"`
 	ExcludePaths                       []string            `yaml:"exclude_paths"`
 	IncludeContent                     []string            `yaml:"include_content"`
@@ -71,8 +71,8 @@ type Profile struct {
 	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
 	NudgeCount                         int                 `yaml:"nudge_count"`
 	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
-	SkipSuggestions                    bool                `yaml:"skip_suggestions"`
-	SkipWorkflowTimeBudget             bool                `yaml:"skip_workflow_time_budget"`
+	SkipSuggestions                    bool                `yaml:"disable_suggestions"`
+	SkipWorkflowTimeBudget             bool                `yaml:"disable_workflow_time_budget"`
 	ReasoningEffort                    string              `yaml:"reasoning_effort"`
 	Workdir                            string              `yaml:"workdir"`
 	GitHubToken                        string              `yaml:"github_token"`
@@ -117,39 +117,39 @@ type ReasoningCapabilities struct {
 }
 
 type Overrides struct {
-	Profile                string
-	Model                  string
-	Small                  SmallModelConfig
-	BaseURL                string
-	APIKey                 string
-	MaxTokens              *int
-	Temperature            *float64
-	TopP                   *float64
-	TopK                   *int
-	PresencePenalty        *float64
-	ExtraBody              map[string]any
-	UseJSONSchema          bool
-	IncludePaths           *[]string
-	ExcludePaths           *[]string
-	IncludeContent         *[]string
-	ExcludeContent         *[]string
-	DiffFormat             model.DiffFormat
-	MaxContextTokens       *int
-	ToolCalls              *int
-	DuplicateToolCalls     *int
-	OutputRetries          *int
-	ReasoningSeconds       *int
-	ReasoningLoopRepeats   *int
-	RateLimitDelaySeconds  *int
-	NudgeCount             *int
-	DisablePatchSummary    bool
-	SkipSuggestions        bool
-	SkipWorkflowTimeBudget bool
-	ReasoningEffort        string
-	Workdir                string
-	GitHubToken            string
-	GitLabToken            string
-	GitLabBaseURL          string
+	Profile                   string
+	Model                     string
+	Small                     SmallModelConfig
+	BaseURL                   string
+	APIKey                    string
+	MaxTokens                 *int
+	Temperature               *float64
+	TopP                      *float64
+	TopK                      *int
+	PresencePenalty           *float64
+	ExtraBody                 map[string]any
+	DisableJSONResponseFormat bool
+	IncludePaths              *[]string
+	ExcludePaths              *[]string
+	IncludeContent            *[]string
+	ExcludeContent            *[]string
+	DiffFormat                model.DiffFormat
+	MaxContextTokens          *int
+	ToolCalls                 *int
+	DuplicateToolCalls        *int
+	OutputRetries             *int
+	ReasoningSeconds          *int
+	ReasoningLoopRepeats      *int
+	RateLimitDelaySeconds     *int
+	NudgeCount                *int
+	DisablePatchSummary       bool
+	SkipSuggestions           bool
+	SkipWorkflowTimeBudget    bool
+	ReasoningEffort           string
+	Workdir                   string
+	GitHubToken               string
+	GitLabToken               string
+	GitLabBaseURL             string
 }
 
 type defaultProfile struct {
@@ -190,8 +190,7 @@ var defaultProfiles = []defaultProfile{
 					},
 				},
 			},
-			UseJSONSchema: true,
-			APIKey:        "$MITTWALD_LLM_API_KEY",
+			APIKey: "$MITTWALD_LLM_API_KEY",
 		},
 	},
 	{
@@ -604,8 +603,8 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.ExtraBody != nil {
 		profile.ExtraBody = overrides.ExtraBody
 	}
-	if overrides.UseJSONSchema {
-		profile.UseJSONSchema = true
+	if overrides.DisableJSONResponseFormat {
+		profile.DisableJSONResponseFormat = true
 	}
 	if overrides.IncludePaths != nil {
 		profile.IncludePaths = slices.Clone(*overrides.IncludePaths)

@@ -19,19 +19,19 @@ type VerifyRequest struct {
 	// StyleGuides, when non-nil, are reused instead of being recomputed from
 	// ReviewCtx. VerifyAll resolves them once and shares them across findings so
 	// the style-guide probe files are not stat+read once per finding.
-	StyleGuides              []model.StyleGuide
-	RepoRoot                 string
-	Section                  *logging.ReasoningSection
-	Progress                 logging.ProgressInfo
-	UseJSONSchema            bool
-	MaxToolCalls             int
-	MaxDuplicateToolCalls    int
-	MaxOutputRetries         int
-	MaxReasoningSeconds      int
-	MaxReasoningLoopRepeats  int
-	DisableParallelToolCalls bool
-	SkipSuggestions          bool
-	DiffFormat               model.DiffFormat
+	StyleGuides               []model.StyleGuide
+	RepoRoot                  string
+	Section                   *logging.ReasoningSection
+	Progress                  logging.ProgressInfo
+	DisableJSONResponseFormat bool
+	MaxToolCalls              int
+	MaxDuplicateToolCalls     int
+	MaxOutputRetries          int
+	MaxReasoningSeconds       int
+	MaxReasoningLoopRepeats   int
+	DisableParallelToolCalls  bool
+	SkipSuggestions           bool
+	DiffFormat                model.DiffFormat
 }
 
 type VerifyOptions struct {
@@ -41,18 +41,18 @@ type VerifyOptions struct {
 	Limiter *Limiter
 	// ReviewerName labels progress output when verifying a single reviewer's
 	// findings (per-vector lane steps); empty for the global verify step.
-	ReviewerName             string
-	UseJSONSchema            bool
-	MaxToolCalls             int
-	MaxDuplicateToolCalls    int
-	MaxOutputRetries         int
-	MaxReasoningSeconds      int
-	MaxReasoningLoopRepeats  int
-	DisableParallelToolCalls bool
-	SkipSuggestions          bool
-	RepoRoot                 string
-	DropPolicy               string
-	DiffFormat               model.DiffFormat
+	ReviewerName              string
+	DisableJSONResponseFormat bool
+	MaxToolCalls              int
+	MaxDuplicateToolCalls     int
+	MaxOutputRetries          int
+	MaxReasoningSeconds       int
+	MaxReasoningLoopRepeats   int
+	DisableParallelToolCalls  bool
+	SkipSuggestions           bool
+	RepoRoot                  string
+	DropPolicy                string
+	DiffFormat                model.DiffFormat
 }
 
 func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {
@@ -68,7 +68,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	systemSnippet := verifyOutputSchemaSnippetFor(req.UseJSONSchema)
+	systemSnippet := verifyOutputSchemaSnippetFor(req.DisableJSONResponseFormat)
 	exampleSnippet := llm.VerifyExamplePromptSnippet()
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
@@ -120,7 +120,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	}
 
 	var schema []byte
-	if req.UseJSONSchema {
+	if !req.DisableJSONResponseFormat {
 		schema = llm.VerifySchema
 	}
 
@@ -236,21 +236,21 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 			sec := e.logger.NewReasoningTracker(info)
 			defer sec.End()
 			req := VerifyRequest{
-				ReviewCtx:                reviewCtx,
-				Finding:                  f,
-				StyleGuides:              sharedStyleGuides,
-				RepoRoot:                 opts.RepoRoot,
-				Section:                  sec,
-				Progress:                 info,
-				UseJSONSchema:            opts.UseJSONSchema,
-				MaxToolCalls:             opts.MaxToolCalls,
-				MaxDuplicateToolCalls:    opts.MaxDuplicateToolCalls,
-				MaxOutputRetries:         opts.MaxOutputRetries,
-				MaxReasoningSeconds:      opts.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
-				DisableParallelToolCalls: opts.DisableParallelToolCalls,
-				SkipSuggestions:          opts.SkipSuggestions,
-				DiffFormat:               opts.DiffFormat,
+				ReviewCtx:                 reviewCtx,
+				Finding:                   f,
+				StyleGuides:               sharedStyleGuides,
+				RepoRoot:                  opts.RepoRoot,
+				Section:                   sec,
+				Progress:                  info,
+				DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
+				MaxToolCalls:              opts.MaxToolCalls,
+				MaxDuplicateToolCalls:     opts.MaxDuplicateToolCalls,
+				MaxOutputRetries:          opts.MaxOutputRetries,
+				MaxReasoningSeconds:       opts.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
+				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
+				SkipSuggestions:           opts.SkipSuggestions,
+				DiffFormat:                opts.DiffFormat,
 			}
 			verification, usage, err := e.Verify(ctx, req)
 			mu.Lock()
@@ -324,8 +324,8 @@ func truncateFindingTitle(title string) string {
 	return title
 }
 
-func verifyOutputSchemaSnippetFor(useJSONSchema bool) string {
-	if useJSONSchema {
+func verifyOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
+	if !disableJSONResponseFormat {
 		return ""
 	}
 	return llm.VerifyExamplePromptSnippet()

@@ -726,7 +726,7 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 		t.Fatal("explicit false disable_patch_summary not applied")
 	}
 	if gotReq.SkipSuggestions {
-		t.Fatal("explicit false skip_suggestions not applied")
+		t.Fatal("explicit false disable_suggestions not applied")
 	}
 }
 

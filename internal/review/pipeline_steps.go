@@ -129,7 +129,7 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 		return agentSpec{}, err
 	}
 	var schema []byte
-	if req.UseJSONSchema {
+	if req.DisableJSONResponseFormat {
 		schema = llm.FindingsSchema
 		if req.SkipSuggestions {
 			schema = llm.FindingsSchemaWithoutSuggestions
@@ -468,7 +468,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 
 		mergeConstraints := llm.ResponseConstraints{}
 		var mergeSchema []byte
-		if req.UseJSONSchema {
+		if req.DisableJSONResponseFormat {
 			mergeConstraints = mergeConstraintsForRequest(req)
 			if hasResponseConstraints(mergeConstraints) {
 				mergeSchema = llm.MergeSchemaWithConstraintsFor(mergeConstraints, req.SkipSuggestions)
@@ -854,7 +854,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byte) {
 	constraints := llm.ResponseConstraints{}
 	var schema []byte
-	if req.UseJSONSchema {
+	if req.DisableJSONResponseFormat {
 		constraints = mergeConstraintsForRequest(req)
 		if hasResponseConstraints(constraints) {
 			schema = llm.MergeSchemaWithConstraintsFor(constraints, req.SkipSuggestions)
@@ -869,17 +869,17 @@ func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byt
 
 func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
 	opts := FinalizeOptions{
-		UseJSONSchema:            sc.Req.UseJSONSchema,
-		MaxOutputRetries:         sc.Req.MaxOutputRetries,
-		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
-		DisablePatchSummary:      sc.Req.DisablePatchSummary,
-		SkipSuggestions:          sc.Req.SkipSuggestions,
-		RepoRoot:                 sc.Req.RepoRoot,
-		DiffFormat:               sc.Req.DiffFormat,
-		PriorityThreshold:        sc.Req.PriorityThreshold,
-		ContextNotes:             st.contextNotes,
+		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+		MaxOutputRetries:          sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:       sc.Req.DisablePatchSummary,
+		SkipSuggestions:           sc.Req.SkipSuggestions,
+		RepoRoot:                  sc.Req.RepoRoot,
+		DiffFormat:                sc.Req.DiffFormat,
+		PriorityThreshold:         sc.Req.PriorityThreshold,
+		ContextNotes:              st.contextNotes,
 	}
 	finalized, run, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 	if err != nil {
@@ -909,18 +909,18 @@ func filterFinalizedByDisplayPriority(ctx context.Context, sc *stepContext, in *
 
 func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
 	opts := VerdictOptions{
-		UseJSONSchema:            sc.Req.UseJSONSchema,
-		MaxOutputRetries:         sc.Req.MaxOutputRetries,
-		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
-		DisablePatchSummary:      sc.Req.DisablePatchSummary,
-		SkipSuggestions:          sc.Req.SkipSuggestions,
-		RepoRoot:                 sc.Req.RepoRoot,
-		DiffFormat:               sc.Req.DiffFormat,
-		PriorityThreshold:        sc.Req.PriorityThreshold,
-		ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
-		ContextNotes:             st.contextNotes,
+		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+		MaxOutputRetries:          sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:       sc.Req.DisablePatchSummary,
+		SkipSuggestions:           sc.Req.SkipSuggestions,
+		RepoRoot:                  sc.Req.RepoRoot,
+		DiffFormat:                sc.Req.DiffFormat,
+		PriorityThreshold:         sc.Req.PriorityThreshold,
+		ConfidenceThreshold:       sc.Req.ConfidenceThreshold,
+		ContextNotes:              st.contextNotes,
 	}
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
@@ -942,14 +942,14 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 
 func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
 	opts := SummarizeOptions{
-		UseJSONSchema:            sc.Req.UseJSONSchema,
-		MaxOutputRetries:         sc.Req.MaxOutputRetries,
-		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
-		DisablePatchSummary:      sc.Req.DisablePatchSummary,
-		SkipSuggestions:          sc.Req.SkipSuggestions,
-		RepoRoot:                 sc.Req.RepoRoot,
+		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+		MaxOutputRetries:          sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:       sc.Req.DisablePatchSummary,
+		SkipSuggestions:           sc.Req.SkipSuggestions,
+		RepoRoot:                  sc.Req.RepoRoot,
 	}
 	summarized, run, err := sc.Engine.Summarize(ctx, in, opts)
 	if err != nil {
@@ -967,14 +967,14 @@ func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewRes
 
 func runOverallSummarize(ctx context.Context, sc *stepContext, overall string) (string, *model.AgentRun, []string) {
 	opts := SummarizeOptions{
-		UseJSONSchema:            sc.Req.UseJSONSchema,
-		MaxOutputRetries:         sc.Req.MaxOutputRetries,
-		MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
-		DisablePatchSummary:      sc.Req.DisablePatchSummary,
-		SkipSuggestions:          sc.Req.SkipSuggestions,
-		RepoRoot:                 sc.Req.RepoRoot,
+		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+		MaxOutputRetries:          sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:       sc.Req.DisablePatchSummary,
+		SkipSuggestions:           sc.Req.SkipSuggestions,
+		RepoRoot:                  sc.Req.RepoRoot,
 	}
 	summary, run, err := sc.Engine.SummarizeOverall(ctx, overall, opts)
 	if err != nil {
@@ -1143,17 +1143,17 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			return nil
 		}
 		opts := FinalizeOptions{
-			UseJSONSchema:            sc.Req.UseJSONSchema,
-			MaxOutputRetries:         sc.Req.MaxOutputRetries,
-			MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
-			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
-			DisablePatchSummary:      sc.Req.DisablePatchSummary,
-			SkipSuggestions:          sc.Req.SkipSuggestions,
-			RepoRoot:                 sc.Req.RepoRoot,
-			DiffFormat:               sc.Req.DiffFormat,
-			PriorityThreshold:        sc.Req.PriorityThreshold,
-			ContextNotes:             contextNotes,
+			DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+			MaxOutputRetries:          sc.Req.MaxOutputRetries,
+			MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
+			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+			DisablePatchSummary:       sc.Req.DisablePatchSummary,
+			SkipSuggestions:           sc.Req.SkipSuggestions,
+			RepoRoot:                  sc.Req.RepoRoot,
+			DiffFormat:                sc.Req.DiffFormat,
+			PriorityThreshold:         sc.Req.PriorityThreshold,
+			ContextNotes:              contextNotes,
 		}
 		finalized, finalizeRun, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 		st.mu.Lock()
@@ -1225,18 +1225,18 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			return nil
 		}
 		opts := VerdictOptions{
-			UseJSONSchema:            sc.Req.UseJSONSchema,
-			MaxOutputRetries:         sc.Req.MaxOutputRetries,
-			MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
-			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
-			DisablePatchSummary:      sc.Req.DisablePatchSummary,
-			SkipSuggestions:          sc.Req.SkipSuggestions,
-			RepoRoot:                 sc.Req.RepoRoot,
-			DiffFormat:               sc.Req.DiffFormat,
-			PriorityThreshold:        sc.Req.PriorityThreshold,
-			ConfidenceThreshold:      sc.Req.ConfidenceThreshold,
-			ContextNotes:             contextNotes,
+			DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+			MaxOutputRetries:          sc.Req.MaxOutputRetries,
+			MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
+			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+			DisablePatchSummary:       sc.Req.DisablePatchSummary,
+			SkipSuggestions:           sc.Req.SkipSuggestions,
+			RepoRoot:                  sc.Req.RepoRoot,
+			DiffFormat:                sc.Req.DiffFormat,
+			PriorityThreshold:         sc.Req.PriorityThreshold,
+			ConfidenceThreshold:       sc.Req.ConfidenceThreshold,
+			ContextNotes:              contextNotes,
 		}
 		verdict, verdictRun, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 		st.mu.Lock()
@@ -1316,14 +1316,14 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			return nil
 		}
 		opts := SummarizeOptions{
-			UseJSONSchema:            sc.Req.UseJSONSchema,
-			MaxOutputRetries:         sc.Req.MaxOutputRetries,
-			MaxReasoningSeconds:      sc.Req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:  sc.Req.MaxReasoningLoopRepeats,
-			DisableParallelToolCalls: sc.Req.DisableParallelToolCalls,
-			DisablePatchSummary:      sc.Req.DisablePatchSummary,
-			SkipSuggestions:          sc.Req.SkipSuggestions,
-			RepoRoot:                 sc.Req.RepoRoot,
+			DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+			MaxOutputRetries:          sc.Req.MaxOutputRetries,
+			MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+			MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
+			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+			DisablePatchSummary:       sc.Req.DisablePatchSummary,
+			SkipSuggestions:           sc.Req.SkipSuggestions,
+			RepoRoot:                  sc.Req.RepoRoot,
 		}
 		summarized, summarizeRun, err := sc.Engine.Summarize(ctx, in, opts)
 		st.mu.Lock()

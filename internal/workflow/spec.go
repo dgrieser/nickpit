@@ -199,15 +199,15 @@ type StepOverride struct {
 	MaxReasoningLoopRepeats *int `yaml:"max_reasoning_loop_repeats"`
 
 	// Stage-specific tunables.
-	NudgeCount               *int     `yaml:"nudge_count"`
-	DisableReasoningExtract  *bool    `yaml:"disable_reasoning_extract"`
-	DisableParallelToolCalls *bool    `yaml:"disable_parallel_tool_calls"`
-	DisablePatchSummary      *bool    `yaml:"disable_patch_summary"`
-	SkipSuggestions          *bool    `yaml:"skip_suggestions"`
-	UseJSONSchema            *bool    `yaml:"use_json_schema"`
-	VerifyDropPolicy         *string  `yaml:"verify_drop_policy"`
-	ConfidenceThreshold      *float64 `yaml:"confidence_threshold"`
-	PriorityThreshold        *string  `yaml:"priority_threshold"`
+	NudgeCount                *int     `yaml:"nudge_count"`
+	DisableReasoningExtract   *bool    `yaml:"disable_reasoning_extract"`
+	DisableParallelToolCalls  *bool    `yaml:"disable_parallel_tool_calls"`
+	DisablePatchSummary       *bool    `yaml:"disable_patch_summary"`
+	SkipSuggestions           *bool    `yaml:"disable_suggestions"`
+	DisableJSONResponseFormat *bool    `yaml:"disable_json_response_format"`
+	VerifyDropPolicy          *string  `yaml:"verify_drop_policy"`
+	ConfidenceThreshold       *float64 `yaml:"confidence_threshold"`
+	PriorityThreshold         *string  `yaml:"priority_threshold"`
 
 	// Review-only internal agent overrides. These keys are accepted only under
 	// config on review:<vector> steps. Each inherits the already-resolved review
@@ -223,7 +223,7 @@ var stepOverrideKeys = []string{
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
-	"disable_patch_summary", "skip_suggestions", "use_json_schema", "verify_drop_policy",
+	"disable_patch_summary", "disable_suggestions", "disable_json_response_format", "verify_drop_policy",
 	"confidence_threshold", "priority_threshold",
 }
 
@@ -248,15 +248,15 @@ type AgentOverride struct {
 	MaxReasoningSeconds     *int `yaml:"max_reasoning_seconds"`
 	MaxReasoningLoopRepeats *int `yaml:"max_reasoning_loop_repeats"`
 
-	DisableParallelToolCalls *bool `yaml:"disable_parallel_tool_calls"`
-	UseJSONSchema            *bool `yaml:"use_json_schema"`
+	DisableParallelToolCalls  *bool `yaml:"disable_parallel_tool_calls"`
+	DisableJSONResponseFormat *bool `yaml:"disable_json_response_format"`
 }
 
 var agentOverrideKeys = []string{
 	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort", "time_budget",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
-	"disable_parallel_tool_calls", "use_json_schema",
+	"disable_parallel_tool_calls", "disable_json_response_format",
 }
 
 // TimeBudget controls wall-clock budgeting for workflow steps and groups.
@@ -331,9 +331,9 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 		p.NudgeCount = *o.NudgeCount
 		req.NudgeCount = *o.NudgeCount
 	}
-	if o.UseJSONSchema != nil {
-		p.UseJSONSchema = *o.UseJSONSchema
-		req.UseJSONSchema = *o.UseJSONSchema
+	if o.DisableJSONResponseFormat != nil {
+		p.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
+		req.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
 	}
 	if o.DisableReasoningExtract != nil {
 		req.DisableReasoningExtract = *o.DisableReasoningExtract
@@ -414,9 +414,9 @@ func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (conf
 		p.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 		req.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 	}
-	if o.UseJSONSchema != nil {
-		p.UseJSONSchema = *o.UseJSONSchema
-		req.UseJSONSchema = *o.UseJSONSchema
+	if o.DisableJSONResponseFormat != nil {
+		p.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
+		req.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
 	}
 	if o.DisableParallelToolCalls != nil {
 		req.DisableParallelToolCalls = *o.DisableParallelToolCalls

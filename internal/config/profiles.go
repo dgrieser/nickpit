@@ -51,8 +51,8 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.ExtraBody != nil {
 		base.ExtraBody = override.ExtraBody
 	}
-	if override.UseJSONSchema {
-		base.UseJSONSchema = true
+	if override.DisableJSONResponseFormat {
+		base.DisableJSONResponseFormat = true
 	}
 	if override.IncludePaths != nil {
 		base.IncludePaths = slices.Clone(override.IncludePaths)

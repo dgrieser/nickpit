@@ -13,16 +13,16 @@ import (
 )
 
 type VerdictOptions struct {
-	UseJSONSchema            bool
-	MaxOutputRetries         int
-	MaxReasoningSeconds      int
-	MaxReasoningLoopRepeats  int
-	DisableParallelToolCalls bool
-	DisablePatchSummary      bool
-	SkipSuggestions          bool
-	RepoRoot                 string
-	ContextNotes             string
-	DiffFormat               model.DiffFormat
+	DisableJSONResponseFormat bool
+	MaxOutputRetries          int
+	MaxReasoningSeconds       int
+	MaxReasoningLoopRepeats   int
+	DisableParallelToolCalls  bool
+	DisablePatchSummary       bool
+	SkipSuggestions           bool
+	RepoRoot                  string
+	ContextNotes              string
+	DiffFormat                model.DiffFormat
 	// PriorityThreshold is the configured "lowest currently allowed priority"
 	// (p0..p3). It anchors the priority floor so a verifier-refuted non-finding is
 	// classified at the threshold (not blocking) and never forces the overall
@@ -98,7 +98,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.UseJSONSchema), opts.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -117,7 +117,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		SkipSuggestions            bool
 		StyleGuideToolchainSnippet string
 	}{
-		OutputSchemaSnippet:        verdictOutputSchemaSnippetFor(opts.UseJSONSchema),
+		OutputSchemaSnippet:        verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
 		SkipSuggestions:            opts.SkipSuggestions,
@@ -134,7 +134,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 
 	var schema []byte
 	constraints := verdictConstraintsFor(in.Findings, thresholdRank)
-	if opts.UseJSONSchema {
+	if !opts.DisableJSONResponseFormat {
 		if hasResponseConstraints(constraints) {
 			schema = llm.VerdictSchemaWithConstraints(constraints)
 		} else {
@@ -142,14 +142,14 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		}
 	}
 	req := model.ReviewRequest{
-		RepoRoot:                 opts.RepoRoot,
-		MaxOutputRetries:         opts.MaxOutputRetries,
-		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: opts.DisableParallelToolCalls,
-		SkipSuggestions:          opts.SkipSuggestions,
-		UseJSONSchema:            opts.UseJSONSchema,
-		DiffFormat:               opts.DiffFormat,
+		RepoRoot:                  opts.RepoRoot,
+		MaxOutputRetries:          opts.MaxOutputRetries,
+		MaxReasoningSeconds:       opts.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  opts.DisableParallelToolCalls,
+		SkipSuggestions:           opts.SkipSuggestions,
+		DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
+		DiffFormat:                opts.DiffFormat,
 	}
 	verdictStart := time.Now()
 	e.logProgress(logging.StageVerdict, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
@@ -441,8 +441,8 @@ func findingConfidence(f model.Finding) float64 {
 	return f.ConfidenceScore
 }
 
-func verdictOutputSchemaSnippetFor(useJSONSchema bool) string {
-	if useJSONSchema {
+func verdictOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
+	if !disableJSONResponseFormat {
 		return ""
 	}
 	return llm.VerdictExamplePromptSnippet()

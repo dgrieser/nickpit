@@ -3126,11 +3126,11 @@ func TestEngineMergeSchemaHonorsPriorityThreshold(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
-		Mode:              model.ModeLocal,
-		RepoRoot:          ".",
-		MaxContextTokens:  1000,
-		UseJSONSchema:     true,
-		PriorityThreshold: "p1",
+		Mode:                      model.ModeLocal,
+		RepoRoot:                  ".",
+		MaxContextTokens:          1000,
+		DisableJSONResponseFormat: true,
+		PriorityThreshold:         "p1",
 	})
 	if err != nil {
 		t.Fatal(err)

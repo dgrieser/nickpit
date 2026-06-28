@@ -123,7 +123,7 @@ func CapabilityFromResult(result Result) config.ModelCapabilities {
 	}
 }
 
-func ResultFromCapability(capability config.ModelCapabilities, useJSONSchema bool) Result {
+func ResultFromCapability(capability config.ModelCapabilities, disableJSONResponseFormat bool) Result {
 	effort := firstEffort(capability.Reasoning.Efforts)
 	probes := []ProbeResult{
 		{Name: "configured_no_tools", ReasoningEffort: effort, Reasoned: capability.Reasoning.Traces, Status: statusFor(capability.Response)},
@@ -134,11 +134,11 @@ func ResultFromCapability(capability config.ModelCapabilities, useJSONSchema boo
 		ProbeResult{Name: "configured_json_schema", ReasoningEffort: effort, Status: optionalStatus(capability.JSONSchema), Error: optionalError(capability.JSONSchema)},
 	)
 	return Result{
-		Model:            capability.Model,
-		ConfiguredEffort: effort,
-		UseJSONSchema:    useJSONSchema,
-		Probes:           probes,
-		PassedEfforts:    append([]string(nil), capability.Reasoning.Efforts...),
+		Model:                     capability.Model,
+		ConfiguredEffort:          effort,
+		DisableJSONResponseFormat: disableJSONResponseFormat,
+		Probes:                    probes,
+		PassedEfforts:             append([]string(nil), capability.Reasoning.Efforts...),
 	}
 }
 

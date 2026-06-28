@@ -273,7 +273,7 @@ func TestLoadConfigSkipSuggestions(t *testing.T) {
 profiles:
   default:
     model: test-model
-    skip_suggestions: true
+    disable_suggestions: true
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ profiles:
 		t.Fatal(err)
 	}
 	if !profile.SkipSuggestions {
-		t.Fatal("expected skip_suggestions to be enabled")
+		t.Fatal("expected disable_suggestions to be enabled")
 	}
 }
 
@@ -295,7 +295,7 @@ func TestLoadConfigSkipWorkflowTimeBudget(t *testing.T) {
 profiles:
   default:
     model: test-model
-    skip_workflow_time_budget: true
+    disable_workflow_time_budget: true
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +306,7 @@ profiles:
 		t.Fatal(err)
 	}
 	if !profile.SkipWorkflowTimeBudget {
-		t.Fatal("expected skip_workflow_time_budget to be enabled")
+		t.Fatal("expected disable_workflow_time_budget to be enabled")
 	}
 }
 
@@ -546,14 +546,14 @@ profiles:
 	}
 }
 
-func TestLoadConfigUseJSONSchemaOverride(t *testing.T) {
+func TestLoadConfigDisableJSONResponseFormatOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
     model: test-model
-    use_json_schema: true
+    disable_json_response_format: true
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -563,8 +563,8 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.UseJSONSchema {
-		t.Fatal("expected use_json_schema from config to be enabled")
+	if !profile.DisableJSONResponseFormat {
+		t.Fatal("expected disable_json_response_format from config to be enabled")
 	}
 }
 
@@ -697,13 +697,13 @@ func TestCloneProfileCopiesSupportedModels(t *testing.T) {
 	}
 }
 
-func TestLoadConfigUseJSONSchemaCLIOverride(t *testing.T) {
-	_, profile, err := Load("", Overrides{UseJSONSchema: true, Model: "test-model"})
+func TestLoadConfigDisableJSONResponseFormatCLIOverride(t *testing.T) {
+	_, profile, err := Load("", Overrides{DisableJSONResponseFormat: true, Model: "test-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.UseJSONSchema {
-		t.Fatal("expected use_json_schema override to be enabled")
+	if !profile.DisableJSONResponseFormat {
+		t.Fatal("expected disable_json_response_format override to be enabled")
 	}
 }
 

@@ -20,15 +20,15 @@ const (
 )
 
 type FinalizeOptions struct {
-	UseJSONSchema            bool
-	MaxOutputRetries         int
-	MaxReasoningSeconds      int
-	MaxReasoningLoopRepeats  int
-	DisableParallelToolCalls bool
-	DisablePatchSummary      bool
-	SkipSuggestions          bool
-	RepoRoot                 string
-	DiffFormat               model.DiffFormat
+	DisableJSONResponseFormat bool
+	MaxOutputRetries          int
+	MaxReasoningSeconds       int
+	MaxReasoningLoopRepeats   int
+	DisableParallelToolCalls  bool
+	DisablePatchSummary       bool
+	SkipSuggestions           bool
+	RepoRoot                  string
+	DiffFormat                model.DiffFormat
 	// PriorityThreshold is the configured "lowest currently allowed priority"
 	// (p0..p3). It is the floor a missing priority defaults to and the level a
 	// verifier-refuted non-finding is demoted to, so an affirmation never renders
@@ -58,7 +58,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.UseJSONSchema, opts.SkipSuggestions), opts.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.SkipSuggestions), opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -79,7 +79,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		StyleGuideToolchainSnippet string
 	}{
 		PrioritySnippet:            commonSnippets.priority,
-		OutputSchemaSnippet:        finalizeOutputSchemaSnippetFor(opts.UseJSONSchema, opts.SkipSuggestions),
+		OutputSchemaSnippet:        finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.SkipSuggestions),
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
 		SkipSuggestions:            opts.SkipSuggestions,
@@ -95,7 +95,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	}
 
 	var schema []byte
-	if opts.UseJSONSchema {
+	if !opts.DisableJSONResponseFormat {
 		schema = llm.FinalizeSchema
 		if opts.SkipSuggestions {
 			schema = llm.FinalizeSchemaWithoutSuggestions
@@ -103,14 +103,14 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	}
 
 	req := model.ReviewRequest{
-		RepoRoot:                 opts.RepoRoot,
-		MaxOutputRetries:         opts.MaxOutputRetries,
-		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: opts.DisableParallelToolCalls,
-		SkipSuggestions:          opts.SkipSuggestions,
-		UseJSONSchema:            opts.UseJSONSchema,
-		DiffFormat:               opts.DiffFormat,
+		RepoRoot:                  opts.RepoRoot,
+		MaxOutputRetries:          opts.MaxOutputRetries,
+		MaxReasoningSeconds:       opts.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  opts.DisableParallelToolCalls,
+		SkipSuggestions:           opts.SkipSuggestions,
+		DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
+		DiffFormat:                opts.DiffFormat,
 	}
 	finalizeStart := time.Now()
 	e.logProgress(logging.StageFinalize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
@@ -612,8 +612,8 @@ func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
 }
 
-func finalizeOutputSchemaSnippetFor(useJSONSchema bool, skipSuggestions bool) string {
-	if useJSONSchema {
+func finalizeOutputSchemaSnippetFor(disableJSONResponseFormat bool, skipSuggestions bool) string {
+	if !disableJSONResponseFormat {
 		return ""
 	}
 	return llm.FinalizeExamplePromptSnippetFor(skipSuggestions)

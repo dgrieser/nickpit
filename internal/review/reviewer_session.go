@@ -92,7 +92,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	if agent.hasTools {
 		tools = reviewerToolDefinitions()
 	}
-	reviewSnippet := outputSchemaSnippetFor(agent.schemaKind, req.UseJSONSchema, req.SkipSuggestions)
+	reviewSnippet := outputSchemaSnippetFor(agent.schemaKind, req.DisableJSONResponseFormat, req.SkipSuggestions)
 	if agent.schemaKind == llm.SchemaKindText {
 		reviewSnippet = ""
 	}

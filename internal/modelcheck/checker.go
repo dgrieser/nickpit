@@ -92,11 +92,11 @@ type ProbeResult struct {
 }
 
 type Result struct {
-	Model            string        `json:"model"`
-	ConfiguredEffort string        `json:"configured_reasoning_effort"`
-	UseJSONSchema    bool          `json:"use_json_schema"`
-	Probes           []ProbeResult `json:"probes"`
-	PassedEfforts    []string      `json:"passed_efforts"`
+	Model                     string        `json:"model"`
+	ConfiguredEffort          string        `json:"configured_reasoning_effort"`
+	DisableJSONResponseFormat bool          `json:"disable_json_response_format"`
+	Probes                    []ProbeResult `json:"probes"`
+	PassedEfforts             []string      `json:"passed_efforts"`
 }
 
 type ReasoningSummary struct {
@@ -306,9 +306,9 @@ func (c *Checker) Run(ctx context.Context) Result {
 		configured = config.DefaultReasoningEffort
 	}
 	result := Result{
-		Model:            c.model,
-		ConfiguredEffort: configured,
-		UseJSONSchema:    c.profile.UseJSONSchema,
+		Model:                     c.model,
+		ConfiguredEffort:          configured,
+		DisableJSONResponseFormat: c.profile.DisableJSONResponseFormat,
 	}
 
 	effortProbes := []func() ProbeResult{

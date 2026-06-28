@@ -28,7 +28,7 @@ var summarizeSchemaDefinition = map[string]any{
 	"required": []string{"findings"},
 }
 
-// SummarizeSchema is the JSON schema enforced when --use-json-schema is set.
+// SummarizeSchema is the JSON schema enforced when --disable-json-response-format is set.
 var SummarizeSchema = mustMarshalCleanSchema(summarizeSchemaDefinition)
 
 // SummarizeExamplePromptSnippet renders the example output used both in the

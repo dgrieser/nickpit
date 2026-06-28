@@ -23,14 +23,14 @@ const overallSummaryID = "00000000-0000-4000-8000-0000000a11ee"
 // SummarizeOptions mirrors FinalizeOptions: the per-step model/budget knobs the
 // summarize pass forwards into its single batch agent run.
 type SummarizeOptions struct {
-	UseJSONSchema            bool
-	MaxOutputRetries         int
-	MaxReasoningSeconds      int
-	MaxReasoningLoopRepeats  int
-	DisableParallelToolCalls bool
-	DisablePatchSummary      bool
-	SkipSuggestions          bool
-	RepoRoot                 string
+	DisableJSONResponseFormat bool
+	MaxOutputRetries          int
+	MaxReasoningSeconds       int
+	MaxReasoningLoopRepeats   int
+	DisableParallelToolCalls  bool
+	DisablePatchSummary       bool
+	SkipSuggestions           bool
+	RepoRoot                  string
 }
 
 type summarizeItemKind string
@@ -118,7 +118,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.UseJSONSchema), opts.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.SkipSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -128,7 +128,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 		DisablePatchSummary bool
 		SkipSuggestions     bool
 	}{
-		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.UseJSONSchema),
+		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
 		SkipSuggestions:     opts.SkipSuggestions,
@@ -143,18 +143,18 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	}
 
 	var schema []byte
-	if opts.UseJSONSchema {
+	if !opts.DisableJSONResponseFormat {
 		schema = llm.SummarizeSchema
 	}
 
 	req := model.ReviewRequest{
-		RepoRoot:                 opts.RepoRoot,
-		MaxOutputRetries:         opts.MaxOutputRetries,
-		MaxReasoningSeconds:      opts.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:  opts.MaxReasoningLoopRepeats,
-		DisableParallelToolCalls: opts.DisableParallelToolCalls,
-		SkipSuggestions:          opts.SkipSuggestions,
-		UseJSONSchema:            opts.UseJSONSchema,
+		RepoRoot:                  opts.RepoRoot,
+		MaxOutputRetries:          opts.MaxOutputRetries,
+		MaxReasoningSeconds:       opts.MaxReasoningSeconds,
+		MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
+		DisableParallelToolCalls:  opts.DisableParallelToolCalls,
+		SkipSuggestions:           opts.SkipSuggestions,
+		DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
 	}
 	summarizeStart := time.Now()
 	e.logProgress(logging.StageSummarize, logging.StateStart, fmt.Sprintf("items=%d", len(items)))
@@ -516,8 +516,8 @@ func baseSummarization(finding *model.Finding) *model.FindingSummarization {
 	}
 }
 
-func summarizeOutputSchemaSnippetFor(useJSONSchema bool) string {
-	if useJSONSchema {
+func summarizeOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
+	if !disableJSONResponseFormat {
 		return ""
 	}
 	return llm.SummarizeExamplePromptSnippet()
