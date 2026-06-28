@@ -238,7 +238,7 @@ func TestSummarizeShortensProseSuggestionsInSameCall(t *testing.T) {
 	}
 }
 
-func TestSummarizeSkipSuggestionsOmitsSuggestionItems(t *testing.T) {
+func TestSummarizeDisableSuggestionsOmitsSuggestionItems(t *testing.T) {
 	const findingID = "88888888-8888-4888-8888-888888888888"
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -270,7 +270,7 @@ func TestSummarizeSkipSuggestionsOmitsSuggestionItems(t *testing.T) {
 		},
 	}
 
-	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{SkipSuggestions: true})
+	out, _, err := engine.Summarize(context.Background(), in, SummarizeOptions{DisableSuggestions: true})
 	if err != nil {
 		t.Fatalf("Summarize returned err: %v", err)
 	}

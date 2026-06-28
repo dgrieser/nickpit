@@ -29,7 +29,7 @@ type SummarizeOptions struct {
 	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
 	DisablePatchSummary       bool
-	SkipSuggestions           bool
+	DisableSuggestions        bool
 	RepoRoot                  string
 }
 
@@ -56,7 +56,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: nil review result")
 	}
-	if opts.SkipSuggestions {
+	if opts.DisableSuggestions {
 		out, err := in.Clone()
 		if err != nil {
 			return nil, model.AgentRun{}, fmt.Errorf("summarize: cloning input result: %w", err)
@@ -73,7 +73,7 @@ func (e *Engine) Summarize(ctx context.Context, in *model.ReviewResult, opts Sum
 		}
 		return out, model.AgentRun{Name: "Summarize Review", Role: "summarize", Status: model.AgentRunStatusSkipped}, nil
 	}
-	items := summarizeItemsForResult(in, strings.TrimSpace(in.OverallExplanation) != "", opts.SkipSuggestions)
+	items := summarizeItemsForResult(in, strings.TrimSpace(in.OverallExplanation) != "", opts.DisableSuggestions)
 	if len(items) == 0 {
 		out, err := in.Clone()
 		if err != nil {
@@ -118,7 +118,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -126,12 +126,12 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 		OutputSchemaSnippet string
 		OutputFormatSnippet string
 		DisablePatchSummary bool
-		SkipSuggestions     bool
+		DisableSuggestions  bool
 	}{
 		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
-		SkipSuggestions:     opts.SkipSuggestions,
+		DisableSuggestions:  opts.DisableSuggestions,
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("summarize: rendering system prompt: %w", err)
@@ -153,7 +153,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 		MaxReasoningSeconds:       opts.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  opts.DisableParallelToolCalls,
-		SkipSuggestions:           opts.SkipSuggestions,
+		DisableSuggestions:        opts.DisableSuggestions,
 		DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
 	}
 	summarizeStart := time.Now()
@@ -234,7 +234,7 @@ func summarizerOutputValidator(items []summarizeTextItem) func(*llm.ReviewRespon
 	}
 }
 
-func summarizeItemsForResult(in *model.ReviewResult, includeOverall bool, skipSuggestions bool) []summarizeTextItem {
+func summarizeItemsForResult(in *model.ReviewResult, includeOverall bool, disableSuggestions bool) []summarizeTextItem {
 	items := make([]summarizeTextItem, 0, len(in.Findings)+1)
 	for findingIndex, finding := range in.Findings {
 		title, body := sourceTitleBodyForSummary(finding)
@@ -245,7 +245,7 @@ func summarizeItemsForResult(in *model.ReviewResult, includeOverall bool, skipSu
 			Kind:         summarizeItemFinding,
 			FindingIndex: findingIndex,
 		})
-		if !skipSuggestions {
+		if !disableSuggestions {
 			for suggestionIndex, suggestion := range sourceSuggestionsForSummary(finding) {
 				if !shouldSummarizeSuggestionBody(suggestion.Body) {
 					continue

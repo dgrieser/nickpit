@@ -44,7 +44,7 @@ type agentLoopRequest struct {
 	NoToolsSystem                     string
 	NoToolsSchemaSnippet              string
 	NoToolsStyleGuideToolchainSnippet string
-	SkipSuggestions                   bool
+	DisableSuggestions                bool
 	JSONRetryExampleSnippet           string
 	JSONRetryProgressAgentName        string
 	OnReasoningTrace                  func(agentName string, iterIdx int, reasoning string)
@@ -301,7 +301,7 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 		}
 		noToolsReq.Messages = finalMessages
 	}
-	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.SkipSuggestions, req.MaxOutputRetries, req.Section)
+	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.DisableSuggestions, req.MaxOutputRetries, req.Section)
 }
 
 func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {

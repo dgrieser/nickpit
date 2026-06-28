@@ -98,7 +98,7 @@ func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 }
 
 // FindingsSchemaWithConstraintsFor returns a findings schema narrowed by the given constraints.
-func FindingsSchemaWithConstraintsFor(c ResponseConstraints, skipSuggestions bool) json.RawMessage {
+func FindingsSchemaWithConstraintsFor(c ResponseConstraints, disableSuggestions bool) json.RawMessage {
 	min, max := 0, 3
 	if c.MinPriority != nil {
 		min = *c.MinPriority
@@ -106,15 +106,15 @@ func FindingsSchemaWithConstraintsFor(c ResponseConstraints, skipSuggestions boo
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, false, !skipSuggestions))
+	return mustMarshalCleanSchema(buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, false, !disableSuggestions))
 }
 
 func FindingsExamplePromptSnippet() string {
 	return FindingsExamplePromptSnippetFor(false)
 }
 
-func FindingsExamplePromptSnippetFor(skipSuggestions bool) string {
-	if skipSuggestions {
+func FindingsExamplePromptSnippetFor(disableSuggestions bool) string {
+	if disableSuggestions {
 		return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsWithoutSuggestionsSchemaDefinition)))
 	}
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(findingsSchemaDefinition)))

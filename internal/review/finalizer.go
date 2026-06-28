@@ -26,7 +26,7 @@ type FinalizeOptions struct {
 	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
 	DisablePatchSummary       bool
-	SkipSuggestions           bool
+	DisableSuggestions        bool
 	RepoRoot                  string
 	DiffFormat                model.DiffFormat
 	// PriorityThreshold is the configured "lowest currently allowed priority"
@@ -58,7 +58,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.SkipSuggestions), opts.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.DisableSuggestions), opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -75,21 +75,21 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		OutputSchemaSnippet        string
 		OutputFormatSnippet        string
 		DisablePatchSummary        bool
-		SkipSuggestions            bool
+		DisableSuggestions         bool
 		StyleGuideToolchainSnippet string
 	}{
 		PrioritySnippet:            commonSnippets.priority,
-		OutputSchemaSnippet:        finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.SkipSuggestions),
+		OutputSchemaSnippet:        finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.DisableSuggestions),
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
-		SkipSuggestions:            opts.SkipSuggestions,
+		DisableSuggestions:         opts.DisableSuggestions,
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes, opts.SkipSuggestions, opts.DiffFormat)
+	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes, opts.DisableSuggestions, opts.DiffFormat)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -97,7 +97,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	var schema []byte
 	if !opts.DisableJSONResponseFormat {
 		schema = llm.FinalizeSchema
-		if opts.SkipSuggestions {
+		if opts.DisableSuggestions {
 			schema = llm.FinalizeSchemaWithoutSuggestions
 		}
 	}
@@ -108,7 +108,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		MaxReasoningSeconds:       opts.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  opts.DisableParallelToolCalls,
-		SkipSuggestions:           opts.SkipSuggestions,
+		DisableSuggestions:        opts.DisableSuggestions,
 		DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
 		DiffFormat:                opts.DiffFormat,
 	}
@@ -139,7 +139,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
 	}
 	stats := applyFinalizerOutput(out.Findings, result.resp.Findings)
-	if opts.SkipSuggestions {
+	if opts.DisableSuggestions {
 		model.StripSuggestions(out.Findings)
 	} else {
 		normalizeFinalizedSuggestions(out.Findings, in.Findings)
@@ -207,7 +207,7 @@ func finalizerOutputValidator(inputFindings []model.Finding) func(*llm.ReviewRes
 	}
 }
 
-func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, skipSuggestions bool, format model.DiffFormat) (string, error) {
+func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, disableSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	contextJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -224,7 +224,7 @@ func (e *Engine) buildFinalizeUserPrompt(reviewCtx *model.ReviewContext, in *mod
 			"code_location":           finding.CodeLocation,
 			"review_confidence_score": finding.ConfidenceScore,
 		}
-		if !skipSuggestions && len(finding.Suggestions) > 0 {
+		if !disableSuggestions && len(finding.Suggestions) > 0 {
 			entry["suggestions"] = finding.Suggestions
 		}
 		if finding.Verification != nil {
@@ -612,9 +612,9 @@ func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
 }
 
-func finalizeOutputSchemaSnippetFor(disableJSONResponseFormat bool, skipSuggestions bool) string {
+func finalizeOutputSchemaSnippetFor(disableJSONResponseFormat bool, disableSuggestions bool) string {
 	if !disableJSONResponseFormat {
 		return ""
 	}
-	return llm.FinalizeExamplePromptSnippetFor(skipSuggestions)
+	return llm.FinalizeExamplePromptSnippetFor(disableSuggestions)
 }

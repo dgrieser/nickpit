@@ -646,7 +646,7 @@ func TestVerifyIncludesSuggestions(t *testing.T) {
 	}
 }
 
-func TestVerifySkipSuggestionsOmitsSuggestions(t *testing.T) {
+func TestVerifyDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
@@ -660,7 +660,7 @@ func TestVerifySkipSuggestionsOmitsSuggestions(t *testing.T) {
 			{Body: "replacement one", LineRange: model.LineRange{Start: 1, End: 1}},
 		},
 	}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding, SkipSuggestions: true})
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding, DisableSuggestions: true})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}

@@ -71,8 +71,8 @@ type Profile struct {
 	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
 	NudgeCount                         int                 `yaml:"nudge_count"`
 	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
-	SkipSuggestions                    bool                `yaml:"disable_suggestions"`
-	SkipWorkflowTimeBudget             bool                `yaml:"disable_workflow_time_budget"`
+	DisableSuggestions                 bool                `yaml:"disable_suggestions"`
+	DisableWorkflowTimeBudget          bool                `yaml:"disable_workflow_time_budget"`
 	ReasoningEffort                    string              `yaml:"reasoning_effort"`
 	Workdir                            string              `yaml:"workdir"`
 	GitHubToken                        string              `yaml:"github_token"`
@@ -143,8 +143,8 @@ type Overrides struct {
 	RateLimitDelaySeconds     *int
 	NudgeCount                *int
 	DisablePatchSummary       bool
-	SkipSuggestions           bool
-	SkipWorkflowTimeBudget    bool
+	DisableSuggestions        bool
+	DisableWorkflowTimeBudget bool
 	ReasoningEffort           string
 	Workdir                   string
 	GitHubToken               string
@@ -656,11 +656,11 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.DisablePatchSummary {
 		profile.DisablePatchSummary = true
 	}
-	if overrides.SkipSuggestions {
-		profile.SkipSuggestions = true
+	if overrides.DisableSuggestions {
+		profile.DisableSuggestions = true
 	}
-	if overrides.SkipWorkflowTimeBudget {
-		profile.SkipWorkflowTimeBudget = true
+	if overrides.DisableWorkflowTimeBudget {
+		profile.DisableWorkflowTimeBudget = true
 	}
 	if overrides.ReasoningEffort != "" {
 		profile.ReasoningEffort = overrides.ReasoningEffort

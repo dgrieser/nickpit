@@ -698,19 +698,19 @@ func TestStepOverrideResolveIdentity(t *testing.T) {
 
 func TestStepOverrideResolveApplies(t *testing.T) {
 	base := config.Profile{Model: "base", ReasoningEffort: "high", MaxToolCalls: 7}
-	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, DisablePatchSummary: true, SkipSuggestions: true}
+	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, DisablePatchSummary: true, DisableSuggestions: true}
 	zero := 0
 	model5 := "opus"
 	effort := "low"
 	disablePatchSummary := false
-	skipSuggestions := false
+	disableSuggestions := false
 	ov := &StepOverride{
 		Model:               &model5,
 		ReasoningEffort:     &effort,
 		MaxToolCalls:        &zero, // explicit zero must win (unlimited)
 		NudgeCount:          &zero,
 		DisablePatchSummary: &disablePatchSummary,
-		SkipSuggestions:     &skipSuggestions,
+		DisableSuggestions:  &disableSuggestions,
 	}
 	gotProfile, gotReq := ov.Resolve(base, req)
 	if gotProfile.Model != "opus" || gotProfile.ReasoningEffort != "low" {
@@ -725,7 +725,7 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 	if gotReq.DisablePatchSummary {
 		t.Fatal("explicit false disable_patch_summary not applied")
 	}
-	if gotReq.SkipSuggestions {
+	if gotReq.DisableSuggestions {
 		t.Fatal("explicit false disable_suggestions not applied")
 	}
 }

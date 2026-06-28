@@ -301,7 +301,7 @@ func TestNormalizePriorityThreshold(t *testing.T) {
 	}
 }
 
-func TestLoadProfileAppliesSkipSuggestions(t *testing.T) {
+func TestLoadProfileAppliesDisableSuggestions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -322,12 +322,12 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.SkipSuggestions {
+	if !profile.DisableSuggestions {
 		t.Fatal("expected skip suggestions CLI override")
 	}
 }
 
-func TestLoadProfileAppliesSkipWorkflowTimeBudget(t *testing.T) {
+func TestLoadProfileAppliesDisableWorkflowTimeBudget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -348,7 +348,7 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.SkipWorkflowTimeBudget {
+	if !profile.DisableWorkflowTimeBudget {
 		t.Fatal("expected skip workflow time budget CLI override")
 	}
 }
@@ -999,7 +999,7 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		MaxReasoningLoopRepeats:   5,
 		MaxDuplicateToolCalls:     5,
 		Concurrency:               15,
-		SkipSuggestions:           true,
+		DisableSuggestions:        true,
 		DisablePatchSummary:       true,
 		DisableReasoningExtract:   true,
 		VerifyDropPolicy:          "refuted-only",
@@ -1007,7 +1007,7 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		PriorityThreshold:         "p1",
 	}
 	got := agentSummary(profile, req)
-	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}

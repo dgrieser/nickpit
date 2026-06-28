@@ -387,8 +387,8 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		RateLimitDelaySeconds:     rateLimitDelaySeconds,
 		NudgeCount:                nudgeCount,
 		DisablePatchSummary:       a.disablePatchSummary,
-		SkipSuggestions:           a.disableSuggestions,
-		SkipWorkflowTimeBudget:    a.disableWorkflowTimeBudget,
+		DisableSuggestions:        a.disableSuggestions,
+		DisableWorkflowTimeBudget: a.disableWorkflowTimeBudget,
 		Workdir:                   a.workDir,
 		GitHubToken:               a.githubToken,
 		GitLabToken:               a.gitlabToken,
@@ -532,7 +532,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
 				NudgeCount:                profile.NudgeCount,
 				DisablePatchSummary:       profile.DisablePatchSummary,
-				SkipSuggestions:           profile.SkipSuggestions,
+				DisableSuggestions:        profile.DisableSuggestions,
 				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
 				PriorityThreshold:         a.priorityThreshold,
 				ConfidenceThreshold:       a.confidenceThreshold,
@@ -613,7 +613,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
 				NudgeCount:                profile.NudgeCount,
 				DisablePatchSummary:       profile.DisablePatchSummary,
-				SkipSuggestions:           profile.SkipSuggestions,
+				DisableSuggestions:        profile.DisableSuggestions,
 				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
 				PriorityThreshold:         a.priorityThreshold,
 				ConfidenceThreshold:       a.confidenceThreshold,
@@ -693,7 +693,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
 				NudgeCount:                profile.NudgeCount,
 				DisablePatchSummary:       profile.DisablePatchSummary,
-				SkipSuggestions:           profile.SkipSuggestions,
+				DisableSuggestions:        profile.DisableSuggestions,
 				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
 				PriorityThreshold:         a.priorityThreshold,
 				ConfidenceThreshold:       a.confidenceThreshold,
@@ -978,11 +978,11 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if profile.DisablePatchSummary {
 		req.DisablePatchSummary = true
 	}
-	if profile.SkipSuggestions {
-		req.SkipSuggestions = true
+	if profile.DisableSuggestions {
+		req.DisableSuggestions = true
 	}
-	if profile.SkipWorkflowTimeBudget {
-		req.SkipWorkflowTimeBudget = true
+	if profile.DisableWorkflowTimeBudget {
+		req.DisableWorkflowTimeBudget = true
 	}
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
@@ -1074,7 +1074,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 // emitResult formats the result to stdout, optionally publishes it back to the
 // origin, and reports the "all reviewers errored" CI failure.
 func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
-	if req.SkipSuggestions {
+	if req.DisableSuggestions {
 		result.StripSuggestions()
 	}
 	var formatter output.Formatter
@@ -2075,8 +2075,8 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 		flags = append(flags, "parallel")
 	}
 	flags = append(flags, unlimited(req.MaxDuplicateToolCalls, "", "duplicates"))
-	if req.SkipSuggestions {
-		flags = append(flags, "skip suggestions")
+	if req.DisableSuggestions {
+		flags = append(flags, "no suggestions")
 	}
 	if req.DisablePatchSummary {
 		flags = append(flags, "no patch summary")

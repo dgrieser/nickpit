@@ -86,7 +86,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 	}
 }
 
-func TestFinalizeSkipSuggestionsOmitsAndStripsSuggestions(t *testing.T) {
+func TestFinalizeDisableSuggestionsOmitsAndStripsSuggestions(t *testing.T) {
 	const findingID = "11111111-1111-4111-8111-111111111111"
 	llmClient := &capturingLLM{
 		resps: []*llm.ReviewResponse{
@@ -129,7 +129,7 @@ func TestFinalizeSkipSuggestionsOmitsAndStripsSuggestions(t *testing.T) {
 		},
 	}
 
-	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{SkipSuggestions: true})
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{DisableSuggestions: true})
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}

@@ -120,8 +120,8 @@ func FinalizeExamplePromptSnippet() string {
 	return FinalizeExamplePromptSnippetFor(false)
 }
 
-func FinalizeExamplePromptSnippetFor(skipSuggestions bool) string {
-	if skipSuggestions {
+func FinalizeExamplePromptSnippetFor(disableSuggestions bool) string {
+	if disableSuggestions {
 		return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeWithoutSuggestionsSchemaDefinition)))
 	}
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeSchemaDefinition)))

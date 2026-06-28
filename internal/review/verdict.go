@@ -19,7 +19,7 @@ type VerdictOptions struct {
 	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
 	DisablePatchSummary       bool
-	SkipSuggestions           bool
+	DisableSuggestions        bool
 	RepoRoot                  string
 	ContextNotes              string
 	DiffFormat                model.DiffFormat
@@ -62,7 +62,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		}
 	}
 	in = filtered
-	if opts.SkipSuggestions {
+	if opts.DisableSuggestions {
 		stripped, err := in.Clone()
 		if err != nil {
 			return nil, model.AgentRun{}, fmt.Errorf("verdict: cloning input result: %w", err)
@@ -98,7 +98,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -114,20 +114,20 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		OutputSchemaSnippet        string
 		OutputFormatSnippet        string
 		DisablePatchSummary        bool
-		SkipSuggestions            bool
+		DisableSuggestions         bool
 		StyleGuideToolchainSnippet string
 	}{
 		OutputSchemaSnippet:        verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
-		SkipSuggestions:            opts.SkipSuggestions,
+		DisableSuggestions:         opts.DisableSuggestions,
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return nil, model.AgentRun{}, fmt.Errorf("verdict: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.SkipSuggestions, opts.DiffFormat)
+	userPrompt, err := e.buildVerdictUserPrompt(reviewCtx, in, opts.ContextNotes, thresholdRank, opts.DisableSuggestions, opts.DiffFormat)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -147,7 +147,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		MaxReasoningSeconds:       opts.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  opts.DisableParallelToolCalls,
-		SkipSuggestions:           opts.SkipSuggestions,
+		DisableSuggestions:        opts.DisableSuggestions,
 		DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
 		DiffFormat:                opts.DiffFormat,
 	}
@@ -275,7 +275,7 @@ func verdictFilterConfidence(finding model.Finding) (float64, string) {
 	return finding.ConfidenceScore, "review"
 }
 
-func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, skipSuggestions bool, format model.DiffFormat) (string, error) {
+func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *model.ReviewResult, contextNotes string, thresholdRank int, disableSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	contextJSON, err := json.Marshal(payload)
 	if err != nil {
@@ -299,7 +299,7 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 		}
 		if finding.Finalization != nil {
 			finalization := *finding.Finalization
-			if skipSuggestions {
+			if disableSuggestions {
 				finalization.Suggestions = nil
 			}
 			entry["finalization"] = &finalization

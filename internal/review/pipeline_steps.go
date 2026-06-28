@@ -131,11 +131,11 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 	var schema []byte
 	if req.DisableJSONResponseFormat {
 		schema = llm.FindingsSchema
-		if req.SkipSuggestions {
+		if req.DisableSuggestions {
 			schema = llm.FindingsSchemaWithoutSuggestions
 		}
 		if vector.constraints.MinPriority != nil || vector.constraints.MaxPriority != nil || len(vector.constraints.AllowedCorrectness) > 0 {
-			schema = llm.FindingsSchemaWithConstraintsFor(vector.constraints, req.SkipSuggestions)
+			schema = llm.FindingsSchemaWithConstraintsFor(vector.constraints, req.DisableSuggestions)
 		}
 	}
 	return agentSpec{
@@ -154,7 +154,7 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 }
 
 func reviewPhaseBudgetStarters(ctx context.Context, vectorID string, override *workflow.StepOverride, req model.ReviewRequest, collectAnyway bool, logf timeBudgetLogFunc) (timeBudgetStarter, timeBudgetStarter, timeBudgetStarter, timeBudgetStarter) {
-	if req.SkipWorkflowTimeBudget || override == nil || !hasReviewPhaseBudget(override) {
+	if req.DisableWorkflowTimeBudget || override == nil || !hasReviewPhaseBudget(override) {
 		return newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
 			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
 			newTimeBudgetStarter(ctx, nil, childTimePlan{}, false, "", nil),
@@ -366,7 +366,7 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 // verifier failures are kept as unverified findings with warnings.
 func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		if err := injectGroups(st, findingsFrom, sc.Req.SkipSuggestions); err != nil {
+		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
 			return err
 		}
 		vr := st.vectorResults()
@@ -440,7 +440,7 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 // dedupeStepFunc runs the per-group dedupe pass.
 func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		if err := injectGroups(st, findingsFrom, sc.Req.SkipSuggestions); err != nil {
+		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
 			return err
 		}
 		vr := st.vectorResults()
@@ -458,7 +458,7 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 // normalized) consumed by finalize and output.
 func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
-		if err := injectGroups(st, findingsFrom, sc.Req.SkipSuggestions); err != nil {
+		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
 			return err
 		}
 		req := sc.Req
@@ -471,8 +471,8 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		if req.DisableJSONResponseFormat {
 			mergeConstraints = mergeConstraintsForRequest(req)
 			if hasResponseConstraints(mergeConstraints) {
-				mergeSchema = llm.MergeSchemaWithConstraintsFor(mergeConstraints, req.SkipSuggestions)
-			} else if req.SkipSuggestions {
+				mergeSchema = llm.MergeSchemaWithConstraintsFor(mergeConstraints, req.DisableSuggestions)
+			} else if req.DisableSuggestions {
 				mergeSchema = llm.MergeSchemaWithoutSuggestions
 			} else {
 				mergeSchema = llm.MergeSchema
@@ -585,9 +585,9 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		if fused.hasSummarize {
 			summarizeSC = e.stepContext(fused.summarize.Config, sc.Req)
 		}
-		mergeBudget, finalizeBudget, verdictBudget, summarizeBudget := pipelinePhaseBudgets(ctx, fused, sc.Req.SkipWorkflowTimeBudget, e.logf)
+		mergeBudget, finalizeBudget, verdictBudget, summarizeBudget := pipelinePhaseBudgets(ctx, fused, sc.Req.DisableWorkflowTimeBudget, e.logf)
 
-		if err := injectGroups(st, fused.merge.FindingsFrom, mergeSC.Req.SkipSuggestions); err != nil {
+		if err := injectGroups(st, fused.merge.FindingsFrom, mergeSC.Req.DisableSuggestions); err != nil {
 			return err
 		}
 		vr := st.vectorResults()
@@ -857,8 +857,8 @@ func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byt
 	if req.DisableJSONResponseFormat {
 		constraints = mergeConstraintsForRequest(req)
 		if hasResponseConstraints(constraints) {
-			schema = llm.MergeSchemaWithConstraintsFor(constraints, req.SkipSuggestions)
-		} else if req.SkipSuggestions {
+			schema = llm.MergeSchemaWithConstraintsFor(constraints, req.DisableSuggestions)
+		} else if req.DisableSuggestions {
 			schema = llm.MergeSchemaWithoutSuggestions
 		} else {
 			schema = llm.MergeSchema
@@ -875,7 +875,7 @@ func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, i
 		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:       sc.Req.DisablePatchSummary,
-		SkipSuggestions:           sc.Req.SkipSuggestions,
+		DisableSuggestions:        sc.Req.DisableSuggestions,
 		RepoRoot:                  sc.Req.RepoRoot,
 		DiffFormat:                sc.Req.DiffFormat,
 		PriorityThreshold:         sc.Req.PriorityThreshold,
@@ -915,7 +915,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:       sc.Req.DisablePatchSummary,
-		SkipSuggestions:           sc.Req.SkipSuggestions,
+		DisableSuggestions:        sc.Req.DisableSuggestions,
 		RepoRoot:                  sc.Req.RepoRoot,
 		DiffFormat:                sc.Req.DiffFormat,
 		PriorityThreshold:         sc.Req.PriorityThreshold,
@@ -948,7 +948,7 @@ func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewRes
 		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:       sc.Req.DisablePatchSummary,
-		SkipSuggestions:           sc.Req.SkipSuggestions,
+		DisableSuggestions:        sc.Req.DisableSuggestions,
 		RepoRoot:                  sc.Req.RepoRoot,
 	}
 	summarized, run, err := sc.Engine.Summarize(ctx, in, opts)
@@ -973,7 +973,7 @@ func runOverallSummarize(ctx context.Context, sc *stepContext, overall string) (
 		MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
 		DisablePatchSummary:       sc.Req.DisablePatchSummary,
-		SkipSuggestions:           sc.Req.SkipSuggestions,
+		DisableSuggestions:        sc.Req.DisableSuggestions,
 		RepoRoot:                  sc.Req.RepoRoot,
 	}
 	summary, run, err := sc.Engine.SummarizeOverall(ctx, overall, opts)
@@ -1119,7 +1119,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			// merge and materializeFromGroups do, so --priority-threshold stays
 			// effective for finalize-from-file workflows.
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
-			if sc.Req.SkipSuggestions {
+			if sc.Req.DisableSuggestions {
 				model.StripSuggestions(findings)
 			}
 			st.mu.Lock()
@@ -1149,7 +1149,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
 			DisablePatchSummary:       sc.Req.DisablePatchSummary,
-			SkipSuggestions:           sc.Req.SkipSuggestions,
+			DisableSuggestions:        sc.Req.DisableSuggestions,
 			RepoRoot:                  sc.Req.RepoRoot,
 			DiffFormat:                sc.Req.DiffFormat,
 			PriorityThreshold:         sc.Req.PriorityThreshold,
@@ -1201,7 +1201,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			}
 			flat := flattenInjectedGroups(groups)
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
-			if sc.Req.SkipSuggestions {
+			if sc.Req.DisableSuggestions {
 				model.StripSuggestions(findings)
 			}
 			st.mu.Lock()
@@ -1231,7 +1231,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
 			DisablePatchSummary:       sc.Req.DisablePatchSummary,
-			SkipSuggestions:           sc.Req.SkipSuggestions,
+			DisableSuggestions:        sc.Req.DisableSuggestions,
 			RepoRoot:                  sc.Req.RepoRoot,
 			DiffFormat:                sc.Req.DiffFormat,
 			PriorityThreshold:         sc.Req.PriorityThreshold,
@@ -1281,7 +1281,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			}
 			flat := flattenInjectedGroups(groups)
 			findings := filterByPriority(flat.findings, sc.Req.PriorityThreshold)
-			if sc.Req.SkipSuggestions {
+			if sc.Req.DisableSuggestions {
 				model.StripSuggestions(findings)
 			}
 			st.mu.Lock()
@@ -1322,7 +1322,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			MaxReasoningLoopRepeats:   sc.Req.MaxReasoningLoopRepeats,
 			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
 			DisablePatchSummary:       sc.Req.DisablePatchSummary,
-			SkipSuggestions:           sc.Req.SkipSuggestions,
+			DisableSuggestions:        sc.Req.DisableSuggestions,
 			RepoRoot:                  sc.Req.RepoRoot,
 		}
 		summarized, summarizeRun, err := sc.Engine.Summarize(ctx, in, opts)
@@ -1354,7 +1354,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 
 // injectGroups loads findings files (one group per file) and registers them as
 // synthetic reviewer groups, used to seed verify/dedupe/merge from disk.
-func injectGroups(st *PipelineState, findingsFrom []string, skipSuggestions bool) error {
+func injectGroups(st *PipelineState, findingsFrom []string, disableSuggestions bool) error {
 	if len(findingsFrom) == 0 {
 		return nil
 	}
@@ -1362,7 +1362,7 @@ func injectGroups(st *PipelineState, findingsFrom []string, skipSuggestions bool
 	if err != nil {
 		return err
 	}
-	if skipSuggestions {
+	if disableSuggestions {
 		stripInjectedGroupSuggestions(groups)
 	}
 	seq := st.nextInjectSeq()

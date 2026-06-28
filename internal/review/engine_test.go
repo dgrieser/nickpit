@@ -1793,7 +1793,7 @@ func clusterMergeRequests(t *testing.T, requests []*llm.ReviewRequest) []*llm.Re
 	return out
 }
 
-func TestFindingPromptPayloadSkipSuggestionsStripsNestedSuggestions(t *testing.T) {
+func TestFindingPromptPayloadDisableSuggestionsStripsNestedSuggestions(t *testing.T) {
 	original := model.Finding{
 		ID:          "11111111-1111-4111-8111-111111111111",
 		Title:       "Fix issue",
@@ -1827,7 +1827,7 @@ func TestFindingPromptPayloadSkipSuggestionsStripsNestedSuggestions(t *testing.T
 	}
 }
 
-func TestDedupeAgentSkipSuggestionsOmitsSuggestions(t *testing.T) {
+func TestDedupeAgentDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	a := clusterTestFinding("Fix alpha issue", 1)
 	a.Suggestions = []model.Suggestion{{Body: "alpha suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}}
 	b := clusterTestFinding("Fix beta issue", 13)
@@ -1846,7 +1846,7 @@ func TestDedupeAgentSkipSuggestionsOmitsSuggestions(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}, OverallConfidenceScore: 0.9},
 	}
 
-	if _, err := engine.callDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{SkipSuggestions: true}); err != nil {
+	if _, err := engine.callDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}); err != nil {
 		t.Fatalf("callDedupeAgent returned err: %v", err)
 	}
 	if len(llmClient.mergeRequests) != 1 {
@@ -1862,7 +1862,7 @@ func TestDedupeAgentSkipSuggestionsOmitsSuggestions(t *testing.T) {
 	}
 }
 
-func TestClusterMergeSkipSuggestionsOmitsSuggestions(t *testing.T) {
+func TestClusterMergeDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	a := clusterTestFinding("Fix alpha issue", 1)
 	a.Suggestions = []model.Suggestion{{Body: "alpha suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}}
 	b := clusterTestFinding("Fix beta issue", 13)
@@ -1874,7 +1874,7 @@ func TestClusterMergeSkipSuggestionsOmitsSuggestions(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{SkipSuggestions: true})
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true})
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want 1", len(llmClient.mergeRequests))
@@ -2806,7 +2806,7 @@ func TestNoToolsMessagesUsesAgentRoleForCommonSnippets(t *testing.T) {
 	}
 }
 
-func TestNoToolsMessagesCanSkipSuggestions(t *testing.T) {
+func TestNoToolsMessagesCanDisableSuggestions(t *testing.T) {
 	messages := []llm.Message{{Role: "system", Content: "old"}}
 	reviewerMessages, err := noToolsMessages("review", "{{.FindingInstructionsSnippet}}", messages, "", "", true)
 	if err != nil {

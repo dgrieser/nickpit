@@ -25,7 +25,7 @@ For each finding, you will:
     - add paragraphs, e.g. an empty line, between distinct points to improve readability
     - put code references and symbol names in backticks or code blocks
     - format bold or italic when it makes sense to emphasize a point
-{{- if .SkipSuggestions}}
+{{- if .DisableSuggestions}}
 - do not output `suggestions` anywhere, including under `finalization`
 {{- else}}
 - produce final `finalization.suggestions`, when the input finding has `suggestions`:
@@ -57,7 +57,7 @@ DO NOT introduce new findings that no engineer raised
 - `finalization.priority` is an integer 0-3
 - `finalization.title` and `finalization.body` contain the final title and body you want downstream output to use
 - `finalization.remarks` is a short paragraph explaining what you did
-{{- if not .SkipSuggestions}}
+{{- if not .DisableSuggestions}}
 - `finalization.suggestions` contains the final suggestion text downstream output should use
 {{- end}}
 {{- end}}

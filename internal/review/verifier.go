@@ -30,7 +30,7 @@ type VerifyRequest struct {
 	MaxReasoningSeconds       int
 	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
-	SkipSuggestions           bool
+	DisableSuggestions        bool
 	DiffFormat                model.DiffFormat
 }
 
@@ -49,7 +49,7 @@ type VerifyOptions struct {
 	MaxReasoningSeconds       int
 	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
-	SkipSuggestions           bool
+	DisableSuggestions        bool
 	RepoRoot                  string
 	DropPolicy                string
 	DiffFormat                model.DiffFormat
@@ -78,7 +78,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet, req.SkipSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet, req.DisableSuggestions)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -114,7 +114,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, req.SkipSuggestions, req.DiffFormat)
+	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, req.DisableSuggestions, req.DiffFormat)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -163,7 +163,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           exampleSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.SkipSuggestions)
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions)
 			},
 		})
 		if err != nil {
@@ -249,7 +249,7 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxReasoningSeconds:       opts.MaxReasoningSeconds,
 				MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
 				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
-				SkipSuggestions:           opts.SkipSuggestions,
+				DisableSuggestions:        opts.DisableSuggestions,
 				DiffFormat:                opts.DiffFormat,
 			}
 			verification, usage, err := e.Verify(ctx, req)
@@ -331,7 +331,7 @@ func verifyOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
 	return llm.VerifyExamplePromptSnippet()
 }
 
-func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, skipSuggestions bool, format model.DiffFormat) (string, error) {
+func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	base, err := json.Marshal(payload)
 	if err != nil {
@@ -356,7 +356,7 @@ func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding m
 		Priority:     model.PriorityRank(finding.Priority),
 		CodeLocation: finding.CodeLocation,
 	}
-	if !skipSuggestions {
+	if !disableSuggestions {
 		findingForVerify.Suggestions = finding.Suggestions
 	}
 	encoded, err := json.Marshal(findingForVerify)

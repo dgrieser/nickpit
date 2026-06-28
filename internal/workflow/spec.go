@@ -203,7 +203,7 @@ type StepOverride struct {
 	DisableReasoningExtract   *bool    `yaml:"disable_reasoning_extract"`
 	DisableParallelToolCalls  *bool    `yaml:"disable_parallel_tool_calls"`
 	DisablePatchSummary       *bool    `yaml:"disable_patch_summary"`
-	SkipSuggestions           *bool    `yaml:"disable_suggestions"`
+	DisableSuggestions        *bool    `yaml:"disable_suggestions"`
 	DisableJSONResponseFormat *bool    `yaml:"disable_json_response_format"`
 	VerifyDropPolicy          *string  `yaml:"verify_drop_policy"`
 	ConfidenceThreshold       *float64 `yaml:"confidence_threshold"`
@@ -344,8 +344,8 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.DisablePatchSummary != nil {
 		req.DisablePatchSummary = *o.DisablePatchSummary
 	}
-	if o.SkipSuggestions != nil {
-		req.SkipSuggestions = *o.SkipSuggestions
+	if o.DisableSuggestions != nil {
+		req.DisableSuggestions = *o.DisableSuggestions
 	}
 	if o.VerifyDropPolicy != nil {
 		req.VerifyDropPolicy = *o.VerifyDropPolicy

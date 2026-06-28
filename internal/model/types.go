@@ -66,8 +66,8 @@ type ReviewRequest struct {
 	DisableParallelToolCalls  bool
 	DisableReasoningExtract   bool
 	DisablePatchSummary       bool
-	SkipSuggestions           bool
-	SkipWorkflowTimeBudget    bool
+	DisableSuggestions        bool
+	DisableWorkflowTimeBudget bool
 	ModelEmitsReasoning       bool
 	DisableJSONResponseFormat bool
 	PriorityThreshold         string

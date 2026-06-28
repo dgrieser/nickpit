@@ -266,7 +266,7 @@ profiles:
 	}
 }
 
-func TestLoadConfigSkipSuggestions(t *testing.T) {
+func TestLoadConfigDisableSuggestions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -283,12 +283,12 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.SkipSuggestions {
+	if !profile.DisableSuggestions {
 		t.Fatal("expected disable_suggestions to be enabled")
 	}
 }
 
-func TestLoadConfigSkipWorkflowTimeBudget(t *testing.T) {
+func TestLoadConfigDisableWorkflowTimeBudget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -305,7 +305,7 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.SkipWorkflowTimeBudget {
+	if !profile.DisableWorkflowTimeBudget {
 		t.Fatal("expected disable_workflow_time_budget to be enabled")
 	}
 }
