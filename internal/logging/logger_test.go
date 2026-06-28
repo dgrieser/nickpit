@@ -56,6 +56,68 @@ func TestVerboseJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
 	}
 }
 
+func TestVerboseJSONPreservesStructFieldOrder(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	var buf bytes.Buffer
+	logger := New(&buf, true, false)
+
+	type nestedPayload struct {
+		Second string `json:"second"`
+		First  string `json:"first"`
+	}
+	type payload struct {
+		Zed    int           `json:"zed"`
+		Alpha  int           `json:"alpha"`
+		Nested nestedPayload `json:"nested"`
+	}
+
+	logger.VerboseJSON(context.Background(), "", payload{
+		Zed:   1,
+		Alpha: 2,
+		Nested: nestedPayload{
+			Second: "two",
+			First:  "one",
+		},
+	})
+
+	assertSubstringsInOrder(t, buf.String(), []string{
+		`"zed": 1`,
+		`"alpha": 2`,
+		`"nested": {`,
+		`"second": "two"`,
+		`"first": "one"`,
+	})
+}
+
+func TestVerboseJSONPreservesEmbeddedJSONStringOrder(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	var buf bytes.Buffer
+	logger := New(&buf, true, false)
+
+	type message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+
+	logger.VerboseJSON(context.Background(), "", message{
+		Role:    "user",
+		Content: `{"repository":{"full_name":"repo"},"identifier":7,"title":"T","changed_files":[]}`,
+	})
+
+	got := buf.String()
+	assertSubstringsInOrder(t, got, []string{
+		`"role": "user"`,
+		`"content": {`,
+		`"repository": {`,
+		`"identifier": 7`,
+		`"title": "T"`,
+		`"changed_files": []`,
+	})
+	if strings.Contains(got, `"{\"repository\"`) {
+		t.Fatalf("expected embedded JSON to render structurally:\n%s", got)
+	}
+}
+
 func TestVerboseJSONRendersMultilineStringsConsistently(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
@@ -294,4 +356,16 @@ type testError string
 
 func (e testError) Error() string {
 	return string(e)
+}
+
+func assertSubstringsInOrder(t *testing.T, got string, wants []string) {
+	t.Helper()
+	offset := 0
+	for _, want := range wants {
+		idx := strings.Index(got[offset:], want)
+		if idx < 0 {
+			t.Fatalf("missing %q after offset %d in:\n%s", want, offset, got)
+		}
+		offset += idx + len(want)
+	}
 }

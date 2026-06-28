@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -182,51 +181,147 @@ type renderedJSONLine struct {
 	prefixLen int
 }
 
-func normalizeEmbeddedJSON(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(typed))
-		for key, item := range typed {
-			out[key] = normalizeEmbeddedJSON(item)
+type orderedJSONKind int
+
+const (
+	orderedJSONScalar orderedJSONKind = iota
+	orderedJSONString
+	orderedJSONObject
+	orderedJSONArray
+)
+
+type orderedJSONMember struct {
+	key   string
+	value orderedJSONValue
+}
+
+type orderedJSONValue struct {
+	kind   orderedJSONKind
+	scalar any
+	str    string
+	object []orderedJSONMember
+	array  []orderedJSONValue
+}
+
+func decodeOrderedJSON(data []byte) (orderedJSONValue, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	value, err := decodeOrderedJSONValue(decoder)
+	if err != nil {
+		return orderedJSONValue{}, err
+	}
+	if token, err := decoder.Token(); err != io.EOF {
+		if err != nil {
+			return orderedJSONValue{}, err
 		}
-		return out
-	case []any:
-		out := make([]any, len(typed))
-		for i, item := range typed {
-			out[i] = normalizeEmbeddedJSON(item)
-		}
-		return out
-	case string:
-		trimmed := strings.TrimSpace(typed)
-		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
-			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
-			var embedded any
-			if err := json.Unmarshal([]byte(trimmed), &embedded); err == nil {
-				return normalizeEmbeddedJSON(embedded)
+		return orderedJSONValue{}, fmt.Errorf("unexpected trailing JSON token %v", token)
+	}
+	return value, nil
+}
+
+func decodeOrderedJSONValue(decoder *json.Decoder) (orderedJSONValue, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return orderedJSONValue{}, err
+	}
+	switch typed := token.(type) {
+	case json.Delim:
+		switch typed {
+		case '{':
+			var members []orderedJSONMember
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return orderedJSONValue{}, err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return orderedJSONValue{}, fmt.Errorf("object key token %v is not a string", keyToken)
+				}
+				value, err := decodeOrderedJSONValue(decoder)
+				if err != nil {
+					return orderedJSONValue{}, err
+				}
+				members = append(members, orderedJSONMember{key: key, value: value})
 			}
+			end, err := decoder.Token()
+			if err != nil {
+				return orderedJSONValue{}, err
+			}
+			if end != json.Delim('}') {
+				return orderedJSONValue{}, fmt.Errorf("object ended with %v", end)
+			}
+			return orderedJSONValue{kind: orderedJSONObject, object: members}, nil
+		case '[':
+			var items []orderedJSONValue
+			for decoder.More() {
+				value, err := decodeOrderedJSONValue(decoder)
+				if err != nil {
+					return orderedJSONValue{}, err
+				}
+				items = append(items, value)
+			}
+			end, err := decoder.Token()
+			if err != nil {
+				return orderedJSONValue{}, err
+			}
+			if end != json.Delim(']') {
+				return orderedJSONValue{}, fmt.Errorf("array ended with %v", end)
+			}
+			return orderedJSONValue{kind: orderedJSONArray, array: items}, nil
+		default:
+			return orderedJSONValue{}, fmt.Errorf("unexpected JSON delimiter %q", typed)
 		}
-		return strings.ReplaceAll(typed, "\r\n", "\n")
+	case string:
+		return orderedJSONValue{kind: orderedJSONString, str: typed}, nil
 	default:
-		return typed
+		return orderedJSONValue{kind: orderedJSONScalar, scalar: typed}, nil
 	}
 }
 
-func renderJSONLines(value any, indent int, prefix string, trailingComma bool) []renderedJSONLine {
-	switch typed := value.(type) {
-	case map[string]any:
-		return renderJSONObjectLines(typed, indent, prefix, trailingComma)
-	case []any:
-		return renderJSONArrayLines(typed, indent, prefix, trailingComma)
-	case string:
-		return renderJSONStringLines(typed, prefix, trailingComma)
+func normalizeEmbeddedJSON(value orderedJSONValue) orderedJSONValue {
+	switch value.kind {
+	case orderedJSONObject:
+		for i := range value.object {
+			value.object[i].value = normalizeEmbeddedJSON(value.object[i].value)
+		}
+		return value
+	case orderedJSONArray:
+		for i := range value.array {
+			value.array[i] = normalizeEmbeddedJSON(value.array[i])
+		}
+		return value
+	case orderedJSONString:
+		trimmed := strings.TrimSpace(value.str)
+		if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+			(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+			if embedded, err := decodeOrderedJSON([]byte(trimmed)); err == nil {
+				return normalizeEmbeddedJSON(embedded)
+			}
+		}
+		value.str = strings.ReplaceAll(value.str, "\r\n", "\n")
+		return value
+	default:
+		return value
+	}
+}
+
+func renderJSONLines(value orderedJSONValue, indent int, prefix string, trailingComma bool) []renderedJSONLine {
+	switch value.kind {
+	case orderedJSONObject:
+		return renderJSONObjectLines(value.object, indent, prefix, trailingComma)
+	case orderedJSONArray:
+		return renderJSONArrayLines(value.array, indent, prefix, trailingComma)
+	case orderedJSONString:
+		return renderJSONStringLines(value.str, prefix, trailingComma)
 	default:
 		return []renderedJSONLine{{
-			text: prefix + marshalJSONScalar(typed) + trailingCommaSuffix(trailingComma),
+			text: prefix + marshalJSONScalar(value.scalar) + trailingCommaSuffix(trailingComma),
 		}}
 	}
 }
 
-func renderJSONObjectLines(value map[string]any, indent int, prefix string, trailingComma bool) []renderedJSONLine {
+func renderJSONObjectLines(value []orderedJSONMember, indent int, prefix string, trailingComma bool) []renderedJSONLine {
 	if len(value) == 0 {
 		return []renderedJSONLine{{
 			text: prefix + "{}" + trailingCommaSuffix(trailingComma),
@@ -234,14 +329,9 @@ func renderJSONObjectLines(value map[string]any, indent int, prefix string, trai
 	}
 
 	lines := []renderedJSONLine{{text: prefix + "{"}}
-	keys := make([]string, 0, len(value))
-	for key := range value {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for i, key := range keys {
-		childPrefix := strings.Repeat("  ", indent+1) + marshalJSONString(key) + ": "
-		lines = append(lines, renderJSONLines(value[key], indent+1, childPrefix, i < len(keys)-1)...)
+	for i, member := range value {
+		childPrefix := strings.Repeat("  ", indent+1) + marshalJSONString(member.key) + ": "
+		lines = append(lines, renderJSONLines(member.value, indent+1, childPrefix, i < len(value)-1)...)
 	}
 	lines = append(lines, renderedJSONLine{
 		text: strings.Repeat("  ", indent) + "}" + trailingCommaSuffix(trailingComma),
@@ -249,7 +339,7 @@ func renderJSONObjectLines(value map[string]any, indent int, prefix string, trai
 	return lines
 }
 
-func renderJSONArrayLines(value []any, indent int, prefix string, trailingComma bool) []renderedJSONLine {
+func renderJSONArrayLines(value []orderedJSONValue, indent int, prefix string, trailingComma bool) []renderedJSONLine {
 	if len(value) == 0 {
 		return []renderedJSONLine{{
 			text: prefix + "[]" + trailingCommaSuffix(trailingComma),
