@@ -201,6 +201,9 @@ func (e *Engine) executeLocateCode(ctx context.Context, repoRoot string, toolCal
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
+	if content == nil {
+		return toolError(normalizedPath, "retrieval_failed", "retrieved file content is nil")
+	}
 	matches := locateCodeMatches(content.Content, args.Code)
 	if matches == nil {
 		matches = []locateCodeMatch{}

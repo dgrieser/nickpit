@@ -232,6 +232,29 @@ func TestExecuteLocateCodeReturnsZeroMatches(t *testing.T) {
 	assertLocatePayload(t, payload, 1, nil)
 }
 
+type nilFileRetrieval struct {
+	stubRetrieval
+}
+
+func (nilFileRetrieval) GetFile(context.Context, string, string) (*retrieval.FileContent, error) {
+	return nil, nil
+}
+
+func TestExecuteLocateCodeHandlesNilFileContent(t *testing.T) {
+	engine := NewEngine(stubSource{}, &capturingLLM{}, nilFileRetrieval{}, config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "nil_file", Name: "locate_code", Arguments: `{"path":"pkg/a.go","code":"package pkg"}`},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	if got := nestedString(payload, "error", "code"); got != "retrieval_failed" {
+		t.Fatalf("nil content error code = %q, payload = %#v", got, payload)
+	}
+	if got := nestedString(payload, "error", "message"); got != "retrieved file content is nil" {
+		t.Fatalf("nil content error message = %q, payload = %#v", got, payload)
+	}
+}
+
 func TestExecuteLocateCodeValidatesRequiredArguments(t *testing.T) {
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
