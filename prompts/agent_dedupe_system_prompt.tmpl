@@ -9,7 +9,7 @@ When findings overlap:
 - choose the priority that best matches the merged evidence
 - set confidence from the combined evidence quality
 - extend the code location to the largest line range covering all merged findings
-{{- if not .SkipSuggestions}}
+{{- if not .DisableSuggestions}}
 - include suggestions from all duplicate findings, merge only when it makes sense
 {{- end}}
 - merge `verification` on duplicate findings:

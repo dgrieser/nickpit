@@ -284,7 +284,24 @@ profiles:
 	}
 }
 
-func TestLoadProfileAppliesSkipSuggestions(t *testing.T) {
+func TestNormalizePriorityThreshold(t *testing.T) {
+	for in, want := range map[string]string{"0": "p0", "1": "p1", "2": "p2", "3": "p3"} {
+		got, err := model.NormalizePriorityThreshold(in)
+		if err != nil {
+			t.Fatalf("NormalizePriorityThreshold(%q) error: %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("NormalizePriorityThreshold(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"p3", "4", "-1", "", "high"} {
+		if _, err := model.NormalizePriorityThreshold(in); err == nil {
+			t.Fatalf("NormalizePriorityThreshold(%q) expected error, got nil", in)
+		}
+	}
+}
+
+func TestLoadProfileAppliesDisableSuggestions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -297,20 +314,20 @@ profiles:
 	}
 
 	app := &app{
-		profile:         "default",
-		configPath:      path,
-		skipSuggestions: true,
+		profile:            "default",
+		configPath:         path,
+		disableSuggestions: true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.SkipSuggestions {
+	if !profile.DisableSuggestions {
 		t.Fatal("expected skip suggestions CLI override")
 	}
 }
 
-func TestLoadProfileAppliesSkipWorkflowTimeBudget(t *testing.T) {
+func TestLoadProfileAppliesDisableWorkflowTimeBudget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -323,15 +340,15 @@ profiles:
 	}
 
 	app := &app{
-		profile:                "default",
-		configPath:             path,
-		skipWorkflowTimeBudget: true,
+		profile:                   "default",
+		configPath:                path,
+		disableWorkflowTimeBudget: true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profile.SkipWorkflowTimeBudget {
+	if !profile.DisableWorkflowTimeBudget {
 		t.Fatal("expected skip workflow time budget CLI override")
 	}
 }
@@ -443,8 +460,8 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	if vc.DefValue != "10" {
 		t.Fatalf("concurrency default = %q, want 10", vc.DefValue)
 	}
-	if cmd.PersistentFlags().Lookup("skip-model-check") == nil {
-		t.Fatal("skip-model-check flag missing")
+	if cmd.PersistentFlags().Lookup("disable-model-check") == nil {
+		t.Fatal("disable-model-check flag missing")
 	}
 	if cmd.PersistentFlags().Lookup("small-model") == nil {
 		t.Fatal("small-model flag missing")
@@ -455,6 +472,8 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	for _, name := range []string{
 		"top-k",
 		"presence-penalty",
+		"max-output-tokens",
+		"small-max-output-tokens",
 		"small-max-tokens",
 		"small-temperature",
 		"small-top-p",
@@ -707,8 +726,8 @@ func TestSmallModelRequirementsForDefaultSpecDoNotRequireTools(t *testing.T) {
 	if requirements.Tools {
 		t.Fatalf("default small-model requirements should not require tools: %+v", requirements)
 	}
-	if !requirements.JSONOutput || requirements.JSONSchema {
-		t.Fatalf("default small-model requirements = %+v, want JSON output only", requirements)
+	if !requirements.JSONSchema || requirements.JSONOutput {
+		t.Fatalf("default small-model requirements = %+v, want JSON schema only", requirements)
 	}
 
 	result := modelcheck.Result{
@@ -716,6 +735,7 @@ func TestSmallModelRequirementsForDefaultSpecDoNotRequireTools(t *testing.T) {
 			{Name: "configured_no_tools", ReasoningEffort: "low", Status: modelcheck.StatusOK},
 			{Name: "configured_tools", ReasoningEffort: "low", Status: modelcheck.StatusUnsupported, Error: "tools unsupported"},
 			{Name: "configured_json_output", ReasoningEffort: "low", Status: modelcheck.StatusOK},
+			{Name: "configured_json_schema", ReasoningEffort: "low", Status: modelcheck.StatusOK},
 		},
 		PassedEfforts: []string{"low"},
 	}
@@ -763,8 +783,8 @@ func TestSmallModelRequirementsRequireToolsForReviewAlias(t *testing.T) {
 		Config: &workflow.StepOverride{Model: &alias},
 	}}}
 	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
-	if !requirements.Tools || !requirements.JSONOutput || requirements.JSONSchema {
-		t.Fatalf("review small-model requirements = %+v, want tools and JSON output", requirements)
+	if !requirements.Tools || !requirements.JSONSchema || requirements.JSONOutput {
+		t.Fatalf("review small-model requirements = %+v, want tools and JSON schema", requirements)
 	}
 
 	result := modelcheck.Result{
@@ -783,17 +803,17 @@ func TestSmallModelRequirementsRequireToolsForReviewAlias(t *testing.T) {
 
 func TestSmallModelRequirementsHonorSchemaOverride(t *testing.T) {
 	alias := workflow.SmallModelAlias
-	useSchema := true
+	disable := true
 	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
 		Type: workflow.StepFinalize,
 		Config: &workflow.StepOverride{
-			Model:         &alias,
-			UseJSONSchema: &useSchema,
+			Model:                     &alias,
+			DisableJSONResponseFormat: &disable,
 		},
 	}}}
 	requirements := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
-	if !requirements.JSONSchema || requirements.JSONOutput || requirements.Tools {
-		t.Fatalf("schema override requirements = %+v, want schema only", requirements)
+	if !requirements.JSONOutput || requirements.JSONSchema || requirements.Tools {
+		t.Fatalf("disable override requirements = %+v, want JSON output only", requirements)
 	}
 }
 
@@ -869,14 +889,14 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 			MaxDuplicateToolCalls:      5,
 			MaxOutputRetries:           2,
 			MaxOutputRetriesConfigured: true,
-			UseJSONSchema:              true,
+			DisableJSONResponseFormat:  false,
 		}, model.ReviewRequest{
-			Mode:                  model.ModeLocal,
-			RepoRoot:              t.TempDir(),
-			MaxOutputRetries:      2,
-			MaxDuplicateToolCalls: 5,
-			UseJSONSchema:         true,
-			PriorityThreshold:     "p3",
+			Mode:                      model.ModeLocal,
+			RepoRoot:                  t.TempDir(),
+			MaxOutputRetries:          2,
+			MaxDuplicateToolCalls:     5,
+			DisableJSONResponseFormat: false,
+			PriorityThreshold:         "p3",
 		})
 		if err == nil || !strings.Contains(err.Error(), "model check failed") {
 			t.Fatalf("error = %v, want model check failure", err)
@@ -911,18 +931,18 @@ func TestRunReviewShowProgressPrintsSmallModelWhenDifferent(t *testing.T) {
 
 	stderr := captureStderr(t, func() {
 		_ = (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
-			Model:            "Primary-Big",
-			BaseURL:          server.URL,
-			APIKey:           "token",
-			ReasoningEffort:  "high",
-			MaxContextTokens: 120000,
-			UseJSONSchema:    true,
-			Small:            config.SmallModelConfig{Model: "Small-Fast", ReasoningEffort: "low"},
+			Model:                     "Primary-Big",
+			BaseURL:                   server.URL,
+			APIKey:                    "token",
+			ReasoningEffort:           "high",
+			MaxContextTokens:          120000,
+			DisableJSONResponseFormat: true,
+			Small:                     config.SmallModelConfig{Model: "Small-Fast", ReasoningEffort: "low"},
 		}, model.ReviewRequest{
-			Mode:              model.ModeLocal,
-			RepoRoot:          t.TempDir(),
-			UseJSONSchema:     true,
-			PriorityThreshold: "p3",
+			Mode:                      model.ModeLocal,
+			RepoRoot:                  t.TempDir(),
+			DisableJSONResponseFormat: true,
+			PriorityThreshold:         "p3",
 		})
 	})
 
@@ -949,17 +969,17 @@ func TestRunReviewShowProgressOmitsSmallModelWhenSame(t *testing.T) {
 
 	stderr := captureStderr(t, func() {
 		_ = (&app{showProgress: true}).runReview(context.Background(), &recordingSource{}, nil, "mittwald", config.Profile{
-			Model:            "Primary-Big",
-			BaseURL:          server.URL,
-			APIKey:           "token",
-			ReasoningEffort:  "high",
-			MaxContextTokens: 120000,
-			UseJSONSchema:    true,
+			Model:                     "Primary-Big",
+			BaseURL:                   server.URL,
+			APIKey:                    "token",
+			ReasoningEffort:           "high",
+			MaxContextTokens:          120000,
+			DisableJSONResponseFormat: true,
 		}, model.ReviewRequest{
-			Mode:              model.ModeLocal,
-			RepoRoot:          t.TempDir(),
-			UseJSONSchema:     true,
-			PriorityThreshold: "p3",
+			Mode:                      model.ModeLocal,
+			RepoRoot:                  t.TempDir(),
+			DisableJSONResponseFormat: true,
+			PriorityThreshold:         "p3",
 		})
 	})
 
@@ -972,22 +992,22 @@ func TestRunReviewShowProgressOmitsSmallModelWhenSame(t *testing.T) {
 func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 	profile := config.Profile{MaxRateLimitDelaySeconds: 300}
 	req := model.ReviewRequest{
-		UseJSONSchema:           true,
-		NudgeCount:              3,
-		MaxOutputRetries:        5,
-		MaxReasoningSeconds:     300,
-		MaxReasoningLoopRepeats: 5,
-		MaxDuplicateToolCalls:   5,
-		Concurrency:             15,
-		SkipSuggestions:         true,
-		DisablePatchSummary:     true,
-		DisableReasoningExtract: true,
-		VerifyDropPolicy:        "refuted-only",
-		ConfidenceThreshold:     0.7,
-		PriorityThreshold:       "p1",
+		DisableJSONResponseFormat: false,
+		NudgeCount:                3,
+		MaxOutputRetries:          5,
+		MaxReasoningSeconds:       300,
+		MaxReasoningLoopRepeats:   5,
+		MaxDuplicateToolCalls:     5,
+		Concurrency:               15,
+		DisableSuggestions:        true,
+		DisablePatchSummary:       true,
+		DisableReasoningExtract:   true,
+		VerifyDropPolicy:          "refuted-only",
+		ConfidenceThreshold:       0.7,
+		PriorityThreshold:         "p1",
 	}
 	got := agentSummary(profile, req)
-	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, skip suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}
@@ -995,10 +1015,11 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 
 func TestAgentSummaryOmitsDefaultsAndSerial(t *testing.T) {
 	req := model.ReviewRequest{
-		DisableParallelToolCalls: true,
-		Concurrency:              10,
-		VerifyDropPolicy:         "none",
-		PriorityThreshold:        "p3",
+		DisableJSONResponseFormat: true,
+		DisableParallelToolCalls:  true,
+		Concurrency:               10,
+		VerifyDropPolicy:          "none",
+		PriorityThreshold:         "p3",
 	}
 	got := agentSummary(config.Profile{}, req)
 	want := "Unstructured no nudges, no retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ≤10 concurrency, ∞ tool calls, ∞ duplicates"
@@ -1084,7 +1105,7 @@ func TestFormatExtraBody(t *testing.T) {
 func TestRunReviewSkipModelCheckBypassesChecker(t *testing.T) {
 	wantErr := errors.New("source called")
 	source := &recordingSource{err: wantErr}
-	err := (&app{skipModelCheck: true}).runReview(context.Background(), source, nil, "default", config.Profile{
+	err := (&app{disableModelCheck: true}).runReview(context.Background(), source, nil, "default", config.Profile{
 		Model:           "model",
 		BaseURL:         "http://127.0.0.1:1",
 		APIKey:          "token",
@@ -1178,6 +1199,177 @@ func TestRunReviewReprobesWhenSettingsChange(t *testing.T) {
 	}
 	if source.called {
 		t.Fatal("source should not run when the model check fails")
+	}
+}
+
+func TestCacheableModelResult(t *testing.T) {
+	capWith := func(mutate func(*config.ModelCapabilities)) modelcheck.Result {
+		c := compatibleCapability("model")
+		mutate(&c)
+		return modelcheck.ResultFromCapability(c, false)
+	}
+	no := false
+	tests := []struct {
+		name   string
+		result modelcheck.Result
+		want   bool
+	}{
+		{"fully compatible", capWith(func(*config.ModelCapabilities) {}), true},
+		// The P3 case: a model that cannot do API-enforced json_schema but can emit
+		// plain JSON is still usable via the prompt-embedded fallback, so it must be
+		// cached rather than re-probed every run.
+		{"json_schema unsupported, json output ok", capWith(func(c *config.ModelCapabilities) { c.JSONSchema = &no }), true},
+		{"no structured output at all", capWith(func(c *config.ModelCapabilities) { c.JSONSchema = &no; c.JSONResponse = &no }), false},
+		{"tools unsupported", capWith(func(c *config.ModelCapabilities) { c.Tools = false }), false},
+		{"no reasoning efforts", capWith(func(c *config.ModelCapabilities) { c.Reasoning.Efforts = nil }), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cacheableModelResult(tt.result); got != tt.want {
+				t.Fatalf("cacheableModelResult = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A source-less spec (e.g. --step merge on imported findings) still calls the
+// LLM, so the model probe must run when credentials are present — that is what
+// lets the json_schema fallback apply. It must not be hard-failed by the model
+// check, matching the deferred-credential design.
+func TestRunReviewProbesModelForSourcelessSpec(t *testing.T) {
+	var probes atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "reasoning_effort unsupported"}})
+	}))
+	defer server.Close()
+
+	source := &recordingSource{}
+	err := (&app{stepName: "merge"}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         server.URL,
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("source-less merge run returned err: %v", err)
+	}
+	if probes.Load() == 0 {
+		t.Fatal("model probe did not run for source-less spec; json_schema fallback would be skipped")
+	}
+	if source.called {
+		t.Fatal("source-less spec must not resolve a review source")
+	}
+}
+
+// A model that lacks API-enforced json_schema but can emit plain JSON is usable
+// via the prompt-embedded fallback. `check model` must report it healthy (exit
+// zero), matching what a real review of the same model does.
+func TestCheckModelDegradesWhenJSONResponseFormatUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	cfg := `profiles:
+  default:
+    base_url: http://127.0.0.1:1
+    api_key: token
+    model: model
+    reasoning_effort: high
+    supported_models:
+      - model: model
+        compatible: true
+        response: true
+        tools: true
+        json_response: true
+        json_schema: false
+        reasoning:
+          traces: true
+          efforts: [high]
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkCmd := (&app{configPath: cfgPath, profile: "default"}).newCheckCmd()
+	checkCmd.SetArgs([]string{"model"})
+	var err error
+	_ = captureOutput(t, &os.Stdout, func() { err = checkCmd.ExecuteContext(context.Background()) })
+	if err != nil {
+		t.Fatalf("check model exited non-zero for a json_schema-incapable but JSON-capable model: %v", err)
+	}
+}
+
+// When @small forces the whole run onto the prompt-embedded schema, the primary
+// model — accepted on its json_schema probe alone — must be re-validated for
+// plain JSON output, since its reviewers now run prompt-only. A primary that
+// cannot emit plain JSON must fail the model check up front, not mid-review.
+func TestRunReviewRevalidatesPrimaryWhenSmallForcesPromptSchema(t *testing.T) {
+	no, yes := false, true
+	primaryCap := config.ModelCapabilities{
+		Model: "primary", Compatible: true, Response: true, Tools: true,
+		JSONResponse: &no, // primary cannot do plain JSON output
+		JSONSchema:   &yes,
+		Reasoning:    config.ReasoningCapabilities{Traces: true, Efforts: []string{"high"}},
+	}
+	smallCap := config.ModelCapabilities{
+		Model: "small", Compatible: true, Response: true, Tools: true,
+		JSONResponse: &yes,
+		JSONSchema:   &no, // small lacks json_schema → forces the global prompt fallback
+		Reasoning:    config.ReasoningCapabilities{Traces: true, Efforts: []string{"high"}},
+	}
+	source := &recordingSource{}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "primary",
+		BaseURL:         "http://127.0.0.1:1",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+		Small:           config.SmallModelConfig{Model: "small"},
+		SupportedModels: []config.ModelCapabilities{primaryCap, smallCap},
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected model check failure: primary cannot emit plain JSON after @small forced the prompt-embedded schema")
+	}
+	if !strings.Contains(err.Error(), "JSON text output") {
+		t.Fatalf("error = %v, want primary JSON-output validation failure", err)
+	}
+	if source.called {
+		t.Fatal("source must not run when the model check fails")
+	}
+}
+
+// A primary-model step that turns response_format off (disable_json_response_format:
+// true) runs prompt-only and needs plain JSON output. A primary that passes the
+// json_schema probe but fails the plain-JSON probe must be rejected by the
+// pre-review check, not pass it and fail inside that step.
+func TestRunReviewValidatesPrimaryPromptOnlyStepRequirements(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "wf.yaml")
+	spec := "version: 1\nsteps:\n  - type: collect-context\n  - type: review:security\n    config:\n      disable_json_response_format: true\n"
+	if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	no, yes := false, true
+	primaryCap := config.ModelCapabilities{
+		Model: "primary", Compatible: true, Response: true, Tools: true,
+		JSONResponse: &no, // cannot do plain JSON output
+		JSONSchema:   &yes,
+		Reasoning:    config.ReasoningCapabilities{Traces: true, Efforts: []string{"high"}},
+	}
+	source := &recordingSource{}
+	err := (&app{specPath: specPath}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "primary",
+		BaseURL:         "http://127.0.0.1:1",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+		SupportedModels: []config.ModelCapabilities{primaryCap},
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected model check failure: prompt-only primary step needs plain JSON output the model lacks")
+	}
+	if !strings.Contains(err.Error(), "JSON text output") {
+		t.Fatalf("error = %v, want primary JSON-output validation failure", err)
+	}
+	if source.called {
+		t.Fatal("source must not run when the model check fails")
 	}
 }
 

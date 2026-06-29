@@ -51,8 +51,8 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.ExtraBody != nil {
 		base.ExtraBody = override.ExtraBody
 	}
-	if override.UseJSONSchema {
-		base.UseJSONSchema = true
+	if override.DisableJSONResponseFormat {
+		base.DisableJSONResponseFormat = true
 	}
 	if override.IncludePaths != nil {
 		base.IncludePaths = slices.Clone(override.IncludePaths)
@@ -120,11 +120,11 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.DisablePatchSummary {
 		base.DisablePatchSummary = true
 	}
-	if override.SkipSuggestions {
-		base.SkipSuggestions = true
+	if override.DisableSuggestions {
+		base.DisableSuggestions = true
 	}
-	if override.SkipWorkflowTimeBudget {
-		base.SkipWorkflowTimeBudget = true
+	if override.DisableWorkflowTimeBudget {
+		base.DisableWorkflowTimeBudget = true
 	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort

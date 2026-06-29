@@ -14,7 +14,7 @@ It uses a normalized review context, a provider-compatible chat completions clie
 - OpenAI-compatible chat completions client
 - Structured JSON findings with priority filtering and overall verdicts
 - Default multi-agent review with context collection, specialist reviewers, merge, and verification stages
-- Prompt-embedded JSON output schema by default, with optional API-enforced JSON schema mode
+- API-enforced JSON response format (`response_format` json_schema) by default, with automatic fallback to a prompt-embedded schema when the model lacks support
 - Retrieval commands for files, slices, symbols, callers, and callees
 - Terminal and JSON output modes
 
@@ -44,7 +44,7 @@ docker run --rm \
   --user "$(id -u):$(id -g)" \
   -e OPENROUTER_API_KEY -e NICKPIT_GITHUB_TOKEN -e NICKPIT_GITLAB_TOKEN \
   -v "$PWD:/work" -w /work \
-  ghcr.io/dgrieser/nickpit:latest local branch
+  ghcr.io/dgrieser/nickpit:latest git branch
 
 # Review a remote PR/MR (no mount needed); pass the SCM token via env.
 docker run --rm \
@@ -105,7 +105,9 @@ profiles:
       reasoning_effort: low
 ```
 
-`model: "@small"` in workflow step config selects the nested `small` config. Any unset small field falls back to the primary profile value. Small model settings can also be set with `NICKPIT_SMALL_*` environment variables or `--small-*` flags such as `--small-model`, `--small-reasoning-effort`, `--small-top-k`, and `--small-presence-penalty`.
+`model: "@small"` in workflow step config selects the nested `small` config. Any unset small field falls back to the primary profile value. Small model settings can also be set with `NICKPIT_SMALL_*` environment variables or `--small-*` flags such as `--small-model`, `--small-reasoning-effort`, `--small-top-k`, `--small-presence-penalty`, and `--small-max-output-tokens`.
+
+The primary `max_tokens` output cap (max completion tokens the model may generate) can also be set with `--max-output-tokens`. This is the output side; the separate `--max-context-tokens` is the input budget used to trim the prompt before sending. Both default to unset for `max_tokens` (provider default) and `120000` for the context budget.
 
 ### Diff Filters
 
@@ -128,19 +130,19 @@ The same filters can be set per run with repeatable flags such as `--include-pat
 
 ```bash
 # Review current branch in current directory against default branch
-nickpit local branch
+nickpit git branch
 
 # Review current branch in specified directory against default branch
-nickpit local branch --workdir /path/to/dir
+nickpit git branch --workdir /path/to/dir
 
 # Review feature/my-branch against main in specified directory
-nickpit local branch --base main --head feature/my-branch --workdir /path/to/dir
+nickpit git branch --base main --head feature/my-branch --workdir /path/to/dir
 
 # Review specific commit range in current directory
-nickpit local commits --from HEAD~3 --to HEAD
+nickpit git commits --from HEAD~3 --to HEAD
 
 # Review uncommitted changes in current directory
-nickpit local uncommitted
+nickpit git uncommitted
 
 # Review PR in GitHub
 nickpit github pr --repo owner/repo --id 123
@@ -170,7 +172,7 @@ By default, the final overall explanation starts with an assumed summary of what
 
 ### Suggestions
 
-By default, NickPit may include suggested fixes when an obvious replacement exists. Use `--skip-suggestions` or `skip_suggestions: true` in the active profile to suppress suggestions in prompts, JSON output, terminal output, and published PR/MR comments.
+By default, NickPit may include suggested fixes when an obvious replacement exists. Use `--disable-suggestions` or `disable_suggestions: true` in the active profile to suppress suggestions in prompts, JSON output, terminal output, and published PR/MR comments.
 
 ### Debug
 
@@ -179,8 +181,8 @@ Append `--verbose` or `--debug` to print step-by-step execution details to stder
 
 ### Output Schema Mode
 
-By default, NickPit includes the expected JSON schema directly in the system prompt.
-Use `--use-json-schema` to send the review schema via the API `response_format` field for providers that support JSON schema constrained output. The same setting can be stored in config as `use_json_schema: true`.
+By default, NickPit sends the review schema via the API `response_format` field (json_schema constrained output). When the pre-review model check finds the model does not support it, NickPit warns and automatically falls back to embedding the schema in the system prompt — the review still runs.
+Use `--disable-json-response-format` to force the prompt-embedded schema instead. The same setting can be stored in config as `disable_json_response_format: true` in the active profile, or per workflow step.
 
 NickPit can lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` means unlimited.
 
@@ -190,24 +192,24 @@ Reviews run a context agent first, then six specialist reviewer lanes in paralle
 
 ### Workflows
 
-The review pipeline is driven by a portable workflow spec. The spec is the single source of truth for execution — there is no auto-fusion or hidden execution-shape decisions in code. By default `nickpit local`/`github`/`gitlab` run the built-in workflow (collect context → six reviewer lanes in parallel, each running review → verify → dedupe for its vector → then a `pipeline:` tail that streams merge → finalize → verdict → summarize). You can supply your own spec or run a single step instead, on any of those commands:
+The review pipeline is driven by a portable workflow spec. The spec is the single source of truth for execution — there is no auto-fusion or hidden execution-shape decisions in code. By default `nickpit git`/`github`/`gitlab` run the built-in workflow (collect context → six reviewer lanes in parallel, each running review → verify → dedupe for its vector → then a `pipeline:` tail that streams merge → finalize → verdict → summarize). You can supply your own spec or run a single step instead, on any of those commands:
 
 ```bash
 # Run a custom workflow spec (YAML)
-nickpit local branch --spec workflow.yaml
+nickpit git branch --spec workflow.yaml
 
 # Run a single step on imported findings (no review needed)
-nickpit local branch --step merge --findings reviewer_a.json --findings reviewer_b.json --json
-nickpit local branch --step finalize --findings merged.json --json
-nickpit local branch --step verdict --findings finalized.json --json
-nickpit local branch --step summarize --findings finalized.json --json
+nickpit git branch --step merge --findings reviewer_a.json --findings reviewer_b.json --json
+nickpit git branch --step finalize --findings merged.json --json
+nickpit git branch --step verdict --findings finalized.json --json
+nickpit git branch --step summarize --findings finalized.json --json
 ```
 
-See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); a parallel child can be a `lane:` — a list of steps that run sequentially within the group, e.g. one reviewer's `review:` → `verify:` → `dedupe:` chain. A `pipeline:` group is the explicit, streamed post-review tail (`merge` → `finalize` → `verdict`, optionally `summarize`): its steps overlap with no barrier between them — each merge cluster flows straight into finalize/summarize while other clusters are still merging, and verdict gates on all finalizes. Listing those steps flat instead runs them strictly sequentially, each over the whole finding set. Each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, top_p, top_k, presence_penalty, reasoning_effort, scope, max_tool_calls, max_output_retries, max_reasoning_loop_repeats, nudge_count, disable_patch_summary, skip_suggestions, verify_drop_policy, confidence_threshold, …) — anything unset inherits the active profile/flags. `scope` makes a step's fan-out explicit — the work unit each agent operates on: `all` (whole finding set), `cluster` (per merge cluster, `merge`/`finalize`/`summarize`), `finding` (per finding, `verify`), or `reviewer` (per reviewer group, `dedupe`); cluster-scoped finalize/summarize is valid only inside a `pipeline:`. Use `model: "@small"` to select the configured nested `small` profile for a step. `review:<vector>` configs can also override internal agents with `mine_reasoning:`, `compile_findings:`, and `nudge:` subconfigs. LLM concurrency is run-level only (`--concurrency`, default `10`, `0` = unlimited): one shared cap across every agent loop in the run — it is intentionally not in the spec. Per-vector steps are addressed as `review:security`, `verify:security`, `dedupe:security`, …; `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any global step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group); inside a `pipeline:` only the `merge` step may carry it. Steps that only consume injected findings (e.g. `merge`, `finalize`, `verdict`, `summarize`) run without a git/PR source. `finalize` now only finalizes finding wording/priority/confidence; include `verdict` after it when a workflow needs final top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score`. `confidence_threshold` is applied only by the `verdict` step.
+See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); a parallel child can be a `lane:` — a list of steps that run sequentially within the group, e.g. one reviewer's `review:` → `verify:` → `dedupe:` chain. A `pipeline:` group is the explicit, streamed post-review tail (`merge` → `finalize` → `verdict`, optionally `summarize`): its steps overlap with no barrier between them — each merge cluster flows straight into finalize/summarize while other clusters are still merging, and verdict gates on all finalizes. Listing those steps flat instead runs them strictly sequentially, each over the whole finding set. Each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, top_p, top_k, presence_penalty, reasoning_effort, scope, max_tool_calls, max_output_retries, max_reasoning_loop_repeats, nudge_count, disable_patch_summary, disable_suggestions, verify_drop_policy, confidence_threshold, …) — anything unset inherits the active profile/flags. `scope` makes a step's fan-out explicit — the work unit each agent operates on: `all` (whole finding set), `cluster` (per merge cluster, `merge`/`finalize`/`summarize`), `finding` (per finding, `verify`), or `reviewer` (per reviewer group, `dedupe`); cluster-scoped finalize/summarize is valid only inside a `pipeline:`. Use `model: "@small"` to select the configured nested `small` profile for a step. `review:<vector>` configs can also override internal agents with `mine_reasoning:`, `compile_findings:`, and `nudge:` subconfigs. LLM concurrency is run-level only (`--concurrency`, default `10`, `0` = unlimited): one shared cap across every agent loop in the run — it is intentionally not in the spec. Per-vector steps are addressed as `review:security`, `verify:security`, `dedupe:security`, …; `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any global step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group); inside a `pipeline:` only the `merge` step may carry it. Steps that only consume injected findings (e.g. `merge`, `finalize`, `verdict`, `summarize`) run without a git/PR source. `finalize` now only finalizes finding wording/priority/confidence; include `verdict` after it when a workflow needs final top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score`. `confidence_threshold` is applied only by the `verdict` step.
 
 ### Filtering Review Output
 
-Review output filtering uses `--priority-threshold` with `p0` through `p3`, where `p0` is highest priority and `p3` is lowest. `--confidence-threshold` filters findings at the start of the `verdict` step using finalized confidence; workflows without `verdict` do not apply the confidence threshold and emit a warning.
+Review output filtering uses `--priority-threshold` with `0` through `3`, where `0` is highest priority and `3` is lowest (the default, showing everything). Findings are still displayed with `p0`–`p3` badges. `--confidence-threshold` filters findings at the start of the `verdict` step using finalized confidence; workflows without `verdict` do not apply the confidence threshold and emit a warning.
 
 ### Inspect Commands
 

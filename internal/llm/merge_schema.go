@@ -54,7 +54,7 @@ func MergeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
 
 // MergeSchemaWithConstraintsFor returns the merge schema narrowed by the given
 // constraints (priority bounds + allowed overall_correctness values).
-func MergeSchemaWithConstraintsFor(c ResponseConstraints, skipSuggestions bool) json.RawMessage {
+func MergeSchemaWithConstraintsFor(c ResponseConstraints, disableSuggestions bool) json.RawMessage {
 	min, max := 0, 3
 	if c.MinPriority != nil {
 		min = *c.MinPriority
@@ -62,7 +62,7 @@ func MergeSchemaWithConstraintsFor(c ResponseConstraints, skipSuggestions bool) 
 	if c.MaxPriority != nil {
 		max = *c.MaxPriority
 	}
-	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true, !skipSuggestions)
+	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true, !disableSuggestions)
 	return mustMarshalCleanSchema(extendFindingsForMergeProvenance(extendFindingsForVerification(root)))
 }
 
@@ -70,8 +70,8 @@ func MergeExamplePromptSnippet() string {
 	return MergeExamplePromptSnippetFor(false)
 }
 
-func MergeExamplePromptSnippetFor(skipSuggestions bool) string {
-	if skipSuggestions {
+func MergeExamplePromptSnippetFor(disableSuggestions bool) string {
+	if disableSuggestions {
 		return mustIndentJSON(mustMarshalJSON(exampleFromSchema(mergeWithoutSuggestionsSchemaDefinition)))
 	}
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(mergeSchemaDefinition)))

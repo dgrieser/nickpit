@@ -352,7 +352,7 @@ func TestSimpleProbeRetriesTransientLoopError(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		),
 	}
-	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true, MaxOutputRetries: 1, MaxOutputRetriesConfigured: true})
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: true, MaxOutputRetries: 1, MaxOutputRetriesConfigured: true})
 	if result.ConfiguredJSONSchema().Status != StatusOK {
 		t.Fatalf("json schema status = %s error=%s, want ok", result.ConfiguredJSONSchema().Status, result.ConfiguredJSONSchema().Error)
 	}
@@ -372,7 +372,7 @@ func TestSimpleProbeRetriesExhaustThenFail(t *testing.T) {
 			scriptedResponse{err: &llm.ReasoningLoopDetectedError{ReasoningEffort: "high", RepeatedChunk: true}},
 		),
 	}
-	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true, MaxOutputRetries: 1, MaxOutputRetriesConfigured: true})
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: true, MaxOutputRetries: 1, MaxOutputRetriesConfigured: true})
 	if result.ConfiguredJSONSchema().Status != StatusFailed {
 		t.Fatalf("json schema status = %s, want failed", result.ConfiguredJSONSchema().Status)
 	}
@@ -609,7 +609,7 @@ func TestToolDefinitionsRejectUnknownTool(t *testing.T) {
 	}
 }
 
-func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
+func TestCheckerRunsJSONOutputProbeWhenJSONResponseFormatDisabled(t *testing.T) {
 	client := &scriptedClient{
 		responses: successfulEffortDiscoveryResponses("high",
 			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
@@ -618,9 +618,9 @@ func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		),
 	}
-	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: false})
-	if result.UseJSONSchema {
-		t.Fatal("UseJSONSchema should be false")
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: true})
+	if !result.DisableJSONResponseFormat {
+		t.Fatal("DisableJSONResponseFormat should be true")
 	}
 	if result.ConfiguredJSONOutput().Status != StatusOK {
 		t.Fatalf("json-output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
@@ -662,7 +662,7 @@ func TestCheckerJSONOutputProbeFailsOnWrongShape(t *testing.T) {
 	}
 }
 
-func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
+func TestCheckerRunsJSONSchemaProbeWhenJSONResponseFormatEnabled(t *testing.T) {
 	client := &scriptedClient{
 		responses: successfulEffortDiscoveryResponses("high",
 			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
@@ -671,9 +671,9 @@ func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		),
 	}
-	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true})
-	if !result.UseJSONSchema {
-		t.Fatal("UseJSONSchema should be true")
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: false})
+	if result.DisableJSONResponseFormat {
+		t.Fatal("DisableJSONResponseFormat should be false")
 	}
 	if result.ConfiguredJSONSchema().Status != StatusOK {
 		t.Fatalf("json-schema status = %s error=%s", result.ConfiguredJSONSchema().Status, result.ConfiguredJSONSchema().Error)
@@ -692,7 +692,7 @@ func TestCheckerJSONSchemaProbeSetsSchemOnRequest(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		),
 	}
-	runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", UseJSONSchema: true})
+	runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: true})
 	schemaReq := client.reqs[len(client.reqs)-1]
 	if len(schemaReq.Schema) == 0 {
 		t.Fatal("json-schema probe request must have Schema set")

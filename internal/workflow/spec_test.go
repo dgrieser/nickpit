@@ -368,6 +368,59 @@ steps:
 	}
 }
 
+func TestLoadNormalizesPriorityThreshold(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: collect-context
+  - parallel:
+      - lane:
+          - type: review:security
+  - pipeline:
+      - type: merge
+      - type: finalize
+        config: { priority_threshold: "0" }
+      - type: verdict
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	finalize := spec.Steps[len(spec.Steps)-1].Pipeline[1]
+	if finalize.Type != StepFinalize {
+		t.Fatalf("expected finalize step, got %q", finalize.Type)
+	}
+	if finalize.Config == nil || finalize.Config.PriorityThreshold == nil {
+		t.Fatalf("priority_threshold not parsed: %+v", finalize.Config)
+	}
+	if got := *finalize.Config.PriorityThreshold; got != "p0" {
+		t.Fatalf("priority_threshold = %q, want p0 (normalized from 0)", got)
+	}
+	// The normalized value must reach the request, so the engine's
+	// PriorityThresholdRank sees "p0" (rank 0) and not the unparsed "0" (rank 3).
+	_, req := finalize.Config.Resolve(config.Profile{}, model.ReviewRequest{})
+	if req.PriorityThreshold != "p0" {
+		t.Fatalf("resolved req.PriorityThreshold = %q, want p0", req.PriorityThreshold)
+	}
+}
+
+func TestLoadRejectsInvalidPriorityThreshold(t *testing.T) {
+	for _, bad := range []string{"5", "p3", "high", "-1"} {
+		path := writeSpec(t, `
+version: 1
+steps:
+  - type: finalize
+    config: { priority_threshold: "`+bad+`" }
+`)
+		if _, err := Load(path); err == nil {
+			t.Fatalf("priority_threshold %q: expected load error, got nil", bad)
+		}
+	}
+}
+
 func TestPipelineRejections(t *testing.T) {
 	cases := map[string]string{
 		"missing verdict":           "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - type: finalize\n",
@@ -698,19 +751,19 @@ func TestStepOverrideResolveIdentity(t *testing.T) {
 
 func TestStepOverrideResolveApplies(t *testing.T) {
 	base := config.Profile{Model: "base", ReasoningEffort: "high", MaxToolCalls: 7}
-	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, DisablePatchSummary: true, SkipSuggestions: true}
+	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, DisablePatchSummary: true, DisableSuggestions: true}
 	zero := 0
 	model5 := "opus"
 	effort := "low"
 	disablePatchSummary := false
-	skipSuggestions := false
+	disableSuggestions := false
 	ov := &StepOverride{
 		Model:               &model5,
 		ReasoningEffort:     &effort,
 		MaxToolCalls:        &zero, // explicit zero must win (unlimited)
 		NudgeCount:          &zero,
 		DisablePatchSummary: &disablePatchSummary,
-		SkipSuggestions:     &skipSuggestions,
+		DisableSuggestions:  &disableSuggestions,
 	}
 	gotProfile, gotReq := ov.Resolve(base, req)
 	if gotProfile.Model != "opus" || gotProfile.ReasoningEffort != "low" {
@@ -725,8 +778,28 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 	if gotReq.DisablePatchSummary {
 		t.Fatal("explicit false disable_patch_summary not applied")
 	}
-	if gotReq.SkipSuggestions {
-		t.Fatal("explicit false skip_suggestions not applied")
+	if gotReq.DisableSuggestions {
+		t.Fatal("explicit false disable_suggestions not applied")
+	}
+}
+
+// Disabling response_format is monotonic: a per-step override may turn it off
+// but must never re-enable it once the run disabled it (e.g. the model-check
+// fallback for a model that lacks json_schema). Otherwise the step would send
+// response_format: json_schema to a model already probed as unable to honor it.
+func TestStepOverrideResolveDisableJSONResponseFormatMonotonic(t *testing.T) {
+	enable := false
+	reEnable := &StepOverride{DisableJSONResponseFormat: &enable}
+	_, req := reEnable.Resolve(config.Profile{}, model.ReviewRequest{DisableJSONResponseFormat: true})
+	if !req.DisableJSONResponseFormat {
+		t.Fatal("step disable_json_response_format: false must not re-enable response_format after the run disabled it")
+	}
+
+	disable := true
+	turnOff := &StepOverride{DisableJSONResponseFormat: &disable}
+	_, req2 := turnOff.Resolve(config.Profile{}, model.ReviewRequest{DisableJSONResponseFormat: false})
+	if !req2.DisableJSONResponseFormat {
+		t.Fatal("step disable_json_response_format: true must disable response_format")
 	}
 }
 

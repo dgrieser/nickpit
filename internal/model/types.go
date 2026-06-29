@@ -59,22 +59,21 @@ type ReviewRequest struct {
 	// Concurrency caps concurrent LLM agent loops across the whole pipeline
 	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
 	// summarize); 0 = unlimited.
-	Concurrency              int
-	VerifyDropPolicy         string
-	ConfidenceThreshold      float64
-	NudgeCount               int
-	DisableParallelToolCalls bool
-	DisableReasoningExtract  bool
-	DisablePatchSummary      bool
-	SkipSuggestions          bool
-	SkipWorkflowTimeBudget   bool
-	ModelEmitsReasoning      bool
-	UseJSONSchema            bool
-	PriorityThreshold        string
-	Offline                  bool
-	PostReview               bool
-	Submode                  string
-	ProfileName              string
+	Concurrency               int
+	VerifyDropPolicy          string
+	ConfidenceThreshold       float64
+	NudgeCount                int
+	DisableParallelToolCalls  bool
+	DisableReasoningExtract   bool
+	DisablePatchSummary       bool
+	DisableSuggestions        bool
+	DisableWorkflowTimeBudget bool
+	ModelEmitsReasoning       bool
+	DisableJSONResponseFormat bool
+	PriorityThreshold         string
+	PostReview                bool
+	Submode                   string
+	ProfileName               string
 }
 
 type ReviewResult struct {
@@ -527,6 +526,20 @@ func PriorityThresholdRank(value string) int {
 		return 2
 	default:
 		return 3
+	}
+}
+
+// NormalizePriorityThreshold maps the numeric priority-threshold form
+// (0 highest .. 3 lowest) to the internal "pN" representation consumed by
+// PriorityThresholdRank and the finding badges. Non-numeric or out-of-range
+// input is rejected; there is no legacy "pN" fallback. It is shared by CLI flag
+// parsing and workflow-spec decoding so both reach the engine as "pN".
+func NormalizePriorityThreshold(value string) (string, error) {
+	switch value {
+	case "0", "1", "2", "3":
+		return "p" + value, nil
+	default:
+		return "", fmt.Errorf("must be one of 0, 1, 2, 3 (got %q)", value)
 	}
 }
 

@@ -73,7 +73,7 @@ func TestVerdictConfidenceThresholdFiltersPromptAndResult(t *testing.T) {
 	}
 }
 
-func TestVerdictSkipSuggestionsOmitsFinalizationSuggestions(t *testing.T) {
+func TestVerdictDisableSuggestionsOmitsFinalizationSuggestions(t *testing.T) {
 	finding := model.Finding{
 		ID:           "11111111-1111-4111-8111-111111111111",
 		Title:        "Finding",
@@ -97,7 +97,7 @@ func TestVerdictSkipSuggestionsOmitsFinalizationSuggestions(t *testing.T) {
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	in := &model.ReviewResult{Findings: []model.Finding{finding}, OverallCorrectness: "patch is incorrect", OverallExplanation: "pre-filter"}
 
-	out, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{SkipSuggestions: true})
+	out, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{DisableSuggestions: true})
 	if err != nil {
 		t.Fatalf("Verdict returned err: %v", err)
 	}

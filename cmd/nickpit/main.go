@@ -49,6 +49,8 @@ type app struct {
 	presencePenalty               float64
 	presencePenaltySet            bool
 	extraBody                     string
+	maxOutputTokens               int
+	maxOutputTokensSet            bool
 	smallMaxTokens                int
 	smallMaxTokensSet             bool
 	smallTemperature              float64
@@ -75,7 +77,7 @@ type app struct {
 	excludeContentSet             bool
 	diffFormat                    string
 	jsonOutput                    bool
-	useJSONSchema                 bool
+	disableJSONResponseFormat     bool
 	maxToolCalls                  int
 	maxToolCallsSet               bool
 	maxDuplicateToolCalls         int
@@ -90,7 +92,6 @@ type app struct {
 	maxRateLimitDelaySecondsSet   bool
 	nudgeCount                    int
 	nudgeCountSet                 bool
-	offline                       bool
 	priorityThreshold             string
 	configPath                    string
 	githubToken                   string
@@ -105,12 +106,12 @@ type app struct {
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
 	disablePatchSummary           bool
-	skipSuggestions               bool
-	skipWorkflowTimeBudget        bool
+	disableSuggestions            bool
+	disableWorkflowTimeBudget     bool
 	concurrency                   int
 	verifyDropPolicy              string
 	confidenceThreshold           float64
-	skipModelCheck                bool
+	disableModelCheck             bool
 	refreshModelCheck             bool
 	specPath                      string
 	stepName                      string
@@ -158,6 +159,11 @@ func newRootCmd() *cobra.Command {
 			if err := review.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
 				return err
 			}
+			normalizedPriority, err := model.NormalizePriorityThreshold(cli.priorityThreshold)
+			if err != nil {
+				return fmt.Errorf("invalid --priority-threshold: %w", err)
+			}
+			cli.priorityThreshold = normalizedPriority
 			if cli.workDir == "" {
 				return nil
 			}
@@ -179,7 +185,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.topK, &cli.topKSet), "top-k", "Top-k sampling cutoff")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.presencePenalty, &cli.presencePenaltySet), "presence-penalty", "Presence penalty")
 	root.PersistentFlags().StringVar(&cli.extraBody, "extra-body", "", "Additional JSON object fields to merge into the LLM request body")
-	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallMaxTokens, &cli.smallMaxTokensSet), "small-max-tokens", "Max tokens for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxOutputTokens, &cli.maxOutputTokensSet), "max-output-tokens", "Maximum output (completion) tokens the model may generate; distinct from --max-context-tokens (input budget)")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallMaxTokens, &cli.smallMaxTokensSet), "small-max-output-tokens", "Maximum output (completion) tokens for workflow steps using model: \"@small\"")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallMaxTokens, &cli.smallMaxTokensSet), "small-max-tokens", "Deprecated alias for --small-max-output-tokens")
+	_ = root.PersistentFlags().MarkDeprecated("small-max-tokens", "use --small-max-output-tokens")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallTemperature, &cli.smallTemperatureSet), "small-temperature", "Sampling temperature for workflow steps using model: \"@small\"")
 	root.PersistentFlags().Var(newTrackedFloatValue(&cli.smallTopP, &cli.smallTopPSet), "small-top-p", "Nucleus sampling probability for workflow steps using model: \"@small\"")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.smallTopK, &cli.smallTopKSet), "small-top-k", "Top-k sampling cutoff for workflow steps using model: \"@small\"")
@@ -195,7 +204,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.excludeContent, "exclude-content", nil, "Exclude changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
-	root.PersistentFlags().BoolVar(&cli.useJSONSchema, "use-json-schema", false, "Use API-enforced JSON schema output")
+	root.PersistentFlags().BoolVar(&cli.disableJSONResponseFormat, "disable-json-response-format", false, "Disable the API-enforced JSON response format (response_format json_schema); on by default, falls back to prompt-embedded schema")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxOutputRetries, &cli.maxOutputRetriesSet), "max-output-retries", "Maximum invalid output retries")
@@ -203,8 +212,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningLoopRepeats, &cli.maxReasoningLoopRepeatsSet), "max-reasoning-loop-repeats", "Allowed repeated reasoning loops before falling back (0 disables loop detection)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxRateLimitDelaySeconds, &cli.maxRateLimitDelaySecondsSet), "max-rate-limit-delay-seconds", "Maximum seconds to wait for rate-limit reset times parsed from 429 responses (0 disables)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.nudgeCount, &cli.nudgeCountSet), "nudge-count", "Number of nudge rounds asking each reviewer to look again (0 disables)")
-	root.PersistentFlags().BoolVar(&cli.offline, "offline", false, "Skip remote review comments")
-	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "p3", "Minimum priority to display (p0, p1, p2, p3)")
+	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "3", "Minimum priority to display: 0 (highest) to 3 (lowest)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
 	root.PersistentFlags().StringVar(&cli.gitlabToken, "gitlab-token", "", "GitLab token override")
@@ -219,18 +227,18 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
-	root.PersistentFlags().BoolVar(&cli.skipSuggestions, "skip-suggestions", false, "Omit code suggestions from prompts and review output")
-	root.PersistentFlags().BoolVar(&cli.skipWorkflowTimeBudget, "skip-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
+	root.PersistentFlags().BoolVar(&cli.disableSuggestions, "disable-suggestions", false, "Omit code suggestions from prompts and review output")
+	root.PersistentFlags().BoolVar(&cli.disableWorkflowTimeBudget, "disable-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.confidenceThreshold, "confidence-threshold", 0.7, "Minimum finalized confidence_score required for the verdict step to keep a finding (0 = keep all)")
-	root.PersistentFlags().BoolVar(&cli.skipModelCheck, "skip-model-check", false, "Skip pre-review model capability checks")
+	root.PersistentFlags().BoolVar(&cli.disableModelCheck, "disable-model-check", false, "Disable pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
 	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 
 	root.AddCommand(cli.newCheckCmd())
-	root.AddCommand(cli.newLocalCmd())
+	root.AddCommand(cli.newGitCmd())
 	root.AddCommand(cli.newGitHubCmd())
 	root.AddCommand(cli.newGitLabCmd())
 	root.AddCommand(cli.newInspectCmd())
@@ -285,6 +293,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	var presencePenalty *float64
 	if a.presencePenaltySet {
 		presencePenalty = &a.presencePenalty
+	}
+	var maxTokens *int
+	if a.maxOutputTokensSet {
+		maxTokens = &a.maxOutputTokens
 	}
 	var extraBody map[string]any
 	if strings.TrimSpace(a.extraBody) != "" {
@@ -351,35 +363,36 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 			ExtraBody:       smallExtraBody,
 			ReasoningEffort: a.smallReasoningEffort,
 		},
-		BaseURL:                a.baseURL,
-		APIKey:                 a.apiKey,
-		ReasoningEffort:        a.reasoningEffort,
-		Temperature:            temperature,
-		TopP:                   topP,
-		TopK:                   topK,
-		PresencePenalty:        presencePenalty,
-		ExtraBody:              extraBody,
-		UseJSONSchema:          a.useJSONSchema,
-		IncludePaths:           includePaths,
-		ExcludePaths:           excludePaths,
-		IncludeContent:         includeContent,
-		ExcludeContent:         excludeContent,
-		DiffFormat:             model.DiffFormat(a.diffFormat),
-		MaxContextTokens:       maxContextTokens,
-		ToolCalls:              toolCalls,
-		DuplicateToolCalls:     duplicateToolCalls,
-		OutputRetries:          outputRetries,
-		ReasoningSeconds:       reasoningSeconds,
-		ReasoningLoopRepeats:   reasoningLoopRepeats,
-		RateLimitDelaySeconds:  rateLimitDelaySeconds,
-		NudgeCount:             nudgeCount,
-		DisablePatchSummary:    a.disablePatchSummary,
-		SkipSuggestions:        a.skipSuggestions,
-		SkipWorkflowTimeBudget: a.skipWorkflowTimeBudget,
-		Workdir:                a.workDir,
-		GitHubToken:            a.githubToken,
-		GitLabToken:            a.gitlabToken,
-		GitLabBaseURL:          a.gitlabBaseURL,
+		BaseURL:                   a.baseURL,
+		APIKey:                    a.apiKey,
+		ReasoningEffort:           a.reasoningEffort,
+		Temperature:               temperature,
+		TopP:                      topP,
+		TopK:                      topK,
+		PresencePenalty:           presencePenalty,
+		ExtraBody:                 extraBody,
+		MaxTokens:                 maxTokens,
+		DisableJSONResponseFormat: a.disableJSONResponseFormat,
+		IncludePaths:              includePaths,
+		ExcludePaths:              excludePaths,
+		IncludeContent:            includeContent,
+		ExcludeContent:            excludeContent,
+		DiffFormat:                model.DiffFormat(a.diffFormat),
+		MaxContextTokens:          maxContextTokens,
+		ToolCalls:                 toolCalls,
+		DuplicateToolCalls:        duplicateToolCalls,
+		OutputRetries:             outputRetries,
+		ReasoningSeconds:          reasoningSeconds,
+		ReasoningLoopRepeats:      reasoningLoopRepeats,
+		RateLimitDelaySeconds:     rateLimitDelaySeconds,
+		NudgeCount:                nudgeCount,
+		DisablePatchSummary:       a.disablePatchSummary,
+		DisableSuggestions:        a.disableSuggestions,
+		DisableWorkflowTimeBudget: a.disableWorkflowTimeBudget,
+		Workdir:                   a.workDir,
+		GitHubToken:               a.githubToken,
+		GitLabToken:               a.gitlabToken,
+		GitLabBaseURL:             a.gitlabBaseURL,
 	})
 	if err != nil {
 		return "", config.Profile{}, err
@@ -462,8 +475,8 @@ func (v *trackedFloatValue) Type() string {
 	return "float"
 }
 
-func (a *app) newLocalCmd() *cobra.Command {
-	local := &cobra.Command{Use: "local", Short: "Review local git changes"}
+func (a *app) newGitCmd() *cobra.Command {
+	local := &cobra.Command{Use: "git", Short: "Review local git changes"}
 	local.AddCommand(a.newLocalReviewCmd("uncommitted"))
 	local.AddCommand(a.newLocalReviewCmd("commits"))
 	local.AddCommand(a.newLocalReviewCmd("branch"))
@@ -485,32 +498,32 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				return err
 			}
 			req := model.ReviewRequest{
-				Mode:                    model.ModeLocal,
-				RepoRoot:                repoRoot,
-				Workdir:                 profile.Workdir,
-				BaseRef:                 firstNonEmpty(base, from),
-				HeadRef:                 firstNonEmpty(head, to),
-				IncludeComments:         a.includeComments,
-				IncludeCommits:          a.includeCommits,
-				IncludeFullFiles:        a.includeFullFiles,
-				IncludePaths:            profile.IncludePaths,
-				ExcludePaths:            profile.ExcludePaths,
-				IncludeContent:          profile.IncludeContent,
-				ExcludeContent:          profile.ExcludeContent,
-				DiffFormat:              profile.DiffFormat,
-				MaxContextTokens:        profile.MaxContextTokens,
-				MaxToolCalls:            profile.MaxToolCalls,
-				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
-				MaxOutputRetries:        profile.MaxOutputRetries,
-				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
-				NudgeCount:              profile.NudgeCount,
-				DisablePatchSummary:     profile.DisablePatchSummary,
-				SkipSuggestions:         profile.SkipSuggestions,
-				UseJSONSchema:           profile.UseJSONSchema,
-				PriorityThreshold:       a.priorityThreshold,
-				ConfidenceThreshold:     a.confidenceThreshold,
-				Submode:                 submode,
+				Mode:                      model.ModeLocal,
+				RepoRoot:                  repoRoot,
+				Workdir:                   profile.Workdir,
+				BaseRef:                   firstNonEmpty(base, from),
+				HeadRef:                   firstNonEmpty(head, to),
+				IncludeComments:           a.includeComments,
+				IncludeCommits:            a.includeCommits,
+				IncludeFullFiles:          a.includeFullFiles,
+				IncludePaths:              profile.IncludePaths,
+				ExcludePaths:              profile.ExcludePaths,
+				IncludeContent:            profile.IncludeContent,
+				ExcludeContent:            profile.ExcludeContent,
+				DiffFormat:                profile.DiffFormat,
+				MaxContextTokens:          profile.MaxContextTokens,
+				MaxToolCalls:              profile.MaxToolCalls,
+				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:          profile.MaxOutputRetries,
+				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
+				NudgeCount:                profile.NudgeCount,
+				DisablePatchSummary:       profile.DisablePatchSummary,
+				DisableSuggestions:        profile.DisableSuggestions,
+				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
+				PriorityThreshold:         a.priorityThreshold,
+				ConfidenceThreshold:       a.confidenceThreshold,
+				Submode:                   submode,
 			}
 			return a.runReview(cmd.Context(), git.NewLocalSource(repoRoot), retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -568,31 +581,30 @@ func (a *app) newGitHubCmd() *cobra.Command {
 			}
 			source := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken), profile.AssetBaseURL)
 			req := model.ReviewRequest{
-				Mode:                    model.ModeGitHub,
-				Workdir:                 profile.Workdir,
-				Repo:                    repo,
-				Identifier:              pr,
-				IncludeComments:         a.includeComments,
-				IncludeCommits:          a.includeCommits,
-				IncludePaths:            profile.IncludePaths,
-				ExcludePaths:            profile.ExcludePaths,
-				IncludeContent:          profile.IncludeContent,
-				ExcludeContent:          profile.ExcludeContent,
-				DiffFormat:              profile.DiffFormat,
-				MaxContextTokens:        profile.MaxContextTokens,
-				MaxToolCalls:            profile.MaxToolCalls,
-				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
-				MaxOutputRetries:        profile.MaxOutputRetries,
-				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
-				NudgeCount:              profile.NudgeCount,
-				DisablePatchSummary:     profile.DisablePatchSummary,
-				SkipSuggestions:         profile.SkipSuggestions,
-				UseJSONSchema:           profile.UseJSONSchema,
-				PriorityThreshold:       a.priorityThreshold,
-				ConfidenceThreshold:     a.confidenceThreshold,
-				Offline:                 a.offline,
-				PostReview:              publish,
+				Mode:                      model.ModeGitHub,
+				Workdir:                   profile.Workdir,
+				Repo:                      repo,
+				Identifier:                pr,
+				IncludeComments:           a.includeComments,
+				IncludeCommits:            a.includeCommits,
+				IncludePaths:              profile.IncludePaths,
+				ExcludePaths:              profile.ExcludePaths,
+				IncludeContent:            profile.IncludeContent,
+				ExcludeContent:            profile.ExcludeContent,
+				DiffFormat:                profile.DiffFormat,
+				MaxContextTokens:          profile.MaxContextTokens,
+				MaxToolCalls:              profile.MaxToolCalls,
+				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:          profile.MaxOutputRetries,
+				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
+				NudgeCount:                profile.NudgeCount,
+				DisablePatchSummary:       profile.DisablePatchSummary,
+				DisableSuggestions:        profile.DisableSuggestions,
+				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
+				PriorityThreshold:         a.priorityThreshold,
+				ConfidenceThreshold:       a.confidenceThreshold,
+				PostReview:                publish,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -649,31 +661,30 @@ func (a *app) newGitLabCmd() *cobra.Command {
 			}
 			source := glscm.NewAdapter(glscm.NewClient(profile.GitLabBaseURL, profile.GitLabToken), profile.AssetBaseURL)
 			req := model.ReviewRequest{
-				Mode:                    model.ModeGitLab,
-				Workdir:                 profile.Workdir,
-				Repo:                    project,
-				Identifier:              mr,
-				IncludeComments:         a.includeComments,
-				IncludeCommits:          a.includeCommits,
-				IncludePaths:            profile.IncludePaths,
-				ExcludePaths:            profile.ExcludePaths,
-				IncludeContent:          profile.IncludeContent,
-				ExcludeContent:          profile.ExcludeContent,
-				DiffFormat:              profile.DiffFormat,
-				MaxContextTokens:        profile.MaxContextTokens,
-				MaxToolCalls:            profile.MaxToolCalls,
-				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
-				MaxOutputRetries:        profile.MaxOutputRetries,
-				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
-				NudgeCount:              profile.NudgeCount,
-				DisablePatchSummary:     profile.DisablePatchSummary,
-				SkipSuggestions:         profile.SkipSuggestions,
-				UseJSONSchema:           profile.UseJSONSchema,
-				PriorityThreshold:       a.priorityThreshold,
-				ConfidenceThreshold:     a.confidenceThreshold,
-				Offline:                 a.offline,
-				PostReview:              publish,
+				Mode:                      model.ModeGitLab,
+				Workdir:                   profile.Workdir,
+				Repo:                      project,
+				Identifier:                mr,
+				IncludeComments:           a.includeComments,
+				IncludeCommits:            a.includeCommits,
+				IncludePaths:              profile.IncludePaths,
+				ExcludePaths:              profile.ExcludePaths,
+				IncludeContent:            profile.IncludeContent,
+				ExcludeContent:            profile.ExcludeContent,
+				DiffFormat:                profile.DiffFormat,
+				MaxContextTokens:          profile.MaxContextTokens,
+				MaxToolCalls:              profile.MaxToolCalls,
+				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:          profile.MaxOutputRetries,
+				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
+				NudgeCount:                profile.NudgeCount,
+				DisablePatchSummary:       profile.DisablePatchSummary,
+				DisableSuggestions:        profile.DisableSuggestions,
+				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
+				PriorityThreshold:         a.priorityThreshold,
+				ConfidenceThreshold:       a.confidenceThreshold,
+				PostReview:                publish,
 			}
 			return a.runReview(cmd.Context(), source, retrieval.NewLocalEngine(), profileName, profile, req)
 		},
@@ -839,14 +850,14 @@ func (a *app) newCheckCmd() *cobra.Command {
 			logger.SetShowProgress(a.showProgress)
 			a.logger = logger
 			checkReq := model.ReviewRequest{
-				MaxContextTokens:        profile.MaxContextTokens,
-				MaxToolCalls:            profile.MaxToolCalls,
-				MaxDuplicateToolCalls:   profile.MaxDuplicateToolCalls,
-				MaxOutputRetries:        profile.MaxOutputRetries,
-				MaxReasoningSeconds:     profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats: profile.MaxReasoningLoopRepeats,
-				DiffFormat:              profile.DiffFormat,
-				UseJSONSchema:           profile.UseJSONSchema,
+				MaxContextTokens:          profile.MaxContextTokens,
+				MaxToolCalls:              profile.MaxToolCalls,
+				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
+				MaxOutputRetries:          profile.MaxOutputRetries,
+				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
+				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
+				DiffFormat:                profile.DiffFormat,
+				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
 			}
 			ctx := logging.WithProgressInfo(cmd.Context(), profileProgressInfo(profile))
 			a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, checkReq))
@@ -869,6 +880,24 @@ func (a *app) newCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Mirror runReview's run-wide json_schema→prompt fallback so a model
+			// usable only via the prompt-embedded schema reports healthy here too,
+			// instead of exiting non-zero while real reviews of the same model
+			// succeed. The API response format is global: either model lacking
+			// json_schema degrades both, so validation then requires only plain JSON
+			// output.
+			if !result.DisableJSONResponseFormat && a.jsonSchemaFallbackRequired(ctx, result, "model") {
+				result.DisableJSONResponseFormat = true
+			}
+			if smallChecked && smallRequirements.JSONSchema && !result.DisableJSONResponseFormat &&
+				a.jsonSchemaFallbackRequired(ctx, smallResult, "small model") {
+				result.DisableJSONResponseFormat = true
+			}
+			if result.DisableJSONResponseFormat {
+				checkReq.DisableJSONResponseFormat = true
+				smallResult.DisableJSONResponseFormat = true
+				smallRequirements = smallModelRequirementsForSpec(spec, checkReq)
+			}
 			if a.jsonOutput {
 				out := struct {
 					Check modelcheck.CheckSummary  `json:"check"`
@@ -881,7 +910,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 				if err := writeJSON(out); err != nil {
 					return err
 				}
-				if err := validatePreReviewModelCheck(result); err != nil {
+				if err := validateModelCheckRequirements(result, primaryModelRequirements(spec, checkReq)); err != nil {
 					return err
 				}
 				if smallChecked {
@@ -897,7 +926,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 					return err
 				}
 			}
-			if err := validatePreReviewModelCheck(result); err != nil {
+			if err := validateModelCheckRequirements(result, primaryModelRequirements(spec, checkReq)); err != nil {
 				return err
 			}
 			if smallChecked {
@@ -929,14 +958,16 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
-	// findings) operate on injected findings and commonly make no LLM call at
-	// all — a single-input merge is a passthrough, finalize on empty findings is
-	// a no-op. Defer the credential requirement and the model probe for them: the
-	// client is still built, so any LLM call that does happen fails at call time
-	// if credentials are missing, exactly as --skip-model-check behaves.
-	needsLLMSetup := spec.NeedsSource()
+	// findings) operate on injected findings and may make no LLM call at all — a
+	// single-input merge is a passthrough, finalize on empty findings is a no-op.
+	// Defer the hard credential requirement for them: the client is still built,
+	// so any LLM call that does happen fails at call time if credentials are
+	// missing, exactly as --disable-model-check behaves. The model probe itself
+	// still runs whenever credentials are present (see below), so the json_schema
+	// fallback applies to the LLM calls these specs do make.
+	needsSource := spec.NeedsSource()
 
-	if needsLLMSetup && profile.APIKey == "" {
+	if needsSource && profile.APIKey == "" {
 		if profile.APIKeyConfigured {
 			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
 		}
@@ -954,11 +985,11 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if profile.DisablePatchSummary {
 		req.DisablePatchSummary = true
 	}
-	if profile.SkipSuggestions {
-		req.SkipSuggestions = true
+	if profile.DisableSuggestions {
+		req.DisableSuggestions = true
 	}
-	if profile.SkipWorkflowTimeBudget {
-		req.SkipWorkflowTimeBudget = true
+	if profile.DisableWorkflowTimeBudget {
+		req.DisableWorkflowTimeBudget = true
 	}
 	req.ProfileName = profileName
 	if req.MaxContextTokens == 0 {
@@ -987,29 +1018,60 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-	if needsLLMSetup && !a.skipModelCheck {
+	if !a.disableModelCheck && profile.APIKey != "" {
 		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, "", false)
 		if err != nil {
 			return err
 		}
-		if err := validatePreReviewModelCheck(checkResult); err != nil {
-			return err
+		// JSON response format is on by default. If a model cannot do API-enforced
+		// json_schema, degrade the whole run to the prompt-embedded schema rather
+		// than failing: the API response format is a single global request setting,
+		// so a primary OR small model lacking json_schema disables it for both.
+		// Resolve the fallback fully BEFORE validating, so each model is checked
+		// against exactly the JSON mode its steps will use. This runs for
+		// source-less specs too, so imported-findings merge/finalize/verify/summarize
+		// degrade the same way a normal review would.
+		if !req.DisableJSONResponseFormat && a.jsonSchemaFallbackRequired(ctx, checkResult, "model") {
+			req.DisableJSONResponseFormat = true
 		}
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
+
 		smallRequirements := smallModelRequirementsForSpec(spec, req)
+		smallResult, smallChecked := modelcheck.Result{}, false
 		if smallRequirements.Uses() {
-			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, false)
+			smallResult, smallChecked, err = a.checkSmallModel(ctx, client, profile, false)
 			if err != nil {
 				return err
 			}
+			if smallChecked && smallRequirements.JSONSchema && !req.DisableJSONResponseFormat &&
+				a.jsonSchemaFallbackRequired(ctx, smallResult, "small model") {
+				req.DisableJSONResponseFormat = true
+			}
+		}
+
+		// req.DisableJSONResponseFormat is now final for the run. Validate each
+		// model against exactly what its steps will ask for — including any
+		// primary-model step that turned response_format off (it needs plain JSON
+		// output, not json_schema). The hard gate only applies when a source
+		// guarantees LLM calls; a source-less spec may be a passthrough, so
+		// (matching the deferred-credential design) it is not blocked up front and
+		// any LLM call it makes fails at call time if the model is unusable.
+		checkResult.DisableJSONResponseFormat = req.DisableJSONResponseFormat
+		if needsSource {
+			if err := validateModelCheckRequirements(checkResult, primaryModelRequirements(spec, req)); err != nil {
+				return err
+			}
 			if smallChecked {
-				if err := validateSmallModelCheck(smallResult, smallRequirements); err != nil {
+				if err := validateSmallModelCheck(smallResult, smallModelRequirementsForSpec(spec, req)); err != nil {
 					return err
 				}
 			}
+			// Restrict reasoning efforts to the probed set only for source-backed
+			// runs; source-less runs keep the unrestricted default so a probe that
+			// could not run (e.g. offline) never narrows them to an empty set.
+			client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		}
-		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 	} else {
 		req.ModelEmitsReasoning = true
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
@@ -1029,7 +1091,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 // emitResult formats the result to stdout, optionally publishes it back to the
 // origin, and reports the "all reviewers errored" CI failure.
 func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
-	if req.SkipSuggestions {
+	if req.DisableSuggestions {
 		result.StripSuggestions()
 	}
 	var formatter output.Formatter
@@ -1220,7 +1282,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	settings := requestSettingsFingerprint(profile)
 	if !refresh {
 		if capability, ok := modelcheck.FindProfileCapabilityFor(profile, model); ok {
-			result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
+			result := modelcheck.ResultFromCapability(capability, profile.DisableJSONResponseFormat)
 			a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=profile")
 			return result, nil
 		}
@@ -1230,7 +1292,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 		} else {
 			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model, settings)
 			if err == nil && ok {
-				result := modelcheck.ResultFromCapability(capability, profile.UseJSONSchema)
+				result := modelcheck.ResultFromCapability(capability, profile.DisableJSONResponseFormat)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
 				return result, nil
 			}
@@ -1248,7 +1310,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	// being checked.
 	checker.SetModelAlias(alias)
 	result := checker.Run(ctx)
-	if err := validatePreReviewModelCheck(result); err != nil {
+	if !cacheableModelResult(result) {
 		return result, nil
 	}
 	capability := modelcheck.CapabilityFromResult(result)
@@ -1338,27 +1400,52 @@ func (r *modelCapabilityRequirements) requireJSON(useSchema bool) {
 }
 
 func smallModelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest) modelCapabilityRequirements {
+	return modelRequirementsForSpec(spec, req, true)
+}
+
+// primaryModelRequirements is the capability set the spec demands of the primary
+// model: the baseline tool use, reasoning, and run-level JSON mode a review
+// needs, plus every step (and review-internal agent) left on the primary model.
+// A step that turns response_format off via disable_json_response_format requires
+// plain JSON output instead of json_schema, so a primary that passes the schema
+// probe but fails the plain-JSON probe is rejected up front rather than failing
+// inside that prompt-only step — mirroring how the small model is validated.
+func primaryModelRequirements(spec workflow.Spec, req model.ReviewRequest) modelCapabilityRequirements {
+	requirements := modelCapabilityRequirements{Response: true, Tools: true}
+	requirements.requireJSON(!req.DisableJSONResponseFormat)
+	requirements.merge(modelRequirementsForSpec(spec, req, false))
+	return requirements
+}
+
+// modelRequirementsForSpec accumulates the capability requirements the spec
+// places on one model. useSmallModel selects which: true gathers the steps (and
+// review-internal agents) routed to @small, false gathers those left on the
+// primary model. Per-step disable_json_response_format is honored — and, like
+// the runtime override resolution, treated monotonically (it may disable but not
+// re-enable a run that already disabled response_format) — so a prompt-only step
+// requires plain JSON output while a default step requires json_schema.
+func modelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest, useSmallModel bool) modelCapabilityRequirements {
 	var requirements modelCapabilityRequirements
 	for _, entry := range spec.FlatSteps() {
 		stepReq := req
 		stepUsesSmall := entry.Config != nil && usesSmallAlias(entry.Config.Model)
-		if entry.Config != nil && entry.Config.UseJSONSchema != nil {
-			stepReq.UseJSONSchema = *entry.Config.UseJSONSchema
+		if entry.Config != nil && entry.Config.DisableJSONResponseFormat != nil {
+			stepReq.DisableJSONResponseFormat = stepReq.DisableJSONResponseFormat || *entry.Config.DisableJSONResponseFormat
 		}
-		if stepUsesSmall {
-			requirements.merge(stepModelRequirements(entry.Type, stepReq.UseJSONSchema))
+		if stepUsesSmall == useSmallModel {
+			requirements.merge(stepModelRequirements(entry.Type, stepReq.DisableJSONResponseFormat))
 		}
 		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) || entry.Config == nil {
 			continue
 		}
-		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) {
+		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) == useSmallModel {
 			requirements.merge(textModelRequirements())
 		}
-		if agentUsesSmall(stepUsesSmall, entry.Config.CompileFindings) {
+		if agentUsesSmall(stepUsesSmall, entry.Config.CompileFindings) == useSmallModel {
 			requirements.merge(textModelRequirements())
 		}
-		if agentUsesSmall(stepUsesSmall, entry.Config.Nudge) {
-			requirements.merge(reviewerModelRequirements(agentUseJSONSchema(stepReq, entry.Config.Nudge)))
+		if agentUsesSmall(stepUsesSmall, entry.Config.Nudge) == useSmallModel {
+			requirements.merge(reviewerModelRequirements(agentDisableJSONResponseFormat(stepReq, entry.Config.Nudge)))
 		}
 	}
 	return requirements
@@ -1386,13 +1473,13 @@ func textModelRequirements() modelCapabilityRequirements {
 	return modelCapabilityRequirements{Response: true}
 }
 
-func reviewerModelRequirements(useJSONSchema bool) modelCapabilityRequirements {
+func reviewerModelRequirements(disableJSONResponseFormat bool) modelCapabilityRequirements {
 	requirements := modelCapabilityRequirements{Response: true, Tools: true}
-	requirements.requireJSON(useJSONSchema)
+	requirements.requireJSON(!disableJSONResponseFormat)
 	return requirements
 }
 
-func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityRequirements {
+func stepModelRequirements(stepType string, disableJSONResponseFormat bool) modelCapabilityRequirements {
 	switch {
 	case stepType == workflow.StepCollectContext:
 		return modelCapabilityRequirements{Response: true, Tools: true}
@@ -1400,7 +1487,7 @@ func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityR
 		stepType == workflow.StepVerify,
 		strings.HasPrefix(stepType, workflow.StepVerifyPrefix),
 		strings.HasPrefix(stepType, workflow.StepNudgePrefix):
-		return reviewerModelRequirements(useJSONSchema)
+		return reviewerModelRequirements(disableJSONResponseFormat)
 	case stepType == workflow.StepDedupe,
 		strings.HasPrefix(stepType, workflow.StepDedupePrefix),
 		stepType == workflow.StepMerge,
@@ -1408,7 +1495,7 @@ func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityR
 		stepType == workflow.StepVerdict,
 		stepType == workflow.StepSummarize:
 		requirements := modelCapabilityRequirements{}
-		requirements.requireJSON(useJSONSchema)
+		requirements.requireJSON(!disableJSONResponseFormat)
 		return requirements
 	case strings.HasPrefix(stepType, workflow.StepExtractPrefix):
 		return textModelRequirements()
@@ -1417,11 +1504,14 @@ func stepModelRequirements(stepType string, useJSONSchema bool) modelCapabilityR
 	}
 }
 
-func agentUseJSONSchema(stepReq model.ReviewRequest, override *workflow.AgentOverride) bool {
-	if override != nil && override.UseJSONSchema != nil {
-		return *override.UseJSONSchema
+func agentDisableJSONResponseFormat(stepReq model.ReviewRequest, override *workflow.AgentOverride) bool {
+	// Monotonic, matching workflow.AgentOverride.Resolve: an override may disable
+	// response_format but never re-enable it once the run disabled it, so the
+	// requirement computation predicts the JSON mode the agent will actually use.
+	if override != nil && override.DisableJSONResponseFormat != nil {
+		return stepReq.DisableJSONResponseFormat || *override.DisableJSONResponseFormat
 	}
-	return stepReq.UseJSONSchema
+	return stepReq.DisableJSONResponseFormat
 }
 
 // checkSmallModel runs (or loads cached) capabilities for the effective small
@@ -1640,8 +1730,40 @@ func validateSmallModelCheck(result modelcheck.Result, requirements modelCapabil
 
 func validatePreReviewModelCheck(result modelcheck.Result) error {
 	requirements := modelCapabilityRequirements{Response: true, Tools: true}
-	requirements.requireJSON(result.UseJSONSchema)
+	requirements.requireJSON(!result.DisableJSONResponseFormat)
 	return validateModelCheckRequirements(result, requirements)
+}
+
+// jsonSchemaFallbackRequired reports whether a probed model cannot do
+// API-enforced json_schema, logging the prompt-embedded fallback notice when it
+// cannot. The API response format is a single global request setting, so the
+// caller disables it for the whole run (both primary and small models). label
+// names the model in the warning ("model" or "small model"). Shared by runReview
+// and `check model` so the two paths cannot drift apart on the degrade rule.
+func (a *app) jsonSchemaFallbackRequired(ctx context.Context, result modelcheck.Result, label string) bool {
+	probe := result.ConfiguredJSONSchema()
+	if probe.Status == modelcheck.StatusOK {
+		return false
+	}
+	a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("%s lacks json_schema response format (%s); falling back to prompt-embedded schema", label, probe.Status))
+	return true
+}
+
+// cacheableModelResult reports whether a freshly probed result is worth
+// persisting to the capability cache. A model is cacheable when it is usable by
+// either structured-output route: API-enforced json_schema, or — since runReview
+// degrades a model that lacks json_schema to the prompt-embedded schema — plain
+// JSON output. Without the degraded check, a json_schema-incapable but otherwise
+// fine model failed the strict gate, was never cached, and re-probed (and
+// re-warned) on every run. A model that also fails tools/reasoning or emits no
+// JSON at all stays uncached so a later run can re-probe a fixed endpoint.
+func cacheableModelResult(result modelcheck.Result) bool {
+	if validatePreReviewModelCheck(result) == nil {
+		return true
+	}
+	degraded := result
+	degraded.DisableJSONResponseFormat = true
+	return validatePreReviewModelCheck(degraded) == nil
 }
 
 func validateModelCheckRequirements(result modelcheck.Result, requirements modelCapabilityRequirements) error {
@@ -2014,7 +2136,7 @@ func extraBodyValue(v any) string {
 
 func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 	kind := "Unstructured"
-	if req.UseJSONSchema {
+	if !req.DisableJSONResponseFormat {
 		kind = "Structured"
 	}
 	flags := []string{
@@ -2030,8 +2152,8 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 		flags = append(flags, "parallel")
 	}
 	flags = append(flags, unlimited(req.MaxDuplicateToolCalls, "", "duplicates"))
-	if req.SkipSuggestions {
-		flags = append(flags, "skip suggestions")
+	if req.DisableSuggestions {
+		flags = append(flags, "no suggestions")
 	}
 	if req.DisablePatchSummary {
 		flags = append(flags, "no patch summary")

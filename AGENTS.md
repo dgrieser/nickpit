@@ -15,7 +15,7 @@ NickPit is a Go 1.25 CLI for LLM-assisted code review. The main binary lives in 
 - `make vet`: run `go vet ./...`.
 - `make fmt`: run `gofmt -w ./cmd ./internal`.
 
-For local manual use, run examples such as `./bin/nickpit local uncommitted` or `./bin/nickpit local branch --show-progress` after building.
+For local manual use, run examples such as `./bin/nickpit git uncommitted` or `./bin/nickpit git branch --show-progress` after building.
 
 ## Coding Style & Naming Conventions
 

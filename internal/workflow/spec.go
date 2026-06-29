@@ -199,15 +199,15 @@ type StepOverride struct {
 	MaxReasoningLoopRepeats *int `yaml:"max_reasoning_loop_repeats"`
 
 	// Stage-specific tunables.
-	NudgeCount               *int     `yaml:"nudge_count"`
-	DisableReasoningExtract  *bool    `yaml:"disable_reasoning_extract"`
-	DisableParallelToolCalls *bool    `yaml:"disable_parallel_tool_calls"`
-	DisablePatchSummary      *bool    `yaml:"disable_patch_summary"`
-	SkipSuggestions          *bool    `yaml:"skip_suggestions"`
-	UseJSONSchema            *bool    `yaml:"use_json_schema"`
-	VerifyDropPolicy         *string  `yaml:"verify_drop_policy"`
-	ConfidenceThreshold      *float64 `yaml:"confidence_threshold"`
-	PriorityThreshold        *string  `yaml:"priority_threshold"`
+	NudgeCount                *int     `yaml:"nudge_count"`
+	DisableReasoningExtract   *bool    `yaml:"disable_reasoning_extract"`
+	DisableParallelToolCalls  *bool    `yaml:"disable_parallel_tool_calls"`
+	DisablePatchSummary       *bool    `yaml:"disable_patch_summary"`
+	DisableSuggestions        *bool    `yaml:"disable_suggestions"`
+	DisableJSONResponseFormat *bool    `yaml:"disable_json_response_format"`
+	VerifyDropPolicy          *string  `yaml:"verify_drop_policy"`
+	ConfidenceThreshold       *float64 `yaml:"confidence_threshold"`
+	PriorityThreshold         *string  `yaml:"priority_threshold"`
 
 	// Review-only internal agent overrides. These keys are accepted only under
 	// config on review:<vector> steps. Each inherits the already-resolved review
@@ -223,7 +223,7 @@ var stepOverrideKeys = []string{
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
-	"disable_patch_summary", "skip_suggestions", "use_json_schema", "verify_drop_policy",
+	"disable_patch_summary", "disable_suggestions", "disable_json_response_format", "verify_drop_policy",
 	"confidence_threshold", "priority_threshold",
 }
 
@@ -248,15 +248,15 @@ type AgentOverride struct {
 	MaxReasoningSeconds     *int `yaml:"max_reasoning_seconds"`
 	MaxReasoningLoopRepeats *int `yaml:"max_reasoning_loop_repeats"`
 
-	DisableParallelToolCalls *bool `yaml:"disable_parallel_tool_calls"`
-	UseJSONSchema            *bool `yaml:"use_json_schema"`
+	DisableParallelToolCalls  *bool `yaml:"disable_parallel_tool_calls"`
+	DisableJSONResponseFormat *bool `yaml:"disable_json_response_format"`
 }
 
 var agentOverrideKeys = []string{
 	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort", "time_budget",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
-	"disable_parallel_tool_calls", "use_json_schema",
+	"disable_parallel_tool_calls", "disable_json_response_format",
 }
 
 // TimeBudget controls wall-clock budgeting for workflow steps and groups.
@@ -331,9 +331,14 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 		p.NudgeCount = *o.NudgeCount
 		req.NudgeCount = *o.NudgeCount
 	}
-	if o.UseJSONSchema != nil {
-		p.UseJSONSchema = *o.UseJSONSchema
-		req.UseJSONSchema = *o.UseJSONSchema
+	if o.DisableJSONResponseFormat != nil && *o.DisableJSONResponseFormat {
+		// Disabling response_format is monotonic: a per-step override may turn it
+		// off but must never re-enable it once the run already disabled it (most
+		// importantly the model-check fallback for a model that lacks json_schema).
+		// Re-enabling would send response_format: json_schema to a model already
+		// probed as unable to honor it.
+		p.DisableJSONResponseFormat = true
+		req.DisableJSONResponseFormat = true
 	}
 	if o.DisableReasoningExtract != nil {
 		req.DisableReasoningExtract = *o.DisableReasoningExtract
@@ -344,8 +349,8 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.DisablePatchSummary != nil {
 		req.DisablePatchSummary = *o.DisablePatchSummary
 	}
-	if o.SkipSuggestions != nil {
-		req.SkipSuggestions = *o.SkipSuggestions
+	if o.DisableSuggestions != nil {
+		req.DisableSuggestions = *o.DisableSuggestions
 	}
 	if o.VerifyDropPolicy != nil {
 		req.VerifyDropPolicy = *o.VerifyDropPolicy
@@ -414,9 +419,14 @@ func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (conf
 		p.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 		req.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 	}
-	if o.UseJSONSchema != nil {
-		p.UseJSONSchema = *o.UseJSONSchema
-		req.UseJSONSchema = *o.UseJSONSchema
+	if o.DisableJSONResponseFormat != nil && *o.DisableJSONResponseFormat {
+		// Disabling response_format is monotonic: a per-step override may turn it
+		// off but must never re-enable it once the run already disabled it (most
+		// importantly the model-check fallback for a model that lacks json_schema).
+		// Re-enabling would send response_format: json_schema to a model already
+		// probed as unable to honor it.
+		p.DisableJSONResponseFormat = true
+		req.DisableJSONResponseFormat = true
 	}
 	if o.DisableParallelToolCalls != nil {
 		req.DisableParallelToolCalls = *o.DisableParallelToolCalls
@@ -666,7 +676,28 @@ func decodeGroupConfig(node *yaml.Node) (*StepOverride, error) {
 	if err := node.Decode(&override); err != nil {
 		return nil, err
 	}
+	if err := normalizeStepOverride(&override); err != nil {
+		return nil, err
+	}
 	return &override, nil
+}
+
+// normalizeStepOverride canonicalizes user-supplied override fields so the
+// engine always sees its internal representation. Currently it maps the numeric
+// priority_threshold form (0..3) to "pN" via model.NormalizePriorityThreshold,
+// matching how the CLI normalizes --priority-threshold; without this a workflow
+// YAML threshold would reach PriorityThresholdRank unparsed and silently fall
+// back to p3.
+func normalizeStepOverride(o *StepOverride) error {
+	if o == nil || o.PriorityThreshold == nil {
+		return nil
+	}
+	normalized, err := model.NormalizePriorityThreshold(*o.PriorityThreshold)
+	if err != nil {
+		return fmt.Errorf("priority_threshold: %w", err)
+	}
+	*o.PriorityThreshold = normalized
+	return nil
 }
 
 func decodePlainStep(node *yaml.Node) (StepEntry, error) {
@@ -694,6 +725,9 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 		}
 		var override StepOverride
 		if err := cfg.Decode(&override); err != nil {
+			return StepEntry{}, fmt.Errorf("config: %w", err)
+		}
+		if err := normalizeStepOverride(&override); err != nil {
 			return StepEntry{}, fmt.Errorf("config: %w", err)
 		}
 		entry.Config = &override

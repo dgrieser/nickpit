@@ -375,7 +375,7 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.ReviewRequest, st *PipelineState) error {
 	laneCtx := ctx
 	laneCancel := func() {}
-	if !req.SkipWorkflowTimeBudget {
+	if !req.DisableWorkflowTimeBudget {
 		var skipped bool
 		laneCtx, laneCancel, skipped = withConfiguredTimeBudget(ctx, lane.timeBudget, childTimePlan{}, "lane:"+laneLabel(lane), p.engine.logf)
 		if skipped {
@@ -390,13 +390,13 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 		budgets[i] = lane.steps[i].timeBudget
 	}
 	plans := []childTimePlan(nil)
-	if !req.SkipWorkflowTimeBudget {
+	if !req.DisableWorkflowTimeBudget {
 		plans = childTimePlans(laneCtx, budgets)
 	}
 	for i, bs := range lane.steps {
 		stepCtx := laneCtx
 		stepCancel := func() {}
-		if !req.SkipWorkflowTimeBudget {
+		if !req.DisableWorkflowTimeBudget {
 			plan := childTimePlan{}
 			if i < len(plans) {
 				plan = plans[i]
@@ -466,7 +466,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	res.SummarizeTokensUsed = st.summarizeUsage
 	res.TotalToolCalls = toolCalls
 	res.ReasoningEffort = reasoning
-	if req.SkipSuggestions {
+	if req.DisableSuggestions {
 		res.StripSuggestions()
 	}
 	return res
@@ -547,7 +547,7 @@ func (st *PipelineState) materializeFromGroupsLocked(req model.ReviewRequest) *m
 		}
 	}
 	findings = filterByPriority(findings, req.PriorityThreshold)
-	if req.SkipSuggestions {
+	if req.DisableSuggestions {
 		model.StripSuggestions(findings)
 	}
 	model.EnsureFindingIDs(findings)
