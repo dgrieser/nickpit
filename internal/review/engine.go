@@ -2372,7 +2372,7 @@ func reviewOutputSchemaSnippetFor(disableJSONResponseFormat bool, disableSuggest
 }
 
 func mergeOutputSchemaSnippetFor(disableJSONResponseFormat bool, disableSuggestions bool) string {
-	if disableJSONResponseFormat {
+	if !disableJSONResponseFormat {
 		return ""
 	}
 	return llm.MergeExamplePromptSnippetFor(disableSuggestions)

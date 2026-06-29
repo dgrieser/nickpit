@@ -129,7 +129,7 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 		return agentSpec{}, err
 	}
 	var schema []byte
-	if req.DisableJSONResponseFormat {
+	if !req.DisableJSONResponseFormat {
 		schema = llm.FindingsSchema
 		if req.DisableSuggestions {
 			schema = llm.FindingsSchemaWithoutSuggestions
@@ -468,7 +468,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 
 		mergeConstraints := llm.ResponseConstraints{}
 		var mergeSchema []byte
-		if req.DisableJSONResponseFormat {
+		if !req.DisableJSONResponseFormat {
 			mergeConstraints = mergeConstraintsForRequest(req)
 			if hasResponseConstraints(mergeConstraints) {
 				mergeSchema = llm.MergeSchemaWithConstraintsFor(mergeConstraints, req.DisableSuggestions)
@@ -854,7 +854,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byte) {
 	constraints := llm.ResponseConstraints{}
 	var schema []byte
-	if req.DisableJSONResponseFormat {
+	if !req.DisableJSONResponseFormat {
 		constraints = mergeConstraintsForRequest(req)
 		if hasResponseConstraints(constraints) {
 			schema = llm.MergeSchemaWithConstraintsFor(constraints, req.DisableSuggestions)

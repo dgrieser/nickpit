@@ -337,11 +337,10 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	}
 
 	verification, usage, err := engine.Verify(context.Background(), VerifyRequest{
-		ReviewCtx:                 sampleReviewCtx(),
-		Finding:                   finding,
-		MaxToolCalls:              2,
-		RepoRoot:                  "/repo",
-		DisableJSONResponseFormat: true,
+		ReviewCtx:    sampleReviewCtx(),
+		Finding:      finding,
+		MaxToolCalls: 2,
+		RepoRoot:     "/repo",
 	})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
@@ -391,9 +390,8 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	_, _, err := engine.Verify(context.Background(), VerifyRequest{
-		ReviewCtx:                 sampleReviewCtx(),
-		Finding:                   model.Finding{Title: "No issue", Body: "x", Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-		DisableJSONResponseFormat: true,
+		ReviewCtx: sampleReviewCtx(),
+		Finding:   model.Finding{Title: "No issue", Body: "x", Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)

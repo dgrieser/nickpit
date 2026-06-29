@@ -618,9 +618,9 @@ func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		),
 	}
-	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: false})
-	if result.DisableJSONResponseFormat {
-		t.Fatal("DisableJSONResponseFormat should be false")
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: true})
+	if !result.DisableJSONResponseFormat {
+		t.Fatal("DisableJSONResponseFormat should be true")
 	}
 	if result.ConfiguredJSONOutput().Status != StatusOK {
 		t.Fatalf("json-output status = %s error=%s", result.ConfiguredJSONOutput().Status, result.ConfiguredJSONOutput().Error)
@@ -671,9 +671,9 @@ func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		),
 	}
-	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: true})
-	if !result.DisableJSONResponseFormat {
-		t.Fatal("DisableJSONResponseFormat should be true")
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: false})
+	if result.DisableJSONResponseFormat {
+		t.Fatal("DisableJSONResponseFormat should be false")
 	}
 	if result.ConfiguredJSONSchema().Status != StatusOK {
 		t.Fatalf("json-schema status = %s error=%s", result.ConfiguredJSONSchema().Status, result.ConfiguredJSONSchema().Error)
