@@ -940,14 +940,16 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
-	// findings) operate on injected findings and commonly make no LLM call at
-	// all — a single-input merge is a passthrough, finalize on empty findings is
-	// a no-op. Defer the credential requirement and the model probe for them: the
-	// client is still built, so any LLM call that does happen fails at call time
-	// if credentials are missing, exactly as --disable-model-check behaves.
-	needsLLMSetup := spec.NeedsSource()
+	// findings) operate on injected findings and may make no LLM call at all — a
+	// single-input merge is a passthrough, finalize on empty findings is a no-op.
+	// Defer the hard credential requirement for them: the client is still built,
+	// so any LLM call that does happen fails at call time if credentials are
+	// missing, exactly as --disable-model-check behaves. The model probe itself
+	// still runs whenever credentials are present (see below), so the json_schema
+	// fallback applies to the LLM calls these specs do make.
+	needsSource := spec.NeedsSource()
 
-	if needsLLMSetup && profile.APIKey == "" {
+	if needsSource && profile.APIKey == "" {
 		if profile.APIKeyConfigured {
 			return fmt.Errorf("profile %q has an empty api_key value; %s", profileName, missingAPIKeyHint(profileName, true))
 		}
@@ -998,7 +1000,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
-	if needsLLMSetup && !a.disableModelCheck {
+	if !a.disableModelCheck && profile.APIKey != "" {
 		checkResult, err := a.resolveModelCapabilities(ctx, client, profile, profile.Model, profile.ReasoningEffort, "", false)
 		if err != nil {
 			return err
@@ -1006,7 +1008,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		// JSON response format is on by default. If the model can't do
 		// API-enforced json_schema, degrade to the prompt-embedded schema instead
 		// of failing the review; validatePreReviewModelCheck then only requires
-		// plain JSON output.
+		// plain JSON output. This runs for source-less specs too, so an
+		// imported-findings merge/finalize/verify/summarize degrades the same way
+		// a normal review would instead of sending json_schema to a model that
+		// cannot honor it.
 		if !req.DisableJSONResponseFormat {
 			if probe := checkResult.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("model lacks json_schema response format (%s); falling back to prompt-embedded schema", probe.Status))
@@ -1014,8 +1019,14 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 				checkResult.DisableJSONResponseFormat = true
 			}
 		}
-		if err := validatePreReviewModelCheck(checkResult); err != nil {
-			return err
+		// The hard usability gate only applies when a source guarantees LLM calls.
+		// A source-less spec may be a passthrough, so — matching the deferred
+		// credential design — it is not blocked up front; any LLM call it makes
+		// fails at call time if the model is unusable.
+		if needsSource {
+			if err := validatePreReviewModelCheck(checkResult); err != nil {
+				return err
+			}
 		}
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
@@ -1036,12 +1047,19 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 						smallRequirements = smallModelRequirementsForSpec(spec, req)
 					}
 				}
-				if err := validateSmallModelCheck(smallResult, smallRequirements); err != nil {
-					return err
+				if needsSource {
+					if err := validateSmallModelCheck(smallResult, smallRequirements); err != nil {
+						return err
+					}
 				}
 			}
 		}
-		client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
+		// Restrict reasoning efforts to the probed set only for source-backed runs;
+		// source-less runs keep the unrestricted default so a probe that could not
+		// run (e.g. offline) never narrows them to an empty set.
+		if needsSource {
+			client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
+		}
 	} else {
 		req.ModelEmitsReasoning = true
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateSkip, "")
@@ -1280,7 +1298,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 	// being checked.
 	checker.SetModelAlias(alias)
 	result := checker.Run(ctx)
-	if err := validatePreReviewModelCheck(result); err != nil {
+	if !cacheableModelResult(result) {
 		return result, nil
 	}
 	capability := modelcheck.CapabilityFromResult(result)
@@ -1674,6 +1692,23 @@ func validatePreReviewModelCheck(result modelcheck.Result) error {
 	requirements := modelCapabilityRequirements{Response: true, Tools: true}
 	requirements.requireJSON(!result.DisableJSONResponseFormat)
 	return validateModelCheckRequirements(result, requirements)
+}
+
+// cacheableModelResult reports whether a freshly probed result is worth
+// persisting to the capability cache. A model is cacheable when it is usable by
+// either structured-output route: API-enforced json_schema, or — since runReview
+// degrades a model that lacks json_schema to the prompt-embedded schema — plain
+// JSON output. Without the degraded check, a json_schema-incapable but otherwise
+// fine model failed the strict gate, was never cached, and re-probed (and
+// re-warned) on every run. A model that also fails tools/reasoning or emits no
+// JSON at all stays uncached so a later run can re-probe a fixed endpoint.
+func cacheableModelResult(result modelcheck.Result) bool {
+	if validatePreReviewModelCheck(result) == nil {
+		return true
+	}
+	degraded := result
+	degraded.DisableJSONResponseFormat = true
+	return validatePreReviewModelCheck(degraded) == nil
 }
 
 func validateModelCheckRequirements(result modelcheck.Result, requirements modelCapabilityRequirements) error {

@@ -1202,6 +1202,67 @@ func TestRunReviewReprobesWhenSettingsChange(t *testing.T) {
 	}
 }
 
+func TestCacheableModelResult(t *testing.T) {
+	capWith := func(mutate func(*config.ModelCapabilities)) modelcheck.Result {
+		c := compatibleCapability("model")
+		mutate(&c)
+		return modelcheck.ResultFromCapability(c, false)
+	}
+	no := false
+	tests := []struct {
+		name   string
+		result modelcheck.Result
+		want   bool
+	}{
+		{"fully compatible", capWith(func(*config.ModelCapabilities) {}), true},
+		// The P3 case: a model that cannot do API-enforced json_schema but can emit
+		// plain JSON is still usable via the prompt-embedded fallback, so it must be
+		// cached rather than re-probed every run.
+		{"json_schema unsupported, json output ok", capWith(func(c *config.ModelCapabilities) { c.JSONSchema = &no }), true},
+		{"no structured output at all", capWith(func(c *config.ModelCapabilities) { c.JSONSchema = &no; c.JSONResponse = &no }), false},
+		{"tools unsupported", capWith(func(c *config.ModelCapabilities) { c.Tools = false }), false},
+		{"no reasoning efforts", capWith(func(c *config.ModelCapabilities) { c.Reasoning.Efforts = nil }), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cacheableModelResult(tt.result); got != tt.want {
+				t.Fatalf("cacheableModelResult = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A source-less spec (e.g. --step merge on imported findings) still calls the
+// LLM, so the model probe must run when credentials are present — that is what
+// lets the json_schema fallback apply. It must not be hard-failed by the model
+// check, matching the deferred-credential design.
+func TestRunReviewProbesModelForSourcelessSpec(t *testing.T) {
+	var probes atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes.Add(1)
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "reasoning_effort unsupported"}})
+	}))
+	defer server.Close()
+
+	source := &recordingSource{}
+	err := (&app{stepName: "merge"}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "model",
+		BaseURL:         server.URL,
+		APIKey:          "token",
+		ReasoningEffort: "high",
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("source-less merge run returned err: %v", err)
+	}
+	if probes.Load() == 0 {
+		t.Fatal("model probe did not run for source-less spec; json_schema fallback would be skipped")
+	}
+	if source.called {
+		t.Fatal("source-less spec must not resolve a review source")
+	}
+}
+
 func TestRequestSettingsFingerprint(t *testing.T) {
 	withProfile := func(p config.Profile, fn func(*config.Profile)) config.Profile {
 		fn(&p)
