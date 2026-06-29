@@ -1,6 +1,6 @@
-# Kubernetes Style Guide
+### Kubernetes Style Guide
 
-## Foundational Principles
+#### Foundational Principles
 
 | Principle | Description |
 |---|---|
@@ -13,9 +13,9 @@
 
 ---
 
-## Project Layout & Tooling
+#### Project Layout & Tooling
 
-### Recommended Scaffold (Kubebuilder)
+##### Recommended Scaffold (Kubebuilder)
 
 ```
 ├── api/
@@ -34,7 +34,7 @@
 └── Makefile                         # make generate, make manifests, make test
 ```
 
-### Toolchain Requirements
+##### Toolchain Requirements
 
 - **kubebuilder** — scaffolding, marker-based manifest generation
 - **controller-gen** — CRD YAML, RBAC, DeepCopy code generation (`make generate`, `make manifests`)
@@ -42,7 +42,7 @@
 - **envtest** — in-process API server for unit/integration tests
 - **kustomize** — layered config management for deploy targets
 
-### Makefile Targets (Mandatory)
+##### Makefile Targets (Mandatory)
 
 ```makefile
 make generate      # DeepCopy, runtime.Object implementations
@@ -54,9 +54,9 @@ make docker-build  # Build operator image
 
 ---
 
-## Naming Conventions
+#### Naming Conventions
 
-### Character Rules by Name Class
+##### Character Rules by Name Class
 
 Kubernetes uses several distinct name classes, each with its own allowed character set. Use the table below to pick the right rule for the field you're naming.
 
@@ -76,7 +76,7 @@ Kubernetes uses several distinct name classes, each with its own allowed charact
 
 > ⚠️ Uppercase letters are **never** valid in DNS Subdomain or DNS Label names. They ARE valid in label keys (name part), label values, qualified names, and C-identifiers.
 
-### API Group, Kind, Resource
+##### API Group, Kind, Resource
 
 | Element | Rule | Example |
 |---|---|---|
@@ -88,7 +88,7 @@ Kubernetes uses several distinct name classes, each with its own allowed charact
 
 > ⚠️ Do **not** use the empty group, single-word names, or `*.k8s.io` — those are reserved by the Kubernetes project.
 
-### Go Type Names
+##### Go Type Names
 
 ```go
 // ✅ Correct
@@ -102,7 +102,7 @@ type rediscluster struct { ... }
 type RedisClusterSpecs struct { ... }
 ```
 
-### JSON Field Names
+##### JSON Field Names
 
 | Rule | ✅ Good | ❌ Bad |
 |---|---|---|
@@ -113,7 +113,7 @@ type RedisClusterSpecs struct { ... }
 | Duration | `timeoutSeconds` (`int32`) | `timeout: "30s"` in spec primitive fields |
 | Avoid abbreviations | `maximumRetries` | `maxRetries` (except established: `url`, `ip`, `id`) |
 
-### Constant (Enum) Values
+##### Constant (Enum) Values
 
 ```go
 // CamelCase string alias — never Go iota enums in API types
@@ -127,29 +127,29 @@ const (
 )
 ```
 
-### `client.ObjectKey` in Go Code
+##### `client.ObjectKey` in Go Code
 
 When code uses `sigs.k8s.io/controller-runtime/pkg/client.ObjectKey`, assume `Namespace` and `Name` came from Kubernetes object identity (DNS Subdomain / DNS Label rules above) unless there is evidence otherwise.
 
-### Label & Annotation Key Examples
+##### Label & Annotation Key Examples
 
 Use the Qualified Name rules from the character table above. Conventional prefixes:
 
 ```
-# Labels (user-facing, for selection)
+### Labels (user-facing, for selection)
 app.kubernetes.io/name: redis
 app.kubernetes.io/component: cache
 app.kubernetes.io/managed-by: redis-operator
 
-# Annotations (tooling metadata)
+### Annotations (tooling metadata)
 cache.example.com/last-backup-time: "2025-01-01T00:00:00Z"
 ```
 
 ---
 
-## CRD & API Design
+#### CRD & API Design
 
-### Minimal Skeleton
+##### Minimal Skeleton
 
 ```go
 // +kubebuilder:object:root=true
@@ -167,7 +167,7 @@ type RedisCluster struct {
 }
 ```
 
-### Spec Design Rules
+##### Spec Design Rules
 
 - Use `// +optional` and `omitempty` for optional fields; `// +required` for required.
 - Prefer **lists of named subobjects** over maps for portability with strategic merge patch:
@@ -185,7 +185,7 @@ type RedisCluster struct {
 - **No raw maps** except for labels, annotations, and opaque user data.
 - **Object-level fields only**: do not add top-level fields other than `metadata`, `spec`, `status`.
 
-### OpenAPI / Kubebuilder Validation Markers
+##### OpenAPI / Kubebuilder Validation Markers
 
 ```go
 // +kubebuilder:validation:Minimum=1
@@ -207,7 +207,7 @@ Immutability via CEL:
 StorageClass string `json:"storageClass"`
 ```
 
-### PrintColumns
+##### PrintColumns
 
 Always define at minimum:
 1. A human-readable state/phase column
@@ -215,7 +215,7 @@ Always define at minimum:
 
 ---
 
-## Spec vs. Status
+#### Spec vs. Status
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -233,7 +233,7 @@ Always define at minimum:
 | **PUT/POST behaviour** | Updated | Ignored (must use `/status` endpoint) |
 | **Read access** | Operators need read | Operators write |
 
-### Updating Status (controller-runtime)
+##### Updating Status (controller-runtime)
 
 ```go
 // ✅ Always update status through the subresource
@@ -244,7 +244,7 @@ if err := r.Status().Update(ctx, myResource); err != nil {
 r.Update(ctx, myResource) // this ignores status changes or overwrites spec
 ```
 
-### observedGeneration
+##### observedGeneration
 
 Always set `status.observedGeneration = metadata.generation` after a successful reconcile:
 
@@ -256,7 +256,7 @@ This allows external tools to detect whether the controller has processed the la
 
 ---
 
-## Status Conditions
+#### Status Conditions
 
 Use `metav1.Condition` from `k8s.io/apimachinery/pkg/apis/meta/v1`:
 
@@ -270,7 +270,7 @@ Use `metav1.Condition` from `k8s.io/apimachinery/pkg/apis/meta/v1`:
 Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 ```
 
-### Condition Field Rules
+##### Condition Field Rules
 
 | Field | Rule |
 |---|---|
@@ -281,7 +281,7 @@ Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge"
 | `ObservedGeneration` | Copy from `metadata.generation` at the time of observation |
 | `LastTransitionTime` | Update **only** when status value transitions; not on every reconcile |
 
-### Standard Condition Types
+##### Standard Condition Types
 
 | Type | Normal Status | Meaning |
 |---|---|---|
@@ -293,7 +293,7 @@ Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge"
 
 > ⚠️ **Deprecated:** Do **not** use `phase` string fields (e.g., `"Running"`, `"Pending"`). Conditions are the approved pattern — phase is a state machine anti-pattern that hinders backward compatibility.
 
-### Setting Conditions (example with controller-runtime meta/v1)
+##### Setting Conditions (example with controller-runtime meta/v1)
 
 ```go
 meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
@@ -307,9 +307,9 @@ meta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
 
 ---
 
-## Versioning & API Evolution
+#### Versioning & API Evolution
 
-### Version Lifecycle
+##### Version Lifecycle
 
 ```
 v1alpha1 → v1alpha2 → v1beta1 → v1beta2 → v1
@@ -321,7 +321,7 @@ v1alpha1 → v1alpha2 → v1beta1 → v1beta2 → v1
 | `v1betaX` | Pre-release | Yes | Best-effort |
 | `v1` (GA) | Stable | Yes | **Required** |
 
-### Rules
+##### Rules
 
 1. **Never remove or rename existing fields** in a served version.
 2. **Never tighten validation** on an existing field in a way that rejects previously valid values.
@@ -331,7 +331,7 @@ v1alpha1 → v1alpha2 → v1beta1 → v1beta2 → v1
 6. For breaking changes: introduce a new version, mark the old as deprecated, maintain support for ≥ 1 year before removal.
 7. Use a **ConversionWebhook** when schemas diverge between versions.
 
-### CRD Served/Storage Annotation
+##### CRD Served/Storage Annotation
 
 ```yaml
 versions:
@@ -347,9 +347,9 @@ versions:
 
 ---
 
-## Controller / Reconciler Patterns
+#### Controller / Reconciler Patterns
 
-### Reconciler Skeleton (Go / controller-runtime)
+##### Reconciler Skeleton (Go / controller-runtime)
 
 ```go
 // +kubebuilder:rbac:groups=cache.example.com,resources=redisclusters,verbs=get;list;watch;create;update;patch;delete
@@ -405,7 +405,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 ```
 
-### Reconcile Return Conventions
+##### Reconcile Return Conventions
 
 | Return | Meaning |
 |---|---|
@@ -416,7 +416,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 > **Rule:** Return `ctrl.Result{}, err` for errors so the work queue applies backoff. Only use `RequeueAfter` for intentional polling patterns (e.g., waiting for an external API).
 
-### Manager Setup
+##### Manager Setup
 
 ```go
 func (r *RedisClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -433,9 +433,9 @@ func (r *RedisClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 ---
 
-## Watches & Predicates
+#### Watches & Predicates
 
-### Use Predicates to Reduce Noise
+##### Use Predicates to Reduce Noise
 
 ```go
 // Only reconcile when spec actually changes (generation increment)
@@ -446,7 +446,7 @@ ctrl.NewControllerManagedBy(mgr).
     Complete(r)
 ```
 
-### Custom Predicate Example
+##### Custom Predicate Example
 
 ```go
 var annotationPredicate = predicate.Funcs{
@@ -461,14 +461,14 @@ var annotationPredicate = predicate.Funcs{
 }
 ```
 
-### Enqueue Requests for Owned Objects
+##### Enqueue Requests for Owned Objects
 
 ```go
 // Watch Deployments owned by RedisCluster; reconcile the owner
 Owns(&appsv1.Deployment{})
 ```
 
-### Fan-Out Watches (Many-to-One)
+##### Fan-Out Watches (Many-to-One)
 
 ```go
 // Watch a shared Secret; enqueue all CRs referencing it
@@ -481,15 +481,15 @@ Watches(
 
 ---
 
-## Finalizers
+#### Finalizers
 
-### When to Use
+##### When to Use
 
 Use finalizers **only** when the controller manages resources outside of Kubernetes (cloud APIs, databases, DNS records) that must be explicitly cleaned up before the CR is deleted.
 
 > Do **not** use finalizers for in-cluster resources already covered by `ownerReferences`.
 
-### Naming Rule
+##### Naming Rule
 
 Finalizer names **must** be fully qualified:
 
@@ -498,7 +498,7 @@ example.com/redis-external-cleanup    ✅
 cleanup                               ❌  (not qualified)
 ```
 
-### Finalizer Lifecycle Pattern
+##### Finalizer Lifecycle Pattern
 
 ```go
 const myFinalizer = "cache.example.com/cleanup"
@@ -528,7 +528,7 @@ func (r *Reconciler) isInitialized(obj *cachev1.RedisCluster) bool {
 }
 ```
 
-### Rules
+##### Rules
 
 - Cleanup logic **must be idempotent** — the reconcile loop may be called multiple times while `DeletionTimestamp` is set.
 - Never add a new finalizer after `DeletionTimestamp` is set — only removal is allowed.
@@ -537,9 +537,9 @@ func (r *Reconciler) isInitialized(obj *cachev1.RedisCluster) bool {
 
 ---
 
-## Owner References & Garbage Collection
+#### Owner References & Garbage Collection
 
-### Set Owner References for All Child Resources
+##### Set Owner References for All Child Resources
 
 ```go
 // controllerutil.SetControllerReference sets ownerReferences and blockOwnerDeletion=true
@@ -548,7 +548,7 @@ if err := controllerutil.SetControllerReference(owner, childDeployment, r.Scheme
 }
 ```
 
-### Rules
+##### Rules
 
 | Rule | Notes |
 |---|---|
@@ -558,7 +558,7 @@ if err := controllerutil.SetControllerReference(owner, childDeployment, r.Scheme
 | Use `controllerutil.SetControllerReference` (not manual ownerRef) | Sets `controller: true` and `blockOwnerDeletion: true` |
 | One resource should have **at most one controller owner** | Multiple owners only for non-controller (informational) references |
 
-### When to Use Finalizers vs. OwnerReferences
+##### When to Use Finalizers vs. OwnerReferences
 
 | Scenario | Use |
 |---|---|
@@ -569,21 +569,21 @@ if err := controllerutil.SetControllerReference(owner, childDeployment, r.Scheme
 
 ---
 
-## Validation & Admission Webhooks
+#### Validation & Admission Webhooks
 
-### Validation Hierarchy (prefer left-to-right)
+##### Validation Hierarchy (prefer left-to-right)
 
 ```
 CEL XValidation markers  →  OpenAPI schema markers  →  Validating Webhook
 (no extra process)            (no extra process)          (extra infra needed)
 ```
 
-### When Webhooks Are Needed
+##### When Webhooks Are Needed
 
 - **MutatingWebhook** — Defaulting complex fields that CEL cannot express; injecting sidecars.
 - **ValidatingWebhook** — Cross-resource validation (e.g., quota checks), user-identity-based rules.
 
-### Webhook Rules
+##### Webhook Rules
 
 ```go
 // +kubebuilder:webhook:path=/validate-cache-example-com-v1-rediscluster,mutating=false,failurePolicy=fail,sideEffects=None,groups=cache.example.com,resources=redisclusters,verbs=create;update,versions=v1,name=vrediscluster.kb.io,admissionReviewVersions=v1
@@ -596,7 +596,7 @@ CEL XValidation markers  →  OpenAPI schema markers  →  Validating Webhook
 - Use `timeoutSeconds: 10` (max 30); fast webhooks maintain cluster stability.
 - TLS certificates **must** be rotated; use cert-manager or OLM-managed certs.
 
-### Immutability Example (prefer CEL)
+##### Immutability Example (prefer CEL)
 
 ```go
 // +kubebuilder:validation:XValidation:rule="self.storageClass == oldSelf.storageClass",message="storageClass is immutable after creation"
@@ -605,9 +605,9 @@ StorageClass string `json:"storageClass"`
 
 ---
 
-## RBAC & Least Privilege
+#### RBAC & Least Privilege
 
-### Principles
+##### Principles
 
 1. **Least privilege** — grant only the verbs/resources explicitly required.
 2. Prefer `Role` + `RoleBinding` (namespaced) over `ClusterRole` + `ClusterRoleBinding`.
@@ -615,7 +615,7 @@ StorageClass string `json:"storageClass"`
 4. **No `cluster-admin`** service accounts.
 5. Mount service account tokens only when the operator needs API access (`automountServiceAccountToken: false` as default).
 
-### RBAC Marker Pattern (Kubebuilder)
+##### RBAC Marker Pattern (Kubebuilder)
 
 ```go
 // Core resources the operator reads
@@ -633,7 +633,7 @@ StorageClass string `json:"storageClass"`
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 ```
 
-### Service Account Configuration
+##### Service Account Configuration
 
 ```yaml
 apiVersion: v1
@@ -653,9 +653,9 @@ spec:
 
 ---
 
-## Security Hardening
+#### Security Hardening
 
-### Operator Pod Security Context
+##### Operator Pod Security Context
 
 ```yaml
 spec:
@@ -677,17 +677,17 @@ spec:
         runAsNonRoot: true
 ```
 
-### Pod Security Standards
+##### Pod Security Standards
 
 Operator pods should comply with at minimum the **Restricted** profile:
 
 ```yaml
-# Namespace label
+### Namespace label
 pod-security.kubernetes.io/enforce: restricted
 pod-security.kubernetes.io/warn: restricted
 ```
 
-### Secrets Management
+##### Secrets Management
 
 - Never embed secrets in CRD `spec` fields.
 - Reference secrets by name: `secretName: my-secret`.
@@ -695,10 +695,10 @@ pod-security.kubernetes.io/warn: restricted
 - Use projected volumes for short-lived tokens rather than long-lived static secrets.
 - Consider External Secrets Operator or Vault Agent for rotation.
 
-### Network Policies
+##### Network Policies
 
 ```yaml
-# Restrict operator egress to API server only
+### Restrict operator egress to API server only
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -716,7 +716,7 @@ spec:
           protocol: TCP
 ```
 
-### Image Security
+##### Image Security
 
 - Use **distroless** or **scratch** base images for the operator binary.
 - Pin images to SHA256 digest in production manifests.
@@ -725,9 +725,9 @@ spec:
 
 ---
 
-## Observability
+#### Observability
 
-### Structured Logging (logr / zap)
+##### Structured Logging (logr / zap)
 
 ```go
 // ✅ Structured key-value pairs — never fmt.Sprintf for log fields
@@ -749,7 +749,7 @@ Log levels:
 - `V(2)` — detailed decision logging
 - `V(4)` — trace / dump level
 
-### Prometheus Metrics
+##### Prometheus Metrics
 
 Use the controller-runtime built-in metrics endpoint (`:8080/metrics`):
 
@@ -774,7 +774,7 @@ func init() {
 - `*_reconcile_duration_seconds` — histogram of reconcile latency
 - `*_managed_resources` — gauge of CRs under management
 
-### Health Probes
+##### Health Probes
 
 ```go
 mgr, _ := ctrl.NewManager(cfg, ctrl.Options{
@@ -800,7 +800,7 @@ readinessProbe:
   periodSeconds: 10
 ```
 
-### Events
+##### Events
 
 Emit Events for user-visible state changes (not every reconcile):
 
@@ -817,9 +817,9 @@ r.Recorder.Event(obj, corev1.EventTypeNormal, "Reconciled",
 
 ---
 
-## Error Handling & Requeue Strategy
+#### Error Handling & Requeue Strategy
 
-### Error Classification
+##### Error Classification
 
 ```go
 // Permanent error — user must fix; do not retry automatically
@@ -833,7 +833,7 @@ return ctrl.Result{}, fmt.Errorf("API temporarily unavailable: %w", err)
 return ctrl.Result{}, nil  // After setting a Degraded condition
 ```
 
-### Backoff Requeue Pattern
+##### Backoff Requeue Pattern
 
 ```go
 func (r *Reconciler) ManageError(ctx context.Context, obj *cachev1.RedisCluster, err error) (ctrl.Result, error) {
@@ -851,7 +851,7 @@ func (r *Reconciler) ManageError(ctx context.Context, obj *cachev1.RedisCluster,
 }
 ```
 
-### Rules
+##### Rules
 
 - **Always** return the error from `Reconcile` for transient failures — do not swallow errors.
 - **Never** return `ctrl.Result{Requeue: true}, err` — choose one or the other.
@@ -861,9 +861,9 @@ func (r *Reconciler) ManageError(ctx context.Context, obj *cachev1.RedisCluster,
 
 ---
 
-## Testing
+#### Testing
 
-### Testing Pyramid
+##### Testing Pyramid
 
 ```
                     ┌────────────────────┐
@@ -875,7 +875,7 @@ func (r *Reconciler) ManageError(ctx context.Context, obj *cachev1.RedisCluster,
                     └────────────────────┘
 ```
 
-### Unit Tests (fake client)
+##### Unit Tests (fake client)
 
 ```go
 func TestReconcile_CreatesDeployment(t *testing.T) {
@@ -902,7 +902,7 @@ func TestReconcile_CreatesDeployment(t *testing.T) {
 }
 ```
 
-### Integration Tests (envtest)
+##### Integration Tests (envtest)
 
 ```go
 var _ = Describe("RedisCluster Controller", func() {
@@ -918,13 +918,13 @@ var _ = Describe("RedisCluster Controller", func() {
 })
 ```
 
-### e2e Tests (kind / k3s)
+##### e2e Tests (kind / k3s)
 
 - Deploy the full operator image.
 - Test the complete lifecycle: Create → Reconcile → Update → Delete with finalizer.
 - Use `kubectl wait --for=condition=Ready` assertions.
 
-### Testing Rules
+##### Testing Rules
 
 - Test idempotency: run `Reconcile` twice and assert the same outcome.
 - Test deletion path including finalizer removal.
@@ -933,9 +933,9 @@ var _ = Describe("RedisCluster Controller", func() {
 
 ---
 
-## Quick-Reference Checklists
+#### Quick-Reference Checklists
 
-### CRD Design Checklist
+##### CRD Design Checklist
 
 - [ ] Kind: CamelCase singular; Resource: lowercase plural
 - [ ] API group is a DNS subdomain you own (not `*.k8s.io`)
@@ -948,7 +948,7 @@ var _ = Describe("RedisCluster Controller", func() {
 - [ ] At least one `// +kubebuilder:printcolumn` with state info
 - [ ] `omitempty` on all optional fields; `// +optional` marker present
 
-### Controller Checklist
+##### Controller Checklist
 
 - [ ] Fetch → guard `NotFound` → handle deletion → reconcile → update status
 - [ ] Return `ctrl.Result{}, err` for transient errors
@@ -959,7 +959,7 @@ var _ = Describe("RedisCluster Controller", func() {
 - [ ] Structured logging with key-value pairs via `logr`
 - [ ] Events emitted on state transitions (not on every reconcile)
 
-### Security Checklist
+##### Security Checklist
 
 - [ ] Operator pod: `runAsNonRoot: true`, `allowPrivilegeEscalation: false`
 - [ ] Operator pod: `capabilities.drop: [ALL]`, `readOnlyRootFilesystem: true`
@@ -969,7 +969,7 @@ var _ = Describe("RedisCluster Controller", func() {
 - [ ] NetworkPolicy restricting operator egress to API server only
 - [ ] Image pinned to SHA256 digest; scanned in CI
 
-### Finalizer Checklist
+##### Finalizer Checklist
 
 - [ ] Finalizer name is fully qualified (`domain.com/name`)
 - [ ] Finalizer added during initialization, before any external resource creation
@@ -977,7 +977,7 @@ var _ = Describe("RedisCluster Controller", func() {
 - [ ] Finalizer removed only after successful cleanup
 - [ ] Permanent cleanup failures result in a `Stalled` condition + Event
 
-### Versioning Checklist
+##### Versioning Checklist
 
 - [ ] New fields added as optional with `omitempty`
 - [ ] No fields removed or renamed in served versions

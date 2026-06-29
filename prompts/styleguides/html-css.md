@@ -1,10 +1,10 @@
-# HTML & CSS Style Guide
+### HTML & CSS Style Guide
 
 Web standards for semantic markup, maintainable styling, and accessibility.
 
-## Semantic HTML
+#### Semantic HTML
 
-### Document Structure
+##### Document Structure
 
 ```html
 <!DOCTYPE html>
@@ -39,7 +39,7 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 </html>
 ```
 
-### Semantic Elements
+##### Semantic Elements
 
 ```html
 <!-- Use appropriate semantic elements -->
@@ -87,7 +87,7 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 </dl>
 ```
 
-### Form Elements
+##### Form Elements
 
 ```html
 <form action="/submit" method="POST">
@@ -133,9 +133,9 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 </form>
 ```
 
-## BEM Naming Convention
+#### BEM Naming Convention
 
-### Block, Element, Modifier
+##### Block, Element, Modifier
 
 ```css
 /* Block: Standalone component */
@@ -159,7 +159,7 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 }
 ```
 
-### BEM Examples
+##### BEM Examples
 
 ```html
 <!-- Card component -->
@@ -188,7 +188,7 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 </nav>
 ```
 
-### BEM Best Practices
+##### BEM Best Practices
 
 ```css
 /* Avoid deep nesting */
@@ -225,9 +225,9 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 }
 ```
 
-## Accessibility
+#### Accessibility
 
-### ARIA Attributes
+##### ARIA Attributes
 
 ```html
 <!-- Live regions for dynamic content -->
@@ -255,7 +255,7 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 </button>
 ```
 
-### Keyboard Navigation
+##### Keyboard Navigation
 
 ```html
 <!-- Skip link -->
@@ -279,7 +279,7 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 <!-- Never use tabindex > 0 -->
 ```
 
-### Screen Reader Support
+##### Screen Reader Support
 
 ```css
 /* Visually hidden but accessible */
@@ -326,9 +326,9 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 </figure>
 ```
 
-## Responsive Design
+#### Responsive Design
 
-### Mobile-First Approach
+##### Mobile-First Approach
 
 ```css
 /* Base styles for mobile */
@@ -367,7 +367,7 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 }
 ```
 
-### Flexible Units
+##### Flexible Units
 
 ```css
 /* Use relative units */
@@ -396,7 +396,7 @@ h1 {
 }
 ```
 
-### Responsive Images
+##### Responsive Images
 
 ```html
 <!-- Responsive image with srcset -->
@@ -416,9 +416,9 @@ h1 {
 </picture>
 ```
 
-## CSS Best Practices
+#### CSS Best Practices
 
-### Custom Properties (CSS Variables)
+##### Custom Properties (CSS Variables)
 
 ```css
 :root {
@@ -469,7 +469,7 @@ h1 {
 }
 ```
 
-### Modern Layout
+##### Modern Layout
 
 ```css
 /* Flexbox for 1D layouts */
@@ -513,7 +513,7 @@ h1 {
 }
 ```
 
-### Performance
+##### Performance
 
 ```css
 /* Avoid expensive properties in animations */
@@ -555,9 +555,9 @@ h1 {
 }
 ```
 
-## HTML Best Practices
+#### HTML Best Practices
 
-### Validation and Attributes
+##### Validation and Attributes
 
 ```html
 <!-- Use proper input types -->
@@ -576,7 +576,7 @@ h1 {
 <input type="text" name="cc-number" autocomplete="cc-number" />
 ```
 
-### Performance Attributes
+##### Performance Attributes
 
 ```html
 <!-- Lazy loading -->
@@ -597,7 +597,7 @@ h1 {
 <script src="app.js" defer></script>
 ```
 
-### Microdata and SEO
+##### Microdata and SEO
 
 ```html
 <!-- Schema.org markup -->
