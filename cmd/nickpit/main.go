@@ -926,7 +926,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 					return err
 				}
 			}
-			if err := validatePreReviewModelCheck(result); err != nil {
+			if err := validateModelCheckRequirements(result, primaryModelRequirements(spec, checkReq)); err != nil {
 				return err
 			}
 			if smallChecked {
