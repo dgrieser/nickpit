@@ -2177,7 +2177,6 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 		guides = append(guides, model.StyleGuide{
 			Language: language,
 			Content:  content,
-			Title:    styleGuideTitle(content),
 		})
 	}
 	return guides, nil
@@ -2205,16 +2204,6 @@ func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []mod
 		return "", fmt.Errorf("review: rendering styleguide/toolchain prompt: %w", err)
 	}
 	return strings.TrimSpace(rendered), nil
-}
-
-func styleGuideTitle(content string) string {
-	for line := range strings.SplitSeq(content, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "# "); ok {
-			return strings.TrimSpace(rest)
-		}
-	}
-	return ""
 }
 
 func changedLanguages(ctx *model.ReviewContext) []string {

@@ -1700,7 +1700,7 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if !strings.Contains(llmClient.contextSystem, "DO NOT produce review findings yourself") {
 		t.Fatalf("context prompt missing standalone instructions: %q", llmClient.contextSystem)
 	}
-	if !strings.Contains(llmClient.contextSystem, "### Go Style Guide (go)") || !strings.Contains(llmClient.contextSystem, "# Go Style Guide") {
+	if !strings.Contains(llmClient.contextSystem, "# Go Style Guide") || strings.Contains(llmClient.contextSystem, "### Go Style Guide (go)") {
 		t.Fatalf("context prompt missing styleguide content: %q", llmClient.contextSystem)
 	}
 	if strings.Contains(llmClient.contextSystem, "Make sure to output the findings") {
@@ -1723,7 +1723,7 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if len(llmClient.mergeRequests) == 0 {
 		t.Fatal("missing merge request")
 	}
-	if system := llmClient.mergeRequests[0].Messages[0].Content; !strings.Contains(system, "### Go Style Guide (go)") || !strings.Contains(system, "# Go Style Guide") {
+	if system := llmClient.mergeRequests[0].Messages[0].Content; !strings.Contains(system, "# Go Style Guide") || strings.Contains(system, "### Go Style Guide (go)") {
 		t.Fatalf("merge prompt missing styleguide content: %q", system)
 	}
 	clusterEntries, ok := llmClient.mergePayload["cluster_findings"].([]any)
@@ -1753,7 +1753,7 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 		if !strings.Contains(system, "## FOCUS ON ") {
 			t.Fatalf("%s prompt missing focus snippet", vector.name)
 		}
-		if !strings.Contains(system, "### Go Style Guide (go)") || !strings.Contains(system, "# Go Style Guide") {
+		if !strings.Contains(system, "# Go Style Guide") || strings.Contains(system, "### Go Style Guide (go)") {
 			t.Fatalf("%s prompt missing styleguide content: %q", vector.name, system)
 		}
 		if !strings.Contains(system, "provided `toolchain_versions`") {

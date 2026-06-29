@@ -605,33 +605,30 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 }
 
 func styleGuideContentsFromSystem(system string) map[string]string {
-	knownLanguages := map[string]struct{}{
-		"csharp":     {},
-		"go":         {},
-		"helm":       {},
-		"html":       {},
-		"javascript": {},
-		"kubernetes": {},
-		"python":     {},
-		"shell":      {},
-		"sql":        {},
-		"typescript": {},
+	titleLanguages := map[string]string{
+		"# Bash Style Guide":          "shell",
+		"# C# Style Guide":            "csharp",
+		"# Go Style Guide":            "go",
+		"# Helm Style Guide":          "helm",
+		"# HTML & CSS Style Guide":    "html",
+		"# JavaScript Style Guide":    "javascript",
+		"# Kubernetes Style Guide":    "kubernetes",
+		"# Python Style Guide":        "python",
+		"# SQL Optimization Patterns": "sql",
+		"# TypeScript Style Guide":    "typescript",
 	}
 	out := make(map[string]string)
-	for _, section := range strings.Split(system, "\n### ")[1:] {
-		heading, body, ok := strings.Cut(section, "\n")
+	for _, section := range strings.Split(system, "\n# ")[1:] {
+		section = "# " + section
+		heading, _, ok := strings.Cut(section, "\n")
 		if !ok {
 			continue
 		}
-		start := strings.LastIndex(heading, " (")
-		if start < 0 || !strings.HasSuffix(heading, ")") {
+		language, ok := titleLanguages[strings.TrimSpace(heading)]
+		if !ok {
 			continue
 		}
-		language := heading[start+2 : len(heading)-1]
-		if _, ok := knownLanguages[language]; !ok {
-			continue
-		}
-		out[language] = body
+		out[language] = section
 	}
 	return out
 }

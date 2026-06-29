@@ -521,7 +521,7 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if !strings.Contains(system, "Styleguide contradiction gate") || !strings.Contains(system, "Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide") {
 		t.Fatalf("verify system prompt missing styleguide contradiction gate: %q", system)
 	}
-	if !strings.Contains(system, "### Go Style Guide (go)") || !strings.Contains(system, "# Go Style Guide") {
+	if !strings.Contains(system, "# Go Style Guide") || strings.Contains(system, "### Go Style Guide (go)") {
 		t.Fatalf("verify system prompt missing Go styleguide content: %q", system)
 	}
 }
@@ -556,7 +556,7 @@ func TestVerifyIncludesKubernetesStyleGuide(t *testing.T) {
 		t.Fatalf("user prompt should not include style_guides: %#v", payload["style_guides"])
 	}
 	system := llmClient.requests[0].Messages[0].Content
-	if !strings.Contains(system, "### Kubernetes Style Guide (kubernetes)") || !strings.Contains(system, "# Kubernetes Style Guide") {
+	if !strings.Contains(system, "# Kubernetes Style Guide") || strings.Contains(system, "### Kubernetes Style Guide (kubernetes)") {
 		t.Fatalf("verify system prompt missing Kubernetes styleguide content: %q", system)
 	}
 }
