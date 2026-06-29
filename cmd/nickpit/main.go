@@ -880,6 +880,24 @@ func (a *app) newCheckCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Mirror runReview's run-wide json_schema→prompt fallback so a model
+			// usable only via the prompt-embedded schema reports healthy here too,
+			// instead of exiting non-zero while real reviews of the same model
+			// succeed. The API response format is global: either model lacking
+			// json_schema degrades both, so validation then requires only plain JSON
+			// output.
+			if !result.DisableJSONResponseFormat && a.jsonSchemaFallbackRequired(ctx, result, "model") {
+				result.DisableJSONResponseFormat = true
+			}
+			if smallChecked && smallRequirements.JSONSchema && !result.DisableJSONResponseFormat &&
+				a.jsonSchemaFallbackRequired(ctx, smallResult, "small model") {
+				result.DisableJSONResponseFormat = true
+			}
+			if result.DisableJSONResponseFormat {
+				checkReq.DisableJSONResponseFormat = true
+				smallResult.DisableJSONResponseFormat = true
+				smallRequirements = smallModelRequirementsForSpec(spec, checkReq)
+			}
 			if a.jsonOutput {
 				out := struct {
 					Check modelcheck.CheckSummary  `json:"check"`
@@ -1012,12 +1030,9 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		// imported-findings merge/finalize/verify/summarize degrades the same way
 		// a normal review would instead of sending json_schema to a model that
 		// cannot honor it.
-		if !req.DisableJSONResponseFormat {
-			if probe := checkResult.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
-				a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("model lacks json_schema response format (%s); falling back to prompt-embedded schema", probe.Status))
-				req.DisableJSONResponseFormat = true
-				checkResult.DisableJSONResponseFormat = true
-			}
+		if !req.DisableJSONResponseFormat && a.jsonSchemaFallbackRequired(ctx, checkResult, "model") {
+			req.DisableJSONResponseFormat = true
+			checkResult.DisableJSONResponseFormat = true
 		}
 		// The hard usability gate only applies when a source guarantees LLM calls.
 		// A source-less spec may be a passthrough, so — matching the deferred
@@ -1040,11 +1055,20 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 				// Same degrade as the primary model: a small model that can't do
 				// json_schema disables the API response format for the whole run
 				// (it is a single global setting) rather than failing.
-				if smallRequirements.JSONSchema && !req.DisableJSONResponseFormat {
-					if probe := smallResult.ConfiguredJSONSchema(); probe.Status != modelcheck.StatusOK {
-						a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("small model lacks json_schema response format (%s); falling back to prompt-embedded schema", probe.Status))
-						req.DisableJSONResponseFormat = true
-						smallRequirements = smallModelRequirementsForSpec(spec, req)
+				if smallRequirements.JSONSchema && !req.DisableJSONResponseFormat &&
+					a.jsonSchemaFallbackRequired(ctx, smallResult, "small model") {
+					req.DisableJSONResponseFormat = true
+					smallRequirements = smallModelRequirementsForSpec(spec, req)
+					// The primary was accepted on its json_schema probe alone, but the
+					// whole run now uses the prompt-embedded schema, so its reviewers
+					// must emit plain JSON. Mark it degraded and re-validate that
+					// requirement before continuing, rather than letting primary
+					// reviewers fail invalid-output retries mid-review.
+					checkResult.DisableJSONResponseFormat = true
+					if needsSource {
+						if err := validatePreReviewModelCheck(checkResult); err != nil {
+							return err
+						}
 					}
 				}
 				if needsSource {
@@ -1692,6 +1716,21 @@ func validatePreReviewModelCheck(result modelcheck.Result) error {
 	requirements := modelCapabilityRequirements{Response: true, Tools: true}
 	requirements.requireJSON(!result.DisableJSONResponseFormat)
 	return validateModelCheckRequirements(result, requirements)
+}
+
+// jsonSchemaFallbackRequired reports whether a probed model cannot do
+// API-enforced json_schema, logging the prompt-embedded fallback notice when it
+// cannot. The API response format is a single global request setting, so the
+// caller disables it for the whole run (both primary and small models). label
+// names the model in the warning ("model" or "small model"). Shared by runReview
+// and `check model` so the two paths cannot drift apart on the degrade rule.
+func (a *app) jsonSchemaFallbackRequired(ctx context.Context, result modelcheck.Result, label string) bool {
+	probe := result.ConfiguredJSONSchema()
+	if probe.Status == modelcheck.StatusOK {
+		return false
+	}
+	a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("%s lacks json_schema response format (%s); falling back to prompt-embedded schema", label, probe.Status))
+	return true
 }
 
 // cacheableModelResult reports whether a freshly probed result is worth

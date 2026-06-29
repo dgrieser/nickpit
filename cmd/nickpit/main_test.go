@@ -1263,6 +1263,79 @@ func TestRunReviewProbesModelForSourcelessSpec(t *testing.T) {
 	}
 }
 
+// A model that lacks API-enforced json_schema but can emit plain JSON is usable
+// via the prompt-embedded fallback. `check model` must report it healthy (exit
+// zero), matching what a real review of the same model does.
+func TestCheckModelDegradesJSONSchemaUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	cfg := `profiles:
+  default:
+    base_url: http://127.0.0.1:1
+    api_key: token
+    model: model
+    reasoning_effort: high
+    supported_models:
+      - model: model
+        compatible: true
+        response: true
+        tools: true
+        json_response: true
+        json_schema: false
+        reasoning:
+          traces: true
+          efforts: [high]
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkCmd := (&app{configPath: cfgPath, profile: "default"}).newCheckCmd()
+	checkCmd.SetArgs([]string{"model"})
+	var err error
+	_ = captureOutput(t, &os.Stdout, func() { err = checkCmd.ExecuteContext(context.Background()) })
+	if err != nil {
+		t.Fatalf("check model exited non-zero for a json_schema-incapable but JSON-capable model: %v", err)
+	}
+}
+
+// When @small forces the whole run onto the prompt-embedded schema, the primary
+// model — accepted on its json_schema probe alone — must be re-validated for
+// plain JSON output, since its reviewers now run prompt-only. A primary that
+// cannot emit plain JSON must fail the model check up front, not mid-review.
+func TestRunReviewRevalidatesPrimaryWhenSmallForcesPromptSchema(t *testing.T) {
+	no, yes := false, true
+	primaryCap := config.ModelCapabilities{
+		Model: "primary", Compatible: true, Response: true, Tools: true,
+		JSONResponse: &no, // primary cannot do plain JSON output
+		JSONSchema:   &yes,
+		Reasoning:    config.ReasoningCapabilities{Traces: true, Efforts: []string{"high"}},
+	}
+	smallCap := config.ModelCapabilities{
+		Model: "small", Compatible: true, Response: true, Tools: true,
+		JSONResponse: &yes,
+		JSONSchema:   &no, // small lacks json_schema → forces the global prompt fallback
+		Reasoning:    config.ReasoningCapabilities{Traces: true, Efforts: []string{"high"}},
+	}
+	source := &recordingSource{}
+	err := (&app{}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "primary",
+		BaseURL:         "http://127.0.0.1:1",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+		Small:           config.SmallModelConfig{Model: "small"},
+		SupportedModels: []config.ModelCapabilities{primaryCap, smallCap},
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected model check failure: primary cannot emit plain JSON after @small forced the prompt-embedded schema")
+	}
+	if !strings.Contains(err.Error(), "JSON text output") {
+		t.Fatalf("error = %v, want primary JSON-output validation failure", err)
+	}
+	if source.called {
+		t.Fatal("source must not run when the model check fails")
+	}
+}
+
 func TestRequestSettingsFingerprint(t *testing.T) {
 	withProfile := func(p config.Profile, fn func(*config.Profile)) config.Profile {
 		fn(&p)
