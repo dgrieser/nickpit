@@ -516,10 +516,7 @@ func baseSummarization(finding *model.Finding) *model.FindingSummarization {
 	}
 }
 
-func summarizeOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
+func summarizeOutputSchemaSnippetFor(_ bool) string {
 	return llm.SummarizeExamplePromptSnippet()
 }
 

@@ -277,37 +277,47 @@ func reviewPromptPayload(t *testing.T, req *llm.ReviewRequest) map[string]any {
 	return payload
 }
 
-func TestRunAgentAddsExampleMessageForJSONAgents(t *testing.T) {
+func TestOutputFormatSnippetIncludesExampleForBothJSONResponseModes(t *testing.T) {
 	for _, disableJSONResponseFormat := range []bool{false, true} {
-		llmClient := &capturingLLM{}
-		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-		_, err := engine.runAgent(context.Background(), agentSpec{
-			name:       "Merge Findings",
-			role:       "merge",
-			system:     "system prompt",
-			user:       `{"task":true}`,
-			schemaKind: llm.SchemaKindMerge,
-			hasTools:   false,
-		}, model.ReviewRequest{DisableJSONResponseFormat: disableJSONResponseFormat})
+		snippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(disableJSONResponseFormat, false), false)
 		if err != nil {
-			t.Fatalf("runAgent(disableJSONResponseFormat=%v) returned err: %v", disableJSONResponseFormat, err)
+			t.Fatalf("agentCommonSystemPromptSnippets(disableJSONResponseFormat=%v) returned err: %v", disableJSONResponseFormat, err)
 		}
-		if len(llmClient.reqs) != 1 {
-			t.Fatalf("requests = %d, want 1", len(llmClient.reqs))
+		if !strings.Contains(snippets.outputFormat, strings.TrimSpace(llm.MergeExamplePromptSnippet())) {
+			t.Fatalf("output format missing merge example for disableJSONResponseFormat=%v:\n%s", disableJSONResponseFormat, snippets.outputFormat)
 		}
-		messages := llmClient.reqs[0].Messages
-		if len(messages) < 3 {
-			t.Fatalf("messages = %#v, want system/example/user", messages)
+		if strings.Contains(snippets.outputFormat, "response_format.json_schema") {
+			t.Fatalf("output format should not branch on response_format mode:\n%s", snippets.outputFormat)
 		}
-		if messages[0].Role != "system" || messages[0].Content != "system prompt" {
-			t.Fatalf("system message = %#v", messages[0])
-		}
-		if messages[1].Role != "user" || strings.TrimSpace(messages[1].Content) != strings.TrimSpace(llm.MergeExamplePromptSnippet()) {
-			t.Fatalf("example message = %#v", messages[1])
-		}
-		if messages[2].Role != "user" || messages[2].Content != `{"task":true}` {
-			t.Fatalf("task message = %#v", messages[2])
-		}
+	}
+}
+
+func TestRunAgentDoesNotInsertSeparateExampleMessage(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	_, err := engine.runAgent(context.Background(), agentSpec{
+		name:       "Merge Findings",
+		role:       "merge",
+		system:     "system prompt",
+		user:       `{"task":true}`,
+		schemaKind: llm.SchemaKindMerge,
+		hasTools:   false,
+	}, model.ReviewRequest{})
+	if err != nil {
+		t.Fatalf("runAgent returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(llmClient.reqs))
+	}
+	messages := llmClient.reqs[0].Messages
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want only system/user", messages)
+	}
+	if messages[0].Role != "system" || messages[0].Content != "system prompt" {
+		t.Fatalf("system message = %#v", messages[0])
+	}
+	if messages[1].Role != "user" || messages[1].Content != `{"task":true}` {
+		t.Fatalf("task message = %#v", messages[1])
 	}
 }
 

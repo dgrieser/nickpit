@@ -441,9 +441,6 @@ func findingConfidence(f model.Finding) float64 {
 	return f.ConfidenceScore
 }
 
-func verdictOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
+func verdictOutputSchemaSnippetFor(_ bool) string {
 	return llm.VerdictExamplePromptSnippet()
 }

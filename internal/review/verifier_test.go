@@ -54,7 +54,7 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 	return resp, nil
 }
 
-func TestVerifyAddsExampleMessageForBothJSONResponseModes(t *testing.T) {
+func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
 	for _, disableJSONResponseFormat := range []bool{false, true} {
 		llmClient := &scriptedVerifyLLM{}
 		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
@@ -70,14 +70,14 @@ func TestVerifyAddsExampleMessageForBothJSONResponseModes(t *testing.T) {
 			t.Fatalf("requests = %d, want 1", len(llmClient.requests))
 		}
 		messages := llmClient.requests[0].Messages
-		if len(messages) < 3 {
-			t.Fatalf("messages = %#v, want system/example/user", messages)
+		if len(messages) != 2 {
+			t.Fatalf("messages = %#v, want system/user", messages)
 		}
-		if messages[1].Role != "user" || strings.TrimSpace(messages[1].Content) != strings.TrimSpace(llm.VerifyExamplePromptSnippet()) {
-			t.Fatalf("example message = %#v", messages[1])
+		if !strings.Contains(messages[0].Content, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
+			t.Fatalf("system prompt missing verify example:\n%s", messages[0].Content)
 		}
-		if messages[2].Role != "user" || !strings.Contains(messages[2].Content, `"finding"`) {
-			t.Fatalf("task message = %#v", messages[2])
+		if messages[1].Role != "user" || !strings.Contains(messages[1].Content, `"finding"`) {
+			t.Fatalf("task message = %#v", messages[1])
 		}
 	}
 }
@@ -396,11 +396,11 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	if len(secondMessages) < 4 {
 		t.Fatalf("second request messages = %d, want tool loop history", len(secondMessages))
 	}
-	if secondMessages[3].Role != "assistant" || len(secondMessages[3].ToolCalls) != 1 {
-		t.Fatalf("assistant tool call message = %#v", secondMessages[3])
+	if secondMessages[2].Role != "assistant" || len(secondMessages[2].ToolCalls) != 1 {
+		t.Fatalf("assistant tool call message = %#v", secondMessages[2])
 	}
-	if secondMessages[4].Role != "tool" || !strings.Contains(secondMessages[4].Content, `"content":"package extra"`) {
-		t.Fatalf("tool response message = %#v", secondMessages[4])
+	if secondMessages[3].Role != "tool" || !strings.Contains(secondMessages[3].Content, `"content":"package extra"`) {
+		t.Fatalf("tool response message = %#v", secondMessages[3])
 	}
 	if last := secondMessages[len(secondMessages)-1]; last.Role != "user" || !strings.Contains(last.Content, "You used the following tools up to now") {
 		t.Fatalf("synthetic followup = %#v", last)

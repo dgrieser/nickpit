@@ -124,7 +124,10 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		schema = llm.VerifySchema
 	}
 
-	messages := agentPromptMessages(systemPrompt, userPrompt, llm.SchemaKindVerify, req.DisableSuggestions, nil)
+	messages := []llm.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
 
 	progress := req.Progress
 	if progress.IsZero() {
@@ -321,10 +324,7 @@ func truncateFindingTitle(title string) string {
 	return title
 }
 
-func verifyOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
+func verifyOutputSchemaSnippetFor(_ bool) string {
 	return llm.VerifyExamplePromptSnippet()
 }
 

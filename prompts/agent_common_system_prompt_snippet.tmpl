@@ -37,15 +37,12 @@ Use these priority levels:
 - 3: low-priority issue
 {{- end}}
 {{- if eq .Snippet "output_format"}}
-Make sure to output the findings in the following JSON format:
+Return your response as a JSON object matching this example shape:
 
 ```json
 {{.OutputSchemaSnippet}}
 ```
 
 - DO NOT wrap the JSON in markdown fences or extra prose
-- produce JSON only and match the schema EXACTLY
-{{- end}}
-{{- if eq .Snippet "response_format"}}
-Make sure to output the findings using the specified `response_format.json_schema` named `review_response`, which was sent in the API request.
+- produce JSON only and match the expected response fields exactly
 {{- end}}

@@ -612,9 +612,6 @@ func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
 }
 
-func finalizeOutputSchemaSnippetFor(disableJSONResponseFormat bool, disableSuggestions bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
+func finalizeOutputSchemaSnippetFor(_ bool, disableSuggestions bool) string {
 	return llm.FinalizeExamplePromptSnippetFor(disableSuggestions)
 }
