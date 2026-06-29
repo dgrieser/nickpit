@@ -7,13 +7,13 @@ Go idioms and conventions for clean, maintainable code.
 ##### Always Use gofmt
 
 ```bash
-### Format a single file
+# Format a single file
 gofmt -w file.go
 
-### Format entire project
+# Format entire project
 gofmt -w .
 
-### Use goimports for imports management
+# Use goimports for imports management
 goimports -w .
 ```
 
@@ -746,7 +746,7 @@ func processItems(items []Item, workers int) []Result {
 ##### Linting with golangci-lint
 
 ```yaml
-### .golangci.yml
+# .golangci.yml
 linters:
   enable:
     - errcheck
@@ -775,23 +775,23 @@ issues:
 ##### Common Commands
 
 ```bash
-### Format code
+# Format code
 go fmt ./...
 
-### Run linter
+# Run linter
 golangci-lint run
 
-### Run tests
+# Run tests
 go test ./...
 
-### Run tests with coverage
+# Run tests with coverage
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 
-### Check for race conditions
+# Check for race conditions
 go test -race ./...
 
-### Build
+# Build
 go build ./...
 ```
 

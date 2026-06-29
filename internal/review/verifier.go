@@ -68,8 +68,8 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	systemSnippet := verifyOutputSchemaSnippetFor(req.DisableJSONResponseFormat)
-	exampleSnippet := llm.VerifyExamplePromptSnippet()
+	systemSnippet := exampleSnippetFor(llm.SchemaKindVerify, false)
+	exampleSnippet := systemSnippet
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                agentKind,
@@ -322,10 +322,6 @@ func truncateFindingTitle(title string) string {
 		title = string([]rune(title)[:57]) + "..."
 	}
 	return title
-}
-
-func verifyOutputSchemaSnippetFor(_ bool) string {
-	return exampleSnippetFor(llm.SchemaKindVerify, false)
 }
 
 func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {

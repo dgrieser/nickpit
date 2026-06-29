@@ -98,7 +98,8 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindVerdict, false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", outputSchemaSnippet, opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -117,7 +118,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		DisableSuggestions         bool
 		StyleGuideToolchainSnippet string
 	}{
-		OutputSchemaSnippet:        verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
+		OutputSchemaSnippet:        outputSchemaSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
 		DisableSuggestions:         opts.DisableSuggestions,
@@ -154,16 +155,17 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	verdictStart := time.Now()
 	e.logProgress(logging.StageVerdict, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
-		name:             "Verdict Review",
-		role:             "verdict",
-		system:           system,
-		noToolsSystem:    system,
-		user:             userPrompt,
-		schema:           schema,
-		schemaKind:       llm.SchemaKindVerdict,
-		constraints:      constraints,
-		hasTools:         false,
-		validateResponse: verdictOutputValidator(),
+		name:                    "Verdict Review",
+		role:                    "verdict",
+		system:                  system,
+		noToolsSystem:           system,
+		user:                    userPrompt,
+		schema:                  schema,
+		schemaKind:              llm.SchemaKindVerdict,
+		constraints:             constraints,
+		jsonRetryExampleSnippet: outputSchemaSnippet,
+		hasTools:                false,
+		validateResponse:        verdictOutputValidator(),
 	}, req)
 	if err != nil {
 		return in, result.run, err
@@ -439,8 +441,4 @@ func findingConfidence(f model.Finding) float64 {
 		return f.Verification.ConfidenceScore
 	}
 	return f.ConfidenceScore
-}
-
-func verdictOutputSchemaSnippetFor(_ bool) string {
-	return exampleSnippetFor(llm.SchemaKindVerdict, false)
 }

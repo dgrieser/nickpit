@@ -31,13 +31,13 @@ TMPDIR=$(mktemp -d)
 Always quote variables to prevent word splitting and globbing.
 
 ```bash
-### Wrong
+# Wrong
 cp $source $dest
 
-### Correct
+# Correct
 cp "$source" "$dest"
 
-### Fail with message if unset
+# Fail with message if unset
 : "${REQUIRED_VAR:?REQUIRED_VAR is not set}"
 ```
 

@@ -136,7 +136,7 @@ WHERE u.created_at > '2024-01-01';
 **Problem: N+1 Query Anti-Pattern**
 
 ```python
-### Bad: Executes N+1 queries
+# Bad: Executes N+1 queries
 users = db.query("SELECT * FROM users LIMIT 10")
 for user in users:
     orders = db.query("SELECT * FROM orders WHERE user_id = ?", user.id)
@@ -160,8 +160,8 @@ WHERE user_id IN (1, 2, 3, 4, 5);
 ```
 
 ```python
-### Good: Single query with JOIN or batch load
-### Using JOIN
+# Good: Single query with JOIN or batch load
+# Using JOIN
 results = db.query("""
     SELECT u.id, u.name, o.id as order_id, o.total
     FROM users u
@@ -169,14 +169,14 @@ results = db.query("""
     WHERE u.id IN (1, 2, 3, 4, 5)
 """)
 
-### Or batch load
+# Or batch load
 users = db.query("SELECT * FROM users LIMIT 10")
 user_ids = [u.id for u in users]
 orders = db.query(
     "SELECT * FROM orders WHERE user_id IN (?)",
     user_ids
 )
-### Group orders by user_id
+# Group orders by user_id
 orders_by_user = {}
 for order in orders:
     orders_by_user.setdefault(order.user_id, []).append(order)

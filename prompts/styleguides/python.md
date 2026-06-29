@@ -7,50 +7,50 @@ Python conventions following PEP 8 and modern best practices.
 ##### Naming Conventions
 
 ```python
-### Variables and functions: snake_case
+# Variables and functions: snake_case
 user_name = "John"
 def calculate_total(items):
     pass
 
-### Constants: SCREAMING_SNAKE_CASE
+# Constants: SCREAMING_SNAKE_CASE
 MAX_CONNECTIONS = 100
 DEFAULT_TIMEOUT = 30
 
-### Classes: PascalCase
+# Classes: PascalCase
 class UserAccount:
     pass
 
-### Private: single underscore prefix
+# Private: single underscore prefix
 class User:
     def __init__(self):
         self._internal_state = {}
 
-### Name mangling: double underscore prefix
+# Name mangling: double underscore prefix
 class Base:
     def __init__(self):
         self.__private = "truly private"
 
-### Module-level "private": single underscore
+# Module-level "private": single underscore
 _module_cache = {}
 ```
 
 ##### Indentation and Line Length
 
 ```python
-### 4 spaces per indentation level
+# 4 spaces per indentation level
 def function():
     if condition:
         do_something()
 
-### Line length: 88 characters (Black) or 79 (PEP 8)
-### Break long lines appropriately
+# Line length: 88 characters (Black) or 79 (PEP 8)
+# Break long lines appropriately
 result = some_function(
     argument_one,
     argument_two,
     argument_three,
 )
 
-### Implicit line continuation in brackets
+# Implicit line continuation in brackets
 users = [
     "alice",
     "bob",
@@ -61,23 +61,23 @@ users = [
 ##### Imports
 
 ```python
-### Standard library
+# Standard library
 import os
 import sys
 from pathlib import Path
 from typing import Optional, List
 
-### Third-party
+# Third-party
 import requests
 from pydantic import BaseModel
 
-### Local application
+# Local application
 from myapp.models import User
 from myapp.utils import format_date
 
-### Avoid wildcard imports
-### Bad: from module import *
-### Good: from module import specific_item
+# Avoid wildcard imports
+# Bad: from module import *
+# Good: from module import specific_item
 ```
 
 #### Type Hints
@@ -87,13 +87,13 @@ from myapp.utils import format_date
 ```python
 from typing import Optional, List, Dict, Tuple, Union, Any
 
-### Variables
+# Variables
 name: str = "John"
 age: int = 30
 active: bool = True
 scores: List[int] = [90, 85, 92]
 
-### Functions
+# Functions
 def greet(name: str) -> str:
     return f"Hello, {name}!"
 
@@ -114,31 +114,31 @@ from typing import (
     Literal, TypedDict, Final
 )
 
-### TypeVar for generics
+# TypeVar for generics
 T = TypeVar('T')
 def first(items: List[T]) -> Optional[T]:
     return items[0] if items else None
 
-### Protocol for structural typing
+# Protocol for structural typing
 class Renderable(Protocol):
     def render(self) -> str: ...
 
 def display(obj: Renderable) -> None:
     print(obj.render())
 
-### Literal for specific values
+# Literal for specific values
 Status = Literal["pending", "active", "completed"]
 
 def set_status(status: Status) -> None:
     pass
 
-### TypedDict for dictionary shapes
+# TypedDict for dictionary shapes
 class UserDict(TypedDict):
     id: int
     name: str
     email: Optional[str]
 
-### Final for constants
+# Final for constants
 MAX_SIZE: Final = 100
 ```
 
@@ -243,35 +243,35 @@ class UserService:
 ##### Setup Commands
 
 ```bash
-### Create virtual environment
+# Create virtual environment
 python -m venv .venv
 
-### Activate (Unix/macOS)
+# Activate (Unix/macOS)
 source .venv/bin/activate
 
-### Activate (Windows)
+# Activate (Windows)
 .venv\Scripts\activate
 
-### Install dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-### Freeze dependencies
+# Freeze dependencies
 pip freeze > requirements.txt
 ```
 
 ##### Modern Tools
 
 ```bash
-### Using uv (recommended)
+# Using uv (recommended)
 uv venv
 uv pip install -r requirements.txt
 
-### Using poetry
+# Using poetry
 poetry init
 poetry add requests
 poetry install
 
-### Using pipenv
+# Using pipenv
 pipenv install
 pipenv install requests
 ```
@@ -312,7 +312,7 @@ def test_divide_by_zero_raises():
     with pytest.raises(ZeroDivisionError):
         divide(10, 0)
 
-### Parametrized tests
+# Parametrized tests
 @pytest.mark.parametrize("a,b,expected", [
     (1, 1, 2),
     (0, 0, 0),
@@ -379,7 +379,7 @@ def test_with_patch_decorator(mock_api):
 ##### Exception Patterns
 
 ```python
-### Define custom exceptions
+# Define custom exceptions
 class AppError(Exception):
     """Base exception for application errors."""
     pass
@@ -412,7 +412,7 @@ def get_user(user_id: int) -> User:
         logger.error(f"Database error: {e}")
         raise AppError("Unable to fetch user") from e
 
-### Context managers for cleanup
+# Context managers for cleanup
 from contextlib import contextmanager
 
 @contextmanager
@@ -473,11 +473,11 @@ def timer(name: str) -> Generator[None, None, None]:
         elapsed = time.perf_counter() - start
         print(f"{name}: {elapsed:.3f}s")
 
-### Usage
+# Usage
 with timer("data processing"):
     process_large_dataset()
 
-### Class-based context manager
+# Class-based context manager
 class DatabaseConnection:
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
@@ -532,7 +532,7 @@ def fetch_data(url: str) -> dict:
 ##### Ruff Configuration
 
 ```toml
-### pyproject.toml
+# pyproject.toml
 [tool.ruff]
 line-length = 88
 target-version = "py311"
@@ -556,7 +556,7 @@ known-first-party = ["myapp"]
 ##### Type Checking with mypy
 
 ```toml
-### pyproject.toml
+# pyproject.toml
 [tool.mypy]
 python_version = "3.11"
 strict = true

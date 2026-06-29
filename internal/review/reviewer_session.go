@@ -92,9 +92,9 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	if agent.hasTools {
 		tools = reviewerToolDefinitions()
 	}
-	reviewSnippet := outputSchemaSnippetFor(agent.schemaKind, req.DisableJSONResponseFormat, req.DisableSuggestions)
-	if agent.schemaKind == llm.SchemaKindText {
-		reviewSnippet = ""
+	reviewSnippet := agent.jsonRetryExampleSnippet
+	if reviewSnippet == "" {
+		reviewSnippet = exampleSnippetFor(agent.schemaKind, req.DisableSuggestions)
 	}
 	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
@@ -124,7 +124,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		NoToolsSystem:              noToolsSystem,
 		NoToolsSchemaSnippet:       reviewSnippet,
 		DisableSuggestions:         req.DisableSuggestions,
-		JSONRetryExampleSnippet:    exampleSnippetFor(agent.schemaKind, req.DisableSuggestions),
+		JSONRetryExampleSnippet:    reviewSnippet,
 		JSONRetryProgressAgentName: agent.name,
 		ValidateResponse:           agent.validateResponse,
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {

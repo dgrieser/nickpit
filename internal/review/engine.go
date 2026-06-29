@@ -261,17 +261,18 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 }
 
 type agentSpec struct {
-	name             string
-	role             string
-	system           string
-	noToolsSystem    string
-	user             string
-	extraMessages    []llm.Message
-	questionsSnippet string
-	schema           []byte
-	schemaKind       llm.SchemaKind
-	constraints      llm.ResponseConstraints
-	hasTools         bool
+	name                    string
+	role                    string
+	system                  string
+	noToolsSystem           string
+	user                    string
+	extraMessages           []llm.Message
+	questionsSnippet        string
+	schema                  []byte
+	schemaKind              llm.SchemaKind
+	constraints             llm.ResponseConstraints
+	hasTools                bool
+	jsonRetryExampleSnippet string
 	// validateResponse returns the typed error so retry guidance metadata can
 	// be rendered after otherwise valid JSON is parsed.
 	validateResponse func(*llm.ReviewResponse) *llm.InvalidResponseError
@@ -728,7 +729,7 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 	if err != nil {
 		return agentResult{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", mergeOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.DisableSuggestions), req.DisableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", exampleSnippetFor(llm.SchemaKindMerge, req.DisableSuggestions), req.DisableSuggestions)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1048,7 +1049,7 @@ func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userP
 	if err != nil {
 		return agentResult{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.DisableSuggestions), req.DisableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("merge", exampleSnippetFor(llm.SchemaKindMerge, req.DisableSuggestions), req.DisableSuggestions)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1717,7 +1718,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 			return "", err
 		}
 	}
-	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindReview, req.DisableSuggestions)
 	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, outputSchemaSnippet, req.DisableSuggestions)
 	if err != nil {
 		return "", err
@@ -2007,22 +2008,22 @@ func addTokenUsage(left, right model.TokenUsage) model.TokenUsage {
 }
 
 func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
-	if kind == llm.SchemaKindVerify {
+	switch kind {
+	case llm.SchemaKindVerify:
 		return llm.VerifyExamplePromptSnippet()
-	}
-	if kind == llm.SchemaKindMerge {
+	case llm.SchemaKindMerge:
 		return llm.MergeExamplePromptSnippetFor(disableSuggestions)
-	}
-	if kind == llm.SchemaKindFinalize {
+	case llm.SchemaKindFinalize:
 		return llm.FinalizeExamplePromptSnippetFor(disableSuggestions)
-	}
-	if kind == llm.SchemaKindVerdict {
+	case llm.SchemaKindVerdict:
 		return llm.VerdictExamplePromptSnippet()
-	}
-	if kind == llm.SchemaKindSummarize {
+	case llm.SchemaKindSummarize:
 		return llm.SummarizeExamplePromptSnippet()
+	case llm.SchemaKindReview:
+		return llm.FindingsExamplePromptSnippetFor(disableSuggestions)
+	default:
+		return ""
 	}
-	return llm.FindingsExamplePromptSnippetFor(disableSuggestions)
 }
 
 func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool) ([]llm.Message, error) {
@@ -2350,18 +2351,6 @@ func mergeConstraintsForRequest(req model.ReviewRequest) llm.ResponseConstraints
 
 func hasResponseConstraints(c llm.ResponseConstraints) bool {
 	return c.MinPriority != nil || c.MaxPriority != nil || len(c.AllowedCorrectness) > 0
-}
-
-func reviewOutputSchemaSnippetFor(_ bool, disableSuggestions bool) string {
-	return exampleSnippetFor(llm.SchemaKindReview, disableSuggestions)
-}
-
-func mergeOutputSchemaSnippetFor(_ bool, disableSuggestions bool) string {
-	return exampleSnippetFor(llm.SchemaKindMerge, disableSuggestions)
-}
-
-func outputSchemaSnippetFor(kind llm.SchemaKind, _ bool, disableSuggestions bool) string {
-	return exampleSnippetFor(kind, disableSuggestions)
 }
 
 // agentLoopKind maps an agentSpec role to the loop kind. Roles are uniform

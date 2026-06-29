@@ -118,7 +118,8 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindSummarize, false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", outputSchemaSnippet, opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -128,7 +129,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 		DisablePatchSummary bool
 		DisableSuggestions  bool
 	}{
-		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
+		OutputSchemaSnippet: outputSchemaSnippet,
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
 		DisableSuggestions:  opts.DisableSuggestions,
@@ -159,15 +160,16 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	summarizeStart := time.Now()
 	e.logProgress(logging.StageSummarize, logging.StateStart, fmt.Sprintf("items=%d", len(items)))
 	result, err := e.runAgent(ctx, agentSpec{
-		name:             "Summarize Review",
-		role:             "summarize",
-		system:           system,
-		noToolsSystem:    system,
-		user:             userPrompt,
-		schema:           schema,
-		schemaKind:       llm.SchemaKindSummarize,
-		hasTools:         false,
-		validateResponse: summarizerOutputValidator(items),
+		name:                    "Summarize Review",
+		role:                    "summarize",
+		system:                  system,
+		noToolsSystem:           system,
+		user:                    userPrompt,
+		schema:                  schema,
+		schemaKind:              llm.SchemaKindSummarize,
+		jsonRetryExampleSnippet: outputSchemaSnippet,
+		hasTools:                false,
+		validateResponse:        summarizerOutputValidator(items),
 	}, req)
 	if err != nil {
 		// Preserve the partial AgentRun (tokens accrued before the loop aborted)
@@ -514,10 +516,6 @@ func baseSummarization(finding *model.Finding) *model.FindingSummarization {
 		ConfidenceScore: finding.ConfidenceScore,
 		Suggestions:     cloneSuggestions(finding.Suggestions),
 	}
-}
-
-func summarizeOutputSchemaSnippetFor(_ bool) string {
-	return exampleSnippetFor(llm.SchemaKindSummarize, false)
 }
 
 func summarizeItemKindOrDefault(item summarizeTextItem) summarizeItemKind {

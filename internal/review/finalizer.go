@@ -58,7 +58,8 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.DisableSuggestions), opts.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindFinalize, opts.DisableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", outputSchemaSnippet, opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -79,7 +80,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		StyleGuideToolchainSnippet string
 	}{
 		PrioritySnippet:            commonSnippets.priority,
-		OutputSchemaSnippet:        finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.DisableSuggestions),
+		OutputSchemaSnippet:        outputSchemaSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
 		DisableSuggestions:         opts.DisableSuggestions,
@@ -115,15 +116,16 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	finalizeStart := time.Now()
 	e.logProgress(logging.StageFinalize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
-		name:             "Finalize Review",
-		role:             "finalize",
-		system:           system,
-		noToolsSystem:    system,
-		user:             userPrompt,
-		schema:           schema,
-		schemaKind:       llm.SchemaKindFinalize,
-		hasTools:         false,
-		validateResponse: finalizerOutputValidator(in.Findings),
+		name:                    "Finalize Review",
+		role:                    "finalize",
+		system:                  system,
+		noToolsSystem:           system,
+		user:                    userPrompt,
+		schema:                  schema,
+		schemaKind:              llm.SchemaKindFinalize,
+		jsonRetryExampleSnippet: outputSchemaSnippet,
+		hasTools:                false,
+		validateResponse:        finalizerOutputValidator(in.Findings),
 	}, req)
 	if err != nil {
 		// Preserve partial AgentRun (tokens, tool calls accumulated before
@@ -610,8 +612,4 @@ func cloneSuggestions(src []model.Suggestion) []model.Suggestion {
 
 func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
-}
-
-func finalizeOutputSchemaSnippetFor(_ bool, disableSuggestions bool) string {
-	return exampleSnippetFor(llm.SchemaKindFinalize, disableSuggestions)
 }

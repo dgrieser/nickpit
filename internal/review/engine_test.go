@@ -277,18 +277,26 @@ func reviewPromptPayload(t *testing.T, req *llm.ReviewRequest) map[string]any {
 	return payload
 }
 
-func TestOutputFormatSnippetIncludesExampleForBothJSONResponseModes(t *testing.T) {
-	for _, disableJSONResponseFormat := range []bool{false, true} {
-		snippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(disableJSONResponseFormat, false), false)
-		if err != nil {
-			t.Fatalf("agentCommonSystemPromptSnippets(disableJSONResponseFormat=%v) returned err: %v", disableJSONResponseFormat, err)
-		}
-		if !strings.Contains(snippets.outputFormat, strings.TrimSpace(llm.MergeExamplePromptSnippet())) {
-			t.Fatalf("output format missing merge example for disableJSONResponseFormat=%v:\n%s", disableJSONResponseFormat, snippets.outputFormat)
-		}
-		if strings.Contains(snippets.outputFormat, "response_format.json_schema") {
-			t.Fatalf("output format should not branch on response_format mode:\n%s", snippets.outputFormat)
-		}
+func TestOutputFormatSnippetIncludesExampleWhenProvided(t *testing.T) {
+	snippets, err := agentCommonSystemPromptSnippets("merge", exampleSnippetFor(llm.SchemaKindMerge, false), false)
+	if err != nil {
+		t.Fatalf("agentCommonSystemPromptSnippets returned err: %v", err)
+	}
+	if !strings.Contains(snippets.outputFormat, strings.TrimSpace(llm.MergeExamplePromptSnippet())) {
+		t.Fatalf("output format missing merge example:\n%s", snippets.outputFormat)
+	}
+	if strings.Contains(snippets.outputFormat, "response_format.json_schema") {
+		t.Fatalf("output format should not branch on response_format mode:\n%s", snippets.outputFormat)
+	}
+}
+
+func TestOutputFormatSnippetSkippedWithoutExample(t *testing.T) {
+	snippets, err := agentCommonSystemPromptSnippets("context", "", false)
+	if err != nil {
+		t.Fatalf("agentCommonSystemPromptSnippets returned err: %v", err)
+	}
+	if snippets.outputFormat != "" {
+		t.Fatalf("output format = %q, want empty", snippets.outputFormat)
 	}
 }
 

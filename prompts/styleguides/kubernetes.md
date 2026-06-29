@@ -136,12 +136,12 @@ When code uses `sigs.k8s.io/controller-runtime/pkg/client.ObjectKey`, assume `Na
 Use the Qualified Name rules from the character table above. Conventional prefixes:
 
 ```
-### Labels (user-facing, for selection)
+# Labels (user-facing, for selection)
 app.kubernetes.io/name: redis
 app.kubernetes.io/component: cache
 app.kubernetes.io/managed-by: redis-operator
 
-### Annotations (tooling metadata)
+# Annotations (tooling metadata)
 cache.example.com/last-backup-time: "2025-01-01T00:00:00Z"
 ```
 
@@ -682,7 +682,7 @@ spec:
 Operator pods should comply with at minimum the **Restricted** profile:
 
 ```yaml
-### Namespace label
+# Namespace label
 pod-security.kubernetes.io/enforce: restricted
 pod-security.kubernetes.io/warn: restricted
 ```
@@ -698,7 +698,7 @@ pod-security.kubernetes.io/warn: restricted
 ##### Network Policies
 
 ```yaml
-### Restrict operator egress to API server only
+# Restrict operator egress to API server only
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

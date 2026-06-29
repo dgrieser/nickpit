@@ -35,7 +35,7 @@ Commit `Chart.lock` alongside `Chart.yaml`.
 Organize hierarchically. Document every key with inline comments.
 
 ```yaml
-### Image configuration
+# Image configuration
 image:
   registry: docker.io
   repository: myapp/web
@@ -49,7 +49,7 @@ service:
   port: 80
   targetPort: http
 
-### Security defaults — always set these
+# Security defaults — always set these
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
@@ -76,7 +76,7 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 80
 
-### Global values propagate to subcharts
+# Global values propagate to subcharts
 global:
   imageRegistry: ""
   imagePullSecrets: []
@@ -192,11 +192,11 @@ YAML is whitespace-sensitive. Wrong indentation produces silently malformed mani
 Use `nindent N` (adds a leading newline then N spaces) when the `{{- include }}` or `{{- toYaml }}` call is on its own line:
 
 ```yaml
-### nindent adds newline + 4 spaces — correct for a block under `labels:`
+# nindent adds newline + 4 spaces — correct for a block under `labels:`
 labels:
   {{- include "my-app.labels" . | nindent 4 }}
 
-### toYaml + nindent for multi-key blocks
+# toYaml + nindent for multi-key blocks
 resources:
   {{- toYaml .Values.resources | nindent 2 }}
 ```
@@ -278,7 +278,7 @@ Hook types: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-d
 Every chart should have a connectivity test.
 
 ```yaml
-### templates/tests/test-connection.yaml
+# templates/tests/test-connection.yaml
 apiVersion: v1
 kind: Pod
 metadata:
