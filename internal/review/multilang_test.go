@@ -625,8 +625,8 @@ func styleGuideContentsFromSystem(system string) map[string]string {
 	offset := 0
 	for _, line := range strings.SplitAfter(system, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+		if strings.HasPrefix(trimmed, "### ") {
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "###"))
 			if language, ok := titleLanguages[title]; ok {
 				starts = append(starts, guideStart{language: language, offset: offset})
 			}
