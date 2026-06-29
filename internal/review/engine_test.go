@@ -348,41 +348,10 @@ func TestRunAgentSkipsExampleMessageForTextAgents(t *testing.T) {
 }
 
 func taskMessageContent(req *llm.ReviewRequest) string {
-	if req == nil {
+	if req == nil || len(req.Messages) < 2 {
 		return ""
 	}
-	for i := 1; i < len(req.Messages); i++ {
-		msg := req.Messages[i]
-		if msg.Role != "user" || isExamplePromptMessage(req, msg) {
-			continue
-		}
-		return msg.Content
-	}
-	return ""
-}
-
-func isExamplePromptMessage(req *llm.ReviewRequest, msg llm.Message) bool {
-	content := strings.TrimSpace(msg.Content)
-	if content == "" {
-		return false
-	}
-	kinds := []llm.SchemaKind{req.SchemaKind}
-	if req.SchemaKind == "" {
-		kinds = []llm.SchemaKind{
-			llm.SchemaKindReview,
-			llm.SchemaKindMerge,
-			llm.SchemaKindVerify,
-			llm.SchemaKindFinalize,
-			llm.SchemaKindVerdict,
-			llm.SchemaKindSummarize,
-		}
-	}
-	for _, kind := range kinds {
-		if content == strings.TrimSpace(exampleSnippetFor(kind, false)) || content == strings.TrimSpace(exampleSnippetFor(kind, true)) {
-			return true
-		}
-	}
-	return false
+	return req.Messages[1].Content
 }
 
 func commentBodies(comments []model.Comment) []string {

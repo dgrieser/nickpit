@@ -613,5 +613,5 @@ func roundConfidenceScore(score float64) float64 {
 }
 
 func finalizeOutputSchemaSnippetFor(_ bool, disableSuggestions bool) string {
-	return llm.FinalizeExamplePromptSnippetFor(disableSuggestions)
+	return exampleSnippetFor(llm.SchemaKindFinalize, disableSuggestions)
 }

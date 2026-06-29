@@ -325,7 +325,7 @@ func truncateFindingTitle(title string) string {
 }
 
 func verifyOutputSchemaSnippetFor(_ bool) string {
-	return llm.VerifyExamplePromptSnippet()
+	return exampleSnippetFor(llm.SchemaKindVerify, false)
 }
 
 func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {

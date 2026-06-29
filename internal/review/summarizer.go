@@ -517,7 +517,7 @@ func baseSummarization(finding *model.Finding) *model.FindingSummarization {
 }
 
 func summarizeOutputSchemaSnippetFor(_ bool) string {
-	return llm.SummarizeExamplePromptSnippet()
+	return exampleSnippetFor(llm.SchemaKindSummarize, false)
 }
 
 func summarizeItemKindOrDefault(item summarizeTextItem) summarizeItemKind {

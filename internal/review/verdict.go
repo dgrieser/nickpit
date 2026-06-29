@@ -442,5 +442,5 @@ func findingConfidence(f model.Finding) float64 {
 }
 
 func verdictOutputSchemaSnippetFor(_ bool) string {
-	return llm.VerdictExamplePromptSnippet()
+	return exampleSnippetFor(llm.SchemaKindVerdict, false)
 }

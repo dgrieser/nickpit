@@ -2361,30 +2361,15 @@ func hasResponseConstraints(c llm.ResponseConstraints) bool {
 }
 
 func reviewOutputSchemaSnippetFor(_ bool, disableSuggestions bool) string {
-	return llm.FindingsExamplePromptSnippetFor(disableSuggestions)
+	return exampleSnippetFor(llm.SchemaKindReview, disableSuggestions)
 }
 
 func mergeOutputSchemaSnippetFor(_ bool, disableSuggestions bool) string {
-	return llm.MergeExamplePromptSnippetFor(disableSuggestions)
+	return exampleSnippetFor(llm.SchemaKindMerge, disableSuggestions)
 }
 
-func outputSchemaSnippetFor(kind llm.SchemaKind, disableJSONResponseFormat bool, disableSuggestions bool) string {
-	if kind == llm.SchemaKindMerge {
-		return mergeOutputSchemaSnippetFor(disableJSONResponseFormat, disableSuggestions)
-	}
-	if kind == llm.SchemaKindFinalize {
-		return finalizeOutputSchemaSnippetFor(disableJSONResponseFormat, disableSuggestions)
-	}
-	if kind == llm.SchemaKindVerdict {
-		return verdictOutputSchemaSnippetFor(disableJSONResponseFormat)
-	}
-	if kind == llm.SchemaKindVerify {
-		return verifyOutputSchemaSnippetFor(disableJSONResponseFormat)
-	}
-	if kind == llm.SchemaKindSummarize {
-		return summarizeOutputSchemaSnippetFor(disableJSONResponseFormat)
-	}
-	return reviewOutputSchemaSnippetFor(disableJSONResponseFormat, disableSuggestions)
+func outputSchemaSnippetFor(kind llm.SchemaKind, _ bool, disableSuggestions bool) string {
+	return exampleSnippetFor(kind, disableSuggestions)
 }
 
 // agentLoopKind maps an agentSpec role to the loop kind. Roles are uniform
