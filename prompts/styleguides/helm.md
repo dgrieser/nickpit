@@ -1,8 +1,8 @@
-# Helm Style Guide
+### Helm Style Guide
 
 Best practices for production-ready Helm charts.
 
-## Chart.yaml
+#### Chart.yaml
 
 Use apiVersion v2 (Helm 3+). All required fields must be present.
 
@@ -30,7 +30,7 @@ dependencies:
 
 Commit `Chart.lock` alongside `Chart.yaml`.
 
-## values.yaml
+#### values.yaml
 
 Organize hierarchically. Document every key with inline comments.
 
@@ -82,7 +82,7 @@ global:
   imagePullSecrets: []
 ```
 
-## values.schema.json
+#### values.schema.json
 
 Validate required fields and constrain enums:
 
@@ -112,7 +112,7 @@ Validate required fields and constrain enums:
 }
 ```
 
-## Template Helpers (_helpers.tpl)
+#### Template Helpers (_helpers.tpl)
 
 Define all reusable logic in `_helpers.tpl`. Never inline repeated expressions in templates.
 
@@ -158,7 +158,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 ```
 
-## Naming Conventions
+#### Naming Conventions
 
 - Resource names: lowercase, hyphens only — `my-app-worker`, not `myAppWorker`
 - All names truncated to 63 characters (Kubernetes DNS label limit)
@@ -166,7 +166,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - Partial template files: underscore prefix `_helpers.tpl`
 - Test files: `templates/tests/`
 
-## Labels
+#### Labels
 
 Apply `app.kubernetes.io/*` labels on every resource via helpers. Never hardcode label values.
 
@@ -185,7 +185,7 @@ spec:
         {{- include "my-app.selectorLabels" . | nindent 8 }}
 ```
 
-## Indentation
+#### Indentation
 
 YAML is whitespace-sensitive. Wrong indentation produces silently malformed manifests.
 
@@ -214,7 +214,7 @@ spec:
 
 N must equal the YAML nesting depth in spaces. Off-by-two errors are a common source of broken renders — verify with `helm template` before committing.
 
-## Templating Patterns
+#### Templating Patterns
 
 **Quote all string values** to prevent YAML type coercion:
 
@@ -248,7 +248,7 @@ env:
 image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
 ```
 
-## Hooks
+#### Hooks
 
 Use hooks for DB migrations and setup jobs. Always set a deletion policy to avoid stale hook objects.
 
@@ -273,7 +273,7 @@ spec:
 
 Hook types: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-delete`, `post-delete`, `test`.
 
-## Tests
+#### Tests
 
 Every chart should have a connectivity test.
 
@@ -297,7 +297,7 @@ spec:
 
 Run with: `helm test <release-name>`
 
-## Best Practices
+#### Best Practices
 
 1. Pin dependency versions exactly — no version ranges
 2. Commit `Chart.lock`

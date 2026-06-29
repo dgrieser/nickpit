@@ -58,7 +58,8 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.DisableSuggestions), opts.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindFinalize, opts.DisableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", outputSchemaSnippet, opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -79,7 +80,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		StyleGuideToolchainSnippet string
 	}{
 		PrioritySnippet:            commonSnippets.priority,
-		OutputSchemaSnippet:        finalizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat, opts.DisableSuggestions),
+		OutputSchemaSnippet:        outputSchemaSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
 		DisableSuggestions:         opts.DisableSuggestions,
@@ -610,11 +611,4 @@ func cloneSuggestions(src []model.Suggestion) []model.Suggestion {
 
 func roundConfidenceScore(score float64) float64 {
 	return math.Round(score*100) / 100
-}
-
-func finalizeOutputSchemaSnippetFor(disableJSONResponseFormat bool, disableSuggestions bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
-	return llm.FinalizeExamplePromptSnippetFor(disableSuggestions)
 }

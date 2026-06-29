@@ -1,10 +1,10 @@
-# TypeScript Style Guide
+### TypeScript Style Guide
 
 TypeScript-specific conventions and best practices for type-safe development.
 
-## Strict Mode
+#### Strict Mode
 
-### Enable Strict Configuration
+##### Enable Strict Configuration
 
 ```json
 {
@@ -24,16 +24,16 @@ TypeScript-specific conventions and best practices for type-safe development.
 }
 ```
 
-### Benefits
+##### Benefits
 
 - Catches errors at compile time
 - Better IDE support and autocomplete
 - Self-documenting code
 - Easier refactoring
 
-## Type Safety
+#### Type Safety
 
-### Avoid `any`
+##### Avoid `any`
 
 ```typescript
 // Bad
@@ -52,7 +52,7 @@ function processData(data: DataItem): string {
 }
 ```
 
-### Use `unknown` for Unknown Types
+##### Use `unknown` for Unknown Types
 
 ```typescript
 // When type is truly unknown
@@ -68,7 +68,7 @@ function isUser(obj: unknown): obj is User {
 }
 ```
 
-### Prefer Explicit Types
+##### Prefer Explicit Types
 
 ```typescript
 // Bad: Implicit any
@@ -82,9 +82,9 @@ const count = 0; // number inferred
 const name = "John"; // string inferred
 ```
 
-## Interfaces vs Types
+#### Interfaces vs Types
 
-### Use Interfaces for Object Shapes
+##### Use Interfaces for Object Shapes
 
 ```typescript
 // Preferred for objects
@@ -105,7 +105,7 @@ interface User {
 }
 ```
 
-### Use Types for Unions, Primitives, and Computed Types
+##### Use Types for Unions, Primitives, and Computed Types
 
 ```typescript
 // Union types
@@ -123,7 +123,7 @@ type Readonly<T> = {
 type Coordinate = [number, number];
 ```
 
-### Decision Guide
+##### Decision Guide
 
 | Use Case                | Recommendation |
 | ----------------------- | -------------- |
@@ -134,9 +134,9 @@ type Coordinate = [number, number];
 | Mapped/conditional type | `type`         |
 | Library public API      | `interface`    |
 
-## Async Patterns
+#### Async Patterns
 
-### Prefer async/await
+##### Prefer async/await
 
 ```typescript
 // Bad: Callback hell
@@ -153,7 +153,7 @@ async function fetchUserData(id: string): Promise<User> {
 }
 ```
 
-### Error Handling in Async Code
+##### Error Handling in Async Code
 
 ```typescript
 // Explicit error handling
@@ -175,7 +175,7 @@ async function fetchUser(id: string): Promise<User> {
 }
 ```
 
-### Promise Types
+##### Promise Types
 
 ```typescript
 // Return type annotation for clarity
@@ -189,9 +189,9 @@ async function loadAllData(): Promise<[Users, Posts]> {
 }
 ```
 
-## Module Structure
+#### Module Structure
 
-### File Organization
+##### File Organization
 
 ```
 src/
@@ -208,7 +208,7 @@ src/
 └── index.ts         # Public API exports
 ```
 
-### Export Patterns
+##### Export Patterns
 
 ```typescript
 // Named exports (preferred)
@@ -229,7 +229,7 @@ export default class UserService { ... }
 export class UserService { ... }
 ```
 
-### Import Organization
+##### Import Organization
 
 ```typescript
 // 1. External dependencies
@@ -245,9 +245,9 @@ import { formatDate } from "./utils";
 import { UserCard } from "./UserCard";
 ```
 
-## Utility Types
+#### Utility Types
 
-### Built-in Utility Types
+##### Built-in Utility Types
 
 ```typescript
 // Partial - all properties optional
@@ -272,7 +272,7 @@ type ApiResponse = ReturnType<typeof fetchData>;
 type FetchParams = Parameters<typeof fetch>;
 ```
 
-### Custom Utility Types
+##### Custom Utility Types
 
 ```typescript
 // Make specific properties optional
@@ -287,9 +287,9 @@ type DeepReadonly<T> = {
 };
 ```
 
-## Enums and Constants
+#### Enums and Constants
 
-### Prefer const Objects Over Enums
+##### Prefer const Objects Over Enums
 
 ```typescript
 // Enums have runtime overhead
@@ -307,7 +307,7 @@ const Status = {
 type Status = (typeof Status)[keyof typeof Status];
 ```
 
-### When to Use Enums
+##### When to Use Enums
 
 ```typescript
 // Numeric enums for bit flags
@@ -320,9 +320,9 @@ enum Permissions {
 }
 ```
 
-## Generics
+#### Generics
 
-### Basic Generic Usage
+##### Basic Generic Usage
 
 ```typescript
 // Generic function
@@ -338,7 +338,7 @@ interface Repository<T> {
 }
 ```
 
-### Constraining Generics
+##### Constraining Generics
 
 ```typescript
 // Constrain to objects with id
@@ -355,9 +355,9 @@ function merge<T extends object, U extends object>(a: T, b: U): T & U {
 }
 ```
 
-## Error Types
+#### Error Types
 
-### Custom Error Classes
+##### Custom Error Classes
 
 ```typescript
 class AppError extends Error {
@@ -382,7 +382,7 @@ class ValidationError extends AppError {
 }
 ```
 
-### Type Guards for Errors
+##### Type Guards for Errors
 
 ```typescript
 function isAppError(error: unknown): error is AppError {
@@ -400,9 +400,9 @@ function handleError(error: unknown): void {
 }
 ```
 
-## Testing Types
+#### Testing Types
 
-### Type Testing
+##### Type Testing
 
 ```typescript
 // Use type assertions for compile-time checks
@@ -416,9 +416,9 @@ type _TestUserHasId = Assert<{ id: string }, User>;
 const invalidUser: User = { name: "John" };
 ```
 
-## Common Patterns
+#### Common Patterns
 
-### Builder Pattern
+##### Builder Pattern
 
 ```typescript
 class QueryBuilder<T> {
@@ -435,7 +435,7 @@ class QueryBuilder<T> {
 }
 ```
 
-### Result Type
+##### Result Type
 
 ```typescript
 type Result<T, E = Error> =

@@ -1,10 +1,10 @@
-# Go Style Guide
+### Go Style Guide
 
 Go idioms and conventions for clean, maintainable code.
 
-## gofmt and Standard Formatting
+#### gofmt and Standard Formatting
 
-### Always Use gofmt
+##### Always Use gofmt
 
 ```bash
 # Format a single file
@@ -17,14 +17,14 @@ gofmt -w .
 goimports -w .
 ```
 
-### Formatting Rules (Enforced by gofmt)
+##### Formatting Rules (Enforced by gofmt)
 
 - Tabs for indentation
 - No trailing whitespace
 - Consistent brace placement
 - Standardized spacing
 
-## Version-Aware Go
+#### Version-Aware Go
 
 Check the module's `go` directive before reviewing language semantics or
 suggesting newer APIs. The `go` directive controls language version behavior;
@@ -41,7 +41,7 @@ tool github.com/golangci/golangci-lint/cmd/golangci-lint
 For Go 1.24 and newer modules, use `tool` directives in `go.mod` to track
 executable development tools instead of blank-import `tools.go` files.
 
-### Generics
+##### Generics
 
 Use generics when they remove duplication across real types or express a
 container/helper API. Prefer ordinary functions and interfaces when there is
@@ -60,7 +60,7 @@ func Keys[K comparable, V any](m map[K]V) []K {
 Keep constraints small and local when possible. Use `any` instead of
 `interface{}` for unconstrained type parameters.
 
-### Standard Library Helpers
+##### Standard Library Helpers
 
 Prefer standard library helpers over local generic utilities when they match
 the need:
@@ -71,7 +71,7 @@ the need:
 - `clear` for clearing maps or zeroing slice contents.
 - `min` and `max` for simple ordered comparisons.
 
-### Map Iteration Semantics
+##### Map Iteration Semantics
 
 Deleting map entries while ranging over the same map is allowed in Go. Do not
 flag code like this as a bug by itself:
@@ -93,9 +93,9 @@ example:
 Do not apply generic "modifying a collection while iterating" rules from other
 languages to Go map deletion.
 
-## Error Handling
+#### Error Handling
 
-### Explicit Error Checking
+##### Explicit Error Checking
 
 ```go
 // Always check errors explicitly
@@ -116,7 +116,7 @@ if err != nil {
 }
 ```
 
-### Error Wrapping
+##### Error Wrapping
 
 ```go
 // Use %w to wrap errors for unwrapping later
@@ -144,7 +144,7 @@ if errors.As(err, &validationErr) {
 }
 ```
 
-### Multiple Errors
+##### Multiple Errors
 
 Use `errors.Join` or multiple `%w` operands when an operation can fail in more
 than one independent way and callers should still be able to use `errors.Is`
@@ -161,7 +161,7 @@ if err := cleanup(); err != nil {
 return errors.Join(errs...)
 ```
 
-### Custom Error Types
+##### Custom Error Types
 
 ```go
 // Sentinel errors for expected conditions
@@ -187,9 +187,9 @@ func NewValidationError(field, message string) error {
 }
 ```
 
-## Interfaces
+#### Interfaces
 
-### Small, Focused Interfaces
+##### Small, Focused Interfaces
 
 ```go
 // Good: Single-method interface
@@ -219,7 +219,7 @@ type Repository interface {
 }
 ```
 
-### Accept Interfaces, Return Structs
+##### Accept Interfaces, Return Structs
 
 ```go
 // Good: Accept interface, return concrete type
@@ -243,7 +243,7 @@ func (r *PostgresUserRepo) Find(ctx context.Context, id string) (*User, error) {
 }
 ```
 
-### Interface Naming
+##### Interface Naming
 
 ```go
 // Single-method interfaces: method name + "er"
@@ -259,9 +259,9 @@ type UserStore interface {
 }
 ```
 
-## Package Structure
+#### Package Structure
 
-### Standard Layout
+##### Standard Layout
 
 ```
 myproject/
@@ -286,7 +286,7 @@ myproject/
 └── README.md
 ```
 
-### Package Guidelines
+##### Package Guidelines
 
 ```go
 // Package names: short, lowercase, no underscores
@@ -310,7 +310,7 @@ import (
 )
 ```
 
-### Internal Packages
+##### Internal Packages
 
 ```go
 // internal/ packages cannot be imported from outside the module
@@ -322,9 +322,9 @@ package cache
 // This can only be imported by code in myproject/
 ```
 
-## Testing
+#### Testing
 
-### Test File Organization
+##### Test File Organization
 
 ```go
 // user_test.go - same package
@@ -352,7 +352,7 @@ func TestUserService(t *testing.T) {
 }
 ```
 
-### Table-Driven Tests
+##### Table-Driven Tests
 
 ```go
 func TestAdd(t *testing.T) {
@@ -379,7 +379,7 @@ func TestAdd(t *testing.T) {
 }
 ```
 
-### Test Helpers
+##### Test Helpers
 
 ```go
 // Helper functions should call t.Helper()
@@ -407,7 +407,7 @@ func assertEqual[T comparable](t *testing.T, got, want T) {
 }
 ```
 
-### Test Context and Cleanup
+##### Test Context and Cleanup
 
 Use `t.Context()` in Go 1.24 and newer when code under test needs a context
 that is canceled before registered cleanup functions run.
@@ -426,7 +426,7 @@ func TestWorkerStops(t *testing.T) {
 Use `t.TempDir()`, `t.Setenv()`, `t.Chdir()`, and `t.Cleanup()` instead of
 manual cleanup where available.
 
-### Fuzzing
+##### Fuzzing
 
 Add fuzz tests for parsers, decoders, validators, and other code that accepts
 complex external input.
@@ -440,7 +440,7 @@ func FuzzParse(f *testing.F) {
 }
 ```
 
-### Mocking with Interfaces
+##### Mocking with Interfaces
 
 ```go
 // Define interface for dependency
@@ -484,9 +484,9 @@ func TestUserService_GetUser(t *testing.T) {
 }
 ```
 
-## Common Patterns
+#### Common Patterns
 
-### Range Loop Semantics
+##### Range Loop Semantics
 
 Go 1.22 changed loop variables declared by `for` loops. When a loop uses `:=`,
 each iteration gets fresh variables, so closures and goroutines capture the
@@ -569,7 +569,7 @@ for v := range set.All() {
 }
 ```
 
-### Options Pattern
+##### Options Pattern
 
 ```go
 // Option function type
@@ -616,7 +616,7 @@ server := NewServer(
 )
 ```
 
-### Context Usage
+##### Context Usage
 
 ```go
 // Always pass context as first parameter
@@ -656,7 +656,7 @@ if cause := context.Cause(ctx); cause != nil {
 }
 ```
 
-### Structured Logging
+##### Structured Logging
 
 Use `log/slog` for structured application logs. Prefer stable key names and
 typed values over formatted strings.
@@ -673,7 +673,7 @@ logger.InfoContext(ctx, "request complete",
 Avoid logging secrets, tokens, credentials, or full request/response bodies
 unless they are explicitly scrubbed.
 
-### Defer for Cleanup
+##### Defer for Cleanup
 
 ```go
 func processFile(path string) error {
@@ -701,7 +701,7 @@ func transaction(db *sql.DB) error {
 }
 ```
 
-### Concurrency Patterns
+##### Concurrency Patterns
 
 ```go
 // Worker pool
@@ -741,9 +741,9 @@ func processItems(items []Item, workers int) []Result {
 }
 ```
 
-## Code Quality
+#### Code Quality
 
-### Linting with golangci-lint
+##### Linting with golangci-lint
 
 ```yaml
 # .golangci.yml
@@ -772,7 +772,7 @@ issues:
         - errcheck
 ```
 
-### Common Commands
+##### Common Commands
 
 ```bash
 # Format code
@@ -795,13 +795,13 @@ go test -race ./...
 go build ./...
 ```
 
-### Security
+##### Security
 
 Weak hashes are only security-relevant when the hash is used for a security
 property such as authentication, authorization, integrity, signatures, password
 storage, or collision resistance against attacker-controlled input.
 
-### Races
+##### Races
 
 Separate true data races from lifecycle, shutdown, or ordering races. Only call
 something a data race after confirming unsynchronized shared-memory access with

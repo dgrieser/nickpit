@@ -125,7 +125,7 @@ func TestEngineAddsPythonStyleGuideForPythonDiffs(t *testing.T) {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.reqs[0])), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := payload["style_guides"]; ok {
@@ -174,7 +174,7 @@ func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.reqs[0])), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := payload["style_guides"]; ok {
@@ -595,7 +595,7 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.reqs[0])), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := payload["style_guides"]; ok {
@@ -605,33 +605,41 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 }
 
 func styleGuideContentsFromSystem(system string) map[string]string {
-	knownLanguages := map[string]struct{}{
-		"csharp":     {},
-		"go":         {},
-		"helm":       {},
-		"html":       {},
-		"javascript": {},
-		"kubernetes": {},
-		"python":     {},
-		"shell":      {},
-		"sql":        {},
-		"typescript": {},
+	titleLanguages := map[string]string{
+		"Bash Style Guide":          "shell",
+		"C# Style Guide":            "csharp",
+		"Go Style Guide":            "go",
+		"Helm Style Guide":          "helm",
+		"HTML & CSS Style Guide":    "html",
+		"JavaScript Style Guide":    "javascript",
+		"Kubernetes Style Guide":    "kubernetes",
+		"Python Style Guide":        "python",
+		"SQL Optimization Patterns": "sql",
+		"TypeScript Style Guide":    "typescript",
+	}
+	type guideStart struct {
+		language string
+		offset   int
+	}
+	var starts []guideStart
+	offset := 0
+	for _, line := range strings.SplitAfter(system, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "### ") {
+			title := strings.TrimSpace(strings.TrimPrefix(trimmed, "###"))
+			if language, ok := titleLanguages[title]; ok {
+				starts = append(starts, guideStart{language: language, offset: offset})
+			}
+		}
+		offset += len(line)
 	}
 	out := make(map[string]string)
-	for _, section := range strings.Split(system, "\n### ")[1:] {
-		heading, body, ok := strings.Cut(section, "\n")
-		if !ok {
-			continue
+	for i, start := range starts {
+		end := len(system)
+		if i+1 < len(starts) {
+			end = starts[i+1].offset
 		}
-		start := strings.LastIndex(heading, " (")
-		if start < 0 || !strings.HasSuffix(heading, ")") {
-			continue
-		}
-		language := heading[start+2 : len(heading)-1]
-		if _, ok := knownLanguages[language]; !ok {
-			continue
-		}
-		out[language] = body
+		out[start.language] = system[start.offset:end]
 	}
 	return out
 }

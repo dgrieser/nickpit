@@ -1,8 +1,8 @@
-# SQL Optimization Patterns
+### SQL Optimization Patterns
 
 Transform slow database queries into lightning-fast operations through systematic optimization, proper indexing, and query plan analysis.
 
-## When to Use This Skill
+#### When to Use This Skill
 
 - Debugging slow-running queries
 - Designing performant database schemas
@@ -13,9 +13,9 @@ Transform slow database queries into lightning-fast operations through systemati
 - Implementing efficient indexes
 - Resolving N+1 query problems
 
-## Core Concepts
+#### Core Concepts
 
-### 1. Query Execution Plans (EXPLAIN)
+##### 1. Query Execution Plans (EXPLAIN)
 
 Understanding EXPLAIN output is fundamental to optimization.
 
@@ -49,7 +49,7 @@ WHERE u.created_at > NOW() - INTERVAL '30 days';
 - **Rows**: Estimated rows returned
 - **Actual Time**: Real execution time
 
-### 2. Index Strategies
+##### 2. Index Strategies
 
 Indexes are the most powerful optimization tool.
 
@@ -87,7 +87,7 @@ USING GIN(to_tsvector('english', title || ' ' || body));
 CREATE INDEX idx_metadata ON events USING GIN(metadata);
 ```
 
-### 3. Query Optimization Patterns
+##### 3. Query Optimization Patterns
 
 **Avoid SELECT \*:**
 
@@ -129,9 +129,9 @@ JOIN orders o ON u.id = o.user_id
 WHERE u.created_at > '2024-01-01';
 ```
 
-## Optimization Patterns
+#### Optimization Patterns
 
-### Pattern 1: Eliminate N+1 Queries
+##### Pattern 1: Eliminate N+1 Queries
 
 **Problem: N+1 Query Anti-Pattern**
 
@@ -182,7 +182,7 @@ for order in orders:
     orders_by_user.setdefault(order.user_id, []).append(order)
 ```
 
-### Pattern 2: Optimize Pagination
+##### Pattern 2: Optimize Pagination
 
 **Bad: OFFSET on Large Tables**
 
@@ -212,7 +212,7 @@ LIMIT 20;
 CREATE INDEX idx_users_cursor ON users(created_at DESC, id DESC);
 ```
 
-### Pattern 3: Aggregate Efficiently
+##### Pattern 3: Aggregate Efficiently
 
 **Optimize COUNT Queries:**
 
@@ -259,7 +259,7 @@ HAVING COUNT(*) > 10;
 CREATE INDEX idx_orders_user_status ON orders(user_id, status);
 ```
 
-### Pattern 4: Subquery Optimization
+##### Pattern 4: Subquery Optimization
 
 **Transform Correlated Subqueries:**
 
@@ -296,7 +296,7 @@ FROM recent_users ru
 LEFT JOIN user_order_counts uoc ON ru.id = uoc.user_id;
 ```
 
-### Pattern 5: Batch Operations
+##### Pattern 5: Batch Operations
 
 **Batch INSERT:**
 
@@ -343,9 +343,9 @@ WHERE u.id = t.id;
 -- UPDATE users u JOIN temp_user_updates t ON u.id = t.id SET u.status = t.new_status;
 ```
 
-## Advanced Techniques
+#### Advanced Techniques
 
-### Materialized Views
+##### Materialized Views
 
 Pre-compute expensive queries.
 
@@ -377,7 +377,7 @@ WHERE total_spent > 1000
 ORDER BY total_spent DESC;
 ```
 
-### Partitioning
+##### Partitioning
 
 Split large tables for better performance.
 
@@ -403,7 +403,7 @@ WHERE created_at BETWEEN '2024-02-01' AND '2024-02-28';
 -- Only scans orders_2024_q1 partition
 ```
 
-### Query Hints and Optimization
+##### Query Hints and Optimization
 
 ```sql
 -- Force index usage (MySQL)
@@ -421,7 +421,7 @@ SELECT * FROM large_table WHERE condition;
 -- SET enable_nestloop = OFF;
 ```
 
-## Best Practices
+#### Best Practices
 
 1. **Index Selectively**: Too many indexes slow down writes
 2. **Monitor Query Performance**: Use slow query logs
@@ -446,7 +446,7 @@ REINDEX INDEX idx_users_email;
 REINDEX TABLE users;
 ```
 
-## Common Pitfalls
+#### Common Pitfalls
 
 - **Over-Indexing**: Each index slows down INSERT/UPDATE/DELETE
 - **Unused Indexes**: Waste space and slow writes
@@ -456,7 +456,7 @@ REINDEX TABLE users;
 - **LIKE with Leading Wildcard**: `LIKE '%abc'` can't use index
 - **Function in WHERE**: Prevents index usage unless functional index exists
 
-## Monitoring Queries
+#### Monitoring Queries
 
 ```sql
 -- Find slow queries (PostgreSQL)

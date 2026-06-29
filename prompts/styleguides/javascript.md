@@ -1,10 +1,10 @@
-# JavaScript Style Guide
+### JavaScript Style Guide
 
 Modern JavaScript (ES6+) best practices and conventions.
 
-## ES6+ Features
+#### ES6+ Features
 
-### Use Modern Syntax
+##### Use Modern Syntax
 
 ```javascript
 // Prefer const and let over var
@@ -29,7 +29,7 @@ const combined = [...array1, ...array2];
 const doubled = numbers.map((n) => n * 2);
 ```
 
-### Object Shorthand
+##### Object Shorthand
 
 ```javascript
 // Property shorthand
@@ -57,7 +57,7 @@ const obj = {
 };
 ```
 
-### Default Parameters and Rest
+##### Default Parameters and Rest
 
 ```javascript
 // Default parameters
@@ -76,9 +76,9 @@ function createUser({ name, email, role = "user" }) {
 }
 ```
 
-## Async/Await
+#### Async/Await
 
-### Prefer async/await Over Promises
+##### Prefer async/await Over Promises
 
 ```javascript
 // Bad: Promise chains
@@ -99,7 +99,7 @@ async function fetchUserPosts(userId) {
 }
 ```
 
-### Parallel Execution
+##### Parallel Execution
 
 ```javascript
 // Sequential (slow)
@@ -121,7 +121,7 @@ async function loadDataParallel() {
 }
 ```
 
-### Error Handling
+##### Error Handling
 
 ```javascript
 // try/catch with async/await
@@ -157,9 +157,9 @@ if (error) {
 }
 ```
 
-## Error Handling
+#### Error Handling
 
-### Custom Errors
+##### Custom Errors
 
 ```javascript
 class AppError extends Error {
@@ -190,7 +190,7 @@ class NotFoundError extends AppError {
 }
 ```
 
-### Error Handling Patterns
+##### Error Handling Patterns
 
 ```javascript
 // Centralized error handler
@@ -228,9 +228,9 @@ function withErrorBoundary(Component) {
 }
 ```
 
-## Module Patterns
+#### Module Patterns
 
-### ES Modules
+##### ES Modules
 
 ```javascript
 // Named exports
@@ -252,7 +252,7 @@ import * as api from "./api.js";
 import defaultExport from "./module.js";
 ```
 
-### Module Organization
+##### Module Organization
 
 ```javascript
 // Feature-based organization
@@ -268,7 +268,7 @@ export { validateUser } from "./utils.js";
 export { USER_ROLES } from "./constants.js";
 ```
 
-### Dependency Injection
+##### Dependency Injection
 
 ```javascript
 // Constructor injection
@@ -292,9 +292,9 @@ function createUserService(config = {}) {
 }
 ```
 
-## Functional Patterns
+#### Functional Patterns
 
-### Pure Functions
+##### Pure Functions
 
 ```javascript
 // Impure: Modifies external state
@@ -315,7 +315,7 @@ function calculateTotal(items) {
 }
 ```
 
-### Array Methods
+##### Array Methods
 
 ```javascript
 const users = [
@@ -350,7 +350,7 @@ const activeNames = users
   .sort();
 ```
 
-### Composition
+##### Composition
 
 ```javascript
 // Compose functions
@@ -370,9 +370,9 @@ const processUser = pipe(validateUser, normalizeUser, enrichUser);
 const result = processUser(rawUserData);
 ```
 
-## Classes
+#### Classes
 
-### Modern Class Syntax
+##### Modern Class Syntax
 
 ```javascript
 class User {
@@ -413,7 +413,7 @@ class User {
 }
 ```
 
-### Inheritance
+##### Inheritance
 
 ```javascript
 class Entity {
@@ -445,9 +445,9 @@ class User extends Entity {
 }
 ```
 
-## Common Patterns
+#### Common Patterns
 
-### Null Safety
+##### Null Safety
 
 ```javascript
 // Optional chaining
@@ -463,7 +463,7 @@ const count = value ?? 0;
 const displayName = user?.profile?.name ?? "Unknown";
 ```
 
-### Debounce and Throttle
+##### Debounce and Throttle
 
 ```javascript
 function debounce(fn, delay) {
@@ -486,7 +486,7 @@ function throttle(fn, limit) {
 }
 ```
 
-### Memoization
+##### Memoization
 
 ```javascript
 function memoize(fn) {
@@ -509,9 +509,9 @@ const expensiveCalculation = memoize((n) => {
 });
 ```
 
-## Best Practices
+#### Best Practices
 
-### Avoid Common Pitfalls
+##### Avoid Common Pitfalls
 
 ```javascript
 // Avoid loose equality
@@ -547,7 +547,7 @@ function process(options) {
 }
 ```
 
-### Performance Tips
+##### Performance Tips
 
 ```javascript
 // Avoid creating functions in loops

@@ -54,6 +54,34 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 	return resp, nil
 }
 
+func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
+	for _, disableJSONResponseFormat := range []bool{false, true} {
+		llmClient := &scriptedVerifyLLM{}
+		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+		_, _, err := engine.Verify(context.Background(), VerifyRequest{
+			ReviewCtx:                 sampleReviewCtx(),
+			Finding:                   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+			DisableJSONResponseFormat: disableJSONResponseFormat,
+		})
+		if err != nil {
+			t.Fatalf("Verify(disableJSONResponseFormat=%v) returned err: %v", disableJSONResponseFormat, err)
+		}
+		if len(llmClient.requests) != 1 {
+			t.Fatalf("requests = %d, want 1", len(llmClient.requests))
+		}
+		messages := llmClient.requests[0].Messages
+		if len(messages) != 2 {
+			t.Fatalf("messages = %#v, want system/user", messages)
+		}
+		if !strings.Contains(messages[0].Content, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
+			t.Fatalf("system prompt missing verify example:\n%s", messages[0].Content)
+		}
+		if messages[1].Role != "user" || !strings.Contains(messages[1].Content, `"finding"`) {
+			t.Fatalf("task message = %#v", messages[1])
+		}
+	}
+}
+
 func sampleReviewCtx() *model.ReviewContext {
 	return &model.ReviewContext{
 		Mode:       model.ModeLocal,
@@ -189,7 +217,7 @@ func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
 		t.Fatalf("requests = %d, want 1", len(llmClient.requests))
 	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.requests[0])), &payload); err != nil {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
 	verifyFinding := payload["finding"].(map[string]any)
@@ -477,7 +505,7 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 		t.Fatalf("requests = %d, want 1", len(llmClient.requests))
 	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.requests[0])), &payload); err != nil {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
 	if _, ok := payload["style_guides"]; ok {
@@ -493,7 +521,7 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if !strings.Contains(system, "Styleguide contradiction gate") || !strings.Contains(system, "Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide") {
 		t.Fatalf("verify system prompt missing styleguide contradiction gate: %q", system)
 	}
-	if !strings.Contains(system, "### Go Style Guide (go)") || !strings.Contains(system, "# Go Style Guide") {
+	if !strings.Contains(system, "# Go Style Guide") || strings.Contains(system, "### Go Style Guide (go)") {
 		t.Fatalf("verify system prompt missing Go styleguide content: %q", system)
 	}
 }
@@ -521,14 +549,14 @@ func TestVerifyIncludesKubernetesStyleGuide(t *testing.T) {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.requests[0])), &payload); err != nil {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
 	if _, ok := payload["style_guides"]; ok {
 		t.Fatalf("user prompt should not include style_guides: %#v", payload["style_guides"])
 	}
 	system := llmClient.requests[0].Messages[0].Content
-	if !strings.Contains(system, "### Kubernetes Style Guide (kubernetes)") || !strings.Contains(system, "# Kubernetes Style Guide") {
+	if !strings.Contains(system, "# Kubernetes Style Guide") || strings.Contains(system, "### Kubernetes Style Guide (kubernetes)") {
 		t.Fatalf("verify system prompt missing Kubernetes styleguide content: %q", system)
 	}
 }
@@ -628,7 +656,7 @@ func TestVerifyIncludesSuggestions(t *testing.T) {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.requests[0])), &payload); err != nil {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
 	verifyFinding := payload["finding"].(map[string]any)
@@ -664,14 +692,15 @@ func TestVerifyDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.requests[0].Messages[1].Content), &payload); err != nil {
+	userPrompt := taskMessageContent(llmClient.requests[0])
+	if err := json.Unmarshal([]byte(userPrompt), &payload); err != nil {
 		t.Fatalf("unmarshal user prompt: %v", err)
 	}
 	verifyFinding := payload["finding"].(map[string]any)
 	if _, ok := verifyFinding["suggestions"]; ok {
 		t.Fatalf("suggestions should be omitted from verify payload: %#v", verifyFinding)
 	}
-	if strings.Contains(llmClient.requests[0].Messages[1].Content, "replacement one") {
-		t.Fatalf("verify user prompt should not contain suggestion text:\n%s", llmClient.requests[0].Messages[1].Content)
+	if strings.Contains(userPrompt, "replacement one") {
+		t.Fatalf("verify user prompt should not contain suggestion text:\n%s", userPrompt)
 	}
 }

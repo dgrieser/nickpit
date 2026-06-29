@@ -1,8 +1,8 @@
-# Bash Style Guide
+### Bash Style Guide
 
 Defensive Bash programming techniques for production-grade scripts.
 
-## Strict Mode
+#### Strict Mode
 
 Enable at the start of every script.
 
@@ -17,7 +17,7 @@ Key flags:
 - `set -u`: Exit on undefined variable reference
 - `set -o pipefail`: Pipe fails if any command fails (not just last)
 
-## Error Trapping and Cleanup
+#### Error Trapping and Cleanup
 
 ```bash
 trap 'echo "Error on line $LINENO"' ERR
@@ -26,7 +26,7 @@ trap 'rm -rf -- "$TMPDIR"' EXIT
 TMPDIR=$(mktemp -d)
 ```
 
-## Variable Safety
+#### Variable Safety
 
 Always quote variables to prevent word splitting and globbing.
 
@@ -41,7 +41,7 @@ cp "$source" "$dest"
 : "${REQUIRED_VAR:?REQUIRED_VAR is not set}"
 ```
 
-## Quoted Newlines
+#### Quoted Newlines
 
 Do not treat a newline inside a correctly quoted shell word as a command
 separator. In Bash and POSIX-style shells, single quotes preserve the literal
@@ -58,7 +58,7 @@ downstream tools. If a path or argument must be single-line, recommend explicit
 input validation. Phrase that as compatibility/input validation, not shell
 injection, when the value is already correctly quoted.
 
-## Parameter Expansion and Prefix/Suffix Stripping
+#### Parameter Expansion and Prefix/Suffix Stripping
 
 `${var#word}`, `${var##word}`, `${var%word}`, and `${var%%word}` remove shell
 patterns, not literal strings. `word` can contain glob metacharacters such as
@@ -102,7 +102,7 @@ outside:
 [[ $path == $root/* ]]     # WRONG if root contains glob characters
 ```
 
-## Array Handling
+#### Array Handling
 
 ```bash
 declare -a items=("item 1" "item 2" "item 3")
@@ -114,7 +114,7 @@ done
 mapfile -t lines < <(some_command)
 ```
 
-## Conditionals
+#### Conditionals
 
 Use `[[ ]]` for Bash-specific features.
 
@@ -128,14 +128,14 @@ if [[ -z "${VAR:-}" ]]; then
 fi
 ```
 
-## Script Directory Detection
+#### Script Directory Detection
 
 ```bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SCRIPT_NAME="$(basename -- "${BASH_SOURCE[0]}")"
 ```
 
-## Function Template
+#### Function Template
 
 ```bash
 validate_file() {
@@ -161,7 +161,7 @@ process_files() {
 }
 ```
 
-## Temporary Files
+#### Temporary Files
 
 ```bash
 trap 'rm -rf -- "$TMPDIR"' EXIT
@@ -169,7 +169,7 @@ TMPDIR=$(mktemp -d) || { echo "ERROR: Failed to create temp directory" >&2; exit
 TMPFILE="$TMPDIR/temp.txt"
 ```
 
-## Argument Parsing
+#### Argument Parsing
 
 ```bash
 VERBOSE=false
@@ -206,7 +206,7 @@ done
 [[ -n "$OUTPUT_FILE" ]] || { echo "ERROR: -o/--output is required" >&2; usage 1; }
 ```
 
-## Structured Logging
+#### Structured Logging
 
 ```bash
 log_info()  { echo "[$(date +'%Y-%m-%d %H:%M:%S')] INFO: $*" >&2; }
@@ -219,7 +219,7 @@ log_debug() {
 }
 ```
 
-## Process Orchestration with Signals
+#### Process Orchestration with Signals
 
 ```bash
 PIDS=()
@@ -241,7 +241,7 @@ PIDS+=($!)
 wait
 ```
 
-## Safe File Operations
+#### Safe File Operations
 
 ```bash
 safe_move() {
@@ -261,7 +261,7 @@ atomic_write() {
 }
 ```
 
-## Idempotent Design
+#### Idempotent Design
 
 Scripts should be safe to rerun.
 
@@ -273,7 +273,7 @@ ensure_directory() {
 }
 ```
 
-## Dry-Run Support
+#### Dry-Run Support
 
 ```bash
 DRY_RUN="${DRY_RUN:-false}"
@@ -289,7 +289,7 @@ run_cmd() {
 run_cmd cp "$source" "$dest"
 ```
 
-## Named Parameters Pattern
+#### Named Parameters Pattern
 
 ```bash
 process_data() {
@@ -310,7 +310,7 @@ process_data() {
 }
 ```
 
-## Dependency Checking
+#### Dependency Checking
 
 ```bash
 check_dependencies() {
@@ -328,7 +328,7 @@ check_dependencies() {
 }
 ```
 
-## NUL-Safe File Iteration
+#### NUL-Safe File Iteration
 
 ```bash
 while IFS= read -r -d '' file; do
@@ -336,7 +336,7 @@ while IFS= read -r -d '' file; do
 done < <(find /path -type f -print0)
 ```
 
-## Best Practices
+#### Best Practices
 
 1. Always use strict mode: `set -Eeuo pipefail`
 2. Quote all variables: `"$variable"`

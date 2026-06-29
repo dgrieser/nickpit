@@ -44,7 +44,7 @@ func (s *finalizingPriorityDowngradeLLM) Review(ctx context.Context, req *llm.Re
 	cloned := *req
 	cloned.Messages = cloneTestMessages(req.Messages)
 	s.finalizeRequests = append(s.finalizeRequests, &cloned)
-	findings := testPayloadFindingsFromJSON(req.Messages[1].Content)
+	findings := testPayloadFindingsFromJSON(taskMessageContent(req))
 	for i := range findings {
 		findings[i].Finalization = &model.FindingFinalization{
 			Title:           "Final " + findings[i].Title,
@@ -926,7 +926,7 @@ func classifyLaneCall(req *llm.ReviewRequest) string {
 		system = req.Messages[0].Content
 	}
 	if len(req.Messages) > 1 {
-		user = req.Messages[1].Content
+		user = taskMessageContent(req)
 	}
 	switch {
 	case req.SchemaKind == llm.SchemaKindVerify:

@@ -6,7 +6,12 @@ You receive the original review context (patch, changed files, diff hunks) and t
 - `finding.review_confidence_score`: confidence from another engineer who did an initial code review
 - `finding.verification`: the second-pass of another engineer's verdict with `verification.id`, `verification.verdict` (`confirmed`/`refuted`/`unverified`), `verification.priority`, `verification.confidence_score`, and `verification.remarks`
 
-Your job:
+{{- if .StyleGuideToolchainSnippet}}
+
+{{.StyleGuideToolchainSnippet}}
+{{- end}}
+
+## YOUR TASK
 For each finding, you will:
 - decide on the final `finalization.priority` by reasoning about current `verification.priority` and `finding.priority`
     - the "priority floor" of a finding is
@@ -42,10 +47,6 @@ For each finding, you will:
 - explain what you did in `finalization.remarks`
 
 DO NOT introduce new findings that no engineer raised
-{{- if .StyleGuideToolchainSnippet}}
-
-{{.StyleGuideToolchainSnippet}}
-{{- end}}
 
 {{.PrioritySnippet}}
 

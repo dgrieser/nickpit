@@ -65,7 +65,7 @@ func TestSummarizeShortensBodyAndCopiesFinalizationFields(t *testing.T) {
 		t.Fatalf("schema kind = %v, want summarize", got)
 	}
 	// The user prompt's source body must be the finalized body, not the original.
-	if userPrompt := llmClient.reqs[0].Messages[1].Content; !strings.Contains(userPrompt, "long finalized body") || !strings.Contains(userPrompt, findingID) {
+	if userPrompt := taskMessageContent(llmClient.reqs[0]); !strings.Contains(userPrompt, "long finalized body") || !strings.Contains(userPrompt, findingID) {
 		t.Fatalf("summarize user prompt missing finalized body or id:\n%s", userPrompt)
 	}
 	if sys := llmClient.reqs[0].Messages[0].Content; !strings.Contains(sys, "summarization") {
@@ -167,7 +167,7 @@ func TestSummarizeShortensOverallExplanation(t *testing.T) {
 		t.Fatalf("Summarize returned err: %v", err)
 	}
 	// The input overall_explanation is sent to the model to shorten.
-	if up := llmClient.reqs[0].Messages[1].Content; !strings.Contains(up, overallSummaryID) || !strings.Contains(up, "LONG_OVERALL_MARKER") {
+	if up := taskMessageContent(llmClient.reqs[0]); !strings.Contains(up, overallSummaryID) || !strings.Contains(up, "LONG_OVERALL_MARKER") {
 		t.Fatalf("summarize user prompt missing overall summary item:\n%s", up)
 	}
 	// The shortened overall_explanation is adopted.
@@ -217,7 +217,7 @@ func TestSummarizeShortensProseSuggestionsInSameCall(t *testing.T) {
 	if len(llmClient.reqs) != 1 {
 		t.Fatalf("requests = %d, want one shared summarize call", len(llmClient.reqs))
 	}
-	userPrompt := llmClient.reqs[0].Messages[1].Content
+	userPrompt := taskMessageContent(llmClient.reqs[0])
 	if !strings.Contains(userPrompt, `"kind": "suggestion"`) || !strings.Contains(userPrompt, suggestionID) {
 		t.Fatalf("summarize user prompt missing prose suggestion item:\n%s", userPrompt)
 	}
@@ -281,7 +281,7 @@ func TestSummarizeDisableSuggestionsOmitsSuggestionItems(t *testing.T) {
 	if strings.Contains(systemPrompt, "suggestion") {
 		t.Fatalf("summarize system prompt should not mention suggestions when skipped:\n%s", systemPrompt)
 	}
-	userPrompt := llmClient.reqs[0].Messages[1].Content
+	userPrompt := taskMessageContent(llmClient.reqs[0])
 	if strings.Contains(userPrompt, `"kind": "suggestion"`) || strings.Contains(userPrompt, "prose suggestion") {
 		t.Fatalf("summarize user prompt should not carry suggestion items:\n%s", userPrompt)
 	}

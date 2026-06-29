@@ -98,7 +98,8 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindVerdict, false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("verdict", outputSchemaSnippet, opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -117,7 +118,7 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		DisableSuggestions         bool
 		StyleGuideToolchainSnippet string
 	}{
-		OutputSchemaSnippet:        verdictOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
+		OutputSchemaSnippet:        outputSchemaSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisablePatchSummary:        opts.DisablePatchSummary,
 		DisableSuggestions:         opts.DisableSuggestions,
@@ -439,11 +440,4 @@ func findingConfidence(f model.Finding) float64 {
 		return f.Verification.ConfidenceScore
 	}
 	return f.ConfidenceScore
-}
-
-func verdictOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
-	return llm.VerdictExamplePromptSnippet()
 }

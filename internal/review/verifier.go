@@ -68,8 +68,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	systemSnippet := verifyOutputSchemaSnippetFor(req.DisableJSONResponseFormat)
-	exampleSnippet := llm.VerifyExamplePromptSnippet()
+	systemSnippet := exampleSnippetFor(llm.SchemaKindVerify, false)
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                agentKind,
@@ -161,7 +160,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			NoToolsSystem:                     systemTemplate,
 			NoToolsSchemaSnippet:              systemSnippet,
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
-			JSONRetryExampleSnippet:           exampleSnippet,
+			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions)
 			},
@@ -322,13 +321,6 @@ func truncateFindingTitle(title string) string {
 		title = string([]rune(title)[:57]) + "..."
 	}
 	return title
-}
-
-func verifyOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
-	return llm.VerifyExamplePromptSnippet()
 }
 
 func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {

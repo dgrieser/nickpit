@@ -118,7 +118,8 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat), opts.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindSummarize, false)
+	commonSnippets, err := agentCommonSystemPromptSnippets("summarize", outputSchemaSnippet, opts.DisableSuggestions)
 	if err != nil {
 		return nil, model.AgentRun{}, err
 	}
@@ -128,7 +129,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 		DisablePatchSummary bool
 		DisableSuggestions  bool
 	}{
-		OutputSchemaSnippet: summarizeOutputSchemaSnippetFor(opts.DisableJSONResponseFormat),
+		OutputSchemaSnippet: outputSchemaSnippet,
 		OutputFormatSnippet: commonSnippets.outputFormat,
 		DisablePatchSummary: opts.DisablePatchSummary,
 		DisableSuggestions:  opts.DisableSuggestions,
@@ -514,13 +515,6 @@ func baseSummarization(finding *model.Finding) *model.FindingSummarization {
 		ConfidenceScore: finding.ConfidenceScore,
 		Suggestions:     cloneSuggestions(finding.Suggestions),
 	}
-}
-
-func summarizeOutputSchemaSnippetFor(disableJSONResponseFormat bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
-	return llm.SummarizeExamplePromptSnippet()
 }
 
 func summarizeItemKindOrDefault(item summarizeTextItem) summarizeItemKind {

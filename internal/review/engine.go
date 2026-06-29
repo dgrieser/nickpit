@@ -728,7 +728,7 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 	if err != nil {
 		return agentResult{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", mergeOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.DisableSuggestions), req.DisableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", exampleSnippetFor(llm.SchemaKindMerge, req.DisableSuggestions), req.DisableSuggestions)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1048,7 +1048,7 @@ func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userP
 	if err != nil {
 		return agentResult{}, err
 	}
-	commonSnippets, err := agentCommonSystemPromptSnippets("merge", mergeOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.DisableSuggestions), req.DisableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippets("merge", exampleSnippetFor(llm.SchemaKindMerge, req.DisableSuggestions), req.DisableSuggestions)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1717,7 +1717,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 			return "", err
 		}
 	}
-	outputSchemaSnippet := reviewOutputSchemaSnippetFor(req.DisableJSONResponseFormat, req.DisableSuggestions)
+	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindReview, req.DisableSuggestions)
 	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, outputSchemaSnippet, req.DisableSuggestions)
 	if err != nil {
 		return "", err
@@ -2007,22 +2007,22 @@ func addTokenUsage(left, right model.TokenUsage) model.TokenUsage {
 }
 
 func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
-	if kind == llm.SchemaKindVerify {
+	switch kind {
+	case llm.SchemaKindVerify:
 		return llm.VerifyExamplePromptSnippet()
-	}
-	if kind == llm.SchemaKindMerge {
+	case llm.SchemaKindMerge:
 		return llm.MergeExamplePromptSnippetFor(disableSuggestions)
-	}
-	if kind == llm.SchemaKindFinalize {
+	case llm.SchemaKindFinalize:
 		return llm.FinalizeExamplePromptSnippetFor(disableSuggestions)
-	}
-	if kind == llm.SchemaKindVerdict {
+	case llm.SchemaKindVerdict:
 		return llm.VerdictExamplePromptSnippet()
-	}
-	if kind == llm.SchemaKindSummarize {
+	case llm.SchemaKindSummarize:
 		return llm.SummarizeExamplePromptSnippet()
+	case llm.SchemaKindReview:
+		return llm.FindingsExamplePromptSnippetFor(disableSuggestions)
+	default:
+		return ""
 	}
-	return llm.FindingsExamplePromptSnippetFor(disableSuggestions)
 }
 
 func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool) ([]llm.Message, error) {
@@ -2146,13 +2146,12 @@ func agentCommonSystemPromptSnippets(agentRole string, outputSchemaSnippet strin
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
-	outputFormatSnippet := "output_format"
-	if outputSchemaSnippet == "" {
-		outputFormatSnippet = "response_format"
-	}
-	outputFormat, err := agentCommonSystemPromptSnippet(agentRole, outputFormatSnippet, outputSchemaSnippet, disableSuggestions)
-	if err != nil {
-		return agentCommonSystemPromptSnippetSet{}, err
+	var outputFormat string
+	if outputSchemaSnippet != "" {
+		outputFormat, err = agentCommonSystemPromptSnippet(agentRole, "output_format", outputSchemaSnippet, disableSuggestions)
+		if err != nil {
+			return agentCommonSystemPromptSnippetSet{}, err
+		}
 	}
 	return agentCommonSystemPromptSnippetSet{
 		findingInstructions: findingInstructions,
@@ -2181,7 +2180,6 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 		guides = append(guides, model.StyleGuide{
 			Language: language,
 			Content:  content,
-			Title:    styleGuideTitle(content),
 		})
 	}
 	return guides, nil
@@ -2209,16 +2207,6 @@ func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []mod
 		return "", fmt.Errorf("review: rendering styleguide/toolchain prompt: %w", err)
 	}
 	return strings.TrimSpace(rendered), nil
-}
-
-func styleGuideTitle(content string) string {
-	for line := range strings.SplitSeq(content, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "# "); ok {
-			return strings.TrimSpace(rest)
-		}
-	}
-	return ""
 }
 
 func changedLanguages(ctx *model.ReviewContext) []string {
@@ -2362,39 +2350,6 @@ func mergeConstraintsForRequest(req model.ReviewRequest) llm.ResponseConstraints
 
 func hasResponseConstraints(c llm.ResponseConstraints) bool {
 	return c.MinPriority != nil || c.MaxPriority != nil || len(c.AllowedCorrectness) > 0
-}
-
-func reviewOutputSchemaSnippetFor(disableJSONResponseFormat bool, disableSuggestions bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
-	return llm.FindingsExamplePromptSnippetFor(disableSuggestions)
-}
-
-func mergeOutputSchemaSnippetFor(disableJSONResponseFormat bool, disableSuggestions bool) string {
-	if !disableJSONResponseFormat {
-		return ""
-	}
-	return llm.MergeExamplePromptSnippetFor(disableSuggestions)
-}
-
-func outputSchemaSnippetFor(kind llm.SchemaKind, disableJSONResponseFormat bool, disableSuggestions bool) string {
-	if kind == llm.SchemaKindMerge {
-		return mergeOutputSchemaSnippetFor(disableJSONResponseFormat, disableSuggestions)
-	}
-	if kind == llm.SchemaKindFinalize {
-		return finalizeOutputSchemaSnippetFor(disableJSONResponseFormat, disableSuggestions)
-	}
-	if kind == llm.SchemaKindVerdict {
-		return verdictOutputSchemaSnippetFor(disableJSONResponseFormat)
-	}
-	if kind == llm.SchemaKindVerify {
-		return verifyOutputSchemaSnippetFor(disableJSONResponseFormat)
-	}
-	if kind == llm.SchemaKindSummarize {
-		return summarizeOutputSchemaSnippetFor(disableJSONResponseFormat)
-	}
-	return reviewOutputSchemaSnippetFor(disableJSONResponseFormat, disableSuggestions)
 }
 
 // agentLoopKind maps an agentSpec role to the loop kind. Roles are uniform

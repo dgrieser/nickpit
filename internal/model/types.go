@@ -224,7 +224,6 @@ type DiffHunk struct {
 type StyleGuide struct {
 	Language string `json:"language"`
 	Content  string `json:"content"`
-	Title    string `json:"-"`
 }
 
 type Comment struct {

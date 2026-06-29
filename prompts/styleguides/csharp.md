@@ -1,10 +1,10 @@
-# C# Style Guide
+### C# Style Guide
 
 C# conventions and best practices for .NET development.
 
-## Naming Conventions
+#### Naming Conventions
 
-### General Rules
+##### General Rules
 
 ```csharp
 // PascalCase for public members, types, namespaces
@@ -30,7 +30,7 @@ public const int MaxRetryCount = 3;
 public const string DefaultCurrency = "USD";
 ```
 
-### Field and Property Naming
+##### Field and Property Naming
 
 ```csharp
 public class Order
@@ -51,9 +51,9 @@ public class Order
 }
 ```
 
-## Async/Await Patterns
+#### Async/Await Patterns
 
-### Basic Async Usage
+##### Basic Async Usage
 
 ```csharp
 // Always use async/await for I/O operations
@@ -75,7 +75,7 @@ var user = GetUserAsync(id).Result;
 var user = await GetUserAsync(id);
 ```
 
-### Async Best Practices
+##### Async Best Practices
 
 ```csharp
 // Use ConfigureAwait(false) in library code
@@ -108,7 +108,7 @@ private async void Button_Click(object sender, EventArgs e)
 }
 ```
 
-### Parallel Async Operations
+##### Parallel Async Operations
 
 ```csharp
 // Execute independent operations in parallel
@@ -150,9 +150,9 @@ public async Task ProcessItemsAsync(IEnumerable<Item> items)
 }
 ```
 
-## LINQ
+#### LINQ
 
-### Query Syntax vs Method Syntax
+##### Query Syntax vs Method Syntax
 
 ```csharp
 // Method syntax (preferred for simple queries)
@@ -170,7 +170,7 @@ var orderSummary =
     select new { Customer = g.Key, Total = g.Sum(o => o.Total) };
 ```
 
-### LINQ Best Practices
+##### LINQ Best Practices
 
 ```csharp
 // Use appropriate methods
@@ -199,7 +199,7 @@ var names = users
     .ToList();
 ```
 
-### Common LINQ Operations
+##### Common LINQ Operations
 
 ```csharp
 // Filtering
@@ -229,9 +229,9 @@ var result = orders
 var allOrders = customers.SelectMany(c => c.Orders);
 ```
 
-## Dependency Injection
+#### Dependency Injection
 
-### Service Registration
+##### Service Registration
 
 ```csharp
 // In Program.cs or Startup.cs
@@ -255,7 +255,7 @@ public void ConfigureServices(IServiceCollection services)
 }
 ```
 
-### Constructor Injection
+##### Constructor Injection
 
 ```csharp
 public class OrderService : IOrderService
@@ -287,7 +287,7 @@ public class OrderService : IOrderService
 }
 ```
 
-### Options Pattern
+##### Options Pattern
 
 ```csharp
 // Configuration class
@@ -314,9 +314,9 @@ public class EmailService
 }
 ```
 
-## Testing
+#### Testing
 
-### xUnit Basics
+##### xUnit Basics
 
 ```csharp
 public class CalculatorTests
@@ -346,7 +346,7 @@ public class CalculatorTests
 }
 ```
 
-### Mocking with Moq
+##### Mocking with Moq
 
 ```csharp
 public class OrderServiceTests
@@ -394,7 +394,7 @@ public class OrderServiceTests
 }
 ```
 
-### Integration Testing
+##### Integration Testing
 
 ```csharp
 public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
@@ -420,9 +420,9 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 }
 ```
 
-## Common Patterns
+#### Common Patterns
 
-### Null Handling
+##### Null Handling
 
 ```csharp
 // Null-conditional operators
@@ -452,7 +452,7 @@ public void ProcessOrder(Order order)
 }
 ```
 
-### Records and Init-Only Properties
+##### Records and Init-Only Properties
 
 ```csharp
 // Record for immutable data
@@ -472,7 +472,7 @@ public record Order
 var updatedUser = user with { Name = "New Name" };
 ```
 
-### Pattern Matching
+##### Pattern Matching
 
 ```csharp
 // Type patterns
@@ -504,7 +504,7 @@ public bool IsValidSequence(int[] numbers) => numbers switch
 };
 ```
 
-### Disposable Pattern
+##### Disposable Pattern
 
 ```csharp
 public class ResourceManager : IDisposable
@@ -547,9 +547,9 @@ using var manager = new ResourceManager("file.txt");
 manager.DoWork();
 ```
 
-## Code Organization
+#### Code Organization
 
-### File Structure
+##### File Structure
 
 ```csharp
 // One type per file (generally)
@@ -584,7 +584,7 @@ public class UserService
 }
 ```
 
-### Project Structure
+##### Project Structure
 
 ```
 Solution/

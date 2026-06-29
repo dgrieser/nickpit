@@ -1,10 +1,10 @@
-# Python Style Guide
+### Python Style Guide
 
 Python conventions following PEP 8 and modern best practices.
 
-## PEP 8 Fundamentals
+#### PEP 8 Fundamentals
 
-### Naming Conventions
+##### Naming Conventions
 
 ```python
 # Variables and functions: snake_case
@@ -34,7 +34,7 @@ class Base:
 _module_cache = {}
 ```
 
-### Indentation and Line Length
+##### Indentation and Line Length
 
 ```python
 # 4 spaces per indentation level
@@ -58,7 +58,7 @@ users = [
 ]
 ```
 
-### Imports
+##### Imports
 
 ```python
 # Standard library
@@ -80,9 +80,9 @@ from myapp.utils import format_date
 # Good: from module import specific_item
 ```
 
-## Type Hints
+#### Type Hints
 
-### Basic Type Annotations
+##### Basic Type Annotations
 
 ```python
 from typing import Optional, List, Dict, Tuple, Union, Any
@@ -106,7 +106,7 @@ def process_items(items: List[str]) -> Dict[str, int]:
     pass
 ```
 
-### Advanced Type Hints
+##### Advanced Type Hints
 
 ```python
 from typing import (
@@ -142,7 +142,7 @@ class UserDict(TypedDict):
 MAX_SIZE: Final = 100
 ```
 
-### Type Hints in Classes
+##### Type Hints in Classes
 
 ```python
 from dataclasses import dataclass
@@ -171,9 +171,9 @@ class Builder:
         return self
 ```
 
-## Docstrings
+#### Docstrings
 
-### Function Docstrings
+##### Function Docstrings
 
 ```python
 def calculate_discount(
@@ -205,7 +205,7 @@ def calculate_discount(
     return max(discounted, min_price)
 ```
 
-### Class Docstrings
+##### Class Docstrings
 
 ```python
 class UserService:
@@ -238,9 +238,9 @@ class UserService:
         self.cache = cache
 ```
 
-## Virtual Environments
+#### Virtual Environments
 
-### Setup Commands
+##### Setup Commands
 
 ```bash
 # Create virtual environment
@@ -259,7 +259,7 @@ pip install -r requirements.txt
 pip freeze > requirements.txt
 ```
 
-### Modern Tools
+##### Modern Tools
 
 ```bash
 # Using uv (recommended)
@@ -276,7 +276,7 @@ pipenv install
 pipenv install requests
 ```
 
-### Project Structure
+##### Project Structure
 
 ```
 project/
@@ -294,9 +294,9 @@ project/
 └── README.md
 ```
 
-## Testing
+#### Testing
 
-### pytest Basics
+##### pytest Basics
 
 ```python
 import pytest
@@ -322,7 +322,7 @@ def test_add_parametrized(a, b, expected):
     assert add(a, b) == expected
 ```
 
-### Fixtures
+##### Fixtures
 
 ```python
 import pytest
@@ -349,7 +349,7 @@ def test_user_creation(db, sample_user):
     assert found.name == "Test User"
 ```
 
-### Mocking
+##### Mocking
 
 ```python
 from unittest.mock import Mock, patch, MagicMock
@@ -374,9 +374,9 @@ def test_with_patch_decorator(mock_api):
     assert result["status"] == "ok"
 ```
 
-## Error Handling
+#### Error Handling
 
-### Exception Patterns
+##### Exception Patterns
 
 ```python
 # Define custom exceptions
@@ -399,7 +399,7 @@ class NotFoundError(AppError):
         super().__init__(f"{resource} '{identifier}' not found")
 ```
 
-### Exception Handling
+##### Exception Handling
 
 ```python
 def get_user(user_id: int) -> User:
@@ -425,9 +425,9 @@ def database_transaction(db):
         raise
 ```
 
-## Common Patterns
+#### Common Patterns
 
-### Dataclasses
+##### Dataclasses
 
 ```python
 from dataclasses import dataclass, field
@@ -456,7 +456,7 @@ class Point:
         return ((self.x - other.x)**2 + (self.y - other.y)**2) ** 0.5
 ```
 
-### Context Managers
+##### Context Managers
 
 ```python
 from contextlib import contextmanager
@@ -493,7 +493,7 @@ class DatabaseConnection:
         return False  # Don't suppress exceptions
 ```
 
-### Decorators
+##### Decorators
 
 ```python
 from functools import wraps
@@ -527,9 +527,9 @@ def fetch_data(url: str) -> dict:
     return response.json()
 ```
 
-## Code Quality Tools
+#### Code Quality Tools
 
-### Ruff Configuration
+##### Ruff Configuration
 
 ```toml
 # pyproject.toml
@@ -553,7 +553,7 @@ ignore = ["E501"]  # Line too long (handled by formatter)
 known-first-party = ["myapp"]
 ```
 
-### Type Checking with mypy
+##### Type Checking with mypy
 
 ```toml
 # pyproject.toml
