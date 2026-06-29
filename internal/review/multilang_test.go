@@ -606,29 +606,40 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 
 func styleGuideContentsFromSystem(system string) map[string]string {
 	titleLanguages := map[string]string{
-		"# Bash Style Guide":          "shell",
-		"# C# Style Guide":            "csharp",
-		"# Go Style Guide":            "go",
-		"# Helm Style Guide":          "helm",
-		"# HTML & CSS Style Guide":    "html",
-		"# JavaScript Style Guide":    "javascript",
-		"# Kubernetes Style Guide":    "kubernetes",
-		"# Python Style Guide":        "python",
-		"# SQL Optimization Patterns": "sql",
-		"# TypeScript Style Guide":    "typescript",
+		"Bash Style Guide":          "shell",
+		"C# Style Guide":            "csharp",
+		"Go Style Guide":            "go",
+		"Helm Style Guide":          "helm",
+		"HTML & CSS Style Guide":    "html",
+		"JavaScript Style Guide":    "javascript",
+		"Kubernetes Style Guide":    "kubernetes",
+		"Python Style Guide":        "python",
+		"SQL Optimization Patterns": "sql",
+		"TypeScript Style Guide":    "typescript",
+	}
+	type guideStart struct {
+		language string
+		offset   int
+	}
+	var starts []guideStart
+	offset := 0
+	for _, line := range strings.SplitAfter(system, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			title := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+			if language, ok := titleLanguages[title]; ok {
+				starts = append(starts, guideStart{language: language, offset: offset})
+			}
+		}
+		offset += len(line)
 	}
 	out := make(map[string]string)
-	for _, section := range strings.Split(system, "\n# ")[1:] {
-		section = "# " + section
-		heading, _, ok := strings.Cut(section, "\n")
-		if !ok {
-			continue
+	for i, start := range starts {
+		end := len(system)
+		if i+1 < len(starts) {
+			end = starts[i+1].offset
 		}
-		language, ok := titleLanguages[strings.TrimSpace(heading)]
-		if !ok {
-			continue
-		}
-		out[language] = section
+		out[start.language] = system[start.offset:end]
 	}
 	return out
 }
