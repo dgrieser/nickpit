@@ -2146,9 +2146,12 @@ func agentCommonSystemPromptSnippets(agentRole string, outputSchemaSnippet strin
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
-	outputFormat, err := agentCommonSystemPromptSnippet(agentRole, "output_format", outputSchemaSnippet, disableSuggestions)
-	if err != nil {
-		return agentCommonSystemPromptSnippetSet{}, err
+	var outputFormat string
+	if outputSchemaSnippet != "" {
+		outputFormat, err = agentCommonSystemPromptSnippet(agentRole, "output_format", outputSchemaSnippet, disableSuggestions)
+		if err != nil {
+			return agentCommonSystemPromptSnippetSet{}, err
+		}
 	}
 	return agentCommonSystemPromptSnippetSet{
 		findingInstructions: findingInstructions,
