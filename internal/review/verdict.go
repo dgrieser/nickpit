@@ -155,17 +155,16 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 	verdictStart := time.Now()
 	e.logProgress(logging.StageVerdict, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
-		name:                    "Verdict Review",
-		role:                    "verdict",
-		system:                  system,
-		noToolsSystem:           system,
-		user:                    userPrompt,
-		schema:                  schema,
-		schemaKind:              llm.SchemaKindVerdict,
-		constraints:             constraints,
-		jsonRetryExampleSnippet: outputSchemaSnippet,
-		hasTools:                false,
-		validateResponse:        verdictOutputValidator(),
+		name:             "Verdict Review",
+		role:             "verdict",
+		system:           system,
+		noToolsSystem:    system,
+		user:             userPrompt,
+		schema:           schema,
+		schemaKind:       llm.SchemaKindVerdict,
+		constraints:      constraints,
+		hasTools:         false,
+		validateResponse: verdictOutputValidator(),
 	}, req)
 	if err != nil {
 		return in, result.run, err

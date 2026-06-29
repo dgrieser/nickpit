@@ -92,10 +92,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	if agent.hasTools {
 		tools = reviewerToolDefinitions()
 	}
-	reviewSnippet := agent.jsonRetryExampleSnippet
-	if reviewSnippet == "" {
-		reviewSnippet = exampleSnippetFor(agent.schemaKind, req.DisableSuggestions)
-	}
+	reviewSnippet := exampleSnippetFor(agent.schemaKind, req.DisableSuggestions)
 	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
 		AgentKind:                  agentLoopKind(agent.role),

@@ -69,7 +69,6 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		return nil, usage, err
 	}
 	systemSnippet := exampleSnippetFor(llm.SchemaKindVerify, false)
-	exampleSnippet := systemSnippet
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                agentKind,
@@ -161,7 +160,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			NoToolsSystem:                     systemTemplate,
 			NoToolsSchemaSnippet:              systemSnippet,
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
-			JSONRetryExampleSnippet:           exampleSnippet,
+			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions)
 			},

@@ -261,18 +261,17 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 }
 
 type agentSpec struct {
-	name                    string
-	role                    string
-	system                  string
-	noToolsSystem           string
-	user                    string
-	extraMessages           []llm.Message
-	questionsSnippet        string
-	schema                  []byte
-	schemaKind              llm.SchemaKind
-	constraints             llm.ResponseConstraints
-	hasTools                bool
-	jsonRetryExampleSnippet string
+	name             string
+	role             string
+	system           string
+	noToolsSystem    string
+	user             string
+	extraMessages    []llm.Message
+	questionsSnippet string
+	schema           []byte
+	schemaKind       llm.SchemaKind
+	constraints      llm.ResponseConstraints
+	hasTools         bool
 	// validateResponse returns the typed error so retry guidance metadata can
 	// be rendered after otherwise valid JSON is parsed.
 	validateResponse func(*llm.ReviewResponse) *llm.InvalidResponseError

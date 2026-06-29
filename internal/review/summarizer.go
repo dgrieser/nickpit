@@ -160,16 +160,15 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	summarizeStart := time.Now()
 	e.logProgress(logging.StageSummarize, logging.StateStart, fmt.Sprintf("items=%d", len(items)))
 	result, err := e.runAgent(ctx, agentSpec{
-		name:                    "Summarize Review",
-		role:                    "summarize",
-		system:                  system,
-		noToolsSystem:           system,
-		user:                    userPrompt,
-		schema:                  schema,
-		schemaKind:              llm.SchemaKindSummarize,
-		jsonRetryExampleSnippet: outputSchemaSnippet,
-		hasTools:                false,
-		validateResponse:        summarizerOutputValidator(items),
+		name:             "Summarize Review",
+		role:             "summarize",
+		system:           system,
+		noToolsSystem:    system,
+		user:             userPrompt,
+		schema:           schema,
+		schemaKind:       llm.SchemaKindSummarize,
+		hasTools:         false,
+		validateResponse: summarizerOutputValidator(items),
 	}, req)
 	if err != nil {
 		// Preserve the partial AgentRun (tokens accrued before the loop aborted)
