@@ -32,7 +32,7 @@ func (s *recordingMultiAgentLLM) Review(_ context.Context, req *llm.ReviewReques
 	if strings.Contains(system, "DO NOT produce review findings yourself") {
 		s.context++
 		if s.context == 1 && s.contextPayload == nil && len(req.Messages) > 1 {
-			_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.contextPayload)
+			_ = json.Unmarshal([]byte(taskMessageContent(req)), &s.contextPayload)
 		}
 		return &llm.ReviewResponse{
 			RawResponse: "context done\n\n## Assumed Patch Purpose\nAssumption.",
@@ -121,7 +121,7 @@ func TestEngineSkipsToolchainCaptureWhenNil(t *testing.T) {
 		t.Fatal("no requests captured")
 	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.reqs[0])), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := payload["toolchain_versions"]; ok {

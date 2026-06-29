@@ -108,7 +108,7 @@ func TestVerdictDisableSuggestionsOmitsFinalizationSuggestions(t *testing.T) {
 	if strings.Contains(systemPrompt, "suggestion") {
 		t.Fatalf("verdict system prompt should not mention suggestions when skipped:\n%s", systemPrompt)
 	}
-	rawPayload := llmClient.reqs[0].Messages[1].Content
+	rawPayload := taskMessageContent(llmClient.reqs[0])
 	if strings.Contains(rawPayload, "suggestion") {
 		t.Fatalf("verdict user prompt should not include suggestions:\n%s", rawPayload)
 	}
@@ -250,12 +250,13 @@ func TestVerdictConfidenceThresholdDropMetadataUsesDisplayConfidenceSource(t *te
 
 func verdictPromptPayload(t *testing.T, req *llm.ReviewRequest) map[string]any {
 	t.Helper()
-	if req == nil || len(req.Messages) < 2 {
+	content := taskMessageContent(req)
+	if content == "" {
 		t.Fatalf("verdict request messages = %#v", req)
 	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
-		t.Fatalf("unmarshal verdict payload: %v\n%s", err, req.Messages[1].Content)
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		t.Fatalf("unmarshal verdict payload: %v\n%s", err, content)
 	}
 	return payload
 }

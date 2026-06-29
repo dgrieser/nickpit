@@ -266,14 +266,113 @@ func TestPromptPayloadCanUseLegacyDiffHunks(t *testing.T) {
 
 func reviewPromptPayload(t *testing.T, req *llm.ReviewRequest) map[string]any {
 	t.Helper()
-	if req == nil || len(req.Messages) < 2 {
+	content := taskMessageContent(req)
+	if content == "" {
 		t.Fatalf("review request messages = %#v", req)
 	}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
-		t.Fatalf("unmarshal review payload: %v\n%s", err, req.Messages[1].Content)
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		t.Fatalf("unmarshal review payload: %v\n%s", err, content)
 	}
 	return payload
+}
+
+func TestRunAgentAddsExampleMessageForJSONAgents(t *testing.T) {
+	for _, disableJSONResponseFormat := range []bool{false, true} {
+		llmClient := &capturingLLM{}
+		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+		_, err := engine.runAgent(context.Background(), agentSpec{
+			name:       "Merge Findings",
+			role:       "merge",
+			system:     "system prompt",
+			user:       `{"task":true}`,
+			schemaKind: llm.SchemaKindMerge,
+			hasTools:   false,
+		}, model.ReviewRequest{DisableJSONResponseFormat: disableJSONResponseFormat})
+		if err != nil {
+			t.Fatalf("runAgent(disableJSONResponseFormat=%v) returned err: %v", disableJSONResponseFormat, err)
+		}
+		if len(llmClient.reqs) != 1 {
+			t.Fatalf("requests = %d, want 1", len(llmClient.reqs))
+		}
+		messages := llmClient.reqs[0].Messages
+		if len(messages) < 3 {
+			t.Fatalf("messages = %#v, want system/example/user", messages)
+		}
+		if messages[0].Role != "system" || messages[0].Content != "system prompt" {
+			t.Fatalf("system message = %#v", messages[0])
+		}
+		if messages[1].Role != "user" || strings.TrimSpace(messages[1].Content) != strings.TrimSpace(llm.MergeExamplePromptSnippet()) {
+			t.Fatalf("example message = %#v", messages[1])
+		}
+		if messages[2].Role != "user" || messages[2].Content != `{"task":true}` {
+			t.Fatalf("task message = %#v", messages[2])
+		}
+	}
+}
+
+func TestRunAgentSkipsExampleMessageForTextAgents(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	_, err := engine.runAgent(context.Background(), agentSpec{
+		name:       "Collect Context",
+		role:       "context",
+		system:     "system prompt",
+		user:       "plain text task",
+		schemaKind: llm.SchemaKindText,
+		hasTools:   false,
+	}, model.ReviewRequest{})
+	if err != nil {
+		t.Fatalf("runAgent returned err: %v", err)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(llmClient.reqs))
+	}
+	messages := llmClient.reqs[0].Messages
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want only system/user", messages)
+	}
+	if messages[1].Role != "user" || messages[1].Content != "plain text task" {
+		t.Fatalf("task message = %#v", messages[1])
+	}
+}
+
+func taskMessageContent(req *llm.ReviewRequest) string {
+	if req == nil {
+		return ""
+	}
+	for i := 1; i < len(req.Messages); i++ {
+		msg := req.Messages[i]
+		if msg.Role != "user" || isExamplePromptMessage(req, msg) {
+			continue
+		}
+		return msg.Content
+	}
+	return ""
+}
+
+func isExamplePromptMessage(req *llm.ReviewRequest, msg llm.Message) bool {
+	content := strings.TrimSpace(msg.Content)
+	if content == "" {
+		return false
+	}
+	kinds := []llm.SchemaKind{req.SchemaKind}
+	if req.SchemaKind == "" {
+		kinds = []llm.SchemaKind{
+			llm.SchemaKindReview,
+			llm.SchemaKindMerge,
+			llm.SchemaKindVerify,
+			llm.SchemaKindFinalize,
+			llm.SchemaKindVerdict,
+			llm.SchemaKindSummarize,
+		}
+	}
+	for _, kind := range kinds {
+		if content == strings.TrimSpace(exampleSnippetFor(kind, false)) || content == strings.TrimSpace(exampleSnippetFor(kind, true)) {
+			return true
+		}
+	}
+	return false
 }
 
 func commentBodies(comments []model.Comment) []string {
@@ -459,7 +558,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		cloned := *req
 		cloned.Messages = cloneTestMessages(req.Messages)
 		s.finalizeRequests = append(s.finalizeRequests, &cloned)
-		findings := testPayloadFindingsFromJSON(req.Messages[1].Content)
+		findings := testPayloadFindingsFromJSON(taskMessageContent(req))
 		for i := range findings {
 			if findings[i].Verification == nil {
 				findings[i].Verification = &model.FindingVerification{ID: findings[i].ID, Verdict: model.VerdictConfirmed, Priority: model.PriorityRank(findings[i].Priority), ConfidenceScore: 0.9, Remarks: "verified"}
@@ -484,7 +583,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		if s.verdictFailErr != nil {
 			return nil, s.verdictFailErr
 		}
-		findings := testPayloadFindingsFromJSON(req.Messages[1].Content)
+		findings := testPayloadFindingsFromJSON(taskMessageContent(req))
 		return &llm.ReviewResponse{
 			OverallCorrectness:     "patch is incorrect",
 			OverallExplanation:     fmt.Sprintf("VERDICT_MARKER findings=%d", len(findings)),
@@ -496,7 +595,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		cloned := *req
 		cloned.Messages = cloneTestMessages(req.Messages)
 		s.summarizeRequests = append(s.summarizeRequests, &cloned)
-		items := testPayloadFindingsFromJSON(req.Messages[1].Content)
+		items := testPayloadFindingsFromJSON(taskMessageContent(req))
 		out := make([]model.Finding, 0, len(items))
 		for _, item := range items {
 			body := item.Body
@@ -516,8 +615,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	cloned := *req
 	cloned.Messages = cloneTestMessages(req.Messages)
 	s.mergeRequests = append(s.mergeRequests, &cloned)
-	if len(req.Messages) > 1 {
-		if strings.Contains(req.Messages[1].Content, `"review_findings"`) {
+	taskContent := taskMessageContent(req)
+	if taskContent != "" {
+		if strings.Contains(taskContent, `"review_findings"`) {
 			if s.dedupeFailErr != nil {
 				return nil, s.dedupeFailErr
 			}
@@ -526,7 +626,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				s.dedupeResponses = s.dedupeResponses[1:]
 				return resp, nil
 			}
-			findings := testPayloadFindingIDsFromJSON(req.Messages[1].Content)
+			findings := testPayloadFindingIDsFromJSON(taskContent)
 			return &llm.ReviewResponse{
 				Findings:               findings,
 				OverallCorrectness:     "patch is incorrect",
@@ -535,7 +635,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				TokensUsed:             model.TokenUsage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4},
 			}, nil
 		}
-		_ = json.Unmarshal([]byte(req.Messages[1].Content), &s.mergePayload)
+		_ = json.Unmarshal([]byte(taskContent), &s.mergePayload)
 	}
 	if s.mergeFailErr != nil {
 		return nil, s.mergeFailErr
@@ -1772,10 +1872,11 @@ func TestMultiAgentClusterMergeAcceptsMergedClusterWithoutTextChanges(t *testing
 func mergePayloadFromRequest(t *testing.T, req *llm.ReviewRequest) map[string]any {
 	t.Helper()
 	var payload map[string]any
-	if len(req.Messages) < 2 {
+	content := taskMessageContent(req)
+	if content == "" {
 		t.Fatalf("merge request messages = %d", len(req.Messages))
 	}
-	if err := json.Unmarshal([]byte(req.Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
 		t.Fatalf("merge payload unmarshal: %v", err)
 	}
 	return payload
@@ -1856,7 +1957,7 @@ func TestDedupeAgentDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	if strings.Contains(req.Messages[0].Content, "include suggestions") {
 		t.Fatalf("dedupe system prompt should not ask for suggestions when skipped:\n%s", req.Messages[0].Content)
 	}
-	userPrompt := req.Messages[1].Content
+	userPrompt := taskMessageContent(req)
 	if strings.Contains(userPrompt, "suggestion should be omitted") || strings.Contains(userPrompt, `"suggestions"`) {
 		t.Fatalf("dedupe user prompt should not include suggestions:\n%s", userPrompt)
 	}
@@ -1883,7 +1984,7 @@ func TestClusterMergeDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	if strings.Contains(req.Messages[0].Content, "include suggestions") {
 		t.Fatalf("merge system prompt should not ask for suggestions when skipped:\n%s", req.Messages[0].Content)
 	}
-	userPrompt := req.Messages[1].Content
+	userPrompt := taskMessageContent(req)
 	if strings.Contains(userPrompt, "suggestion should be omitted") || strings.Contains(userPrompt, `"suggestions"`) {
 		t.Fatalf("merge user prompt should not include suggestions:\n%s", userPrompt)
 	}

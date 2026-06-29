@@ -72,11 +72,12 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 	if !strings.Contains(systemPrompt, "### Go Style Guide (go)") || !strings.Contains(systemPrompt, "# Go Style Guide") {
 		t.Fatalf("finalize system prompt missing styleguide content:\n%s", systemPrompt)
 	}
-	if !strings.Contains(req.Messages[1].Content, `"id": "`+findingID+`"`) {
-		t.Fatalf("finalize user prompt missing finding id:\n%s", req.Messages[1].Content)
+	userPrompt := taskMessageContent(req)
+	if !strings.Contains(userPrompt, `"id": "`+findingID+`"`) {
+		t.Fatalf("finalize user prompt missing finding id:\n%s", userPrompt)
 	}
 	var userPayload map[string]any
-	if err := json.Unmarshal([]byte(req.Messages[1].Content), &userPayload); err != nil {
+	if err := json.Unmarshal([]byte(userPrompt), &userPayload); err != nil {
 		t.Fatalf("unmarshal finalize user prompt: %v", err)
 	}
 	if reviewContext, ok := userPayload["review_context"].(map[string]any); ok {
@@ -133,7 +134,7 @@ func TestFinalizeDisableSuggestionsOmitsAndStripsSuggestions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
-	userPrompt := llmClient.reqs[0].Messages[1].Content
+	userPrompt := taskMessageContent(llmClient.reqs[0])
 	if strings.Contains(userPrompt, `"suggestions"`) || strings.Contains(userPrompt, "input suggestion should be omitted") {
 		t.Fatalf("finalize user prompt should not include suggestions:\n%s", userPrompt)
 	}
@@ -184,7 +185,7 @@ func TestVerdictContextNotesInPrompt(t *testing.T) {
 	if _, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), newInput(), VerdictOptions{ContextNotes: notes}); err != nil {
 		t.Fatalf("Verdict (with notes) returned err: %v", err)
 	}
-	userPrompt := withNotes.reqs[0].Messages[1].Content
+	userPrompt := taskMessageContent(withNotes.reqs[0])
 	if !strings.Contains(userPrompt, `"notes"`) || !strings.Contains(userPrompt, "CONTEXT_NOTES_MARKER") {
 		t.Fatalf("verdict user prompt missing notes:\n%s", userPrompt)
 	}
@@ -213,7 +214,7 @@ func TestVerdictContextNotesInPrompt(t *testing.T) {
 	if _, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), newInput(), VerdictOptions{}); err != nil {
 		t.Fatalf("Verdict (no notes) returned err: %v", err)
 	}
-	if up := withoutNotes.reqs[0].Messages[1].Content; strings.Contains(up, `"notes"`) {
+	if up := taskMessageContent(withoutNotes.reqs[0]); strings.Contains(up, `"notes"`) {
 		t.Fatalf("verdict user prompt should omit notes when none provided:\n%s", up)
 	}
 
@@ -224,7 +225,7 @@ func TestVerdictContextNotesInPrompt(t *testing.T) {
 	if _, _, err := engine.Verdict(context.Background(), sampleReviewCtx(), newInput(), VerdictOptions{ContextNotes: notes, DisablePatchSummary: true}); err != nil {
 		t.Fatalf("Verdict (disabled patch summary) returned err: %v", err)
 	}
-	if up := disabledSummary.reqs[0].Messages[1].Content; !strings.Contains(up, `"notes"`) || !strings.Contains(up, "CONTEXT_NOTES_MARKER") {
+	if up := taskMessageContent(disabledSummary.reqs[0]); !strings.Contains(up, `"notes"`) || !strings.Contains(up, "CONTEXT_NOTES_MARKER") {
 		t.Fatalf("verdict user prompt should still carry internal notes:\n%s", up)
 	}
 	sys := disabledSummary.reqs[0].Messages[0].Content

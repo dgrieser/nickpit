@@ -80,11 +80,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	if noToolsSystem == "" {
 		noToolsSystem = agent.system
 	}
-	messages := []llm.Message{
-		{Role: "system", Content: agent.system},
-		{Role: "user", Content: agent.user},
-	}
-	messages = append(messages, agent.extraMessages...)
+	messages := agentPromptMessages(agent.system, agent.user, agent.schemaKind, req.DisableSuggestions, agent.extraMessages)
 	info := e.progressInfo(agent.role, agent.name, "")
 	sec := e.logger.NewReasoningTracker(info)
 

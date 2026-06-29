@@ -125,7 +125,7 @@ func TestEngineAddsPythonStyleGuideForPythonDiffs(t *testing.T) {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.reqs[0])), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := payload["style_guides"]; ok {
@@ -174,7 +174,7 @@ func TestEngineAddsStyleGuidesForUntrackedMarkdownGuides(t *testing.T) {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.reqs[0])), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := payload["style_guides"]; ok {
@@ -595,7 +595,7 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(llmClient.reqs[0].Messages[1].Content), &payload); err != nil {
+	if err := json.Unmarshal([]byte(taskMessageContent(llmClient.reqs[0])), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := payload["style_guides"]; ok {

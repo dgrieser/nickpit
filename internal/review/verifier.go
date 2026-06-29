@@ -124,10 +124,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		schema = llm.VerifySchema
 	}
 
-	messages := []llm.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userPrompt},
-	}
+	messages := agentPromptMessages(systemPrompt, userPrompt, llm.SchemaKindVerify, req.DisableSuggestions, nil)
 
 	progress := req.Progress
 	if progress.IsZero() {

@@ -2025,6 +2025,34 @@ func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
 	return llm.FindingsExamplePromptSnippetFor(disableSuggestions)
 }
 
+func exampleMessageFor(kind llm.SchemaKind, disableSuggestions bool) (llm.Message, bool) {
+	switch kind {
+	case llm.SchemaKindReview,
+		llm.SchemaKindMerge,
+		llm.SchemaKindVerify,
+		llm.SchemaKindFinalize,
+		llm.SchemaKindVerdict,
+		llm.SchemaKindSummarize:
+	default:
+		return llm.Message{}, false
+	}
+	snippet := strings.TrimSpace(exampleSnippetFor(kind, disableSuggestions))
+	if snippet == "" {
+		return llm.Message{}, false
+	}
+	return llm.Message{Role: "user", Content: snippet}, true
+}
+
+func agentPromptMessages(systemPrompt, userPrompt string, kind llm.SchemaKind, disableSuggestions bool, extraMessages []llm.Message) []llm.Message {
+	messages := []llm.Message{{Role: "system", Content: systemPrompt}}
+	if example, ok := exampleMessageFor(kind, disableSuggestions); ok {
+		messages = append(messages, example)
+	}
+	messages = append(messages, llm.Message{Role: "user", Content: userPrompt})
+	messages = append(messages, extraMessages...)
+	return messages
+}
+
 func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool) ([]llm.Message, error) {
 	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, snippet, disableSuggestions)
 	if err != nil {
