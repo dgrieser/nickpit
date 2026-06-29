@@ -1266,7 +1266,7 @@ func TestRunReviewProbesModelForSourcelessSpec(t *testing.T) {
 // A model that lacks API-enforced json_schema but can emit plain JSON is usable
 // via the prompt-embedded fallback. `check model` must report it healthy (exit
 // zero), matching what a real review of the same model does.
-func TestCheckModelDegradesJSONSchemaUnsupported(t *testing.T) {
+func TestCheckModelDegradesWhenJSONResponseFormatUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	cfg := `profiles:

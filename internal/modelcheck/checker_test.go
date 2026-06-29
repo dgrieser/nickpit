@@ -609,7 +609,7 @@ func TestToolDefinitionsRejectUnknownTool(t *testing.T) {
 	}
 }
 
-func TestCheckerRunsJSONOutputProbeWhenSchemaDisabled(t *testing.T) {
+func TestCheckerRunsJSONOutputProbeWhenJSONResponseFormatDisabled(t *testing.T) {
 	client := &scriptedClient{
 		responses: successfulEffortDiscoveryResponses("high",
 			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
@@ -662,7 +662,7 @@ func TestCheckerJSONOutputProbeFailsOnWrongShape(t *testing.T) {
 	}
 }
 
-func TestCheckerRunsJSONSchemaProbeWhenSchemaEnabled(t *testing.T) {
+func TestCheckerRunsJSONSchemaProbeWhenJSONResponseFormatEnabled(t *testing.T) {
 	client := &scriptedClient{
 		responses: successfulEffortDiscoveryResponses("high",
 			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
