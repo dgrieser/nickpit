@@ -910,7 +910,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 				if err := writeJSON(out); err != nil {
 					return err
 				}
-				if err := validatePreReviewModelCheck(result); err != nil {
+				if err := validateModelCheckRequirements(result, primaryModelRequirements(spec, checkReq)); err != nil {
 					return err
 				}
 				if smallChecked {
@@ -1023,65 +1023,53 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		if err != nil {
 			return err
 		}
-		// JSON response format is on by default. If the model can't do
-		// API-enforced json_schema, degrade to the prompt-embedded schema instead
-		// of failing the review; validatePreReviewModelCheck then only requires
-		// plain JSON output. This runs for source-less specs too, so an
-		// imported-findings merge/finalize/verify/summarize degrades the same way
-		// a normal review would instead of sending json_schema to a model that
-		// cannot honor it.
+		// JSON response format is on by default. If a model cannot do API-enforced
+		// json_schema, degrade the whole run to the prompt-embedded schema rather
+		// than failing: the API response format is a single global request setting,
+		// so a primary OR small model lacking json_schema disables it for both.
+		// Resolve the fallback fully BEFORE validating, so each model is checked
+		// against exactly the JSON mode its steps will use. This runs for
+		// source-less specs too, so imported-findings merge/finalize/verify/summarize
+		// degrade the same way a normal review would.
 		if !req.DisableJSONResponseFormat && a.jsonSchemaFallbackRequired(ctx, checkResult, "model") {
 			req.DisableJSONResponseFormat = true
-			checkResult.DisableJSONResponseFormat = true
-		}
-		// The hard usability gate only applies when a source guarantees LLM calls.
-		// A source-less spec may be a passthrough, so — matching the deferred
-		// credential design — it is not blocked up front; any LLM call it makes
-		// fails at call time if the model is unusable.
-		if needsSource {
-			if err := validatePreReviewModelCheck(checkResult); err != nil {
-				return err
-			}
 		}
 		req.ModelEmitsReasoning = checkResult.Summary().Reasoning.Traces
 		a.logProgress(ctx, logging.StageModelCheck, logging.StateDone, modelCheckSummary(checkResult))
+
 		smallRequirements := smallModelRequirementsForSpec(spec, req)
+		smallResult, smallChecked := modelcheck.Result{}, false
 		if smallRequirements.Uses() {
-			smallResult, smallChecked, err := a.checkSmallModel(ctx, client, profile, false)
+			smallResult, smallChecked, err = a.checkSmallModel(ctx, client, profile, false)
 			if err != nil {
 				return err
 			}
-			if smallChecked {
-				// Same degrade as the primary model: a small model that can't do
-				// json_schema disables the API response format for the whole run
-				// (it is a single global setting) rather than failing.
-				if smallRequirements.JSONSchema && !req.DisableJSONResponseFormat &&
-					a.jsonSchemaFallbackRequired(ctx, smallResult, "small model") {
-					req.DisableJSONResponseFormat = true
-					smallRequirements = smallModelRequirementsForSpec(spec, req)
-					// The primary was accepted on its json_schema probe alone, but the
-					// whole run now uses the prompt-embedded schema, so its reviewers
-					// must emit plain JSON. Mark it degraded and re-validate that
-					// requirement before continuing, rather than letting primary
-					// reviewers fail invalid-output retries mid-review.
-					checkResult.DisableJSONResponseFormat = true
-					if needsSource {
-						if err := validatePreReviewModelCheck(checkResult); err != nil {
-							return err
-						}
-					}
-				}
-				if needsSource {
-					if err := validateSmallModelCheck(smallResult, smallRequirements); err != nil {
-						return err
-					}
-				}
+			if smallChecked && smallRequirements.JSONSchema && !req.DisableJSONResponseFormat &&
+				a.jsonSchemaFallbackRequired(ctx, smallResult, "small model") {
+				req.DisableJSONResponseFormat = true
 			}
 		}
-		// Restrict reasoning efforts to the probed set only for source-backed runs;
-		// source-less runs keep the unrestricted default so a probe that could not
-		// run (e.g. offline) never narrows them to an empty set.
+
+		// req.DisableJSONResponseFormat is now final for the run. Validate each
+		// model against exactly what its steps will ask for — including any
+		// primary-model step that turned response_format off (it needs plain JSON
+		// output, not json_schema). The hard gate only applies when a source
+		// guarantees LLM calls; a source-less spec may be a passthrough, so
+		// (matching the deferred-credential design) it is not blocked up front and
+		// any LLM call it makes fails at call time if the model is unusable.
+		checkResult.DisableJSONResponseFormat = req.DisableJSONResponseFormat
 		if needsSource {
+			if err := validateModelCheckRequirements(checkResult, primaryModelRequirements(spec, req)); err != nil {
+				return err
+			}
+			if smallChecked {
+				if err := validateSmallModelCheck(smallResult, smallModelRequirementsForSpec(spec, req)); err != nil {
+					return err
+				}
+			}
+			// Restrict reasoning efforts to the probed set only for source-backed
+			// runs; source-less runs keep the unrestricted default so a probe that
+			// could not run (e.g. offline) never narrows them to an empty set.
 			client.SetAllowedReasoningEfforts(checkResult.PassedEfforts)
 		}
 	} else {
@@ -1412,26 +1400,51 @@ func (r *modelCapabilityRequirements) requireJSON(useSchema bool) {
 }
 
 func smallModelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest) modelCapabilityRequirements {
+	return modelRequirementsForSpec(spec, req, true)
+}
+
+// primaryModelRequirements is the capability set the spec demands of the primary
+// model: the baseline tool use, reasoning, and run-level JSON mode a review
+// needs, plus every step (and review-internal agent) left on the primary model.
+// A step that turns response_format off via disable_json_response_format requires
+// plain JSON output instead of json_schema, so a primary that passes the schema
+// probe but fails the plain-JSON probe is rejected up front rather than failing
+// inside that prompt-only step — mirroring how the small model is validated.
+func primaryModelRequirements(spec workflow.Spec, req model.ReviewRequest) modelCapabilityRequirements {
+	requirements := modelCapabilityRequirements{Response: true, Tools: true}
+	requirements.requireJSON(!req.DisableJSONResponseFormat)
+	requirements.merge(modelRequirementsForSpec(spec, req, false))
+	return requirements
+}
+
+// modelRequirementsForSpec accumulates the capability requirements the spec
+// places on one model. useSmallModel selects which: true gathers the steps (and
+// review-internal agents) routed to @small, false gathers those left on the
+// primary model. Per-step disable_json_response_format is honored — and, like
+// the runtime override resolution, treated monotonically (it may disable but not
+// re-enable a run that already disabled response_format) — so a prompt-only step
+// requires plain JSON output while a default step requires json_schema.
+func modelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest, useSmallModel bool) modelCapabilityRequirements {
 	var requirements modelCapabilityRequirements
 	for _, entry := range spec.FlatSteps() {
 		stepReq := req
 		stepUsesSmall := entry.Config != nil && usesSmallAlias(entry.Config.Model)
 		if entry.Config != nil && entry.Config.DisableJSONResponseFormat != nil {
-			stepReq.DisableJSONResponseFormat = *entry.Config.DisableJSONResponseFormat
+			stepReq.DisableJSONResponseFormat = stepReq.DisableJSONResponseFormat || *entry.Config.DisableJSONResponseFormat
 		}
-		if stepUsesSmall {
+		if stepUsesSmall == useSmallModel {
 			requirements.merge(stepModelRequirements(entry.Type, stepReq.DisableJSONResponseFormat))
 		}
 		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) || entry.Config == nil {
 			continue
 		}
-		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) {
+		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) == useSmallModel {
 			requirements.merge(textModelRequirements())
 		}
-		if agentUsesSmall(stepUsesSmall, entry.Config.CompileFindings) {
+		if agentUsesSmall(stepUsesSmall, entry.Config.CompileFindings) == useSmallModel {
 			requirements.merge(textModelRequirements())
 		}
-		if agentUsesSmall(stepUsesSmall, entry.Config.Nudge) {
+		if agentUsesSmall(stepUsesSmall, entry.Config.Nudge) == useSmallModel {
 			requirements.merge(reviewerModelRequirements(agentDisableJSONResponseFormat(stepReq, entry.Config.Nudge)))
 		}
 	}
@@ -1492,8 +1505,11 @@ func stepModelRequirements(stepType string, disableJSONResponseFormat bool) mode
 }
 
 func agentDisableJSONResponseFormat(stepReq model.ReviewRequest, override *workflow.AgentOverride) bool {
+	// Monotonic, matching workflow.AgentOverride.Resolve: an override may disable
+	// response_format but never re-enable it once the run disabled it, so the
+	// requirement computation predicts the JSON mode the agent will actually use.
 	if override != nil && override.DisableJSONResponseFormat != nil {
-		return *override.DisableJSONResponseFormat
+		return stepReq.DisableJSONResponseFormat || *override.DisableJSONResponseFormat
 	}
 	return stepReq.DisableJSONResponseFormat
 }

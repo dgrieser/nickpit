@@ -783,6 +783,26 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 	}
 }
 
+// Disabling response_format is monotonic: a per-step override may turn it off
+// but must never re-enable it once the run disabled it (e.g. the model-check
+// fallback for a model that lacks json_schema). Otherwise the step would send
+// response_format: json_schema to a model already probed as unable to honor it.
+func TestStepOverrideResolveDisableJSONResponseFormatMonotonic(t *testing.T) {
+	enable := false
+	reEnable := &StepOverride{DisableJSONResponseFormat: &enable}
+	_, req := reEnable.Resolve(config.Profile{}, model.ReviewRequest{DisableJSONResponseFormat: true})
+	if !req.DisableJSONResponseFormat {
+		t.Fatal("step disable_json_response_format: false must not re-enable response_format after the run disabled it")
+	}
+
+	disable := true
+	turnOff := &StepOverride{DisableJSONResponseFormat: &disable}
+	_, req2 := turnOff.Resolve(config.Profile{}, model.ReviewRequest{DisableJSONResponseFormat: false})
+	if !req2.DisableJSONResponseFormat {
+		t.Fatal("step disable_json_response_format: true must disable response_format")
+	}
+}
+
 func TestStepOverrideResolveSmallModelAlias(t *testing.T) {
 	alias := SmallModelAlias
 	explicitEffort := "none"

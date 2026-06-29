@@ -331,9 +331,14 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 		p.NudgeCount = *o.NudgeCount
 		req.NudgeCount = *o.NudgeCount
 	}
-	if o.DisableJSONResponseFormat != nil {
-		p.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
-		req.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
+	if o.DisableJSONResponseFormat != nil && *o.DisableJSONResponseFormat {
+		// Disabling response_format is monotonic: a per-step override may turn it
+		// off but must never re-enable it once the run already disabled it (most
+		// importantly the model-check fallback for a model that lacks json_schema).
+		// Re-enabling would send response_format: json_schema to a model already
+		// probed as unable to honor it.
+		p.DisableJSONResponseFormat = true
+		req.DisableJSONResponseFormat = true
 	}
 	if o.DisableReasoningExtract != nil {
 		req.DisableReasoningExtract = *o.DisableReasoningExtract
@@ -414,9 +419,14 @@ func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (conf
 		p.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 		req.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 	}
-	if o.DisableJSONResponseFormat != nil {
-		p.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
-		req.DisableJSONResponseFormat = *o.DisableJSONResponseFormat
+	if o.DisableJSONResponseFormat != nil && *o.DisableJSONResponseFormat {
+		// Disabling response_format is monotonic: a per-step override may turn it
+		// off but must never re-enable it once the run already disabled it (most
+		// importantly the model-check fallback for a model that lacks json_schema).
+		// Re-enabling would send response_format: json_schema to a model already
+		// probed as unable to honor it.
+		p.DisableJSONResponseFormat = true
+		req.DisableJSONResponseFormat = true
 	}
 	if o.DisableParallelToolCalls != nil {
 		req.DisableParallelToolCalls = *o.DisableParallelToolCalls

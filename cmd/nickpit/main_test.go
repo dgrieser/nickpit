@@ -1336,6 +1336,43 @@ func TestRunReviewRevalidatesPrimaryWhenSmallForcesPromptSchema(t *testing.T) {
 	}
 }
 
+// A primary-model step that turns response_format off (disable_json_response_format:
+// true) runs prompt-only and needs plain JSON output. A primary that passes the
+// json_schema probe but fails the plain-JSON probe must be rejected by the
+// pre-review check, not pass it and fail inside that step.
+func TestRunReviewValidatesPrimaryPromptOnlyStepRequirements(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "wf.yaml")
+	spec := "version: 1\nsteps:\n  - type: collect-context\n  - type: review:security\n    config:\n      disable_json_response_format: true\n"
+	if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	no, yes := false, true
+	primaryCap := config.ModelCapabilities{
+		Model: "primary", Compatible: true, Response: true, Tools: true,
+		JSONResponse: &no, // cannot do plain JSON output
+		JSONSchema:   &yes,
+		Reasoning:    config.ReasoningCapabilities{Traces: true, Efforts: []string{"high"}},
+	}
+	source := &recordingSource{}
+	err := (&app{specPath: specPath}).runReview(context.Background(), source, nil, "default", config.Profile{
+		Model:           "primary",
+		BaseURL:         "http://127.0.0.1:1",
+		APIKey:          "token",
+		ReasoningEffort: "high",
+		SupportedModels: []config.ModelCapabilities{primaryCap},
+	}, model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected model check failure: prompt-only primary step needs plain JSON output the model lacks")
+	}
+	if !strings.Contains(err.Error(), "JSON text output") {
+		t.Fatalf("error = %v, want primary JSON-output validation failure", err)
+	}
+	if source.called {
+		t.Fatal("source must not run when the model check fails")
+	}
+}
+
 func TestRequestSettingsFingerprint(t *testing.T) {
 	withProfile := func(p config.Profile, fn func(*config.Profile)) config.Profile {
 		fn(&p)
