@@ -368,6 +368,59 @@ steps:
 	}
 }
 
+func TestLoadNormalizesPriorityThreshold(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: collect-context
+  - parallel:
+      - lane:
+          - type: review:security
+  - pipeline:
+      - type: merge
+      - type: finalize
+        config: { priority_threshold: "0" }
+      - type: verdict
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	finalize := spec.Steps[len(spec.Steps)-1].Pipeline[1]
+	if finalize.Type != StepFinalize {
+		t.Fatalf("expected finalize step, got %q", finalize.Type)
+	}
+	if finalize.Config == nil || finalize.Config.PriorityThreshold == nil {
+		t.Fatalf("priority_threshold not parsed: %+v", finalize.Config)
+	}
+	if got := *finalize.Config.PriorityThreshold; got != "p0" {
+		t.Fatalf("priority_threshold = %q, want p0 (normalized from 0)", got)
+	}
+	// The normalized value must reach the request, so the engine's
+	// PriorityThresholdRank sees "p0" (rank 0) and not the unparsed "0" (rank 3).
+	_, req := finalize.Config.Resolve(config.Profile{}, model.ReviewRequest{})
+	if req.PriorityThreshold != "p0" {
+		t.Fatalf("resolved req.PriorityThreshold = %q, want p0", req.PriorityThreshold)
+	}
+}
+
+func TestLoadRejectsInvalidPriorityThreshold(t *testing.T) {
+	for _, bad := range []string{"5", "p3", "high", "-1"} {
+		path := writeSpec(t, `
+version: 1
+steps:
+  - type: finalize
+    config: { priority_threshold: "`+bad+`" }
+`)
+		if _, err := Load(path); err == nil {
+			t.Fatalf("priority_threshold %q: expected load error, got nil", bad)
+		}
+	}
+}
+
 func TestPipelineRejections(t *testing.T) {
 	cases := map[string]string{
 		"missing verdict":           "version: 1\nsteps:\n  - pipeline:\n      - type: merge\n      - type: finalize\n",

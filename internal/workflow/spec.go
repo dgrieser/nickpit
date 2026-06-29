@@ -666,7 +666,28 @@ func decodeGroupConfig(node *yaml.Node) (*StepOverride, error) {
 	if err := node.Decode(&override); err != nil {
 		return nil, err
 	}
+	if err := normalizeStepOverride(&override); err != nil {
+		return nil, err
+	}
 	return &override, nil
+}
+
+// normalizeStepOverride canonicalizes user-supplied override fields so the
+// engine always sees its internal representation. Currently it maps the numeric
+// priority_threshold form (0..3) to "pN" via model.NormalizePriorityThreshold,
+// matching how the CLI normalizes --priority-threshold; without this a workflow
+// YAML threshold would reach PriorityThresholdRank unparsed and silently fall
+// back to p3.
+func normalizeStepOverride(o *StepOverride) error {
+	if o == nil || o.PriorityThreshold == nil {
+		return nil
+	}
+	normalized, err := model.NormalizePriorityThreshold(*o.PriorityThreshold)
+	if err != nil {
+		return fmt.Errorf("priority_threshold: %w", err)
+	}
+	*o.PriorityThreshold = normalized
+	return nil
 }
 
 func decodePlainStep(node *yaml.Node) (StepEntry, error) {
@@ -694,6 +715,9 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 		}
 		var override StepOverride
 		if err := cfg.Decode(&override); err != nil {
+			return StepEntry{}, fmt.Errorf("config: %w", err)
+		}
+		if err := normalizeStepOverride(&override); err != nil {
 			return StepEntry{}, fmt.Errorf("config: %w", err)
 		}
 		entry.Config = &override

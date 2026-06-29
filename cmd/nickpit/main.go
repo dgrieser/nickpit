@@ -159,9 +159,9 @@ func newRootCmd() *cobra.Command {
 			if err := review.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
 				return err
 			}
-			normalizedPriority, err := normalizePriorityThreshold(cli.priorityThreshold)
+			normalizedPriority, err := model.NormalizePriorityThreshold(cli.priorityThreshold)
 			if err != nil {
-				return err
+				return fmt.Errorf("invalid --priority-threshold: %w", err)
 			}
 			cli.priorityThreshold = normalizedPriority
 			if cli.workDir == "" {
@@ -398,19 +398,6 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		return "", config.Profile{}, err
 	}
 	return cfg.ActiveProfile, profile, nil
-}
-
-// normalizePriorityThreshold accepts the numeric --priority-threshold form
-// (0 highest .. 3 lowest) and maps it to the internal "pN" representation used
-// by model.PriorityThresholdRank and the finding badges. Non-numeric or
-// out-of-range input is rejected; there is no legacy "pN" fallback.
-func normalizePriorityThreshold(value string) (string, error) {
-	switch value {
-	case "0", "1", "2", "3":
-		return "p" + value, nil
-	default:
-		return "", fmt.Errorf("invalid --priority-threshold %q: must be one of 0, 1, 2, 3", value)
-	}
 }
 
 func parseExtraBodyFlag(name, raw string) (map[string]any, error) {

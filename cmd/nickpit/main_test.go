@@ -286,17 +286,17 @@ profiles:
 
 func TestNormalizePriorityThreshold(t *testing.T) {
 	for in, want := range map[string]string{"0": "p0", "1": "p1", "2": "p2", "3": "p3"} {
-		got, err := normalizePriorityThreshold(in)
+		got, err := model.NormalizePriorityThreshold(in)
 		if err != nil {
-			t.Fatalf("normalizePriorityThreshold(%q) error: %v", in, err)
+			t.Fatalf("NormalizePriorityThreshold(%q) error: %v", in, err)
 		}
 		if got != want {
-			t.Fatalf("normalizePriorityThreshold(%q) = %q, want %q", in, got, want)
+			t.Fatalf("NormalizePriorityThreshold(%q) = %q, want %q", in, got, want)
 		}
 	}
 	for _, in := range []string{"p3", "4", "-1", "", "high"} {
-		if _, err := normalizePriorityThreshold(in); err == nil {
-			t.Fatalf("normalizePriorityThreshold(%q) expected error, got nil", in)
+		if _, err := model.NormalizePriorityThreshold(in); err == nil {
+			t.Fatalf("NormalizePriorityThreshold(%q) expected error, got nil", in)
 		}
 	}
 }
