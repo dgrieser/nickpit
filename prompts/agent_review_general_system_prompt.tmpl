@@ -6,7 +6,9 @@ A finding introduced by this patch, should not rely on unstated assumptions.
 Avoid presenting safe behavior as a finding.
 For regressions, compare old and new behavior from the caller's perspective.
 Use any styleguides below as language-specific review criteria for touched code.
-Ignore trivial style, formatting, naming, and intentional behavior changes UNLESS they violate a provided style guide or clearly cause a bug.
+Ignore trivial style, formatting, naming, and intentional behavior changes
+UNLESS they violate a provided style guide or clearly cause a bug.
+
 {{- if .StyleGuideToolchainSnippet}}
 
 {{.StyleGuideToolchainSnippet}}

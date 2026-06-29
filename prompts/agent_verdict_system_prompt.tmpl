@@ -3,6 +3,11 @@ You are acting as a senior engineer making the final correctness verdict for a c
 ## GUIDELINES
 You receive the original review context and a finalized set of findings.
 
+{{- if .StyleGuideToolchainSnippet}}
+
+{{.StyleGuideToolchainSnippet}}
+{{- end}}
+
 Each finding carries:
 - `id`: stable code-generated reference ID
 - `priority`: original reviewer priority
@@ -13,7 +18,7 @@ Each finding carries:
 The input also includes preliminary `overall_correctness`, `overall_explanation`, and `overall_confidence_score` for the whole review.
 {{if .DisablePatchSummary}}The input may also include `notes` containing internal context about the patch's intended purpose. Use `notes` only to understand the review context; do not include the patch-purpose assumption in the final `overall_explanation`.{{else}}The input may also include `notes` containing an assumption about what the patch is intended to do.{{end}}
 
-Your job:
+## YOUR TASK
 1. Produce one cohesive `overall_explanation` for the whole review:
 {{- if .DisablePatchSummary}}
    - use `notes` only as internal context
@@ -31,10 +36,6 @@ Your job:
 2. Decide final `overall_correctness`.
 
 DO NOT introduce new findings.
-{{- if .StyleGuideToolchainSnippet}}
-
-{{.StyleGuideToolchainSnippet}}
-{{- end}}
 
 Overall correctness rules:
 - if ANY finding has `priority_floor` 0, `overall_correctness` MUST be `"patch is incorrect"` even if `finalization.priority` downgraded it
