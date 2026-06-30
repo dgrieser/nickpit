@@ -59,10 +59,6 @@ func FindLinesIn(content *FileContent, code string) *FindLinesResult {
 	}
 }
 
-func matchFindLines(relPath, content, code string) []FindLinesMatch {
-	return matchFindLinesLimit(relPath, content, code, 0)
-}
-
 func matchFindLinesLimit(relPath, content, code string, maxMatches int) []FindLinesMatch {
 	matches := make([]FindLinesMatch, 0)
 	// Leading/trailing whitespace on each line is ignored, so a snippet matches
