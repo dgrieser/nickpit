@@ -38,8 +38,8 @@ func validateTestingDuplicateFileResponse(existing []model.Finding, resp *llm.Re
 	return &llm.InvalidResponseError{
 		RawContent:            resp.RawResponse,
 		Reason:                fmt.Sprintf("testing_duplicate_file_findings files=%s", strings.Join(files, ", ")),
-		MissingFields:         []string{"findings"},
 		ReasoningEffort:       resp.ReasoningEffort,
+		ValidationFailure:     true,
 		RetryGuidanceTemplate: "testing_duplicate_file_retry_guidance.tmpl",
 		RetryGuidanceData: struct {
 			Files       []testingDuplicateFileGuidance

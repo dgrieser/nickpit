@@ -2094,15 +2094,17 @@ func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exam
 		guidance = strings.TrimSpace(renderedGuidance)
 	}
 	rendered, err := renderPromptFile("helper_json_snippet.tmpl", struct {
-		Reason         string
-		MissingFields  string
-		Guidance       string
-		ExampleSnippet string
+		Reason            string
+		MissingFields     string
+		Guidance          string
+		ExampleSnippet    string
+		ValidationFailure bool
 	}{
-		Reason:         invalid.Reason,
-		MissingFields:  strings.Join(invalid.MissingFields, ", "),
-		Guidance:       guidance,
-		ExampleSnippet: strings.TrimSpace(exampleSnippet),
+		Reason:            invalid.Reason,
+		MissingFields:     strings.Join(invalid.MissingFields, ", "),
+		Guidance:          guidance,
+		ExampleSnippet:    strings.TrimSpace(exampleSnippet),
+		ValidationFailure: invalid.ValidationFailure,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering JSON retry feedback prompt: %w", err)

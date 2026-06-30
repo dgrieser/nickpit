@@ -901,6 +901,9 @@ func TestTestingDuplicateFileValidatorRejectsSameFile(t *testing.T) {
 	if invalid == nil {
 		t.Fatal("validator accepted duplicate Testing findings for same file")
 	}
+	if got := invalid.Error(); strings.Contains(got, "invalid JSON") || strings.Contains(got, "missing or invalid fields") {
+		t.Fatalf("validator error = %q, want semantic validation wording", got)
+	}
 	if !strings.Contains(invalid.Reason, "main.go") {
 		t.Fatalf("reason = %q, want file path", invalid.Reason)
 	}
@@ -976,6 +979,14 @@ func TestRunAgent_TestingDuplicateFileInitialRetry(t *testing.T) {
 		t.Fatalf("llm calls = %d, want initial plus retry", len(llmClient.reqs))
 	}
 	retryMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content
+	if !strings.Contains(retryMessage, "valid JSON but failed response validation") {
+		t.Fatalf("retry message missing semantic validation framing:\n%s", retryMessage)
+	}
+	for _, notWant := range []string{"could not be parsed", "Missing or invalid fields: findings"} {
+		if strings.Contains(retryMessage, notWant) {
+			t.Fatalf("retry message contains misleading %q:\n%s", notWant, retryMessage)
+		}
+	}
 	if !strings.Contains(retryMessage, "maximum of one finding per file") {
 		t.Fatalf("retry message missing Testing duplicate-file guidance:\n%s", retryMessage)
 	}

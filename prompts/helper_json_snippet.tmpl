@@ -1,4 +1,8 @@
+{{- if .ValidationFailure -}}
+Your previous response was valid JSON but failed response validation: {{.Reason}}.{{if .MissingFields}} Fields: {{.MissingFields}}.{{end}}
+{{- else -}}
 Your previous response could not be parsed as the expected JSON output: {{.Reason}}.{{if .MissingFields}} Missing or invalid fields: {{.MissingFields}}.{{end}}
+{{- end}}
 {{- if .Guidance}}
 
 {{.Guidance}}
