@@ -2429,8 +2429,71 @@ func TestClientReviewReturnsReasoningOnlyEmptyAfterEffortsExhausted(t *testing.T
 	if !errors.As(err, &emptyErr) {
 		t.Fatalf("err = %v, want *ReasoningOnlyEmptyResponseError", err)
 	}
+	if emptyErr.FinishReason != "stop" {
+		t.Fatalf("finish reason = %q, want stop", emptyErr.FinishReason)
+	}
+	if !strings.Contains(err.Error(), `"stop"`) {
+		t.Fatalf("error message should surface finish reason: %q", err.Error())
+	}
 	if got, want := strings.Join(efforts, ","), "high"; got != want {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+}
+
+func TestClientReviewReasoningOnlyContentFilterStaysTerminal(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"reasoning_content": "thinking about the policy",
+					},
+					"finish_reason": "content_filter",
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err == nil {
+		t.Fatal("expected terminal error for content_filter response")
+	}
+	var emptyErr *ReasoningOnlyEmptyResponseError
+	if errors.As(err, &emptyErr) {
+		t.Fatalf("content_filter must not be treated as reasoning-only empty: %v", err)
+	}
+	var invalidResp *InvalidResponseError
+	if !errors.As(err, &invalidResp) {
+		t.Fatalf("err = %v, want *InvalidResponseError", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (no reasoning-effort retry storm)", attempts)
 	}
 }
 

@@ -302,7 +302,24 @@ type ReasoningOnlyEmptyResponseError struct {
 }
 
 func (e *ReasoningOnlyEmptyResponseError) Error() string {
+	if e.FinishReason != "" {
+		return fmt.Sprintf("llm: model produced only reasoning with no response content (finish reason %q)", e.FinishReason)
+	}
 	return "llm: model produced only reasoning with no response content"
+}
+
+// reasoningOnlyEmptyFinish reports whether finishReason represents a benign
+// "model reasoned then produced no output" stop that lowering reasoning effort
+// can plausibly recover. Hard stops such as content_filter are excluded so they
+// stay terminal (a lower effort cannot satisfy a policy refusal) and surface
+// their real cause instead of being masked by a reasoning-budget retry storm.
+func reasoningOnlyEmptyFinish(finishReason string) bool {
+	switch finishReason {
+	case "", string(openai.FinishReasonStop), string(openai.FinishReasonNull):
+		return true
+	default:
+		return false
+	}
 }
 
 func newReasoningTimeoutController(limit time.Duration, cancel context.CancelFunc) *reasoningTimeoutController {
@@ -1131,7 +1148,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
 		return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 	}
-	if streamed.reasoned && !streamed.sawContent && !streamed.sawToolCalls {
+	if streamed.reasoned && !streamed.sawContent && !streamed.sawToolCalls && reasoningOnlyEmptyFinish(streamed.lastFinishReason) {
 		return nil, &ReasoningOnlyEmptyResponseError{
 			ReasoningEffort: payload.ReasoningEffort,
 			FinishReason:    streamed.lastFinishReason,
