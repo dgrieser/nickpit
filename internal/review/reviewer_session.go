@@ -37,16 +37,17 @@ type reviewerSession struct {
 	extractorDuplicates int
 
 	// running result, accumulated across the initial pass and nudge rounds.
-	totalFindings   []model.Finding
-	totalTokens     model.TokenUsage
-	totalToolCalls  int
-	totalDuplicates int
-	latestResp      *llm.ReviewResponse
-	latestReasoning string
-	historyMessages []llm.Message
-	contentMessages []string
-	toolMessages    []llm.Message
-	toolCallHistory []toolCallHistoryEntry
+	totalFindings    []model.Finding
+	totalTokens      model.TokenUsage
+	totalToolCalls   int
+	totalDuplicates  int
+	latestResp       *llm.ReviewResponse
+	latestReasoning  string
+	historyMessages  []llm.Message
+	contentMessages  []string
+	toolMessages     []llm.Message
+	toolCallHistory  []toolCallHistoryEntry
+	validationErrors []string
 
 	// nudge carry state.
 	nudgeState           *agentLoopState
@@ -195,6 +196,7 @@ func (s *reviewerSession) launchCollect(budget timeBudgetStarter, e *Engine, age
 func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineBudget timeBudgetStarter, mineEngine *Engine, mineReq model.ReviewRequest) error {
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
+	loopReq.ValidateResponse = s.responseValidator(nil)
 	if s.extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
 			s.launchCollect(mineBudget, mineEngine, agentName, iterIdx, reasoning, mineReq)
@@ -209,6 +211,7 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 	if loopResult.resp == nil {
 		return fmt.Errorf("agent %s returned no response", s.agent.name)
 	}
+	s.enforceResponse(s.agent.name, nil, loopResult.resp)
 	s.totalFindings = append([]model.Finding(nil), loopResult.resp.Findings...)
 	s.totalTokens = loopResult.tokensUsed
 	s.totalToolCalls = loopResult.toolCalls
@@ -293,6 +296,8 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	loopReq.Progress.AgentName = nudgeName
 	loopReq.JSONRetryProgressAgentName = nudgeName
 	loopReq.Messages = nudged
+	existingFindings := append([]model.Finding(nil), s.totalFindings...)
+	loopReq.ValidateResponse = s.responseValidator(existingFindings)
 	loopReq.ReasoningEffort = s.nudgeReasoningEffort
 	loopReq.State = s.nudgeState
 	loopReq.OnReasoningTrace = nil
@@ -307,6 +312,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 		e.logf(nudgeCtx, "Nudge returned no response, keeping prior findings: round=%d/%d", iterIdx+1, total)
 		return false
 	}
+	s.enforceResponse(nudgeName, existingFindings, sub.resp)
 	prevFindings := len(s.totalFindings)
 	s.totalFindings = appendNewFindings(s.totalFindings, sub.resp.Findings)
 	e.logf(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", iterIdx+1, total, len(sub.resp.Findings), len(s.totalFindings)-prevFindings, len(s.totalFindings))
@@ -386,9 +392,14 @@ func (s *reviewerSession) result(req model.ReviewRequest) agentResult {
 		DuplicateToolCalls:    s.totalDuplicates + duplicates,
 		TokensUsed:            addTokenUsage(s.totalTokens, tokens),
 	}
+	runErrors := make([]string, 0, 1+len(s.validationErrors))
 	if s.nudgeErr != nil {
+		runErrors = append(runErrors, s.nudgeErr.Error())
+	}
+	runErrors = append(runErrors, s.validationErrors...)
+	if len(runErrors) > 0 {
 		run.Status = model.AgentRunStatusPartial
-		run.Error = s.nudgeErr.Error()
+		run.Error = strings.Join(runErrors, "; ")
 	}
 	run.RuntimeSeconds = model.RuntimeSeconds(time.Since(s.started))
 	return agentResult{
@@ -408,4 +419,33 @@ func (s *reviewerSession) partialResult(req model.ReviewRequest) agentResult {
 	result := partialAgentResult(s.agent, req, s.initLoop)
 	result.run.RuntimeSeconds = model.RuntimeSeconds(time.Since(s.started))
 	return result
+}
+
+func (s *reviewerSession) responseValidator(existing []model.Finding) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+	if s.agent.validateResponse == nil && s.agent.reviewSessionValidateResponse == nil {
+		return nil
+	}
+	existing = append([]model.Finding(nil), existing...)
+	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+		if s.agent.validateResponse != nil {
+			if invalid := s.agent.validateResponse(resp); invalid != nil {
+				return invalid
+			}
+		}
+		if s.agent.reviewSessionValidateResponse != nil {
+			return s.agent.reviewSessionValidateResponse(existing, resp)
+		}
+		return nil
+	}
+}
+
+func (s *reviewerSession) enforceResponse(agentName string, existing []model.Finding, resp *llm.ReviewResponse) {
+	if s.agent.reviewSessionEnforceResponse == nil {
+		return
+	}
+	msg := strings.TrimSpace(s.agent.reviewSessionEnforceResponse(agentName, existing, resp))
+	if msg == "" {
+		return
+	}
+	s.validationErrors = append(s.validationErrors, msg)
 }

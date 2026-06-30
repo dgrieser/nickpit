@@ -139,17 +139,19 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 		}
 	}
 	return agentSpec{
-		name:             vector.name,
-		role:             "review",
-		system:           system,
-		noToolsSystem:    noToolsSystem,
-		user:             st.enrichedPrompt,
-		extraMessages:    st.contextMessages,
-		questionsSnippet: questionsSnippet,
-		schema:           schema,
-		schemaKind:       llm.SchemaKindReview,
-		constraints:      vector.constraints,
-		hasTools:         true,
+		name:                          vector.name,
+		role:                          "review",
+		system:                        system,
+		noToolsSystem:                 noToolsSystem,
+		user:                          st.enrichedPrompt,
+		extraMessages:                 st.contextMessages,
+		questionsSnippet:              questionsSnippet,
+		schema:                        schema,
+		schemaKind:                    llm.SchemaKindReview,
+		constraints:                   vector.constraints,
+		hasTools:                      true,
+		reviewSessionValidateResponse: vector.validateResponse,
+		reviewSessionEnforceResponse:  vector.enforceResponse,
 	}, nil
 }
 
