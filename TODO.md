@@ -7,7 +7,6 @@
   5. Fix body/suggestion duplication: body should summarize the issue; full patch/code belongs only in finalization.suggestions.
   6. If 429s persist, lower effective verifier burst slightly. Only 2/10 runs had real 429s, so not urgent.
 
-- Add code line verification agent
 - Add max turns for agents; unlimited by default
 - Add feature to give additional instructions to agents
 
