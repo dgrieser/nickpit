@@ -53,7 +53,7 @@ var catalogDefinition = []catalogEntry{
 		},
 	},
 	{
-		Name:               "locate_code",
+		Name:               "find_lines",
 		APIDescription:     "Locate line numbers for exact code text in a repo-relative file",
 		ListingDescription: "with a repo-relative `path` and exact `code` line or block to return matching line ranges",
 		Note:               "Use this whenever you need exact line numbers for code references",

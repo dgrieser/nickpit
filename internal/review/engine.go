@@ -2558,7 +2558,7 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 }
 
 // toolCallArgs is the union of arguments across the retrieval tools
-// (inspect_file, locate_code, list_files, search, find_callers, find_callees). A single
+// (inspect_file, find_lines, list_files, search, find_callers, find_callees). A single
 // named type replaces the 9-field anonymous struct that was previously
 // re-declared verbatim at several call sites.
 type toolCallArgs struct {
@@ -2585,9 +2585,9 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		if args.LineEnd > 0 {
 			parts = append(parts, fmt.Sprintf("line_end=%d", args.LineEnd))
 		}
-	case "locate_code":
+	case "find_lines":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
-		parts = append(parts, fmt.Sprintf("code_line_count=%d", locateCodeLineCount(args.Code)))
+		parts = append(parts, fmt.Sprintf("code_line_count=%d", findLinesCodeLineCount(args.Code)))
 	case "list_files":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {
@@ -2631,7 +2631,7 @@ func syntheticToolOutcome(toolName string, result toolResultSummary) string {
 		parts = append(parts, fmt.Sprintf("result_count=%d", result.ResultCount))
 	}
 	if len(parts) == 0 {
-		if toolName == "search" || toolName == "locate_code" {
+		if toolName == "search" || toolName == "find_lines" {
 			parts = append(parts, "result_count=0")
 			return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
 		}

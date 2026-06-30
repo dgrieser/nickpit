@@ -822,7 +822,28 @@ func (a *app) newInspectCmd() *cobra.Command {
 	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 10, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
 
-	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd)
+	var findLinesPath, findLinesCode string
+	findLinesCmd := &cobra.Command{
+		Use:   "find-lines",
+		Short: "Find line numbers for exact code text",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repoRoot, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			result, err := engine.FindLines(cmd.Context(), repoRoot, findLinesPath, findLinesCode)
+			if err != nil {
+				return err
+			}
+			return a.writeInspectOutput(result)
+		},
+	}
+	findLinesCmd.Flags().StringVar(&findLinesPath, "path", "", "Relative file path")
+	findLinesCmd.Flags().StringVar(&findLinesCode, "code", "", "Exact line or contiguous block of code to locate")
+	_ = findLinesCmd.MarkFlagRequired("path")
+	_ = findLinesCmd.MarkFlagRequired("code")
+
+	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, findLinesCmd, callersCmd, calleesCmd)
 	return cmd
 }
 
@@ -1840,6 +1861,16 @@ func (a *app) writeInspectOutput(value any) error {
 		}
 		_, err := fmt.Fprintln(os.Stdout, typed.Content)
 		return err
+	case *retrieval.FindLinesResult:
+		if _, err := fmt.Fprintf(os.Stdout, "%s (%s): %d match(es)\n", typed.Path, typed.Language, typed.MatchCount); err != nil {
+			return err
+		}
+		for _, match := range typed.Matches {
+			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d\n", typed.Path, match.StartLine, match.EndLine); err != nil {
+				return err
+			}
+		}
+		return nil
 	case *retrieval.CallHierarchy:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err
