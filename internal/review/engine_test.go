@@ -300,6 +300,27 @@ func TestOutputFormatSnippetSkippedWithoutExample(t *testing.T) {
 	}
 }
 
+func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
+	engine := NewEngine(stubSource{}, &capturingLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	template := "{{.FindingInstructionsSnippet}}"
+
+	withTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, true, "review", nil, false)
+	if err != nil {
+		t.Fatalf("renderReviewSystemWithFocus with tools returned err: %v", err)
+	}
+	if !strings.Contains(withTools, "ALWAYS use `find_lines`") {
+		t.Fatalf("with-tools prompt missing find_lines guidance:\n%s", withTools)
+	}
+
+	withoutTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, false, "review", nil, false)
+	if err != nil {
+		t.Fatalf("renderReviewSystemWithFocus without tools returned err: %v", err)
+	}
+	if strings.Contains(withoutTools, "find_lines") {
+		t.Fatalf("no-tools prompt mentions find_lines:\n%s", withoutTools)
+	}
+}
+
 func TestRunAgentDoesNotInsertSeparateExampleMessage(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
@@ -1289,6 +1310,14 @@ func (stubRetrieval) GetFile(context.Context, string, string) (*retrieval.FileCo
 	}, nil
 }
 
+func (s stubRetrieval) FindLines(ctx context.Context, repoRoot, path, code string) (*retrieval.FindLinesResult, error) {
+	content, err := s.GetFile(ctx, repoRoot, path)
+	if err != nil {
+		return nil, err
+	}
+	return retrieval.FindLinesIn(content, code), nil
+}
+
 func (stubRetrieval) ListFiles(context.Context, string, string, int) (*retrieval.DirectoryListing, error) {
 	return &retrieval.DirectoryListing{
 		Path:  "pkg",
@@ -1335,6 +1364,14 @@ func (r *countingRetrieval) GetFile(_ context.Context, _ string, path string) (*
 		Content:  "package extra",
 		Language: "go",
 	}, nil
+}
+
+func (r *countingRetrieval) FindLines(ctx context.Context, repoRoot, path, code string) (*retrieval.FindLinesResult, error) {
+	content, err := r.GetFile(ctx, repoRoot, path)
+	if err != nil {
+		return nil, err
+	}
+	return retrieval.FindLinesIn(content, code), nil
 }
 
 func (r *countingRetrieval) ListFiles(_ context.Context, _ string, path string, depth int) (*retrieval.DirectoryListing, error) {
@@ -1483,7 +1520,7 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
-	wantNames := []string{"inspect_file", "locate_code", "list_files", "search", "find_callers", "find_callees"}
+	wantNames := []string{"inspect_file", "find_lines", "list_files", "search", "find_callers", "find_callees"}
 	if len(definitions) != len(wantNames) {
 		t.Fatalf("tool definitions = %d", len(definitions))
 	}
@@ -1501,7 +1538,7 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 	definitions := reviewerToolDefinitions()
 	requiredByTool := map[string][]string{
 		"inspect_file": {"path"},
-		"locate_code":  {"path", "code"},
+		"find_lines":   {"code"},
 		"search":       {"query"},
 		"find_callers": {"symbol"},
 		"find_callees": {"symbol"},
@@ -1555,8 +1592,8 @@ func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	if !strings.Contains(listing, "- `search` tool with a repo-relative `path` and a `query`") {
 		t.Fatalf("generated listing missing search tool: %q", listing)
 	}
-	if !strings.Contains(listing, "- `locate_code` tool with a repo-relative `path` and exact `code`") {
-		t.Fatalf("generated listing missing locate_code tool: %q", listing)
+	if !strings.Contains(listing, "- `find_lines` tool with an exact `code` line or block and an optional repo-relative `path` to return line numbers and the matching code snippets") {
+		t.Fatalf("generated listing missing find_lines tool: %q", listing)
 	}
 }
 
@@ -3292,6 +3329,10 @@ func (blockingRetrieval) FindCallers(context.Context, string, retrieval.SymbolRe
 
 func (blockingRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
 	return nil, errors.New("unexpected FindCallees call")
+}
+
+func (blockingRetrieval) FindLines(context.Context, string, string, string) (*retrieval.FindLinesResult, error) {
+	return nil, errors.New("unexpected FindLines call")
 }
 
 func TestEngineExecutesIndependentToolCallsConcurrently(t *testing.T) {

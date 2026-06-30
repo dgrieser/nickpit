@@ -53,13 +53,13 @@ var catalogDefinition = []catalogEntry{
 		},
 	},
 	{
-		Name:               "locate_code",
-		APIDescription:     "Locate line numbers for exact code text in a repo-relative file",
-		ListingDescription: "with a repo-relative `path` and exact `code` line or block to return matching line ranges",
-		Note:               "Use this whenever you need exact line numbers for code references",
+		Name:               "find_lines",
+		APIDescription:     "Retrieve exact line ranges for a line or block of code in a repo-relative file, folder or across the whole repo",
+		ListingDescription: "with an exact `code` line or block and an optional repo-relative `path` to return line numbers and the matching code snippets",
+		Note:               "Use this whenever you need exact line numbers for code references or when embedding code snippets",
 		Parameters: []CatalogParameter{
-			{Name: "path", Type: "string", Description: "Repo-relative file path", Example: `"<repo-relative path>"`, Required: true},
-			{Name: "code", Type: "string", Description: "Exact line or contiguous block of code to locate", Example: `"<line or block of code>"`, Required: true},
+			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search the whole repo", Example: `"<repo-relative path>"`},
+			{Name: "code", Type: "string", Description: "Line or contiguous block of code to locate", Example: `"<line or block of code>"`, Required: true},
 		},
 	},
 	{
@@ -75,9 +75,9 @@ var catalogDefinition = []catalogEntry{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder",
 		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches",
-		Note:               "Prefer `find_callers` over `search` when locating a function by name; for other languages use `search` directly",
+		Note:               "Prefer `find_callers` over `search` when locating a function by name",
 		Parameters: []CatalogParameter{
-			{Name: "path", Type: "string", Description: "Repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
+			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
 			{Name: "context_lines", Type: "integer", Description: "Optional number of surrounding lines to include before and after each match; defaults to 5", Example: "int", Minimum: intPtr(0)},
 			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: intPtr(0)},

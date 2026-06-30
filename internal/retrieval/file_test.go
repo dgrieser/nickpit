@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -356,6 +357,65 @@ func TestLocalEngineSearchSkipsGitIgnored(t *testing.T) {
 	}
 	if got.ResultCount != 1 || len(got.Results) != 1 || got.Results[0].Path != "pkg/a.go" {
 		t.Fatalf("search = %#v", got)
+	}
+}
+
+func TestLocalEngineFindLinesSearchesExplicitIgnoredFile(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".gitignore"), []byte("ignored/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "ignored", "tmp.go"), []byte("func Run() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.FindLines(context.Background(), repoRoot, "ignored/tmp.go", "func Run() {}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MatchCount != 1 || len(got.Matches) != 1 || got.Matches[0].Path != "ignored/tmp.go" {
+		t.Fatalf("find_lines = %#v", got)
+	}
+}
+
+func TestLocalEngineFindLinesLimitsMatches(t *testing.T) {
+	repoRoot := t.TempDir()
+	var content strings.Builder
+	for range 120 {
+		content.WriteString("needle\n")
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "many.txt"), []byte(content.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.FindLines(context.Background(), repoRoot, "", "needle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MatchCount != maxFindLinesMatches || len(got.Matches) != maxFindLinesMatches {
+		t.Fatalf("matches = %d/%d, want %d: %#v", got.MatchCount, len(got.Matches), maxFindLinesMatches, got)
+	}
+	last := got.Matches[len(got.Matches)-1]
+	if last.StartLine != maxFindLinesMatches || last.EndLine != maxFindLinesMatches {
+		t.Fatalf("last match = %#v, want line %d", last, maxFindLinesMatches)
+	}
+}
+
+func TestFindLinesInNilContent(t *testing.T) {
+	got := FindLinesIn(nil, " \nneedle\n ")
+	if got == nil {
+		t.Fatal("FindLinesIn returned nil")
+	}
+	if got.CodeLineCount != 1 {
+		t.Fatalf("code_line_count = %d, want 1", got.CodeLineCount)
+	}
+	if got.Path != "" || got.MatchCount != 0 || len(got.Matches) != 0 {
+		t.Fatalf("FindLinesIn(nil) = %#v", got)
 	}
 }
 

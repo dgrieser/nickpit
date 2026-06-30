@@ -174,118 +174,180 @@ func TestExecuteSearchLiteralWhenOptimizationDisabled(t *testing.T) {
 	}
 }
 
-func TestExecuteLocateCodeFindsLineAndBlock(t *testing.T) {
+func TestExecuteFindLinesFindsLineAndBlock(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "cmd/main.go", "package main\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n")
 
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
-		{ID: "line", Name: "locate_code", Arguments: mustToolResultJSON(map[string]any{
+		{ID: "line", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
 			"path": "cmd/main.go",
 			"code": "\tfmt.Println(\"hi\")",
 		})},
-		{ID: "block", Name: "locate_code", Arguments: mustToolResultJSON(map[string]any{
+		{ID: "block", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
 			"path": "cmd/main.go",
 			"code": "\nfunc main() {\r\n\tfmt.Println(\"hi\")\r\n}\n",
 		})},
 	}, freshToolRoundState())
 
 	linePayload := decodeToolPayload(t, results[0].Content)
-	assertLocatePayload(t, linePayload, 1, []locateCodeMatch{{StartLine: 4, EndLine: 4, LineCount: 1}})
+	assertFindLinesPayload(t, linePayload, 1, []retrieval.FindLinesMatch{{StartLine: 4, EndLine: 4, LineCount: 1}})
 
 	blockPayload := decodeToolPayload(t, results[1].Content)
-	assertLocatePayload(t, blockPayload, 3, []locateCodeMatch{{StartLine: 3, EndLine: 5, LineCount: 3}})
+	assertFindLinesPayload(t, blockPayload, 3, []retrieval.FindLinesMatch{{StartLine: 3, EndLine: 5, LineCount: 3}})
 }
 
-func TestExecuteLocateCodeReturnsDuplicateMatches(t *testing.T) {
+func TestExecuteFindLinesReturnsDuplicateMatches(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/repeat.go", "x := 1\nkeep()\nx := 1\nkeep()\n")
 
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
-		{ID: "dupes", Name: "locate_code", Arguments: mustToolResultJSON(map[string]any{
+		{ID: "dupes", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
 			"path": "pkg/repeat.go",
 			"code": "x := 1\nkeep()",
 		})},
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	assertLocatePayload(t, payload, 2, []locateCodeMatch{
+	assertFindLinesPayload(t, payload, 2, []retrieval.FindLinesMatch{
 		{StartLine: 1, EndLine: 2, LineCount: 2},
 		{StartLine: 3, EndLine: 4, LineCount: 2},
 	})
 }
 
-func TestExecuteLocateCodeReturnsZeroMatches(t *testing.T) {
+func TestExecuteFindLinesIgnoresIndentationWhitespace(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/block.go", "func outer() {\n\tif cond {\n\t\tdoThing()\n\t}\n}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		// Snippet is unindented and carries trailing spaces; it should still match
+		// the indented block in the file.
+		{ID: "block", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
+			"path": "pkg/block.go",
+			"code": "if cond {  \ndoThing()\n}",
+		})},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, payload, 3, []retrieval.FindLinesMatch{
+		// Content preserves the file's original indentation, not the trimmed query.
+		{Path: "pkg/block.go", StartLine: 2, EndLine: 4, LineCount: 3, Content: "\tif cond {\n\t\tdoThing()\n\t}"},
+	})
+}
+
+func TestExecuteFindLinesIgnoresWhitespaceOnlyBoundaryLines(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/run.go", "func Run() {}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "run", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
+			"path": "pkg/run.go",
+			"code": " \nfunc Run() {}\n ",
+		})},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, payload, 1, []retrieval.FindLinesMatch{
+		{Path: "pkg/run.go", StartLine: 1, EndLine: 1, LineCount: 1, Content: "func Run() {}"},
+	})
+}
+
+func TestExecuteFindLinesReturnsZeroMatches(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/a.go", "package pkg\n")
 
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
-		{ID: "missing", Name: "locate_code", Arguments: mustToolResultJSON(map[string]any{
+		{ID: "missing", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
 			"path": "pkg/a.go",
 			"code": "func Missing() {}",
 		})},
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	assertLocatePayload(t, payload, 1, nil)
+	assertFindLinesPayload(t, payload, 1, nil)
 }
 
-type nilFileRetrieval struct {
+type nilResultRetrieval struct {
 	stubRetrieval
 }
 
-func (nilFileRetrieval) GetFile(context.Context, string, string) (*retrieval.FileContent, error) {
+func (nilResultRetrieval) FindLines(context.Context, string, string, string) (*retrieval.FindLinesResult, error) {
 	return nil, nil
 }
 
-func TestExecuteLocateCodeHandlesNilFileContent(t *testing.T) {
-	engine := NewEngine(stubSource{}, &capturingLLM{}, nilFileRetrieval{}, config.Profile{Model: "test"})
+func TestExecuteFindLinesHandlesNilResult(t *testing.T) {
+	engine := NewEngine(stubSource{}, &capturingLLM{}, nilResultRetrieval{}, config.Profile{Model: "test"})
 	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
-		{ID: "nil_file", Name: "locate_code", Arguments: `{"path":"pkg/a.go","code":"package pkg"}`},
+		{ID: "nil_file", Name: "find_lines", Arguments: `{"path":"pkg/a.go","code":"package pkg"}`},
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
 	if got := nestedString(payload, "error", "code"); got != "retrieval_failed" {
-		t.Fatalf("nil content error code = %q, payload = %#v", got, payload)
+		t.Fatalf("nil result error code = %q, payload = %#v", got, payload)
 	}
-	if got := nestedString(payload, "error", "message"); got != "retrieved file content is nil" {
-		t.Fatalf("nil content error message = %q, payload = %#v", got, payload)
+	if got := nestedString(payload, "error", "message"); got != "find_lines result is nil" {
+		t.Fatalf("nil result error message = %q, payload = %#v", got, payload)
 	}
 }
 
-func TestExecuteLocateCodeValidatesRequiredArguments(t *testing.T) {
+func TestExecuteFindLinesRequiresCodeButNotPath(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/a.go", "package pkg\n")
+
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
-		{ID: "missing_path", Name: "locate_code", Arguments: `{"code":"x"}`},
-		{ID: "missing_code", Name: "locate_code", Arguments: `{"path":"pkg/a.go","code":"\n"}`},
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "missing_code", Name: "find_lines", Arguments: `{"path":"pkg/a.go","code":"\n"}`},
+		{ID: "no_path", Name: "find_lines", Arguments: `{"code":"package pkg"}`},
 	}, freshToolRoundState())
 
-	pathPayload := decodeToolPayload(t, results[0].Content)
-	if got := nestedString(pathPayload, "error", "code"); got != "missing_argument" {
-		t.Fatalf("missing path error code = %q, payload = %#v", got, pathPayload)
-	}
-
-	codePayload := decodeToolPayload(t, results[1].Content)
+	codePayload := decodeToolPayload(t, results[0].Content)
 	if got := nestedString(codePayload, "error", "code"); got != "missing_argument" {
 		t.Fatalf("missing code error code = %q, payload = %#v", got, codePayload)
 	}
+
+	// An omitted path is valid and searches the whole repo.
+	noPathPayload := decodeToolPayload(t, results[1].Content)
+	assertFindLinesPayload(t, noPathPayload, 1, []retrieval.FindLinesMatch{
+		{Path: "pkg/a.go", StartLine: 1, EndLine: 1, LineCount: 1},
+	})
 }
 
-func TestExecuteLocateCodeDedupesDuplicateCalls(t *testing.T) {
+func TestExecuteFindLinesSearchesWholeRepoWhenPathOmitted(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "a/one.go", "package a\n\nfunc Run() {}\n")
+	writeRepoFile(t, repoRoot, "b/two.go", "package b\n\nfunc Run() {}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "repo_wide", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
+			"code": "func Run() {}",
+		})},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, payload, 1, []retrieval.FindLinesMatch{
+		{Path: "a/one.go", StartLine: 3, EndLine: 3, LineCount: 1},
+		{Path: "b/two.go", StartLine: 3, EndLine: 3, LineCount: 1},
+	})
+}
+
+func TestExecuteFindLinesDedupesDuplicateCalls(t *testing.T) {
 	retrievalEngine := &countingRetrieval{}
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
 	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
-		{ID: "call_1", Name: "locate_code", Arguments: `{"path":"extra.go","code":"package extra"}`},
-		{ID: "call_2", Name: "locate_code", Arguments: `{"path":"./extra.go","code":"package extra"}`},
+		{ID: "call_1", Name: "find_lines", Arguments: `{"path":"extra.go","code":"package extra"}`},
+		{ID: "call_2", Name: "find_lines", Arguments: `{"path":"./extra.go","code":"package extra"}`},
 	}, freshToolRoundState())
 
 	if len(retrievalEngine.paths) != 1 {
 		t.Fatalf("retrieval calls = %d, want 1", len(retrievalEngine.paths))
 	}
 	firstPayload := decodeToolPayload(t, results[0].Content)
-	assertLocatePayload(t, firstPayload, 1, []locateCodeMatch{{StartLine: 1, EndLine: 1, LineCount: 1}})
+	assertFindLinesPayload(t, firstPayload, 1, []retrieval.FindLinesMatch{{StartLine: 1, EndLine: 1, LineCount: 1}})
 
 	secondPayload := decodeToolPayload(t, results[1].Content)
 	if got := nestedString(secondPayload, "error", "code"); got != "already_requested" {
@@ -293,10 +355,33 @@ func TestExecuteLocateCodeDedupesDuplicateCalls(t *testing.T) {
 	}
 }
 
-func assertLocatePayload(t *testing.T, payload map[string]any, wantCodeLines int, wantMatches []locateCodeMatch) {
+func TestExecuteFindLinesDedupesRepoRootAlias(t *testing.T) {
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "call_1", Name: "find_lines", Arguments: `{"code":"package extra"}`},
+		{ID: "call_2", Name: "find_lines", Arguments: `{"path":".","code":"package extra"}`},
+	}, freshToolRoundState())
+
+	if len(retrievalEngine.paths) != 1 {
+		t.Fatalf("retrieval calls = %d, want 1 (%v)", len(retrievalEngine.paths), retrievalEngine.paths)
+	}
+	if retrievalEngine.paths[0] != "" {
+		t.Fatalf("retrieval path = %q, want repo root", retrievalEngine.paths[0])
+	}
+	firstPayload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, firstPayload, 1, []retrieval.FindLinesMatch{{StartLine: 1, EndLine: 1, LineCount: 1}})
+
+	secondPayload := decodeToolPayload(t, results[1].Content)
+	if got := nestedString(secondPayload, "error", "code"); got != "already_requested" {
+		t.Fatalf("duplicate error code = %q, payload = %#v", got, secondPayload)
+	}
+}
+
+func assertFindLinesPayload(t *testing.T, payload map[string]any, wantCodeLines int, wantMatches []retrieval.FindLinesMatch) {
 	t.Helper()
 	if _, isErr := payload["error"]; isErr {
-		t.Fatalf("locate_code returned error: %#v", payload)
+		t.Fatalf("find_lines returned error: %#v", payload)
 	}
 	if got := intFromJSON(payload["code_line_count"]); got != wantCodeLines {
 		t.Fatalf("code_line_count = %d, want %d; payload = %#v", got, wantCodeLines, payload)
@@ -320,6 +405,12 @@ func assertLocatePayload(t *testing.T, payload map[string]any, wantCodeLines int
 			intFromJSON(got["end_line"]) != want.EndLine ||
 			intFromJSON(got["line_count"]) != want.LineCount {
 			t.Fatalf("match[%d] = %#v, want %#v", i, got, want)
+		}
+		if want.Path != "" && got["path"] != want.Path {
+			t.Fatalf("match[%d] path = %#v, want %q", i, got["path"], want.Path)
+		}
+		if want.Content != "" && got["content"] != want.Content {
+			t.Fatalf("match[%d] content = %#v, want %q", i, got["content"], want.Content)
 		}
 	}
 }
@@ -379,9 +470,9 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 			want: fmt.Sprintf("inspect_file\x00%s", goPath),
 		},
 		{
-			name: "locate_code",
-			call: llm.ToolCall{ID: "loc", Name: "locate_code", Arguments: `{"path":"./src/demo.go","code":"func Run() int { return 1 }\n"}`},
-			want: locateCodeDedupKey(goPath, "func Run() int { return 1 }"),
+			name: "find_lines",
+			call: llm.ToolCall{ID: "loc", Name: "find_lines", Arguments: `{"path":"./src/demo.go","code":"func Run() int { return 1 }\n"}`},
+			want: findLinesDedupKey(goPath, "func Run() int { return 1 }"),
 		},
 		{
 			name: "list_files default depth",

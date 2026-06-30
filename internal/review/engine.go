@@ -1718,7 +1718,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		}
 	}
 	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindReview, req.DisableSuggestions)
-	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, outputSchemaSnippet, req.DisableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippetsForTools(agentRole, outputSchemaSnippet, req.DisableSuggestions, hasTools)
 	if err != nil {
 		return "", err
 	}
@@ -2026,7 +2026,7 @@ func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
 }
 
 func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool) ([]llm.Message, error) {
-	commonSnippets, err := agentCommonSystemPromptSnippets(agentRole, snippet, disableSuggestions)
+	commonSnippets, err := agentCommonSystemPromptSnippetsForTools(agentRole, snippet, disableSuggestions, false)
 	if err != nil {
 		return nil, err
 	}
@@ -2113,17 +2113,19 @@ func renderPromptFile(name string, data any) (string, error) {
 	return llm.RenderPrompt(tmpl, data)
 }
 
-func agentCommonSystemPromptSnippet(agentRole string, snippet string, outputSchemaSnippet string, disableSuggestions bool) (string, error) {
+func agentCommonSystemPromptSnippet(agentRole string, snippet string, outputSchemaSnippet string, disableSuggestions bool, hasTools bool) (string, error) {
 	rendered, err := renderPromptFile("agent_common_system_prompt_snippet.tmpl", struct {
 		AgentRole           string
 		Snippet             string
 		OutputSchemaSnippet string
 		DisableSuggestions  bool
+		HasTools            bool
 	}{
 		AgentRole:           agentRole,
 		Snippet:             snippet,
 		OutputSchemaSnippet: outputSchemaSnippet,
 		DisableSuggestions:  disableSuggestions,
+		HasTools:            hasTools,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering common system prompt snippet %q for %s: %w", snippet, agentRole, err)
@@ -2138,17 +2140,21 @@ type agentCommonSystemPromptSnippetSet struct {
 }
 
 func agentCommonSystemPromptSnippets(agentRole string, outputSchemaSnippet string, disableSuggestions bool) (agentCommonSystemPromptSnippetSet, error) {
-	findingInstructions, err := agentCommonSystemPromptSnippet(agentRole, "findings", "", disableSuggestions)
+	return agentCommonSystemPromptSnippetsForTools(agentRole, outputSchemaSnippet, disableSuggestions, true)
+}
+
+func agentCommonSystemPromptSnippetsForTools(agentRole string, outputSchemaSnippet string, disableSuggestions bool, hasTools bool) (agentCommonSystemPromptSnippetSet, error) {
+	findingInstructions, err := agentCommonSystemPromptSnippet(agentRole, "findings", "", disableSuggestions, hasTools)
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
-	priority, err := agentCommonSystemPromptSnippet(agentRole, "priority", "", disableSuggestions)
+	priority, err := agentCommonSystemPromptSnippet(agentRole, "priority", "", disableSuggestions, hasTools)
 	if err != nil {
 		return agentCommonSystemPromptSnippetSet{}, err
 	}
 	var outputFormat string
 	if outputSchemaSnippet != "" {
-		outputFormat, err = agentCommonSystemPromptSnippet(agentRole, "output_format", outputSchemaSnippet, disableSuggestions)
+		outputFormat, err = agentCommonSystemPromptSnippet(agentRole, "output_format", outputSchemaSnippet, disableSuggestions, hasTools)
 		if err != nil {
 			return agentCommonSystemPromptSnippetSet{}, err
 		}
@@ -2558,7 +2564,7 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 }
 
 // toolCallArgs is the union of arguments across the retrieval tools
-// (inspect_file, locate_code, list_files, search, find_callers, find_callees). A single
+// (inspect_file, find_lines, list_files, search, find_callers, find_callees). A single
 // named type replaces the 9-field anonymous struct that was previously
 // re-declared verbatim at several call sites.
 type toolCallArgs struct {
@@ -2585,9 +2591,9 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		if args.LineEnd > 0 {
 			parts = append(parts, fmt.Sprintf("line_end=%d", args.LineEnd))
 		}
-	case "locate_code":
+	case "find_lines":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
-		parts = append(parts, fmt.Sprintf("code_line_count=%d", locateCodeLineCount(args.Code)))
+		parts = append(parts, fmt.Sprintf("code_line_count=%d", retrieval.FindLinesCount(args.Code)))
 	case "list_files":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {
@@ -2631,7 +2637,7 @@ func syntheticToolOutcome(toolName string, result toolResultSummary) string {
 		parts = append(parts, fmt.Sprintf("result_count=%d", result.ResultCount))
 	}
 	if len(parts) == 0 {
-		if toolName == "search" || toolName == "locate_code" {
+		if toolName == "search" || toolName == "find_lines" {
 			parts = append(parts, "result_count=0")
 			return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
 		}
