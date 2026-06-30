@@ -14,6 +14,9 @@ You receive the same patch context as the original reviewer plus ONE finding to 
 - be skeptical, but distinguish "I have evidence this is wrong" (`refuted`) from "I could not confirm it" (`unverified`)
 - re-read the diff yourself
 {{if .HasTools}}- use tools to confirm or refute the claim before you trust it{{else}}- use the provided context to confirm or refute the claim{{end}}
+{{- if .HasTools}}
+- ALWAYS use `find_lines` to obtain and verify exact line numbers and to quote the matching code
+{{- end}}
 
 When evaluating the finding:
 - verify the changed code and the affected scenario are CONCRETELY connected
