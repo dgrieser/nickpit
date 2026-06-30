@@ -300,6 +300,27 @@ func TestOutputFormatSnippetSkippedWithoutExample(t *testing.T) {
 	}
 }
 
+func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
+	engine := NewEngine(stubSource{}, &capturingLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	template := "{{.FindingInstructionsSnippet}}"
+
+	withTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, true, "review", nil, false)
+	if err != nil {
+		t.Fatalf("renderReviewSystemWithFocus with tools returned err: %v", err)
+	}
+	if !strings.Contains(withTools, "ALWAYS use `find_lines`") {
+		t.Fatalf("with-tools prompt missing find_lines guidance:\n%s", withTools)
+	}
+
+	withoutTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, false, "review", nil, false)
+	if err != nil {
+		t.Fatalf("renderReviewSystemWithFocus without tools returned err: %v", err)
+	}
+	if strings.Contains(withoutTools, "find_lines") {
+		t.Fatalf("no-tools prompt mentions find_lines:\n%s", withoutTools)
+	}
+}
+
 func TestRunAgentDoesNotInsertSeparateExampleMessage(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})

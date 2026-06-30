@@ -275,8 +275,8 @@ func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string
 	}
 	ignores := repofs.NewIgnoreMatcher(repoRoot)
 
-	visitFile := func(relPath string) error {
-		if ignores.IsIgnored(relPath, false) {
+	visitFile := func(relPath string, respectIgnores bool) error {
+		if respectIgnores && ignores.IsIgnored(relPath, false) {
 			return nil
 		}
 		_, fileFullPath, err := repofs.ResolvePath(repoRoot, relPath)
@@ -294,7 +294,7 @@ func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string
 	}
 
 	if !info.IsDir() {
-		if err := visitFile(normalizedPath); err != nil {
+		if err := visitFile(normalizedPath, false); err != nil {
 			return normalizedPath, err
 		}
 		return normalizedPath, nil
@@ -318,7 +318,7 @@ func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string
 		if err != nil {
 			return err
 		}
-		return visitFile(relPath)
+		return visitFile(relPath, true)
 	})
 	if walkErr != nil {
 		return normalizedPath, walkErr

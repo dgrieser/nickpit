@@ -237,6 +237,24 @@ func TestExecuteFindLinesIgnoresIndentationWhitespace(t *testing.T) {
 	})
 }
 
+func TestExecuteFindLinesIgnoresWhitespaceOnlyBoundaryLines(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/run.go", "func Run() {}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "run", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
+			"path": "pkg/run.go",
+			"code": " \nfunc Run() {}\n ",
+		})},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, payload, 1, []retrieval.FindLinesMatch{
+		{Path: "pkg/run.go", StartLine: 1, EndLine: 1, LineCount: 1, Content: "func Run() {}"},
+	})
+}
+
 func TestExecuteFindLinesReturnsZeroMatches(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/a.go", "package pkg\n")
@@ -327,6 +345,29 @@ func TestExecuteFindLinesDedupesDuplicateCalls(t *testing.T) {
 
 	if len(retrievalEngine.paths) != 1 {
 		t.Fatalf("retrieval calls = %d, want 1", len(retrievalEngine.paths))
+	}
+	firstPayload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, firstPayload, 1, []retrieval.FindLinesMatch{{StartLine: 1, EndLine: 1, LineCount: 1}})
+
+	secondPayload := decodeToolPayload(t, results[1].Content)
+	if got := nestedString(secondPayload, "error", "code"); got != "already_requested" {
+		t.Fatalf("duplicate error code = %q, payload = %#v", got, secondPayload)
+	}
+}
+
+func TestExecuteFindLinesDedupesRepoRootAlias(t *testing.T) {
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "call_1", Name: "find_lines", Arguments: `{"code":"package extra"}`},
+		{ID: "call_2", Name: "find_lines", Arguments: `{"path":".","code":"package extra"}`},
+	}, freshToolRoundState())
+
+	if len(retrievalEngine.paths) != 1 {
+		t.Fatalf("retrieval calls = %d, want 1 (%v)", len(retrievalEngine.paths), retrievalEngine.paths)
+	}
+	if retrievalEngine.paths[0] != "" {
+		t.Fatalf("retrieval path = %q, want repo root", retrievalEngine.paths[0])
 	}
 	firstPayload := decodeToolPayload(t, results[0].Content)
 	assertFindLinesPayload(t, firstPayload, 1, []retrieval.FindLinesMatch{{StartLine: 1, EndLine: 1, LineCount: 1}})

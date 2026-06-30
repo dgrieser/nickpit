@@ -19,7 +19,7 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
   - format bold or italic when it makes sense to emphasize a point
 {{- end}}
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
-{{- if eq .AgentRole "review"}}
+{{- if and (eq .AgentRole "review") .HasTools}}
 - ALWAYS use `find_lines` to obtain exact line numbers and to quote the matching code
 {{- end}}
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths

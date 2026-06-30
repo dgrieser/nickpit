@@ -89,7 +89,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
-		return findLinesDedupKey(normalizeToolPath(args.Path), retrieval.NormalizeFindLinesCode(args.Code))
+		return findLinesDedupKey(normalizeFindLinesPath(args.Path), retrieval.NormalizeFindLinesCode(args.Code))
 	case "list_files":
 		var args struct {
 			Path  string `json:"path"`
@@ -172,7 +172,7 @@ func (e *Engine) executeFindLines(ctx context.Context, repoRoot string, toolCall
 	args.Path = strings.TrimSpace(args.Path)
 	args.Code = retrieval.NormalizeFindLinesCode(args.Code)
 	// path is optional: an empty path searches the whole repository.
-	normalizedPath := normalizeToolPath(args.Path)
+	normalizedPath := normalizeFindLinesPath(args.Path)
 	if args.Code == "" {
 		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "code"))
 	}
@@ -538,6 +538,14 @@ func callHierarchyDedupKey(name, path, symbol string, depth int) string {
 
 func findLinesDedupKey(path, code string) string {
 	return fmt.Sprintf("find_lines\x00%s\x00%s", path, code)
+}
+
+func normalizeFindLinesPath(path string) string {
+	normalized := normalizeToolPath(strings.TrimSpace(path))
+	if normalized == "." {
+		return ""
+	}
+	return normalized
 }
 
 func mustToolResultJSON(value any) string {

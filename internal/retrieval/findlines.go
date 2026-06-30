@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const maxFindLinesMatches = 100
+
 // FindLines returns the line ranges whose contents match the given code (a
 // single line or a contiguous block). When path names a file only that file is
 // scanned; when it names a directory its tree is walked; when it is empty the
@@ -16,10 +18,18 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 	code = NormalizeFindLinesCode(code)
 	matches := make([]FindLinesMatch, 0)
 	normalizedPath, err := walkRepoTextFiles(repoRoot, path, func(relPath, content string) error {
-		matches = append(matches, matchFindLines(relPath, content, code)...)
+		remaining := maxFindLinesMatches - len(matches)
+		if remaining <= 0 {
+			return errSearchLimitReached
+		}
+		fileMatches := matchFindLinesLimit(relPath, content, code, remaining)
+		matches = append(matches, fileMatches...)
+		if len(fileMatches) >= remaining {
+			return errSearchLimitReached
+		}
 		return nil
 	})
-	if err != nil {
+	if err != nil && err != errSearchLimitReached {
 		return nil, fmt.Errorf("retrieval: find_lines %s: %w", searchScopeLabel(path, normalizedPath), err)
 	}
 	return &FindLinesResult{
@@ -34,8 +44,13 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 // content, so callers that obtain a FileContent another way (or fakes in tests)
 // share the same matching logic as the LocalEngine.
 func FindLinesIn(content *FileContent, code string) *FindLinesResult {
+	if content == nil {
+		return &FindLinesResult{
+			CodeLineCount: FindLinesCount(code),
+		}
+	}
 	code = NormalizeFindLinesCode(code)
-	matches := matchFindLines(content.Path, content.Content, code)
+	matches := matchFindLinesLimit(content.Path, content.Content, code, maxFindLinesMatches)
 	return &FindLinesResult{
 		Path:          content.Path,
 		CodeLineCount: FindLinesCount(code),
@@ -45,6 +60,10 @@ func FindLinesIn(content *FileContent, code string) *FindLinesResult {
 }
 
 func matchFindLines(relPath, content, code string) []FindLinesMatch {
+	return matchFindLinesLimit(relPath, content, code, 0)
+}
+
+func matchFindLinesLimit(relPath, content, code string, maxMatches int) []FindLinesMatch {
 	matches := make([]FindLinesMatch, 0)
 	// Leading/trailing whitespace on each line is ignored, so a snippet matches
 	// regardless of how it is indented in the file.
@@ -67,6 +86,9 @@ func matchFindLines(relPath, content, code string) []FindLinesMatch {
 			LineCount: len(codeLines),
 			Content:   strings.Join(rawFileLines[i:i+len(codeLines)], "\n"),
 		})
+		if maxMatches > 0 && len(matches) >= maxMatches {
+			return matches
+		}
 	}
 	return matches
 }
@@ -94,7 +116,14 @@ func allBlank(lines []string) bool {
 func NormalizeFindLinesCode(code string) string {
 	code = strings.ReplaceAll(code, "\r\n", "\n")
 	code = strings.ReplaceAll(code, "\r", "\n")
-	return strings.Trim(code, "\n")
+	lines := strings.Split(code, "\n")
+	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func normalizeFindLinesContent(content string) string {
