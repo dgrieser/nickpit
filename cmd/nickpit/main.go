@@ -838,9 +838,8 @@ func (a *app) newInspectCmd() *cobra.Command {
 			return a.writeInspectOutput(result)
 		},
 	}
-	findLinesCmd.Flags().StringVar(&findLinesPath, "path", "", "Relative file path")
+	findLinesCmd.Flags().StringVar(&findLinesPath, "path", "", "Relative file or folder path; leave empty to search the whole repo")
 	findLinesCmd.Flags().StringVar(&findLinesCode, "code", "", "Exact line or contiguous block of code to locate")
-	_ = findLinesCmd.MarkFlagRequired("path")
 	_ = findLinesCmd.MarkFlagRequired("code")
 
 	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, findLinesCmd, callersCmd, calleesCmd)
@@ -1862,11 +1861,19 @@ func (a *app) writeInspectOutput(value any) error {
 		_, err := fmt.Fprintln(os.Stdout, typed.Content)
 		return err
 	case *retrieval.FindLinesResult:
-		if _, err := fmt.Fprintf(os.Stdout, "%s (%s): %d match(es)\n", typed.Path, typed.Language, typed.MatchCount); err != nil {
+		if _, err := fmt.Fprintf(os.Stdout, "%d match(es)\n", typed.MatchCount); err != nil {
 			return err
 		}
-		for _, match := range typed.Matches {
-			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d\n", typed.Path, match.StartLine, match.EndLine); err != nil {
+		for i, match := range typed.Matches {
+			if i > 0 {
+				if _, err := fmt.Fprintln(os.Stdout); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", match.Path, match.StartLine, match.EndLine, match.Language); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(os.Stdout, match.Content); err != nil {
 				return err
 			}
 		}

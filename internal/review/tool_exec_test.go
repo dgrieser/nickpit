@@ -216,6 +216,27 @@ func TestExecuteFindLinesReturnsDuplicateMatches(t *testing.T) {
 	})
 }
 
+func TestExecuteFindLinesIgnoresIndentationWhitespace(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/block.go", "func outer() {\n\tif cond {\n\t\tdoThing()\n\t}\n}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		// Snippet is unindented and carries trailing spaces; it should still match
+		// the indented block in the file.
+		{ID: "block", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
+			"path": "pkg/block.go",
+			"code": "if cond {  \ndoThing()\n}",
+		})},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, payload, 3, []retrieval.FindLinesMatch{
+		// Content preserves the file's original indentation, not the trimmed query.
+		{Path: "pkg/block.go", StartLine: 2, EndLine: 4, LineCount: 3, Content: "\tif cond {\n\t\tdoThing()\n\t}"},
+	})
+}
+
 func TestExecuteFindLinesReturnsZeroMatches(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/a.go", "package pkg\n")
@@ -255,22 +276,45 @@ func TestExecuteFindLinesHandlesNilResult(t *testing.T) {
 	}
 }
 
-func TestExecuteFindLinesValidatesRequiredArguments(t *testing.T) {
+func TestExecuteFindLinesRequiresCodeButNotPath(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/a.go", "package pkg\n")
+
 	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
-		{ID: "missing_path", Name: "find_lines", Arguments: `{"code":"x"}`},
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
 		{ID: "missing_code", Name: "find_lines", Arguments: `{"path":"pkg/a.go","code":"\n"}`},
+		{ID: "no_path", Name: "find_lines", Arguments: `{"code":"package pkg"}`},
 	}, freshToolRoundState())
 
-	pathPayload := decodeToolPayload(t, results[0].Content)
-	if got := nestedString(pathPayload, "error", "code"); got != "missing_argument" {
-		t.Fatalf("missing path error code = %q, payload = %#v", got, pathPayload)
-	}
-
-	codePayload := decodeToolPayload(t, results[1].Content)
+	codePayload := decodeToolPayload(t, results[0].Content)
 	if got := nestedString(codePayload, "error", "code"); got != "missing_argument" {
 		t.Fatalf("missing code error code = %q, payload = %#v", got, codePayload)
 	}
+
+	// An omitted path is valid and searches the whole repo.
+	noPathPayload := decodeToolPayload(t, results[1].Content)
+	assertFindLinesPayload(t, noPathPayload, 1, []retrieval.FindLinesMatch{
+		{Path: "pkg/a.go", StartLine: 1, EndLine: 1, LineCount: 1},
+	})
+}
+
+func TestExecuteFindLinesSearchesWholeRepoWhenPathOmitted(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "a/one.go", "package a\n\nfunc Run() {}\n")
+	writeRepoFile(t, repoRoot, "b/two.go", "package b\n\nfunc Run() {}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "repo_wide", Name: "find_lines", Arguments: mustToolResultJSON(map[string]any{
+			"code": "func Run() {}",
+		})},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	assertFindLinesPayload(t, payload, 1, []retrieval.FindLinesMatch{
+		{Path: "a/one.go", StartLine: 3, EndLine: 3, LineCount: 1},
+		{Path: "b/two.go", StartLine: 3, EndLine: 3, LineCount: 1},
+	})
 }
 
 func TestExecuteFindLinesDedupesDuplicateCalls(t *testing.T) {
@@ -320,6 +364,12 @@ func assertFindLinesPayload(t *testing.T, payload map[string]any, wantCodeLines 
 			intFromJSON(got["end_line"]) != want.EndLine ||
 			intFromJSON(got["line_count"]) != want.LineCount {
 			t.Fatalf("match[%d] = %#v, want %#v", i, got, want)
+		}
+		if want.Path != "" && got["path"] != want.Path {
+			t.Fatalf("match[%d] path = %#v, want %q", i, got["path"], want.Path)
+		}
+		if want.Content != "" && got["content"] != want.Content {
+			t.Fatalf("match[%d] content = %#v, want %q", i, got["content"], want.Content)
 		}
 	}
 }

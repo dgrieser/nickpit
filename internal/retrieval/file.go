@@ -222,36 +222,11 @@ func (e *LocalEngine) SearchRegex(_ context.Context, repoRoot, path string, patt
 }
 
 func runFileSearch(repoRoot, path string, contextLines, maxResults int, match func(string) bool) ([]SearchResult, string, int, error) {
-	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
-	if err != nil {
-		return nil, "", contextLines, fmt.Errorf("retrieval: searching %s: %w", path, err)
-	}
 	if contextLines < 0 {
 		contextLines = 5
 	}
-	info, err := os.Stat(fullPath)
-	if err != nil {
-		return nil, normalizedPath, contextLines, fmt.Errorf("retrieval: searching %s: %w", normalizedPath, err)
-	}
-	ignores := repofs.NewIgnoreMatcher(repoRoot)
-
 	results := make([]SearchResult, 0)
-	appendMatches := func(relPath string) error {
-		if ignores.IsIgnored(relPath, false) {
-			return nil
-		}
-		_, fullPath, err := repofs.ResolvePath(repoRoot, relPath)
-		if err != nil {
-			return err
-		}
-		data, err := os.ReadFile(fullPath)
-		if err != nil {
-			return nil
-		}
-		if !isTextContent(data) {
-			return nil
-		}
-		content := normalizeText(string(data))
+	appendMatches := func(relPath, content string) error {
 		lines := splitLines(content)
 		for i, line := range lines {
 			if !match(line) {
@@ -276,11 +251,53 @@ func runFileSearch(repoRoot, path string, contextLines, maxResults int, match fu
 		return nil
 	}
 
-	if !info.IsDir() {
-		if err := appendMatches(normalizedPath); err != nil && err != errSearchLimitReached {
-			return nil, normalizedPath, contextLines, err
+	normalizedPath, err := walkRepoTextFiles(repoRoot, path, appendMatches)
+	if err != nil && err != errSearchLimitReached {
+		return nil, normalizedPath, contextLines, fmt.Errorf("retrieval: searching %s: %w", searchScopeLabel(path, normalizedPath), err)
+	}
+	return results, normalizedPath, contextLines, nil
+}
+
+// walkRepoTextFiles resolves path within repoRoot and invokes visit with the
+// repo-relative path and normalized text content of each non-ignored text file.
+// When path is a file, only that file is visited; when it is a directory (or
+// empty, meaning the repo root), its tree is walked. The returned string is the
+// normalized path that was resolved. A non-nil error from visit stops the walk
+// and is returned to the caller.
+func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string) error) (string, error) {
+	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return normalizedPath, err
+	}
+	ignores := repofs.NewIgnoreMatcher(repoRoot)
+
+	visitFile := func(relPath string) error {
+		if ignores.IsIgnored(relPath, false) {
+			return nil
 		}
-		return results, normalizedPath, contextLines, nil
+		_, fileFullPath, err := repofs.ResolvePath(repoRoot, relPath)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(fileFullPath)
+		if err != nil {
+			return nil
+		}
+		if !isTextContent(data) {
+			return nil
+		}
+		return visit(relPath, normalizeText(string(data)))
+	}
+
+	if !info.IsDir() {
+		if err := visitFile(normalizedPath); err != nil {
+			return normalizedPath, err
+		}
+		return normalizedPath, nil
 	}
 
 	walkErr := filepath.WalkDir(fullPath, func(currentPath string, d os.DirEntry, walkErr error) error {
@@ -301,12 +318,24 @@ func runFileSearch(repoRoot, path string, contextLines, maxResults int, match fu
 		if err != nil {
 			return err
 		}
-		return appendMatches(relPath)
+		return visitFile(relPath)
 	})
-	if walkErr != nil && walkErr != errSearchLimitReached {
-		return nil, normalizedPath, contextLines, fmt.Errorf("retrieval: searching %s: %w", normalizedPath, walkErr)
+	if walkErr != nil {
+		return normalizedPath, walkErr
 	}
-	return results, normalizedPath, contextLines, nil
+	return normalizedPath, nil
+}
+
+// searchScopeLabel renders the path used in scope error messages, falling back
+// to the repo root when an empty path resolves to "".
+func searchScopeLabel(path, normalizedPath string) string {
+	if normalizedPath != "" {
+		return normalizedPath
+	}
+	if path != "" {
+		return path
+	}
+	return "."
 }
 
 func unescapeSearchQuery(query string) string {

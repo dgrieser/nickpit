@@ -171,9 +171,7 @@ func (e *Engine) executeFindLines(ctx context.Context, repoRoot string, toolCall
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	args.Code = normalizeFindLinesInput(args.Code)
-	if args.Path == "" {
-		return toolError("", "missing_argument", missingToolArgumentMessage(toolCall.Name, "path"))
-	}
+	// path is optional: an empty path searches the whole repository.
 	normalizedPath := normalizeToolPath(args.Path)
 	if args.Code == "" {
 		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "code"))
