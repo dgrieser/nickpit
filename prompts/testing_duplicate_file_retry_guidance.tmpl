@@ -1,0 +1,17 @@
+You may return at most one finding per file.
+{{- if .HasExisting}}
+Some files were already reported earlier in this session; omit same-file findings from this retry unless they are the single combined finding replacing the current response.
+{{- end}}
+
+Files that violated the one-finding-per-file rule:
+{{- range .Files}}
+- `{{.File}}`
+  {{- if .ExistingTitles}}
+  - already reported: {{range $i, $title := .ExistingTitles}}{{if $i}}, {{end}}`{{$title}}`{{end}}
+  {{- end}}
+  - previous response: {{range $i, $title := .ResponseTitles}}{{if $i}}, {{end}}`{{$title}}`{{end}}
+{{- end}}
+
+Retry with these rules:
+- return a maximum of one finding per file
+- combine multiple testing gaps in the same file into one finding body

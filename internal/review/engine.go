@@ -275,6 +275,12 @@ type agentSpec struct {
 	// validateResponse returns the typed error so retry guidance metadata can
 	// be rendered after otherwise valid JSON is parsed.
 	validateResponse func(*llm.ReviewResponse) *llm.InvalidResponseError
+	// reviewSessionValidateResponse validates reviewer responses against
+	// findings already accumulated by the same reviewer session.
+	reviewSessionValidateResponse func([]model.Finding, *llm.ReviewResponse) *llm.InvalidResponseError
+	// reviewSessionEnforceResponse repairs a reviewer response after retry
+	// exhaustion. It may mutate resp and returns a partial-run message.
+	reviewSessionEnforceResponse func(string, []model.Finding, *llm.ReviewResponse) string
 }
 
 type agentResult struct {
@@ -299,11 +305,13 @@ type contextAgentResult struct {
 type reviewVector struct {
 	// id is the stable, portable identifier used in workflow specs
 	// (e.g. "security" for the "review:security" step). name is the display name.
-	id            string
-	name          string
-	focusFile     string
-	questionsFile string
-	constraints   llm.ResponseConstraints
+	id               string
+	name             string
+	focusFile        string
+	questionsFile    string
+	constraints      llm.ResponseConstraints
+	validateResponse func([]model.Finding, *llm.ReviewResponse) *llm.InvalidResponseError
+	enforceResponse  func(string, []model.Finding, *llm.ReviewResponse) string
 }
 
 var reviewVectors = []reviewVector{
@@ -340,6 +348,8 @@ var reviewVectors = []reviewVector{
 			MinPriority:        intPtr(2),
 			AllowedCorrectness: []string{"patch is correct"},
 		},
+		validateResponse: validateTestingDuplicateFileResponse,
+		enforceResponse:  enforceTestingDuplicateFileResponse,
 	},
 	{
 		id:            "bestpractices",
@@ -2084,15 +2094,17 @@ func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exam
 		guidance = strings.TrimSpace(renderedGuidance)
 	}
 	rendered, err := renderPromptFile("helper_json_snippet.tmpl", struct {
-		Reason         string
-		MissingFields  string
-		Guidance       string
-		ExampleSnippet string
+		Reason            string
+		MissingFields     string
+		Guidance          string
+		ExampleSnippet    string
+		ValidationFailure bool
 	}{
-		Reason:         invalid.Reason,
-		MissingFields:  strings.Join(invalid.MissingFields, ", "),
-		Guidance:       guidance,
-		ExampleSnippet: strings.TrimSpace(exampleSnippet),
+		Reason:            invalid.Reason,
+		MissingFields:     strings.Join(invalid.MissingFields, ", "),
+		Guidance:          guidance,
+		ExampleSnippet:    strings.TrimSpace(exampleSnippet),
+		ValidationFailure: invalid.ValidationFailure,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering JSON retry feedback prompt: %w", err)

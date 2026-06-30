@@ -1030,6 +1030,43 @@ func TestWorkflowLaneRunsPerVectorVerifyAndDedupeInOrder(t *testing.T) {
 	}
 }
 
+func TestWorkflowTestingVectorWiresDuplicateFileValidation(t *testing.T) {
+	client := &multiAgentLLM{vectorFindings: map[string]int{"Testing": 2}}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec("testing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := laneTestRequest()
+	req.MaxOutputRetries = 1
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := client.vectorCalls["Testing"]; got != 3 {
+		t.Fatalf("Testing reviewer calls = %d, want tool call, invalid response, retry", got)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %d, want duplicate same-file Testing findings pruned to 1", len(result.Findings))
+	}
+	foundTestingRun := false
+	for _, run := range result.AgentRuns {
+		if run.Name != "Testing" || run.Role != "review" {
+			continue
+		}
+		foundTestingRun = true
+		if got, want := run.Status, model.AgentRunStatusPartial; got != want {
+			t.Fatalf("Testing run status = %q, want %q", got, want)
+		}
+		if !strings.Contains(run.Error, "duplicate-file Testing findings dropped") {
+			t.Fatalf("Testing run error = %q, want duplicate-file prune message", run.Error)
+		}
+	}
+	if !foundTestingRun {
+		t.Fatalf("Testing review run missing from %#v", result.AgentRuns)
+	}
+}
+
 // The verify limiter is shared across lanes: with a cap of 1, the four verify
 // calls (two lanes × two findings) never overlap.
 func TestLimiterCapsAcrossLanes(t *testing.T) {

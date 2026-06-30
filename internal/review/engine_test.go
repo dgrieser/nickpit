@@ -892,6 +892,181 @@ func TestRunAgent_NudgeKeepDuplicate(t *testing.T) {
 	}
 }
 
+func TestTestingDuplicateFileValidatorRejectsSameFile(t *testing.T) {
+	first := nudgeFindingInFile("A", "main.go", 1)
+	second := nudgeFindingInFile("B", "./main.go", 2)
+	resp := nudgeReviewResponse("duplicate", 1, first, second)
+
+	invalid := validateTestingDuplicateFileResponse(nil, resp)
+	if invalid == nil {
+		t.Fatal("validator accepted duplicate Testing findings for same file")
+	}
+	if got := invalid.Error(); strings.Contains(got, "invalid JSON") || strings.Contains(got, "missing or invalid fields") {
+		t.Fatalf("validator error = %q, want semantic validation wording", got)
+	}
+	if !strings.Contains(invalid.Reason, "main.go") {
+		t.Fatalf("reason = %q, want file path", invalid.Reason)
+	}
+	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"at most one finding per file", "`A`", "`B`"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("retry guidance missing %q:\n%s", want, rendered)
+		}
+	}
+
+	otherFile := nudgeFindingInFile("C", "other.go", 3)
+	if invalid := validateTestingDuplicateFileResponse(nil, nudgeReviewResponse("ok", 1, first, otherFile)); invalid != nil {
+		t.Fatalf("validator rejected different files: %v", invalid)
+	}
+
+	exactDuplicate := first
+	exactResp := nudgeReviewResponse("exact duplicate", 1, first, exactDuplicate)
+	if msg := enforceTestingDuplicateFileResponse("Testing", nil, exactResp); msg != "" {
+		t.Fatalf("exact duplicate enforcement message = %q, want none", msg)
+	}
+	if got := len(exactResp.Findings); got != 1 {
+		t.Fatalf("exact duplicate findings = %d, want collapsed to 1", got)
+	}
+}
+
+func TestTestingDuplicateFileValidatorRejectsExistingSessionFile(t *testing.T) {
+	existing := []model.Finding{nudgeFindingInFile("Existing", "main.go", 1)}
+	resp := nudgeReviewResponse("duplicate", 1, nudgeFindingInFile("Nudge", "main.go", 2))
+
+	invalid := validateTestingDuplicateFileResponse(existing, resp)
+	if invalid == nil {
+		t.Fatal("validator accepted nudge finding for existing file")
+	}
+	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"already reported", "earlier in this session", "`Existing`", "`Nudge`"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("retry guidance missing %q:\n%s", want, rendered)
+		}
+	}
+
+	exactReplay := nudgeReviewResponse("exact replay", 1, existing[0])
+	if invalid := validateTestingDuplicateFileResponse(existing, exactReplay); invalid != nil {
+		t.Fatalf("validator rejected exact replay that appendNewFindings would ignore: %v", invalid)
+	}
+}
+
+func TestRunAgent_TestingDuplicateFileInitialRetry(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("duplicate", 1,
+				nudgeFindingInFile("A", "main.go", 1),
+				nudgeFindingInFile("B", "main.go", 2),
+			)},
+			{resp: nudgeReviewResponse("retry", 1, nudgeFindingInFile("Combined", "main.go", 1))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), testingNudgeTestAgent(), model.ReviewRequest{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Combined"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want initial plus retry", len(llmClient.reqs))
+	}
+	retryMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content
+	if !strings.Contains(retryMessage, "valid JSON but failed response validation") {
+		t.Fatalf("retry message missing semantic validation framing:\n%s", retryMessage)
+	}
+	for _, notWant := range []string{"could not be parsed", "Missing or invalid fields: findings"} {
+		if strings.Contains(retryMessage, notWant) {
+			t.Fatalf("retry message contains misleading %q:\n%s", notWant, retryMessage)
+		}
+	}
+	if !strings.Contains(retryMessage, "maximum of one finding per file") {
+		t.Fatalf("retry message missing Testing duplicate-file guidance:\n%s", retryMessage)
+	}
+}
+
+func TestRunAgent_TestingDuplicateFileNudgeRetryAgainstExisting(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("initial", 1, nudgeFindingInFile("A", "main.go", 1))},
+			{resp: nudgeReviewResponse("nudge duplicate", 1,
+				nudgeFindingInFile("B", "main.go", 2),
+				nudgeFindingInFile("C", "other.go", 3),
+			)},
+			{resp: nudgeReviewResponse("nudge retry", 1, nudgeFindingInFile("C", "other.go", 3))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), testingNudgeTestAgent(), model.ReviewRequest{NudgeCount: 1, MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A", "C"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 3 {
+		t.Fatalf("llm calls = %d, want initial, nudge, retry", len(llmClient.reqs))
+	}
+	retryMessage := llmClient.reqs[2].Messages[len(llmClient.reqs[2].Messages)-1].Content
+	if !strings.Contains(retryMessage, "omit same-file findings") {
+		t.Fatalf("retry message missing nudge guidance:\n%s", retryMessage)
+	}
+}
+
+func TestRunAgent_TestingDuplicateFileRetryExhaustionDropsExtras(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("duplicate", 1,
+				nudgeFindingInFile("A", "main.go", 1),
+				nudgeFindingInFile("B", "main.go", 2),
+			)},
+			{resp: nudgeReviewResponse("still duplicate", 1,
+				nudgeFindingInFile("Retry A", "main.go", 1),
+				nudgeFindingInFile("Retry B", "main.go", 2),
+			)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), testingNudgeTestAgent(), model.ReviewRequest{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Retry A"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if got, want := result.run.Status, model.AgentRunStatusPartial; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if !strings.Contains(result.run.Error, "duplicate-file Testing findings dropped") || !strings.Contains(result.run.Error, "Retry B") {
+		t.Fatalf("run error = %q, want dropped duplicate details", result.run.Error)
+	}
+}
+
+func TestTestingDuplicateFilePruneRecordsDroppedFindingKeys(t *testing.T) {
+	existing := []model.Finding{nudgeFindingInFile("Existing", "main.go", 1)}
+	dropped := nudgeFindingInFile("Dropped", "main.go", 2)
+
+	kept, drops := pruneTestingDuplicateFileFindings(existing, []model.Finding{dropped, dropped})
+	if len(kept) != 0 {
+		t.Fatalf("kept findings = %#v, want none", kept)
+	}
+	if len(drops) != 1 {
+		t.Fatalf("drops = %#v, want one entry for exact duplicate dropped finding", drops)
+	}
+	if drops[0].Title != "Dropped" || drops[0].File != "main.go" {
+		t.Fatalf("drop = %#v, want Dropped/main.go", drops[0])
+	}
+}
+
 func TestRunAgent_NudgeZeroDisables(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
@@ -1264,6 +1439,14 @@ func nudgeTestAgent(role string) agentSpec {
 	}
 }
 
+func testingNudgeTestAgent() agentSpec {
+	agent := nudgeTestAgent("review")
+	agent.name = "Testing"
+	agent.reviewSessionValidateResponse = validateTestingDuplicateFileResponse
+	agent.reviewSessionEnforceResponse = enforceTestingDuplicateFileResponse
+	return agent
+}
+
 func nudgeTestToolAgent(role string) agentSpec {
 	agent := nudgeTestAgent(role)
 	agent.hasTools = true
@@ -1290,6 +1473,12 @@ func nudgeFinding(title string, line int) model.Finding {
 		Priority:        intPtr(2),
 		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
 	}
+}
+
+func nudgeFindingInFile(title, file string, line int) model.Finding {
+	finding := nudgeFinding(title, line)
+	finding.CodeLocation.FilePath = file
+	return finding
 }
 
 func findingTitles(findings []model.Finding) []string {

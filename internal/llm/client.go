@@ -40,21 +40,28 @@ const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget durin
 
 var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 
-// InvalidResponseError describes a model response that could not be parsed
-// or that parsed but is missing required fields. RawContent holds the original
-// model output so callers can append it to the conversation when asking the
-// model to retry.
+// InvalidResponseError describes a model response that could not be parsed,
+// that parsed but is missing required fields, or that parsed but failed a
+// response validator. RawContent holds the original model output so callers can
+// append it to the conversation when asking the model to retry.
 type InvalidResponseError struct {
 	RawContent            string
 	Reason                string
 	MissingFields         []string
 	ReasoningEffort       string
 	ToolsOmitted          bool
+	ValidationFailure     bool
 	RetryGuidanceTemplate string
 	RetryGuidanceData     any
 }
 
 func (e *InvalidResponseError) Error() string {
+	if e.ValidationFailure {
+		if len(e.MissingFields) > 0 {
+			return fmt.Sprintf("model response failed validation: %s (fields: %s)", e.Reason, strings.Join(e.MissingFields, ", "))
+		}
+		return fmt.Sprintf("model response failed validation: %s", e.Reason)
+	}
 	if len(e.MissingFields) > 0 {
 		return fmt.Sprintf("model returned invalid JSON: %s (missing or invalid fields: %s)", e.Reason, strings.Join(e.MissingFields, ", "))
 	}
