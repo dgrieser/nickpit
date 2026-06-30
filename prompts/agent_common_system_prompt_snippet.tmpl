@@ -15,6 +15,12 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
   - NO headers, NO titles
   - add paragraphs, e.g. an empty line, between distinct points to improve readability
 {{- if eq .AgentRole "review"}}
+{{- if not .DisableSuggestions}}
+  - DO NOT include the following in `body`:
+    - full replacement code
+    - full patches
+    - or before/after patches
+{{- end}}
   - put code references and symbol names in backticks or code blocks
   - format bold or italic when it makes sense to emphasize a point
 {{- end}}
@@ -26,9 +32,15 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
 {{- if .DisableSuggestions}}
 - do not output `suggestions`
 {{- else if eq .AgentRole "review"}}
-- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`, if you think obvious fixes exist, but suggestions are not required
+- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`,
+  if you think obvious fixes exist; suggestions are not required
+- put the following in `suggestions[].body`:
+  - full replacement code
+  - full patches
+  - or before/after patches
 {{- else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}
-- copy `suggestions` from the source findings, each including `body`, `line_range.start` and `line_range.end`; merge them only when it makes sense and DO NOT invent new suggestions
+- copy `suggestions` from the source findings, each including `body`, `line_range.start` and `line_range.end`;
+  merge them only when it makes sense and DO NOT invent new suggestions
 {{- end}}
 {{- end}}
 {{- if eq .Snippet "priority"}}

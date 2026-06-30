@@ -311,6 +311,17 @@ func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
 	if !strings.Contains(withTools, "ALWAYS use `find_lines`") {
 		t.Fatalf("with-tools prompt missing find_lines guidance:\n%s", withTools)
 	}
+	for _, want := range []string{
+		"DO NOT include the following in `body`",
+		"full replacement code",
+		"full patches",
+		"or before/after patches",
+		"put the following in `suggestions[].body`",
+	} {
+		if !strings.Contains(withTools, want) {
+			t.Fatalf("review prompt missing body/suggestion split instruction %q:\n%s", want, withTools)
+		}
+	}
 
 	withoutTools, err := engine.renderReviewSystemWithFocus(template, "", model.ReviewRequest{}, false, "review", nil, false)
 	if err != nil {
@@ -3132,6 +3143,12 @@ func TestNoToolsMessagesCanDisableSuggestions(t *testing.T) {
 	}
 	if strings.Contains(system, "generate one or more `suggestions`") {
 		t.Fatalf("reviewer no-tools prompt still asks for suggestions: %q", system)
+	}
+	if strings.Contains(system, "only in `suggestions[].body`") {
+		t.Fatalf("reviewer no-tools prompt still routes patch code into suggestions: %q", system)
+	}
+	if strings.Contains(system, "DO NOT include the following in `body`") {
+		t.Fatalf("reviewer no-tools prompt still includes suggestions-only body guard: %q", system)
 	}
 }
 
