@@ -1,6 +1,6 @@
-The Testing reviewer may return at most one finding per file.
+You may return at most one finding per file.
 {{- if .HasExisting}}
-Some files were already reported earlier in this Testing session; omit same-file findings from this retry unless they are the single combined finding replacing the current response.
+Some files were already reported earlier in this session; omit same-file findings from this retry unless they are the single combined finding replacing the current response.
 {{- end}}
 
 Files that violated the one-finding-per-file rule:
@@ -13,6 +13,5 @@ Files that violated the one-finding-per-file rule:
 {{- end}}
 
 Retry with these rules:
-- return a maximum of one Testing finding per file
+- return a maximum of one finding per file
 - combine multiple testing gaps in the same file into one finding body
-- during nudges, omit findings for files already reported earlier in the Testing session and only return findings for other files
