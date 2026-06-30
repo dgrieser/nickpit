@@ -89,7 +89,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
-		return findLinesDedupKey(normalizeToolPath(args.Path), normalizeFindLinesInput(args.Code))
+		return findLinesDedupKey(normalizeToolPath(args.Path), retrieval.NormalizeFindLinesCode(args.Code))
 	case "list_files":
 		var args struct {
 			Path  string `json:"path"`
@@ -170,7 +170,7 @@ func (e *Engine) executeFindLines(ctx context.Context, repoRoot string, toolCall
 		return toolError("", "invalid_arguments", err.Error())
 	}
 	args.Path = strings.TrimSpace(args.Path)
-	args.Code = normalizeFindLinesInput(args.Code)
+	args.Code = retrieval.NormalizeFindLinesCode(args.Code)
 	// path is optional: an empty path searches the whole repository.
 	normalizedPath := normalizeToolPath(args.Path)
 	if args.Code == "" {
@@ -188,7 +188,7 @@ func (e *Engine) executeFindLines(ctx context.Context, repoRoot string, toolCall
 		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
 
-	e.logf(ctx, "Executing tool call: name=%s path=%s code_lines=%d", toolCall.Name, normalizedPath, findLinesCodeLineCount(args.Code))
+	e.logf(ctx, "Executing tool call: name=%s path=%s code_lines=%d", toolCall.Name, normalizedPath, retrieval.FindLinesCount(args.Code))
 	result, err := e.retrieval.FindLines(ctx, repoRoot, normalizedPath, args.Code)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -538,16 +538,6 @@ func callHierarchyDedupKey(name, path, symbol string, depth int) string {
 
 func findLinesDedupKey(path, code string) string {
 	return fmt.Sprintf("find_lines\x00%s\x00%s", path, code)
-}
-
-func normalizeFindLinesInput(code string) string {
-	code = strings.ReplaceAll(code, "\r\n", "\n")
-	code = strings.ReplaceAll(code, "\r", "\n")
-	return strings.Trim(code, "\n")
-}
-
-func findLinesCodeLineCount(code string) int {
-	return lineCount(normalizeFindLinesInput(code))
 }
 
 func mustToolResultJSON(value any) string {

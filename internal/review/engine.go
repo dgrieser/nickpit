@@ -2587,7 +2587,7 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		}
 	case "find_lines":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
-		parts = append(parts, fmt.Sprintf("code_line_count=%d", findLinesCodeLineCount(args.Code)))
+		parts = append(parts, fmt.Sprintf("code_line_count=%d", retrieval.FindLinesCount(args.Code)))
 	case "list_files":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {

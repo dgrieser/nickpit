@@ -13,7 +13,7 @@ import (
 // matches LF files, and leading/trailing whitespace on each line is ignored, so
 // the snippet matches regardless of its indentation.
 func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) (*FindLinesResult, error) {
-	code = normalizeFindLinesCode(code)
+	code = NormalizeFindLinesCode(code)
 	matches := make([]FindLinesMatch, 0)
 	normalizedPath, err := walkRepoTextFiles(repoRoot, path, func(relPath, content string) error {
 		matches = append(matches, matchFindLines(relPath, content, code)...)
@@ -24,7 +24,7 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 	}
 	return &FindLinesResult{
 		Path:          normalizedPath,
-		CodeLineCount: findLinesCount(code),
+		CodeLineCount: FindLinesCount(code),
 		MatchCount:    len(matches),
 		Matches:       matches,
 	}, nil
@@ -34,11 +34,11 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 // content, so callers that obtain a FileContent another way (or fakes in tests)
 // share the same matching logic as the LocalEngine.
 func FindLinesIn(content *FileContent, code string) *FindLinesResult {
-	code = normalizeFindLinesCode(code)
+	code = NormalizeFindLinesCode(code)
 	matches := matchFindLines(content.Path, content.Content, code)
 	return &FindLinesResult{
 		Path:          content.Path,
-		CodeLineCount: findLinesCount(code),
+		CodeLineCount: FindLinesCount(code),
 		MatchCount:    len(matches),
 		Matches:       matches,
 	}
@@ -48,7 +48,7 @@ func matchFindLines(relPath, content, code string) []FindLinesMatch {
 	matches := make([]FindLinesMatch, 0)
 	// Leading/trailing whitespace on each line is ignored, so a snippet matches
 	// regardless of how it is indented in the file.
-	codeLines := trimFindLines(splitFindLines(normalizeFindLinesCode(code)))
+	codeLines := trimFindLines(splitFindLines(NormalizeFindLinesCode(code)))
 	if len(codeLines) == 0 || allBlank(codeLines) {
 		return matches
 	}
@@ -88,7 +88,10 @@ func allBlank(lines []string) bool {
 	return true
 }
 
-func normalizeFindLinesCode(code string) string {
+// NormalizeFindLinesCode normalizes a find_lines code argument: it converts
+// CRLF/CR line endings to LF and trims surrounding blank lines, so callers in
+// other packages share one definition of the canonical form.
+func NormalizeFindLinesCode(code string) string {
 	code = strings.ReplaceAll(code, "\r\n", "\n")
 	code = strings.ReplaceAll(code, "\r", "\n")
 	return strings.Trim(code, "\n")
@@ -100,8 +103,11 @@ func normalizeFindLinesContent(content string) string {
 	return strings.TrimSuffix(content, "\n")
 }
 
-func findLinesCount(code string) int {
-	code = normalizeFindLinesCode(code)
+// FindLinesCount returns the number of lines in a find_lines code argument
+// after normalization, so a raw or CRLF snippet is counted the same as its
+// canonical form.
+func FindLinesCount(code string) int {
+	code = NormalizeFindLinesCode(code)
 	if code == "" {
 		return 0
 	}
