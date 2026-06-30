@@ -119,6 +119,7 @@ func pruneTestingDuplicateFileFindings(existing, candidates []model.Finding) ([]
 				File:  file,
 				Title: testingFindingTitle(finding),
 			})
+			recordFindingKeys(seenIDTitles, seenTitleLocations, finding)
 			continue
 		}
 		seenFiles[file] = struct{}{}

@@ -1040,6 +1040,22 @@ func TestRunAgent_TestingDuplicateFileRetryExhaustionDropsExtras(t *testing.T) {
 	}
 }
 
+func TestTestingDuplicateFilePruneRecordsDroppedFindingKeys(t *testing.T) {
+	existing := []model.Finding{nudgeFindingInFile("Existing", "main.go", 1)}
+	dropped := nudgeFindingInFile("Dropped", "main.go", 2)
+
+	kept, drops := pruneTestingDuplicateFileFindings(existing, []model.Finding{dropped, dropped})
+	if len(kept) != 0 {
+		t.Fatalf("kept findings = %#v, want none", kept)
+	}
+	if len(drops) != 1 {
+		t.Fatalf("drops = %#v, want one entry for exact duplicate dropped finding", drops)
+	}
+	if drops[0].Title != "Dropped" || drops[0].File != "main.go" {
+		t.Fatalf("drop = %#v, want Dropped/main.go", drops[0])
+	}
+}
+
 func TestRunAgent_NudgeZeroDisables(t *testing.T) {
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
