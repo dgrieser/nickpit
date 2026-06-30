@@ -1,7 +1,6 @@
 # TODO
 
-  2. Add handling for reasoning-only empty responses: retry those immediately with lower/no reasoning, instead of same-mode retries.
-  5. Fix body/suggestion duplication: body should summarize the issue; full patch/code belongs only in finalization.suggestions.
+  1. Fix body/suggestion duplication: body should summarize the issue; full patch/code belongs only in finalization.suggestions.
 
 - Add max turns for agents; unlimited by default
 - Add feature to give additional instructions to agents
