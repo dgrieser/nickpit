@@ -941,7 +941,7 @@ func TestTestingDuplicateFileValidatorRejectsExistingSessionFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"already reported", "`Existing`", "`Nudge`", "during nudges"} {
+	for _, want := range []string{"already reported", "earlier in this session", "`Existing`", "`Nudge`"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("retry guidance missing %q:\n%s", want, rendered)
 		}
@@ -976,7 +976,7 @@ func TestRunAgent_TestingDuplicateFileInitialRetry(t *testing.T) {
 		t.Fatalf("llm calls = %d, want initial plus retry", len(llmClient.reqs))
 	}
 	retryMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content
-	if !strings.Contains(retryMessage, "maximum of one Testing finding per file") {
+	if !strings.Contains(retryMessage, "maximum of one finding per file") {
 		t.Fatalf("retry message missing Testing duplicate-file guidance:\n%s", retryMessage)
 	}
 }
@@ -1005,7 +1005,7 @@ func TestRunAgent_TestingDuplicateFileNudgeRetryAgainstExisting(t *testing.T) {
 		t.Fatalf("llm calls = %d, want initial, nudge, retry", len(llmClient.reqs))
 	}
 	retryMessage := llmClient.reqs[2].Messages[len(llmClient.reqs[2].Messages)-1].Content
-	if !strings.Contains(retryMessage, "omit findings for files already reported earlier") {
+	if !strings.Contains(retryMessage, "omit same-file findings") {
 		t.Fatalf("retry message missing nudge guidance:\n%s", retryMessage)
 	}
 }
