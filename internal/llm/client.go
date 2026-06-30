@@ -698,10 +698,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		if req.Urgent {
 			addReasoningBudgetRetryHint(&attemptReq)
 		}
-		if budgetExhausted {
-			addReasoningBudgetRetryHint(&attemptReq)
-		}
-		if emptyDetected {
+		if budgetExhausted || emptyDetected {
 			addReasoningBudgetRetryHint(&attemptReq)
 		}
 		if loopDetected {
