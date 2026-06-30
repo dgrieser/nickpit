@@ -628,7 +628,11 @@ func sameEffortRetryable(err error) bool {
 		return true
 	}
 	var budgetErr *llm.ReasoningBudgetExhaustedError
-	return errors.As(err, &budgetErr)
+	if errors.As(err, &budgetErr) {
+		return true
+	}
+	var emptyErr *llm.ReasoningOnlyEmptyResponseError
+	return errors.As(err, &emptyErr)
 }
 
 // anyErrorRetryable reports whether a capability probe should retry after err.

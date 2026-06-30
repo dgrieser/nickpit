@@ -2305,6 +2305,208 @@ func TestClientReviewRetriesLastBudgetExhaustedEffortWithoutToolsAfterFallbacks(
 	}
 }
 
+func TestClientReviewFallsBackAfterReasoningOnlyEmptyResponse(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		if len(efforts) == 1 {
+			writeReasoningOnlyStopSSE(t, w)
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:            "system",
+		UserContent:             "user",
+		ReasoningEffort:         "high",
+		MaxReasoningLoopRepeats: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+func TestClientReviewReasoningOnlyEmptyDoesNotMisclassifyToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"reasoning_content": "thinking about which file to inspect",
+						"tool_calls": []map[string]any{
+							{
+								"index": 0,
+								"id":    "call_1",
+								"type":  "function",
+								"function": map[string]any{
+									"name":      "inspect_file",
+									"arguments": `{"path":"main.go"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+		})
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-2",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{},
+			"usage": map[string]any{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+				"total_tokens":      6,
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("reasoning + tool calls must not be treated as empty: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.ToolCalls))
+	}
+}
+
+func TestClientReviewReturnsReasoningOnlyEmptyAfterEffortsExhausted(t *testing.T) {
+	var efforts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		writeReasoningOnlyStopSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:                   "system",
+		UserContent:                    "user",
+		ReasoningEffort:                "high",
+		DisableReasoningEffortFallback: true,
+	})
+	var emptyErr *ReasoningOnlyEmptyResponseError
+	if !errors.As(err, &emptyErr) {
+		t.Fatalf("err = %v, want *ReasoningOnlyEmptyResponseError", err)
+	}
+	if got, want := strings.Join(efforts, ","), "high"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+}
+
+func TestClientReviewReasoningLengthStillBudgetExhausted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeReasoningLengthSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:                   "system",
+		UserContent:                    "user",
+		ReasoningEffort:                "high",
+		DisableReasoningEffortFallback: true,
+	})
+	var budgetErr *ReasoningBudgetExhaustedError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("err = %v, want *ReasoningBudgetExhaustedError", err)
+	}
+	var emptyErr *ReasoningOnlyEmptyResponseError
+	if errors.As(err, &emptyErr) {
+		t.Fatal("length-finish reasoning-only response must not be a ReasoningOnlyEmptyResponseError")
+	}
+}
+
+func TestClientReviewRetriesLastReasoningOnlyEmptyEffortWithoutToolsAfterFallbacks(t *testing.T) {
+	var attempts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		hasTools := false
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			hasTools = true
+		}
+		attempts = append(attempts, fmt.Sprintf("%s:%t", effort, hasTools))
+		if effort == "off" && !hasTools {
+			writeValidReviewSSE(t, w)
+			return
+		}
+		writeReasoningOnlyStopSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+		Tools: []ToolDefinition{
+			{
+				Name:        "inspect_file",
+				Description: "Retrieve a file",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		ParallelToolCalls:       true,
+		MaxReasoningLoopRepeats: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(attempts, ","), "high:true,medium:true,low:true,minimal:true,none:true,off:true,off:false"; got != want {
+		t.Fatalf("attempts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "off" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+	if !resp.ToolsOmitted {
+		t.Fatal("expected response to record omitted tools")
+	}
+}
+
 func TestClientReviewRetriesLastLoopDetectedEffortWithoutToolsAfterFallbacks(t *testing.T) {
 	var attempts []struct {
 		effort   string
@@ -3337,6 +3539,38 @@ func writeReasoningLengthSSE(t *testing.T, w http.ResponseWriter) {
 					"reasoning_content": "thinking",
 				},
 				"finish_reason": "length",
+			},
+		},
+	})
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-2",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{},
+		"usage": map[string]any{
+			"prompt_tokens":     4,
+			"completion_tokens": 2,
+			"total_tokens":      6,
+		},
+	})
+	writeSSEDone(t, w)
+}
+
+func writeReasoningOnlyStopSSE(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	writeSSEChunk(t, w, map[string]any{
+		"id":      "chunk-1",
+		"object":  "chat.completion.chunk",
+		"created": 1,
+		"model":   "model",
+		"choices": []map[string]any{
+			{
+				"index": 0,
+				"delta": map[string]any{
+					"reasoning_content": "thinking",
+				},
+				"finish_reason": "stop",
 			},
 		},
 	})

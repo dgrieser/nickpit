@@ -291,6 +291,20 @@ func (e *ReasoningBudgetExhaustedError) Error() string {
 	return reasoningBudgetExhaustedMessage
 }
 
+// ReasoningOnlyEmptyResponseError is returned when the model emits reasoning
+// tokens but no response content and no tool calls, for a finish reason other
+// than length (e.g. stop). It is treated like ReasoningBudgetExhaustedError: the
+// Review fallback loop retries immediately at a lower reasoning effort rather
+// than re-prompting at the same effort.
+type ReasoningOnlyEmptyResponseError struct {
+	ReasoningEffort string
+	FinishReason    string
+}
+
+func (e *ReasoningOnlyEmptyResponseError) Error() string {
+	return "llm: model produced only reasoning with no response content"
+}
+
 func newReasoningTimeoutController(limit time.Duration, cancel context.CancelFunc) *reasoningTimeoutController {
 	if limit <= 0 {
 		return nil
@@ -675,6 +689,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	var lastLoopErr *ReasoningLoopDetectedError
 	var lastLoopReq *ReviewRequest
 	loopDetected := false
+	var lastEmptyErr *ReasoningOnlyEmptyResponseError
+	var lastEmptyReq *ReviewRequest
+	emptyDetected := false
 	for attemptIndex, effort := range efforts {
 		attemptReq := cloneReviewRequest(req)
 		attemptReq.ReasoningEffort = effort
@@ -682,6 +699,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			addReasoningBudgetRetryHint(&attemptReq)
 		}
 		if budgetExhausted {
+			addReasoningBudgetRetryHint(&attemptReq)
+		}
+		if emptyDetected {
 			addReasoningBudgetRetryHint(&attemptReq)
 		}
 		if loopDetected {
@@ -698,6 +718,17 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			if attemptIndex+1 < len(efforts) {
 				budgetExhausted = true
 				c.logf(ctx, "Reasoning budget exhausted, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
+				continue
+			}
+			break
+		}
+		var emptyErr *ReasoningOnlyEmptyResponseError
+		if errors.As(err, &emptyErr) {
+			lastEmptyErr = emptyErr
+			lastEmptyReq = &attemptReq
+			if attemptIndex+1 < len(efforts) {
+				emptyDetected = true
+				c.logf(ctx, "Reasoning-only empty response, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
 				continue
 			}
 			break
@@ -750,7 +781,31 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		}
 		c.logf(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
-	if lastLoopReq != nil && len(lastLoopReq.Tools) > 0 && lastBudgetErr == nil {
+	if lastEmptyReq != nil && len(lastEmptyReq.Tools) > 0 && lastBudgetErr == nil {
+		noToolsReq := cloneReviewRequest(lastEmptyReq)
+		noToolsReq.Messages = noToolsFallbackMessages(lastEmptyReq)
+		noToolsReq.Tools = nil
+		noToolsReq.ParallelToolCalls = false
+		addReasoningBudgetRetryHint(&noToolsReq)
+		c.logf(ctx, "Retrying last reasoning-only empty effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
+		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		if noToolsErr == nil {
+			noToolsResp.ToolsOmitted = true
+			return noToolsResp, nil
+		}
+		var emptyErr *ReasoningOnlyEmptyResponseError
+		if errors.As(noToolsErr, &emptyErr) {
+			lastEmptyErr = emptyErr
+		} else {
+			var invalidResp *InvalidResponseError
+			if errors.As(noToolsErr, &invalidResp) {
+				invalidResp.ToolsOmitted = true
+			}
+			return nil, noToolsErr
+		}
+		c.logf(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
+	}
+	if lastLoopReq != nil && len(lastLoopReq.Tools) > 0 && lastBudgetErr == nil && lastEmptyErr == nil {
 		noToolsReq := cloneReviewRequest(lastLoopReq)
 		noToolsReq.Messages = noToolsFallbackMessages(lastLoopReq)
 		noToolsReq.Tools = nil
@@ -774,7 +829,10 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		}
 		c.logf(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
-	if lastLoopErr != nil && lastBudgetErr == nil {
+	if lastEmptyErr != nil && lastBudgetErr == nil {
+		return nil, lastEmptyErr
+	}
+	if lastLoopErr != nil && lastBudgetErr == nil && lastEmptyErr == nil {
 		return nil, lastLoopErr
 	}
 	if lastBudgetErr != nil {
@@ -1075,6 +1133,12 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 
 	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
 		return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
+	}
+	if streamed.reasoned && !streamed.sawContent && !streamed.sawToolCalls {
+		return nil, &ReasoningOnlyEmptyResponseError{
+			ReasoningEffort: payload.ReasoningEffort,
+			FinishReason:    streamed.lastFinishReason,
+		}
 	}
 
 	toolCalls, content, recoveredXMLToolCalls := mergeContentToolCalls(streamed.toolCalls, streamed.content)

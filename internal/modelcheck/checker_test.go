@@ -174,6 +174,26 @@ func TestCheckerReasoningSnippetIncludesLoopDetectedGuidance(t *testing.T) {
 	}
 }
 
+func TestSameEffortRetryableClassifiesReasoningFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"loop", &llm.ReasoningLoopDetectedError{ReasoningEffort: "high"}, true},
+		{"budget", &llm.ReasoningBudgetExhaustedError{ReasoningEffort: "high"}, true},
+		{"empty", &llm.ReasoningOnlyEmptyResponseError{ReasoningEffort: "high"}, true},
+		{"other", errors.New("boom"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameEffortRetryable(tc.err); got != tc.want {
+				t.Fatalf("sameEffortRetryable(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEffortDiscoveryRetriesReasoningLoopWithSameEffort(t *testing.T) {
 	client := &scriptedClient{
 		responses: []scriptedResponse{
