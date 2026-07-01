@@ -2518,12 +2518,26 @@ func parseToolResultSummary(content string) toolResultSummary {
 	if matchCount, ok := payload["match_count"].(float64); ok {
 		summary.HasResultCount = true
 		summary.ResultCount = int(matchCount)
-		if matchCount > 0 {
-			summary.Files = 1
-		}
 	}
-	if codeLineCount, ok := payload["code_line_count"].(float64); ok {
-		summary.Lines = int(codeLineCount)
+	if matches, ok := payload["matches"].([]any); ok {
+		distinct := make(map[string]struct{}, len(matches))
+		for _, item := range matches {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			loc, ok := entry["code_location"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if path, _ := loc["file_path"].(string); path != "" {
+				distinct[path] = struct{}{}
+			}
+		}
+		summary.Files = len(distinct)
+	}
+	if code, ok := payload["code"].(string); ok && code != "" {
+		summary.Lines = lineCount(code)
 	}
 	if root, ok := payload["root"].(map[string]any); ok {
 		summary.Files = countCallHierarchyFiles(root)
