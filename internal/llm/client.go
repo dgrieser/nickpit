@@ -2233,16 +2233,12 @@ func normalizeSuggestionCodeLocations(suggestions []model.Suggestion, fallback m
 		if loc.Language == "" && loc.FilePath == fallback.FilePath {
 			loc.Language = fallback.Language
 		}
-		if loc.Content == "" && sameLineRange(loc.LineRange, fallback.LineRange) {
+		if loc.Content == "" && loc.LineRange.SameAnchor(fallback.LineRange) {
 			loc.Content = fallback.Content
 		}
 		suggestions[i].CodeLocation = loc
 		suggestions[i].LineRange = loc.LineRange
 	}
-}
-
-func sameLineRange(a, b model.LineRange) bool {
-	return a.Start == b.Start && a.End == b.End
 }
 
 func parseVerifyResponse(content string) (*ReviewResponse, error) {

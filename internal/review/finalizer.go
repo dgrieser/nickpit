@@ -472,9 +472,7 @@ func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
 }
 
 func sameCodeLocationAnchor(a, b model.CodeLocation) bool {
-	return a.FilePath == b.FilePath &&
-		a.LineRange.Start == b.LineRange.Start &&
-		a.LineRange.End == b.LineRange.End
+	return a.FilePath == b.FilePath && a.LineRange.SameAnchor(b.LineRange)
 }
 
 // enforcePriorityFloor ensures finalization.priority is not more critical (lower number)

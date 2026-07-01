@@ -110,6 +110,78 @@ func TestValidateResponseCodeLocationsRejectsWrongFindingLine(t *testing.T) {
 	}
 }
 
+func TestValidateResponseCodeLocationsPartialResponseDropsInvalidAnchors(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tfmt.Println(\"run\")\n}\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+
+	resp := &llm.ReviewResponse{
+		Findings: []model.Finding{
+			{
+				Title:           "Fix run output",
+				Body:            "body",
+				ConfidenceScore: 0.85,
+				Priority:        intPtr(1),
+				CodeLocation: model.CodeLocation{
+					FilePath:  "pkg/demo.go",
+					LineRange: model.LineRange{Start: 3, End: 5, Count: 3},
+					Language:  "go",
+					Content:   "func Run() {\n\tfmt.Println(\"run\")\n}",
+				},
+				Suggestions: []model.Suggestion{
+					{
+						Body: "replace print",
+						CodeLocation: model.CodeLocation{
+							FilePath:  "pkg/demo.go",
+							LineRange: model.LineRange{Start: 4, End: 4, Count: 1},
+							Language:  "go",
+							Content:   "\tfmt.Println(\"run\")",
+						},
+					},
+					{
+						Body: "bad anchor",
+						CodeLocation: model.CodeLocation{
+							FilePath:  "pkg/demo.go",
+							LineRange: model.LineRange{Start: 4, End: 4, Count: 1},
+							Language:  "go",
+							Content:   "\tfmt.Println(\"run\") ",
+						},
+					},
+				},
+			},
+			{
+				Title:           "Wrong line",
+				Body:            "body",
+				ConfidenceScore: 0.85,
+				Priority:        intPtr(1),
+				CodeLocation: model.CodeLocation{
+					FilePath:  "pkg/demo.go",
+					LineRange: model.LineRange{Start: 4, End: 4, Count: 1},
+					Language:  "go",
+					Content:   "func Run() {",
+				},
+			},
+		},
+	}
+
+	invalid := engine.validateResponseCodeLocations(context.Background(), repoRoot, resp)
+	if invalid == nil {
+		t.Fatal("validateResponseCodeLocations returned nil, want invalid response")
+	}
+	if invalid.PartialResponse == nil {
+		t.Fatal("PartialResponse = nil, want best-effort response")
+	}
+	if got := len(invalid.PartialResponse.Findings); got != 1 {
+		t.Fatalf("partial findings = %d, want 1", got)
+	}
+	if got := len(invalid.PartialResponse.Findings[0].Suggestions); got != 1 {
+		t.Fatalf("partial suggestions = %d, want 1", got)
+	}
+	if got := invalid.PartialResponse.Findings[0].Suggestions[0].Body; got != "replace print" {
+		t.Fatalf("partial suggestion body = %q, want valid suggestion", got)
+	}
+}
+
 func TestValidateResponseCodeLocationsRejectsSuggestionContentMismatch(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tfmt.Println(\"run\")\n}\n")

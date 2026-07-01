@@ -98,10 +98,6 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	if maxOutputRetries == 0 {
 		maxOutputRetries = defaultMaxOutputRetries
 	}
-	codeLocationValidator := e.responseCodeLocationValidator(req.RepoRoot)
-	if !agent.hasTools {
-		codeLocationValidator = nil
-	}
 	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
 		AgentKind:                  agentLoopKind(agent.role),
@@ -132,7 +128,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		DisableSuggestions:         req.DisableSuggestions,
 		JSONRetryExampleSnippet:    reviewSnippet,
 		JSONRetryProgressAgentName: agent.name,
-		ValidateResponse:           composeResponseValidators(agent.validateResponse, codeLocationValidator),
+		ValidateResponse:           agent.validateResponse,
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			if !agent.hasTools {
 				return append([]llm.Message(nil), messages...), nil
@@ -204,7 +200,7 @@ func (s *reviewerSession) launchCollect(budget timeBudgetStarter, e *Engine, age
 func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineBudget timeBudgetStarter, mineEngine *Engine, mineReq model.ReviewRequest) error {
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
-	loopReq.ValidateResponse = s.responseValidator(nil, codeLocationValidatorForReviewer(e, s.agent, req.RepoRoot))
+	loopReq.ValidateResponse = s.responseValidator(nil, codeLocationValidatorForReviewer(ctx, e, s.agent, req.RepoRoot))
 	if s.extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
 			s.launchCollect(mineBudget, mineEngine, agentName, iterIdx, reasoning, mineReq)
@@ -305,7 +301,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	loopReq.JSONRetryProgressAgentName = nudgeName
 	loopReq.Messages = nudged
 	existingFindings := append([]model.Finding(nil), s.totalFindings...)
-	loopReq.ValidateResponse = s.responseValidator(existingFindings, codeLocationValidatorForReviewer(e, s.agent, req.RepoRoot))
+	loopReq.ValidateResponse = s.responseValidator(existingFindings, codeLocationValidatorForReviewer(nudgeCtx, e, s.agent, req.RepoRoot))
 	loopReq.ReasoningEffort = s.nudgeReasoningEffort
 	loopReq.State = s.nudgeState
 	loopReq.OnReasoningTrace = nil

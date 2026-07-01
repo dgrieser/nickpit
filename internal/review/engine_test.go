@@ -1411,6 +1411,30 @@ func TestRunAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	}
 }
 
+func TestRunAgent_CodeLocationRetryExhaustionUsesPartialResponse(t *testing.T) {
+	valid := nudgeFinding("Valid", 1)
+	invalid := nudgeFinding("Invalid", 2)
+	invalid.CodeLocation.Content = "line 3"
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, valid, invalid)},
+			{resp: nudgeReviewResponse("second", 1, valid, invalid)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("review"), model.ReviewRequest{MaxOutputRetries: 1, RepoRoot: "."})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Valid"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want 2", len(llmClient.reqs))
+	}
+}
+
 func TestAppendNewFindingsDuplicateKeys(t *testing.T) {
 	base := nudgeFinding("Same", 1)
 	sameIDSameTitle := nudgeFinding(" same ", 2)

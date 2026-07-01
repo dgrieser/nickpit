@@ -212,7 +212,13 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 					syntheticFollowup = nil
 					continue
 				}
-				e.logf(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+				if invalidResp.PartialResponse != nil {
+					e.logf(loopCtx, "Response validation failed after retries exhausted; using partial validated response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+					resp = invalidResp.PartialResponse
+					result.resp = resp
+				} else {
+					e.logf(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+				}
 			}
 		}
 

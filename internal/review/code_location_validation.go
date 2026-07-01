@@ -20,35 +20,66 @@ type codeLocationValidationQuery struct {
 	code string
 }
 
-func (e *Engine) responseCodeLocationValidator(repoRoot string) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+func (e *Engine) responseCodeLocationValidator(ctx context.Context, repoRoot string) func(*llm.ReviewResponse) *llm.InvalidResponseError {
 	if e == nil || e.retrieval == nil || strings.TrimSpace(repoRoot) == "" {
 		return nil
 	}
-	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
-		return e.validateResponseCodeLocations(context.Background(), repoRoot, resp)
+	if ctx == nil {
+		ctx = context.Background()
 	}
+	validator := &codeLocationValidator{
+		ctx:       ctx,
+		repoRoot:  repoRoot,
+		retrieval: e.retrieval,
+		cache:     make(map[codeLocationValidationQuery]*retrieval.FindLinesResult),
+	}
+	return validator.validateResponse
 }
 
 func (e *Engine) validateResponseCodeLocations(ctx context.Context, repoRoot string, resp *llm.ReviewResponse) *llm.InvalidResponseError {
 	if e == nil || e.retrieval == nil || strings.TrimSpace(repoRoot) == "" || resp == nil {
 		return nil
 	}
-	validator := codeLocationValidator{
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	validator := &codeLocationValidator{
 		ctx:       ctx,
 		repoRoot:  repoRoot,
 		retrieval: e.retrieval,
 		cache:     make(map[codeLocationValidationQuery]*retrieval.FindLinesResult),
 	}
+	return validator.validateResponse(resp)
+}
+
+func codeLocationValidatorForReviewer(ctx context.Context, e *Engine, agent agentSpec, repoRoot string) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+	if !agent.hasTools {
+		return nil
+	}
+	return e.responseCodeLocationValidator(ctx, repoRoot)
+}
+
+type codeLocationValidator struct {
+	ctx       context.Context
+	repoRoot  string
+	retrieval retrieval.Engine
+	cache     map[codeLocationValidationQuery]*retrieval.FindLinesResult
+}
+
+func (v *codeLocationValidator) validateResponse(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+	if v == nil || resp == nil {
+		return nil
+	}
 	var issues []codeLocationValidationIssue
 	for i, finding := range resp.Findings {
 		prefix := fmt.Sprintf("findings[%d]", i)
-		issues = validator.validateLocation(issues, prefix+".code_location", finding.CodeLocation)
-		issues = validator.validateSuggestions(issues, prefix+".suggestions", finding.Suggestions)
+		issues = v.validateLocation(issues, prefix+".code_location", finding.CodeLocation)
+		issues = v.validateSuggestions(issues, prefix+".suggestions", finding.Suggestions)
 		if finding.Finalization != nil {
-			issues = validator.validateSuggestions(issues, prefix+".finalization.suggestions", finding.Finalization.Suggestions)
+			issues = v.validateSuggestions(issues, prefix+".finalization.suggestions", finding.Finalization.Suggestions)
 		}
 		if finding.Summarization != nil {
-			issues = validator.validateSuggestions(issues, prefix+".summarization.suggestions", finding.Summarization.Suggestions)
+			issues = v.validateSuggestions(issues, prefix+".summarization.suggestions", finding.Summarization.Suggestions)
 		}
 	}
 	if len(issues) == 0 {
@@ -56,9 +87,11 @@ func (e *Engine) validateResponseCodeLocations(ctx context.Context, repoRoot str
 	}
 	fields := make([]string, 0, len(issues))
 	reasons := make([]string, 0, len(issues))
+	invalidFields := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
 		fields = append(fields, issue.Field)
 		reasons = append(reasons, issue.Field+": "+issue.Reason)
+		invalidFields[issue.Field] = struct{}{}
 	}
 	return &llm.InvalidResponseError{
 		RawContent:            resp.RawResponse,
@@ -72,21 +105,8 @@ func (e *Engine) validateResponseCodeLocations(ctx context.Context, repoRoot str
 		}{
 			Issues: issues,
 		},
+		PartialResponse: partialResponseWithoutInvalidCodeLocations(resp, invalidFields),
 	}
-}
-
-func codeLocationValidatorForReviewer(e *Engine, agent agentSpec, repoRoot string) func(*llm.ReviewResponse) *llm.InvalidResponseError {
-	if !agent.hasTools {
-		return nil
-	}
-	return e.responseCodeLocationValidator(repoRoot)
-}
-
-type codeLocationValidator struct {
-	ctx       context.Context
-	repoRoot  string
-	retrieval retrieval.Engine
-	cache     map[codeLocationValidationQuery]*retrieval.FindLinesResult
 }
 
 func (v *codeLocationValidator) validateSuggestions(issues []codeLocationValidationIssue, prefix string, suggestions []model.Suggestion) []codeLocationValidationIssue {
@@ -152,22 +172,45 @@ func (v *codeLocationValidator) findLines(path, code string) (*retrieval.FindLin
 	return result, nil
 }
 
-func composeResponseValidators(validators ...func(*llm.ReviewResponse) *llm.InvalidResponseError) func(*llm.ReviewResponse) *llm.InvalidResponseError {
-	nonNil := make([]func(*llm.ReviewResponse) *llm.InvalidResponseError, 0, len(validators))
-	for _, validator := range validators {
-		if validator != nil {
-			nonNil = append(nonNil, validator)
-		}
-	}
-	if len(nonNil) == 0 {
+func partialResponseWithoutInvalidCodeLocations(resp *llm.ReviewResponse, invalidFields map[string]struct{}) *llm.ReviewResponse {
+	if resp == nil {
 		return nil
 	}
-	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
-		for _, validator := range nonNil {
-			if invalid := validator(resp); invalid != nil {
-				return invalid
-			}
+	partial := *resp
+	partial.Findings = make([]model.Finding, 0, len(resp.Findings))
+	for i, finding := range resp.Findings {
+		prefix := fmt.Sprintf("findings[%d]", i)
+		if _, invalid := invalidFields[prefix+".code_location"]; invalid {
+			continue
 		}
-		return nil
+		out := finding
+		out.Suggestions = filterValidCodeLocationSuggestions(finding.Suggestions, prefix+".suggestions", invalidFields)
+		if finding.Finalization != nil {
+			finalization := *finding.Finalization
+			finalization.Suggestions = filterValidCodeLocationSuggestions(finding.Finalization.Suggestions, prefix+".finalization.suggestions", invalidFields)
+			out.Finalization = &finalization
+		}
+		if finding.Summarization != nil {
+			summarization := *finding.Summarization
+			summarization.Suggestions = filterValidCodeLocationSuggestions(finding.Summarization.Suggestions, prefix+".summarization.suggestions", invalidFields)
+			out.Summarization = &summarization
+		}
+		partial.Findings = append(partial.Findings, out)
 	}
+	return &partial
+}
+
+func filterValidCodeLocationSuggestions(suggestions []model.Suggestion, prefix string, invalidFields map[string]struct{}) []model.Suggestion {
+	if len(suggestions) == 0 {
+		return suggestions
+	}
+	filtered := make([]model.Suggestion, 0, len(suggestions))
+	for i, suggestion := range suggestions {
+		field := fmt.Sprintf("%s[%d].code_location", prefix, i)
+		if _, invalid := invalidFields[field]; invalid {
+			continue
+		}
+		filtered = append(filtered, suggestion)
+	}
+	return filtered
 }

@@ -448,6 +448,10 @@ func (r LineRange) EffectiveCount() int {
 	return 0
 }
 
+func (r LineRange) SameAnchor(other LineRange) bool {
+	return r.Start == other.Start && r.End == other.End
+}
+
 type Suggestion struct {
 	Body         string       `json:"body"`
 	CodeLocation CodeLocation `json:"code_location"`

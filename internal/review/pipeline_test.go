@@ -324,7 +324,7 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 }
 
 func sameTestLineAnchor(a, b model.LineRange) bool {
-	return a.Start == b.Start && a.End == b.End
+	return a.SameAnchor(b)
 }
 
 func TestWorkflowFusedPostMergeVerdictConfidenceFilterOwnsFinalFindings(t *testing.T) {
