@@ -2220,6 +2220,9 @@ func normalizeFindingSuggestions(findings []model.Finding) {
 func normalizeSuggestionCodeLocations(suggestions []model.Suggestion, fallback model.CodeLocation) {
 	for i := range suggestions {
 		loc := suggestions[i].CodeLocation
+		if loc.FilePath == "" {
+			loc.FilePath = fallback.FilePath
+		}
 		if loc.LineRange == (model.LineRange{}) && suggestions[i].LineRange != (model.LineRange{}) {
 			loc.LineRange = suggestions[i].LineRange
 		}

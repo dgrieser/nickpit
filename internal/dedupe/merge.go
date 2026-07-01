@@ -39,8 +39,11 @@ func mergeCodeLocation(base, other model.CodeLocation) model.CodeLocation {
 	if base.FilePath != other.FilePath {
 		return base
 	}
-	if base.Content != "" || other.Content != "" {
+	if base.Content != "" {
 		return base
+	}
+	if other.Content != "" {
+		return other
 	}
 	out := base
 	out.LineRange = extendRange(base.LineRange, other.LineRange)

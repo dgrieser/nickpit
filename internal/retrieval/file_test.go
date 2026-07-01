@@ -419,6 +419,25 @@ func TestFindLinesInNilContent(t *testing.T) {
 	}
 }
 
+func TestFindLinesInNormalizesQueryBeforeMatching(t *testing.T) {
+	code := "\r\n    needle  \r\n"
+	got := FindLinesIn(&FileContent{
+		Path:     "pkg/a.go",
+		Content:  "first\n\tneedle\nlast\n",
+		Language: "go",
+	}, code)
+	if got.Code != code {
+		t.Fatalf("code = %q, want original query preserved", got.Code)
+	}
+	if got.MatchCount != 1 || len(got.Matches) != 1 {
+		t.Fatalf("matches = %d/%d, want one: %#v", got.MatchCount, len(got.Matches), got)
+	}
+	loc := got.Matches[0].CodeLocation
+	if loc.FilePath != "pkg/a.go" || loc.LineRange != (FindLinesRange{Start: 2, End: 2, Count: 1}) || loc.Content != "\tneedle" {
+		t.Fatalf("location = %+v, want exact line 2 match", loc)
+	}
+}
+
 func TestLocalEngineSearchRegex(t *testing.T) {
 	repoRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {

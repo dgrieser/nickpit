@@ -67,6 +67,21 @@ func TestMergeFindingsPreservesFindLinesLocation(t *testing.T) {
 	}
 }
 
+func TestMergeFindingsKeepsOtherFindLinesLocationWhenBaseIsLegacy(t *testing.T) {
+	a := finding("A", "longer body", "a.sh", 10, 12)
+	a.ConfidenceScore = 0.8
+	b := finding("B", "short", "a.sh", 8, 11)
+	b.ConfidenceScore = 0.5
+	b.CodeLocation.Content = "exact other snippet"
+	b.CodeLocation.Language = "sh"
+	b.CodeLocation.LineRange.Count = 4
+
+	got := MergeFindings(a, b).CodeLocation
+	if got != b.CodeLocation {
+		t.Fatalf("location = %+v, want other exact find_lines location %+v", got, b.CodeLocation)
+	}
+}
+
 func TestMergeFindingsMostCriticalPriority(t *testing.T) {
 	a := finding("A", "body", "a.sh", 1, 1)
 	a.ConfidenceScore = 0.9

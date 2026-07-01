@@ -3815,6 +3815,32 @@ func TestParseReviewResponseSalvagesLegacySuggestionLineRangeAsInvalid(t *testin
 	}
 }
 
+func TestNormalizeSuggestionCodeLocationsDefaultsMissingFilePath(t *testing.T) {
+	suggestions := []model.Suggestion{{
+		Body:      "fix",
+		LineRange: model.LineRange{Start: 7, End: 9, Count: 3},
+	}}
+	fallback := model.CodeLocation{
+		FilePath:  "f.go",
+		LineRange: model.LineRange{Start: 7, End: 9, Count: 3},
+		Language:  "go",
+		Content:   "old code",
+	}
+
+	normalizeSuggestionCodeLocations(suggestions, fallback)
+
+	got := suggestions[0]
+	if got.CodeLocation.FilePath != "f.go" {
+		t.Fatalf("suggestion file_path = %q, want fallback path", got.CodeLocation.FilePath)
+	}
+	if got.CodeLocation.LineRange != fallback.LineRange || got.LineRange != fallback.LineRange {
+		t.Fatalf("line ranges = code_location %+v legacy %+v, want %+v", got.CodeLocation.LineRange, got.LineRange, fallback.LineRange)
+	}
+	if got.CodeLocation.Language != "go" || got.CodeLocation.Content != "old code" {
+		t.Fatalf("code location = %+v, want fallback language/content", got.CodeLocation)
+	}
+}
+
 func TestParseReviewResponseMergesMultipleBlocks(t *testing.T) {
 	content := "First block:\n```json\n" +
 		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e1","overall_confidence_score":0.5}` +

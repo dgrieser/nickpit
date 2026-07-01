@@ -50,7 +50,8 @@ func FindLinesIn(content *FileContent, code string) *FindLinesResult {
 			Code: code,
 		}
 	}
-	matches := matchFindLinesLimit(content.Path, content.Content, code, maxFindLinesMatches)
+	normalizedCode := NormalizeFindLinesCode(code)
+	matches := matchFindLinesLimit(content.Path, content.Content, normalizedCode, maxFindLinesMatches)
 	return &FindLinesResult{
 		Path:       content.Path,
 		Code:       code,
