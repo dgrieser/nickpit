@@ -53,6 +53,7 @@ type InvalidResponseError struct {
 	ValidationFailure     bool
 	RetryGuidanceTemplate string
 	RetryGuidanceData     any
+	PartialResponse       *ReviewResponse
 }
 
 func (e *InvalidResponseError) Error() string {
@@ -1171,6 +1172,13 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 			var invalidResp *InvalidResponseError
 			if errors.As(err, &invalidResp) {
 				invalidResp.ReasoningEffort = payload.ReasoningEffort
+				if resp != nil {
+					resp.RawResponse = content
+					resp.TokensUsed = streamed.usage
+					resp.ReasoningEffort = payload.ReasoningEffort
+					resp.Reasoned = streamed.reasoned
+					invalidResp.PartialResponse = resp
+				}
 			}
 			return nil, err
 		}
@@ -2199,22 +2207,35 @@ func reviewResponseFallbackTypes() []FallbackType {
 
 func normalizeFindingSuggestions(findings []model.Finding) {
 	for i := range findings {
-		normalizeSuggestionLineRanges(findings[i].Suggestions, findings[i].CodeLocation.LineRange)
+		normalizeSuggestionCodeLocations(findings[i].Suggestions, findings[i].CodeLocation)
 		if findings[i].Finalization != nil {
-			normalizeSuggestionLineRanges(findings[i].Finalization.Suggestions, findings[i].CodeLocation.LineRange)
+			normalizeSuggestionCodeLocations(findings[i].Finalization.Suggestions, findings[i].CodeLocation)
 		}
 		if findings[i].Summarization != nil {
-			normalizeSuggestionLineRanges(findings[i].Summarization.Suggestions, findings[i].CodeLocation.LineRange)
+			normalizeSuggestionCodeLocations(findings[i].Summarization.Suggestions, findings[i].CodeLocation)
 		}
 	}
 }
 
-func normalizeSuggestionLineRanges(suggestions []model.Suggestion, fallback model.LineRange) {
+func normalizeSuggestionCodeLocations(suggestions []model.Suggestion, fallback model.CodeLocation) {
 	for i := range suggestions {
-		if suggestions[i].LineRange == (model.LineRange{}) {
-			suggestions[i].LineRange = fallback
+		loc := suggestions[i].CodeLocation
+		if loc.LineRange == (model.LineRange{}) && suggestions[i].LineRange != (model.LineRange{}) {
+			loc.LineRange = suggestions[i].LineRange
 		}
+		if loc.Language == "" && loc.FilePath == fallback.FilePath {
+			loc.Language = fallback.Language
+		}
+		if loc.Content == "" && sameLineRange(loc.LineRange, fallback.LineRange) {
+			loc.Content = fallback.Content
+		}
+		suggestions[i].CodeLocation = loc
+		suggestions[i].LineRange = loc.LineRange
 	}
+}
+
+func sameLineRange(a, b model.LineRange) bool {
+	return a.Start == b.Start && a.End == b.End
 }
 
 func parseVerifyResponse(content string) (*ReviewResponse, error) {
@@ -2493,6 +2514,9 @@ func missingFindingFields(findings []model.Finding, rawFindings json.RawMessage,
 		if kind == SchemaKindMerge || kind == SchemaKindFinalize {
 			missing = append(missing, verificationFieldErrors(i, rawItem)...)
 		}
+		if rawSuggestions, ok := rawItem["suggestions"]; ok {
+			missing = append(missing, suggestionFieldErrors(fmt.Sprintf("findings[%d].suggestions", i), rawSuggestions)...)
+		}
 		if kind == SchemaKindFinalize {
 			missing = append(missing, missingFinalizeFindingFields(i, rawItem, finding)...)
 		}
@@ -2533,6 +2557,69 @@ func missingFinalizeFindingFields(i int, rawItem map[string]json.RawMessage, fin
 		missing = append(missing, missingNestedFields(fmt.Sprintf("findings[%d].finalization", i), rawItem["finalization"], []string{"title", "body", "priority", "remarks"})...)
 		if finding.Finalization.Priority < 0 || finding.Finalization.Priority > 3 {
 			missing = append(missing, fmt.Sprintf("findings[%d].finalization.priority (must be 0-3)", i))
+		}
+		var finalizationFields map[string]json.RawMessage
+		_ = json.Unmarshal(rawItem["finalization"], &finalizationFields)
+		if rawSuggestions, ok := finalizationFields["suggestions"]; ok {
+			missing = append(missing, suggestionFieldErrors(fmt.Sprintf("findings[%d].finalization.suggestions", i), rawSuggestions)...)
+		}
+	}
+	return missing
+}
+
+func suggestionFieldErrors(prefix string, raw json.RawMessage) []string {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return []string{prefix + " (must be an array)"}
+	}
+	var missing []string
+	for i, item := range items {
+		itemPrefix := fmt.Sprintf("%s[%d]", prefix, i)
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(item, &object); err != nil {
+			var body string
+			if json.Unmarshal(item, &body) == nil {
+				missing = append(missing, itemPrefix+".code_location")
+				continue
+			}
+			missing = append(missing, itemPrefix+" (must be an object)")
+			continue
+		}
+		if _, ok := object["body"]; !ok {
+			missing = append(missing, itemPrefix+".body")
+		}
+		rawLocation, ok := object["code_location"]
+		if !ok {
+			missing = append(missing, itemPrefix+".code_location")
+			continue
+		}
+		missing = append(missing, codeLocationFieldErrors(itemPrefix+".code_location", rawLocation)...)
+	}
+	return missing
+}
+
+func codeLocationFieldErrors(prefix string, raw json.RawMessage) []string {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return []string{prefix + " (must be an object)"}
+	}
+	var missing []string
+	for _, field := range []string{"file_path", "line_range", "content"} {
+		if _, ok := object[field]; !ok {
+			missing = append(missing, prefix+"."+field)
+		}
+	}
+	rawRange, ok := object["line_range"]
+	if !ok {
+		return missing
+	}
+	var lineRange map[string]json.RawMessage
+	if err := json.Unmarshal(rawRange, &lineRange); err != nil {
+		return append(missing, prefix+".line_range (must be an object)")
+	}
+	for _, field := range []string{"start", "end", "count"} {
+		if _, ok := lineRange[field]; !ok {
+			missing = append(missing, prefix+".line_range."+field)
 		}
 	}
 	return missing

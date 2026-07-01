@@ -1,7 +1,6 @@
 package model
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -403,36 +402,99 @@ type FindingSummarization struct {
 type CodeLocation struct {
 	FilePath  string    `json:"file_path"`
 	LineRange LineRange `json:"line_range"`
+	Language  string    `json:"language,omitempty"`
+	Content   string    `json:"content"`
 }
 
 type LineRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
+	Count int `json:"count"`
+}
+
+func (r LineRange) MarshalJSON() ([]byte, error) {
+	type lineRange struct {
+		Start int `json:"start"`
+		End   int `json:"end"`
+		Count int `json:"count"`
+	}
+	return json.Marshal(lineRange{Start: r.Start, End: r.End, Count: r.EffectiveCount()})
+}
+
+func (r *LineRange) UnmarshalJSON(data []byte) error {
+	type lineRange struct {
+		Start int `json:"start"`
+		End   int `json:"end"`
+		Count int `json:"count"`
+	}
+	var parsed lineRange
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	*r = LineRange{Start: parsed.Start, End: parsed.End, Count: parsed.Count}
+	return nil
+}
+
+func (r LineRange) EffectiveCount() int {
+	if r.Count > 0 {
+		return r.Count
+	}
+	if r.Start > 0 && r.End >= r.Start {
+		return r.End - r.Start + 1
+	}
+	return 0
 }
 
 type Suggestion struct {
-	Body      string    `json:"body"`
-	LineRange LineRange `json:"line_range"`
+	Body         string       `json:"body"`
+	CodeLocation CodeLocation `json:"code_location"`
+	LineRange    LineRange    `json:"-"`
+}
+
+func (s Suggestion) MarshalJSON() ([]byte, error) {
+	type suggestion struct {
+		Body         string       `json:"body"`
+		CodeLocation CodeLocation `json:"code_location"`
+	}
+	return json.Marshal(suggestion{
+		Body:         s.Body,
+		CodeLocation: s.effectiveCodeLocation(),
+	})
 }
 
 func (s *Suggestion) UnmarshalJSON(data []byte) error {
-	trimmed := bytes.TrimSpace(data)
-	if len(trimmed) > 0 && trimmed[0] == '"' {
-		var body string
-		if err := json.Unmarshal(trimmed, &body); err != nil {
-			return err
-		}
+	var body string
+	if err := json.Unmarshal(data, &body); err == nil {
 		s.Body = body
+		s.CodeLocation = CodeLocation{}
 		s.LineRange = LineRange{}
 		return nil
 	}
-	type suggestion Suggestion
+
+	type suggestion struct {
+		Body         string       `json:"body"`
+		CodeLocation CodeLocation `json:"code_location"`
+		LineRange    LineRange    `json:"line_range"`
+	}
 	var parsed suggestion
-	if err := json.Unmarshal(trimmed, &parsed); err != nil {
+	if err := json.Unmarshal(data, &parsed); err != nil {
 		return err
 	}
-	*s = Suggestion(parsed)
+	s.Body = parsed.Body
+	s.CodeLocation = parsed.CodeLocation
+	s.LineRange = s.CodeLocation.LineRange
+	if s.LineRange == (LineRange{}) {
+		s.LineRange = parsed.LineRange
+	}
 	return nil
+}
+
+func (s Suggestion) effectiveCodeLocation() CodeLocation {
+	loc := s.CodeLocation
+	if loc.LineRange == (LineRange{}) {
+		loc.LineRange = s.LineRange
+	}
+	return loc
 }
 
 type TokenUsage struct {

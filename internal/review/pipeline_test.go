@@ -290,7 +290,7 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	for _, finding := range result.Findings {
 		if finding.ID == firstFinding.ID && finding.Summarization != nil && len(finding.Summarization.Suggestions) > 0 {
 			summarizedSuggestion = finding.Summarization.Suggestions[0].Body
-			if finding.Summarization.Suggestions[0].LineRange != firstFinding.Suggestions[0].LineRange {
+			if !sameTestLineAnchor(finding.Summarization.Suggestions[0].LineRange, firstFinding.Suggestions[0].LineRange) {
 				t.Fatalf("suggestion line range = %+v, want %+v", finding.Summarization.Suggestions[0].LineRange, firstFinding.Suggestions[0].LineRange)
 			}
 		}
@@ -321,6 +321,10 @@ func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	if len(result.SegmentRuntimes) != 1 || len(result.SegmentRuntimes[0].Steps) != 1 || result.SegmentRuntimes[0].Steps[0] != "merge→finalize→verdict→summarize" {
 		t.Fatalf("segment runtimes = %+v, want fused post-merge segment", result.SegmentRuntimes)
 	}
+}
+
+func sameTestLineAnchor(a, b model.LineRange) bool {
+	return a.Start == b.Start && a.End == b.End
 }
 
 func TestWorkflowFusedPostMergeVerdictConfidenceFilterOwnsFinalFindings(t *testing.T) {

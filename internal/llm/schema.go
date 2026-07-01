@@ -16,21 +16,7 @@ func buildFindingsSchemaDefinition(minPriority, maxPriority int, allowedCorrectn
 		"body":             map[string]any{"type": "string", "examples": []any{"Example explanation of why this is a problem."}},
 		"confidence_score": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "examples": []any{0.85}},
 		"priority":         map[string]any{"type": "integer", "minimum": minPriority, "maximum": maxPriority, "examples": []any{minPriority}},
-		"code_location": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "examples": []any{"file.go"}},
-				"line_range": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"start": map[string]any{"type": "integer"},
-						"end":   map[string]any{"type": "integer"},
-					},
-					"required": []string{"start", "end"},
-				},
-			},
-			"required": []string{"file_path", "line_range"},
-		},
+		"code_location":    codeLocationSchemaDefinition(),
 	}
 	if includeSuggestions {
 		findingProperties["suggestions"] = suggestionListSchemaDefinition()
@@ -65,18 +51,32 @@ func suggestionListSchemaDefinition() map[string]any {
 		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"body": map[string]any{"type": "string", "examples": []any{"replacement code"}},
-				"line_range": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"start": map[string]any{"type": "integer", "examples": []any{10}},
-						"end":   map[string]any{"type": "integer", "examples": []any{12}},
-					},
-					"required": []string{"start", "end"},
-				},
+				"body":          map[string]any{"type": "string", "examples": []any{"Change the code to so and so"}},
+				"code_location": codeLocationSchemaDefinition(),
 			},
-			"required": []string{"body", "line_range"},
+			"required": []string{"body", "code_location"},
 		},
+	}
+}
+
+func codeLocationSchemaDefinition() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"file_path": map[string]any{"type": "string", "examples": []any{"mappings/embed.go"}},
+			"line_range": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"start": map[string]any{"type": "integer", "examples": []any{21}},
+					"end":   map[string]any{"type": "integer", "examples": []any{26}},
+					"count": map[string]any{"type": "integer", "examples": []any{6}},
+				},
+				"required": []string{"start", "end", "count"},
+			},
+			"language": map[string]any{"type": "string", "examples": []any{"go"}},
+			"content":  map[string]any{"type": "string", "examples": []any{"type LanguageMappings struct {\n\tDefault   string              `yaml:\"default\"`\n\tExtension map[string][]string `yaml:\"extensions\"`\n\tBasename  map[string][]string `yaml:\"basenames\"`\n\tPathRules []LanguagePathRule  `yaml:\"path_rules\"`\n}"}},
+		},
+		"required": []string{"file_path", "line_range", "content"},
 	}
 }
 

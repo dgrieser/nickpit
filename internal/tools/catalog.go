@@ -55,8 +55,8 @@ var catalogDefinition = []catalogEntry{
 	{
 		Name:               "find_lines",
 		APIDescription:     "Retrieve exact line ranges for a line or block of code in a repo-relative file, folder or across the whole repo",
-		ListingDescription: "with an exact `code` line or block and an optional repo-relative `path` to return line numbers and the matching code snippets",
-		Note:               "Use this whenever you need exact line numbers for code references or when embedding code snippets",
+		ListingDescription: "with an exact `code` line or block and an optional repo-relative `path` to return line numbers, counts, the matching code snippets and language",
+		Note:               "Use this whenever you need to return a `code_location` in findings or suggestions",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search the whole repo", Example: `"<repo-relative path>"`},
 			{Name: "code", Type: "string", Description: "Line or contiguous block of code to locate", Example: `"<line or block of code>"`, Required: true},

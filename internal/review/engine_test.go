@@ -1062,6 +1062,42 @@ func TestRunAgent_TestingDuplicateFileRetryExhaustionDropsExtras(t *testing.T) {
 	}
 }
 
+func TestRunAgent_InvalidJSONRetryExhaustionUsesPartialResponse(t *testing.T) {
+	first := nudgeReviewResponse("first invalid", 1, nudgeFinding("First", 1))
+	second := nudgeReviewResponse("second invalid", 2, nudgeFinding("Second", 2))
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{err: &llm.InvalidResponseError{
+				RawContent:      first.RawResponse,
+				Reason:          "response is missing required fields",
+				MissingFields:   []string{"findings[0].suggestions[0].code_location"},
+				PartialResponse: first,
+			}},
+			{err: &llm.InvalidResponseError{
+				RawContent:      second.RawResponse,
+				Reason:          "response is missing required fields",
+				MissingFields:   []string{"findings[0].suggestions[0].code_location"},
+				PartialResponse: second,
+			}},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Second"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want initial plus retry", len(llmClient.reqs))
+	}
+	if result.run.TokensUsed.TotalTokens != 2 {
+		t.Fatalf("tokens = %d, want partial retry tokens", result.run.TokensUsed.TotalTokens)
+	}
+}
+
 func TestTestingDuplicateFilePruneRecordsDroppedFindingKeys(t *testing.T) {
 	existing := []model.Finding{nudgeFindingInFile("Existing", "main.go", 1)}
 	dropped := nudgeFindingInFile("Dropped", "main.go", 2)

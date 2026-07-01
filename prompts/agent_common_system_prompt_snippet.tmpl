@@ -26,20 +26,27 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
 {{- end}}
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 {{- if and (eq .AgentRole "review") .HasTools}}
-- ALWAYS use `find_lines` to obtain exact line numbers and to quote the matching code
+- ALWAYS use `find_lines` to fill every `code_location` under findings and suggestions
+- copy `matches[].code_location` from `find_lines` exactly:
+  - include `file_path`, `line_range.start`, `line_range.end`, `line_range.count`, and `content`
+  - include `language` when present
 {{- end}}
 - use repo-relative paths in `code_location.file_path`; do not invent paths or include absolute paths
 {{- if .DisableSuggestions}}
 - do not output `suggestions`
 {{- else if eq .AgentRole "review"}}
-- generate one or more `suggestions` entries, each including `body`, `line_range.start` and `line_range.end`,
+- generate one or more `suggestions` entries, each including `body` and `code_location`,
   if you think obvious fixes exist; suggestions are not required
+{{- if .HasTools}}
+- use `find_lines` for each `suggestions[].code_location`;
+  this code location should identify the exact code the suggestion replaces or edits
+{{- end}}
 - put the following in `suggestions[].body`:
   - full replacement code
   - full patches
   - or before/after patches
 {{- else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}
-- copy `suggestions` from the source findings, each including `body`, `line_range.start` and `line_range.end`;
+- copy `suggestions` from the source findings, each including `body` and the full `code_location`;
   merge them only when it makes sense and DO NOT invent new suggestions
 {{- end}}
 {{- end}}

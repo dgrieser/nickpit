@@ -53,6 +53,20 @@ func TestMergeFindingsExtendsRange(t *testing.T) {
 	}
 }
 
+func TestMergeFindingsPreservesFindLinesLocation(t *testing.T) {
+	a := finding("A", "longer body", "a.sh", 10, 12)
+	a.ConfidenceScore = 0.8
+	a.CodeLocation.Content = "exact base snippet"
+	b := finding("B", "short", "a.sh", 8, 11)
+	b.ConfidenceScore = 0.5
+	b.CodeLocation.Content = "exact other snippet"
+
+	got := MergeFindings(a, b).CodeLocation
+	if got.LineRange != (model.LineRange{Start: 10, End: 12}) || got.Content != "exact base snippet" {
+		t.Fatalf("location = %+v, want exact base find_lines location preserved", got)
+	}
+}
+
 func TestMergeFindingsMostCriticalPriority(t *testing.T) {
 	a := finding("A", "body", "a.sh", 1, 1)
 	a.ConfidenceScore = 0.9

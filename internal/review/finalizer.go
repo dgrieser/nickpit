@@ -347,7 +347,7 @@ func findFinalizerInputIndex(target model.Finding, in []model.Finding, matched [
 		if matched[i] {
 			continue
 		}
-		if in[i].CodeLocation == target.CodeLocation {
+		if sameCodeLocationAnchor(in[i].CodeLocation, target.CodeLocation) {
 			locMatches = append(locMatches, i)
 		}
 	}
@@ -446,14 +446,14 @@ func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
 		for i := range in {
 			// ID matches still need a location cross-check so swapped IDs cannot
 			// attach one finding's ID to another finding's code location.
-			if in[i].ID == target.ID && in[i].CodeLocation == target.CodeLocation {
+			if in[i].ID == target.ID && sameCodeLocationAnchor(in[i].CodeLocation, target.CodeLocation) {
 				return &in[i]
 			}
 		}
 	}
 	var locMatches []*model.Finding
 	for i := range in {
-		if in[i].CodeLocation == target.CodeLocation {
+		if sameCodeLocationAnchor(in[i].CodeLocation, target.CodeLocation) {
 			locMatches = append(locMatches, &in[i])
 		}
 	}
@@ -469,6 +469,12 @@ func findInputMatch(target model.Finding, in []model.Finding) *model.Finding {
 		}
 	}
 	return locMatches[0]
+}
+
+func sameCodeLocationAnchor(a, b model.CodeLocation) bool {
+	return a.FilePath == b.FilePath &&
+		a.LineRange.Start == b.LineRange.Start &&
+		a.LineRange.End == b.LineRange.End
 }
 
 // enforcePriorityFloor ensures finalization.priority is not more critical (lower number)

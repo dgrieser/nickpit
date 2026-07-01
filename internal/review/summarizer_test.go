@@ -2,7 +2,6 @@ package review
 
 import (
 	"context"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -83,11 +82,20 @@ func TestSummarizeShortensBodyAndCopiesFinalizationFields(t *testing.T) {
 	if got.Title != fin.Title || got.Priority != fin.Priority || got.ConfidenceScore != fin.ConfidenceScore || got.Remarks != fin.Remarks {
 		t.Fatalf("summarization fields = %#v, want copied from finalization %#v", got, fin)
 	}
-	if !slices.Equal(got.Suggestions, fin.Suggestions) {
+	if len(got.Suggestions) != len(fin.Suggestions) ||
+		got.Suggestions[0].Body != fin.Suggestions[0].Body ||
+		!sameTestLineAnchor(got.Suggestions[0].LineRange, fin.Suggestions[0].LineRange) {
 		t.Fatalf("summarization suggestions = %#v, want copied from finalization %#v", got.Suggestions, fin.Suggestions)
 	}
 	// Finalization itself is untouched.
-	if out.Findings[0].Finalization == nil || !reflect.DeepEqual(out.Findings[0].Finalization, fin) {
+	if out.Findings[0].Finalization == nil ||
+		out.Findings[0].Finalization.Title != fin.Title ||
+		out.Findings[0].Finalization.Body != fin.Body ||
+		out.Findings[0].Finalization.Priority != fin.Priority ||
+		out.Findings[0].Finalization.ConfidenceScore != fin.ConfidenceScore ||
+		out.Findings[0].Finalization.Remarks != fin.Remarks ||
+		len(out.Findings[0].Finalization.Suggestions) != len(fin.Suggestions) ||
+		!sameTestLineAnchor(out.Findings[0].Finalization.Suggestions[0].LineRange, fin.Suggestions[0].LineRange) {
 		t.Fatalf("finalization mutated: %#v, want %#v", out.Findings[0].Finalization, fin)
 	}
 }
@@ -227,7 +235,7 @@ func TestSummarizeShortensProseSuggestionsInSameCall(t *testing.T) {
 	if got := out.Findings[0].Summarization.Suggestions[0].Body; got != "Short suggestion." {
 		t.Fatalf("summarization suggestion body = %q, want shortened", got)
 	}
-	if got := out.Findings[0].Summarization.Suggestions[0].LineRange; got != (model.LineRange{Start: 10, End: 12}) {
+	if got := out.Findings[0].Summarization.Suggestions[0].LineRange; !sameTestLineAnchor(got, model.LineRange{Start: 10, End: 12}) {
 		t.Fatalf("summarization suggestion line range = %+v, want preserved", got)
 	}
 	if got := out.Findings[0].Summarization.Suggestions[1].Body; got != codeSuggestion {
