@@ -68,9 +68,17 @@ func TestFindingsSchemaIncludesSuggestions(t *testing.T) {
 	if _, ok := suggestionProps["body"]; !ok {
 		t.Fatalf("suggestion.body schema missing: %#v", suggestionProps)
 	}
-	lineRange, ok := suggestionProps["line_range"].(map[string]any)
+	codeLocation, ok := suggestionProps["code_location"].(map[string]any)
 	if !ok {
-		t.Fatalf("suggestion.line_range schema missing: %#v", suggestionProps["line_range"])
+		t.Fatalf("suggestion.code_location schema missing: %#v", suggestionProps["code_location"])
+	}
+	codeLocationProps := codeLocation["properties"].(map[string]any)
+	lineRange, ok := codeLocationProps["line_range"].(map[string]any)
+	if !ok {
+		t.Fatalf("suggestion.code_location.line_range schema missing: %#v", codeLocationProps["line_range"])
+	}
+	if _, ok := codeLocationProps["content"]; !ok {
+		t.Fatalf("suggestion.code_location.content schema missing: %#v", codeLocationProps)
 	}
 	lineRangeProps := lineRange["properties"].(map[string]any)
 	if _, ok := lineRangeProps["start"]; !ok {
@@ -79,11 +87,14 @@ func TestFindingsSchemaIncludesSuggestions(t *testing.T) {
 	if _, ok := lineRangeProps["end"]; !ok {
 		t.Fatalf("suggestion.line_range.end schema missing: %#v", lineRangeProps)
 	}
+	if _, ok := lineRangeProps["count"]; !ok {
+		t.Fatalf("suggestion.line_range.count schema missing: %#v", lineRangeProps)
+	}
 }
 
 func TestFindingsExamplePromptSnippetIncludesSuggestions(t *testing.T) {
 	snippet := FindingsExamplePromptSnippet()
-	for _, required := range []string{`"suggestions"`, `"body": "replacement code"`, `"line_range"`, `"start": 10`, `"end": 12`} {
+	for _, required := range []string{`"suggestions"`, `"body": "Change the code to so and so"`, `"code_location"`, `"line_range"`, `"count": 6`, `"content"`} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}

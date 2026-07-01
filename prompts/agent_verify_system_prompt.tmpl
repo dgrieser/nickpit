@@ -15,7 +15,7 @@ You receive the same patch context as the original reviewer plus ONE finding to 
 - re-read the diff yourself
 {{if .HasTools}}- use tools to confirm or refute the claim before you trust it{{else}}- use the provided context to confirm or refute the claim{{end}}
 {{- if .HasTools}}
-- ALWAYS use `find_lines` to obtain and verify exact line numbers and to quote the matching code
+- ALWAYS use `find_lines` to obtain and verify exact line numbers and matching code for any location you cite
 {{- end}}
 
 When evaluating the finding:
@@ -37,13 +37,17 @@ Apply these gates in order. Stop as soon as one gate applies.
     - affirm the code is correct
     - state there is no issue
     - say a change is intentional
+    - say a change is acceptable
     - report no problem or only praise/confirm behavior
   - Treat titles or bodies containing phrases like these as non-findings:
-    - "No findings..."
-    - "No issue..."
+    - "no finding"
+    - "no issue"
+    - "no problem"
     - "works correctly"
     - "is sound"
-    - "correctly handles..."
+    - "is intentional"
+    - "is acceptable"
+    - "correctly handles"
 
 2. Styleguide contradiction gate:
   - Treat styleguides as verification evidence, they are rules to follow, not background context.

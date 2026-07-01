@@ -149,31 +149,40 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		}
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
-			if errors.As(err, &invalidResp) && outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
-				if invalidResp.ReasoningEffort != "" {
-					result.reasoningEffort = invalidResp.ReasoningEffort
-					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+			if errors.As(err, &invalidResp) {
+				if outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
+					if invalidResp.ReasoningEffort != "" {
+						result.reasoningEffort = invalidResp.ReasoningEffort
+						llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+					}
+					if invalidResp.ToolsOmitted || state.jsonRepairWithoutTools {
+						state.jsonRepairWithoutTools = true
+						messages = noToolsHistory
+						llmReq.Tools = nil
+						llmReq.ParallelToolCalls = false
+					}
+					state.jsonRetries++
+					e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
+					if strings.TrimSpace(invalidResp.RawContent) != "" {
+						messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+					}
+					feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
+					if err != nil {
+						return result, err
+					}
+					messages = append(messages, llm.Message{Role: "user", Content: feedback})
+					syntheticFollowup = nil
+					continue
 				}
-				if invalidResp.ToolsOmitted || state.jsonRepairWithoutTools {
-					state.jsonRepairWithoutTools = true
-					messages = noToolsHistory
-					llmReq.Tools = nil
-					llmReq.ParallelToolCalls = false
-				}
-				state.jsonRetries++
-				e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
-				if strings.TrimSpace(invalidResp.RawContent) != "" {
-					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
-				}
-				feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
-				if err != nil {
+				if invalidResp.PartialResponse != nil {
+					e.logf(loopCtx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+					resp = invalidResp.PartialResponse
+				} else {
 					return result, err
 				}
-				messages = append(messages, llm.Message{Role: "user", Content: feedback})
-				syntheticFollowup = nil
-				continue
+			} else {
+				return result, err
 			}
-			return result, err
 		}
 
 		if resp.ReasoningEffort != "" {
@@ -203,7 +212,13 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 					syntheticFollowup = nil
 					continue
 				}
-				e.logf(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+				if invalidResp.PartialResponse != nil {
+					e.logf(loopCtx, "Response validation failed after retries exhausted; using partial validated response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+					resp = invalidResp.PartialResponse
+					result.resp = resp
+				} else {
+					e.logf(loopCtx, "Response validation failed after retries exhausted: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+				}
 			}
 		}
 

@@ -32,8 +32,9 @@ When merging duplicate findings:
 - preserve the strongest concrete failure scenario
 - choose the most critical priority among the merged findings unless the combined evidence says otherwise
 - set confidence from the combined evidence quality; independent reviewers agreeing increases confidence
-- extend the code location to the largest line range covering all merged findings;
-  when merged findings span files, keep the location of the surviving finding
+- when merged findings span files, keep the `code_location` of the surviving finding
+- either copy the `code_location` from one source finding or create a new, extended `code_location`
+- mention any additional affected files or lines in the body rather than inventing location content
 {{- if not .DisableSuggestions}}
 - include suggestions from all duplicate findings, merge only when it makes sense
 {{- end}}

@@ -15,6 +15,7 @@ const maxFindLinesMatches = 100
 // matches LF files, and leading/trailing whitespace on each line is ignored, so
 // the snippet matches regardless of its indentation.
 func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) (*FindLinesResult, error) {
+	specifiedCode := code
 	code = NormalizeFindLinesCode(code)
 	matches := make([]FindLinesMatch, 0)
 	normalizedPath, err := walkRepoTextFiles(repoRoot, path, func(relPath, content string) error {
@@ -33,10 +34,10 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 		return nil, fmt.Errorf("retrieval: find_lines %s: %w", searchScopeLabel(path, normalizedPath), err)
 	}
 	return &FindLinesResult{
-		Path:          normalizedPath,
-		CodeLineCount: FindLinesCount(code),
-		MatchCount:    len(matches),
-		Matches:       matches,
+		Path:       normalizedPath,
+		Code:       specifiedCode,
+		MatchCount: len(matches),
+		Matches:    matches,
 	}, nil
 }
 
@@ -46,16 +47,16 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 func FindLinesIn(content *FileContent, code string) *FindLinesResult {
 	if content == nil {
 		return &FindLinesResult{
-			CodeLineCount: FindLinesCount(code),
+			Code: code,
 		}
 	}
-	code = NormalizeFindLinesCode(code)
-	matches := matchFindLinesLimit(content.Path, content.Content, code, maxFindLinesMatches)
+	normalizedCode := NormalizeFindLinesCode(code)
+	matches := matchFindLinesLimit(content.Path, content.Content, normalizedCode, maxFindLinesMatches)
 	return &FindLinesResult{
-		Path:          content.Path,
-		CodeLineCount: FindLinesCount(code),
-		MatchCount:    len(matches),
-		Matches:       matches,
+		Path:       content.Path,
+		Code:       code,
+		MatchCount: len(matches),
+		Matches:    matches,
 	}
 }
 
@@ -75,12 +76,16 @@ func matchFindLinesLimit(relPath, content, code string, maxMatches int) []FindLi
 			continue
 		}
 		matches = append(matches, FindLinesMatch{
-			Path:      relPath,
-			StartLine: i + 1,
-			EndLine:   i + len(codeLines),
-			Language:  language,
-			LineCount: len(codeLines),
-			Content:   strings.Join(rawFileLines[i:i+len(codeLines)], "\n"),
+			CodeLocation: FindLinesLocation{
+				FilePath: relPath,
+				LineRange: FindLinesRange{
+					Start: i + 1,
+					End:   i + len(codeLines),
+					Count: len(codeLines),
+				},
+				Language: language,
+				Content:  strings.Join(rawFileLines[i:i+len(codeLines)], "\n"),
+			},
 		})
 		if maxMatches > 0 && len(matches) >= maxMatches {
 			return matches

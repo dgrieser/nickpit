@@ -12,7 +12,8 @@ import (
 //   - confidence: noisy-or, capped at 0.99 — two independent reviewers
 //     agreeing is stronger evidence than either alone
 //   - priority: the most critical of the two
-//   - line range: extended to cover both findings
+//   - location: exact find_lines-backed locations are preserved; legacy
+//     no-content line ranges are extended to cover both findings
 //   - suggestions: included from both sides, no merge attempts
 //   - verification: verdict and remarks from the side with the higher
 //     verification confidence, highest confidence, most critical priority
@@ -26,11 +27,26 @@ func MergeFindings(a, b model.Finding) model.Finding {
 	out := base
 	out.ConfidenceScore = noisyOr(base.ConfidenceScore, other.ConfidenceScore)
 	out.Priority = mostCriticalPriority(base.Priority, other.Priority)
-	out.CodeLocation.LineRange = extendRange(base.CodeLocation.LineRange, other.CodeLocation.LineRange)
+	out.CodeLocation = mergeCodeLocation(base.CodeLocation, other.CodeLocation)
 	if len(other.Suggestions) > 0 {
 		out.Suggestions = append(append([]model.Suggestion(nil), base.Suggestions...), other.Suggestions...)
 	}
 	out.Verification = mergeVerifications(base.Verification, other.Verification, out.ID)
+	return out
+}
+
+func mergeCodeLocation(base, other model.CodeLocation) model.CodeLocation {
+	if base.FilePath != other.FilePath {
+		return base
+	}
+	if base.Content != "" {
+		return base
+	}
+	if other.Content != "" {
+		return other
+	}
+	out := base
+	out.LineRange = extendRange(base.LineRange, other.LineRange)
 	return out
 }
 
@@ -90,15 +106,21 @@ func mostCriticalPriority(a, b *int) *int {
 // ranges so they cannot drag Start to 0.
 func extendRange(a, b model.LineRange) model.LineRange {
 	if (a == model.LineRange{}) {
-		return b
+		return lineRangeWithEffectiveCount(b)
 	}
 	if (b == model.LineRange{}) {
-		return a
+		return lineRangeWithEffectiveCount(a)
 	}
-	return model.LineRange{
+	out := model.LineRange{
 		Start: min(a.Start, b.Start),
 		End:   max(a.End, b.End),
 	}
+	return lineRangeWithEffectiveCount(out)
+}
+
+func lineRangeWithEffectiveCount(r model.LineRange) model.LineRange {
+	r.Count = r.EffectiveCount()
+	return r
 }
 
 // mergeVerifications follows the prompt-stated rules: verdict and remarks

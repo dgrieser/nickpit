@@ -191,10 +191,10 @@ func TestExecuteFindLinesFindsLineAndBlock(t *testing.T) {
 	}, freshToolRoundState())
 
 	linePayload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, linePayload, 1, []retrieval.FindLinesMatch{{StartLine: 4, EndLine: 4, LineCount: 1}})
+	assertFindLinesPayload(t, linePayload, []retrieval.FindLinesMatch{{CodeLocation: retrieval.FindLinesLocation{LineRange: retrieval.FindLinesRange{Start: 4, End: 4, Count: 1}}}})
 
 	blockPayload := decodeToolPayload(t, results[1].Content)
-	assertFindLinesPayload(t, blockPayload, 3, []retrieval.FindLinesMatch{{StartLine: 3, EndLine: 5, LineCount: 3}})
+	assertFindLinesPayload(t, blockPayload, []retrieval.FindLinesMatch{{CodeLocation: retrieval.FindLinesLocation{LineRange: retrieval.FindLinesRange{Start: 3, End: 5, Count: 3}}}})
 }
 
 func TestExecuteFindLinesReturnsDuplicateMatches(t *testing.T) {
@@ -210,9 +210,9 @@ func TestExecuteFindLinesReturnsDuplicateMatches(t *testing.T) {
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, payload, 2, []retrieval.FindLinesMatch{
-		{StartLine: 1, EndLine: 2, LineCount: 2},
-		{StartLine: 3, EndLine: 4, LineCount: 2},
+	assertFindLinesPayload(t, payload, []retrieval.FindLinesMatch{
+		{CodeLocation: retrieval.FindLinesLocation{LineRange: retrieval.FindLinesRange{Start: 1, End: 2, Count: 2}}},
+		{CodeLocation: retrieval.FindLinesLocation{LineRange: retrieval.FindLinesRange{Start: 3, End: 4, Count: 2}}},
 	})
 }
 
@@ -231,9 +231,9 @@ func TestExecuteFindLinesIgnoresIndentationWhitespace(t *testing.T) {
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, payload, 3, []retrieval.FindLinesMatch{
+	assertFindLinesPayload(t, payload, []retrieval.FindLinesMatch{
 		// Content preserves the file's original indentation, not the trimmed query.
-		{Path: "pkg/block.go", StartLine: 2, EndLine: 4, LineCount: 3, Content: "\tif cond {\n\t\tdoThing()\n\t}"},
+		{CodeLocation: retrieval.FindLinesLocation{FilePath: "pkg/block.go", LineRange: retrieval.FindLinesRange{Start: 2, End: 4, Count: 3}, Content: "\tif cond {\n\t\tdoThing()\n\t}"}},
 	})
 }
 
@@ -250,8 +250,8 @@ func TestExecuteFindLinesIgnoresWhitespaceOnlyBoundaryLines(t *testing.T) {
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, payload, 1, []retrieval.FindLinesMatch{
-		{Path: "pkg/run.go", StartLine: 1, EndLine: 1, LineCount: 1, Content: "func Run() {}"},
+	assertFindLinesPayload(t, payload, []retrieval.FindLinesMatch{
+		{CodeLocation: retrieval.FindLinesLocation{FilePath: "pkg/run.go", LineRange: retrieval.FindLinesRange{Start: 1, End: 1, Count: 1}, Content: "func Run() {}"}},
 	})
 }
 
@@ -268,7 +268,7 @@ func TestExecuteFindLinesReturnsZeroMatches(t *testing.T) {
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, payload, 1, nil)
+	assertFindLinesPayload(t, payload, nil)
 }
 
 type nilResultRetrieval struct {
@@ -311,8 +311,8 @@ func TestExecuteFindLinesRequiresCodeButNotPath(t *testing.T) {
 
 	// An omitted path is valid and searches the whole repo.
 	noPathPayload := decodeToolPayload(t, results[1].Content)
-	assertFindLinesPayload(t, noPathPayload, 1, []retrieval.FindLinesMatch{
-		{Path: "pkg/a.go", StartLine: 1, EndLine: 1, LineCount: 1},
+	assertFindLinesPayload(t, noPathPayload, []retrieval.FindLinesMatch{
+		{CodeLocation: retrieval.FindLinesLocation{FilePath: "pkg/a.go", LineRange: retrieval.FindLinesRange{Start: 1, End: 1, Count: 1}}},
 	})
 }
 
@@ -329,9 +329,9 @@ func TestExecuteFindLinesSearchesWholeRepoWhenPathOmitted(t *testing.T) {
 	}, freshToolRoundState())
 
 	payload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, payload, 1, []retrieval.FindLinesMatch{
-		{Path: "a/one.go", StartLine: 3, EndLine: 3, LineCount: 1},
-		{Path: "b/two.go", StartLine: 3, EndLine: 3, LineCount: 1},
+	assertFindLinesPayload(t, payload, []retrieval.FindLinesMatch{
+		{CodeLocation: retrieval.FindLinesLocation{FilePath: "a/one.go", LineRange: retrieval.FindLinesRange{Start: 3, End: 3, Count: 1}}},
+		{CodeLocation: retrieval.FindLinesLocation{FilePath: "b/two.go", LineRange: retrieval.FindLinesRange{Start: 3, End: 3, Count: 1}}},
 	})
 }
 
@@ -347,7 +347,7 @@ func TestExecuteFindLinesDedupesDuplicateCalls(t *testing.T) {
 		t.Fatalf("retrieval calls = %d, want 1", len(retrievalEngine.paths))
 	}
 	firstPayload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, firstPayload, 1, []retrieval.FindLinesMatch{{StartLine: 1, EndLine: 1, LineCount: 1}})
+	assertFindLinesPayload(t, firstPayload, []retrieval.FindLinesMatch{{CodeLocation: retrieval.FindLinesLocation{LineRange: retrieval.FindLinesRange{Start: 1, End: 1, Count: 1}}}})
 
 	secondPayload := decodeToolPayload(t, results[1].Content)
 	if got := nestedString(secondPayload, "error", "code"); got != "already_requested" {
@@ -370,7 +370,7 @@ func TestExecuteFindLinesDedupesRepoRootAlias(t *testing.T) {
 		t.Fatalf("retrieval path = %q, want repo root", retrievalEngine.paths[0])
 	}
 	firstPayload := decodeToolPayload(t, results[0].Content)
-	assertFindLinesPayload(t, firstPayload, 1, []retrieval.FindLinesMatch{{StartLine: 1, EndLine: 1, LineCount: 1}})
+	assertFindLinesPayload(t, firstPayload, []retrieval.FindLinesMatch{{CodeLocation: retrieval.FindLinesLocation{LineRange: retrieval.FindLinesRange{Start: 1, End: 1, Count: 1}}}})
 
 	secondPayload := decodeToolPayload(t, results[1].Content)
 	if got := nestedString(secondPayload, "error", "code"); got != "already_requested" {
@@ -378,13 +378,10 @@ func TestExecuteFindLinesDedupesRepoRootAlias(t *testing.T) {
 	}
 }
 
-func assertFindLinesPayload(t *testing.T, payload map[string]any, wantCodeLines int, wantMatches []retrieval.FindLinesMatch) {
+func assertFindLinesPayload(t *testing.T, payload map[string]any, wantMatches []retrieval.FindLinesMatch) {
 	t.Helper()
 	if _, isErr := payload["error"]; isErr {
 		t.Fatalf("find_lines returned error: %#v", payload)
-	}
-	if got := intFromJSON(payload["code_line_count"]); got != wantCodeLines {
-		t.Fatalf("code_line_count = %d, want %d; payload = %#v", got, wantCodeLines, payload)
 	}
 	if got := intFromJSON(payload["match_count"]); got != len(wantMatches) {
 		t.Fatalf("match_count = %d, want %d; payload = %#v", got, len(wantMatches), payload)
@@ -397,20 +394,29 @@ func assertFindLinesPayload(t *testing.T, payload map[string]any, wantCodeLines 
 		t.Fatalf("matches length = %d, want %d; payload = %#v", len(rawMatches), len(wantMatches), payload)
 	}
 	for i, want := range wantMatches {
-		got, ok := rawMatches[i].(map[string]any)
+		match, ok := rawMatches[i].(map[string]any)
 		if !ok {
 			t.Fatalf("match[%d] wrong type: %#v", i, rawMatches[i])
 		}
-		if intFromJSON(got["start_line"]) != want.StartLine ||
-			intFromJSON(got["end_line"]) != want.EndLine ||
-			intFromJSON(got["line_count"]) != want.LineCount {
-			t.Fatalf("match[%d] = %#v, want %#v", i, got, want)
+		loc, ok := match["code_location"].(map[string]any)
+		if !ok {
+			t.Fatalf("match[%d] code_location missing or wrong type: %#v", i, match["code_location"])
 		}
-		if want.Path != "" && got["path"] != want.Path {
-			t.Fatalf("match[%d] path = %#v, want %q", i, got["path"], want.Path)
+		lineRange, ok := loc["line_range"].(map[string]any)
+		if !ok {
+			t.Fatalf("match[%d] line_range missing or wrong type: %#v", i, loc["line_range"])
 		}
-		if want.Content != "" && got["content"] != want.Content {
-			t.Fatalf("match[%d] content = %#v, want %q", i, got["content"], want.Content)
+		wantLoc := want.CodeLocation
+		if intFromJSON(lineRange["start"]) != wantLoc.LineRange.Start ||
+			intFromJSON(lineRange["end"]) != wantLoc.LineRange.End ||
+			intFromJSON(lineRange["count"]) != wantLoc.LineRange.Count {
+			t.Fatalf("match[%d] line_range = %#v, want %#v", i, lineRange, wantLoc.LineRange)
+		}
+		if wantLoc.FilePath != "" && loc["file_path"] != wantLoc.FilePath {
+			t.Fatalf("match[%d] file_path = %#v, want %q", i, loc["file_path"], wantLoc.FilePath)
+		}
+		if wantLoc.Content != "" && loc["content"] != wantLoc.Content {
+			t.Fatalf("match[%d] content = %#v, want %q", i, loc["content"], wantLoc.Content)
 		}
 	}
 }

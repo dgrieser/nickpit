@@ -3779,21 +3779,92 @@ func TestParseReviewResponseRescalesMisscaledConfidence(t *testing.T) {
 	}
 }
 
-func TestParseReviewResponseAcceptsStringSuggestionShorthand(t *testing.T) {
+func TestParseReviewResponseSalvagesStringSuggestionShorthandAsInvalid(t *testing.T) {
 	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":7,"end":9}},"suggestions":["Add a regression test."]}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
-	if err != nil {
-		t.Fatalf("parseReviewResponse: %v", err)
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
 	}
-	if len(resp.Findings) != 1 || len(resp.Findings[0].Suggestions) != 1 {
-		t.Fatalf("findings = %+v", resp.Findings)
+	if resp == nil || len(resp.Findings) != 1 || len(resp.Findings[0].Suggestions) != 1 {
+		t.Fatalf("resp = %+v, want salvaged suggestion", resp)
 	}
-	suggestion := resp.Findings[0].Suggestions[0]
-	if suggestion.Body != "Add a regression test." {
-		t.Fatalf("suggestion body = %q", suggestion.Body)
+	if resp.Findings[0].Suggestions[0].Body != "Add a regression test." {
+		t.Fatalf("suggestion = %+v", resp.Findings[0].Suggestions[0])
 	}
-	if suggestion.LineRange.Start != 7 || suggestion.LineRange.End != 9 {
-		t.Fatalf("suggestion line range = %+v, want finding location", suggestion.LineRange)
+	if !slices.Contains(invalid.MissingFields, "findings[0].suggestions[0].code_location") {
+		t.Fatalf("missing fields = %v, want suggestion code_location", invalid.MissingFields)
+	}
+}
+
+func TestParseReviewResponseSalvagesLegacySuggestionLineRangeAsInvalid(t *testing.T) {
+	content := `{"findings":[{"title":"Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":7,"end":9}},"suggestions":[{"body":"Add a regression test.","line_range":{"start":7,"end":9}}]}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	if resp == nil || len(resp.Findings) != 1 || len(resp.Findings[0].Suggestions) != 1 {
+		t.Fatalf("resp = %+v, want salvaged suggestion", resp)
+	}
+	if got := resp.Findings[0].Suggestions[0].LineRange; got != (model.LineRange{Start: 7, End: 9, Count: 3}) {
+		t.Fatalf("line range = %+v, want salvaged legacy range", got)
+	}
+	if !slices.Contains(invalid.MissingFields, "findings[0].suggestions[0].code_location") {
+		t.Fatalf("missing fields = %v, want suggestion code_location", invalid.MissingFields)
+	}
+}
+
+func TestNormalizeSuggestionCodeLocationsDefaultsMissingFilePath(t *testing.T) {
+	suggestions := []model.Suggestion{{
+		Body: "fix",
+	}}
+	fallback := model.CodeLocation{
+		FilePath:  "f.go",
+		LineRange: model.LineRange{Start: 7, End: 9, Count: 3},
+		Language:  "go",
+		Content:   "old code",
+	}
+
+	normalizeSuggestionCodeLocations(suggestions, fallback)
+
+	got := suggestions[0]
+	if got.CodeLocation.FilePath != "f.go" {
+		t.Fatalf("suggestion file_path = %q, want fallback path", got.CodeLocation.FilePath)
+	}
+	if got.CodeLocation.LineRange != fallback.LineRange || got.LineRange != fallback.LineRange {
+		t.Fatalf("line ranges = code_location %+v legacy %+v, want %+v", got.CodeLocation.LineRange, got.LineRange, fallback.LineRange)
+	}
+	if got.CodeLocation.Language != "go" || got.CodeLocation.Content != "old code" {
+		t.Fatalf("code location = %+v, want fallback language/content", got.CodeLocation)
+	}
+}
+
+func TestNormalizeSuggestionCodeLocationsDoesNotBorrowFindingAnchorForDifferentFile(t *testing.T) {
+	suggestions := []model.Suggestion{{
+		Body: "fix",
+		CodeLocation: model.CodeLocation{
+			FilePath: "other.go",
+		},
+	}}
+	fallback := model.CodeLocation{
+		FilePath:  "f.go",
+		LineRange: model.LineRange{Start: 7, End: 9, Count: 3},
+		Language:  "go",
+		Content:   "old code",
+	}
+
+	normalizeSuggestionCodeLocations(suggestions, fallback)
+
+	got := suggestions[0]
+	if got.CodeLocation.FilePath != "other.go" {
+		t.Fatalf("suggestion file_path = %q, want original path", got.CodeLocation.FilePath)
+	}
+	if got.CodeLocation.LineRange != (model.LineRange{}) || got.LineRange != (model.LineRange{}) {
+		t.Fatalf("line ranges = code_location %+v legacy %+v, want empty", got.CodeLocation.LineRange, got.LineRange)
+	}
+	if got.CodeLocation.Language != "" || got.CodeLocation.Content != "" {
+		t.Fatalf("code location = %+v, want no fallback language/content", got.CodeLocation)
 	}
 }
 
@@ -4080,7 +4151,7 @@ func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
 }
 
 func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep","suggestions":[{"body":"final suggestion"}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1},"content":"old code"},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep","suggestions":[{"body":"final suggestion","code_location":{"file_path":"f.go","line_range":{"start":1,"end":1,"count":1},"content":"old code"}}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
@@ -4098,8 +4169,23 @@ func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
 	if len(suggestions) != 1 || suggestions[0].Body != "final suggestion" {
 		t.Fatalf("finalization.suggestions = %#v", suggestions)
 	}
-	if suggestions[0].LineRange != (model.LineRange{Start: 1, End: 1}) {
-		t.Fatalf("finalization.suggestions[0].line_range = %+v, want fallback code location", suggestions[0].LineRange)
+	if suggestions[0].LineRange != (model.LineRange{Start: 1, End: 1, Count: 1}) {
+		t.Fatalf("finalization.suggestions[0].line_range = %+v, want code_location range", suggestions[0].LineRange)
+	}
+}
+
+func TestParseFinalizeResponseSalvagesSuggestionWithoutLocationAsInvalid(t *testing.T) {
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1},"content":"old code"},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep","suggestions":[{"body":"final suggestion"}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	if resp == nil || len(resp.Findings) != 1 || resp.Findings[0].Finalization == nil || len(resp.Findings[0].Finalization.Suggestions) != 1 {
+		t.Fatalf("resp = %+v, want salvaged finalization suggestion", resp)
+	}
+	if !slices.Contains(invalid.MissingFields, "findings[0].finalization.suggestions[0].code_location") {
+		t.Fatalf("missing fields = %v, want finalization suggestion code_location", invalid.MissingFields)
 	}
 }
 

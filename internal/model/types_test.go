@@ -199,7 +199,7 @@ func TestEnsureFindingIDReportsOnlyNonEmptyInvalidOverwrite(t *testing.T) {
 	}
 }
 
-func TestSuggestionUnmarshalAcceptsStringShorthand(t *testing.T) {
+func TestSuggestionUnmarshalSalvagesStringShorthand(t *testing.T) {
 	var got Suggestion
 	if err := json.Unmarshal([]byte(`"Add a regression test."`), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -207,17 +207,47 @@ func TestSuggestionUnmarshalAcceptsStringShorthand(t *testing.T) {
 	if got.Body != "Add a regression test." {
 		t.Fatalf("body = %q", got.Body)
 	}
-	if got.LineRange != (LineRange{}) {
-		t.Fatalf("line range = %+v, want zero", got.LineRange)
+	if got.CodeLocation != (CodeLocation{}) || got.LineRange != (LineRange{}) {
+		t.Fatalf("location = %+v line_range = %+v, want zero", got.CodeLocation, got.LineRange)
 	}
 }
 
-func TestSuggestionUnmarshalAcceptsObject(t *testing.T) {
+func TestSuggestionUnmarshalSalvagesLegacyLineRangeObject(t *testing.T) {
 	var got Suggestion
 	if err := json.Unmarshal([]byte(`{"body":"fix","line_range":{"start":3,"end":5}}`), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	want := Suggestion{Body: "fix", LineRange: LineRange{Start: 3, End: 5}}
+	want := Suggestion{Body: "fix", LineRange: LineRange{Start: 3, End: 5, Count: 3}}
+	if got != want {
+		t.Fatalf("suggestion = %+v, want %+v", got, want)
+	}
+}
+
+func TestLineRangeUnmarshalPopulatesMissingCount(t *testing.T) {
+	var got LineRange
+	if err := json.Unmarshal([]byte(`{"start":3,"end":5}`), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != (LineRange{Start: 3, End: 5, Count: 3}) {
+		t.Fatalf("line range = %+v, want effective count", got)
+	}
+}
+
+func TestSuggestionUnmarshalAcceptsCodeLocationObject(t *testing.T) {
+	var got Suggestion
+	data := `{"body":"fix","code_location":{"file_path":"f.go","line_range":{"start":3,"end":5,"count":3},"content":"old code"}}`
+	if err := json.Unmarshal([]byte(data), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := Suggestion{
+		Body: "fix",
+		CodeLocation: CodeLocation{
+			FilePath:  "f.go",
+			LineRange: LineRange{Start: 3, End: 5, Count: 3},
+			Content:   "old code",
+		},
+		LineRange: LineRange{Start: 3, End: 5, Count: 3},
+	}
 	if got != want {
 		t.Fatalf("suggestion = %+v, want %+v", got, want)
 	}

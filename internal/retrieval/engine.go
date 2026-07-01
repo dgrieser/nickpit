@@ -40,21 +40,30 @@ type DirectoryListing struct {
 type FindLinesResult struct {
 	// Path is the resolved search scope: a file, a directory, or "" for the
 	// whole repository when the caller omits a path.
-	Path          string           `json:"path"`
-	CodeLineCount int              `json:"code_line_count"`
-	MatchCount    int              `json:"match_count"`
-	Matches       []FindLinesMatch `json:"matches"`
+	Path string `json:"path"`
+	// Code is the code line or block that was searched for.
+	Code       string           `json:"code"`
+	MatchCount int              `json:"match_count"`
+	Matches    []FindLinesMatch `json:"matches"`
 }
 
 type FindLinesMatch struct {
-	Path      string `json:"path"`
-	StartLine int    `json:"start_line"`
-	EndLine   int    `json:"end_line"`
-	Language  string `json:"language"`
-	LineCount int    `json:"line_count"`
+	CodeLocation FindLinesLocation `json:"code_location"`
+}
+
+type FindLinesLocation struct {
+	FilePath  string         `json:"file_path"`
+	LineRange FindLinesRange `json:"line_range"`
+	Language  string         `json:"language"`
 	// Content is the matched file text with its original indentation, so the
 	// caller can verify the hit and reuse the snippet verbatim.
 	Content string `json:"content"`
+}
+
+type FindLinesRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+	Count int `json:"count"`
 }
 
 type SearchResults struct {

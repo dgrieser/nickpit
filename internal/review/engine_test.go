@@ -562,7 +562,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				Body:            "body",
 				ConfidenceScore: 0.9,
 				Priority:        intPtr(2),
-				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
+				CodeLocation:    testLineCodeLocation("main.go", line),
 			})
 		}
 		return &llm.ReviewResponse{
@@ -1062,6 +1062,42 @@ func TestRunAgent_TestingDuplicateFileRetryExhaustionDropsExtras(t *testing.T) {
 	}
 }
 
+func TestRunAgent_InvalidJSONRetryExhaustionUsesPartialResponse(t *testing.T) {
+	first := nudgeReviewResponse("first invalid", 1, nudgeFinding("First", 1))
+	second := nudgeReviewResponse("second invalid", 2, nudgeFinding("Second", 2))
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{err: &llm.InvalidResponseError{
+				RawContent:      first.RawResponse,
+				Reason:          "response is missing required fields",
+				MissingFields:   []string{"findings[0].suggestions[0].code_location"},
+				PartialResponse: first,
+			}},
+			{err: &llm.InvalidResponseError{
+				RawContent:      second.RawResponse,
+				Reason:          "response is missing required fields",
+				MissingFields:   []string{"findings[0].suggestions[0].code_location"},
+				PartialResponse: second,
+			}},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Second"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want initial plus retry", len(llmClient.reqs))
+	}
+	if result.run.TokensUsed.TotalTokens != 2 {
+		t.Fatalf("tokens = %d, want partial retry tokens", result.run.TokensUsed.TotalTokens)
+	}
+}
+
 func TestTestingDuplicateFilePruneRecordsDroppedFindingKeys(t *testing.T) {
 	existing := []model.Finding{nudgeFindingInFile("Existing", "main.go", 1)}
 	dropped := nudgeFindingInFile("Dropped", "main.go", 2)
@@ -1375,6 +1411,30 @@ func TestRunAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	}
 }
 
+func TestRunAgent_CodeLocationRetryExhaustionUsesPartialResponse(t *testing.T) {
+	valid := nudgeFinding("Valid", 1)
+	invalid := nudgeFinding("Invalid", 2)
+	invalid.CodeLocation.Content = "line 3"
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, valid, invalid)},
+			{resp: nudgeReviewResponse("second", 1, valid, invalid)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestToolAgent("review"), model.ReviewRequest{MaxOutputRetries: 1, RepoRoot: "."})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Valid"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want 2", len(llmClient.reqs))
+	}
+}
+
 func TestAppendNewFindingsDuplicateKeys(t *testing.T) {
 	base := nudgeFinding("Same", 1)
 	sameIDSameTitle := nudgeFinding(" same ", 2)
@@ -1482,14 +1542,23 @@ func nudgeFinding(title string, line int) model.Finding {
 		Body:            "body",
 		ConfidenceScore: 0.9,
 		Priority:        intPtr(2),
-		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
+		CodeLocation:    testLineCodeLocation("main.go", line),
 	}
 }
 
 func nudgeFindingInFile(title, file string, line int) model.Finding {
 	finding := nudgeFinding(title, line)
-	finding.CodeLocation.FilePath = file
+	finding.CodeLocation = testLineCodeLocation(file, line)
 	return finding
+}
+
+func testLineCodeLocation(file string, line int) model.CodeLocation {
+	return model.CodeLocation{
+		FilePath:  file,
+		LineRange: model.LineRange{Start: line, End: line, Count: 1},
+		Language:  "go",
+		Content:   fmt.Sprintf("line %d", line),
+	}
 }
 
 func findingTitles(findings []model.Finding) []string {
@@ -1511,9 +1580,32 @@ func (stubRetrieval) GetFile(context.Context, string, string) (*retrieval.FileCo
 }
 
 func (s stubRetrieval) FindLines(ctx context.Context, repoRoot, path, code string) (*retrieval.FindLinesResult, error) {
+	line := 1
+	if _, err := fmt.Sscanf(strings.TrimSpace(code), "line %d", &line); err == nil && line > 0 {
+		if path == "" {
+			path = "main.go"
+		}
+		return &retrieval.FindLinesResult{
+			Path:       path,
+			Code:       code,
+			MatchCount: 1,
+			Matches: []retrieval.FindLinesMatch{{
+				CodeLocation: retrieval.FindLinesLocation{
+					FilePath:  path,
+					LineRange: retrieval.FindLinesRange{Start: line, End: line, Count: 1},
+					Language:  "go",
+					Content:   code,
+				},
+			}},
+		}, nil
+	}
 	content, err := s.GetFile(ctx, repoRoot, path)
 	if err != nil {
 		return nil, err
+	}
+	content.Path = path
+	if content.Path == "" {
+		content.Path = "extra.go"
 	}
 	return retrieval.FindLinesIn(content, code), nil
 }
@@ -1792,7 +1884,7 @@ func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	if !strings.Contains(listing, "- `search` tool with a repo-relative `path` and a `query`") {
 		t.Fatalf("generated listing missing search tool: %q", listing)
 	}
-	if !strings.Contains(listing, "- `find_lines` tool with an exact `code` line or block and an optional repo-relative `path` to return line numbers and the matching code snippets") {
+	if !strings.Contains(listing, "- `find_lines` tool with an exact `code` line or block and an optional repo-relative `path` to return line numbers, counts, the matching code snippets and language") {
 		t.Fatalf("generated listing missing find_lines tool: %q", listing)
 	}
 }
@@ -3492,6 +3584,16 @@ func schemaFindingProperty(t *testing.T, schema []byte, property string) map[str
 		t.Fatalf("finding property %q missing: %#v", property, findingProps[property])
 	}
 	return out
+}
+
+func TestParseToolResultSummaryUsesNormalizedFindLinesCount(t *testing.T) {
+	result := `{"code":"\r\nfoo()\r\nbar()\r\n\r\n","match_count":1,"matches":[]}`
+
+	summary := parseToolResultSummary(result)
+
+	if summary.Lines != 2 {
+		t.Fatalf("lines = %d, want normalized find_lines code count 2", summary.Lines)
+	}
 }
 
 type blockingRetrieval struct {

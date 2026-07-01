@@ -1870,10 +1870,11 @@ func (a *app) writeInspectOutput(value any) error {
 					return err
 				}
 			}
-			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", match.Path, match.StartLine, match.EndLine, match.Language); err != nil {
+			loc := match.CodeLocation
+			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", loc.FilePath, loc.LineRange.Start, loc.LineRange.End, loc.Language); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintln(os.Stdout, match.Content); err != nil {
+			if _, err := fmt.Fprintln(os.Stdout, loc.Content); err != nil {
 				return err
 			}
 		}

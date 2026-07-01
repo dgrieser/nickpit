@@ -377,7 +377,7 @@ func TestLocalEngineFindLinesSearchesExplicitIgnoredFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.MatchCount != 1 || len(got.Matches) != 1 || got.Matches[0].Path != "ignored/tmp.go" {
+	if got.MatchCount != 1 || len(got.Matches) != 1 || got.Matches[0].CodeLocation.FilePath != "ignored/tmp.go" {
 		t.Fatalf("find_lines = %#v", got)
 	}
 }
@@ -401,7 +401,7 @@ func TestLocalEngineFindLinesLimitsMatches(t *testing.T) {
 		t.Fatalf("matches = %d/%d, want %d: %#v", got.MatchCount, len(got.Matches), maxFindLinesMatches, got)
 	}
 	last := got.Matches[len(got.Matches)-1]
-	if last.StartLine != maxFindLinesMatches || last.EndLine != maxFindLinesMatches {
+	if last.CodeLocation.LineRange.Start != maxFindLinesMatches || last.CodeLocation.LineRange.End != maxFindLinesMatches {
 		t.Fatalf("last match = %#v, want line %d", last, maxFindLinesMatches)
 	}
 }
@@ -411,11 +411,30 @@ func TestFindLinesInNilContent(t *testing.T) {
 	if got == nil {
 		t.Fatal("FindLinesIn returned nil")
 	}
-	if got.CodeLineCount != 1 {
-		t.Fatalf("code_line_count = %d, want 1", got.CodeLineCount)
+	if got.Code != " \nneedle\n " {
+		t.Fatalf("code = %q, want the specified code preserved", got.Code)
 	}
 	if got.Path != "" || got.MatchCount != 0 || len(got.Matches) != 0 {
 		t.Fatalf("FindLinesIn(nil) = %#v", got)
+	}
+}
+
+func TestFindLinesInNormalizesQueryBeforeMatching(t *testing.T) {
+	code := "\r\n    needle  \r\n"
+	got := FindLinesIn(&FileContent{
+		Path:     "pkg/a.go",
+		Content:  "first\n\tneedle\nlast\n",
+		Language: "go",
+	}, code)
+	if got.Code != code {
+		t.Fatalf("code = %q, want original query preserved", got.Code)
+	}
+	if got.MatchCount != 1 || len(got.Matches) != 1 {
+		t.Fatalf("matches = %d/%d, want one: %#v", got.MatchCount, len(got.Matches), got)
+	}
+	loc := got.Matches[0].CodeLocation
+	if loc.FilePath != "pkg/a.go" || loc.LineRange != (FindLinesRange{Start: 2, End: 2, Count: 1}) || loc.Content != "\tneedle" {
+		t.Fatalf("location = %+v, want exact line 2 match", loc)
 	}
 }
 

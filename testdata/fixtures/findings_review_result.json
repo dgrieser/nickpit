@@ -8,11 +8,29 @@
       "priority": 1,
       "code_location": {
         "file_path": "internal/llm/client.go",
-        "line_range": { "start": 120, "end": 124 }
+        "line_range": { "start": 120, "end": 124, "count": 5 },
+        "language": "go",
+        "content": "for attempt := 0; attempt < c.maxRetries; attempt++ {\n    go c.retry(attempt)\n}"
       },
       "suggestions": [
-        { "body": "Use `atomic.Int64` for the retry counter.", "line_range": { "start": 120, "end": 124 } },
-        { "body": "Alternatively hold `c.mu` across the read:\n```go\nc.mu.Lock()\nn := c.retries\nc.mu.Unlock()\n```", "line_range": { "start": 120, "end": 124 } }
+        {
+          "body": "Use `atomic.Int64` for the retry counter.",
+          "code_location": {
+            "file_path": "internal/llm/client.go",
+            "line_range": { "start": 120, "end": 124, "count": 5 },
+            "language": "go",
+            "content": "for attempt := 0; attempt < c.maxRetries; attempt++ {\n    go c.retry(attempt)\n}"
+          }
+        },
+        {
+          "body": "Alternatively hold `c.mu` across the read:\n```go\nc.mu.Lock()\nn := c.retries\nc.mu.Unlock()\n```",
+          "code_location": {
+            "file_path": "internal/llm/client.go",
+            "line_range": { "start": 120, "end": 124, "count": 5 },
+            "language": "go",
+            "content": "for attempt := 0; attempt < c.maxRetries; attempt++ {\n    go c.retry(attempt)\n}"
+          }
+        }
       ]
     },
     {
@@ -23,7 +41,9 @@
       "priority": 2,
       "code_location": {
         "file_path": "internal/review/review_file_unix.go",
-        "line_range": { "start": 42, "end": 42 }
+        "line_range": { "start": 42, "end": 42, "count": 1 },
+        "language": "go",
+        "content": "defer f.Close()"
       }
     }
   ],
