@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/llm"
@@ -192,10 +193,7 @@ func bestEndpointPair(firstMatches []retrieval.FindLinesMatch, firstIdx int, las
 			if firstLoc.FilePath != lastLoc.FilePath {
 				continue
 			}
-			start := firstLoc.LineRange.Start - (firstIdx - 1)
-			if start < 1 {
-				start = 1
-			}
+			start := max(firstLoc.LineRange.Start-(firstIdx-1), 1)
 			end := lastLoc.LineRange.Start + (lineCount - lastIdx)
 			if end < start {
 				continue
@@ -219,14 +217,8 @@ func (r *codeLocationRepairer) repairFromAnyContentLine(ctx context.Context, fie
 		if !ok {
 			continue
 		}
-		start := match.LineRange.Start - i
-		if start < 1 {
-			start = 1
-		}
-		end := match.LineRange.Start + (len(lines) - i - 1)
-		if end < start {
-			end = start
-		}
+		start := max(match.LineRange.Start-i, 1)
+		end := max(match.LineRange.Start+(len(lines)-i-1), start)
 		return r.applyFileSlice(ctx, field, loc, start, end, "content_line_offset")
 	}
 	return false
@@ -246,12 +238,8 @@ func (r *codeLocationRepairer) repairFromRange(ctx context.Context, field string
 	if start <= 0 && end <= 0 {
 		return false
 	}
-	if start <= 0 {
-		start = 1
-	}
-	if end > 0 && end < start {
-		end = start
-	}
+	start = max(start, 1)
+	end = max(end, start)
 	return r.applyFileSlice(ctx, field, loc, start, end, "line_range")
 }
 
@@ -341,9 +329,9 @@ func firstNonBlankLine(lines []string) (string, int, bool) {
 }
 
 func lastNonBlankLine(lines []string) (string, int, bool) {
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.TrimSpace(lines[i]) != "" {
-			return lines[i], i + 1, true
+	for i, line := range slices.Backward(lines) {
+		if strings.TrimSpace(line) != "" {
+			return line, i + 1, true
 		}
 	}
 	return "", 0, false

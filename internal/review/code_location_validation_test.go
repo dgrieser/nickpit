@@ -168,6 +168,35 @@ func TestRepairResponseCodeLocationsFillsContentFromLineRange(t *testing.T) {
 	}
 }
 
+func TestRepairResponseCodeLocationsDefaultsMissingEndToStart(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "line 1\nline 2\nline 3\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title:           "Fix run output",
+		Body:            "body",
+		ConfidenceScore: 0.85,
+		Priority:        intPtr(1),
+		CodeLocation: model.CodeLocation{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 2},
+		},
+	}}}
+
+	result := runCodeLocationRepair(t, engine, repoRoot, resp)
+
+	if result.Repaired != 1 || len(result.RetryFields) != 0 {
+		t.Fatalf("repair result = %+v, want range repair", result)
+	}
+	loc := resp.Findings[0].CodeLocation
+	if loc.LineRange != (model.LineRange{Start: 2, End: 2, Count: 1}) {
+		t.Fatalf("line range = %+v, want single line 2", loc.LineRange)
+	}
+	if loc.Content != "line 2" {
+		t.Fatalf("content = %q, want single-line content", loc.Content)
+	}
+}
+
 func TestRepairResponseCodeLocationsRequestsRetryForMissingAnchors(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/demo.go", "line 1\n")
