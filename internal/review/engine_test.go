@@ -562,7 +562,7 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 				Body:            "body",
 				ConfidenceScore: 0.9,
 				Priority:        intPtr(2),
-				CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
+				CodeLocation:    testLineCodeLocation("main.go", line),
 			})
 		}
 		return &llm.ReviewResponse{
@@ -1518,14 +1518,23 @@ func nudgeFinding(title string, line int) model.Finding {
 		Body:            "body",
 		ConfidenceScore: 0.9,
 		Priority:        intPtr(2),
-		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: line, End: line}},
+		CodeLocation:    testLineCodeLocation("main.go", line),
 	}
 }
 
 func nudgeFindingInFile(title, file string, line int) model.Finding {
 	finding := nudgeFinding(title, line)
-	finding.CodeLocation.FilePath = file
+	finding.CodeLocation = testLineCodeLocation(file, line)
 	return finding
+}
+
+func testLineCodeLocation(file string, line int) model.CodeLocation {
+	return model.CodeLocation{
+		FilePath:  file,
+		LineRange: model.LineRange{Start: line, End: line, Count: 1},
+		Language:  "go",
+		Content:   fmt.Sprintf("line %d", line),
+	}
 }
 
 func findingTitles(findings []model.Finding) []string {
@@ -1547,9 +1556,32 @@ func (stubRetrieval) GetFile(context.Context, string, string) (*retrieval.FileCo
 }
 
 func (s stubRetrieval) FindLines(ctx context.Context, repoRoot, path, code string) (*retrieval.FindLinesResult, error) {
+	line := 1
+	if _, err := fmt.Sscanf(strings.TrimSpace(code), "line %d", &line); err == nil && line > 0 {
+		if path == "" {
+			path = "main.go"
+		}
+		return &retrieval.FindLinesResult{
+			Path:       path,
+			Code:       code,
+			MatchCount: 1,
+			Matches: []retrieval.FindLinesMatch{{
+				CodeLocation: retrieval.FindLinesLocation{
+					FilePath:  path,
+					LineRange: retrieval.FindLinesRange{Start: line, End: line, Count: 1},
+					Language:  "go",
+					Content:   code,
+				},
+			}},
+		}, nil
+	}
 	content, err := s.GetFile(ctx, repoRoot, path)
 	if err != nil {
 		return nil, err
+	}
+	content.Path = path
+	if content.Path == "" {
+		content.Path = "extra.go"
 	}
 	return retrieval.FindLinesIn(content, code), nil
 }

@@ -94,6 +94,14 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		tools = reviewerToolDefinitions()
 	}
 	reviewSnippet := exampleSnippetFor(agent.schemaKind, req.DisableSuggestions)
+	maxOutputRetries := req.MaxOutputRetries
+	if maxOutputRetries == 0 {
+		maxOutputRetries = defaultMaxOutputRetries
+	}
+	codeLocationValidator := e.responseCodeLocationValidator(req.RepoRoot)
+	if !agent.hasTools {
+		codeLocationValidator = nil
+	}
 	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
 		AgentKind:                  agentLoopKind(agent.role),
@@ -115,7 +123,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		RepoRoot:                   req.RepoRoot,
 		MaxToolCalls:               req.MaxToolCalls,
 		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
-		MaxOutputRetries:           req.MaxOutputRetries,
+		MaxOutputRetries:           maxOutputRetries,
 		MaxReasoningSeconds:        req.MaxReasoningSeconds,
 		MaxReasoningLoopRepeats:    req.MaxReasoningLoopRepeats,
 		Section:                    sec,
@@ -124,7 +132,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		DisableSuggestions:         req.DisableSuggestions,
 		JSONRetryExampleSnippet:    reviewSnippet,
 		JSONRetryProgressAgentName: agent.name,
-		ValidateResponse:           agent.validateResponse,
+		ValidateResponse:           composeResponseValidators(agent.validateResponse, codeLocationValidator),
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			if !agent.hasTools {
 				return append([]llm.Message(nil), messages...), nil
@@ -196,7 +204,7 @@ func (s *reviewerSession) launchCollect(budget timeBudgetStarter, e *Engine, age
 func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineBudget timeBudgetStarter, mineEngine *Engine, mineReq model.ReviewRequest) error {
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
-	loopReq.ValidateResponse = s.responseValidator(nil)
+	loopReq.ValidateResponse = s.responseValidator(nil, codeLocationValidatorForReviewer(e, s.agent, req.RepoRoot))
 	if s.extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
 			s.launchCollect(mineBudget, mineEngine, agentName, iterIdx, reasoning, mineReq)
@@ -297,7 +305,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	loopReq.JSONRetryProgressAgentName = nudgeName
 	loopReq.Messages = nudged
 	existingFindings := append([]model.Finding(nil), s.totalFindings...)
-	loopReq.ValidateResponse = s.responseValidator(existingFindings)
+	loopReq.ValidateResponse = s.responseValidator(existingFindings, codeLocationValidatorForReviewer(e, s.agent, req.RepoRoot))
 	loopReq.ReasoningEffort = s.nudgeReasoningEffort
 	loopReq.State = s.nudgeState
 	loopReq.OnReasoningTrace = nil
@@ -421,12 +429,17 @@ func (s *reviewerSession) partialResult(req model.ReviewRequest) agentResult {
 	return result
 }
 
-func (s *reviewerSession) responseValidator(existing []model.Finding) func(*llm.ReviewResponse) *llm.InvalidResponseError {
-	if s.agent.validateResponse == nil && s.agent.reviewSessionValidateResponse == nil {
+func (s *reviewerSession) responseValidator(existing []model.Finding, codeLocationValidator func(*llm.ReviewResponse) *llm.InvalidResponseError) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+	if s.agent.validateResponse == nil && s.agent.reviewSessionValidateResponse == nil && codeLocationValidator == nil {
 		return nil
 	}
 	existing = append([]model.Finding(nil), existing...)
 	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
+		if codeLocationValidator != nil {
+			if invalid := codeLocationValidator(resp); invalid != nil {
+				return invalid
+			}
+		}
 		if s.agent.validateResponse != nil {
 			if invalid := s.agent.validateResponse(resp); invalid != nil {
 				return invalid
