@@ -47,6 +47,14 @@ type codeLocationRepairer struct {
 	retrySeen map[string]struct{}
 }
 
+type contentRepairStatus int
+
+const (
+	contentRepairNoMatch contentRepairStatus = iota
+	contentRepairRepaired
+	contentRepairInconclusive
+)
+
 func (r *codeLocationRepairer) repairResponse(ctx context.Context, resp *llm.ReviewResponse) codeLocationRepairResult {
 	var result codeLocationRepairResult
 	if r == nil || resp == nil {
@@ -95,8 +103,12 @@ func (r *codeLocationRepairer) repairLocation(ctx context.Context, field string,
 	}
 	original := *loc
 	if loc.Content != "" {
-		if r.repairFromContent(ctx, field, loc) {
+		switch r.repairFromContent(ctx, field, loc) {
+		case contentRepairRepaired:
 			return changedCodeLocation(original, *loc)
+		case contentRepairInconclusive:
+			r.addRetry(result, field+".content_or_line_range")
+			return 0
 		}
 	}
 	if hasAnyLineAnchor(loc.LineRange) {
@@ -108,35 +120,43 @@ func (r *codeLocationRepairer) repairLocation(ctx context.Context, field string,
 	return 0
 }
 
-func (r *codeLocationRepairer) repairFromContent(ctx context.Context, field string, loc *model.CodeLocation) bool {
-	if match, ok := r.findBestContentMatch(ctx, loc.FilePath, loc.Content, loc.LineRange); ok {
+func (r *codeLocationRepairer) repairFromContent(ctx context.Context, field string, loc *model.CodeLocation) contentRepairStatus {
+	match, status := r.findBestContentMatch(ctx, loc.FilePath, loc.Content, loc.LineRange)
+	if status == contentRepairRepaired {
 		r.applyFindLinesLocation(ctx, field, loc, match, "content")
-		return true
+		return contentRepairRepaired
+	}
+	if status == contentRepairInconclusive {
+		return contentRepairInconclusive
 	}
 	lines := splitNormalizedCodeLines(loc.Content)
 	if len(lines) == 0 {
-		return false
+		return contentRepairNoMatch
 	}
-	if r.repairFromFirstLastLines(ctx, field, loc, lines) {
-		return true
+	status = r.repairFromFirstLastLines(ctx, field, loc, lines)
+	if status == contentRepairRepaired {
+		return contentRepairRepaired
+	}
+	if status == contentRepairInconclusive {
+		return contentRepairInconclusive
 	}
 	return r.repairFromAnyContentLine(ctx, field, loc, lines)
 }
 
-func (r *codeLocationRepairer) findBestContentMatch(ctx context.Context, path, content string, hint model.LineRange) (retrieval.FindLinesLocation, bool) {
+func (r *codeLocationRepairer) findBestContentMatch(ctx context.Context, path, content string, hint model.LineRange) (retrieval.FindLinesLocation, contentRepairStatus) {
 	result, err := r.findLines(ctx, path, content)
 	if err != nil || result == nil || len(result.Matches) == 0 {
-		return retrieval.FindLinesLocation{}, false
+		return retrieval.FindLinesLocation{}, contentRepairNoMatch
 	}
 	return bestFindLinesMatch(result.Matches, hint)
 }
 
-func bestFindLinesMatch(matches []retrieval.FindLinesMatch, hint model.LineRange) (retrieval.FindLinesLocation, bool) {
+func bestFindLinesMatch(matches []retrieval.FindLinesMatch, hint model.LineRange) (retrieval.FindLinesLocation, contentRepairStatus) {
 	if len(matches) == 0 {
-		return retrieval.FindLinesLocation{}, false
+		return retrieval.FindLinesLocation{}, contentRepairNoMatch
 	}
 	if !hasAnyLineAnchor(hint) && len(matches) > 1 {
-		return retrieval.FindLinesLocation{}, false
+		return retrieval.FindLinesLocation{}, contentRepairInconclusive
 	}
 	best := matches[0].CodeLocation
 	bestScore := lineRangeScore(best.LineRange.Start, best.LineRange.End, hint)
@@ -154,7 +174,10 @@ func bestFindLinesMatch(matches []retrieval.FindLinesMatch, hint model.LineRange
 			tied = true
 		}
 	}
-	return best, !tied
+	if tied {
+		return retrieval.FindLinesLocation{}, contentRepairInconclusive
+	}
+	return best, contentRepairRepaired
 }
 
 func lineRangeScore(start, end int, hint model.LineRange) int {
@@ -171,28 +194,34 @@ func lineRangeScore(start, end int, hint model.LineRange) int {
 	return score
 }
 
-func (r *codeLocationRepairer) repairFromFirstLastLines(ctx context.Context, field string, loc *model.CodeLocation, lines []string) bool {
+func (r *codeLocationRepairer) repairFromFirstLastLines(ctx context.Context, field string, loc *model.CodeLocation, lines []string) contentRepairStatus {
 	first, firstIdx, ok := firstNonBlankLine(lines)
 	if !ok {
-		return false
+		return contentRepairNoMatch
 	}
 	last, lastIdx, ok := lastNonBlankLine(lines)
 	if !ok {
-		return false
+		return contentRepairNoMatch
+	}
+	if firstIdx == lastIdx {
+		return contentRepairNoMatch
 	}
 	firstMatches, err := r.findLines(ctx, loc.FilePath, first)
 	if err != nil || firstMatches == nil || len(firstMatches.Matches) == 0 {
-		return false
+		return contentRepairNoMatch
 	}
 	lastMatches, err := r.findLines(ctx, loc.FilePath, last)
 	if err != nil || lastMatches == nil || len(lastMatches.Matches) == 0 {
-		return false
+		return contentRepairNoMatch
 	}
 	start, end, ok := bestEndpointPair(firstMatches.Matches, firstIdx, lastMatches.Matches, lastIdx, len(lines), loc.LineRange)
 	if !ok {
-		return false
+		return contentRepairInconclusive
 	}
-	return r.applyFileSlice(ctx, field, loc, start, end, "content_endpoints")
+	if r.applyFileSlice(ctx, field, loc, start, end, "content_endpoints") {
+		return contentRepairRepaired
+	}
+	return contentRepairNoMatch
 }
 
 func bestEndpointPair(firstMatches []retrieval.FindLinesMatch, firstIdx int, lastMatches []retrieval.FindLinesMatch, lastIdx int, lineCount int, hint model.LineRange) (int, int, bool) {
@@ -226,7 +255,7 @@ func bestEndpointPair(firstMatches []retrieval.FindLinesMatch, firstIdx int, las
 	return bestStart, bestEnd, found && !tied
 }
 
-func (r *codeLocationRepairer) repairFromAnyContentLine(ctx context.Context, field string, loc *model.CodeLocation, lines []string) bool {
+func (r *codeLocationRepairer) repairFromAnyContentLine(ctx context.Context, field string, loc *model.CodeLocation, lines []string) contentRepairStatus {
 	lineMatches := make([]contentLineMatches, 0, len(lines))
 	nonBlank := 0
 	for i, line := range lines {
@@ -241,13 +270,19 @@ func (r *codeLocationRepairer) repairFromAnyContentLine(ctx context.Context, fie
 		lineMatches = append(lineMatches, contentLineMatches{Index: i, Matches: result.Matches})
 	}
 	if len(lineMatches) == 0 || (nonBlank > 1 && len(lineMatches) < 2) {
-		return false
+		if len(lineMatches) == 0 {
+			return contentRepairNoMatch
+		}
+		return contentRepairInconclusive
 	}
 	start, end, ok := bestCorroboratedLineOffset(lineMatches, len(lines), loc.LineRange)
 	if !ok {
-		return false
+		return contentRepairInconclusive
 	}
-	return r.applyFileSlice(ctx, field, loc, start, end, "content_line_offset")
+	if r.applyFileSlice(ctx, field, loc, start, end, "content_line_offset") {
+		return contentRepairRepaired
+	}
+	return contentRepairNoMatch
 }
 
 type contentLineMatches struct {

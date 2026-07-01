@@ -189,6 +189,35 @@ func TestRepairResponseCodeLocationsRetriesAmbiguousContentWithoutLineHint(t *te
 	}
 }
 
+func TestRepairResponseCodeLocationsDoesNotEndpointPairSingleLineSnippet(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "return err\nline 2\nline 3\nreturn err\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title:           "Fix run output",
+		Body:            "body",
+		ConfidenceScore: 0.85,
+		Priority:        intPtr(1),
+		CodeLocation: model.CodeLocation{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 1, End: 4, Count: 4},
+			Content:   "return err",
+		},
+	}}}
+
+	result := runCodeLocationRepair(t, engine, repoRoot, resp)
+
+	if result.Repaired != 0 {
+		t.Fatalf("repaired = %d, want 0", result.Repaired)
+	}
+	if !slices.Contains(result.RetryFields, "findings[0].code_location.content_or_line_range") {
+		t.Fatalf("retry fields = %v, want code_location retry", result.RetryFields)
+	}
+	if got := resp.Findings[0].CodeLocation.LineRange; got != (model.LineRange{Start: 1, End: 4, Count: 4}) {
+		t.Fatalf("line range = %+v, want original range preserved", got)
+	}
+}
+
 func TestRepairResponseCodeLocationsFillsContentFromLineRange(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/demo.go", "line 1\nline 2\nline 3\n")
