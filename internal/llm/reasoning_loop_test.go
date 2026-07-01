@@ -3,6 +3,7 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -191,23 +192,115 @@ func TestReasoningLoopDetectorFuzzyDecisionCycle(t *testing.T) {
 		{"OpenSession", "RemoveSession", "Close"},
 		{"StartSession", "StopSession", "Close"},
 	}
-	for _, cycle := range cycles {
+	detectedAt := 0
+	for i, cycle := range cycles {
 		for _, line := range fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2]) {
 			d.onDelta(line + "\n")
 		}
 		if d.Detected() {
-			t.Fatal("fuzzy decision loop detected before allowed repeats were exhausted")
+			detectedAt = i + 1
+			break
 		}
 	}
-	for _, line := range fuzzyReasoningCycle("MakeSession", "ClearSession", "Close") {
-		d.onDelta(line + "\n")
+	if !d.Detected() {
+		for _, line := range fuzzyReasoningCycle("MakeSession", "ClearSession", "Close") {
+			d.onDelta(line + "\n")
+		}
 	}
 	if !d.Detected() {
 		t.Fatal("expected fuzzy decision loop")
 	}
+	if detectedAt > 0 && detectedAt >= len(cycles) {
+		t.Fatalf("fuzzy loop detected after %d cycles, want earlier than old long-window behavior", detectedAt)
+	}
 	err := d.MakeError()
 	if !strings.Contains(err.RepeatedContent, "Finding") {
 		t.Fatalf("repeated content missing finding: %q", err.RepeatedContent)
+	}
+}
+
+func TestReasoningLoopDetectorShortFuzzyDecisionCycleTriggersBeforeOldFloor(t *testing.T) {
+	d, _ := newTestReasoningLoopDetectorAtProgress(0.35)
+	lines := []string{"Initial analysis before compact fuzzy cycles begin."}
+	for _, cycle := range [][3]string{
+		{"AddSession", "DropSession", "Close"},
+		{"DropSession", "DropPod", "Close"},
+		{"CreateSession", "DeleteSession", "Close"},
+		{"OpenSession", "RemoveSession", "Close"},
+	} {
+		lines = append(lines, shortFuzzyReasoningCycle(cycle[0], cycle[1], cycle[2])...)
+	}
+	for i, line := range lines {
+		d.onDelta(line + "\n")
+		if d.Detected() {
+			if i+1 >= 168 {
+				t.Fatalf("short fuzzy loop detected after %d lines, want before old 168-line floor", i+1)
+			}
+			return
+		}
+	}
+	t.Fatal("expected short fuzzy loop")
+}
+
+func TestReasoningLoopDetectorSemanticOverthinkingLoop(t *testing.T) {
+	data, err := os.ReadFile("testdata/semantic_overthinking_excerpt.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, canceled := newTestReasoningLoopDetectorAtProgress(0.35)
+	d.onDelta(string(data))
+	if !d.Detected() {
+		t.Fatal("expected semantic overthinking loop")
+	}
+	if !*canceled {
+		t.Fatal("expected detector to cancel stream")
+	}
+	errResult := d.MakeError()
+	if !strings.Contains(errResult.RepeatedContent, "Actually, I should verify") {
+		t.Fatalf("repeated content missing reopened analysis: %q", errResult.RepeatedContent)
+	}
+}
+
+func TestReasoningLoopDetectorSensitivityStages(t *testing.T) {
+	lines := strings.Join(oneReopenOverthinkingCycle(), "\n") + "\n"
+
+	conservative, _ := newTestReasoningLoopDetectorAtProgress(0.10)
+	conservative.onDelta(lines)
+	if conservative.Detected() {
+		t.Fatal("conservative sensitivity should not detect a single reopened cycle")
+	}
+
+	balanced, _ := newTestReasoningLoopDetectorAtProgress(0.35)
+	balanced.onDelta(lines)
+	if balanced.Detected() {
+		t.Fatal("balanced sensitivity should not detect a single reopened cycle")
+	}
+
+	aggressive, _ := newTestReasoningLoopDetectorAtProgress(0.75)
+	aggressive.onDelta(lines)
+	if !aggressive.Detected() {
+		t.Fatal("aggressive sensitivity should detect a dense single reopened cycle")
+	}
+}
+
+func TestReasoningLoopDetectorIgnoresLinearReviewReasoning(t *testing.T) {
+	d, _ := newTestReasoningLoopDetectorAtProgress(0.75)
+	lines := []string{
+		"I need to verify the changed request path before deciding.",
+		"Looking at the handler shows the new branch validates the input first.",
+		"The storage layer receives a typed object and does not parse raw text.",
+		"The concurrency path uses the existing mutex and does not add shared state.",
+		"The error path wraps the lower-level error with enough context.",
+		"The tests cover the successful path and one validation failure.",
+		"The remaining uncovered branch is minor and not part of this finding.",
+		"The verdict is confirmed because the changed behavior is bounded.",
+		"Priority is low because the risk is limited to diagnostics.",
+		"The finding is ready with a concrete recommendation.",
+		"Therefore the review can finalize without more analysis.",
+	}
+	d.onDelta(strings.Join(lines, "\n") + "\n")
+	if d.Detected() {
+		t.Fatal("linear reasoning should not trigger semantic loop detection")
 	}
 }
 
@@ -224,32 +317,30 @@ func TestReasoningLoopDetectorIgnoresShortRepeatedHeadings(t *testing.T) {
 
 func TestReasoningLoopDetectorWaitsForCompletedLines(t *testing.T) {
 	d, _ := newTestReasoningLoopDetector()
-	cycleA := strings.Join(fuzzyReasoningCycle("AddSession", "DropSession", "Close"), "\n")
-	d.onDelta(cycleA + "\n")
-	for _, cycle := range [][3]string{
-		{"DropSession", "DropPod", "Close"},
-		{"CreateSession", "DeleteSession", "Close"},
-		{"OpenSession", "RemoveSession", "Close"},
-		{"StartSession", "StopSession", "Close"},
-	} {
-		d.onDelta(strings.Join(fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2]), "\n") + "\n")
+	for range 5 {
+		d.onDelta("same thought\n")
 	}
-	cycleB := strings.Join(fuzzyReasoningCycle("MakeSession", "ClearSession", "Close"), "\n")
-	d.onDelta(cycleB)
+	d.onDelta("same thought")
 	if d.Detected() {
-		t.Fatal("partial final line should not complete fuzzy loop")
+		t.Fatal("partial final line should not complete loop")
 	}
 	d.onDelta("\n")
 	if !d.Detected() {
-		t.Fatal("expected fuzzy loop after final newline")
+		t.Fatal("expected loop after final newline")
 	}
 }
 
 func newTestReasoningLoopDetector() (*reasoningLoopDetector, *bool) {
+	return newTestReasoningLoopDetectorAtProgress(0)
+}
+
+func newTestReasoningLoopDetectorAtProgress(progress float64) (*reasoningLoopDetector, *bool) {
 	canceled := false
-	d := newReasoningLoopDetector(func() {
+	d := newReasoningLoopDetectorWithProgress(func() {
 		canceled = true
-	}, 4)
+	}, 4, func() float64 {
+		return progress
+	})
 	return d, &canceled
 }
 
@@ -281,4 +372,34 @@ func fuzzyReasoningCycle(first, second, closer string) []string {
 		"The better solution is still to make the closed state explicit and avoid letting cleanup methods touch Redis after shutdown.",
 	}
 	return lines
+}
+
+func shortFuzzyReasoningCycle(first, second, closer string) []string {
+	return []string{
+		fmt.Sprintf("Actually, I need to verify whether `%s` and `%s` are in this patch before I finalize the finding.", first, second),
+		fmt.Sprintf("The main issue is that `%s` can race with concurrent lifecycle calls, but I need to separate new behavior from pre existing behavior.", closer),
+		"Let me formulate the finding with enough precision so the reviewer can act on it.",
+		fmt.Sprintf("**Finding: %s does not guard concurrent lifecycle calls**", closer),
+		fmt.Sprintf("The `%s` method closes shared state while `%s` and `%s` can still try to use it.", closer, first, second),
+		fmt.Sprintf("If these methods run after `%s` releases control, they can observe closed resources and return cleanup errors.", closer),
+		"**Priority: 2**",
+		fmt.Sprintf("**Suggestion**: Add an explicit closed flag and check it before `%s` or `%s` uses shared state.", first, second),
+	}
+}
+
+func oneReopenOverthinkingCycle() []string {
+	return []string{
+		"I need to verify the changed cache lifecycle before deciding.",
+		"Looking at the close path shows the shared resource is released after cancellation.",
+		"The main issue is whether concurrent calls can still enter after close starts.",
+		"**Finding: Close can race with concurrent lifecycle calls**",
+		"Priority is moderate because the failure only appears during shutdown.",
+		"Let me finalize the finding with a concrete recommendation.",
+		"Actually, I should verify the helper path before I submit this.",
+		"However, the helper path uses the same shared resource after close.",
+		"I need to check whether this is pre existing or introduced by the patch.",
+		"Looking at the new code confirms the changed close path introduced the ordering.",
+		"The verdict is confirmed because the patch changes the lifecycle boundary.",
+		"The finding is still ready and the fix remains an explicit closed guard.",
+	}
 }

@@ -259,13 +259,14 @@ type ReasoningBudgetExhaustedError struct {
 }
 
 type reasoningTimeoutController struct {
-	limit   time.Duration
-	cancel  context.CancelFunc
-	timer   *time.Timer
-	mu      sync.Mutex
-	expired bool
-	started bool
-	stopped bool
+	limit     time.Duration
+	cancel    context.CancelFunc
+	timer     *time.Timer
+	mu        sync.Mutex
+	expired   bool
+	started   bool
+	stopped   bool
+	startedAt time.Time
 }
 
 func (e *streamReadError) Error() string {
@@ -340,6 +341,7 @@ func (t *reasoningTimeoutController) Start() {
 		return
 	}
 	t.started = true
+	t.startedAt = time.Now()
 	t.timer = time.AfterFunc(t.limit, func() {
 		t.mu.Lock()
 		if t.stopped {
@@ -371,6 +373,25 @@ func (t *reasoningTimeoutController) Expired() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.expired
+}
+
+func (t *reasoningTimeoutController) Progress() float64 {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.started || t.limit <= 0 {
+		return 0
+	}
+	progress := float64(time.Since(t.startedAt)) / float64(t.limit)
+	if progress < 0 {
+		return 0
+	}
+	if progress > 1 {
+		return 1
+	}
+	return progress
 }
 
 func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
@@ -1331,11 +1352,13 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		streamCtx, slot := contextWithCaptureSlot(streamCtx)
+		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		var detector *reasoningLoopDetector
 		if maxReasoningLoopRepeats > 0 {
-			detector = newReasoningLoopDetector(streamCancel, maxReasoningLoopRepeats)
+			detector = newReasoningLoopDetectorWithProgress(streamCancel, maxReasoningLoopRepeats, func() float64 {
+				return timeout.Progress()
+			})
 		}
-		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		c.logf(ctx, "Sending LLM request: attempt=%d", attempt+1)
 
 		stream, err := c.sdkClient.CreateChatCompletionStream(streamCtx, payload)

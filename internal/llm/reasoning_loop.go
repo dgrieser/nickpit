@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync"
 	"unicode"
@@ -21,24 +22,16 @@ const (
 	// while swapping method names or rewording "after Close returns" into
 	// "after Close releases the mutex".
 	//
-	// The minimum token and shingle counts keep short repeated boilerplate from
-	// firing the detector. Repeated headings like "Priority: 2" and "Suggestion"
-	// are not enough signal.
-	loopFuzzyMinTokens         = 120
-	loopFuzzyMinUniqueShingles = 60
+	// Sensitivity increases as the reasoning stream consumes its time budget.
+	// These are intentionally constants, not config, so tuning does not expand
+	// the public profile surface.
+	loopSensitivityBalancedAt   = 0.30
+	loopSensitivityAggressiveAt = 0.70
 
 	// Shingles are contiguous token groups. Four-token shingles are long enough
 	// to represent phrasing, but short enough that small wording changes still
 	// leave overlap between repeated reasoning windows.
 	loopFuzzyShingleSize = 4
-
-	// Strict threshold triggers on very similar windows without extra evidence.
-	// Marker threshold is lower, but requires both windows to contain repeated
-	// review-decision markers such as findings, priorities, suggestions, or
-	// "actually/wait" reconsideration. This catches loop.log-style behavior
-	// while reducing false positives from normal long reasoning.
-	loopFuzzyMarkerThreshold = 0.68
-	loopFuzzyStrictThreshold = 0.82
 
 	// Repeated-rune detection catches degenerate streams like 96 consecutive
 	// newlines that never form meaningful repeated lines or fuzzy windows.
@@ -53,7 +46,30 @@ const liteLLMRepeatedChunkMarker = "The model is repeating the same chunk = "
 // is compared only with the immediately preceding same-sized window. Multiple
 // sizes let us catch both compact and longer decision cycles without searching
 // the whole history or comparing unrelated sections.
-var loopFuzzyWindowSizes = []int{24, 32, 48, 64}
+var loopFuzzyWindowSizes = []int{8, 12, 16, 24, 32, 48, 64}
+
+type loopSensitivity int
+
+const (
+	loopSensitivityConservative loopSensitivity = iota
+	loopSensitivityBalanced
+	loopSensitivityAggressive
+)
+
+type loopDetectorTuning struct {
+	fuzzyMinTokens         int
+	fuzzyMinUniqueShingles int
+	fuzzyMarkerThreshold   float64
+	fuzzyStrictThreshold   float64
+	fuzzySharedMarkers     int
+	fuzzyRequiredMatches   int
+	semanticWindowLines    int
+	semanticMinLines       int
+	semanticMinMarkers     int
+	semanticMinRoles       int
+	semanticRequiredReopen int
+	semanticAggressive     bool
+}
 
 // ReasoningLoopDetectedError is returned when the model's streaming reasoning
 // content repeats itself, indicating it has entered an infinite loop.
@@ -79,6 +95,7 @@ type reasoningLoopDetector struct {
 	mu                sync.Mutex
 	cancel            context.CancelFunc
 	maxRepeats        int
+	progress          func() float64
 	detected          bool
 	repeatedChunk     bool
 	loopStartContent  string
@@ -95,9 +112,14 @@ type reasoningLoopDetector struct {
 }
 
 func newReasoningLoopDetector(cancel context.CancelFunc, maxRepeats int) *reasoningLoopDetector {
+	return newReasoningLoopDetectorWithProgress(cancel, maxRepeats, nil)
+}
+
+func newReasoningLoopDetectorWithProgress(cancel context.CancelFunc, maxRepeats int, progress func() float64) *reasoningLoopDetector {
 	return &reasoningLoopDetector{
 		cancel:            cancel,
 		maxRepeats:        maxRepeats,
+		progress:          progress,
 		runeCounts:        make(map[rune]int, loopRepeatedRuneWindowSize),
 		fuzzyRepeats:      make(map[int]int, len(loopFuzzyWindowSizes)),
 		fuzzyLastMatchEnd: make(map[int]int, len(loopFuzzyWindowSizes)),
@@ -327,6 +349,9 @@ func (d *reasoningLoopDetector) checkLoopLocked() bool {
 		}
 	}
 
+	if d.checkSemanticOverthinkingLoopLocked(n) {
+		return true
+	}
 	return d.checkFuzzyLoopLocked(n)
 }
 
@@ -342,6 +367,7 @@ func hasRepeatedBlockSignal(lines []string) bool {
 }
 
 func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
+	tuning := d.tuning()
 	for _, k := range loopFuzzyWindowSizes {
 		if n < 2*k {
 			continue
@@ -354,7 +380,7 @@ func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
 		// be slower and would flag legitimate revisits to earlier topics.
 		prev := fuzzyReasoningWindow(d.lines[prevStart:recentStart])
 		recent := fuzzyReasoningWindow(d.lines[recentStart:])
-		if !prev.enoughSignal() || !recent.enoughSignal() {
+		if !prev.enoughSignal(tuning) || !recent.enoughSignal(tuning) {
 			d.fuzzyRepeats[k] = 0
 			continue
 		}
@@ -363,11 +389,11 @@ func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
 		// insensitive to repeated copies of the same phrase inside one window,
 		// which helps focus on breadth of overlap rather than raw length.
 		score := jaccardSimilarity(prev.shingles, recent.shingles)
-		if score >= loopFuzzyStrictThreshold || score >= loopFuzzyMarkerThreshold && shareDecisionMarkers(prev.markers, recent.markers) {
+		if score >= tuning.fuzzyStrictThreshold || score >= tuning.fuzzyMarkerThreshold && shareDecisionMarkers(prev.markers, recent.markers, tuning.fuzzySharedMarkers) {
 			if lastEnd := d.fuzzyLastMatchEnd[k]; lastEnd == 0 || n-lastEnd >= k {
 				d.fuzzyRepeats[k]++
 				d.fuzzyLastMatchEnd[k] = n
-				if d.fuzzyRepeats[k] > d.maxRepeats {
+				if d.fuzzyRepeats[k] >= tuning.fuzzyRequiredMatches {
 					d.trigger(strings.Join(d.lines[recentStart:], "\n"), prevStart-(d.maxRepeats*k))
 					return true
 				}
@@ -378,6 +404,71 @@ func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
 		d.fuzzyLastMatchEnd[k] = 0
 	}
 	return false
+}
+
+func (d *reasoningLoopDetector) tuning() loopDetectorTuning {
+	sensitivity := d.sensitivity()
+	maxRepeats := max(d.maxRepeats, 1)
+	switch sensitivity {
+	case loopSensitivityAggressive:
+		return loopDetectorTuning{
+			fuzzyMinTokens:         36,
+			fuzzyMinUniqueShingles: 20,
+			fuzzyMarkerThreshold:   0.46,
+			fuzzyStrictThreshold:   0.64,
+			fuzzySharedMarkers:     1,
+			fuzzyRequiredMatches:   2,
+			semanticWindowLines:    72,
+			semanticMinLines:       10,
+			semanticMinMarkers:     6,
+			semanticMinRoles:       3,
+			semanticRequiredReopen: 1,
+			semanticAggressive:     true,
+		}
+	case loopSensitivityBalanced:
+		return loopDetectorTuning{
+			fuzzyMinTokens:         48,
+			fuzzyMinUniqueShingles: 28,
+			fuzzyMarkerThreshold:   0.54,
+			fuzzyStrictThreshold:   0.72,
+			fuzzySharedMarkers:     2,
+			fuzzyRequiredMatches:   max(3, int(math.Ceil(float64(maxRepeats)*0.6))),
+			semanticWindowLines:    96,
+			semanticMinLines:       14,
+			semanticMinMarkers:     8,
+			semanticMinRoles:       3,
+			semanticRequiredReopen: 2,
+		}
+	default:
+		return loopDetectorTuning{
+			fuzzyMinTokens:         64,
+			fuzzyMinUniqueShingles: 36,
+			fuzzyMarkerThreshold:   0.62,
+			fuzzyStrictThreshold:   0.78,
+			fuzzySharedMarkers:     2,
+			fuzzyRequiredMatches:   maxRepeats + 1,
+			semanticWindowLines:    128,
+			semanticMinLines:       18,
+			semanticMinMarkers:     10,
+			semanticMinRoles:       4,
+			semanticRequiredReopen: 3,
+		}
+	}
+}
+
+func (d *reasoningLoopDetector) sensitivity() loopSensitivity {
+	if d.progress == nil {
+		return loopSensitivityConservative
+	}
+	progress := d.progress()
+	switch {
+	case progress >= loopSensitivityAggressiveAt:
+		return loopSensitivityAggressive
+	case progress >= loopSensitivityBalancedAt:
+		return loopSensitivityBalanced
+	default:
+		return loopSensitivityConservative
+	}
 }
 
 type fuzzyWindow struct {
@@ -392,8 +483,8 @@ type fuzzyWindow struct {
 	markers map[string]struct{}
 }
 
-func (w fuzzyWindow) enoughSignal() bool {
-	return len(w.tokens) >= loopFuzzyMinTokens && len(w.shingles) >= loopFuzzyMinUniqueShingles
+func (w fuzzyWindow) enoughSignal(tuning loopDetectorTuning) bool {
+	return len(w.tokens) >= tuning.fuzzyMinTokens && len(w.shingles) >= tuning.fuzzyMinUniqueShingles
 }
 
 func fuzzyReasoningWindow(lines []string) fuzzyWindow {
@@ -526,14 +617,172 @@ func decisionMarkers(s string) []string {
 
 // shareDecisionMarkers requires more than one shared marker so one repeated
 // word, such as "finding", cannot make a weak fuzzy match trigger by itself.
-func shareDecisionMarkers(a, b map[string]struct{}) bool {
+func shareDecisionMarkers(a, b map[string]struct{}, required int) bool {
 	shared := 0
 	for marker := range a {
 		if _, ok := b[marker]; ok {
 			shared++
 		}
 	}
-	return shared >= 2
+	return shared >= required
+}
+
+type semanticReasoningRole uint8
+
+const (
+	semanticRoleInspect semanticReasoningRole = 1 << iota
+	semanticRoleReconsider
+	semanticRoleDecision
+	semanticRoleClosure
+)
+
+func (d *reasoningLoopDetector) checkSemanticOverthinkingLoopLocked(n int) bool {
+	tuning := d.tuning()
+	start := max(0, n-tuning.semanticWindowLines)
+	stats := semanticOverthinkingStats{}
+	closed := false
+	closedLine := -1
+	lastReopenForClose := -1
+
+	for i := start; i < n; i++ {
+		roles := semanticRoles(d.lines[i])
+		if roles == 0 {
+			continue
+		}
+		stats.roleLines++
+		stats.markers += countSemanticRoles(roles)
+		stats.roles |= roles
+
+		if roles&semanticRoleClosure != 0 && roles&(semanticRoleInspect|semanticRoleReconsider) == 0 {
+			closed = true
+			closedLine = i
+		}
+		if closed && i > closedLine && roles&(semanticRoleInspect|semanticRoleReconsider) != 0 {
+			if lastReopenForClose < closedLine {
+				stats.reopens++
+				lastReopenForClose = i
+			}
+			closed = false
+		}
+	}
+
+	if stats.reopens < tuning.semanticRequiredReopen {
+		return false
+	}
+	if stats.roleLines < tuning.semanticMinLines || stats.markers < tuning.semanticMinMarkers {
+		return false
+	}
+	if countSemanticRoles(stats.roles) < tuning.semanticMinRoles {
+		return false
+	}
+	if tuning.semanticAggressive && stats.reopens == 1 {
+		required := semanticRoleInspect | semanticRoleReconsider | semanticRoleDecision | semanticRoleClosure
+		if stats.roles&required != required {
+			return false
+		}
+	}
+
+	d.trigger(strings.Join(d.lines[start:], "\n"), start)
+	return true
+}
+
+type semanticOverthinkingStats struct {
+	roleLines int
+	markers   int
+	reopens   int
+	roles     semanticReasoningRole
+}
+
+func semanticRoles(line string) semanticReasoningRole {
+	normalized := strings.Join(normalizeReasoningTokens(line), " ")
+	var roles semanticReasoningRole
+	if containsAnyReasoningPhrase(normalized, []string{
+		"let me check",
+		"let me look",
+		"look at",
+		"looking at",
+		"examine",
+		"analyze",
+		"verify",
+		"re read",
+		"re examine",
+		"check whether",
+		"check if",
+		"need to check",
+		"need to verify",
+		"should verify",
+		"should check",
+		"more carefully",
+	}) {
+		roles |= semanticRoleInspect
+	}
+	if containsAnyReasoningPhrase(normalized, []string{
+		"actually",
+		"wait",
+		"reconsider",
+		"overthinking",
+		"however",
+		"but",
+		"on second thought",
+		"question is whether",
+		"need to be careful",
+	}) {
+		roles |= semanticRoleReconsider
+	}
+	if containsAnyReasoningPhrase(normalized, []string{
+		"finding",
+		"verdict",
+		"confirmed",
+		"refuted",
+		"valid",
+		"invalid",
+		"priority",
+		"real issue",
+		"main issue",
+		"not a bug",
+		"test gap",
+		"functional problem",
+		"appropriate",
+	}) {
+		roles |= semanticRoleDecision
+	}
+	if containsAnyReasoningPhrase(normalized, []string{
+		"finalize",
+		"submit",
+		"conclude",
+		"therefore",
+		"so the",
+		"the finding is",
+		"the issue is",
+		"should report",
+		"do not see",
+		"no issue",
+		"no major",
+		"fix remains",
+	}) {
+		roles |= semanticRoleClosure
+	}
+	return roles
+}
+
+func containsAnyReasoningPhrase(normalized string, phrases []string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(normalized, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func countSemanticRoles(roles semanticReasoningRole) int {
+	count := 0
+	for roles != 0 {
+		if roles&1 == 1 {
+			count++
+		}
+		roles >>= 1
+	}
+	return count
 }
 
 func (d *reasoningLoopDetector) trigger(repeatedContent string, loopStartLine int) {
