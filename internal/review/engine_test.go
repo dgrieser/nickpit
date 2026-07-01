@@ -1411,14 +1411,13 @@ func TestRunAgent_NudgeErrorKeepsPriorFindingsAsPartial(t *testing.T) {
 	}
 }
 
-func TestRunAgent_CodeLocationRetryExhaustionUsesPartialResponse(t *testing.T) {
+func TestRunAgent_CodeLocationRepairKeepsResponseWithoutRetry(t *testing.T) {
 	valid := nudgeFinding("Valid", 1)
 	invalid := nudgeFinding("Invalid", 2)
 	invalid.CodeLocation.Content = "line 3"
 	llmClient := &scriptedLLM{
 		results: []scriptedLLMResult{
 			{resp: nudgeReviewResponse("first", 1, valid, invalid)},
-			{resp: nudgeReviewResponse("second", 1, valid, invalid)},
 		},
 	}
 	engine := nudgeTestEngine(llmClient)
@@ -1427,11 +1426,122 @@ func TestRunAgent_CodeLocationRetryExhaustionUsesPartialResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got, want := findingTitles(result.resp.Findings), []string{"Valid"}; !reflect.DeepEqual(got, want) {
+	if got, want := findingTitles(result.resp.Findings), []string{"Valid", "Invalid"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if got := result.resp.Findings[1].CodeLocation.LineRange; got != (model.LineRange{Start: 3, End: 3, Count: 1}) {
+		t.Fatalf("repaired range = %+v, want line 3", got)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("llm calls = %d, want no retry", len(llmClient.reqs))
+	}
+}
+
+func TestRunAgent_CodeLocationRepairRunsWithoutModelTools(t *testing.T) {
+	invalid := nudgeFinding("Invalid", 2)
+	invalid.CodeLocation.Content = "line 3"
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, invalid)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 1, RepoRoot: "."})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := result.resp.Findings[0].CodeLocation.LineRange; got != (model.LineRange{Start: 3, End: 3, Count: 1}) {
+		t.Fatalf("repaired range = %+v, want line 3", got)
+	}
+	if len(llmClient.reqs) != 1 {
+		t.Fatalf("llm calls = %d, want no retry", len(llmClient.reqs))
+	}
+}
+
+func TestRunAgent_CodeLocationMissingAnchorRetriesWithoutFindLinesGuidance(t *testing.T) {
+	missing := nudgeFinding("Missing", 1)
+	missing.CodeLocation.FilePath = ""
+	fixed := nudgeFinding("Fixed", 1)
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, missing)},
+			{resp: nudgeReviewResponse("second", 1, fixed)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 1, RepoRoot: "."})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Fixed"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("findings = %#v, want %#v", got, want)
 	}
 	if len(llmClient.reqs) != 2 {
-		t.Fatalf("llm calls = %d, want 2", len(llmClient.reqs))
+		t.Fatalf("llm calls = %d, want one retry", len(llmClient.reqs))
+	}
+	retryPrompt := joinedRequestContent(llmClient.reqs[1].Messages)
+	if strings.Contains(retryPrompt, "find_lines") {
+		t.Fatalf("no-tools code-location retry mentioned find_lines:\n%s", retryPrompt)
+	}
+	if !strings.Contains(retryPrompt, "file_path") || !strings.Contains(retryPrompt, "line_range") {
+		t.Fatalf("retry prompt = %q, want file_path and line_range guidance", retryPrompt)
+	}
+}
+
+func TestRunAgent_CodeLocationRetryConsumesOutputRetryBudget(t *testing.T) {
+	missing := nudgeFinding("Missing", 1)
+	missing.CodeLocation.FilePath = ""
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, missing)},
+			{resp: nudgeReviewResponse("duplicate", 1,
+				nudgeFindingInFile("A", "main.go", 1),
+				nudgeFindingInFile("B", "main.go", 2),
+			)},
+			{resp: nudgeReviewResponse("should not be requested", 1, nudgeFindingInFile("C", "main.go", 1))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), testingNudgeTestAgent(), model.ReviewRequest{MaxOutputRetries: 1, RepoRoot: "."})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want code-location retry to consume the only output retry", len(llmClient.reqs))
+	}
+	if result.run.Status != model.AgentRunStatusPartial {
+		t.Fatalf("run status = %q, want partial after duplicate validator cannot retry", result.run.Status)
+	}
+}
+
+func TestRunAgent_CodeLocationMissingAnchorRetryOnlyOnce(t *testing.T) {
+	first := nudgeFinding("First missing", 1)
+	first.CodeLocation.FilePath = ""
+	second := nudgeFinding("Second missing", 1)
+	second.CodeLocation.FilePath = ""
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("first", 1, first)},
+			{resp: nudgeReviewResponse("second", 1, second)},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 2, RepoRoot: "."})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"Second missing"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if got := result.resp.Findings[0].CodeLocation.FilePath; got != "" {
+		t.Fatalf("file_path = %q, want unrepaired empty path after one retry", got)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want exactly one retry", len(llmClient.reqs))
 	}
 }
 
@@ -1567,6 +1677,14 @@ func findingTitles(findings []model.Finding) []string {
 		titles = append(titles, finding.Title)
 	}
 	return titles
+}
+
+func joinedRequestContent(messages []llm.Message) string {
+	parts := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		parts = append(parts, msg.Content)
+	}
+	return strings.Join(parts, "\n")
 }
 
 type stubRetrieval struct{}

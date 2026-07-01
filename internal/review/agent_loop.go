@@ -48,6 +48,7 @@ type agentLoopRequest struct {
 	JSONRetryExampleSnippet           string
 	JSONRetryProgressAgentName        string
 	OnReasoningTrace                  func(agentName string, iterIdx int, reasoning string)
+	RepairResponse                    func(context.Context, *llm.ReviewResponse) codeLocationRepairResult
 	ValidateResponse                  func(*llm.ReviewResponse) *llm.InvalidResponseError
 }
 
@@ -67,6 +68,7 @@ type agentLoopState struct {
 	toolState              *toolRoundState
 	jsonRetries            int
 	jsonRepairWithoutTools bool
+	codeLocationRetried    bool
 	toolCalls              int
 	duplicateToolCalls     int
 	callNum                int
@@ -147,41 +149,67 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				req.OnReasoningTrace(req.AgentName, state.callNum, trace)
 			}
 		}
+		repairedFromPartial := false
 		if err != nil {
 			var invalidResp *llm.InvalidResponseError
-			if errors.As(err, &invalidResp) {
-				if outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
-					if invalidResp.ReasoningEffort != "" {
-						result.reasoningEffort = invalidResp.ReasoningEffort
-						llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+			if !errors.As(err, &invalidResp) {
+				return result, err
+			}
+			if partialResp, retryInvalid, handled := e.tryRepairPartialResponse(loopCtx, req, invalidResp); handled {
+				repairedFromPartial = true
+				if retryInvalid != nil {
+					if e.canRetryCodeLocation(state, req.MaxOutputRetries) {
+						if err := e.queueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq); err != nil {
+							return result, err
+						}
+						continue
 					}
-					if invalidResp.ToolsOmitted || state.jsonRepairWithoutTools {
-						state.jsonRepairWithoutTools = true
-						messages = noToolsHistory
-						llmReq.Tools = nil
-						llmReq.ParallelToolCalls = false
-					}
-					state.jsonRetries++
-					e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
-					if strings.TrimSpace(invalidResp.RawContent) != "" {
-						messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
-					}
-					feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
-					if err != nil {
-						return result, err
-					}
-					messages = append(messages, llm.Message{Role: "user", Content: feedback})
-					syntheticFollowup = nil
-					continue
+					e.logf(loopCtx, "Code location repair needed retry but retry budget is exhausted; using partial parsed response: missing=%v", retryInvalid.MissingFields)
 				}
-				if invalidResp.PartialResponse != nil {
-					e.logf(loopCtx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
-					resp = invalidResp.PartialResponse
-				} else {
+				resp = partialResp
+				err = nil
+			}
+			if err != nil && outputRetriesRemaining(state.jsonRetries, req.MaxOutputRetries) {
+				if invalidResp.ReasoningEffort != "" {
+					result.reasoningEffort = invalidResp.ReasoningEffort
+					llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+				}
+				if invalidResp.ToolsOmitted || state.jsonRepairWithoutTools {
+					state.jsonRepairWithoutTools = true
+					messages = noToolsHistory
+					llmReq.Tools = nil
+					llmReq.ParallelToolCalls = false
+				}
+				state.jsonRetries++
+				e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
+				if strings.TrimSpace(invalidResp.RawContent) != "" {
+					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+				}
+				feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
+				if err != nil {
 					return result, err
 				}
-			} else {
+				messages = append(messages, llm.Message{Role: "user", Content: feedback})
+				syntheticFollowup = nil
+				continue
+			}
+			if err != nil && invalidResp.PartialResponse != nil {
+				e.logf(loopCtx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+				resp = invalidResp.PartialResponse
+			} else if err != nil {
 				return result, err
+			}
+		}
+
+		if !repairedFromPartial {
+			if retryInvalid := e.repairResponseOrRetry(loopCtx, req, resp); retryInvalid != nil {
+				if e.canRetryCodeLocation(state, req.MaxOutputRetries) {
+					if err := e.queueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq); err != nil {
+						return result, err
+					}
+					continue
+				}
+				e.logf(loopCtx, "Code location repair needed retry but retry budget is exhausted; keeping response as-is: missing=%v", retryInvalid.MissingFields)
 			}
 		}
 
@@ -248,7 +276,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 			}
-			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, finalMessages)
+			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, finalMessages, state)
 			if err != nil {
 				return result, err
 			}
@@ -271,7 +299,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		state.toolCalls += pendingToolCalls
 		if req.MaxDuplicateToolCalls > 0 && state.duplicateToolCalls >= req.MaxDuplicateToolCalls {
 			e.logf(loopCtx, "Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, state.duplicateToolCalls)
-			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, messages)
+			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, messages, state)
 			if err != nil {
 				return result, err
 			}
@@ -305,7 +333,90 @@ func agentLoopNoToolsMessages(req agentLoopRequest, messages []llm.Message) ([]l
 	return req.NoToolsMessages(messages)
 }
 
-func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, req agentLoopRequest, messages []llm.Message) (*llm.ReviewResponse, error) {
+func (e *Engine) tryRepairPartialResponse(ctx context.Context, req agentLoopRequest, invalidResp *llm.InvalidResponseError) (*llm.ReviewResponse, *llm.InvalidResponseError, bool) {
+	if invalidResp == nil || invalidResp.PartialResponse == nil || req.RepairResponse == nil {
+		return nil, nil, false
+	}
+	if !onlyCodeLocationMissingFields(invalidResp.MissingFields) {
+		return nil, nil, false
+	}
+	resp := invalidResp.PartialResponse
+	retryInvalid := e.repairResponseOrRetry(ctx, req, resp)
+	if retryInvalid == nil {
+		e.logf(ctx, "Code location repair accepted partial parsed response: missing=%v", invalidResp.MissingFields)
+	}
+	return resp, retryInvalid, true
+}
+
+func onlyCodeLocationMissingFields(fields []string) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	for _, field := range fields {
+		if !strings.Contains(field, "code_location") {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) repairResponseOrRetry(ctx context.Context, req agentLoopRequest, resp *llm.ReviewResponse) *llm.InvalidResponseError {
+	if req.RepairResponse == nil || resp == nil {
+		return nil
+	}
+	result := req.RepairResponse(ctx, resp)
+	if len(result.RetryFields) == 0 {
+		return nil
+	}
+	raw := ""
+	reasoningEffort := ""
+	if resp != nil {
+		raw = resp.RawResponse
+		reasoningEffort = resp.ReasoningEffort
+	}
+	return &llm.InvalidResponseError{
+		RawContent:            raw,
+		Reason:                "code_location needs file_path plus content or line_range",
+		MissingFields:         result.RetryFields,
+		ReasoningEffort:       reasoningEffort,
+		ValidationFailure:     true,
+		RetryGuidanceTemplate: "",
+		PartialResponse:       resp,
+	}
+}
+
+func (e *Engine) canRetryCodeLocation(state *agentLoopState, maxRetries int) bool {
+	if state == nil || state.codeLocationRetried {
+		return false
+	}
+	return outputRetriesRemaining(state.jsonRetries, maxRetries)
+}
+
+func (e *Engine) queueCodeLocationRetry(ctx context.Context, req agentLoopRequest, state *agentLoopState, invalidResp *llm.InvalidResponseError, messages *[]llm.Message, syntheticFollowup **llm.Message, llmReq *llm.ReviewRequest) error {
+	if state == nil || invalidResp == nil || messages == nil {
+		return nil
+	}
+	if invalidResp.ReasoningEffort != "" && llmReq != nil {
+		llmReq.ReasoningEffort = invalidResp.ReasoningEffort
+	}
+	state.codeLocationRetried = true
+	state.jsonRetries++
+	e.logJSONRetry(ctx, req, state.jsonRetries, invalidResp)
+	if strings.TrimSpace(invalidResp.RawContent) != "" {
+		*messages = append(*messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+	}
+	feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
+	if err != nil {
+		return err
+	}
+	*messages = append(*messages, llm.Message{Role: "user", Content: feedback})
+	if syntheticFollowup != nil {
+		*syntheticFollowup = nil
+	}
+	return nil
+}
+
+func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, req agentLoopRequest, messages []llm.Message, state *agentLoopState) (*llm.ReviewResponse, error) {
 	noToolsReq := *llmReq
 	noToolsReq.Tools = nil
 	noToolsReq.ParallelToolCalls = false
@@ -316,7 +427,7 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 		}
 		noToolsReq.Messages = finalMessages
 	}
-	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.DisableSuggestions, req.MaxOutputRetries, req.Section)
+	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.DisableSuggestions, req.MaxOutputRetries, req.Section, req, state)
 }
 
 func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {
