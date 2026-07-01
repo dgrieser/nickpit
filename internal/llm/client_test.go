@@ -3807,7 +3807,7 @@ func TestParseReviewResponseSalvagesLegacySuggestionLineRangeAsInvalid(t *testin
 	if resp == nil || len(resp.Findings) != 1 || len(resp.Findings[0].Suggestions) != 1 {
 		t.Fatalf("resp = %+v, want salvaged suggestion", resp)
 	}
-	if got := resp.Findings[0].Suggestions[0].LineRange; got != (model.LineRange{Start: 7, End: 9}) {
+	if got := resp.Findings[0].Suggestions[0].LineRange; got != (model.LineRange{Start: 7, End: 9, Count: 3}) {
 		t.Fatalf("line range = %+v, want salvaged legacy range", got)
 	}
 	if !slices.Contains(invalid.MissingFields, "findings[0].suggestions[0].code_location") {
@@ -3817,8 +3817,7 @@ func TestParseReviewResponseSalvagesLegacySuggestionLineRangeAsInvalid(t *testin
 
 func TestNormalizeSuggestionCodeLocationsDefaultsMissingFilePath(t *testing.T) {
 	suggestions := []model.Suggestion{{
-		Body:      "fix",
-		LineRange: model.LineRange{Start: 7, End: 9, Count: 3},
+		Body: "fix",
 	}}
 	fallback := model.CodeLocation{
 		FilePath:  "f.go",

@@ -119,10 +119,10 @@ func (v *codeLocationValidator) validateLocation(issues []codeLocationValidation
 			matchLoc.LineRange.Start == loc.LineRange.Start &&
 			matchLoc.LineRange.End == loc.LineRange.End &&
 			matchLoc.LineRange.Count == loc.LineRange.Count {
-			if matchLoc.Content != loc.Content {
+			if normalizeValidationContent(matchLoc.Content) != normalizeValidationContent(loc.Content) {
 				return append(issues, codeLocationValidationIssue{Field: field, Reason: "content differs from the find_lines match at the exact line range"})
 			}
-			if loc.Language != "" && matchLoc.Language != "" && loc.Language != matchLoc.Language {
+			if loc.Language != "" && matchLoc.Language != "" && !strings.EqualFold(loc.Language, matchLoc.Language) {
 				return append(issues, codeLocationValidationIssue{Field: field, Reason: "language differs from the find_lines match"})
 			}
 			return issues
@@ -132,6 +132,11 @@ func (v *codeLocationValidator) validateLocation(issues []codeLocationValidation
 		Field:  field,
 		Reason: fmt.Sprintf("content was found by find_lines, but not at %s:%d-%d", loc.FilePath, loc.LineRange.Start, loc.LineRange.End),
 	})
+}
+
+func normalizeValidationContent(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	return strings.ReplaceAll(content, "\r", "\n")
 }
 
 func (v *codeLocationValidator) findLines(path, code string) (*retrieval.FindLinesResult, error) {

@@ -432,6 +432,9 @@ func (r *LineRange) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*r = LineRange(parsed)
+	if r.Count == 0 {
+		r.Count = r.EffectiveCount()
+	}
 	return nil
 }
 

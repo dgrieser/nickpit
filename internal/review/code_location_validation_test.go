@@ -46,6 +46,31 @@ func TestValidateResponseCodeLocationsAcceptsExactFindLinesLocations(t *testing.
 	}
 }
 
+func TestValidateResponseCodeLocationsNormalizesContentAndLanguage(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tfmt.Println(\"run\")\n}\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+
+	resp := &llm.ReviewResponse{
+		Findings: []model.Finding{{
+			Title:           "Fix run output",
+			Body:            "body",
+			ConfidenceScore: 0.85,
+			Priority:        intPtr(1),
+			CodeLocation: model.CodeLocation{
+				FilePath:  "pkg/demo.go",
+				LineRange: model.LineRange{Start: 3, End: 5, Count: 3},
+				Language:  "Go",
+				Content:   "func Run() {\r\n\tfmt.Println(\"run\")\r\n}",
+			},
+		}},
+	}
+
+	if invalid := engine.validateResponseCodeLocations(context.Background(), repoRoot, resp); invalid != nil {
+		t.Fatalf("validateResponseCodeLocations returned %v, want nil", invalid)
+	}
+}
+
 func TestValidateResponseCodeLocationsRejectsWrongFindingLine(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tfmt.Println(\"run\")\n}\n")

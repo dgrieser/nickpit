@@ -2223,8 +2223,12 @@ func normalizeSuggestionCodeLocations(suggestions []model.Suggestion, fallback m
 		if loc.FilePath == "" {
 			loc.FilePath = fallback.FilePath
 		}
-		if loc.LineRange == (model.LineRange{}) && suggestions[i].LineRange != (model.LineRange{}) {
-			loc.LineRange = suggestions[i].LineRange
+		if loc.LineRange == (model.LineRange{}) {
+			if suggestions[i].LineRange != (model.LineRange{}) {
+				loc.LineRange = suggestions[i].LineRange
+			} else {
+				loc.LineRange = fallback.LineRange
+			}
 		}
 		if loc.Language == "" && loc.FilePath == fallback.FilePath {
 			loc.Language = fallback.Language

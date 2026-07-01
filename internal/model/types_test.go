@@ -217,9 +217,19 @@ func TestSuggestionUnmarshalSalvagesLegacyLineRangeObject(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"body":"fix","line_range":{"start":3,"end":5}}`), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	want := Suggestion{Body: "fix", LineRange: LineRange{Start: 3, End: 5}}
+	want := Suggestion{Body: "fix", LineRange: LineRange{Start: 3, End: 5, Count: 3}}
 	if got != want {
 		t.Fatalf("suggestion = %+v, want %+v", got, want)
+	}
+}
+
+func TestLineRangeUnmarshalPopulatesMissingCount(t *testing.T) {
+	var got LineRange
+	if err := json.Unmarshal([]byte(`{"start":3,"end":5}`), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != (LineRange{Start: 3, End: 5, Count: 3}) {
+		t.Fatalf("line range = %+v, want effective count", got)
 	}
 }
 
