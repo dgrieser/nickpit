@@ -3530,6 +3530,16 @@ func schemaFindingProperty(t *testing.T, schema []byte, property string) map[str
 	return out
 }
 
+func TestParseToolResultSummaryUsesNormalizedFindLinesCount(t *testing.T) {
+	result := `{"code":"\r\nfoo()\r\nbar()\r\n\r\n","match_count":1,"matches":[]}`
+
+	summary := parseToolResultSummary(result)
+
+	if summary.Lines != 2 {
+		t.Fatalf("lines = %d, want normalized find_lines code count 2", summary.Lines)
+	}
+}
+
 type blockingRetrieval struct {
 	started chan string
 	release chan struct{}

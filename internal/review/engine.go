@@ -2537,7 +2537,7 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.Files = len(distinct)
 	}
 	if code, ok := payload["code"].(string); ok && code != "" {
-		summary.Lines = lineCount(code)
+		summary.Lines = retrieval.FindLinesCount(code)
 	}
 	if root, ok := payload["root"].(map[string]any); ok {
 		summary.Files = countCallHierarchyFiles(root)
