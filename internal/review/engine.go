@@ -236,12 +236,13 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		resp, err := e.loggedReview(ctx, llmReq, sec)
 		if err == nil {
 			if retryInvalid := e.repairResponseOrRetry(ctx, loopReq, resp); retryInvalid != nil {
-				if e.canRetryCodeLocation(state, maxOutputRetries) && outputRetriesRemaining(attempt, maxOutputRetries) {
-					retryMessages := append([]llm.Message(nil), llmReq.Messages...)
-					var synthetic *llm.Message
-					if err := e.queueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq); err != nil {
-						return nil, err
-					}
+				retryMessages := append([]llm.Message(nil), llmReq.Messages...)
+				var synthetic *llm.Message
+				queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+				if err != nil {
+					return nil, err
+				}
+				if queued {
 					llmReq.Messages = retryMessages
 					continue
 				}
@@ -256,12 +257,13 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		if errors.As(err, &invalidResp) {
 			if partialResp, retryInvalid, handled := e.tryRepairPartialResponse(ctx, loopReq, invalidResp); handled {
 				if retryInvalid != nil {
-					if e.canRetryCodeLocation(state, maxOutputRetries) && outputRetriesRemaining(attempt, maxOutputRetries) {
-						retryMessages := append([]llm.Message(nil), llmReq.Messages...)
-						var synthetic *llm.Message
-						if err := e.queueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq); err != nil {
-							return nil, err
-						}
+					retryMessages := append([]llm.Message(nil), llmReq.Messages...)
+					var synthetic *llm.Message
+					queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+					if err != nil {
+						return nil, err
+					}
+					if queued {
 						llmReq.Messages = retryMessages
 						continue
 					}

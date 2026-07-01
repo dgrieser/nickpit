@@ -158,10 +158,11 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			if partialResp, retryInvalid, handled := e.tryRepairPartialResponse(loopCtx, req, invalidResp); handled {
 				repairedFromPartial = true
 				if retryInvalid != nil {
-					if e.canRetryCodeLocation(state, req.MaxOutputRetries) {
-						if err := e.queueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq); err != nil {
-							return result, err
-						}
+					queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true)
+					if err != nil {
+						return result, err
+					}
+					if queued {
 						continue
 					}
 					e.logf(loopCtx, "Code location repair needed retry but retry budget is exhausted; using partial parsed response: missing=%v", retryInvalid.MissingFields)
@@ -203,10 +204,11 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 
 		if !repairedFromPartial {
 			if retryInvalid := e.repairResponseOrRetry(loopCtx, req, resp); retryInvalid != nil {
-				if e.canRetryCodeLocation(state, req.MaxOutputRetries) {
-					if err := e.queueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq); err != nil {
-						return result, err
-					}
+				queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true)
+				if err != nil {
+					return result, err
+				}
+				if queued {
 					continue
 				}
 				e.logf(loopCtx, "Code location repair needed retry but retry budget is exhausted; keeping response as-is: missing=%v", retryInvalid.MissingFields)
@@ -368,17 +370,11 @@ func (e *Engine) repairResponseOrRetry(ctx context.Context, req agentLoopRequest
 	if len(result.RetryFields) == 0 {
 		return nil
 	}
-	raw := ""
-	reasoningEffort := ""
-	if resp != nil {
-		raw = resp.RawResponse
-		reasoningEffort = resp.ReasoningEffort
-	}
 	return &llm.InvalidResponseError{
-		RawContent:            raw,
+		RawContent:            resp.RawResponse,
 		Reason:                "code_location needs file_path plus content or line_range",
 		MissingFields:         result.RetryFields,
-		ReasoningEffort:       reasoningEffort,
+		ReasoningEffort:       resp.ReasoningEffort,
 		ValidationFailure:     true,
 		RetryGuidanceTemplate: "",
 		PartialResponse:       resp,
@@ -390,6 +386,16 @@ func (e *Engine) canRetryCodeLocation(state *agentLoopState, maxRetries int) boo
 		return false
 	}
 	return outputRetriesRemaining(state.jsonRetries, maxRetries)
+}
+
+func (e *Engine) tryQueueCodeLocationRetry(ctx context.Context, req agentLoopRequest, state *agentLoopState, invalidResp *llm.InvalidResponseError, messages *[]llm.Message, syntheticFollowup **llm.Message, llmReq *llm.ReviewRequest, retriesAvailable bool) (bool, error) {
+	if !retriesAvailable || !e.canRetryCodeLocation(state, req.MaxOutputRetries) {
+		return false, nil
+	}
+	if err := e.queueCodeLocationRetry(ctx, req, state, invalidResp, messages, syntheticFollowup, llmReq); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (e *Engine) queueCodeLocationRetry(ctx context.Context, req agentLoopRequest, state *agentLoopState, invalidResp *llm.InvalidResponseError, messages *[]llm.Message, syntheticFollowup **llm.Message, llmReq *llm.ReviewRequest) error {

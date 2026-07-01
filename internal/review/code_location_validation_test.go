@@ -110,7 +110,36 @@ func TestRepairResponseCodeLocationsUsesFirstAndLastContentLines(t *testing.T) {
 	}
 }
 
-func TestRepairResponseCodeLocationsUsesIndividualLineOffset(t *testing.T) {
+func TestRepairResponseCodeLocationsUsesCorroboratedLineOffset(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tactual := 1\n\treturn actual\n}\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title:           "Fix run output",
+		Body:            "body",
+		ConfidenceScore: 0.85,
+		Priority:        intPtr(1),
+		CodeLocation: model.CodeLocation{
+			FilePath: "pkg/demo.go",
+			Content:  "not first\n\tactual := 1\n\treturn actual\nnot last",
+		},
+	}}}
+
+	result := runCodeLocationRepair(t, engine, repoRoot, resp)
+
+	if result.Repaired != 1 || len(result.RetryFields) != 0 {
+		t.Fatalf("repair result = %+v, want line-offset repair", result)
+	}
+	loc := resp.Findings[0].CodeLocation
+	if loc.LineRange != (model.LineRange{Start: 3, End: 6, Count: 4}) {
+		t.Fatalf("line range = %+v, want inferred 3-6", loc.LineRange)
+	}
+	if loc.Content != "func Run() {\n\tactual := 1\n\treturn actual\n}" {
+		t.Fatalf("content = %q, want inferred file slice", loc.Content)
+	}
+}
+
+func TestRepairResponseCodeLocationsDoesNotInferRangeFromOneMatchedLine(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tactual := 1\n\treturn actual\n}\n")
 	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
@@ -127,15 +156,36 @@ func TestRepairResponseCodeLocationsUsesIndividualLineOffset(t *testing.T) {
 
 	result := runCodeLocationRepair(t, engine, repoRoot, resp)
 
-	if result.Repaired != 1 || len(result.RetryFields) != 0 {
-		t.Fatalf("repair result = %+v, want line-offset repair", result)
+	if result.Repaired != 0 {
+		t.Fatalf("repaired = %d, want 0", result.Repaired)
 	}
-	loc := resp.Findings[0].CodeLocation
-	if loc.LineRange != (model.LineRange{Start: 4, End: 6, Count: 3}) {
-		t.Fatalf("line range = %+v, want inferred 4-6", loc.LineRange)
+	if !slices.Contains(result.RetryFields, "findings[0].code_location.content_or_line_range") {
+		t.Fatalf("retry fields = %v, want code_location retry", result.RetryFields)
 	}
-	if loc.Content != "\tactual := 1\n\treturn actual\n}" {
-		t.Fatalf("content = %q, want inferred file slice", loc.Content)
+}
+
+func TestRepairResponseCodeLocationsRetriesAmbiguousContentWithoutLineHint(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "return err\nok()\nreturn err\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title:           "Fix run output",
+		Body:            "body",
+		ConfidenceScore: 0.85,
+		Priority:        intPtr(1),
+		CodeLocation: model.CodeLocation{
+			FilePath: "pkg/demo.go",
+			Content:  "return err",
+		},
+	}}}
+
+	result := runCodeLocationRepair(t, engine, repoRoot, resp)
+
+	if result.Repaired != 0 {
+		t.Fatalf("repaired = %d, want 0", result.Repaired)
+	}
+	if !slices.Contains(result.RetryFields, "findings[0].code_location.content_or_line_range") {
+		t.Fatalf("retry fields = %v, want code_location retry", result.RetryFields)
 	}
 }
 

@@ -345,7 +345,7 @@ func unescapeSearchQuery(query string) string {
 var errSearchLimitReached = fmt.Errorf("search result limit reached")
 
 func normalizeText(text string) string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = NormalizeLineEndings(text)
 	return strings.TrimSuffix(text, "\n")
 }
 
