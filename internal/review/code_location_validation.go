@@ -71,9 +71,10 @@ func (v *codeLocationValidator) validateResponse(resp *llm.ReviewResponse) *llm.
 		return nil
 	}
 	var issues []codeLocationValidationIssue
-	for i, finding := range resp.Findings {
+	for i := range resp.Findings {
+		finding := &resp.Findings[i]
 		prefix := fmt.Sprintf("findings[%d]", i)
-		issues = v.validateLocation(issues, prefix+".code_location", finding.CodeLocation)
+		issues = v.validateLocation(issues, prefix+".code_location", &finding.CodeLocation)
 		issues = v.validateSuggestions(issues, prefix+".suggestions", finding.Suggestions)
 		if finding.Finalization != nil {
 			issues = v.validateSuggestions(issues, prefix+".finalization.suggestions", finding.Finalization.Suggestions)
@@ -110,13 +111,16 @@ func (v *codeLocationValidator) validateResponse(resp *llm.ReviewResponse) *llm.
 }
 
 func (v *codeLocationValidator) validateSuggestions(issues []codeLocationValidationIssue, prefix string, suggestions []model.Suggestion) []codeLocationValidationIssue {
-	for i, suggestion := range suggestions {
-		issues = v.validateLocation(issues, fmt.Sprintf("%s[%d].code_location", prefix, i), suggestion.CodeLocation)
+	for i := range suggestions {
+		issues = v.validateLocation(issues, fmt.Sprintf("%s[%d].code_location", prefix, i), &suggestions[i].CodeLocation)
 	}
 	return issues
 }
 
-func (v *codeLocationValidator) validateLocation(issues []codeLocationValidationIssue, field string, loc model.CodeLocation) []codeLocationValidationIssue {
+func (v *codeLocationValidator) validateLocation(issues []codeLocationValidationIssue, field string, loc *model.CodeLocation) []codeLocationValidationIssue {
+	if loc == nil {
+		return append(issues, codeLocationValidationIssue{Field: field, Reason: "missing code_location"})
+	}
 	if strings.TrimSpace(loc.FilePath) == "" {
 		return append(issues, codeLocationValidationIssue{Field: field, Reason: "missing file_path"})
 	}
@@ -143,7 +147,7 @@ func (v *codeLocationValidator) validateLocation(issues []codeLocationValidation
 				return append(issues, codeLocationValidationIssue{Field: field, Reason: "content differs from the find_lines match at the exact line range"})
 			}
 			if loc.Language != "" && matchLoc.Language != "" && !strings.EqualFold(loc.Language, matchLoc.Language) {
-				return append(issues, codeLocationValidationIssue{Field: field, Reason: "language differs from the find_lines match"})
+				loc.Language = ""
 			}
 			return issues
 		}

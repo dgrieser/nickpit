@@ -71,6 +71,46 @@ func TestValidateResponseCodeLocationsNormalizesContentAndLanguage(t *testing.T)
 	}
 }
 
+func TestValidateResponseCodeLocationsClearsMismatchedLanguageWithoutRetry(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tfmt.Println(\"run\")\n}\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+
+	resp := &llm.ReviewResponse{
+		Findings: []model.Finding{{
+			Title:           "Fix run output",
+			Body:            "body",
+			ConfidenceScore: 0.85,
+			Priority:        intPtr(1),
+			CodeLocation: model.CodeLocation{
+				FilePath:  "pkg/demo.go",
+				LineRange: model.LineRange{Start: 3, End: 5, Count: 3},
+				Language:  "python",
+				Content:   "func Run() {\n\tfmt.Println(\"run\")\n}",
+			},
+			Suggestions: []model.Suggestion{{
+				Body: "replace print",
+				CodeLocation: model.CodeLocation{
+					FilePath:  "pkg/demo.go",
+					LineRange: model.LineRange{Start: 4, End: 4, Count: 1},
+					Language:  "ruby",
+					Content:   "\tfmt.Println(\"run\")",
+				},
+			}},
+		}},
+	}
+
+	if invalid := engine.validateResponseCodeLocations(context.Background(), repoRoot, resp); invalid != nil {
+		t.Fatalf("validateResponseCodeLocations returned %v, want nil", invalid)
+	}
+	if got := resp.Findings[0].CodeLocation.Language; got != "" {
+		t.Fatalf("finding language = %q, want empty", got)
+	}
+	if got := resp.Findings[0].Suggestions[0].CodeLocation.Language; got != "" {
+		t.Fatalf("suggestion language = %q, want empty", got)
+	}
+}
+
 func TestValidateResponseCodeLocationsRejectsWrongFindingLine(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() {\n\tfmt.Println(\"run\")\n}\n")
