@@ -106,15 +106,21 @@ func mostCriticalPriority(a, b *int) *int {
 // ranges so they cannot drag Start to 0.
 func extendRange(a, b model.LineRange) model.LineRange {
 	if (a == model.LineRange{}) {
-		return b
+		return lineRangeWithEffectiveCount(b)
 	}
 	if (b == model.LineRange{}) {
-		return a
+		return lineRangeWithEffectiveCount(a)
 	}
-	return model.LineRange{
+	out := model.LineRange{
 		Start: min(a.Start, b.Start),
 		End:   max(a.End, b.End),
 	}
+	return lineRangeWithEffectiveCount(out)
+}
+
+func lineRangeWithEffectiveCount(r model.LineRange) model.LineRange {
+	r.Count = r.EffectiveCount()
+	return r
 }
 
 // mergeVerifications follows the prompt-stated rules: verdict and remarks

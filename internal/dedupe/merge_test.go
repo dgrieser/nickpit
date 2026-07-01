@@ -43,12 +43,12 @@ func TestMergeFindingsExtendsRange(t *testing.T) {
 	b := finding("B", "short", "a.sh", 8, 11)
 	b.ConfidenceScore = 0.5
 
-	if got := MergeFindings(a, b).CodeLocation.LineRange; got != (model.LineRange{Start: 8, End: 12}) {
+	if got := MergeFindings(a, b).CodeLocation.LineRange; got != (model.LineRange{Start: 8, End: 12, Count: 5}) {
 		t.Fatalf("range = %+v, want union 8-12", got)
 	}
 
 	b.CodeLocation.LineRange = model.LineRange{}
-	if got := MergeFindings(a, b).CodeLocation.LineRange; got != (model.LineRange{Start: 10, End: 12}) {
+	if got := MergeFindings(a, b).CodeLocation.LineRange; got != (model.LineRange{Start: 10, End: 12, Count: 3}) {
 		t.Fatalf("range = %+v, want base range when other side unknown", got)
 	}
 }
@@ -203,7 +203,7 @@ func TestFoldCluster(t *testing.T) {
 	if out.ID != "high" {
 		t.Fatalf("base = %s, want highest-confidence finding", out.ID)
 	}
-	if out.CodeLocation.LineRange != (model.LineRange{Start: 1, End: 6}) {
+	if out.CodeLocation.LineRange != (model.LineRange{Start: 1, End: 6, Count: 6}) {
 		t.Fatalf("range = %+v, want union 1-6 across all members", out.CodeLocation.LineRange)
 	}
 	want := 1 - (1-0.8)*(1-0.5)*(1-0.3)

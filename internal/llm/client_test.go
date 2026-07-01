@@ -3840,6 +3840,34 @@ func TestNormalizeSuggestionCodeLocationsDefaultsMissingFilePath(t *testing.T) {
 	}
 }
 
+func TestNormalizeSuggestionCodeLocationsDoesNotBorrowFindingAnchorForDifferentFile(t *testing.T) {
+	suggestions := []model.Suggestion{{
+		Body: "fix",
+		CodeLocation: model.CodeLocation{
+			FilePath: "other.go",
+		},
+	}}
+	fallback := model.CodeLocation{
+		FilePath:  "f.go",
+		LineRange: model.LineRange{Start: 7, End: 9, Count: 3},
+		Language:  "go",
+		Content:   "old code",
+	}
+
+	normalizeSuggestionCodeLocations(suggestions, fallback)
+
+	got := suggestions[0]
+	if got.CodeLocation.FilePath != "other.go" {
+		t.Fatalf("suggestion file_path = %q, want original path", got.CodeLocation.FilePath)
+	}
+	if got.CodeLocation.LineRange != (model.LineRange{}) || got.LineRange != (model.LineRange{}) {
+		t.Fatalf("line ranges = code_location %+v legacy %+v, want empty", got.CodeLocation.LineRange, got.LineRange)
+	}
+	if got.CodeLocation.Language != "" || got.CodeLocation.Content != "" {
+		t.Fatalf("code location = %+v, want no fallback language/content", got.CodeLocation)
+	}
+}
+
 func TestParseReviewResponseMergesMultipleBlocks(t *testing.T) {
 	content := "First block:\n```json\n" +
 		`{"findings":[{"title":"F1","body":"b1","confidence_score":0.5,"priority":1,"code_location":{"file_path":"a.go","line_range":{"start":1,"end":2}}}],"overall_correctness":"patch is correct","overall_explanation":"e1","overall_confidence_score":0.5}` +
