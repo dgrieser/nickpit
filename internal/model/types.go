@@ -431,7 +431,7 @@ func (r *LineRange) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return err
 	}
-	*r = LineRange{Start: parsed.Start, End: parsed.End, Count: parsed.Count}
+	*r = LineRange(parsed)
 	return nil
 }
 

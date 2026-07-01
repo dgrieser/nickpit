@@ -1828,7 +1828,7 @@ func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	if !strings.Contains(listing, "- `search` tool with a repo-relative `path` and a `query`") {
 		t.Fatalf("generated listing missing search tool: %q", listing)
 	}
-	if !strings.Contains(listing, "- `find_lines` tool with an exact `code` line or block and an optional repo-relative `path` to return line numbers and the matching code snippets") {
+	if !strings.Contains(listing, "- `find_lines` tool with an exact `code` line or block and an optional repo-relative `path` to return line numbers, counts, the matching code snippets and language") {
 		t.Fatalf("generated listing missing find_lines tool: %q", listing)
 	}
 }
