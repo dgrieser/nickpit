@@ -64,11 +64,11 @@ func matchFindLinesLimit(relPath, content, code string, maxMatches int) []FindLi
 	matches := make([]FindLinesMatch, 0)
 	// Leading/trailing whitespace on each line is ignored, so a snippet matches
 	// regardless of how it is indented in the file.
-	codeLines := trimFindLines(splitFindLines(NormalizeFindLinesCode(code)))
+	codeLines := trimFindLines(SplitFindLines(NormalizeFindLinesCode(code)))
 	if len(codeLines) == 0 || allBlank(codeLines) {
 		return matches
 	}
-	rawFileLines := splitFindLines(normalizeFindLinesContent(content))
+	rawFileLines := SplitFindLines(normalizeFindLinesContent(content))
 	fileLines := trimFindLines(rawFileLines)
 	language := detectLanguage(relPath)
 	for i := 0; i+len(codeLines) <= len(fileLines); i++ {
@@ -115,8 +115,7 @@ func allBlank(lines []string) bool {
 // CRLF/CR line endings to LF and trims surrounding blank lines, so callers in
 // other packages share one definition of the canonical form.
 func NormalizeFindLinesCode(code string) string {
-	code = strings.ReplaceAll(code, "\r\n", "\n")
-	code = strings.ReplaceAll(code, "\r", "\n")
+	code = NormalizeLineEndings(code)
 	lines := strings.Split(code, "\n")
 	for len(lines) > 0 && strings.TrimSpace(lines[0]) == "" {
 		lines = lines[1:]
@@ -128,8 +127,7 @@ func NormalizeFindLinesCode(code string) string {
 }
 
 func normalizeFindLinesContent(content string) string {
-	content = strings.ReplaceAll(content, "\r\n", "\n")
-	content = strings.ReplaceAll(content, "\r", "\n")
+	content = NormalizeLineEndings(content)
 	return strings.TrimSuffix(content, "\n")
 }
 
@@ -144,7 +142,16 @@ func FindLinesCount(code string) int {
 	return strings.Count(code, "\n") + 1
 }
 
-func splitFindLines(text string) []string {
+// NormalizeLineEndings converts CRLF and CR line endings to LF without trimming
+// surrounding content.
+func NormalizeLineEndings(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	return strings.ReplaceAll(text, "\r", "\n")
+}
+
+// SplitFindLines splits already-normalized find_lines text, returning nil for
+// empty input to match find_lines matching semantics.
+func SplitFindLines(text string) []string {
 	if text == "" {
 		return nil
 	}

@@ -223,7 +223,7 @@ func (e *Engine) applyResultMetadata(result *model.ReviewResult, req model.Revie
 	}
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, disableSuggestions bool, maxOutputRetries int, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, disableSuggestions bool, maxOutputRetries int, sec *logging.ReasoningSection, loopReq agentLoopRequest, state *agentLoopState) (*llm.ReviewResponse, error) {
 	finalMessages, err := noToolsMessages(agentRole, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, disableSuggestions)
 	if err != nil {
 		return nil, err
@@ -235,12 +235,43 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	for attempt := 0; ; attempt++ {
 		resp, err := e.loggedReview(ctx, llmReq, sec)
 		if err == nil {
+			if retryInvalid := e.repairResponseOrRetry(ctx, loopReq, resp); retryInvalid != nil {
+				retryMessages := append([]llm.Message(nil), llmReq.Messages...)
+				var synthetic *llm.Message
+				queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+				if err != nil {
+					return nil, err
+				}
+				if queued {
+					llmReq.Messages = retryMessages
+					continue
+				}
+				e.logf(ctx, "Code location repair needed retry but retry budget is exhausted; keeping no-tools response as-is: missing=%v", retryInvalid.MissingFields)
+			}
 			if resp.ReasoningEffort != "" {
 				llmReq.ReasoningEffort = resp.ReasoningEffort
 			}
 			return resp, nil
 		}
 		var invalidResp *llm.InvalidResponseError
+		if errors.As(err, &invalidResp) {
+			if partialResp, retryInvalid, handled := e.tryRepairPartialResponse(ctx, loopReq, invalidResp); handled {
+				if retryInvalid != nil {
+					retryMessages := append([]llm.Message(nil), llmReq.Messages...)
+					var synthetic *llm.Message
+					queued, err := e.tryQueueCodeLocationRetry(ctx, loopReq, state, retryInvalid, &retryMessages, &synthetic, llmReq, outputRetriesRemaining(attempt, maxOutputRetries))
+					if err != nil {
+						return nil, err
+					}
+					if queued {
+						llmReq.Messages = retryMessages
+						continue
+					}
+					e.logf(ctx, "Code location repair needed retry but retry budget is exhausted; using partial no-tools response: missing=%v", retryInvalid.MissingFields)
+				}
+				return partialResp, nil
+			}
+		}
 		if !errors.As(err, &invalidResp) || !outputRetriesRemaining(attempt, maxOutputRetries) {
 			return nil, err
 		}

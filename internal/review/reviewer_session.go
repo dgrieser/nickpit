@@ -94,6 +94,10 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		tools = reviewerToolDefinitions()
 	}
 	reviewSnippet := exampleSnippetFor(agent.schemaKind, req.DisableSuggestions)
+	var repairResponse func(context.Context, *llm.ReviewResponse) codeLocationRepairResult
+	if agent.role == "review" {
+		repairResponse = e.responseCodeLocationRepairer(req.RepoRoot)
+	}
 	maxOutputRetries := req.MaxOutputRetries
 	if maxOutputRetries == 0 {
 		maxOutputRetries = defaultMaxOutputRetries
@@ -128,6 +132,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		DisableSuggestions:         req.DisableSuggestions,
 		JSONRetryExampleSnippet:    reviewSnippet,
 		JSONRetryProgressAgentName: agent.name,
+		RepairResponse:             repairResponse,
 		ValidateResponse:           agent.validateResponse,
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
 			if !agent.hasTools {
@@ -200,7 +205,7 @@ func (s *reviewerSession) launchCollect(budget timeBudgetStarter, e *Engine, age
 func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req model.ReviewRequest, mineBudget timeBudgetStarter, mineEngine *Engine, mineReq model.ReviewRequest) error {
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
-	loopReq.ValidateResponse = s.responseValidator(nil, codeLocationValidatorForReviewer(ctx, e, s.agent, req.RepoRoot))
+	loopReq.ValidateResponse = s.responseValidator(nil)
 	if s.extractEnabled {
 		loopReq.OnReasoningTrace = func(agentName string, iterIdx int, reasoning string) {
 			s.launchCollect(mineBudget, mineEngine, agentName, iterIdx, reasoning, mineReq)
@@ -301,7 +306,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	loopReq.JSONRetryProgressAgentName = nudgeName
 	loopReq.Messages = nudged
 	existingFindings := append([]model.Finding(nil), s.totalFindings...)
-	loopReq.ValidateResponse = s.responseValidator(existingFindings, codeLocationValidatorForReviewer(nudgeCtx, e, s.agent, req.RepoRoot))
+	loopReq.ValidateResponse = s.responseValidator(existingFindings)
 	loopReq.ReasoningEffort = s.nudgeReasoningEffort
 	loopReq.State = s.nudgeState
 	loopReq.OnReasoningTrace = nil
@@ -425,17 +430,12 @@ func (s *reviewerSession) partialResult(req model.ReviewRequest) agentResult {
 	return result
 }
 
-func (s *reviewerSession) responseValidator(existing []model.Finding, codeLocationValidator func(*llm.ReviewResponse) *llm.InvalidResponseError) func(*llm.ReviewResponse) *llm.InvalidResponseError {
-	if s.agent.validateResponse == nil && s.agent.reviewSessionValidateResponse == nil && codeLocationValidator == nil {
+func (s *reviewerSession) responseValidator(existing []model.Finding) func(*llm.ReviewResponse) *llm.InvalidResponseError {
+	if s.agent.validateResponse == nil && s.agent.reviewSessionValidateResponse == nil {
 		return nil
 	}
 	existing = append([]model.Finding(nil), existing...)
 	return func(resp *llm.ReviewResponse) *llm.InvalidResponseError {
-		if codeLocationValidator != nil {
-			if invalid := codeLocationValidator(resp); invalid != nil {
-				return invalid
-			}
-		}
 		if s.agent.validateResponse != nil {
 			if invalid := s.agent.validateResponse(resp); invalid != nil {
 				return invalid
