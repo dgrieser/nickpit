@@ -125,7 +125,6 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
 		MaxOutputRetries:           maxOutputRetries,
 		MaxReasoningSeconds:        req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:    req.MaxReasoningLoopRepeats,
 		Section:                    sec,
 		NoToolsSystem:              noToolsSystem,
 		NoToolsSchemaSnippet:       reviewSnippet,

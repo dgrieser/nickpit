@@ -136,7 +136,6 @@ type ReviewRequest struct {
 	ParallelToolCalls              bool
 	ReasoningEffort                string
 	MaxReasoning                   time.Duration
-	MaxReasoningLoopRepeats        int
 	ReasoningSink                  ReasoningSink
 	DisableReasoningEffortFallback bool
 	Urgent                         bool
@@ -1131,7 +1130,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logJSON(ctx, "LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, req.MaxReasoningLoopRepeats)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning)
 	if err != nil {
 		return nil, err
 	}
@@ -1326,15 +1325,12 @@ func NormalizeToolCallArguments(arguments string) (string, bool) {
 	return string(normalized), true
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, maxReasoningLoopRepeats int) (*streamedResponse, error) {
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		streamCtx, slot := contextWithCaptureSlot(streamCtx)
-		var detector *reasoningLoopDetector
-		if maxReasoningLoopRepeats > 0 {
-			detector = newReasoningLoopDetector(streamCancel, maxReasoningLoopRepeats)
-		}
+		detector := newReasoningLoopDetector(streamCancel, maxReasoning)
 		timeout := newReasoningTimeoutController(maxReasoning, streamCancel)
 		c.logf(ctx, "Sending LLM request: attempt=%d", attempt+1)
 

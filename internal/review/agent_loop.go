@@ -36,7 +36,6 @@ type agentLoopRequest struct {
 	MaxDuplicateToolCalls             int
 	MaxOutputRetries                  int
 	MaxReasoningSeconds               int
-	MaxReasoningLoopRepeats           int
 	ParallelToolCalls                 bool
 	State                             *agentLoopState
 	Section                           *logging.ReasoningSection
@@ -95,23 +94,22 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 	defer release()
 
 	llmReq := &llm.ReviewRequest{
-		Messages:                req.Messages,
-		Tools:                   append([]llm.ToolDefinition(nil), req.Tools...),
-		Schema:                  req.Schema,
-		SchemaKind:              req.SchemaKind,
-		Constraints:             req.Constraints,
-		Model:                   req.Model,
-		MaxTokens:               req.MaxTokens,
-		Temperature:             req.Temperature,
-		TopP:                    req.TopP,
-		TopK:                    req.TopK,
-		PresencePenalty:         req.PresencePenalty,
-		ExtraBody:               req.ExtraBody,
-		ParallelToolCalls:       req.ParallelToolCalls,
-		ReasoningEffort:         req.ReasoningEffort,
-		ReasoningSink:           req.ReasoningSink,
-		MaxReasoning:            time.Duration(req.MaxReasoningSeconds) * time.Second,
-		MaxReasoningLoopRepeats: req.MaxReasoningLoopRepeats,
+		Messages:          req.Messages,
+		Tools:             append([]llm.ToolDefinition(nil), req.Tools...),
+		Schema:            req.Schema,
+		SchemaKind:        req.SchemaKind,
+		Constraints:       req.Constraints,
+		Model:             req.Model,
+		MaxTokens:         req.MaxTokens,
+		Temperature:       req.Temperature,
+		TopP:              req.TopP,
+		TopK:              req.TopK,
+		PresencePenalty:   req.PresencePenalty,
+		ExtraBody:         req.ExtraBody,
+		ParallelToolCalls: req.ParallelToolCalls,
+		ReasoningEffort:   req.ReasoningEffort,
+		ReasoningSink:     req.ReasoningSink,
+		MaxReasoning:      time.Duration(req.MaxReasoningSeconds) * time.Second,
 	}
 
 	messages := append([]llm.Message(nil), req.Messages...)

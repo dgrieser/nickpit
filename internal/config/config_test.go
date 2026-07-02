@@ -35,9 +35,6 @@ func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	if profile.MaxReasoningSeconds != 0 {
 		t.Fatalf("default max reasoning seconds = %d", profile.MaxReasoningSeconds)
 	}
-	if profile.MaxReasoningLoopRepeats != 0 {
-		t.Fatalf("default max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
-	}
 	if profile.MaxRateLimitDelaySeconds != 0 {
 		t.Fatalf("default max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
 	}
@@ -84,9 +81,6 @@ func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
 	}
 	if profile.ReasoningEffort != DefaultReasoningEffort {
 		t.Fatalf("reasoning effort = %q", profile.ReasoningEffort)
-	}
-	if profile.MaxReasoningLoopRepeats != DefaultMaxReasoningLoopRepeats {
-		t.Fatalf("max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
 	}
 	if profile.MaxRateLimitDelaySeconds != DefaultMaxRateLimitDelaySeconds {
 		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
@@ -1087,36 +1081,6 @@ profiles:
 	}
 }
 
-func TestLoadConfigMaxReasoningLoopRepeatsFromFileAndOverride(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	err := os.WriteFile(path, []byte(`
-profiles:
-  default:
-    model: test-model
-    max_reasoning_loop_repeats: 2
-`), 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, profile, err := Load(path, Overrides{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if profile.MaxReasoningLoopRepeats != 2 {
-		t.Fatalf("default max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
-	}
-
-	_, profile, err = Load(path, Overrides{ReasoningLoopRepeats: intPtr(4)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if profile.MaxReasoningLoopRepeats != 4 {
-		t.Fatalf("override default max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
-	}
-}
-
 func TestLoadConfigNudgeCountFromFileAndOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -1144,28 +1108,6 @@ profiles:
 	}
 	if profile.NudgeCount != 4 {
 		t.Fatalf("override nudge count = %d", profile.NudgeCount)
-	}
-}
-
-func TestLoadConfigRejectsNegativeMaxReasoningLoopRepeats(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	err := os.WriteFile(path, []byte(`
-profiles:
-  default:
-    model: test-model
-    max_reasoning_loop_repeats: -1
-`), 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, _, err = Load(path, Overrides{})
-	if err == nil {
-		t.Fatal("expected negative max reasoning loop repeats error")
-	}
-	if got, want := err.Error(), "max_reasoning_loop_repeats must be non-negative"; !strings.Contains(got, want) {
-		t.Fatalf("error = %q, want containing %q", got, want)
 	}
 }
 
@@ -1202,7 +1144,6 @@ profiles:
     max_duplicate_tool_calls: 3
     max_output_retries: 4
     max_reasoning_seconds: 5
-    max_reasoning_loop_repeats: 6
     nudge_count: 7
 `), 0o644)
 	if err != nil {
@@ -1210,12 +1151,11 @@ profiles:
 	}
 
 	_, profile, err := Load(path, Overrides{
-		ToolCalls:            intPtr(0),
-		DuplicateToolCalls:   intPtr(0),
-		OutputRetries:        intPtr(0),
-		ReasoningSeconds:     intPtr(0),
-		ReasoningLoopRepeats: intPtr(0),
-		NudgeCount:           intPtr(0),
+		ToolCalls:          intPtr(0),
+		DuplicateToolCalls: intPtr(0),
+		OutputRetries:      intPtr(0),
+		ReasoningSeconds:   intPtr(0),
+		NudgeCount:         intPtr(0),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1231,9 +1171,6 @@ profiles:
 	}
 	if profile.MaxReasoningSeconds != 0 {
 		t.Fatalf("max reasoning seconds = %d", profile.MaxReasoningSeconds)
-	}
-	if profile.MaxReasoningLoopRepeats != 0 {
-		t.Fatalf("max reasoning loop repeats = %d", profile.MaxReasoningLoopRepeats)
 	}
 	if profile.NudgeCount != 0 {
 		t.Fatalf("nudge count = %d", profile.NudgeCount)

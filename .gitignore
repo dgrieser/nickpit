@@ -6,3 +6,4 @@ bin/
 events/
 *.swp
 *.log
+loop_corpus.jsonl

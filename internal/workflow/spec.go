@@ -192,11 +192,10 @@ type StepOverride struct {
 	// context is resolved and trimmed once, before any step runs, so a per-step
 	// value could not affect the prompt size. Set it on the profile / via
 	// --max-context-tokens instead.
-	MaxToolCalls            *int `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls   *int `yaml:"max_duplicate_tool_calls"`
-	MaxOutputRetries        *int `yaml:"max_output_retries"`
-	MaxReasoningSeconds     *int `yaml:"max_reasoning_seconds"`
-	MaxReasoningLoopRepeats *int `yaml:"max_reasoning_loop_repeats"`
+	MaxToolCalls          *int `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls *int `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries      *int `yaml:"max_output_retries"`
+	MaxReasoningSeconds   *int `yaml:"max_reasoning_seconds"`
 
 	// Stage-specific tunables.
 	NudgeCount                *int     `yaml:"nudge_count"`
@@ -221,7 +220,7 @@ var stepOverrideKeys = []string{
 	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort", "time_budget",
 	"scope",
 	"max_tool_calls", "max_duplicate_tool_calls",
-	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
+	"max_output_retries", "max_reasoning_seconds",
 	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
 	"disable_patch_summary", "disable_suggestions", "disable_json_response_format", "verify_drop_policy",
 	"confidence_threshold", "priority_threshold",
@@ -242,11 +241,10 @@ type AgentOverride struct {
 	ReasoningEffort *string        `yaml:"reasoning_effort"`
 	TimeBudget      *TimeBudget    `yaml:"time_budget"`
 
-	MaxToolCalls            *int `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls   *int `yaml:"max_duplicate_tool_calls"`
-	MaxOutputRetries        *int `yaml:"max_output_retries"`
-	MaxReasoningSeconds     *int `yaml:"max_reasoning_seconds"`
-	MaxReasoningLoopRepeats *int `yaml:"max_reasoning_loop_repeats"`
+	MaxToolCalls          *int `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls *int `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries      *int `yaml:"max_output_retries"`
+	MaxReasoningSeconds   *int `yaml:"max_reasoning_seconds"`
 
 	DisableParallelToolCalls  *bool `yaml:"disable_parallel_tool_calls"`
 	DisableJSONResponseFormat *bool `yaml:"disable_json_response_format"`
@@ -255,7 +253,7 @@ type AgentOverride struct {
 var agentOverrideKeys = []string{
 	"model", "temperature", "top_p", "top_k", "presence_penalty", "max_tokens", "extra_body", "reasoning_effort", "time_budget",
 	"max_tool_calls", "max_duplicate_tool_calls",
-	"max_output_retries", "max_reasoning_seconds", "max_reasoning_loop_repeats",
+	"max_output_retries", "max_reasoning_seconds",
 	"disable_parallel_tool_calls", "disable_json_response_format",
 }
 
@@ -322,10 +320,6 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.MaxReasoningSeconds != nil {
 		p.MaxReasoningSeconds = *o.MaxReasoningSeconds
 		req.MaxReasoningSeconds = *o.MaxReasoningSeconds
-	}
-	if o.MaxReasoningLoopRepeats != nil {
-		p.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
-		req.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 	}
 	if o.NudgeCount != nil {
 		p.NudgeCount = *o.NudgeCount
@@ -414,10 +408,6 @@ func (o *AgentOverride) Resolve(p config.Profile, req model.ReviewRequest) (conf
 	if o.MaxReasoningSeconds != nil {
 		p.MaxReasoningSeconds = *o.MaxReasoningSeconds
 		req.MaxReasoningSeconds = *o.MaxReasoningSeconds
-	}
-	if o.MaxReasoningLoopRepeats != nil {
-		p.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
-		req.MaxReasoningLoopRepeats = *o.MaxReasoningLoopRepeats
 	}
 	if o.DisableJSONResponseFormat != nil && *o.DisableJSONResponseFormat {
 		// Disabling response_format is monotonic: a per-step override may turn it

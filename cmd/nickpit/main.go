@@ -86,8 +86,6 @@ type app struct {
 	maxOutputRetriesSet           bool
 	maxReasoningSeconds           int
 	maxReasoningSecondsSet        bool
-	maxReasoningLoopRepeats       int
-	maxReasoningLoopRepeatsSet    bool
 	maxRateLimitDelaySeconds      int
 	maxRateLimitDelaySecondsSet   bool
 	nudgeCount                    int
@@ -141,7 +139,6 @@ func newRootCmd() *cobra.Command {
 		maxDuplicateToolCalls:    config.DefaultMaxDuplicateToolCalls,
 		maxOutputRetries:         config.DefaultMaxOutputRetries,
 		maxReasoningSeconds:      config.DefaultMaxReasoningSeconds,
-		maxReasoningLoopRepeats:  config.DefaultMaxReasoningLoopRepeats,
 		maxRateLimitDelaySeconds: config.DefaultMaxRateLimitDelaySeconds,
 		nudgeCount:               config.DefaultNudgeCount,
 	}
@@ -209,7 +206,6 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxOutputRetries, &cli.maxOutputRetriesSet), "max-output-retries", "Maximum invalid output retries")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningSeconds, &cli.maxReasoningSecondsSet), "max-reasoning-seconds", "Maximum seconds to allow reasoning before falling back to lower effort")
-	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningLoopRepeats, &cli.maxReasoningLoopRepeatsSet), "max-reasoning-loop-repeats", "Allowed repeated reasoning loops before falling back (0 disables loop detection)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxRateLimitDelaySeconds, &cli.maxRateLimitDelaySecondsSet), "max-rate-limit-delay-seconds", "Maximum seconds to wait for rate-limit reset times parsed from 429 responses (0 disables)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.nudgeCount, &cli.nudgeCountSet), "nudge-count", "Number of nudge rounds asking each reviewer to look again (0 disables)")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "3", "Minimum priority to display: 0 (highest) to 3 (lowest)")
@@ -265,10 +261,6 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	var reasoningSeconds *int
 	if a.maxReasoningSecondsSet {
 		reasoningSeconds = &a.maxReasoningSeconds
-	}
-	var reasoningLoopRepeats *int
-	if a.maxReasoningLoopRepeatsSet {
-		reasoningLoopRepeats = &a.maxReasoningLoopRepeats
 	}
 	var rateLimitDelaySeconds *int
 	if a.maxRateLimitDelaySecondsSet {
@@ -383,7 +375,6 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		DuplicateToolCalls:        duplicateToolCalls,
 		OutputRetries:             outputRetries,
 		ReasoningSeconds:          reasoningSeconds,
-		ReasoningLoopRepeats:      reasoningLoopRepeats,
 		RateLimitDelaySeconds:     rateLimitDelaySeconds,
 		NudgeCount:                nudgeCount,
 		DisablePatchSummary:       a.disablePatchSummary,
@@ -516,7 +507,6 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
 				MaxOutputRetries:          profile.MaxOutputRetries,
 				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
 				NudgeCount:                profile.NudgeCount,
 				DisablePatchSummary:       profile.DisablePatchSummary,
 				DisableSuggestions:        profile.DisableSuggestions,
@@ -597,7 +587,6 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
 				MaxOutputRetries:          profile.MaxOutputRetries,
 				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
 				NudgeCount:                profile.NudgeCount,
 				DisablePatchSummary:       profile.DisablePatchSummary,
 				DisableSuggestions:        profile.DisableSuggestions,
@@ -677,7 +666,6 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
 				MaxOutputRetries:          profile.MaxOutputRetries,
 				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
 				NudgeCount:                profile.NudgeCount,
 				DisablePatchSummary:       profile.DisablePatchSummary,
 				DisableSuggestions:        profile.DisableSuggestions,
@@ -875,7 +863,6 @@ func (a *app) newCheckCmd() *cobra.Command {
 				MaxDuplicateToolCalls:     profile.MaxDuplicateToolCalls,
 				MaxOutputRetries:          profile.MaxOutputRetries,
 				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats:   profile.MaxReasoningLoopRepeats,
 				DiffFormat:                profile.DiffFormat,
 				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
 			}
@@ -1026,9 +1013,6 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 	if req.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
 		req.MaxReasoningSeconds = profile.MaxReasoningSeconds
-	}
-	if req.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
-		req.MaxReasoningLoopRepeats = profile.MaxReasoningLoopRepeats
 	}
 	a.logProgress(ctx, logging.StageModel, logging.StateReady, modelSummary(profile, req))
 	a.logSmallModelReady(ctx, profile, req)
@@ -2182,7 +2166,6 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 		disablable(req.NudgeCount, "", "nudges"),
 		disablable(req.MaxOutputRetries, "", "retries"),
 		unlimited(req.MaxReasoningSeconds, "s", "reasoning"),
-		unlimited(req.MaxReasoningLoopRepeats, "", "loop repeats"),
 		disablable(profile.MaxRateLimitDelaySeconds, "s", "rate-limit-delay"),
 		unlimited(req.Concurrency, "", "concurrency"),
 		unlimited(req.MaxToolCalls, "", "tool calls"),

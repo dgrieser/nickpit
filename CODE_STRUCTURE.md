@@ -45,7 +45,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/llm/jsonx.go`: Lenient JSON parsing and extraction helpers.
 - `internal/llm/prompt.go`: Prompt message helpers.
 - `internal/llm/reasoning_buffer.go`: Captures and bounds streamed reasoning text.
-- `internal/llm/reasoning_loop.go`: Detects repeated or stuck reasoning traces.
+- `internal/llm/reasoning_loop.go`: Streaming reasoning-loop detector (character runs, exact line/block repetition, token-shingle recurrence), staged over the reasoning time budget; zero-config.
 - `internal/llm/retry.go`: Retryability classification and retry helpers.
 
 ## Data Models and Formatting

@@ -99,12 +99,6 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.MaxReasoningSeconds != 0 {
 		base.MaxReasoningSeconds = override.MaxReasoningSeconds
 	}
-	if override.MaxReasoningLoopRepeatsConfigured {
-		base.MaxReasoningLoopRepeatsConfigured = true
-		base.MaxReasoningLoopRepeats = override.MaxReasoningLoopRepeats
-	} else if override.MaxReasoningLoopRepeats != 0 {
-		base.MaxReasoningLoopRepeats = override.MaxReasoningLoopRepeats
-	}
 	if override.MaxRateLimitDelaySecondsConfigured {
 		base.MaxRateLimitDelaySecondsConfigured = true
 		base.MaxRateLimitDelaySeconds = override.MaxRateLimitDelaySeconds

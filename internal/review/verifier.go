@@ -28,7 +28,6 @@ type VerifyRequest struct {
 	MaxDuplicateToolCalls     int
 	MaxOutputRetries          int
 	MaxReasoningSeconds       int
-	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
 	DiffFormat                model.DiffFormat
@@ -47,7 +46,6 @@ type VerifyOptions struct {
 	MaxDuplicateToolCalls     int
 	MaxOutputRetries          int
 	MaxReasoningSeconds       int
-	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
 	RepoRoot                  string
@@ -155,7 +153,6 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			MaxDuplicateToolCalls:             req.MaxDuplicateToolCalls,
 			MaxOutputRetries:                  req.MaxOutputRetries,
 			MaxReasoningSeconds:               req.MaxReasoningSeconds,
-			MaxReasoningLoopRepeats:           req.MaxReasoningLoopRepeats,
 			Section:                           req.Section,
 			NoToolsSystem:                     systemTemplate,
 			NoToolsSchemaSnippet:              systemSnippet,
@@ -246,7 +243,6 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxDuplicateToolCalls:     opts.MaxDuplicateToolCalls,
 				MaxOutputRetries:          opts.MaxOutputRetries,
 				MaxReasoningSeconds:       opts.MaxReasoningSeconds,
-				MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
 				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
 				DisableSuggestions:        opts.DisableSuggestions,
 				DiffFormat:                opts.DiffFormat,

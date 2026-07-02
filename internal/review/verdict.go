@@ -16,7 +16,6 @@ type VerdictOptions struct {
 	DisableJSONResponseFormat bool
 	MaxOutputRetries          int
 	MaxReasoningSeconds       int
-	MaxReasoningLoopRepeats   int
 	DisableParallelToolCalls  bool
 	DisablePatchSummary       bool
 	DisableSuggestions        bool
@@ -146,7 +145,6 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		RepoRoot:                  opts.RepoRoot,
 		MaxOutputRetries:          opts.MaxOutputRetries,
 		MaxReasoningSeconds:       opts.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:   opts.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  opts.DisableParallelToolCalls,
 		DisableSuggestions:        opts.DisableSuggestions,
 		DisableJSONResponseFormat: opts.DisableJSONResponseFormat,
