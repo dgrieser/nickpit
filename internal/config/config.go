@@ -24,7 +24,6 @@ const (
 	DefaultMaxDuplicateToolCalls    = 5
 	DefaultMaxOutputRetries         = 5
 	DefaultMaxReasoningSeconds      = 300
-	DefaultMaxReasoningLoopRepeats  = 5
 	DefaultMaxRateLimitDelaySeconds = 300
 	DefaultNudgeCount               = 3
 	DefaultConfigPath               = ".nickpit.yaml"
@@ -67,7 +66,6 @@ type Profile struct {
 	MaxDuplicateToolCalls              int                 `yaml:"max_duplicate_tool_calls"`
 	MaxOutputRetries                   int                 `yaml:"max_output_retries"`
 	MaxReasoningSeconds                int                 `yaml:"max_reasoning_seconds"`
-	MaxReasoningLoopRepeats            int                 `yaml:"max_reasoning_loop_repeats"`
 	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
 	NudgeCount                         int                 `yaml:"nudge_count"`
 	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
@@ -85,7 +83,6 @@ type Profile struct {
 	MaxDuplicateToolCallsConfigured    bool                `yaml:"-"`
 	MaxOutputRetriesConfigured         bool                `yaml:"-"`
 	MaxReasoningSecondsConfigured      bool                `yaml:"-"`
-	MaxReasoningLoopRepeatsConfigured  bool                `yaml:"-"`
 	MaxRateLimitDelaySecondsConfigured bool                `yaml:"-"`
 	NudgeCountConfigured               bool                `yaml:"-"`
 }
@@ -139,7 +136,6 @@ type Overrides struct {
 	DuplicateToolCalls        *int
 	OutputRetries             *int
 	ReasoningSeconds          *int
-	ReasoningLoopRepeats      *int
 	RateLimitDelaySeconds     *int
 	NudgeCount                *int
 	DisablePatchSummary       bool
@@ -641,10 +637,6 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.MaxReasoningSeconds = *overrides.ReasoningSeconds
 		profile.MaxReasoningSecondsConfigured = true
 	}
-	if overrides.ReasoningLoopRepeats != nil {
-		profile.MaxReasoningLoopRepeats = *overrides.ReasoningLoopRepeats
-		profile.MaxReasoningLoopRepeatsConfigured = true
-	}
 	if overrides.RateLimitDelaySeconds != nil {
 		profile.MaxRateLimitDelaySeconds = *overrides.RateLimitDelaySeconds
 		profile.MaxRateLimitDelaySecondsConfigured = true
@@ -727,9 +719,6 @@ func applyProfileDefaults(profile Profile) Profile {
 	if profile.MaxReasoningSeconds == 0 && !profile.MaxReasoningSecondsConfigured {
 		profile.MaxReasoningSeconds = DefaultMaxReasoningSeconds
 	}
-	if profile.MaxReasoningLoopRepeats == 0 && !profile.MaxReasoningLoopRepeatsConfigured {
-		profile.MaxReasoningLoopRepeats = DefaultMaxReasoningLoopRepeats
-	}
 	if profile.MaxRateLimitDelaySeconds == 0 && !profile.MaxRateLimitDelaySecondsConfigured {
 		profile.MaxRateLimitDelaySeconds = DefaultMaxRateLimitDelaySeconds
 	}
@@ -765,9 +754,6 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.MaxReasoningSeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
-	}
-	if profile.MaxReasoningLoopRepeats < 0 {
-		return Profile{}, fmt.Errorf("config: max_reasoning_loop_repeats must be non-negative")
 	}
 	if profile.MaxRateLimitDelaySeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_rate_limit_delay_seconds must be non-negative")
@@ -852,7 +838,6 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil
 		profile.MaxOutputRetriesConfigured = mappingValue(profileNode, "max_output_retries") != nil
 		profile.MaxReasoningSecondsConfigured = mappingValue(profileNode, "max_reasoning_seconds") != nil
-		profile.MaxReasoningLoopRepeatsConfigured = mappingValue(profileNode, "max_reasoning_loop_repeats") != nil
 		profile.MaxRateLimitDelaySecondsConfigured = mappingValue(profileNode, "max_rate_limit_delay_seconds") != nil
 		profile.NudgeCountConfigured = mappingValue(profileNode, "nudge_count") != nil
 		cfg.Profiles[name] = profile

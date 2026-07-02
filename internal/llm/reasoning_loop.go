@@ -2,65 +2,135 @@ package llm
 
 import (
 	"context"
+	"hash/fnv"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
+	"unicode/utf8"
 )
+
+// The detector watches streamed reasoning content and cancels the stream when
+// the model has entered a loop. It layers three independent signals, from
+// cheap-and-exact to fuzzy:
+//
+//  1. Character runs: one rune (or a short unit of up to charMaxPeriod runes)
+//     repeated back-to-back. Degenerate output, fires at any point in time.
+//  2. Exact line repetition: the same normalized line or block of lines
+//     repeated consecutively. Whitespace runs are collapsed and empty lines
+//     are ignored, so "byte-identical modulo formatting" counts as exact.
+//  3. Shingle recurrence: the fraction of recently emitted token shingles that
+//     appeared earlier in the same stream. Verbatim loops drive this to ~1.0;
+//     paraphrase loops (same decision cycle reworded, identifiers or numbers
+//     swapped) still reuse most phrasing and plateau lower. A loop is called
+//     when the recurrence stays above a threshold for long enough.
+//
+// Detection needs no configuration. Instead, thresholds are staged over the
+// reasoning time budget (max_reasoning_seconds): early on, only ironclad
+// repetition may cancel the stream; the closer the stream gets to the budget
+// (where it would be cancelled anyway), the more aggressive detection becomes,
+// because the cost of a false positive shrinks while the expected saving
+// grows. All constants below were tuned against a corpus of ~40k reasoning
+// traces extracted from every archived review run (verbatim loops, paraphrase
+// loops, re-listing loops, provider-detected repeated chunks, timed-out
+// vacillation loops, and clean long reasoning); see tools/loop_corpus_extract.py
+// and TestReasoningLoopCorpus.
 
 const (
-	// Exact block detection compares the most recent k completed lines against
-	// the k lines immediately before them. The max is high enough for review
-	// loops that repeat an entire "finding / priority / suggestion" cycle, but
-	// still bounded so each newline keeps predictable work.
-	loopBlockMinLines       = 2
-	loopBlockMaxLines       = 80
-	loopBlockMinUniqueLines = 3
+	// loopStagingFallbackBudget stages thresholds when no reasoning time limit
+	// is configured. It mirrors config.DefaultMaxReasoningSeconds without
+	// importing the config package.
+	loopStagingFallbackBudget = 300 * time.Second
 
-	// Fuzzy detection exists for loops that are semantically identical but not
-	// byte-identical. Example: the model repeats the same review decision cycle,
-	// while swapping method names or rewording "after Close returns" into
-	// "after Close releases the mutex".
-	//
-	// The minimum token and shingle counts keep short repeated boilerplate from
-	// firing the detector. Repeated headings like "Priority: 2" and "Suggestion"
-	// are not enough signal.
-	loopFuzzyMinTokens         = 120
-	loopFuzzyMinUniqueShingles = 60
+	// Character-run detection. The window holds the most recent runes; a run
+	// unit of up to charMaxPeriod runes must repeat exactly through
+	// charTriggerSpan trailing runes to fire. The period stays short so this
+	// layer only sees degenerate output ("aaaa", "ab ab ab"); repeated whole
+	// sentences belong to the staged line detector. The frequency trigger
+	// fires when one rune dominates the window even with interruptions.
+	charWindowSize      = 128
+	charMaxPeriod       = 8
+	charTriggerSpan     = 96
+	charMinPeriodCopies = 4
+	charFreqMinCount    = 64
+	charFreqMinRate     = 0.90
 
-	// Shingles are contiguous token groups. Four-token shingles are long enough
-	// to represent phrasing, but short enough that small wording changes still
-	// leave overlap between repeated reasoning windows.
-	loopFuzzyShingleSize = 4
+	// Exact line repetition. Periods are measured in normalized non-empty
+	// lines; a "copy" is one full repetition of the repeated unit. Single
+	// repeated lines need more copies than multi-line blocks because short
+	// closers such as "}" legitimately recur.
+	lineMaxPeriod        = 256
+	lineMinUnitChars     = 12
+	lineShortLine        = 4
+	lineShortLineCopies  = 12
+	lineTrackedPositions = 8
 
-	// Strict threshold triggers on very similar windows without extra evidence.
-	// Marker threshold is lower, but requires both windows to contain repeated
-	// review-decision markers such as findings, priorities, suggestions, or
-	// "actually/wait" reconsideration. This catches loop.log-style behavior
-	// while reducing false positives from normal long reasoning.
-	loopFuzzyMarkerThreshold = 0.68
-	loopFuzzyStrictThreshold = 0.82
+	// Shingle recurrence. Tokens are normalized words (case folded, digit runs
+	// collapsed, code spans replaced by a placeholder); a shingle is
+	// shingleSize consecutive tokens. Recurrence is the fraction of the last
+	// shingleWindow shingles that occurred anywhere earlier in the stream.
+	// Once armed at the stage's threshold the plateau keeps growing while
+	// recurrence stays above (threshold - shingleHysteresis); it must reach
+	// the stage's plateau length to fire.
+	shingleSize       = 5
+	shingleWindow     = 256
+	shingleHysteresis = 0.10
 
-	// Repeated-rune detection catches degenerate streams like 96 consecutive
-	// newlines that never form meaningful repeated lines or fuzzy windows.
-	loopRepeatedRuneWindowSize = 96
-	loopRepeatedRuneMinCount   = 64
-	loopRepeatedRuneMinRate    = 0.90
+	// The hard tier is stage-independent: recurrence this close to total
+	// repetition is never legitimate reasoning, no matter how early it
+	// happens. Its plateau is sized above the longest template-style
+	// enumeration observed in clean traces (~360 shingles of "check field X,
+	// use it" cycles) so structured-but-productive passages survive.
+	shingleHardArm     = 0.95
+	shingleHardPlateau = 400
 )
 
-const liteLLMRepeatedChunkMarker = "The model is repeating the same chunk = "
+// loopStage holds the detection thresholds active for one segment of the
+// reasoning time budget.
+type loopStage struct {
+	// until is the budget fraction this stage applies up to.
+	until float64
+	// blockCopies is the number of consecutive copies of a multi-line unit
+	// that count as an exact loop; lineCopies is the same for a single line.
+	blockCopies int
+	lineCopies  int
+	// shingleArm is the recurrence fraction that arms the fuzzy plateau;
+	// shinglePlateau is how many shingles the plateau must span to fire.
+	shingleArm     float64
+	shinglePlateau int
+}
 
-// loopFuzzyWindowSizes are measured in completed reasoning lines. Each window
-// is compared only with the immediately preceding same-sized window. Multiple
-// sizes let us catch both compact and longer decision cycles without searching
-// the whole history or comparing unrelated sections.
-var loopFuzzyWindowSizes = []int{24, 32, 48, 64}
+// loopStages must be ordered by increasing `until`. The last stage also covers
+// streams that exceed the budget (possible when no budget is enforced).
+//
+// The first stage already arms at 0.80: across ~40k corpus blocks, healthy
+// reasoning never held ≥0.70 recurrence for 700 shingles, while
+// re-listing/vacillation loops that finish within the first quarter of the
+// budget (fast streams) routinely sustain 800+ and previously escaped.
+var loopStages = []loopStage{
+	{until: 0.25, blockCopies: 5, lineCopies: 10, shingleArm: 0.80, shinglePlateau: 700},
+	{until: 0.50, blockCopies: 4, lineCopies: 8, shingleArm: 0.80, shinglePlateau: 600},
+	{until: 0.75, blockCopies: 3, lineCopies: 6, shingleArm: 0.70, shinglePlateau: 450},
+	{until: 1.01, blockCopies: 3, lineCopies: 5, shingleArm: 0.60, shinglePlateau: 300},
+}
+
+func stageFor(fraction float64) loopStage {
+	for _, stage := range loopStages {
+		if fraction < stage.until {
+			return stage
+		}
+	}
+	return loopStages[len(loopStages)-1]
+}
+
+const liteLLMRepeatedChunkMarker = "The model is repeating the same chunk = "
 
 // ReasoningLoopDetectedError is returned when the model's streaming reasoning
 // content repeats itself, indicating it has entered an infinite loop.
 type ReasoningLoopDetectedError struct {
 	ReasoningEffort  string
 	LoopStartContent string // reasoning before the loop began
-	RepeatedContent  string // the repeating line(s)
+	RepeatedContent  string // the repeating portion
 	// RepeatedChunk is true when the loop was reported by the upstream provider
 	// as a repeated output chunk (LiteLLM marker) rather than detected in the
 	// model's own reasoning content. Such loops occur in the completion stream
@@ -76,31 +146,65 @@ func (e *ReasoningLoopDetectedError) Error() string {
 }
 
 type reasoningLoopDetector struct {
-	mu                sync.Mutex
-	cancel            context.CancelFunc
-	maxRepeats        int
-	detected          bool
-	repeatedChunk     bool
-	loopStartContent  string
-	repeatedContent   string
-	lines             []string
-	currentLine       strings.Builder
-	recentRunes       []rune
-	recentRuneStart   int
-	runeCounts        map[rune]int
-	runeCountBuckets  [loopRepeatedRuneWindowSize + 1]int
-	maxRuneCount      int
-	fuzzyRepeats      map[int]int
-	fuzzyLastMatchEnd map[int]int
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	now    func() time.Time
+	budget time.Duration
+	start  time.Time
+
+	detected         bool
+	repeatedChunk    bool
+	loopStartContent string
+	repeatedContent  string
+
+	// raw stream, kept for error reporting
+	raw strings.Builder
+
+	// character-run state
+	charRing  [charWindowSize]rune
+	charLen   int
+	charStart int
+	charSince int // runes since the last periodicity scan
+
+	// line state
+	currentLine strings.Builder
+	// rawLineStart is the byte offset of the current (incomplete) raw line.
+	rawLineStart int
+	// lines holds normalized non-empty lines; lineStarts the byte offset of
+	// each in raw.
+	lines      []string
+	lineHashes []uint64
+	lineStarts []int
+	linePos    map[uint64][]int
+	// lineMatch maps candidate period -> length of the current suffix of
+	// lineHashes that matches itself shifted by that period.
+	lineMatch map[int]int
+
+	// shingle state
+	tokenTail     []string // last shingleSize-1 tokens
+	shingleSeen   map[uint64]struct{}
+	shingleRing   [shingleWindow]bool
+	shingleLen    int
+	shingleStart  int
+	shingleRepeat int // repeated shingles inside the ring
+	plateauLen    int // shingles since the plateau was armed
+	plateauOffset int // byte offset into raw where the plateau was armed
+	armedAt       float64
+	hardLen       int // shingles since the hard (near-verbatim) tier armed
+	hardOffset    int
 }
 
-func newReasoningLoopDetector(cancel context.CancelFunc, maxRepeats int) *reasoningLoopDetector {
+func newReasoningLoopDetector(cancel context.CancelFunc, budget time.Duration) *reasoningLoopDetector {
+	if budget <= 0 {
+		budget = loopStagingFallbackBudget
+	}
 	return &reasoningLoopDetector{
-		cancel:            cancel,
-		maxRepeats:        maxRepeats,
-		runeCounts:        make(map[rune]int, loopRepeatedRuneWindowSize),
-		fuzzyRepeats:      make(map[int]int, len(loopFuzzyWindowSizes)),
-		fuzzyLastMatchEnd: make(map[int]int, len(loopFuzzyWindowSizes)),
+		cancel:      cancel,
+		now:         time.Now,
+		budget:      budget,
+		linePos:     make(map[uint64][]int),
+		lineMatch:   make(map[int]int),
+		shingleSeen: make(map[uint64]struct{}),
 	}
 }
 
@@ -120,21 +224,39 @@ func (d *reasoningLoopDetector) MakeError() *ReasoningLoopDetectedError {
 	}
 }
 
+// budgetFraction reports how much of the reasoning time budget has elapsed,
+// clamped to [0, 1].
+func (d *reasoningLoopDetector) budgetFractionLocked() float64 {
+	if d.start.IsZero() {
+		return 0
+	}
+	f := float64(d.now().Sub(d.start)) / float64(d.budget)
+	if f < 0 {
+		return 0
+	}
+	if f > 1 {
+		return 1
+	}
+	return f
+}
+
 func (d *reasoningLoopDetector) onDelta(delta string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.detected {
 		return
 	}
+	if d.start.IsZero() {
+		d.start = d.now()
+	}
 	for _, r := range delta {
-		if d.observeRepeatedRuneLocked(r) {
+		d.raw.WriteRune(r)
+		if d.observeRuneLocked(r) {
 			return
 		}
 		if r == '\n' {
-			line := d.currentLine.String()
-			d.currentLine.Reset()
-			d.lines = append(d.lines, line)
-			if d.checkLoopLocked() {
+			d.finishLineLocked()
+			if d.detected {
 				return
 			}
 			continue
@@ -143,272 +265,313 @@ func (d *reasoningLoopDetector) onDelta(delta string) {
 	}
 }
 
-func (d *reasoningLoopDetector) detectRepeatedChunkError(err error) bool {
-	chunk, ok := repeatedChunkFromError(err)
-	if !ok {
-		return false
+func (d *reasoningLoopDetector) finishLineLocked() {
+	line := d.currentLine.String()
+	d.currentLine.Reset()
+	lineStart := d.rawLineStart
+	d.rawLineStart = d.raw.Len()
+
+	normalized := strings.Join(strings.Fields(line), " ")
+	if normalized == "" {
+		return
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.detected {
-		return true
+	if d.observeLineLocked(normalized, lineStart) {
+		return
 	}
-	if d.currentLine.Len() > 0 {
-		d.lines = append(d.lines, d.currentLine.String())
-		d.currentLine.Reset()
-	}
-	d.repeatedChunk = true
-	d.trigger(chunk, len(d.lines))
-	return true
+	d.observeTokensLocked(normalized)
 }
 
-func (d *reasoningLoopDetector) observeRepeatedRuneLocked(r rune) bool {
-	if ignoredRepeatedRune(r) {
+// --- character runs ---
+
+func (d *reasoningLoopDetector) observeRuneLocked(r rune) bool {
+	if d.charLen < charWindowSize {
+		d.charRing[(d.charStart+d.charLen)%charWindowSize] = r
+		d.charLen++
+	} else {
+		d.charRing[d.charStart] = r
+		d.charStart = (d.charStart + 1) % charWindowSize
+	}
+	d.charSince++
+	// Scanning every rune would be wasted work: a run long enough to fire
+	// stays detectable a few runes later, so scan on a small stride.
+	if d.charSince < 16 || d.charLen < charTriggerSpan {
 		return false
 	}
-	d.appendRecentRuneLocked(r)
-	if len(d.recentRunes) < loopRepeatedRuneMinCount {
-		return false
+	d.charSince = 0
+	if unit, span := d.repeatedRunLocked(); unit != "" {
+		// span counts runes; walk back over the raw bytes to find the byte
+		// offset where the repeated run starts.
+		raw := d.raw.String()
+		loopStartOffset := len(raw)
+		for i := 0; i < span && loopStartOffset > 0; i++ {
+			_, size := utf8.DecodeLastRuneInString(raw[:loopStartOffset])
+			loopStartOffset -= size
+		}
+		d.triggerRawLocked(strings.Repeat(unit, span/len([]rune(unit))), loopStartOffset)
+		return true
 	}
-	if d.maxRuneCount < loopRepeatedRuneMinCount {
-		return false
+	return false
+}
+
+// repeatedRunLocked looks for the smallest period whose repetition covers the
+// trailing charTriggerSpan runes of the window. It returns the repeating unit
+// and the length of the covered span in runes.
+func (d *reasoningLoopDetector) repeatedRunLocked() (string, int) {
+	n := d.charLen
+	at := func(i int) rune { // i counted from the oldest rune in the window
+		return d.charRing[(d.charStart+i)%charWindowSize]
 	}
-	if float64(d.maxRuneCount)/float64(len(d.recentRunes)) < loopRepeatedRuneMinRate {
-		return false
+	for p := 1; p <= charMaxPeriod; p++ {
+		if p*charMinPeriodCopies > charTriggerSpan {
+			break
+		}
+		span := 0
+		for i := n - 1; i >= p; i-- {
+			if at(i) != at(i-p) {
+				break
+			}
+			span++
+		}
+		span += p // the first unit itself
+		if span < charTriggerSpan || span/p < charMinPeriodCopies {
+			continue
+		}
+		unit := make([]rune, 0, p)
+		for i := n - p; i < n; i++ {
+			unit = append(unit, at(i))
+		}
+		if !meaningfulRunUnit(unit) {
+			continue
+		}
+		return string(unit), span
 	}
-	d.trigger(d.recentRunesStringLocked(), len(d.lines))
+	// Frequency fallback: one rune dominating the window even when other
+	// runes interrupt the exact run.
+	counts := make(map[rune]int, 8)
+	best := 0
+	var bestRune rune
+	for i := range n {
+		r := at(i)
+		counts[r]++
+		if counts[r] > best {
+			best = counts[r]
+			bestRune = r
+		}
+	}
+	if best >= charFreqMinCount && float64(best)/float64(n) >= charFreqMinRate && !ignoredRepeatedRune(bestRune) {
+		// Report from the first occurrence of the dominant rune so preceding
+		// unrelated content is not swallowed into the repeated portion.
+		first := 0
+		for first < n && at(first) != bestRune {
+			first++
+		}
+		runes := make([]rune, 0, n-first)
+		for i := first; i < n; i++ {
+			runes = append(runes, at(i))
+		}
+		return string(runes), n - first
+	}
+	return "", 0
+}
+
+// meaningfulRunUnit rejects units made only of formatting characters, which
+// legitimately run long in markdown horizontal rules or ASCII tables.
+func meaningfulRunUnit(unit []rune) bool {
+	for _, r := range unit {
+		if !ignoredRepeatedRune(r) && r != '\n' && r != '\t' && r != '\r' {
+			return true
+		}
+	}
+	// All-whitespace units (for example newline floods) are still degenerate.
+	for _, r := range unit {
+		if r != '\n' && r != '\r' {
+			return false
+		}
+	}
 	return true
 }
 
 func ignoredRepeatedRune(r rune) bool {
-	// Ignore common formatting-only runs that can be benign in markdown output
-	// or ASCII tables. Newlines are intentionally not ignored.
 	switch r {
-	case ' ', '-', '=', '*', '>', '_', '|':
+	case ' ', '-', '=', '*', '>', '_', '|', '#', '.', '`', '+', '~':
 		return true
 	default:
 		return false
 	}
 }
 
-func (d *reasoningLoopDetector) appendRecentRuneLocked(r rune) {
-	if len(d.recentRunes) < loopRepeatedRuneWindowSize {
-		d.recentRunes = append(d.recentRunes, r)
-		d.incrementRuneCountLocked(r)
-		return
-	}
+// --- exact line repetition ---
 
-	evicted := d.recentRunes[d.recentRuneStart]
-	d.decrementRuneCountLocked(evicted)
-	d.recentRunes[d.recentRuneStart] = r
-	d.recentRuneStart = (d.recentRuneStart + 1) % loopRepeatedRuneWindowSize
-	d.incrementRuneCountLocked(r)
-}
+func (d *reasoningLoopDetector) observeLineLocked(normalized string, rawStart int) bool {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(normalized))
+	hash := h.Sum64()
 
-func (d *reasoningLoopDetector) incrementRuneCountLocked(r rune) {
-	if d.runeCounts == nil {
-		d.runeCounts = make(map[rune]int, loopRepeatedRuneWindowSize)
-	}
-	oldCount := d.runeCounts[r]
-	if oldCount > 0 {
-		d.runeCountBuckets[oldCount]--
-	}
-	newCount := oldCount + 1
-	d.runeCounts[r] = newCount
-	d.runeCountBuckets[newCount]++
-	if newCount > d.maxRuneCount {
-		d.maxRuneCount = newCount
-	}
-}
+	n := len(d.lineHashes)
+	d.lines = append(d.lines, normalized)
+	d.lineHashes = append(d.lineHashes, hash)
+	d.lineStarts = append(d.lineStarts, rawStart)
 
-func (d *reasoningLoopDetector) decrementRuneCountLocked(r rune) {
-	oldCount := d.runeCounts[r]
-	if oldCount == 0 {
-		return
-	}
-	d.runeCountBuckets[oldCount]--
-	newCount := oldCount - 1
-	if newCount == 0 {
-		delete(d.runeCounts, r)
-	} else {
-		d.runeCounts[r] = newCount
-		d.runeCountBuckets[newCount]++
-	}
-	if oldCount == d.maxRuneCount && d.runeCountBuckets[oldCount] == 0 {
-		for d.maxRuneCount > 0 && d.runeCountBuckets[d.maxRuneCount] == 0 {
-			d.maxRuneCount--
+	// Update existing candidate periods, drop the ones the new line breaks.
+	for p, matched := range d.lineMatch {
+		if n >= p && d.lineHashes[n-p] == hash {
+			d.lineMatch[p] = matched + 1
+		} else {
+			delete(d.lineMatch, p)
 		}
 	}
-}
-
-func (d *reasoningLoopDetector) recentRunesStringLocked() string {
-	if len(d.recentRunes) < loopRepeatedRuneWindowSize || d.recentRuneStart == 0 {
-		return string(d.recentRunes)
-	}
-	ordered := make([]rune, 0, len(d.recentRunes))
-	ordered = append(ordered, d.recentRunes[d.recentRuneStart:]...)
-	ordered = append(ordered, d.recentRunes[:d.recentRuneStart]...)
-	return string(ordered)
-}
-
-func repeatedChunkFromError(err error) (string, bool) {
-	if err == nil {
-		return "", false
-	}
-	message := err.Error()
-	_, after, ok := strings.Cut(message, liteLLMRepeatedChunkMarker)
-	if !ok {
-		return "", false
-	}
-	chunk := after
-	end := len(chunk)
-	for _, marker := range []string{"Received Model Group=", "Available Model Group Fallbacks="} {
-		if idx := strings.Index(chunk, marker); idx >= 0 {
-			end = min(end, idx)
-		}
-	}
-	chunk = strings.TrimRight(chunk[:end], ". \t\r")
-	chunk = strings.ReplaceAll(chunk, `\n`, "\n")
-	chunk = strings.ReplaceAll(chunk, `\r`, "\r")
-	chunk = strings.ReplaceAll(chunk, `\t`, "\t")
-	if chunk == "" {
-		return "", false
-	}
-	return chunk, true
-}
-
-func (d *reasoningLoopDetector) checkLoopLocked() bool {
-	n := len(d.lines)
-
-	// Strategy 1: same non-empty line repeated beyond the configured allowance.
-	lineThreshold := d.maxRepeats + 2
-	if n >= lineThreshold {
-		last := d.lines[n-1]
-		if strings.TrimSpace(last) != "" {
-			allSame := true
-			for i := n - lineThreshold; i < n-1; i++ {
-				if d.lines[i] != last {
-					allSame = false
-					break
-				}
-			}
-			if allSame {
-				d.trigger(strings.Join(d.lines[n-lineThreshold:], "\n"), n-lineThreshold)
-				return true
+	// Register new candidate periods from recent occurrences of this line.
+	for _, pos := range d.linePos[hash] {
+		p := n - pos
+		if p >= 1 && p <= lineMaxPeriod {
+			if _, ok := d.lineMatch[p]; !ok {
+				d.lineMatch[p] = 1
 			}
 		}
 	}
+	positions := append(d.linePos[hash], n)
+	if len(positions) > lineTrackedPositions {
+		positions = positions[len(positions)-lineTrackedPositions:]
+	}
+	d.linePos[hash] = positions
 
-	// Strategy 2: block of k lines appearing consecutively beyond the allowance.
-	requiredCopies := d.maxRepeats + 2
-	maxK := min(n/requiredCopies, loopBlockMaxLines)
-	for k := loopBlockMinLines; k <= maxK; k++ {
-		recentStart := n - k
-		if !hasRepeatedBlockSignal(d.lines[recentStart:]) {
+	stage := stageFor(d.budgetFractionLocked())
+	for p, matched := range d.lineMatch {
+		copies := matched/p + 1
+		if !d.lineLoopLocked(p, copies, stage) {
 			continue
 		}
-		copies := 1
-		for copyStart := recentStart - k; copyStart >= 0; copyStart -= k {
-			match := true
-			for i := 0; i < k; i++ {
-				if d.lines[copyStart+i] != d.lines[recentStart+i] {
-					match = false
-					break
-				}
-			}
-			if !match {
-				break
-			}
-			copies++
-			if copies >= requiredCopies {
-				d.trigger(strings.Join(d.lines[recentStart:], "\n"), n-copies*k)
-				return true
-			}
-		}
-	}
-
-	return d.checkFuzzyLoopLocked(n)
-}
-
-func hasRepeatedBlockSignal(lines []string) bool {
-	unique := make(map[string]struct{})
-	for _, line := range lines {
-		normalized := strings.ToLower(strings.TrimSpace(line))
-		if normalized != "" {
-			unique[normalized] = struct{}{}
-		}
-	}
-	return len(unique) >= loopBlockMinUniqueLines
-}
-
-func (d *reasoningLoopDetector) checkFuzzyLoopLocked(n int) bool {
-	for _, k := range loopFuzzyWindowSizes {
-		if n < 2*k {
-			continue
-		}
-		prevStart := n - 2*k
-		recentStart := n - k
-
-		// Compare only adjacent windows. A repeated reasoning loop is expected
-		// to recur immediately; comparing every pair of historical windows would
-		// be slower and would flag legitimate revisits to earlier topics.
-		prev := fuzzyReasoningWindow(d.lines[prevStart:recentStart])
-		recent := fuzzyReasoningWindow(d.lines[recentStart:])
-		if !prev.enoughSignal() || !recent.enoughSignal() {
-			d.fuzzyRepeats[k] = 0
-			continue
-		}
-
-		// Jaccard similarity is intersection / union of the shingle sets. It is
-		// insensitive to repeated copies of the same phrase inside one window,
-		// which helps focus on breadth of overlap rather than raw length.
-		score := jaccardSimilarity(prev.shingles, recent.shingles)
-		if score >= loopFuzzyStrictThreshold || score >= loopFuzzyMarkerThreshold && shareDecisionMarkers(prev.markers, recent.markers) {
-			if lastEnd := d.fuzzyLastMatchEnd[k]; lastEnd == 0 || n-lastEnd >= k {
-				d.fuzzyRepeats[k]++
-				d.fuzzyLastMatchEnd[k] = n
-				if d.fuzzyRepeats[k] > d.maxRepeats {
-					d.trigger(strings.Join(d.lines[recentStart:], "\n"), prevStart-(d.maxRepeats*k))
-					return true
-				}
-			}
-			continue
-		}
-		d.fuzzyRepeats[k] = 0
-		d.fuzzyLastMatchEnd[k] = 0
+		unitStart := len(d.lines) - p
+		loopLines := min(copies*p, len(d.lines))
+		d.triggerRawLocked(
+			strings.Join(d.lines[unitStart:], "\n"),
+			d.lineStarts[len(d.lines)-loopLines],
+		)
+		return true
 	}
 	return false
 }
 
-type fuzzyWindow struct {
-	// tokens are normalized words from the raw reasoning lines. They are kept so
-	// enoughSignal can reject tiny windows before shingle similarity is trusted.
-	tokens   []string
-	shingles map[string]struct{}
-
-	// markers summarize high-level review states observed in the window. They
-	// are not model semantics; they are simple phrase buckets for repeated
-	// review behavior that previously escaped exact matching.
-	markers map[string]struct{}
-}
-
-func (w fuzzyWindow) enoughSignal() bool {
-	return len(w.tokens) >= loopFuzzyMinTokens && len(w.shingles) >= loopFuzzyMinUniqueShingles
-}
-
-func fuzzyReasoningWindow(lines []string) fuzzyWindow {
-	tokens := make([]string, 0, len(lines)*8)
-	markers := make(map[string]struct{})
-	for _, line := range lines {
-		for _, marker := range decisionMarkers(line) {
-			markers[marker] = struct{}{}
+func (d *reasoningLoopDetector) lineLoopLocked(period, copies int, stage loopStage) bool {
+	if period == 1 {
+		line := d.lines[len(d.lines)-1]
+		needed := stage.lineCopies
+		if len(line) < lineShortLine {
+			// Very short lines such as "}" close nested structures in code
+			// snippets and legitimately repeat; ask for much more evidence.
+			needed = lineShortLineCopies
 		}
-		tokens = append(tokens, normalizeReasoningTokens(line)...)
+		return copies >= needed
 	}
-	return fuzzyWindow{
-		tokens:   tokens,
-		shingles: tokenShingles(tokens, loopFuzzyShingleSize),
-		markers:  markers,
+	if copies < stage.blockCopies {
+		return false
+	}
+	unit := d.lines[len(d.lines)-period:]
+	distinct := make(map[string]struct{}, len(unit))
+	chars := 0
+	for _, line := range unit {
+		distinct[strings.ToLower(line)] = struct{}{}
+		chars += len(line)
+	}
+	// A block loop needs some substance: two lines alternating or a unit made
+	// of a few characters is more likely quoted structure than a loop.
+	return len(distinct) >= 2 && chars >= lineMinUnitChars
+}
+
+// --- shingle recurrence ---
+
+func (d *reasoningLoopDetector) observeTokensLocked(line string) {
+	tokens := normalizeReasoningTokens(line)
+	if len(tokens) == 0 {
+		return
+	}
+	stage := stageFor(d.budgetFractionLocked())
+	for _, token := range tokens {
+		d.tokenTail = append(d.tokenTail, token)
+		if len(d.tokenTail) < shingleSize {
+			continue
+		}
+		if len(d.tokenTail) > shingleSize {
+			d.tokenTail = d.tokenTail[1:]
+		}
+		h := fnv.New64a()
+		for _, t := range d.tokenTail {
+			_, _ = h.Write([]byte(t))
+			_, _ = h.Write([]byte{0})
+		}
+		hash := h.Sum64()
+		_, repeated := d.shingleSeen[hash]
+		d.shingleSeen[hash] = struct{}{}
+		d.pushShingleLocked(repeated)
+
+		if d.shingleLen < shingleWindow {
+			continue
+		}
+		frac := float64(d.shingleRepeat) / float64(d.shingleLen)
+
+		switch {
+		case d.hardLen == 0:
+			if frac >= shingleHardArm {
+				d.hardLen = 1
+				d.hardOffset = d.rawLineStart
+			}
+		case frac >= shingleHardArm-shingleHysteresis:
+			d.hardLen++
+			if d.hardLen >= shingleHardPlateau {
+				d.triggerShingleLocked(d.hardOffset)
+				return
+			}
+		default:
+			d.hardLen = 0
+		}
+
+		switch {
+		case d.plateauLen == 0:
+			if frac >= stage.shingleArm {
+				d.plateauLen = 1
+				d.plateauOffset = d.rawLineStart
+				d.armedAt = stage.shingleArm
+			}
+		case frac >= minFloat(d.armedAt, stage.shingleArm)-shingleHysteresis:
+			d.plateauLen++
+			if d.plateauLen >= stage.shinglePlateau {
+				d.triggerShingleLocked(d.plateauOffset)
+				return
+			}
+		default:
+			d.plateauLen = 0
+		}
+	}
+}
+
+func (d *reasoningLoopDetector) triggerShingleLocked(offset int) {
+	raw := d.raw.String()
+	if offset > len(raw) {
+		offset = len(raw)
+	}
+	d.triggerRawLocked(raw[offset:], offset)
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (d *reasoningLoopDetector) pushShingleLocked(repeated bool) {
+	if d.shingleLen < shingleWindow {
+		d.shingleRing[(d.shingleStart+d.shingleLen)%shingleWindow] = repeated
+		d.shingleLen++
+	} else {
+		if d.shingleRing[d.shingleStart] {
+			d.shingleRepeat--
+		}
+		d.shingleRing[d.shingleStart] = repeated
+		d.shingleStart = (d.shingleStart + 1) % shingleWindow
+	}
+	if repeated {
+		d.shingleRepeat++
 	}
 }
 
@@ -463,84 +626,68 @@ func normalizeReasoningTokens(s string) []string {
 	return tokens
 }
 
-// tokenShingles returns a set, not a multiset. We only care whether a phrase
-// shape appears in both windows, not how many times it appears inside one
-// window.
-func tokenShingles(tokens []string, size int) map[string]struct{} {
-	shingles := make(map[string]struct{})
-	if size <= 0 || len(tokens) < size {
-		return shingles
+// --- provider repeated chunk ---
+
+func (d *reasoningLoopDetector) detectRepeatedChunkError(err error) bool {
+	chunk, ok := repeatedChunkFromError(err)
+	if !ok {
+		return false
 	}
-	for i := 0; i+size <= len(tokens); i++ {
-		shingles[strings.Join(tokens[i:i+size], " ")] = struct{}{}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.detected {
+		return true
 	}
-	return shingles
+	d.repeatedChunk = true
+	d.triggerRawLocked(chunk, d.raw.Len())
+	return true
 }
 
-// jaccardSimilarity returns 0..1 overlap between two shingle sets. Identical
-// sets score 1. Disjoint sets score 0.
-func jaccardSimilarity(a, b map[string]struct{}) float64 {
-	if len(a) == 0 && len(b) == 0 {
-		return 0
+func repeatedChunkFromError(err error) (string, bool) {
+	if err == nil {
+		return "", false
 	}
-	intersection := 0
-	for shingle := range a {
-		if _, ok := b[shingle]; ok {
-			intersection++
+	message := err.Error()
+	_, after, ok := strings.Cut(message, liteLLMRepeatedChunkMarker)
+	if !ok {
+		return "", false
+	}
+	chunk := after
+	end := len(chunk)
+	for _, marker := range []string{"Received Model Group=", "Available Model Group Fallbacks="} {
+		if idx := strings.Index(chunk, marker); idx >= 0 {
+			end = min(end, idx)
 		}
 	}
-	union := len(a) + len(b) - intersection
-	if union == 0 {
-		return 0
+	chunk = strings.TrimRight(chunk[:end], ". \t\r")
+	chunk = strings.ReplaceAll(chunk, `\n`, "\n")
+	chunk = strings.ReplaceAll(chunk, `\r`, "\r")
+	chunk = strings.ReplaceAll(chunk, `\t`, "\t")
+	if chunk == "" {
+		return "", false
 	}
-	return float64(intersection) / float64(union)
+	return chunk, true
 }
 
-// decisionMarkers are coarse signs that the model is repeating the review
-// decision process itself. They let lower fuzzy similarity trigger only when
-// both windows share important review states, avoiding false positives from
-// ordinary long explanations that happen to reuse vocabulary.
-func decisionMarkers(s string) []string {
-	normalized := strings.Join(normalizeReasoningTokens(s), " ")
-	var markers []string
-	for _, marker := range []struct {
-		name    string
-		phrases []string
-	}{
-		{"finding", []string{"finding", "formulate the finding", "finalize the finding", "finalize my findings"}},
-		{"priority", []string{"priority"}},
-		{"suggestion", []string{"suggestion"}},
-		{"reconsider", []string{"actually", "wait", "reconsider", "overthinking"}},
-		{"old_new_code", []string{"old code", "new code"}},
-		{"main_issue", []string{"main issue", "pre existing", "introduced by the patch"}},
-	} {
-		for _, phrase := range marker.phrases {
-			if strings.Contains(normalized, phrase) {
-				markers = append(markers, marker.name)
-				break
-			}
-		}
-	}
-	return markers
-}
+// --- triggering ---
 
-// shareDecisionMarkers requires more than one shared marker so one repeated
-// word, such as "finding", cannot make a weak fuzzy match trigger by itself.
-func shareDecisionMarkers(a, b map[string]struct{}) bool {
-	shared := 0
-	for marker := range a {
-		if _, ok := b[marker]; ok {
-			shared++
-		}
-	}
-	return shared >= 2
-}
-
-func (d *reasoningLoopDetector) trigger(repeatedContent string, loopStartLine int) {
+// triggerRawLocked fires with the repeated content and the byte offset into
+// the raw stream where the loop is considered to start.
+func (d *reasoningLoopDetector) triggerRawLocked(repeatedContent string, loopStartOffset int) {
 	d.detected = true
 	d.repeatedContent = repeatedContent
-	if loopStartLine > 0 {
-		d.loopStartContent = strings.Join(d.lines[:loopStartLine], "\n")
+	raw := d.raw.String()
+	if loopStartOffset < 0 {
+		loopStartOffset = 0
 	}
+	if loopStartOffset > len(raw) {
+		loopStartOffset = len(raw)
+	}
+	// Offsets derived from rune counts can land inside a multi-byte rune;
+	// snap to the next boundary so the reported split stays valid UTF-8.
+	for loopStartOffset < len(raw) && !utf8.RuneStart(raw[loopStartOffset]) {
+		loopStartOffset++
+	}
+	d.loopStartContent = strings.TrimRight(raw[:loopStartOffset], "\n")
 	d.cancel()
 }

@@ -617,7 +617,6 @@ func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm
 		ParallelToolCalls:              true,
 		ReasoningEffort:                effort,
 		MaxReasoning:                   maxReasoning,
-		MaxReasoningLoopRepeats:        c.profile.MaxReasoningLoopRepeats,
 		DisableReasoningEffortFallback: mode == probeRetrySameEffort,
 	}
 }

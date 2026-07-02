@@ -731,8 +731,7 @@ func TestClientReviewReassemblesStreamedToolCalls(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls:       true,
-		MaxReasoningLoopRepeats: 4,
+		ParallelToolCalls: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1779,10 +1778,9 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	resp, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:            "system",
-		UserContent:             "user",
-		ReasoningEffort:         "high",
-		MaxReasoningLoopRepeats: 4,
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1881,10 +1879,9 @@ func TestClientReviewFallsBackAfterFuzzyReasoningLoop(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	resp, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:            "system",
-		UserContent:             "user",
-		ReasoningEffort:         "high",
-		MaxReasoningLoopRepeats: 4,
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1906,11 +1903,11 @@ func TestClientReviewFallsBackAfterFuzzyReasoningLoop(t *testing.T) {
 	}
 }
 
-func TestClientReviewDisablesReasoningLoopDetection(t *testing.T) {
+func TestClientReviewToleratesFewRepeatedReasoningLines(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		for range 12 {
+		for range 5 {
 			writeSSEChunk(t, w, map[string]any{
 				"id":      "chunk-reasoning",
 				"object":  "chat.completion.chunk",
@@ -1930,10 +1927,9 @@ func TestClientReviewDisablesReasoningLoopDetection(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	_, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:            "system",
-		UserContent:             "user",
-		ReasoningEffort:         "high",
-		MaxReasoningLoopRepeats: 0,
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2155,10 +2151,9 @@ func TestClientReviewTreatsLiteLLMRepeatedChunkErrorAsReasoningLoop(t *testing.T
 	})
 
 	resp, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:            "system",
-		UserContent:             "user",
-		ReasoningEffort:         "high",
-		MaxReasoningLoopRepeats: 5,
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2230,8 +2225,7 @@ func TestClientReviewNoToolsFallbackInvalidJSONIncludesMetadata(t *testing.T) {
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls:       true,
-		MaxReasoningLoopRepeats: 4,
+		ParallelToolCalls: true,
 	})
 	var invalidResp *InvalidResponseError
 	if !errors.As(err, &invalidResp) {
@@ -2288,8 +2282,7 @@ func TestClientReviewRetriesLastBudgetExhaustedEffortWithoutToolsAfterFallbacks(
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls:       true,
-		MaxReasoningLoopRepeats: 4,
+		ParallelToolCalls: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2324,10 +2317,9 @@ func TestClientReviewFallsBackAfterReasoningOnlyEmptyResponse(t *testing.T) {
 
 	client := NewOpenAIClient(server.URL, "token", "model")
 	resp, err := client.Review(context.Background(), &ReviewRequest{
-		SystemPrompt:            "system",
-		UserContent:             "user",
-		ReasoningEffort:         "high",
-		MaxReasoningLoopRepeats: 4,
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2553,8 +2545,7 @@ func TestClientReviewRetriesLastReasoningOnlyEmptyEffortWithoutToolsAfterFallbac
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls:       true,
-		MaxReasoningLoopRepeats: 4,
+		ParallelToolCalls: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2621,8 +2612,7 @@ func TestClientReviewRetriesLastLoopDetectedEffortWithoutToolsAfterFallbacks(t *
 				Parameters:  json.RawMessage(`{"type":"object"}`),
 			},
 		},
-		ParallelToolCalls:       true,
-		MaxReasoningLoopRepeats: 4,
+		ParallelToolCalls: true,
 	})
 	if err != nil {
 		t.Fatal(err)

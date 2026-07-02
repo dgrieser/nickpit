@@ -206,7 +206,6 @@ func TestEffortDiscoveryRetriesReasoningLoopWithSameEffort(t *testing.T) {
 		ReasoningEffort:            "high",
 		MaxOutputRetries:           1,
 		MaxReasoningSeconds:        12,
-		MaxReasoningLoopRepeats:    3,
 		MaxOutputRetriesConfigured: true,
 	})
 	if result.ConfiguredNoTools().Status != StatusOK {
@@ -221,8 +220,8 @@ func TestEffortDiscoveryRetriesReasoningLoopWithSameEffort(t *testing.T) {
 	if !client.reqs[0].DisableReasoningEffortFallback || !client.reqs[1].DisableReasoningEffortFallback {
 		t.Fatal("effort discovery requests must disable reasoning-effort fallback")
 	}
-	if client.reqs[0].MaxReasoning != 12*time.Second || client.reqs[0].MaxReasoningLoopRepeats != 3 {
-		t.Fatalf("timeout settings = %s/%d, want 12s/3", client.reqs[0].MaxReasoning, client.reqs[0].MaxReasoningLoopRepeats)
+	if client.reqs[0].MaxReasoning != 12*time.Second {
+		t.Fatalf("timeout settings = %s, want 12s", client.reqs[0].MaxReasoning)
 	}
 }
 

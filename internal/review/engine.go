@@ -594,7 +594,6 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		MaxDuplicateToolCalls:     req.MaxDuplicateToolCalls,
 		MaxOutputRetries:          req.MaxOutputRetries,
 		MaxReasoningSeconds:       req.MaxReasoningSeconds,
-		MaxReasoningLoopRepeats:   req.MaxReasoningLoopRepeats,
 		DisableParallelToolCalls:  req.DisableParallelToolCalls,
 		DisableSuggestions:        req.DisableSuggestions,
 		RepoRoot:                  req.RepoRoot,

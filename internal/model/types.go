@@ -34,27 +34,26 @@ const (
 )
 
 type ReviewRequest struct {
-	Mode                    ReviewMode
-	RepoRoot                string
-	Workdir                 string
-	Repo                    string
-	Identifier              int
-	BaseRef                 string
-	HeadRef                 string
-	IncludeComments         bool
-	IncludeCommits          bool
-	IncludeFullFiles        bool
-	IncludePaths            []string
-	ExcludePaths            []string
-	IncludeContent          []string
-	ExcludeContent          []string
-	DiffFormat              DiffFormat
-	MaxContextTokens        int
-	MaxToolCalls            int
-	MaxDuplicateToolCalls   int
-	MaxOutputRetries        int
-	MaxReasoningSeconds     int
-	MaxReasoningLoopRepeats int
+	Mode                  ReviewMode
+	RepoRoot              string
+	Workdir               string
+	Repo                  string
+	Identifier            int
+	BaseRef               string
+	HeadRef               string
+	IncludeComments       bool
+	IncludeCommits        bool
+	IncludeFullFiles      bool
+	IncludePaths          []string
+	ExcludePaths          []string
+	IncludeContent        []string
+	ExcludeContent        []string
+	DiffFormat            DiffFormat
+	MaxContextTokens      int
+	MaxToolCalls          int
+	MaxDuplicateToolCalls int
+	MaxOutputRetries      int
+	MaxReasoningSeconds   int
 	// Concurrency caps concurrent LLM agent loops across the whole pipeline
 	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
 	// summarize); 0 = unlimited.

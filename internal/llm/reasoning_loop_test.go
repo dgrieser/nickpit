@@ -5,43 +5,47 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestReasoningLoopDetectorRepeatedLine(t *testing.T) {
-	d, canceled := newTestReasoningLoopDetector()
-	for range 5 {
-		d.onDelta("same thought\n")
+// newTestReasoningLoopDetector returns a detector with a controllable clock.
+// The returned advance function moves the simulated stream time to the given
+// fraction of the (default 300s) staging budget.
+func newTestReasoningLoopDetector() (*reasoningLoopDetector, *bool, func(fraction float64)) {
+	canceled := false
+	d := newReasoningLoopDetector(func() {
+		canceled = true
+	}, 0)
+	base := time.Unix(0, 0)
+	clock := base
+	d.now = func() time.Time { return clock }
+	// Fix the stream start so advancing works before the first delta arrives.
+	d.start = base
+	advance := func(fraction float64) {
+		clock = base.Add(time.Duration(fraction * float64(d.budget)))
+	}
+	return d, &canceled, advance
+}
+
+func TestReasoningLoopDetectorRepeatedLineEarly(t *testing.T) {
+	d, canceled, _ := newTestReasoningLoopDetector()
+	needed := loopStages[0].lineCopies
+	for range needed - 1 {
+		d.onDelta("the same thought again\n")
 	}
 	if d.Detected() {
-		t.Fatal("repeated line loop detected before allowed repeats were exhausted")
+		t.Fatal("repeated line loop detected before the early-stage allowance was exhausted")
 	}
-	d.onDelta("same thought\n")
+	d.onDelta("the same thought again\n")
 	if !d.Detected() {
 		t.Fatal("expected repeated line loop")
 	}
 	if !*canceled {
 		t.Fatal("expected detector to cancel stream")
 	}
-}
-
-func TestReasoningLoopDetectorRepeatedRuneRate(t *testing.T) {
-	d, canceled := newTestReasoningLoopDetector()
-	for range loopRepeatedRuneMinCount - 1 {
-		d.onDelta("\n")
-	}
-	if d.Detected() {
-		t.Fatal("repeated rune loop detected before threshold")
-	}
-	d.onDelta("\n")
-	if !d.Detected() {
-		t.Fatal("expected repeated rune loop")
-	}
-	if !*canceled {
-		t.Fatal("expected detector to cancel stream")
-	}
 	err := d.MakeError()
-	if strings.Count(err.RepeatedContent, "\n") != loopRepeatedRuneMinCount {
-		t.Fatalf("repeated content = %q, want %d newlines", err.RepeatedContent, loopRepeatedRuneMinCount)
+	if !strings.Contains(err.RepeatedContent, "the same thought again") {
+		t.Fatalf("repeated content = %q", err.RepeatedContent)
 	}
 	if err.RepeatedChunk {
 		t.Fatal("reasoning-content loop should not be flagged as a repeated chunk")
@@ -51,22 +55,258 @@ func TestReasoningLoopDetectorRepeatedRuneRate(t *testing.T) {
 	}
 }
 
+func TestReasoningLoopDetectorRepeatedLineIgnoresWhitespace(t *testing.T) {
+	d, _, advance := newTestReasoningLoopDetector()
+	advance(0.9) // late stage: fewest copies needed
+	needed := loopStages[len(loopStages)-1].lineCopies
+	variants := []string{
+		"  the same thought again\n",
+		"the same    thought again  \n",
+		"\tthe same thought\tagain\n",
+		"\n", // empty lines must not break the run
+	}
+	for i := range needed {
+		d.onDelta(variants[i%len(variants)])
+		d.onDelta("the same thought again\n")
+	}
+	if !d.Detected() {
+		t.Fatal("expected whitespace-insensitive repeated line loop")
+	}
+}
+
+func TestReasoningLoopDetectorStagingLowersLineCopies(t *testing.T) {
+	early := loopStages[0].lineCopies
+	late := loopStages[len(loopStages)-1].lineCopies
+	if late >= early {
+		t.Fatalf("staging must relax thresholds over time: early=%d late=%d", early, late)
+	}
+
+	d, _, advance := newTestReasoningLoopDetector()
+	advance(0.9)
+	for range late - 1 {
+		d.onDelta("another repeating conclusion\n")
+	}
+	if d.Detected() {
+		t.Fatal("late-stage line loop detected below the late allowance")
+	}
+	d.onDelta("another repeating conclusion\n")
+	if !d.Detected() {
+		t.Fatal("expected late-stage line loop at the reduced allowance")
+	}
+}
+
+func TestReasoningLoopDetectorRepeatedBlock(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	block := "first line of the repeated reasoning block\nsecond line with more detail\nthird line drawing the conclusion\n"
+	needed := loopStages[0].blockCopies
+	for range needed - 1 {
+		d.onDelta(block)
+	}
+	if d.Detected() {
+		t.Fatal("block loop detected before the allowance was exhausted")
+	}
+	d.onDelta(block)
+	if !d.Detected() {
+		t.Fatal("expected repeated block loop")
+	}
+}
+
+func TestReasoningLoopDetectorLongExactBlock(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	emitBlock := func() {
+		for i := range 55 {
+			d.onDelta(fmt.Sprintf("line %02d has useful reasoning about a specific topic\n", i))
+		}
+	}
+	emitBlock()
+	if d.Detected() {
+		t.Fatal("a single block emission is novel content, not a loop")
+	}
+	// A long verbatim block re-emitted a few times must fire; with 55 lines
+	// per copy the near-verbatim shingle tier catches it within a few copies.
+	for copies := 2; copies <= loopStages[0].blockCopies; copies++ {
+		emitBlock()
+		if d.Detected() {
+			return
+		}
+	}
+	t.Fatal("expected long exact block loop")
+}
+
+func TestReasoningLoopDetectorShortClosingLinesNeedMoreCopies(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	// Nested code snippets legitimately end in runs of closing braces.
+	for range lineShortLineCopies - 1 {
+		d.onDelta("}\n")
+	}
+	if d.Detected() {
+		t.Fatal("short closing lines should get a higher repetition allowance")
+	}
+}
+
+func TestReasoningLoopDetectorRepeatedRune(t *testing.T) {
+	d, canceled, _ := newTestReasoningLoopDetector()
+	d.onDelta(strings.Repeat("a", charTriggerSpan+32))
+	if !d.Detected() {
+		t.Fatal("expected repeated rune loop")
+	}
+	if !*canceled {
+		t.Fatal("expected detector to cancel stream")
+	}
+}
+
+func TestReasoningLoopDetectorRepeatedMultiByteRuneOffsets(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	d.onDelta("intro\n")
+	d.onDelta(strings.Repeat("ü", charTriggerSpan+32))
+	if !d.Detected() {
+		t.Fatal("expected repeated multi-byte rune loop")
+	}
+	err := d.MakeError()
+	// The run starts right after the intro line; the reported split must not
+	// drift into the repeated region (span is counted in runes, not bytes).
+	if err.LoopStartContent != "intro" {
+		t.Fatalf("loop start content = %q, want %q", err.LoopStartContent, "intro")
+	}
+	if strings.Trim(err.RepeatedContent, "ü") != "" {
+		t.Fatalf("repeated content = %q, want only ü runes", err.RepeatedContent)
+	}
+}
+
+func TestReasoningLoopDetectorNewlineFlood(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	d.onDelta(strings.Repeat("\n", charTriggerSpan+32))
+	if !d.Detected() {
+		t.Fatal("expected newline flood to trigger")
+	}
+}
+
+func TestReasoningLoopDetectorShortPeriodRun(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	d.onDelta(strings.Repeat("ab", charTriggerSpan))
+	if !d.Detected() {
+		t.Fatal("expected short-period character run to trigger")
+	}
+}
+
 func TestReasoningLoopDetectorIgnoresFormattingRunes(t *testing.T) {
-	for _, repeated := range []string{" ", "-", "=", "*", ">", "_", "|"} {
+	for _, repeated := range []string{" ", "-", "=", "*", ">", "_", "|", "- ", "=-"} {
 		t.Run(fmt.Sprintf("%q", repeated), func(t *testing.T) {
-			d, _ := newTestReasoningLoopDetector()
-			for range loopRepeatedRuneWindowSize * 2 {
-				d.onDelta(repeated)
-			}
+			d, _, _ := newTestReasoningLoopDetector()
+			d.onDelta(strings.Repeat(repeated, charWindowSize*2))
 			if d.Detected() {
-				t.Fatalf("detected repeated rune loop for %q", repeated)
+				t.Fatalf("detected formatting run for %q", repeated)
 			}
 		})
 	}
 }
 
+func TestReasoningLoopDetectorFuzzyParaphraseCycle(t *testing.T) {
+	d, _, advance := newTestReasoningLoopDetector()
+	advance(0.6) // paraphrase plateaus arm at the mid-stage threshold
+	d.onDelta("Initial analysis before the cycle begins.\n")
+	cycles := [][3]string{
+		{"AddSession", "DropSession", "Close"},
+		{"DropSession", "DropPod", "Close"},
+		{"CreateSession", "DeleteSession", "Close"},
+		{"OpenSession", "RemoveSession", "Close"},
+		{"StartSession", "StopSession", "Close"},
+		{"MakeSession", "ClearSession", "Close"},
+		{"BuildSession", "TearDownSession", "Close"},
+		{"NewSession", "EndSession", "Close"},
+	}
+	for _, cycle := range cycles {
+		if d.Detected() {
+			break
+		}
+		for _, line := range fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2]) {
+			d.onDelta(line + "\n")
+		}
+	}
+	if !d.Detected() {
+		t.Fatal("expected fuzzy paraphrase loop")
+	}
+	err := d.MakeError()
+	if err.RepeatedContent == "" {
+		t.Fatal("expected repeated content to be reported")
+	}
+	if err.LoopStartContent == "" {
+		t.Fatal("expected pre-loop content to be reported")
+	}
+}
+
+func TestReasoningLoopDetectorFuzzyRequiresPlateau(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	// Distinct content, even with recurring vocabulary, must not fire early.
+	// Numbers are masked during normalization, so novelty must come from
+	// actual wording, as it does in real reasoning.
+	for i := range 400 {
+		d.onDelta(fmt.Sprintf("Reviewing function %s which handles a distinct concern such as %s handling and interacts with the %s subsystem in its own specific way.\n",
+			testWord(i), testWord(i*7+3), testWord(i*13+5)))
+	}
+	if d.Detected() {
+		t.Fatal("novel reasoning should not trigger the fuzzy detector")
+	}
+}
+
+func TestReasoningLoopDetectorMaskedNumbersStillLoop(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	// The same sentence with only counters changing is a loop even though no
+	// two raw lines are byte-identical.
+	for i := range 200 {
+		if d.Detected() {
+			return
+		}
+		d.onDelta(fmt.Sprintf("Analyzing item %d with a fresh perspective on concern number %d and some unique detail %d.\n", i, i*3, i*5))
+	}
+	t.Fatal("expected number-masked repetition to trigger the fuzzy detector")
+}
+
+func TestReasoningLoopDetectorIgnoresShortRepeatedHeadings(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	for i := range 120 {
+		d.onDelta(fmt.Sprintf("Analyzing the %s topic with a fresh perspective on the %s concern and its unique %s detail.\n",
+			testWord(i), testWord(i*3+1), testWord(i*5+2)))
+		d.onDelta("**Priority: 2**\n")
+	}
+	if d.Detected() {
+		t.Fatal("interleaved repeated headings should not trigger loop detection")
+	}
+}
+
+// testWord returns distinct pronounceable words so fixtures vary by wording
+// rather than by numbers, which token normalization masks.
+func testWord(i int) string {
+	consonants := []string{"b", "d", "f", "g", "k", "l", "m", "n", "p", "r", "s", "t"}
+	vowels := []string{"a", "e", "i", "o", "u"}
+	var b strings.Builder
+	for range 3 {
+		b.WriteString(consonants[i%len(consonants)])
+		i /= len(consonants)
+		b.WriteString(vowels[i%len(vowels)])
+		i /= len(vowels)
+	}
+	return b.String()
+}
+
+func TestReasoningLoopDetectorWaitsForCompletedLines(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	needed := loopStages[0].lineCopies
+	for range needed - 1 {
+		d.onDelta("the same thought again\n")
+	}
+	d.onDelta("the same thought again") // no trailing newline yet
+	if d.Detected() {
+		t.Fatal("partial final line should not complete the loop")
+	}
+	d.onDelta("\n")
+	if !d.Detected() {
+		t.Fatal("expected loop after final newline")
+	}
+}
+
 func TestReasoningLoopDetectorProviderRepeatedChunkError(t *testing.T) {
-	d, canceled := newTestReasoningLoopDetector()
+	d, canceled, _ := newTestReasoningLoopDetector()
 	err := errors.New("error, litellm.MidStreamFallbackError: litellm.InternalServerError: The model is repeating the same chunk = \n\n\n.. Received Model Group=Qwen3.5-122B-A10B-FP8")
 	if !d.detectRepeatedChunkError(err) {
 		t.Fatal("expected provider repeated chunk error to trigger loop detector")
@@ -87,7 +327,7 @@ func TestReasoningLoopDetectorProviderRepeatedChunkError(t *testing.T) {
 }
 
 func TestReasoningLoopDetectorProviderRepeatedChunkErrorIncludesPartialLine(t *testing.T) {
-	d, _ := newTestReasoningLoopDetector()
+	d, _, _ := newTestReasoningLoopDetector()
 	d.onDelta("completed reasoning\npartial reasoning before provider error")
 	err := errors.New("error, litellm.InternalServerError: The model is repeating the same chunk = repeated chunk.. Received Model Group=Qwen3.5")
 	if !d.detectRepeatedChunkError(err) {
@@ -161,96 +401,6 @@ func TestRepeatedChunkFromError(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestReasoningLoopDetectorLongExactBlock(t *testing.T) {
-	d, _ := newTestReasoningLoopDetector()
-	for repeat := range 5 {
-		for i := range 55 {
-			d.onDelta(fmt.Sprintf("line %02d has useful reasoning\n", i))
-		}
-		if d.Detected() {
-			t.Fatalf("exact block loop detected too early after copy %d", repeat+1)
-		}
-	}
-	for i := range 55 {
-		d.onDelta(fmt.Sprintf("line %02d has useful reasoning\n", i))
-	}
-	if !d.Detected() {
-		t.Fatal("expected exact long block loop")
-	}
-}
-
-func TestReasoningLoopDetectorFuzzyDecisionCycle(t *testing.T) {
-	d, _ := newTestReasoningLoopDetector()
-	d.onDelta("Initial analysis before the cycle begins.\n")
-	cycles := [][3]string{
-		{"AddSession", "DropSession", "Close"},
-		{"DropSession", "DropPod", "Close"},
-		{"CreateSession", "DeleteSession", "Close"},
-		{"OpenSession", "RemoveSession", "Close"},
-		{"StartSession", "StopSession", "Close"},
-	}
-	for _, cycle := range cycles {
-		for _, line := range fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2]) {
-			d.onDelta(line + "\n")
-		}
-		if d.Detected() {
-			t.Fatal("fuzzy decision loop detected before allowed repeats were exhausted")
-		}
-	}
-	for _, line := range fuzzyReasoningCycle("MakeSession", "ClearSession", "Close") {
-		d.onDelta(line + "\n")
-	}
-	if !d.Detected() {
-		t.Fatal("expected fuzzy decision loop")
-	}
-	err := d.MakeError()
-	if !strings.Contains(err.RepeatedContent, "Finding") {
-		t.Fatalf("repeated content missing finding: %q", err.RepeatedContent)
-	}
-}
-
-func TestReasoningLoopDetectorIgnoresShortRepeatedHeadings(t *testing.T) {
-	d, _ := newTestReasoningLoopDetector()
-	for range 200 {
-		d.onDelta("**Priority: 2**\n")
-		d.onDelta("**Suggestion**\n")
-	}
-	if d.Detected() {
-		t.Fatal("short repeated headings should not trigger fuzzy loop detection")
-	}
-}
-
-func TestReasoningLoopDetectorWaitsForCompletedLines(t *testing.T) {
-	d, _ := newTestReasoningLoopDetector()
-	cycleA := strings.Join(fuzzyReasoningCycle("AddSession", "DropSession", "Close"), "\n")
-	d.onDelta(cycleA + "\n")
-	for _, cycle := range [][3]string{
-		{"DropSession", "DropPod", "Close"},
-		{"CreateSession", "DeleteSession", "Close"},
-		{"OpenSession", "RemoveSession", "Close"},
-		{"StartSession", "StopSession", "Close"},
-	} {
-		d.onDelta(strings.Join(fuzzyReasoningCycle(cycle[0], cycle[1], cycle[2]), "\n") + "\n")
-	}
-	cycleB := strings.Join(fuzzyReasoningCycle("MakeSession", "ClearSession", "Close"), "\n")
-	d.onDelta(cycleB)
-	if d.Detected() {
-		t.Fatal("partial final line should not complete fuzzy loop")
-	}
-	d.onDelta("\n")
-	if !d.Detected() {
-		t.Fatal("expected fuzzy loop after final newline")
-	}
-}
-
-func newTestReasoningLoopDetector() (*reasoningLoopDetector, *bool) {
-	canceled := false
-	d := newReasoningLoopDetector(func() {
-		canceled = true
-	}, 4)
-	return d, &canceled
 }
 
 func fuzzyReasoningCycle(first, second, closer string) []string {

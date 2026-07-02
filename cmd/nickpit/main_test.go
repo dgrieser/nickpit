@@ -907,7 +907,7 @@ func TestRunReviewShowProgressPrintsModelBeforeModelCheckFailure(t *testing.T) {
 	if !strings.Contains(stderr, wantModel) {
 		t.Fatalf("stderr missing model progress line\nwant: %s\nstderr:\n%s", wantModel, stderr)
 	}
-	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ∞ concurrency, ∞ tool calls, parallel, ≤5 duplicates"
+	wantAgent := "] Structured no nudges, ≤2 retries, ∞ reasoning, no rate-limit-delay, ∞ concurrency, ∞ tool calls, parallel, ≤5 duplicates"
 	if !strings.Contains(stderr, wantAgent) {
 		t.Fatalf("stderr missing agent progress line\nwant: %s\nstderr:\n%s", wantAgent, stderr)
 	}
@@ -996,7 +996,6 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		NudgeCount:                3,
 		MaxOutputRetries:          5,
 		MaxReasoningSeconds:       300,
-		MaxReasoningLoopRepeats:   5,
 		MaxDuplicateToolCalls:     5,
 		Concurrency:               15,
 		DisableSuggestions:        true,
@@ -1007,7 +1006,7 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		PriorityThreshold:         "p1",
 	}
 	got := agentSummary(profile, req)
-	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤5 loop repeats, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}
@@ -1022,7 +1021,7 @@ func TestAgentSummaryOmitsDefaultsAndSerial(t *testing.T) {
 		PriorityThreshold:         "p3",
 	}
 	got := agentSummary(config.Profile{}, req)
-	want := "Unstructured no nudges, no retries, ∞ reasoning, ∞ loop repeats, no rate-limit-delay, ≤10 concurrency, ∞ tool calls, ∞ duplicates"
+	want := "Unstructured no nudges, no retries, ∞ reasoning, no rate-limit-delay, ≤10 concurrency, ∞ tool calls, ∞ duplicates"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}
