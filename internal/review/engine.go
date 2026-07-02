@@ -224,7 +224,18 @@ func (e *Engine) applyResultMetadata(result *model.ReviewResult, req model.Revie
 }
 
 func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, disableSuggestions bool, maxOutputRetries int, sec *logging.ReasoningSection, loopReq agentLoopRequest, state *agentLoopState) (*llm.ReviewResponse, error) {
-	finalMessages, err := noToolsMessages(agentRole, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, disableSuggestions)
+	// When the loop request already knows how to build the no-tools transcript,
+	// use it. Review/context agents carry an already-RENDERED system prompt in
+	// systemTemplate; re-parsing it as a Go template breaks on prompts that embed
+	// template-looking content (e.g. a helm style guide with `{{ default ... }}`).
+	// Only the fallback path renders: it receives a raw template (verify-style).
+	var finalMessages []llm.Message
+	var err error
+	if loopReq.NoToolsMessages != nil {
+		finalMessages, err = loopReq.NoToolsMessages(messages)
+	} else {
+		finalMessages, err = noToolsMessages(agentRole, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, disableSuggestions)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -916,19 +927,35 @@ func (e *Engine) runClusterMergeAgentsWithStyleGuides(ctx context.Context, userP
 }
 
 // flattenMergeMembers flattens all reviewer responses into one finding list
-// and records which reviewer produced each finding (keyed by finding ID, which
-// the parser keeps unique across responses) for prompt provenance.
+// and records which reviewer produced each finding (keyed by finding ID) for
+// prompt provenance. The parser (EnsureFindingIDs) only dedupes IDs within a
+// single response, so two reviewers can legitimately emit the same ID; the
+// flattened list is re-normalized here so reviewerByID stays collision-free
+// and validateClusterMergeResponse cannot mark two distinct inputs covered by
+// one output finding.
 func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[string]string) {
 	var findings []model.Finding
-	reviewerByID := make(map[string]string)
+	var reviewers []string
 	for _, input := range inputs {
 		if input.response == nil {
 			continue
 		}
 		for _, f := range input.response.Findings {
+			// Clone the verification so the ID normalization below cannot
+			// mutate the reviewer's original response through the shared
+			// pointer when a colliding ID is reminted.
+			if f.Verification != nil {
+				verification := *f.Verification
+				f.Verification = &verification
+			}
 			findings = append(findings, f)
-			reviewerByID[f.ID] = input.name
+			reviewers = append(reviewers, input.name)
 		}
+	}
+	normalizeFindingIDsWithSeen(findings, nil)
+	reviewerByID := make(map[string]string, len(findings))
+	for i := range findings {
+		reviewerByID[findings[i].ID] = reviewers[i]
 	}
 	return findings, reviewerByID
 }
@@ -1211,16 +1238,21 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	}
 	inputCount := 0
 	inputIDs := map[string]struct{}{}
+	verifiedInputIDs := map[string]struct{}{}
 	var allowedIDs []string
 	if input != nil {
 		inputCount = len(input.Findings)
 		inputIDs = make(map[string]struct{}, inputCount)
+		verifiedInputIDs = make(map[string]struct{}, inputCount)
 		allowedIDs = make([]string, 0, inputCount)
 		for _, finding := range input.Findings {
 			id := strings.TrimSpace(finding.ID)
 			if id != "" {
 				allowedIDs = append(allowedIDs, id)
 				inputIDs[id] = struct{}{}
+				if finding.Verification != nil {
+					verifiedInputIDs[id] = struct{}{}
+				}
 			}
 		}
 	}
@@ -1247,8 +1279,14 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 			}
 			seen[id] = struct{}{}
 		}
-		if finding.Verification == nil || strings.TrimSpace(finding.Verification.ID) != id {
-			verificationMismatch++
+		// Only require the verification echo when the corresponding input
+		// finding actually carries a verification. Custom specs may dedupe
+		// before verification (or over raw findings_from JSON); those inputs
+		// have nothing to echo, and demanding one makes validation impossible.
+		if _, inputVerified := verifiedInputIDs[id]; inputVerified {
+			if finding.Verification == nil || strings.TrimSpace(finding.Verification.ID) != id {
+				verificationMismatch++
+			}
 		}
 	}
 	if !countTooLow && !countTooHigh && unknownIDs == 0 && duplicateIDs == 0 && verificationMismatch == 0 {
@@ -1313,8 +1351,9 @@ func dedupeMinCount(inputCount int) int {
 // validateClusterMergeResponse checks a micro-merge response against its
 // cluster: the output must keep between 1 and len(cluster) findings, every
 // output finding must be attributable to a cluster finding (ID first, then
-// code location with a title tiebreak), and every cluster finding must be
-// accounted for — surviving in the output, listed in an output finding's
+// code location with a title tiebreak), every output finding's id must be one
+// of the cluster ids and appear at most once, and every cluster finding must
+// be accounted for — surviving in the output, listed in an output finding's
 // merged_from provenance, or content-matching an output finding. Absorbing a
 // duplicate without touching the surviving finding's text is a valid merge,
 // so unlike the old pairwise validator there is no "accumulator must change"
@@ -1348,7 +1387,9 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 	}
 	unmatched := 0
 	var unknownOutputIDs []string
+	duplicateIDs := 0
 	covered := make(map[string]struct{})
+	seenOutputIDs := make(map[string]struct{}, len(resp.Findings))
 	for i, finding := range resp.Findings {
 		if findMergeInputMatch(finding, cluster) == nil {
 			unmatched++
@@ -1358,6 +1399,10 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			if _, ok := inputIDs[id]; !ok {
 				unknownOutputIDs = append(unknownOutputIDs, id)
 			}
+			if _, ok := seenOutputIDs[id]; ok {
+				duplicateIDs++
+			}
+			seenOutputIDs[id] = struct{}{}
 			covered[id] = struct{}{}
 		} else {
 			unknownOutputIDs = append(unknownOutputIDs, "")
@@ -1367,6 +1412,12 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 				covered[src] = struct{}{}
 			}
 		}
+	}
+	if len(unknownOutputIDs) > 0 {
+		problems = append(problems, fmt.Sprintf("unknown_ids count=%d", len(unknownOutputIDs)))
+	}
+	if duplicateIDs > 0 {
+		problems = append(problems, fmt.Sprintf("duplicate_ids count=%d", duplicateIDs))
 	}
 	var droppedIDs []string
 	var droppedTitles []string
@@ -1566,7 +1617,9 @@ func (e *Engine) runAgentOnce(ctx context.Context, agent agentSpec, req model.Re
 			return s.partialResult(req), err
 		}
 		if err := e.reviewerNudges(ctx, s, req, budget, e, req, budget, e, req); err != nil {
-			return agentResult{}, err
+			// Return the session's accumulated result so telemetry and the
+			// findings gathered before the failure survive alongside the error.
+			return s.result(req), err
 		}
 		return s.result(req), nil
 	}
@@ -1951,6 +2004,12 @@ func findingDedupKeys(finding model.Finding) (string, string) {
 func supplementalFromContextAgent(messages []llm.Message) []model.SupplementalFile {
 	out := make([]model.SupplementalFile, 0, len(messages))
 	for i, msg := range messages {
+		// Errored tool results (status:error payloads, including
+		// already_requested duplicates) carry no reviewable content; embedding
+		// them as supplemental context would only waste prompt budget.
+		if parseToolResultSummary(msg.Content).IsError {
+			continue
+		}
 		path := contextToolPath(msg.Content)
 		if path == "" {
 			path = fmt.Sprintf("context/tool-%d", i+1)

@@ -1545,6 +1545,97 @@ func TestRunAgent_CodeLocationMissingAnchorRetryOnlyOnce(t *testing.T) {
 	}
 }
 
+// TestRunAgent_NoToolsFallbackKeepsRenderedSystemPrompt is the regression test
+// for the no-tools fallback re-parsing already-rendered system prompts as Go
+// templates: a reviewer prompt embedding a helm style guide contains
+// `{{ default ... }}`, which is not a valid Go template function, so the
+// re-render failed the whole agent. The fallback must reuse the prepared
+// no-tools messages instead.
+func TestRunAgent_NoToolsFallbackKeepsRenderedSystemPrompt(t *testing.T) {
+	helmSystem := "reviewer system prompt with helm style guide content: {{ default \"standalone\" .Values.mode }} and {{ include \"chart.name\" . }}"
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: &llm.ReviewResponse{
+				ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+					{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"b.go"}`},
+				},
+				RawResponse: "inspecting",
+			}},
+			{resp: nudgeReviewResponse("final", 1, nudgeFinding("A", 1))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+	agent := nudgeTestToolAgent("review")
+	agent.system = helmSystem
+
+	// MaxToolCalls=1 with a two-call batch forces the final no-tools call.
+	result, err := engine.runAgent(context.Background(), agent, model.ReviewRequest{MaxToolCalls: 1, MaxOutputRetries: 1})
+	if err != nil {
+		t.Fatalf("runAgent returned err: %v", err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want initial plus no-tools final", len(llmClient.reqs))
+	}
+	noToolsReq := llmClient.reqs[1]
+	if len(noToolsReq.Tools) != 0 {
+		t.Fatalf("final call tools = %d, want none", len(noToolsReq.Tools))
+	}
+	if len(noToolsReq.Messages) == 0 || !strings.Contains(noToolsReq.Messages[0].Content, `{{ default "standalone" .Values.mode }}`) {
+		t.Fatalf("no-tools system prompt lost the rendered helm content: %q", noToolsReq.Messages[0].Content)
+	}
+}
+
+// TestBuildAgentLoopRequestZeroOutputRetriesIsUnlimited pins the user decision
+// that an explicitly configured 0 means unlimited output retries everywhere:
+// buildAgentLoopRequest must not clobber 0 back to the default (the default
+// for UNSET config is injected by the config layer, not here).
+func TestBuildAgentLoopRequestZeroOutputRetriesIsUnlimited(t *testing.T) {
+	engine := nudgeTestEngine(&scriptedLLM{})
+	loopReq, sec := engine.buildAgentLoopRequest(nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 0})
+	defer sec.End()
+	if loopReq.MaxOutputRetries != 0 {
+		t.Fatalf("MaxOutputRetries = %d, want 0 (unlimited) passed through", loopReq.MaxOutputRetries)
+	}
+
+	loopReq, sec = engine.buildAgentLoopRequest(nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 3})
+	defer sec.End()
+	if loopReq.MaxOutputRetries != 3 {
+		t.Fatalf("MaxOutputRetries = %d, want 3", loopReq.MaxOutputRetries)
+	}
+}
+
+// TestRunAgent_ZeroOutputRetriesRetriesBeyondDefault proves 0 behaves as
+// unlimited for a reviewer agent: more invalid responses than the old default
+// (5) still end in success instead of exhausting a silently-injected budget.
+func TestRunAgent_ZeroOutputRetriesRetriesBeyondDefault(t *testing.T) {
+	invalidCalls := defaultMaxOutputRetries + 2
+	results := make([]scriptedLLMResult, 0, invalidCalls+1)
+	for i := 0; i < invalidCalls; i++ {
+		results = append(results, scriptedLLMResult{err: &llm.InvalidResponseError{
+			Reason:        "bad json",
+			MissingFields: []string{"findings"},
+		}})
+	}
+	results = append(results, scriptedLLMResult{resp: nudgeReviewResponse("final", 1, nudgeFinding("A", 1))})
+	llmClient := &scriptedLLM{results: results}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{MaxOutputRetries: 0})
+	if err != nil {
+		t.Fatalf("runAgent returned err: %v", err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != invalidCalls+1 {
+		t.Fatalf("llm calls = %d, want %d retries beyond the old default", len(llmClient.reqs), invalidCalls+1)
+	}
+}
+
 func TestAppendNewFindingsDuplicateKeys(t *testing.T) {
 	base := nudgeFinding("Same", 1)
 	sameIDSameTitle := nudgeFinding(" same ", 2)
@@ -3034,9 +3125,10 @@ func TestClusterMergeRepairMissingMergedFromSkipsUnrelatedDrop(t *testing.T) {
 }
 
 // merged_from accounting is lenient: trimmed entries, duplicates, the
-// finding's own id, and unknown ids are ignored — they cannot fake coverage,
-// so only genuinely missing inputs fail. A reminted id with unchanged
-// location+title is also accounted via attribution.
+// finding's own id, and unknown ids inside merged_from are ignored — they
+// cannot fake coverage, so only genuinely missing inputs fail. Output finding
+// ids themselves are strict: a reminted id fails as unknown even when the
+// content still matches an input.
 func TestClusterMergeValidationMergedFromLeniency(t *testing.T) {
 	a := mergeTestFindingWithID("Fix A", 1)
 	b := mergeTestFindingWithID("Fix B", 13)
@@ -3054,10 +3146,16 @@ func TestClusterMergeValidationMergedFromLeniency(t *testing.T) {
 		t.Fatalf("invalid = %v, want dropped_findings count=1", invalid)
 	}
 
-	// Reminted id, same location and title: accounted via attribution.
+	// Reminted output id, same location and title: the input is still
+	// accounted via attribution (no dropped_findings), but the unknown output
+	// id itself now fails validation.
 	reminted := mergeTestFindingWithID("Fix A", 1)
-	if invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{reminted}}, []model.Finding{a}); invalid != nil {
-		t.Fatalf("validateClusterMergeResponse = %v, want nil for reminted id with matching content", invalid)
+	invalid = validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{reminted}}, []model.Finding{a})
+	if invalid == nil || !strings.Contains(invalid.Reason, "unknown_ids count=1") {
+		t.Fatalf("invalid = %v, want unknown_ids count=1 for reminted output id", invalid)
+	}
+	if strings.Contains(invalid.Reason, "dropped_findings") {
+		t.Fatalf("invalid = %v, attribution should still cover the input (no dropped_findings)", invalid)
 	}
 }
 
@@ -3320,6 +3418,105 @@ func TestDedupeValidationRejectsDuplicateOutputIDs(t *testing.T) {
 	}
 	if !strings.Contains(invalid.Reason, "duplicate_ids") {
 		t.Fatalf("dedupe reason = %q, want duplicate_ids", invalid.Reason)
+	}
+}
+
+// TestDedupeValidationSkipsVerificationEchoForUnverifiedInputs covers custom
+// specs that dedupe BEFORE verification (or over raw findings_from JSON): the
+// inputs carry no verification, so the response cannot echo one, and demanding
+// it made validation impossible and burned every retry.
+func TestDedupeValidationSkipsVerificationEchoForUnverifiedInputs(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	a.Verification = nil
+	b := mergeTestFindingWithID("Fix B", 2)
+	b.Verification = nil
+	input := &llm.ReviewResponse{Findings: []model.Finding{a, b}}
+
+	if invalid := validateDedupeResponse(&llm.ReviewResponse{Findings: []model.Finding{a, b}}, input); invalid != nil {
+		t.Fatalf("validateDedupeResponse = %v, want nil for unverified inputs echoed without verification", invalid)
+	}
+}
+
+func TestDedupeValidationStillRequiresVerificationEchoForVerifiedInputs(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	input := &llm.ReviewResponse{Findings: []model.Finding{a}}
+	out := a
+	out.Verification = nil
+
+	invalid := validateDedupeResponse(&llm.ReviewResponse{Findings: []model.Finding{out}}, input)
+	if invalid == nil || !strings.Contains(invalid.Reason, "verification_mismatch") {
+		t.Fatalf("invalid = %v, want verification_mismatch for verified input echoed without verification", invalid)
+	}
+}
+
+// TestFlattenMergeMembersNormalizesCrossReviewerDuplicateIDs pins the fix for
+// cross-reviewer ID collisions: EnsureFindingIDs only dedupes within a single
+// response, so two reviewers can emit the same ID. The flattened merge input
+// must remint collisions (keeping Verification.ID in sync) without mutating
+// the reviewers' original responses.
+func TestFlattenMergeMembersNormalizesCrossReviewerDuplicateIDs(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFinding("Fix B", 13)
+	b.ID = a.ID
+	b.Verification.ID = a.ID
+	inputs := []pairwiseMergeInput{
+		{name: "Code Quality", response: &llm.ReviewResponse{Findings: []model.Finding{a}}},
+		{name: "Security", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
+	}
+
+	findings, reviewerByID := flattenMergeMembers(inputs)
+
+	if len(findings) != 2 {
+		t.Fatalf("flattened findings = %d, want 2", len(findings))
+	}
+	if findings[0].ID == findings[1].ID {
+		t.Fatalf("duplicate IDs survived flattening: %q", findings[0].ID)
+	}
+	for i := range findings {
+		if findings[i].Verification == nil || findings[i].Verification.ID != findings[i].ID {
+			t.Fatalf("finding %d verification ID = %#v, want synced with %q", i, findings[i].Verification, findings[i].ID)
+		}
+	}
+	if len(reviewerByID) != 2 {
+		t.Fatalf("reviewerByID = %#v, want 2 collision-free entries", reviewerByID)
+	}
+	if reviewerByID[findings[0].ID] != "Code Quality" || reviewerByID[findings[1].ID] != "Security" {
+		t.Fatalf("reviewerByID = %#v, want per-reviewer attribution preserved", reviewerByID)
+	}
+	// The reviewers' original responses must not be mutated through shared
+	// verification pointers when a collision is reminted.
+	original := inputs[1].response.Findings[0]
+	if original.ID != a.ID || original.Verification.ID != a.ID {
+		t.Fatalf("original response mutated: id=%q verification_id=%q, want %q", original.ID, original.Verification.ID, a.ID)
+	}
+}
+
+// TestClusterMergeValidationRejectsRemintedOutputIDs pins that unknown output
+// IDs now fail validation (they were previously computed for retry guidance
+// but never failed the response).
+func TestClusterMergeValidationRejectsRemintedOutputIDs(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 13)
+	reminted := a
+	reminted.ID = uuid.NewString()
+	// Cover both inputs via merged_from so unknown_ids is the only failure.
+	reminted.MergedFrom = []string{a.ID, b.ID}
+
+	invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{reminted}}, []model.Finding{a, b})
+	if invalid == nil || !strings.Contains(invalid.Reason, "unknown_ids count=1") {
+		t.Fatalf("invalid = %v, want unknown_ids failure for reminted output ID", invalid)
+	}
+}
+
+func TestClusterMergeValidationRejectsDuplicateOutputIDs(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	b := mergeTestFindingWithID("Fix B", 13)
+	dupe := a
+	dupe.Body = "same finding repeated under the same id"
+
+	invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{a, dupe}}, []model.Finding{a, b})
+	if invalid == nil || !strings.Contains(invalid.Reason, "duplicate_ids count=1") {
+		t.Fatalf("invalid = %v, want duplicate_ids failure for repeated output ID", invalid)
 	}
 }
 

@@ -269,6 +269,9 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 			res := session.partialResult(sc.Req)
 			res.run.Status = model.AgentRunStatusSkipped
 			res.run.Error = "main review skipped because its time budget was exhausted"
+			// Lane/step budget skips warn; a phase-budget skip must be equally
+			// visible instead of surfacing only inside the AgentRuns JSON.
+			st.addWarningf("Skipped review:%s because its main phase time budget was exhausted", vectorID)
 			st.setGroup(vectorID, res, nil)
 			return nil
 		}
@@ -301,17 +304,16 @@ func (e *Engine) reviewStepFunc(vectorID string, collectAnyway bool) stepFunc {
 	}
 }
 
-// sessionForStep returns the open reviewer session for a vector, distinguishing
-// "no preceding review" from "the review ran but failed" (which leaves no
-// session) so standalone nudge/extract steps fail cleanly instead of operating
-// on an unpopulated session.
+// sessionForStep returns the open reviewer session for a vector. A missing
+// group is a spec error (no preceding review step). A group without a session
+// means the review itself soft-failed or was budget-skipped — the same
+// condition verify:/dedupe: steps no-op on — so nudge/extract steps must
+// degrade gracefully too instead of hard-failing the whole run and discarding
+// every other lane's completed work.
 func sessionForStep(st *PipelineState, stepType, vectorID string) (*reviewerSession, error) {
 	g := st.group(vectorID)
 	if g == nil {
 		return nil, fmt.Errorf("workflow: %s%s requires a preceding review:%s step", stepType, vectorID, vectorID)
-	}
-	if g.session == nil {
-		return nil, fmt.Errorf("workflow: %s%s cannot run because review:%s did not complete successfully", stepType, vectorID, vectorID)
 	}
 	return g.session, nil
 }
@@ -323,6 +325,10 @@ func (e *Engine) extractStepFunc(vectorID string) stepFunc {
 		sess, err := sessionForStep(st, "reasoning-extract:", vectorID)
 		if err != nil {
 			return err
+		}
+		if sess == nil {
+			st.addWarningf("Skipped reasoning-extract:%s because review:%s did not complete successfully", vectorID, vectorID)
+			return nil
 		}
 		delta, err := sc.Engine.reviewerComputeExtractDelta(ctx, sess, sc.Req)
 		if err != nil {
@@ -341,6 +347,10 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 		sess, err := sessionForStep(st, "nudge:", vectorID)
 		if err != nil {
 			return err
+		}
+		if sess == nil {
+			st.addWarningf("Skipped nudge:%s because review:%s did not complete successfully", vectorID, vectorID)
+			return nil
 		}
 		delta := ""
 		if sess.pendingDeltaSet {
@@ -433,7 +443,12 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 			st.setVectorResponse(vectorID, resp)
 		}
 		st.mu.Lock()
-		st.dedupeRuns = append(st.dedupeRuns, run)
+		// Keyed by vector so telemetry orders runs by groupOrder instead of
+		// lane-completion order, which varies between runs.
+		if st.dedupeVectorRuns == nil {
+			st.dedupeVectorRuns = map[string][]model.AgentRun{}
+		}
+		st.dedupeVectorRuns[vectorID] = append(st.dedupeVectorRuns[vectorID], run)
 		st.mu.Unlock()
 		return nil
 	}
@@ -468,18 +483,7 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		mergeInputs := pairwiseMergeInputs(vr)
 		verifiedMergeInputs := flattenPairwiseMergeInputs(mergeInputs)
 
-		mergeConstraints := llm.ResponseConstraints{}
-		var mergeSchema []byte
-		if !req.DisableJSONResponseFormat {
-			mergeConstraints = mergeConstraintsForRequest(req)
-			if hasResponseConstraints(mergeConstraints) {
-				mergeSchema = llm.MergeSchemaWithConstraintsFor(mergeConstraints, req.DisableSuggestions)
-			} else if req.DisableSuggestions {
-				mergeSchema = llm.MergeSchemaWithoutSuggestions
-			} else {
-				mergeSchema = llm.MergeSchema
-			}
-		}
+		mergeConstraints, mergeSchema := mergeSchemaForStep(req)
 
 		var (
 			mergeResult agentResult
@@ -515,7 +519,9 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		}
 
 		filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
-		if overwrote := model.EnsureFindingIDs(filtered); overwrote > 0 {
+		// Same normalization as the fused path: reminting an ID must re-sync
+		// Verification.ID, which mirrors the parent finding ID by contract.
+		if overwrote := normalizeFindingIDsWithSeen(filtered, nil); overwrote > 0 {
 			sc.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 		}
 		st.mu.Lock()
@@ -838,7 +844,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		st.finalizeRuns = append(st.finalizeRuns, finalizeRuns...)
 		if verdictRun != nil {
 			st.verdictRun = verdictRun
-			st.verdictUsage = verdictRun.TokensUsed
+			st.verdictUsage = addTokenUsage(st.verdictUsage, verdictRun.TokensUsed)
 		}
 		st.summarizeRuns = append(st.summarizeRuns, summarizeRuns...)
 		st.finalizeUsage = addTokenUsage(st.finalizeUsage, finalizeUsage)
@@ -869,8 +875,11 @@ func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byt
 	return constraints, schema
 }
 
-func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
-	opts := FinalizeOptions{
+// finalizeOptionsFromStep, verdictOptionsFromStep, and summarizeOptionsFromStep
+// build the per-stage options from the request in one place so the flat step
+// funcs and the fused shard runners cannot drift field-by-field.
+func finalizeOptionsFromStep(sc *stepContext, contextNotes string) FinalizeOptions {
+	return FinalizeOptions{
 		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
 		MaxOutputRetries:          sc.Req.MaxOutputRetries,
 		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
@@ -880,8 +889,40 @@ func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, i
 		RepoRoot:                  sc.Req.RepoRoot,
 		DiffFormat:                sc.Req.DiffFormat,
 		PriorityThreshold:         sc.Req.PriorityThreshold,
-		ContextNotes:              st.contextNotes,
+		ContextNotes:              contextNotes,
 	}
+}
+
+func verdictOptionsFromStep(sc *stepContext, contextNotes string) VerdictOptions {
+	return VerdictOptions{
+		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+		MaxOutputRetries:          sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:       sc.Req.DisablePatchSummary,
+		DisableSuggestions:        sc.Req.DisableSuggestions,
+		RepoRoot:                  sc.Req.RepoRoot,
+		DiffFormat:                sc.Req.DiffFormat,
+		PriorityThreshold:         sc.Req.PriorityThreshold,
+		ConfidenceThreshold:       sc.Req.ConfidenceThreshold,
+		ContextNotes:              contextNotes,
+	}
+}
+
+func summarizeOptionsFromStep(sc *stepContext) SummarizeOptions {
+	return SummarizeOptions{
+		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
+		MaxOutputRetries:          sc.Req.MaxOutputRetries,
+		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
+		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
+		DisablePatchSummary:       sc.Req.DisablePatchSummary,
+		DisableSuggestions:        sc.Req.DisableSuggestions,
+		RepoRoot:                  sc.Req.RepoRoot,
+	}
+}
+
+func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
+	opts := finalizeOptionsFromStep(sc, st.contextNotes)
 	finalized, run, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 	if err != nil {
 		sc.Engine.logf(ctx, "Finalize failed for shard, using verified shard: error=%v", err)
@@ -909,23 +950,20 @@ func filterFinalizedByDisplayPriority(ctx context.Context, sc *stepContext, in *
 }
 
 func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
-	opts := VerdictOptions{
-		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
-		MaxOutputRetries:          sc.Req.MaxOutputRetries,
-		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
-		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
-		DisablePatchSummary:       sc.Req.DisablePatchSummary,
-		DisableSuggestions:        sc.Req.DisableSuggestions,
-		RepoRoot:                  sc.Req.RepoRoot,
-		DiffFormat:                sc.Req.DiffFormat,
-		PriorityThreshold:         sc.Req.PriorityThreshold,
-		ConfidenceThreshold:       sc.Req.ConfidenceThreshold,
-		ContextNotes:              st.contextNotes,
-	}
+	opts := verdictOptionsFromStep(sc, st.contextNotes)
 	verdict, run, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 	if err != nil {
 		if verdict != nil {
 			in = verdict
+		} else if filtered, dropped, ferr := filterResultByDisplayPriority(in, sc.Req.PriorityThreshold); ferr == nil {
+			// The display-priority filter normally runs inside Verdict; when it
+			// failed before producing a result, apply the filter here so
+			// finalize-demoted findings cannot leak past the threshold on this
+			// failure path (the flat pipeline pre-filters, the fused one not).
+			if dropped > 0 {
+				sc.Engine.logf(ctx, "Verdict fallback dropped findings below display priority threshold: count=%d", dropped)
+			}
+			in = filtered
 		}
 		sc.Engine.logf(ctx, "Verdict failed, using merged overall fields: error=%v", err)
 		applyVerdictFallback(in, model.PriorityThresholdRank(sc.Req.PriorityThreshold))
@@ -941,15 +979,7 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 }
 
 func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
-	opts := SummarizeOptions{
-		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
-		MaxOutputRetries:          sc.Req.MaxOutputRetries,
-		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
-		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
-		DisablePatchSummary:       sc.Req.DisablePatchSummary,
-		DisableSuggestions:        sc.Req.DisableSuggestions,
-		RepoRoot:                  sc.Req.RepoRoot,
-	}
+	opts := summarizeOptionsFromStep(sc)
 	summarized, run, err := sc.Engine.Summarize(ctx, in, opts)
 	if err != nil {
 		sc.Engine.logf(ctx, "Summarize failed for shard, using finalized shard: error=%v", err)
@@ -965,15 +995,7 @@ func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewRes
 }
 
 func runOverallSummarize(ctx context.Context, sc *stepContext, overall string) (string, *model.AgentRun, []string) {
-	opts := SummarizeOptions{
-		DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
-		MaxOutputRetries:          sc.Req.MaxOutputRetries,
-		MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
-		DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
-		DisablePatchSummary:       sc.Req.DisablePatchSummary,
-		DisableSuggestions:        sc.Req.DisableSuggestions,
-		RepoRoot:                  sc.Req.RepoRoot,
-	}
+	opts := summarizeOptionsFromStep(sc)
 	summary, run, err := sc.Engine.SummarizeOverall(ctx, overall, opts)
 	if err != nil {
 		sc.Engine.logf(ctx, "Summarize failed for overall explanation, using verdict text: error=%v", err)
@@ -981,7 +1003,7 @@ func runOverallSummarize(ctx context.Context, sc *stepContext, overall string) (
 		run.Role = "summarize"
 		run.Status = model.AgentRunStatusFailed
 		run.Error = err.Error()
-		return overall, &run, []string{fmt.Sprintf("Summarize failed: %v; using finalized result", err)}
+		return overall, &run, []string{fmt.Sprintf("Summarize failed for overall explanation: %v; using verdict text", err)}
 	}
 	return summary, &run, nil
 }
@@ -1140,18 +1162,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 		if in == nil || len(in.Findings) == 0 {
 			return nil
 		}
-		opts := FinalizeOptions{
-			DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
-			MaxOutputRetries:          sc.Req.MaxOutputRetries,
-			MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
-			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
-			DisablePatchSummary:       sc.Req.DisablePatchSummary,
-			DisableSuggestions:        sc.Req.DisableSuggestions,
-			RepoRoot:                  sc.Req.RepoRoot,
-			DiffFormat:                sc.Req.DiffFormat,
-			PriorityThreshold:         sc.Req.PriorityThreshold,
-			ContextNotes:              contextNotes,
-		}
+		opts := finalizeOptionsFromStep(sc, contextNotes)
 		finalized, finalizeRun, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -1163,7 +1174,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 			finalizeRun.Status = model.AgentRunStatusFailed
 			finalizeRun.Error = err.Error()
 			st.finalizeRuns = append(st.finalizeRuns, finalizeRun)
-			st.finalizeUsage = finalizeRun.TokensUsed
+			st.finalizeUsage = addTokenUsage(st.finalizeUsage, finalizeRun.TokensUsed)
 			return nil
 		}
 		// Finalize may surface a mismatch warning on the cloned result; fold it
@@ -1180,7 +1191,7 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 		}
 		st.result = finalized
 		st.finalizeRuns = append(st.finalizeRuns, finalizeRun)
-		st.finalizeUsage = finalizeRun.TokensUsed
+		st.finalizeUsage = addTokenUsage(st.finalizeUsage, finalizeRun.TokensUsed)
 		return nil
 	}
 }
@@ -1221,19 +1232,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 		if in == nil {
 			return nil
 		}
-		opts := VerdictOptions{
-			DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
-			MaxOutputRetries:          sc.Req.MaxOutputRetries,
-			MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
-			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
-			DisablePatchSummary:       sc.Req.DisablePatchSummary,
-			DisableSuggestions:        sc.Req.DisableSuggestions,
-			RepoRoot:                  sc.Req.RepoRoot,
-			DiffFormat:                sc.Req.DiffFormat,
-			PriorityThreshold:         sc.Req.PriorityThreshold,
-			ConfidenceThreshold:       sc.Req.ConfidenceThreshold,
-			ContextNotes:              contextNotes,
-		}
+		opts := verdictOptionsFromStep(sc, contextNotes)
 		verdict, verdictRun, err := sc.Engine.Verdict(ctx, st.Enriched, in, opts)
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -1249,7 +1248,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 			verdictRun.Status = model.AgentRunStatusFailed
 			verdictRun.Error = err.Error()
 			st.verdictRun = &verdictRun
-			st.verdictUsage = verdictRun.TokensUsed
+			st.verdictUsage = addTokenUsage(st.verdictUsage, verdictRun.TokensUsed)
 			st.result = in
 			return nil
 		}
@@ -1259,7 +1258,7 @@ func (e *Engine) verdictStepFunc(findingsFrom []string) stepFunc {
 		}
 		st.result = verdict
 		st.verdictRun = &verdictRun
-		st.verdictUsage = verdictRun.TokensUsed
+		st.verdictUsage = addTokenUsage(st.verdictUsage, verdictRun.TokensUsed)
 		return nil
 	}
 }
@@ -1311,15 +1310,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 		if len(in.Findings) == 0 {
 			return nil
 		}
-		opts := SummarizeOptions{
-			DisableJSONResponseFormat: sc.Req.DisableJSONResponseFormat,
-			MaxOutputRetries:          sc.Req.MaxOutputRetries,
-			MaxReasoningSeconds:       sc.Req.MaxReasoningSeconds,
-			DisableParallelToolCalls:  sc.Req.DisableParallelToolCalls,
-			DisablePatchSummary:       sc.Req.DisablePatchSummary,
-			DisableSuggestions:        sc.Req.DisableSuggestions,
-			RepoRoot:                  sc.Req.RepoRoot,
-		}
+		opts := summarizeOptionsFromStep(sc)
 		summarized, summarizeRun, err := sc.Engine.Summarize(ctx, in, opts)
 		st.mu.Lock()
 		defer st.mu.Unlock()
@@ -1331,7 +1322,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 			summarizeRun.Status = model.AgentRunStatusFailed
 			summarizeRun.Error = err.Error()
 			st.summarizeRuns = append(st.summarizeRuns, summarizeRun)
-			st.summarizeUsage = summarizeRun.TokensUsed
+			st.summarizeUsage = addTokenUsage(st.summarizeUsage, summarizeRun.TokensUsed)
 			return nil
 		}
 		// Fold any mismatch warning the summarizer surfaced on the cloned result
@@ -1342,7 +1333,7 @@ func (e *Engine) summarizeStepFunc(findingsFrom []string) stepFunc {
 		}
 		st.result = summarized
 		st.summarizeRuns = append(st.summarizeRuns, summarizeRun)
-		st.summarizeUsage = summarizeRun.TokensUsed
+		st.summarizeUsage = addTokenUsage(st.summarizeUsage, summarizeRun.TokensUsed)
 		return nil
 	}
 }

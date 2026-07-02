@@ -244,6 +244,21 @@ func TestValidateRejections(t *testing.T) {
 		"unknown vector":    {Version: 1, Steps: []StepEntry{{Type: StepReviewPrefix + "bogus"}}},
 		"nudge no review":   {Version: 1, Steps: []StepEntry{{Type: StepNudgePrefix + "security"}}},
 		"extract no review": {Version: 1, Steps: []StepEntry{{Type: StepExtractPrefix + "security"}}},
+		// findings_from on a step that never reads it would be silently ignored.
+		"findings_from on review": {Version: 1, Steps: []StepEntry{
+			{Type: StepReviewPrefix + "security", FindingsFrom: []string{"a.json"}},
+		}},
+		// verify/dedupe after merge mutate groups nothing consumes anymore.
+		"global verify after merge": {Version: 1, Steps: []StepEntry{
+			{Type: StepReviewPrefix + "security"},
+			{Type: StepMerge},
+			{Type: StepVerify},
+		}},
+		"vector dedupe after merge": {Version: 1, Steps: []StepEntry{
+			{Type: StepReviewPrefix + "security"},
+			{Type: StepMerge},
+			{Type: StepDedupePrefix + "security"},
+		}},
 	}
 	for name, spec := range cases {
 		t.Run(name, func(t *testing.T) {
