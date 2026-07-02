@@ -81,7 +81,7 @@ function createUser({ name, email, role = "user" }) {
 ##### Prefer async/await Over Promises
 
 ```javascript
-// Bad: Promise chains
+// Harder to follow: multi-step .then() chain for sequential logic
 function fetchUserPosts(userId) {
   return fetch(`/users/${userId}`)
     .then((res) => res.json())
@@ -98,6 +98,10 @@ async function fetchUserPosts(userId) {
   return postsRes.json();
 }
 ```
+
+`.then()` is still acceptable for simple one-step transforms and for
+combinators like `Promise.all()`; prefer async/await once logic spans
+multiple sequential steps.
 
 ##### Parallel Execution
 
@@ -168,7 +172,10 @@ class AppError extends Error {
     this.name = "AppError";
     this.code = code;
     this.statusCode = statusCode;
-    Error.captureStackTrace(this, this.constructor);
+    // V8/Node-oriented API; guard for cross-engine safety
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, this.constructor);
+    }
   }
 }
 
@@ -514,24 +521,27 @@ const expensiveCalculation = memoize((n) => {
 ##### Avoid Common Pitfalls
 
 ```javascript
-// Avoid loose equality
+// Use strict equality (===/!==) everywhere
 // Bad
-if (value == null) {
+if (value == expected) {
 }
 
 // Good
-if (value === null || value === undefined) {
+if (value === expected) {
 }
+
+// Single exception: a deliberate null-or-undefined check
 if (value == null) {
-} // Only acceptable for null/undefined check
+} // Same as value === null || value === undefined
 
-// Avoid implicit type coercion
-// Bad
-if (items.length) {
-}
-
-// Good
+// Prefer explicit comparisons for numeric clarity
 if (items.length > 0) {
+}
+
+// Truthiness is fine for actual booleans and idiomatic length checks
+if (isEnabled) {
+}
+if (items.length) {
 }
 
 // Avoid modifying function arguments

@@ -17,14 +17,27 @@ Key flags:
 - `set -u`: Exit on undefined variable reference
 - `set -o pipefail`: Pipe fails if any command fails (not just last)
 
+Caveats:
+- `set -e` does not fire in condition contexts (`if cmd`, `while cmd`) or in
+  `&&`/`||` lists — do not rely on it there.
+- `pipefail` makes benign SIGPIPE pipelines fail, e.g. `cmd | head -1` when
+  `cmd` writes more than `head` reads.
+- Do not apply strict mode to sourced libraries; it leaks into the sourcing
+  shell.
+
 #### Error Trapping and Cleanup
 
 ```bash
 trap 'echo "Error on line $LINENO"' ERR
-trap 'rm -rf -- "$TMPDIR"' EXIT
 
-TMPDIR=$(mktemp -d)
+work_dir=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$work_dir"' EXIT
 ```
+
+Create the directory before installing the cleanup trap, and do not name the
+variable `TMPDIR`: `TMPDIR` is the environment variable `mktemp` itself
+consults, and a trap installed before the assignment can `rm -rf` the
+inherited real temp directory if `mktemp` fails.
 
 #### Variable Safety
 
@@ -164,9 +177,9 @@ process_files() {
 #### Temporary Files
 
 ```bash
-trap 'rm -rf -- "$TMPDIR"' EXIT
-TMPDIR=$(mktemp -d) || { echo "ERROR: Failed to create temp directory" >&2; exit 1; }
-TMPFILE="$TMPDIR/temp.txt"
+work_dir=$(mktemp -d) || { echo "ERROR: Failed to create temp directory" >&2; exit 1; }
+trap 'rm -rf -- "$work_dir"' EXIT
+tmp_file="$work_dir/temp.txt"
 ```
 
 #### Argument Parsing
@@ -255,11 +268,15 @@ safe_move() {
 atomic_write() {
     local -r target="$1"
     local tmpfile
-    tmpfile=$(mktemp) || return 1
+    tmpfile=$(mktemp -- "$(dirname -- "$target")/.tmp.XXXXXX") || return 1
     cat > "$tmpfile"
-    mv "$tmpfile" "$target"
+    chmod 644 "$tmpfile"  # mktemp creates 0600; set the intended mode first
+    mv -f "$tmpfile" "$target"
 }
 ```
+
+The temp file must be created in the target's directory: `mv` across
+filesystems is copy+unlink, which is not atomic.
 
 #### Idempotent Design
 
@@ -338,7 +355,7 @@ done < <(find /path -type f -print0)
 
 #### Best Practices
 
-1. Always use strict mode: `set -Eeuo pipefail`
+1. Use strict mode in executable scripts: `set -Eeuo pipefail` (mind the caveats above; not for sourced libraries)
 2. Quote all variables: `"$variable"`
 3. Use `[[ ]]` conditionals over `[ ]`
 4. Implement error trapping; cleanup with `trap`
@@ -349,6 +366,6 @@ done < <(find /path -type f -print0)
 9. Use `mktemp` for temporary files; clean up with `trap`
 10. Design for idempotency — scripts should be safe to rerun
 11. Use `command -v` over `which` for checking executables
-12. Prefer `printf` over `echo` for predictability
+12. Prefer `printf` over `echo` when the output contains variables, leading dashes, or escape sequences; plain literal `echo` is fine
 13. Use `mapfile`/`readarray` for reading command output into arrays
-14. Always use `--` before file arguments to prevent flag injection
+14. Use `--` before operands when the operand may begin with `-` or comes from variable/user-controlled data, and the command supports `--`

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -454,10 +455,16 @@ func TestClientReviewRetries500WithDefaultMaxRetries(t *testing.T) {
 	}
 }
 
+// stubJitter makes computed backoffs deterministic: 0.8+0.4*0.5 = 1.0.
+func stubJitter(retrier *Retrier) {
+	retrier.rand = func() float64 { return 0.5 }
+}
+
 func TestRetrierBackoffCapsAtConfiguredBounds(t *testing.T) {
 	retrier := NewRetrier()
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = 30 * time.Second
+	stubJitter(retrier)
 
 	if got := retrier.Backoff(0, nil); got != time.Second {
 		t.Fatalf("attempt 0 backoff = %v", got)
@@ -473,8 +480,12 @@ func TestRetrierBackoffCapsAtConfiguredBounds(t *testing.T) {
 	}
 	resp := &http.Response{Header: http.Header{}}
 	resp.Header.Set("Retry-After", "120")
-	if got := retrier.Backoff(0, resp); got != 30*time.Second {
-		t.Fatalf("retry-after cap backoff = %v", got)
+	if got := retrier.Backoff(0, resp); got != 120*time.Second {
+		t.Fatalf("retry-after backoff = %v, want it honored beyond MaxBackoff", got)
+	}
+	resp.Header.Set("Retry-After", "600")
+	if got := retrier.Backoff(0, resp); got != retrier.MaxRateLimitDelay() {
+		t.Fatalf("retry-after ceiling backoff = %v, want %v", got, retrier.MaxRateLimitDelay())
 	}
 	resp.Header.Set("Retry-After", "0")
 	if got := retrier.Backoff(0, resp); got != time.Second {
@@ -482,8 +493,78 @@ func TestRetrierBackoffCapsAtConfiguredBounds(t *testing.T) {
 	}
 }
 
+func TestRetrierBackoffDoesNotOverflowAtHighAttemptCounts(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = 30 * time.Second
+	stubJitter(retrier)
+
+	// A plain 1<<attempt shift overflows int64 at attempt >= 34 and used to
+	// clamp the wait back down to InitialBackoff (1s).
+	for _, attempt := range []int{34, 63, 64, 100, 1 << 20} {
+		if got := retrier.Backoff(attempt, nil); got != 30*time.Second {
+			t.Fatalf("attempt %d backoff = %v, want %v", attempt, got, 30*time.Second)
+		}
+	}
+}
+
+func TestRetrierBackoffJittersComputedDelays(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = 10 * time.Second
+	retrier.MaxBackoff = 30 * time.Second
+
+	retrier.rand = func() float64 { return 0 }
+	if got := retrier.Backoff(0, nil); got != 8*time.Second {
+		t.Fatalf("lower jitter bound = %v, want 8s", got)
+	}
+	retrier.rand = func() float64 { return 0.9999999999 }
+	if got := retrier.Backoff(0, nil); got < 11*time.Second || got > 12*time.Second {
+		t.Fatalf("upper jitter bound = %v, want ~12s", got)
+	}
+
+	// Server-instructed delays are never jittered.
+	retrier.rand = func() float64 { return 0 }
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "20")
+	if got := retrier.Backoff(0, resp); got != 20*time.Second {
+		t.Fatalf("server-instructed backoff = %v, want exactly 20s", got)
+	}
+}
+
+func TestRetrierBackoffParsesRetryAfterHTTPDate(t *testing.T) {
+	retrier := NewRetrier()
+	retrier.InitialBackoff = time.Second
+	retrier.MaxBackoff = 30 * time.Second
+	now := time.Date(2026, 5, 18, 18, 18, 0, 0, time.UTC)
+	retrier.now = func() time.Time { return now }
+	stubJitter(retrier)
+
+	resp := &http.Response{Header: http.Header{}}
+	// 90s in the future: beyond MaxBackoff but below the rate-limit ceiling.
+	resp.Header.Set("Retry-After", now.Add(90*time.Second).Format(http.TimeFormat))
+	if got := retrier.Backoff(0, resp); got != 90*time.Second {
+		t.Fatalf("http-date retry-after backoff = %v, want 90s", got)
+	}
+	// Past dates floor at InitialBackoff.
+	resp.Header.Set("Retry-After", now.Add(-time.Minute).Format(http.TimeFormat))
+	if got := retrier.Backoff(0, resp); got != time.Second {
+		t.Fatalf("past http-date retry-after backoff = %v, want 1s", got)
+	}
+	// Beyond the rate-limit ceiling clamps to it.
+	resp.Header.Set("Retry-After", now.Add(time.Hour).Format(http.TimeFormat))
+	if got := retrier.Backoff(0, resp); got != retrier.MaxRateLimitDelay() {
+		t.Fatalf("far http-date retry-after backoff = %v, want %v", got, retrier.MaxRateLimitDelay())
+	}
+	// Malformed values fall back to the computed backoff.
+	resp.Header.Set("Retry-After", "soon")
+	if got := retrier.Backoff(0, resp); got != time.Second {
+		t.Fatalf("malformed retry-after backoff = %v, want 1s", got)
+	}
+}
+
 func TestRetrierBackoffUses429MessageResetTimeWithinCap(t *testing.T) {
 	retrier := NewRetrier()
+	stubJitter(retrier)
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
 	retrier.SetMaxRateLimitDelay(5 * time.Minute)
@@ -502,6 +583,7 @@ func TestRetrierBackoffUses429MessageResetTimeWithinCap(t *testing.T) {
 
 func TestRetrierBackoffIgnores429MessageResetTimeOutsideCap(t *testing.T) {
 	retrier := NewRetrier()
+	stubJitter(retrier)
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
 	retrier.SetMaxRateLimitDelay(5 * time.Minute)
@@ -517,6 +599,7 @@ func TestRetrierBackoffIgnores429MessageResetTimeOutsideCap(t *testing.T) {
 
 func TestRetrierBackoffIgnoresPastAndMalformed429MessageResetTimes(t *testing.T) {
 	retrier := NewRetrier()
+	stubJitter(retrier)
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
 	retrier.SetMaxRateLimitDelay(5 * time.Minute)
@@ -536,6 +619,7 @@ func TestRetrierBackoffIgnoresPastAndMalformed429MessageResetTimes(t *testing.T)
 
 func TestRetrierBackoffIgnores429MessageResetTimeWhenDisabled(t *testing.T) {
 	retrier := NewRetrier()
+	stubJitter(retrier)
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
 	retrier.SetMaxRateLimitDelay(0)
@@ -551,6 +635,7 @@ func TestRetrierBackoffIgnores429MessageResetTimeWhenDisabled(t *testing.T) {
 
 func TestRetrierBackoffSkipsPastTimestampPicksLaterValidOne(t *testing.T) {
 	retrier := NewRetrier()
+	stubJitter(retrier)
 	retrier.InitialBackoff = time.Second
 	retrier.MaxBackoff = time.Second
 	retrier.SetMaxRateLimitDelay(5 * time.Minute)
@@ -1793,6 +1878,105 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 	}
 }
 
+// repeatedChunkBody returns a stream body that fails mid-stream with the
+// LiteLLM repeated-chunk marker.
+func repeatedChunkBody() io.ReadCloser {
+	return &errorAfterReader{
+		reader: bytes.NewReader(nil),
+		err:    errors.New("error, litellm.MidStreamFallbackError: litellm.InternalServerError: The model is repeating the same chunk = loop loop loop.. Received Model Group=Qwen3.5"),
+	}
+}
+
+// A persistent output repeat falls back to the lower-effort ladder after the
+// single same-effort retry.
+func TestClientReviewOutputLoopFallsBackToLowerEffortAfterSameEffortRetry(t *testing.T) {
+	var efforts []string
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+
+		var body io.ReadCloser
+		if len(efforts) <= 2 {
+			body = repeatedChunkBody()
+		} else {
+			body = io.NopCloser(strings.NewReader(validReviewStream(t)))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+// With reasoning disabled and no fallback ladder, the same-effort retry is the
+// only recovery; a persistent repeat surfaces as OutputLoopDetectedError after
+// exactly two attempts instead of giving up without retrying at all.
+func TestClientReviewOutputLoopAtEffortNoneRetriesSameEffortOnce(t *testing.T) {
+	var efforts []string
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       repeatedChunkBody(),
+			Request:    req,
+		}, nil
+	})
+
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:                   "system",
+		UserContent:                    "user",
+		ReasoningEffort:                "none",
+		DisableReasoningEffortFallback: true,
+	})
+	var outErr *OutputLoopDetectedError
+	if !errors.As(err, &outErr) {
+		t.Fatalf("err = %T (%v), want *OutputLoopDetectedError", err, err)
+	}
+	if got, want := strings.Join(efforts, ","), "none,none"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if outErr.ReasoningEffort != "none" {
+		t.Fatalf("error effort = %q, want none", outErr.ReasoningEffort)
+	}
+}
+
 func TestClientReviewFallsBackAfterReasoningTimeout(t *testing.T) {
 	var efforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2117,7 +2301,7 @@ func TestClientReviewTreatsReasoningOnlyPeerInternalStreamErrorAsBudgetExhausted
 	}
 }
 
-func TestClientReviewTreatsLiteLLMRepeatedChunkErrorAsReasoningLoop(t *testing.T) {
+func TestClientReviewRetriesRepeatedOutputChunkAtSameEffort(t *testing.T) {
 	var efforts []string
 	client := NewOpenAIClient("http://example.test", "token", "model")
 	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -2158,10 +2342,12 @@ func TestClientReviewTreatsLiteLLMRepeatedChunkErrorAsReasoningLoop(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+	// A repeated output chunk is a transient serving fault, not a reasoning
+	// loop: the first recovery is a byte-identical retry at the SAME effort.
+	if got, want := strings.Join(efforts, ","), "high,high"; got != want {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
 	}
-	if resp.ReasoningEffort != "medium" {
+	if resp.ReasoningEffort != "high" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
 	}
 }
@@ -4244,5 +4430,357 @@ func TestParseFinalizeResponseAcceptsFinalizationWithoutConfidenceScore(t *testi
 	}
 	if resp.Findings[0].Finalization.Title != "Final fix" {
 		t.Fatalf("finalization.title = %q", resp.Findings[0].Finalization.Title)
+	}
+}
+
+// --- fixes from full repo review 2026-07 ---
+
+// Fix: 429 retries are unbounded per attempt count; a total-wait budget must
+// terminate them so a hard rate limit cannot stall a lane indefinitely.
+func TestClientReviewStops429RetriesAfterTotalRateLimitBudget(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		http.Error(w, "Provider returned error: rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = 10 * time.Millisecond
+	client.retrier.MaxBackoff = 10 * time.Millisecond
+	client.retrier.MaxTotalRateLimitWait = 25 * time.Millisecond
+	stubJitter(client.retrier)
+
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err == nil {
+		t.Fatal("expected rate limit error")
+	}
+	if !strings.Contains(err.Error(), "rate limited for over 25ms") {
+		t.Fatalf("error = %v, want total rate limit budget message", err)
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v, want wrapped 429 status error", err)
+	}
+	// Two 10ms waits fit the 25ms budget; the third would exceed it.
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// Fix: reviewStream leaked one cancellable child context per failed stream
+// open (both the retry `continue` and the terminal `return` branches).
+func TestClientReviewCancelsStreamContextWhenOpenFails(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "upstream hiccup", http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = time.Millisecond
+	client.retrier.MaxBackoff = time.Millisecond
+	stubJitter(client.retrier)
+
+	var mu sync.Mutex
+	var requestCtxs []context.Context
+	base := client.httpClient.Transport
+	client.httpClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		requestCtxs = append(requestCtxs, req.Context())
+		mu.Unlock()
+		return base.RoundTrip(req)
+	})
+
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err == nil {
+		t.Fatal("expected error from 400 response")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requestCtxs) != 2 {
+		t.Fatalf("captured %d request contexts, want 2", len(requestCtxs))
+	}
+	for i, ctx := range requestCtxs {
+		if ctx.Err() == nil {
+			t.Fatalf("stream context %d not canceled after failed open", i+1)
+		}
+	}
+}
+
+// Fix: ParseBool ran first and turned "1"/"0" into booleans, corrupting
+// numeric arguments recovered from XML-style tool calls; boolean parsing must
+// also reject ParseBool's "t"/"TRUE"/... spellings.
+func TestParseXMLToolCallArgumentValueParsesNumbersBeforeBools(t *testing.T) {
+	cases := []struct {
+		in   string
+		want any
+	}{
+		{"1", 1},
+		{"0", 0},
+		{"-3", -3},
+		{"2.5", 2.5},
+		{"true", true},
+		{"false", false},
+		{"True", "True"},
+		{"TRUE", "TRUE"},
+		{"t", "t"},
+		{"F", "F"},
+		{"hello", "hello"},
+	}
+	for _, tc := range cases {
+		if got := parseXMLToolCallArgumentValue(tc.in); got != tc.want {
+			t.Errorf("parseXMLToolCallArgumentValue(%q) = %v (%T), want %v (%T)", tc.in, got, got, tc.want, tc.want)
+		}
+	}
+}
+
+// Fix: empty/whitespace-only tool-call arguments were dropped by sanitize,
+// which also removed the paired tool-result message from the history.
+func TestNormalizeToolCallArgumentsEmptyBecomesEmptyObject(t *testing.T) {
+	for _, in := range []string{"", "   ", "\n\t "} {
+		got, ok := NormalizeToolCallArguments(in)
+		if !ok || got != "{}" {
+			t.Fatalf("NormalizeToolCallArguments(%q) = %q, %t; want {}, true", in, got, ok)
+		}
+	}
+}
+
+func TestSanitizeMessageHistoryKeepsEmptyArgumentToolCalls(t *testing.T) {
+	messages := []Message{
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []ToolCall{{ID: "call-1", Name: "list_files", Arguments: ""}}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "call-1", Content: "README.md"},
+	}
+	sanitized := sanitizeMessageHistory(messages)
+	if len(sanitized) != 2 {
+		t.Fatalf("sanitized message count = %d, want 2 (tool call and paired result kept)", len(sanitized))
+	}
+	if got := sanitized[0].ToolCalls[0].Arguments; got != "{}" {
+		t.Fatalf("tool call arguments = %q, want {}", got)
+	}
+}
+
+// Fix: an EOF without the final usage chunk was always treated as a retryable
+// interruption, even when the provider had signaled completion via a finish
+// reason; the complete response was discarded and re-requested.
+func TestClientReviewAcceptsEOFWithFinishReasonWithoutUsage(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{
+						"content": `{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"summary","overall_confidence_score":0.9}`,
+					},
+					"finish_reason": "stop",
+				},
+			},
+		})
+		writeSSEDone(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = time.Millisecond
+	client.retrier.MaxBackoff = time.Millisecond
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 (finish reason marks the stream complete)", attempts)
+	}
+	if resp.TokensUsed != (model.TokenUsage{}) {
+		t.Fatalf("tokens used = %+v, want zeroed usage", resp.TokensUsed)
+	}
+}
+
+// A usage-less EOF without any finish reason stays a retryable interruption.
+func TestClientReviewStillRetriesEOFWithoutFinishReasonOrUsage(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			writeSSEChunk(t, w, map[string]any{
+				"id":      "chunk-1",
+				"object":  "chat.completion.chunk",
+				"created": 1,
+				"model":   "model",
+				"choices": []map[string]any{
+					{"index": 0, "delta": map[string]any{"content": "partial"}},
+				},
+			})
+			writeSSEDone(t, w)
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.retrier.InitialBackoff = time.Millisecond
+	client.retrier.MaxBackoff = time.Millisecond
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (interrupted stream retried once)", attempts)
+	}
+	if resp.TokensUsed.TotalTokens != 6 {
+		t.Fatalf("total tokens = %d, want 6", resp.TokensUsed.TotalTokens)
+	}
+}
+
+// Fix: when the API rejected every reasoning effort attempt, Review fell
+// through to "llm: internal error: reasoning fallback loop completed without
+// returning" and hid the actual API error.
+func TestClientReviewAllEffortsRejectedSurfacesAPIError(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadRequest)
+		if _, err := fmt.Fprint(w, "Failed to validate the request: unsupported parameter value for this endpoint"); err != nil {
+			t.Fatalf("write error: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "medium",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "internal error") {
+		t.Fatalf("error = %v, want the API rejection instead of the internal-error fallthrough", err)
+	}
+	if !strings.Contains(err.Error(), "all reasoning efforts rejected") {
+		t.Fatalf("error = %v, want all-efforts-rejected context", err)
+	}
+	if !strings.Contains(err.Error(), "unsupported parameter value") {
+		t.Fatalf("error = %v, want underlying API error text", err)
+	}
+	// medium, low, minimal, none, off were all attempted and rejected.
+	if attempts != 5 {
+		t.Fatalf("attempts = %d, want 5", attempts)
+	}
+}
+
+// Fix: TokensUsed only reported the final attempt's usage; spend from failed
+// effort-fallback attempts (and no-tools retries) was silently dropped.
+func TestClientReviewAccumulatesTokenUsageAcrossEffortFallbacks(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			// Reasoning-only + finish reason "length": budget exhausted after a
+			// complete stream that reported 4/2/6 usage.
+			writeReasoningLengthSSE(t, w)
+			return
+		}
+		writeValidReviewSSE(t, w) // usage 4/2/6
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	want := model.TokenUsage{PromptTokens: 8, CompletionTokens: 4, TotalTokens: 12}
+	if resp.TokensUsed != want {
+		t.Fatalf("tokens used = %+v, want %+v (both attempts accumulated)", resp.TokensUsed, want)
+	}
+}
+
+// Fix: extra_body values for credential-like keys (key/token/secret/auth/
+// password/credential, case-insensitive) leaked into the request payload log.
+func TestRequestPayloadForLogRedactsSensitiveExtraBodyValues(t *testing.T) {
+	extraBody := map[string]any{
+		"api_key":       "sk-super-secret",
+		"Authorization": "Bearer abc123",
+		"custom_token":  "tok-value",
+		"PASSWORD":      "hunter2",
+		"top_k":         20,
+		// Sensitive keys nested in sub-objects and arrays must be redacted too.
+		"headers": map[string]any{
+			"x-api-key":  "nested-secret",
+			"user-agent": "nickpit",
+		},
+		"fallbacks": []any{
+			map[string]any{"credentials": "deep-secret", "model": "alt"},
+			"plain-string",
+		},
+	}
+	logPayload, err := requestPayloadForLog(openai.ChatCompletionRequest{Model: "model"}, extraBody)
+	if err != nil {
+		t.Fatalf("requestPayloadForLog returned error: %v", err)
+	}
+	got := string(logPayload)
+	for _, secret := range []string{"sk-super-secret", "Bearer abc123", "tok-value", "hunter2", "nested-secret", "deep-secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("log payload leaks %q:\n%s", secret, got)
+		}
+	}
+	for _, key := range []string{`"api_key"`, `"Authorization"`, `"custom_token"`, `"PASSWORD"`} {
+		if !strings.Contains(got, key) {
+			t.Fatalf("log payload should keep key %s visible:\n%s", key, got)
+		}
+	}
+	if count := strings.Count(got, `"[redacted]"`); count != 6 {
+		t.Fatalf("redacted %d values, want 6:\n%s", count, got)
+	}
+	for _, visible := range []string{`"top_k":20`, `"user-agent":"nickpit"`, `"model":"alt"`, `"plain-string"`} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("non-sensitive extra_body value %s must stay visible:\n%s", visible, got)
+		}
+	}
+	// The map used for the real request must stay untouched, nested too.
+	if extraBody["api_key"] != "sk-super-secret" {
+		t.Fatalf("extra body mutated: %v", extraBody["api_key"])
+	}
+	if extraBody["headers"].(map[string]any)["x-api-key"] != "nested-secret" {
+		t.Fatalf("nested extra body mutated: %v", extraBody["headers"])
 	}
 }

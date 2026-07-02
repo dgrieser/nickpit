@@ -98,10 +98,10 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	if agent.role == "review" {
 		repairResponse = e.responseCodeLocationRepairer(req.RepoRoot)
 	}
-	maxOutputRetries := req.MaxOutputRetries
-	if maxOutputRetries == 0 {
-		maxOutputRetries = defaultMaxOutputRetries
-	}
+	// req.MaxOutputRetries is passed through verbatim: 0 means unlimited
+	// (outputRetriesRemaining treats 0 as no cap). The default for an UNSET
+	// config is injected by the config layer (DefaultMaxOutputRetries), so only
+	// an explicitly configured 0 arrives here as 0.
 	loopReq := agentLoopRequest{
 		AgentName:                  agent.name,
 		AgentKind:                  agentLoopKind(agent.role),
@@ -123,7 +123,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		RepoRoot:                   req.RepoRoot,
 		MaxToolCalls:               req.MaxToolCalls,
 		MaxDuplicateToolCalls:      req.MaxDuplicateToolCalls,
-		MaxOutputRetries:           maxOutputRetries,
+		MaxOutputRetries:           req.MaxOutputRetries,
 		MaxReasoningSeconds:        req.MaxReasoningSeconds,
 		Section:                    sec,
 		NoToolsSystem:              noToolsSystem,
@@ -349,6 +349,12 @@ func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req mod
 		compileCtx, compileCancel := compileBudget.startOrCanceled()
 		if compileCtx.Err() != nil {
 			compileCancel()
+			// Distinguish a real cancellation of the parent context from a
+			// time-budget skip: cancellation is an error to propagate, only a
+			// pure budget expiry is a benign stop.
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("nudge phase cancelled: completed=%d/%d: %w", i, req.NudgeCount, err)
+			}
 			e.logf(ctx, "Nudge phase skipped or stopped by time budget: completed=%d/%d", i, req.NudgeCount)
 			return nil
 		}
@@ -362,6 +368,9 @@ func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req mod
 		nudgeCtxBase, nudgeCancel := nudgeBudget.startOrCanceled()
 		if nudgeCtxBase.Err() != nil {
 			nudgeCancel()
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("nudge phase cancelled: completed=%d/%d: %w", i, req.NudgeCount, err)
+			}
 			e.logf(ctx, "Nudge phase skipped or stopped by time budget: completed=%d/%d", i, req.NudgeCount)
 			return nil
 		}

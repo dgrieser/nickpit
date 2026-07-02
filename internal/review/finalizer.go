@@ -502,12 +502,17 @@ func enforcePriorityFloor(out, in []model.Finding, thresholdRank int) {
 const nonFindingRemark = "no issue"
 
 // isNonFindingVerification reports whether a verification marks its finding as a
-// non-finding: `refuted` with the "no issue" sentinel in remarks. Only these are
-// demoted/zeroed. A real finding kept as `refuted` under --verify-drop-policy=none
-// cites code instead, so it keeps its priority and confidence and can still force
-// a blocking verdict.
+// non-finding: `refuted` with the "no issue" sentinel leading the remarks. Only
+// these are demoted/zeroed. A real finding kept as `refuted` under
+// --verify-drop-policy=none cites code instead, so it keeps its priority and
+// confidence and can still force a blocking verdict. The sentinel must START the
+// remark (the prompt demands exactly "no issue"; models still append variants
+// like "no issue: code is sound") — a genuine refutation such as "the guard at
+// foo.go:12 prevents this, so no issue arises" merely contains the phrase
+// mid-sentence and must not be misclassified as a non-finding.
 func isNonFindingVerification(v *model.FindingVerification) bool {
-	return v != nil && v.Verdict == model.VerdictRefuted && strings.Contains(strings.ToLower(v.Remarks), nonFindingRemark)
+	return v != nil && v.Verdict == model.VerdictRefuted &&
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(v.Remarks)), nonFindingRemark)
 }
 
 func isUnverifiedVerification(v *model.FindingVerification) bool {

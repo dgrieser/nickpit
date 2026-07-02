@@ -126,23 +126,32 @@ func stageFor(fraction float64) loopStage {
 const liteLLMRepeatedChunkMarker = "The model is repeating the same chunk = "
 
 // ReasoningLoopDetectedError is returned when the model's streaming reasoning
-// content repeats itself, indicating it has entered an infinite loop.
+// content repeats itself, indicating it has entered an infinite loop. Lowering
+// the reasoning effort is the primary recovery.
 type ReasoningLoopDetectedError struct {
 	ReasoningEffort  string
 	LoopStartContent string // reasoning before the loop began
 	RepeatedContent  string // the repeating portion
-	// RepeatedChunk is true when the loop was reported by the upstream provider
-	// as a repeated output chunk (LiteLLM marker) rather than detected in the
-	// model's own reasoning content. Such loops occur in the completion stream
-	// even when the model emits no reasoning at all.
-	RepeatedChunk bool
 }
 
 func (e *ReasoningLoopDetectedError) Error() string {
-	if e.RepeatedChunk {
-		return "llm: model repeated output chunk during streaming"
-	}
 	return "llm: reasoning loop detected during streaming"
+}
+
+// OutputLoopDetectedError is returned when the upstream provider reports the
+// model repeating the same chunk in the completion stream (LiteLLM marker).
+// Unlike a reasoning loop this happens even with reasoning disabled — it is
+// usually a transient decode/serving fault, so the primary recovery is one
+// same-effort retry; lowering the effort only helps as a secondary step when
+// a lower effort exists at all.
+type OutputLoopDetectedError struct {
+	ReasoningEffort  string
+	LoopStartContent string // stream content before the repeat began
+	RepeatedContent  string // the repeating chunk
+}
+
+func (e *OutputLoopDetectedError) Error() string {
+	return "llm: model repeated output chunk during streaming"
 }
 
 type reasoningLoopDetector struct {
@@ -214,13 +223,22 @@ func (d *reasoningLoopDetector) Detected() bool {
 	return d.detected
 }
 
-func (d *reasoningLoopDetector) MakeError() *ReasoningLoopDetectedError {
+// MakeError projects the detector state into the matching error type: a
+// provider-reported repeated output chunk is an OutputLoopDetectedError, a
+// loop detected in the model's own reasoning content is a
+// ReasoningLoopDetectedError. The split matters for retry policy.
+func (d *reasoningLoopDetector) MakeError() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.repeatedChunk {
+		return &OutputLoopDetectedError{
+			LoopStartContent: d.loopStartContent,
+			RepeatedContent:  d.repeatedContent,
+		}
+	}
 	return &ReasoningLoopDetectedError{
 		LoopStartContent: d.loopStartContent,
 		RepeatedContent:  d.repeatedContent,
-		RepeatedChunk:    d.repeatedChunk,
 	}
 }
 
@@ -278,7 +296,7 @@ func (d *reasoningLoopDetector) finishLineLocked() {
 	if d.observeLineLocked(normalized, lineStart) {
 		return
 	}
-	d.observeTokensLocked(normalized)
+	d.observeTokensLocked(normalized, lineStart)
 }
 
 // --- character runs ---
@@ -480,7 +498,12 @@ func (d *reasoningLoopDetector) lineLoopLocked(period, copies int, stage loopSta
 
 // --- shingle recurrence ---
 
-func (d *reasoningLoopDetector) observeTokensLocked(line string) {
+// observeTokensLocked feeds one finished line's tokens into the shingle
+// detector. lineStart is the byte offset of that line in the raw stream; the
+// plateau/hard tiers record it when they arm so the reported LoopStart/
+// Repeated split starts at the arming line itself (d.rawLineStart already
+// points at the next, still-empty line by the time this runs).
+func (d *reasoningLoopDetector) observeTokensLocked(line string, lineStart int) {
 	tokens := normalizeReasoningTokens(line)
 	if len(tokens) == 0 {
 		return
@@ -513,7 +536,7 @@ func (d *reasoningLoopDetector) observeTokensLocked(line string) {
 		case d.hardLen == 0:
 			if frac >= shingleHardArm {
 				d.hardLen = 1
-				d.hardOffset = d.rawLineStart
+				d.hardOffset = lineStart
 			}
 		case frac >= shingleHardArm-shingleHysteresis:
 			d.hardLen++
@@ -529,7 +552,7 @@ func (d *reasoningLoopDetector) observeTokensLocked(line string) {
 		case d.plateauLen == 0:
 			if frac >= stage.shingleArm {
 				d.plateauLen = 1
-				d.plateauOffset = d.rawLineStart
+				d.plateauOffset = lineStart
 				d.armedAt = stage.shingleArm
 			}
 		case frac >= minFloat(d.armedAt, stage.shingleArm)-shingleHysteresis:

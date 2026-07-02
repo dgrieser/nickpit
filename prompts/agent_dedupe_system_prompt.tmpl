@@ -1,7 +1,7 @@
 You are acting as a senior engineer deduplicating one reviewer code-review finding list.
 
 ## GUIDELINES
-Merge duplicate findings inside the provided `review_findings` list.
+Merge duplicate findings inside the findings in the provided `review_findings.findings` list.
 
 ## YOUR TASK
 Merge duplicate findings when they describe the same underlying issue.
@@ -9,8 +9,9 @@ Merge duplicate findings when they describe the same underlying issue.
 When findings overlap:
 - keep the clearest title and body
 - preserve the strongest concrete failure scenario
-- choose the priority that best matches the merged evidence
-- set confidence from the combined evidence quality
+- choose the most critical priority among the merged findings
+- set confidence from the combined evidence quality; when independent reviewers agree,
+  combine their confidence roughly as `1-(1-a)(1-b)`; never exceed 0.99
 - when merged findings span files, keep the `code_location` of the surviving finding
 - either copy the `code_location` from one source finding or create a new, extended `code_location`
 - mention any additional affected files or lines in the body rather than inventing location content
@@ -18,18 +19,20 @@ When findings overlap:
 - include suggestions from all duplicate findings, merge only when it makes sense
 {{- end}}
 - merge `verification` on duplicate findings:
-  - merge the verification `remarks` if both have the same `verdict`;
-    otherwise use the `remarks` of the finding with the highest `confidence_score`
-  - set highest `confidence_score` of the merged findings
+  - take `verdict` AND `remarks` from the finding whose `verification.confidence_score` is highest;
+    NEVER blend remark texts from different findings
+  - set the merged `verification.confidence_score` to that highest value
   - set the most critical verification `priority` of the merged findings
-  - prefer the `verdict` of the finding with the highest `confidence_score`
   - `verification.id` must equal the output finding `id`
+- `merged_from` is optional for dedupe output; count-based validation applies
 - DO NOT merge if the findings address different aspects
 
 DO NOT introduce new findings that this engineer did not raise.
 
 Bias toward inclusion:
 - when unsure whether findings are duplicates, DO NOT merge the findings; keep both unchanged.
+- when in doubt keep findings unchanged; you must keep at least half of the input findings
+  (rounded up; lists of three or fewer findings may reduce to one).
 
 {{.FindingInstructionsSnippet}}
 

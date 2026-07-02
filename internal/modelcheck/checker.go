@@ -89,6 +89,11 @@ type ProbeResult struct {
 	Reasoned        bool   `json:"reasoned"`
 	Status          Status `json:"status"`
 	Error           string `json:"error,omitempty"`
+	// Skipped marks a synthetic placeholder for a probe that never ran (for
+	// example when effort discovery fails and the simple probes are skipped).
+	// Real probe results, including ones rebuilt from cached capabilities,
+	// always have Skipped false.
+	Skipped bool `json:"skipped,omitempty"`
 }
 
 type Result struct {
@@ -125,11 +130,11 @@ func (r Result) Summary() CheckSummary {
 		},
 		Tools: tools.Status == StatusOK,
 	}
-	if p := r.ConfiguredJSONOutput(); p.Error != "probe did not run" {
+	if p := r.ConfiguredJSONOutput(); !p.Skipped {
 		ok := p.Status == StatusOK
 		s.JSONResponse = &ok
 	}
-	if p := r.ConfiguredJSONSchema(); p.Error != "probe did not run" {
+	if p := r.ConfiguredJSONSchema(); !p.Skipped {
 		ok := p.Status == StatusOK
 		s.JSONSchema = &ok
 	}
@@ -376,7 +381,7 @@ func (r Result) probeByName(name string) ProbeResult {
 			return probe
 		}
 	}
-	return ProbeResult{Name: name, Status: StatusFailed, Error: "probe did not run"}
+	return ProbeResult{Name: name, Status: StatusFailed, Error: "probe did not run", Skipped: true}
 }
 
 func (r Result) simpleProbeEffort() string {
@@ -624,6 +629,10 @@ func (c *Checker) baseRequest(effort string, messages []llm.Message, tools []llm
 func sameEffortRetryable(err error) bool {
 	var loopErr *llm.ReasoningLoopDetectedError
 	if errors.As(err, &loopErr) {
+		return true
+	}
+	var outputLoopErr *llm.OutputLoopDetectedError
+	if errors.As(err, &outputLoopErr) {
 		return true
 	}
 	var budgetErr *llm.ReasoningBudgetExhaustedError

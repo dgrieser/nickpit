@@ -63,8 +63,8 @@ Kubernetes uses several distinct name classes, each with its own allowed charact
 | Name class | Used for | Allowed characters | Disallowed | Start/end | Max length |
 |---|---|---|---|---|---|
 | **DNS Subdomain** (RFC 1123) | API groups, most `metadata.name` values (e.g., Pods, Deployments, CRs), CRD `spec.group` | lowercase `a–z`, digits `0–9`, `-`, `.` | uppercase `A–Z`, `_`, whitespace, all other punctuation (`/`, `:`, `@`, `+`, `*`, etc.), unicode | must start AND end with alphanumeric (`[a-z0-9]`) | 253 |
-| **DNS Label** (RFC 1123) | `metadata.namespace`, Service names, label *values* that must be DNS-safe, container names | lowercase `a–z`, digits `0–9`, `-` | uppercase, `_`, `.`, whitespace, all other punctuation, unicode | must start AND end with alphanumeric | 63 |
-| **DNS Label** (RFC 1035, stricter) | older Service names, some legacy fields | lowercase `a–z`, digits `0–9`, `-` | same as above PLUS cannot start with a digit | must start with `[a-z]`, end with alphanumeric | 63 |
+| **DNS Label** (RFC 1123) | `metadata.namespace`, label *values* that must be DNS-safe, container names | lowercase `a–z`, digits `0–9`, `-` | uppercase, `_`, `.`, whitespace, all other punctuation, unicode | must start AND end with alphanumeric | 63 |
+| **DNS Label** (RFC 1035, stricter) | Service names (validated with `NameIsDNS1035Label` — cannot start with a digit), some legacy fields | lowercase `a–z`, digits `0–9`, `-` | same as above PLUS cannot start with a digit | must start with `[a-z]`, end with alphanumeric | 63 |
 | **Qualified Name** (label/annotation key, finalizer) | label keys, annotation keys, finalizer names, CRD `categories` prefix | name part: `a–z`, `A–Z`, `0–9`, `-`, `_`, `.` ; optional prefix part: DNS Subdomain followed by `/` | name part: whitespace, `/` (except as prefix separator), `:`, all other punctuation | name part must start AND end with alphanumeric | name ≤ 63; prefix ≤ 253; total ≤ 317 |
 | **Label Value** | `metadata.labels` values | `a–z`, `A–Z`, `0–9`, `-`, `_`, `.` (or empty string) | whitespace, `/`, `:`, all other punctuation, unicode | if non-empty: alphanumeric at both ends | 63 |
 | **Annotation Value** | `metadata.annotations` values | any valid UTF-8 string (incl. whitespace, JSON, base64) | none per key | n/a | total across all annotations ≤ 256 KiB |
@@ -111,7 +111,7 @@ type RedisClusterSpecs struct { ... }
 | Name references | `secretName` | `secretRef.name` (unless cross-namespace) |
 | Object references | `secretRef` | `secret` |
 | Duration | `timeoutSeconds` (`int32`) | `timeout: "30s"` in spec primitive fields |
-| Avoid abbreviations | `maximumRetries` | `maxRetries` (except established: `url`, `ip`, `id`) |
+| Avoid novel abbreviations — `max`/`min` prefixes ARE the established idiom (`maxReplicas`, `maxUnavailable`, `maxSurge`, `minReadySeconds`), as are `url`, `ip`, `id` | `maxRetries`, `minReadySeconds` | `tgtUtilization`, `cfgMapName` (novel abbreviations) |
 
 ##### Constant (Enum) Values
 
@@ -188,17 +188,23 @@ type RedisCluster struct {
 ##### OpenAPI / Kubebuilder Validation Markers
 
 ```go
+// Numeric markers belong on numeric fields
 // +kubebuilder:validation:Minimum=1
 // +kubebuilder:validation:Maximum=100
-// +kubebuilder:validation:Enum=small;medium;large
-// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*$`
-// +kubebuilder:validation:XValidation:rule="self.maxReplicas >= self.minReplicas",message="maxReplicas must be >= minReplicas"
 Replicas int32 `json:"replicas"`
+
+// Enum and Pattern markers belong on string fields
+// +kubebuilder:validation:Enum=small;medium;large
+Size string `json:"size"`
+
+// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*$`
+NodePrefix string `json:"nodePrefix,omitempty"`
 ```
 
-CEL cross-field validation (prefer over webhooks for simple invariants):
+CEL cross-field validation (type-level markers; prefer over webhooks for simple invariants):
 ```go
 // +kubebuilder:validation:XValidation:rule="!has(self.foo) || self.foo != self.bar",message="foo and bar must differ"
+// +kubebuilder:validation:XValidation:rule="self.maxReplicas >= self.minReplicas",message="maxReplicas must be >= minReplicas"
 ```
 
 Immutability via CEL:
@@ -318,8 +324,10 @@ v1alpha1 → v1alpha2 → v1beta1 → v1beta2 → v1
 | Stage | Stability | Enabled by Default | Backward Compat |
 |---|---|---|---|
 | `v1alphaX` | Experimental | No | Not guaranteed |
-| `v1betaX` | Pre-release | Yes | Best-effort |
+| `v1betaX` | Pre-release | New built-in beta APIs: **No** since v1.24 (KEP-3136) | Best-effort |
 | `v1` (GA) | Stable | Yes | **Required** |
+
+For CRDs, "enabled" is not a cluster policy at all — it is simply the `served` flag the CRD author sets on each version.
 
 ##### Rules
 
@@ -412,7 +420,7 @@ func (r *RedisClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 | `ctrl.Result{}, nil` | Success — no requeue needed until a watched event fires |
 | `ctrl.Result{}, err` | Transient error — requeued with exponential backoff |
 | `ctrl.Result{RequeueAfter: d}, nil` | Requeue after duration `d` (e.g., polling external state) |
-| `ctrl.Result{Requeue: true}, nil` | Requeue immediately (avoid; prefer event-driven) |
+| `ctrl.Result{Requeue: true}, nil` | Requeue via the rate limiter (per-item backoff), **not** immediate; deprecated in recent controller-runtime — prefer event-driven or `RequeueAfter` |
 
 > **Rule:** Return `ctrl.Result{}, err` for errors so the work queue applies backoff. Only use `RequeueAfter` for intentional polling patterns (e.g., waiting for an external API).
 
@@ -552,8 +560,8 @@ if err := controllerutil.SetControllerReference(owner, childDeployment, r.Scheme
 
 | Rule | Notes |
 |---|---|
-| Owner must be in **same namespace** as the owned resource | Enforced by Kubernetes GC |
-| A namespaced owner **cannot** own a cluster-scoped resource | Treated as absent owner → deletion |
+| Owner must be in **same namespace** as the owned resource | A namespaced dependent whose same-namespace owner is missing is treated as having an absent owner → deleted by GC |
+| A namespaced owner **cannot** own a cluster-scoped resource | The owner reference is unresolvable — the dependent is **not** garbage collected and gets an `OwnerRefInvalidNamespace` event |
 | A cluster-scoped owner **can** own a cluster-scoped resource | Permitted |
 | Use `controllerutil.SetControllerReference` (not manual ownerRef) | Sets `controller: true` and `blockOwnerDeletion: true` |
 | One resource should have **at most one controller owner** | Multiple owners only for non-controller (informational) references |
@@ -563,7 +571,7 @@ if err := controllerutil.SetControllerReference(owner, childDeployment, r.Scheme
 | Scenario | Use |
 |---|---|
 | Child resource in same namespace | `ownerReferences` (automatic GC) |
-| Child resource is cluster-scoped | `ownerReferences` + `controllerutil.SetControllerReference` |
+| Cluster-scoped child of a namespaced owner | `finalizer` on the owner — `ownerReferences`/`SetControllerReference` error here (or use a cluster-scoped owner) |
 | External resource (cloud, DNS) | `finalizer` |
 | Cross-namespace cleanup needed | `finalizer` |
 
@@ -698,7 +706,9 @@ pod-security.kubernetes.io/warn: restricted
 ##### Network Policies
 
 ```yaml
-# Restrict operator egress to API server only
+# Restrict operator egress to ports 443/6443 (any destination).
+# To pin egress to the API server itself, add a `to:` ipBlock with the
+# API server endpoint IPs (kubectl get endpoints kubernetes).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -710,7 +720,7 @@ spec:
   policyTypes: [Egress]
   egress:
     - ports:
-        - port: 443    # Kubernetes API server
+        - port: 443    # HTTPS / Kubernetes API server
           protocol: TCP
         - port: 6443
           protocol: TCP
@@ -781,8 +791,17 @@ mgr, _ := ctrl.NewManager(cfg, ctrl.Options{
     HealthProbeBindAddress: ":8081",
 })
 
-mgr.AddHealthzCheck("healthz", healthz.Ping)                   // liveness
-mgr.AddReadyzCheck("readyz", mgr.GetCache().WaitForCacheSync)  // readiness
+mgr.AddHealthzCheck("healthz", healthz.Ping)  // liveness
+mgr.AddReadyzCheck("readyz", healthz.Ping)    // readiness (kubebuilder scaffold default)
+
+// To gate readiness on cache sync, wrap it in a healthz.Checker —
+// WaitForCacheSync itself is not one:
+mgr.AddReadyzCheck("cache-sync", func(req *http.Request) error {
+    if !mgr.GetCache().WaitForCacheSync(req.Context()) {
+        return errors.New("informer caches not synced")
+    }
+    return nil
+})
 ```
 
 ```yaml
@@ -868,7 +887,7 @@ func (r *Reconciler) ManageError(ctx context.Context, obj *cachev1.RedisCluster,
 - **Never** return `ctrl.Result{Requeue: true}, err` — choose one or the other.
 - For permanent errors (bad user input), set a `Stalled` condition, record an Event, and return `ctrl.Result{}, nil` to avoid infinite retry loops.
 - Use `client.IgnoreNotFound(err)` when fetching objects that may not exist.
-- Apply backoff cap of ~6 hours for long-running error states (align with event TTL).
+- The default workqueue per-item backoff caps at ~16 minutes (1000s) — rely on it rather than fighting it with custom requeue timing.
 
 ##### Jobs and CronJobs
 
@@ -914,7 +933,12 @@ func TestReconcile_CreatesDeployment(t *testing.T) {
         ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
         Spec:       cachev1.RedisClusterSpec{Replicas: 3},
     }
-    fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cr).Build()
+    fakeClient := fake.NewClientBuilder().
+        WithScheme(scheme).
+        WithObjects(cr).
+        // Required since controller-runtime v0.15 when the reconciler updates status
+        WithStatusSubresource(&cachev1.RedisCluster{}).
+        Build()
     r := &RedisClusterReconciler{Client: fakeClient, Scheme: scheme}
 
     _, err := r.Reconcile(context.TODO(), reconcile.Request{

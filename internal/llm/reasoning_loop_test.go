@@ -11,6 +11,29 @@ import (
 // newTestReasoningLoopDetector returns a detector with a controllable clock.
 // The returned advance function moves the simulated stream time to the given
 // fraction of the (default 300s) staging budget.
+
+// reasoningLoopError asserts MakeError produced a reasoning-content loop error.
+func reasoningLoopError(t *testing.T, d *reasoningLoopDetector) *ReasoningLoopDetectedError {
+	t.Helper()
+	err := d.MakeError()
+	var loopErr *ReasoningLoopDetectedError
+	if !errors.As(err, &loopErr) {
+		t.Fatalf("MakeError() = %T (%v), want *ReasoningLoopDetectedError", err, err)
+	}
+	return loopErr
+}
+
+// outputLoopError asserts MakeError produced a provider repeated-chunk error.
+func outputLoopError(t *testing.T, d *reasoningLoopDetector) *OutputLoopDetectedError {
+	t.Helper()
+	err := d.MakeError()
+	var outErr *OutputLoopDetectedError
+	if !errors.As(err, &outErr) {
+		t.Fatalf("MakeError() = %T (%v), want *OutputLoopDetectedError", err, err)
+	}
+	return outErr
+}
+
 func newTestReasoningLoopDetector() (*reasoningLoopDetector, *bool, func(fraction float64)) {
 	canceled := false
 	d := newReasoningLoopDetector(func() {
@@ -43,12 +66,9 @@ func TestReasoningLoopDetectorRepeatedLineEarly(t *testing.T) {
 	if !*canceled {
 		t.Fatal("expected detector to cancel stream")
 	}
-	err := d.MakeError()
+	err := reasoningLoopError(t, d)
 	if !strings.Contains(err.RepeatedContent, "the same thought again") {
 		t.Fatalf("repeated content = %q", err.RepeatedContent)
-	}
-	if err.RepeatedChunk {
-		t.Fatal("reasoning-content loop should not be flagged as a repeated chunk")
 	}
 	if got, want := err.Error(), "llm: reasoning loop detected during streaming"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
@@ -162,7 +182,7 @@ func TestReasoningLoopDetectorRepeatedMultiByteRuneOffsets(t *testing.T) {
 	if !d.Detected() {
 		t.Fatal("expected repeated multi-byte rune loop")
 	}
-	err := d.MakeError()
+	err := reasoningLoopError(t, d)
 	// The run starts right after the intro line; the reported split must not
 	// drift into the repeated region (span is counted in runes, not bytes).
 	if err.LoopStartContent != "intro" {
@@ -226,7 +246,7 @@ func TestReasoningLoopDetectorFuzzyParaphraseCycle(t *testing.T) {
 	if !d.Detected() {
 		t.Fatal("expected fuzzy paraphrase loop")
 	}
-	err := d.MakeError()
+	err := reasoningLoopError(t, d)
 	if err.RepeatedContent == "" {
 		t.Fatal("expected repeated content to be reported")
 	}
@@ -314,14 +334,11 @@ func TestReasoningLoopDetectorProviderRepeatedChunkError(t *testing.T) {
 	if !*canceled {
 		t.Fatal("expected detector to cancel stream")
 	}
-	if got := strings.Count(d.MakeError().RepeatedContent, "\n"); got != 3 {
+	outErr := outputLoopError(t, d)
+	if got := strings.Count(outErr.RepeatedContent, "\n"); got != 3 {
 		t.Fatalf("repeated content newline count = %d, want 3", got)
 	}
-	loopErr := d.MakeError()
-	if !loopErr.RepeatedChunk {
-		t.Fatal("provider repeated-chunk error should set RepeatedChunk")
-	}
-	if got, want := loopErr.Error(), "llm: model repeated output chunk during streaming"; got != want {
+	if got, want := outErr.Error(), "llm: model repeated output chunk during streaming"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
@@ -333,11 +350,8 @@ func TestReasoningLoopDetectorProviderRepeatedChunkErrorIncludesPartialLine(t *t
 	if !d.detectRepeatedChunkError(err) {
 		t.Fatal("expected provider repeated chunk error to trigger loop detector")
 	}
-	if got, want := d.MakeError().LoopStartContent, "completed reasoning\npartial reasoning before provider error"; got != want {
+	if got, want := outputLoopError(t, d).LoopStartContent, "completed reasoning\npartial reasoning before provider error"; got != want {
 		t.Fatalf("loop start content = %q, want %q", got, want)
-	}
-	if !d.MakeError().RepeatedChunk {
-		t.Fatal("provider repeated-chunk error should set RepeatedChunk")
 	}
 }
 
@@ -431,4 +445,42 @@ func fuzzyReasoningCycle(first, second, closer string) []string {
 		"The better solution is still to make the closed state explicit and avoid letting cleanup methods touch Redis after shutdown.",
 	}
 	return lines
+}
+
+// Fix: the plateau/hard shingle tiers armed with d.rawLineStart, which by the
+// time observeTokensLocked runs already points at the NEXT (still empty) line.
+// The trigger offset must attribute the arming line itself so the reported
+// LoopStart/Repeated split is exact.
+func TestReasoningLoopDetectorShingleArmOffsetsUseArmingLine(t *testing.T) {
+	d := newReasoningLoopDetector(func() {}, time.Minute)
+	line := "alpha beta gamma delta epsilon"
+
+	// First pass registers the line's shingle so replaying it counts as
+	// repeated.
+	d.observeTokensLocked(line, 0)
+
+	// Pretend the stream is deep enough that the recurrence window is full and
+	// one more repeated shingle pushes the fraction over both arm thresholds
+	// (243/256 = 0.949 < 0.95 <= 244/256).
+	d.shingleLen = shingleWindow
+	d.shingleStart = 0
+	d.shingleRepeat = 243
+	// Where the buggy code would point: the start of the next line.
+	d.rawLineStart = 9999
+	const lineStart = 4242
+
+	d.observeTokensLocked(line, lineStart)
+
+	if d.hardLen == 0 {
+		t.Fatal("expected hard tier to arm")
+	}
+	if d.hardOffset != lineStart {
+		t.Fatalf("hardOffset = %d, want %d (the arming line, not the next line)", d.hardOffset, lineStart)
+	}
+	if d.plateauLen == 0 {
+		t.Fatal("expected plateau tier to arm")
+	}
+	if d.plateauOffset != lineStart {
+		t.Fatalf("plateauOffset = %d, want %d (the arming line, not the next line)", d.plateauOffset, lineStart)
+	}
 }

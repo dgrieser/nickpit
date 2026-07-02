@@ -57,8 +57,14 @@ func FindSymbols(_ context.Context, repoRoot, name, path string) ([]Symbol, erro
 }
 
 func findSymbolsInFile(repoRoot, path, name string) []Symbol {
+	// Read through repofs so a symlink pointing outside the checkout cannot
+	// be parsed (and its contents surfaced) as repository source.
+	src, readErr := repofs.ReadFile(repoRoot, path)
+	if readErr != nil {
+		return nil
+	}
 	fset := token.NewFileSet()
-	file, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	file, parseErr := parser.ParseFile(fset, path, src, parser.ParseComments)
 	if parseErr != nil {
 		return nil
 	}

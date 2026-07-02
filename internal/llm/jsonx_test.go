@@ -73,12 +73,20 @@ func TestRepairJSON(t *testing.T) {
 		{"preserves string contents", `{"a":"True, 'x', // comment, /* */"}`, `{"a":"True, 'x', // comment, /* */"}`},
 		{"escapes embedded double quotes in single-quoted string", `{'text': 'He said "hello"'}`, `{"text": "He said \"hello\""}`},
 		{"keeps already escaped double quotes in single-quoted string", `{'text': 'He said \"hi\"'}`, `{"text": "He said \"hi\""}`},
+		// \' is a valid escape inside a single-quoted string but invalid JSON
+		// inside the rewritten double-quoted string; it must become a bare '.
+		{"unescapes escaped single quote in single-quoted string", `{'text': 'it\'s fine'}`, `{"text": "it's fine"}`},
+		{"escaped single quotes do not terminate the string", `{'a': '\'quoted\' word'}`, `{"a": "'quoted' word"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := string(RepairJSON([]byte(tt.in)))
 			if got != tt.want {
 				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+			var parsed any
+			if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+				t.Fatalf("repaired JSON does not parse: %v (%q)", err, got)
 			}
 		})
 	}

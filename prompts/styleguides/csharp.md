@@ -83,7 +83,7 @@ public async Task<Data> FetchDataAsync()
 {
     var response = await _httpClient.GetAsync(url)
         .ConfigureAwait(false);
-    return await response.Content.ReadAsAsync<Data>()
+    return await response.Content.ReadFromJsonAsync<Data>()  // System.Net.Http.Json
         .ConfigureAwait(false);
 }
 
@@ -174,9 +174,16 @@ var orderSummary =
 
 ```csharp
 // Use appropriate methods
-var hasItems = items.Any();                    // Not: items.Count() > 0
-var firstOrDefault = items.FirstOrDefault();  // Not: items.First()
-var count = items.Count;                       // Property, not Count()
+// For lazy IEnumerable<T>, prefer Any() over Count() > 0
+var hasItems = enumerable.Any();               // Count() would enumerate everything
+
+// When the type exposes a Count/Length property (List<T>, arrays), use it
+var count = list.Count;                        // Property, not the Count() method
+
+// FirstOrDefault when absence is expected and handled; First/Single when
+// absence is a programming error — failing fast beats a later
+// NullReferenceException
+var user = users.FirstOrDefault(u => u.Id == id);
 
 // Avoid multiple enumerations
 // Bad
@@ -187,6 +194,7 @@ if (items.Any())
 
 // Good
 var itemList = items.ToList();
+// Count property is fine here: the list is materialized (Any() applies to lazy sequences)
 if (itemList.Count > 0)
 {
     foreach (var item in itemList) { }
@@ -353,13 +361,18 @@ public class OrderServiceTests
 {
     private readonly Mock<IOrderRepository> _mockRepository;
     private readonly Mock<ILogger<OrderService>> _mockLogger;
+    private readonly Mock<IEmailService> _mockEmailService;
     private readonly OrderService _service;
 
     public OrderServiceTests()
     {
         _mockRepository = new Mock<IOrderRepository>();
         _mockLogger = new Mock<ILogger<OrderService>>();
-        _service = new OrderService(_mockRepository.Object, _mockLogger.Object);
+        _mockEmailService = new Mock<IEmailService>();
+        _service = new OrderService(
+            _mockRepository.Object,
+            _mockLogger.Object,
+            _mockEmailService.Object);
     }
 
     [Fact]

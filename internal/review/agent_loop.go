@@ -250,6 +250,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			}
 		}
 
+		invalidToolCalls := resp.ToolCalls
 		originalToolCalls := len(resp.ToolCalls)
 		resp.ToolCalls, _ = filterAgentToolCalls(resp.ToolCalls, req.Tools)
 		if originalToolCalls > 0 && len(resp.ToolCalls) == 0 {
@@ -258,6 +259,12 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				e.logf(loopCtx, "Invalid tool call response, retrying without tool history: attempt=%d", state.jsonRetries)
 				if strings.TrimSpace(resp.RawResponse) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse})
+				} else {
+					// Without raw content the retry would resend byte-identical
+					// messages; inject a short corrective note describing the
+					// invalid calls so the retry request can differ.
+					messages = append(messages, llm.Message{Role: "user", Content: invalidToolCallFeedback(invalidToolCalls)})
+					syntheticFollowup = nil
 				}
 				continue
 			}
@@ -424,13 +431,8 @@ func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.Re
 	noToolsReq := *llmReq
 	noToolsReq.Tools = nil
 	noToolsReq.ParallelToolCalls = false
-	if req.NoToolsMessages != nil {
-		finalMessages, err := req.NoToolsMessages(messages)
-		if err != nil {
-			return nil, err
-		}
-		noToolsReq.Messages = finalMessages
-	}
+	// reviewWithoutTools computes the no-tools transcript itself, preferring
+	// req.NoToolsMessages when set (which is always the case for loop agents).
 	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.DisableSuggestions, req.MaxOutputRetries, req.Section, req, state)
 }
 
@@ -443,6 +445,24 @@ func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt
 	if e.logger != nil {
 		e.logger.Progress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt))
 	}
+}
+
+// invalidToolCallFeedback describes a batch of rejected tool calls so a retry
+// after an all-invalid tool response carries a corrective user message instead
+// of resending a byte-identical request.
+func invalidToolCallFeedback(toolCalls []llm.ToolCall) string {
+	names := make([]string, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		name := strings.TrimSpace(toolCall.Name)
+		if name == "" {
+			name = "<unnamed>"
+		}
+		names = append(names, name)
+	}
+	return fmt.Sprintf(
+		"Your previous response contained only invalid tool calls (%s). Every tool call needs a known tool name, a call id, and valid JSON arguments including the required fields. Either issue corrected tool calls or answer directly in the required output format.",
+		strings.Join(names, ", "),
+	)
 }
 
 func filterAgentToolCalls(toolCalls []llm.ToolCall, tools []llm.ToolDefinition) ([]llm.ToolCall, int) {

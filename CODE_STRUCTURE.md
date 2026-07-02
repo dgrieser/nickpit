@@ -13,7 +13,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/config/config.go`: Loads and merges config files, environment variables, profiles, defaults, and CLI overrides.
 - `internal/config/example.go`: Provides the checked-in example config text.
 - `internal/config/generate.go`: Shared helpers for generator commands.
-- `internal/config/profiles.go`: Built-in model/provider profile definitions and capability defaults.
+- `internal/config/profiles.go`: Profile resolution (`ResolveProfile`) and profile merging (`mergeProfiles`); the built-in provider profiles live in `config.go` (`defaultProfiles`).
 
 ## Review Pipeline
 
@@ -80,7 +80,6 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/git/diff.go`: Diff loading and changed-file extraction.
 - `internal/git/parser.go`: Git diff parser and hunk model.
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers.
-- `internal/scm/types.go`: Common SCM interfaces and review publication types.
 - `internal/scm/github/adapter.go`: GitHub adapter wiring.
 - `internal/scm/github/client.go`: GitHub API client.
 - `internal/scm/github/pr.go`: Pull request loading and review source construction.
@@ -97,7 +96,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `internal/output/terminal.go`: Human terminal output.
 - `internal/output/json.go`: JSON output.
-- `internal/output/sarif.go`: SARIF output for code scanning integrations.
+- `internal/output/sarif.go`: Unused SARIF formatter stub; `FormatFindings` returns "not yet implemented".
 - `internal/output/badge.go`: Badge/status formatting helpers.
 - `internal/logging/logger.go`: Base logger, reasoning sections, JSON rendering, and raw output.
 - `internal/logging/progress.go`: Progress-line data model, formatting, coloring, and workflow labels.

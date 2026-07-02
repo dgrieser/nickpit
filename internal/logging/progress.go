@@ -189,6 +189,7 @@ var progressStageStyles = map[Stage]string{
 	StageTool:       "1;38;5;80",
 	StageVerify:     "1;38;5;123",
 	StageFinalize:   "1;38;5;207",
+	StageVerdict:    "1;38;5;141",
 	StageSummarize:  "1;38;5;222",
 	StagePublish:    "1;38;5;209",
 	StageResult:     "1;38;5;118",

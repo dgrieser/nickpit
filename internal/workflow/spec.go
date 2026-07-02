@@ -781,6 +781,7 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("workflow: steps is empty")
 	}
 	reviewed := map[string]bool{}
+	merged := false
 	idx := 0
 	// validate checks one plain step's type and dependencies, returning the
 	// vector it reviews (if any). Per-vector follow-up steps (verify, dedupe,
@@ -800,6 +801,15 @@ func (s Spec) Validate() error {
 		}
 		if err := validateStepTimeBudgets(entry); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
+		}
+		// Reject config that would be silently ignored at run time: injected
+		// findings on steps that never read them, and verify/dedupe work whose
+		// group mutations the already-produced flat merge result discards.
+		if len(entry.FindingsFrom) > 0 && !StepConsumesFindings(entry.Type) {
+			return "", fmt.Errorf("workflow: step %d: %q does not consume findings_from; the injected findings would be silently ignored", idx, entry.Type)
+		}
+		if merged && stepDiscardedAfterMerge(entry.Type) {
+			return "", fmt.Errorf("workflow: step %d: %q after merge has no effect; later steps consume the flat result merge already produced", idx, entry.Type)
 		}
 		// cluster-scoped finalize/summarize is only reachable inside a pipeline
 		// group (the only place the engine shards them). A flat step must be
@@ -840,6 +850,9 @@ func (s Spec) Validate() error {
 			if err := validatePipelineGroup(entry, &idx); err != nil {
 				return err
 			}
+			// The pipeline group contains the merge; anything mutating groups
+			// afterwards is discarded.
+			merged = true
 			continue
 		}
 		if entry.IsParallel() {
@@ -888,8 +901,27 @@ func (s Spec) Validate() error {
 		if v != "" {
 			reviewed[v] = true
 		}
+		if entry.Type == StepMerge {
+			merged = true
+		}
 	}
 	return nil
+}
+
+// stepDiscardedAfterMerge reports whether a step's work would be silently
+// thrown away when it runs after the merge step: verify/dedupe (global or
+// per-vector) mutate the grouped findings, but finalize/verdict/output consume
+// the flat result the merge already set.
+func stepDiscardedAfterMerge(stepType string) bool {
+	if stepType == StepVerify || stepType == StepDedupe {
+		return true
+	}
+	for _, prefix := range []string{StepVerifyPrefix, StepDedupePrefix} {
+		if _, ok := vectorOf(stepType, prefix); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func validateStepTimeBudgets(entry StepEntry) error {

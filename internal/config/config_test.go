@@ -341,8 +341,79 @@ func TestLoadConfigDefaultProfileFallsBackToGenericAPIKeyEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.APIKey != "" {
-		t.Fatalf("api key = %q", profile.APIKey)
+	// The default profile's $OPENROUTER_API_KEY reference resolves to empty,
+	// so the generic NICKPIT_API_KEY is used as the last resort.
+	if profile.APIKey != "generic-key" {
+		t.Fatalf("api key = %q, want generic-key", profile.APIKey)
+	}
+}
+
+func TestLoadConfigGenericAPIKeyEnvDoesNotOverrideConfiguredKey(t *testing.T) {
+	t.Setenv("NICKPIT_API_KEY", "generic-key")
+	t.Setenv("NICKPIT_MODEL", "test-model")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    api_key: configured-key
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.APIKey != "configured-key" {
+		t.Fatalf("api key = %q, want configured-key", profile.APIKey)
+	}
+}
+
+func TestLoadConfigUsesPrimaryModelEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_REASONING_EFFORT", "low")
+	t.Setenv("NICKPIT_MAX_TOKENS", "4096")
+	t.Setenv("NICKPIT_TEMPERATURE", "0.25")
+	t.Setenv("NICKPIT_TOP_P", "0.85")
+	t.Setenv("NICKPIT_EXTRA_BODY", `{"chat_template_kwargs":{"enable_thinking":false}}`)
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Model != "primary-model" {
+		t.Fatalf("model = %q", profile.Model)
+	}
+	if profile.ReasoningEffort != "low" {
+		t.Fatalf("reasoning effort = %q", profile.ReasoningEffort)
+	}
+	if profile.MaxTokens == nil || *profile.MaxTokens != 4096 {
+		t.Fatalf("max tokens = %v", profile.MaxTokens)
+	}
+	if profile.Temperature == nil || *profile.Temperature != 0.25 {
+		t.Fatalf("temperature = %v", profile.Temperature)
+	}
+	if profile.TopP == nil || *profile.TopP != 0.85 {
+		t.Fatalf("top_p = %v", profile.TopP)
+	}
+	kwargs, ok := profile.ExtraBody["chat_template_kwargs"].(map[string]any)
+	if !ok || kwargs["enable_thinking"] != false {
+		t.Fatalf("extra body = %#v", profile.ExtraBody)
+	}
+}
+
+func TestLoadConfigRejectsInvalidPrimaryModelEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_TEMPERATURE", "not-a-number")
+
+	if _, _, err := Load("", Overrides{}); err == nil {
+		t.Fatal("expected error for non-numeric NICKPIT_TEMPERATURE")
 	}
 }
 
@@ -1198,5 +1269,28 @@ profiles:
 	}
 	if profile.MaxContextTokens != 0 {
 		t.Fatalf("max context tokens = %d", profile.MaxContextTokens)
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home dir: %v", err)
+	}
+	if got := expandPath("~"); got != home {
+		t.Fatalf("expandPath(~) = %q, want %q", got, home)
+	}
+	if got, want := expandPath("~/work"), filepath.Join(home, "work"); got != want {
+		t.Fatalf("expandPath(~/work) = %q, want %q", got, want)
+	}
+	// ~user paths cannot be expanded against the current home; leave untouched.
+	if got := expandPath("~otheruser/work"); got != "~otheruser/work" {
+		t.Fatalf("expandPath(~otheruser/work) = %q, want unchanged", got)
+	}
+	if got := expandPath("/absolute/path"); got != "/absolute/path" {
+		t.Fatalf("expandPath(/absolute/path) = %q, want unchanged", got)
+	}
+	if got := expandPath(""); got != "" {
+		t.Fatalf("expandPath(empty) = %q, want empty", got)
 	}
 }

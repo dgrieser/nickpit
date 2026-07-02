@@ -3,11 +3,12 @@ package retrieval
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 // rustBackend is a best-effort, regex-based structural backend for Rust, in the
@@ -171,7 +172,7 @@ func buildRustGraph(repoRoot string, scope lookupScope) (*staticGraph, error) {
 func parseRustFiles(repoRoot string, files []string) (map[string]*rustFile, error) {
 	modules := make(map[string]*rustFile, len(files))
 	for _, fullPath := range files {
-		data, err := os.ReadFile(fullPath)
+		data, err := repofs.ReadFile(repoRoot, fullPath)
 		if err != nil {
 			return nil, err
 		}

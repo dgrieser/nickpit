@@ -74,3 +74,44 @@ func TestLoadProfileForSpecIgnoresProfileForSingleStep(t *testing.T) {
 		t.Fatalf("profile name = %q, want default for --step", name)
 	}
 }
+
+// active_profile from the config file must select the profile when --profile
+// is left at its flag default; an explicit --profile (even "default") wins.
+func TestLoadProfileHonorsConfigActiveProfile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	cfg := `active_profile: alt
+profiles:
+  default:
+    base_url: http://default
+    api_key: kd
+    model: m-default
+  alt:
+    base_url: http://alt
+    api_key: ka
+    model: m-alt
+`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Flag default "default", not explicitly set: active_profile wins.
+	a := &app{configPath: cfgPath, profile: "default"}
+	name, profile, err := a.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "alt" || profile.Model != "m-alt" {
+		t.Fatalf("profile = %q/%q, want alt/m-alt", name, profile.Model)
+	}
+
+	// --profile=default passed explicitly: overrides active_profile.
+	a = &app{configPath: cfgPath, profile: "default", profileSet: true}
+	name, profile, err = a.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "default" || profile.Model != "m-default" {
+		t.Fatalf("profile = %q/%q, want default/m-default", name, profile.Model)
+	}
+}

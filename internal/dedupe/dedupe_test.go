@@ -456,3 +456,84 @@ func TestClusters(t *testing.T) {
 		t.Fatalf("second cluster = %v, want [1]", clusters[1])
 	}
 }
+
+// A short generic title must not absorb every longer title containing it —
+// the overlap-coefficient term is gated on token count and set-size ratio.
+// (Regression: run 1 posts "Race condition"; run 2's distinct, detailed
+// finding in the same file was silently suppressed at publish time.)
+func TestCompareShortSubsetTitleDoesNotAbsorb(t *testing.T) {
+	prior := finding("Race condition", "", "a.go", 0, 0)
+	fresh := finding(
+		"Race condition in cache eviction map access during shutdown",
+		"Concurrent map write in evict() races with Close().",
+		"a.go", 120, 128,
+	)
+	m := Compare(prior, fresh)
+	if m.Verdict >= Duplicate {
+		t.Fatalf("verdict = %s (title sim %.2f), want < duplicate", m.Verdict, m.TitleSim)
+	}
+}
+
+// Comparable long titles must keep benefiting from the overlap term: the
+// calibrated subset-phrasing pair ("X" vs "X enabling Y") stays Duplicate.
+// TestCompareCalibration covers the corpus; this pins the gate boundary.
+func TestCompareGatedOverlapKeepsComparableSubsets(t *testing.T) {
+	a := finding("Bash script missing strict mode flags", "set -e only", "a.sh", 1, 3)
+	b := finding("Bash script missing strict mode flags enabling silent failures", "set -e without pipefail", "a.sh", 1, 5)
+	if m := Compare(a, b); m.Verdict < Duplicate {
+		t.Fatalf("verdict = %s, want >= duplicate", m.Verdict)
+	}
+}
+
+// Sentence-final punctuation must not split otherwise-identical tokens.
+func TestCompareTrailingPeriodInsensitive(t *testing.T) {
+	a := finding("Unscoped cleanup deletes rotated archive files early.", "", "a.sh", 0, 0)
+	b := finding("Unscoped cleanup deletes rotated archive files early", "", "a.sh", 0, 0)
+	m := Compare(a, b)
+	if m.TitleSim != 1.0 {
+		t.Fatalf("title sim = %.3f, want 1.0", m.TitleSim)
+	}
+	if m.Verdict < Duplicate {
+		t.Fatalf("verdict = %s, want >= duplicate", m.Verdict)
+	}
+}
+
+// Malformed line ranges (zero start, inverted bounds) are unknown locations,
+// not evidence of proximity.
+func TestCompareMalformedRangesScoreNeutral(t *testing.T) {
+	a := finding("Leftover debug logging in request handler", "", "a.go", 0, 7)
+	b := finding("Leftover debug logging in request handler", "", "a.go", 5, 9)
+	if m := Compare(a, b); m.LocationSim != LocSameRegion {
+		t.Fatalf("partial-zero range location sim = %.2f, want neutral %.2f", m.LocationSim, LocSameRegion)
+	}
+	inverted := finding("Leftover debug logging in request handler", "", "a.go", 50, 10)
+	if m := Compare(inverted, finding("Leftover debug logging in request handler", "", "a.go", 20, 25)); m.LocationSim != LocSameRegion {
+		t.Fatalf("inverted range location sim = %.2f, want neutral %.2f", m.LocationSim, LocSameRegion)
+	}
+}
+
+// Repo-level findings (no file path) never fold mechanically on title alone.
+func TestCompareEmptyFilePathsCapAtPossible(t *testing.T) {
+	a := finding("Missing integration tests for new endpoint", "The new /v2/users endpoint has no coverage.", "", 0, 0)
+	b := finding("Missing integration tests for new endpoint", "Rollout plan does not mention canary staging.", "", 0, 0)
+	m := Compare(a, b)
+	if m.Verdict >= Duplicate {
+		t.Fatalf("verdict = %s, want <= possible for pathless findings with diverging bodies", m.Verdict)
+	}
+	if m.Verdict != Possible {
+		t.Fatalf("verdict = %s, want possible (same title)", m.Verdict)
+	}
+	same := Compare(a, a)
+	if same.Verdict != Identical {
+		t.Fatalf("self-compare verdict = %s, want identical", same.Verdict)
+	}
+}
+
+// Lexical path variants are the same file.
+func TestComparePathVariantsNormalize(t *testing.T) {
+	a := finding("Bash script missing strict mode flags", "set -e only", "./a.sh", 1, 3)
+	b := finding("Bash script missing strict mode flags enabling silent failures", "set -e without pipefail", "a.sh", 1, 5)
+	if m := Compare(a, b); m.Verdict < Duplicate {
+		t.Fatalf("verdict = %s, want >= duplicate across ./-prefixed path", m.Verdict)
+	}
+}

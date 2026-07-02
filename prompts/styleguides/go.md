@@ -35,7 +35,7 @@ module example.com/app
 
 go 1.24.0
 
-tool github.com/golangci/golangci-lint/cmd/golangci-lint
+tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 ```
 
 For Go 1.24 and newer modules, use `tool` directives in `go.mod` to track
@@ -73,12 +73,17 @@ Keep constraints small and local when possible. Use `any` instead of
 
 ##### Standard Library Helpers
 
-Prefer standard library helpers over local generic utilities when they match
-the need:
+Prefer standard library helpers and language builtins over local generic
+utilities when they match the need.
+
+Standard library packages:
 
 - `slices` for sorting, searching, cloning, compacting, and comparing slices.
 - `maps` for cloning, copying, deleting, and iterating map contents.
 - `cmp` for ordered comparisons.
+
+Language builtins (Go 1.21+, no import required):
+
 - `clear` for clearing maps or zeroing slice contents.
 - `min` and `max` for simple ordered comparisons.
 
@@ -124,14 +129,14 @@ Examples:
 ##### Explicit Error Checking
 
 ```go
-// Always check errors explicitly
+// Handle errors, or discard them deliberately with _ =
 file, err := os.Open(filename)
 if err != nil {
     return fmt.Errorf("opening file %s: %w", filename, err)
 }
 defer file.Close()
 
-// Don't ignore errors with _
+// Don't silently ignore errors
 // Bad
 data, _ := json.Marshal(obj)
 
@@ -141,6 +146,14 @@ if err != nil {
     return nil, fmt.Errorf("marshaling object: %w", err)
 }
 ```
+
+A few discards are idiomatic and should not be flagged:
+
+- deferred `Close()` on files opened only for reading
+- `defer tx.Rollback()`, which is a no-op after a successful commit
+- writes to `bytes.Buffer` or `strings.Builder`, which never return an error
+
+For everything else, handle the error or make the discard explicit with `_ =`.
 
 ##### Error Wrapping
 
@@ -772,30 +785,33 @@ func processItems(items []Item, workers int) []Result {
 ##### Linting with golangci-lint
 
 ```yaml
-# .golangci.yml
+# .golangci.yml (golangci-lint v2)
+version: "2"
+
 linters:
   enable:
     - errcheck
     - govet
     - ineffassign
-    - staticcheck
+    - staticcheck # includes the former gosimple checks
     - unused
-    - gosimple
     - gocritic
+  settings:
+    govet:
+      enable:
+        - shadow
+    errcheck:
+      check-type-assertions: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
     - gofmt
     - goimports
-
-linters-settings:
-  govet:
-    check-shadowing: true
-  errcheck:
-    check-type-assertions: true
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
 ```
 
 ##### Common Commands

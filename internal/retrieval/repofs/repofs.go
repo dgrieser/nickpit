@@ -2,6 +2,7 @@ package repofs
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -47,6 +48,80 @@ func ResolvePath(repoRoot, path string) (string, string, error) {
 		return "", repoAbs, nil
 	}
 	return filepath.ToSlash(relPath), fullPath, nil
+}
+
+// VerifyNoSymlinkEscape checks that fullPath — an absolute path already
+// lexically contained in repoRoot (e.g. produced by ResolvePath) — still
+// resolves inside repoRoot once symlinks are followed. Lexical containment is
+// not enough: a symlink inside the checkout (e.g. a fork-PR adding
+// settings.py -> ~/.ssh/id_rsa) would otherwise let reads escape the
+// repository. Symlinks that resolve to targets inside the root remain allowed.
+// Non-existent paths are checked through their deepest existing ancestor.
+func VerifyNoSymlinkEscape(repoRoot, fullPath string) error {
+	rootAbs, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return err
+	}
+	rootReal, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return fmt.Errorf("resolving repository root %q: %w", repoRoot, err)
+	}
+	targetAbs, err := filepath.Abs(fullPath)
+	if err != nil {
+		return err
+	}
+	targetReal, err := evalSymlinksDeepest(targetAbs)
+	if err != nil {
+		return err
+	}
+	relPath, err := filepath.Rel(rootReal, targetReal)
+	if err != nil || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q escapes repository root via symlink", fullPath)
+	}
+	return nil
+}
+
+// evalSymlinksDeepest resolves symlinks in path. When the path does not exist,
+// it resolves the deepest existing ancestor and re-appends the non-existent
+// suffix, so a would-be escape through an existing symlinked directory is
+// still detected.
+func evalSymlinksDeepest(path string) (string, error) {
+	suffix := ""
+	current := path
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			return filepath.Join(resolved, suffix), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		suffix = filepath.Join(filepath.Base(current), suffix)
+		current = parent
+	}
+}
+
+// Open opens fullPath for reading after verifying that following symlinks
+// keeps it inside repoRoot. All retrieval file reads must go through Open or
+// ReadFile so a crafted symlink cannot leak files outside the checkout.
+func Open(repoRoot, fullPath string) (*os.File, error) {
+	if err := VerifyNoSymlinkEscape(repoRoot, fullPath); err != nil {
+		return nil, err
+	}
+	return os.Open(fullPath)
+}
+
+// ReadFile reads fullPath after verifying that following symlinks keeps it
+// inside repoRoot. See Open.
+func ReadFile(repoRoot, fullPath string) ([]byte, error) {
+	if err := VerifyNoSymlinkEscape(repoRoot, fullPath); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(fullPath)
 }
 
 func RelPath(repoRoot, fullPath string) (string, error) {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // TestReasoningLoopCorpus replays reasoning traces extracted from real review
@@ -81,8 +82,14 @@ func TestReasoningLoopCorpus(t *testing.T) {
 		text := rec.Text
 		res := result{id: rec.ID, kind: rec.Kind, durSec: dur}
 		const step = 100
-		for off := 0; off < len(text); off += step {
+		for off := 0; off < len(text); {
 			end := min(off+step, len(text))
+			// Never split a multi-byte rune across deltas: the range loop in
+			// onDelta would decode the fragments as U+FFFD and distort both
+			// the detector input and the replayed byte offsets.
+			for end < len(text) && !utf8.RuneStart(text[end]) {
+				end++
+			}
 			clock = base.Add(time.Duration(float64(end) / float64(len(text)) * dur * float64(time.Second)))
 			d.onDelta(text[off:end])
 			if canceled {
@@ -91,6 +98,7 @@ func TestReasoningLoopCorpus(t *testing.T) {
 				res.fireSec = clock.Sub(base).Seconds()
 				break
 			}
+			off = end
 		}
 		results = append(results, res)
 	}

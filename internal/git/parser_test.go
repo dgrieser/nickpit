@@ -1,0 +1,149 @@
+package git
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestParseDiffGitPath(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "plain",
+			line: "diff --git a/main.go b/main.go",
+			want: "main.go",
+		},
+		{
+			name: "space in name unquoted",
+			line: "diff --git a/dir/my file.go b/dir/my file.go",
+			want: "dir/my file.go",
+		},
+		{
+			name: "space in name quoted both sides",
+			line: `diff --git "a/dir/my file.go" "b/dir/my file.go"`,
+			want: "dir/my file.go",
+		},
+		{
+			name: "umlaut octal escapes",
+			line: `diff --git "a/sch\303\266n.txt" "b/sch\303\266n.txt"`,
+			want: "schön.txt",
+		},
+		{
+			name: "quotes in name both sides",
+			line: `diff --git "a/say \"hi\".txt" "b/say \"hi\".txt"`,
+			want: `say "hi".txt`,
+		},
+		{
+			name: "doubled backslash",
+			line: `diff --git "a/back\\slash.txt" "b/back\\slash.txt"`,
+			want: `back\slash.txt`,
+		},
+		{
+			name: "tab escape",
+			line: `diff --git "a/ta\tb.txt" "b/ta\tb.txt"`,
+			want: "ta\tb.txt",
+		},
+		{
+			name: "mixed quoted a unquoted b",
+			line: `diff --git "a/sch\303\266n.txt" b/plain.txt`,
+			want: "plain.txt",
+		},
+		{
+			name: "mixed unquoted a quoted b",
+			line: `diff --git a/plain.txt "b/sch\303\266n.txt"`,
+			want: "schön.txt",
+		},
+		{
+			name: "unquoted rename",
+			line: "diff --git a/old.go b/new.go",
+			want: "new.go",
+		},
+		{
+			name: "not a diff line",
+			line: "index 1234567..89abcde 100644",
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseDiffGitPath(tc.line); got != tc.want {
+				t.Fatalf("parseDiffGitPath(%q) = %q, want %q", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// A combined-diff ("@@@") hunk from a merge state must not be swallowed as
+// content of the preceding file's hunk; its lines are skipped instead.
+func TestParseUnifiedDiffFormatsSkipsCombinedDiffHunks(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/normal.go b/normal.go",
+		"index 1111111..2222222 100644",
+		"--- a/normal.go",
+		"+++ b/normal.go",
+		"@@ -1,2 +1,3 @@",
+		" keep",
+		"+added",
+		" tail",
+		"diff --cc conflicted.go",
+		"index 3333333,4444444..5555555",
+		"--- a/conflicted.go",
+		"+++ b/conflicted.go",
+		"@@@ -1,3 -1,3 +1,3 @@@",
+		"  ctx",
+		"- left",
+		" -right",
+		"++merged",
+		"",
+	}, "\n")
+
+	_, hunks, files, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hunks) != 1 {
+		t.Fatalf("hunks = %d, want 1 (combined hunk skipped)", len(hunks))
+	}
+	if hunks[0].FilePath != "normal.go" {
+		t.Fatalf("hunk path = %q", hunks[0].FilePath)
+	}
+	if strings.Contains(hunks[0].Content, "@@@") || strings.Contains(hunks[0].Content, "merged") {
+		t.Fatalf("combined-diff lines bled into previous hunk: %q", hunks[0].Content)
+	}
+	if len(files) != 1 || files[0].Path != "normal.go" {
+		t.Fatalf("files = %#v, want only normal.go", files)
+	}
+	if files[0].Additions != 1 || files[0].Deletions != 0 {
+		t.Fatalf("normal.go additions/deletions = %d/%d, want 1/0", files[0].Additions, files[0].Deletions)
+	}
+}
+
+// The same protection applies when a combined hunk appears under a
+// "diff --git" header: the file entry survives but no hunk is misparsed.
+func TestParseUnifiedDiffFormatsSkipsCombinedHunkUnderGitHeader(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/conflicted.go b/conflicted.go",
+		"index 3333333,4444444..5555555",
+		"@@@ -1,3 -1,3 +1,3 @@@",
+		"  ctx",
+		"++merged",
+		"",
+	}, "\n")
+
+	_, hunks, files, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hunks) != 0 {
+		t.Fatalf("hunks = %d, want 0", len(hunks))
+	}
+	if len(files) != 1 || files[0].Path != "conflicted.go" {
+		t.Fatalf("files = %#v, want conflicted.go entry", files)
+	}
+	if files[0].Additions != 0 || files[0].Deletions != 0 {
+		t.Fatalf("combined body lines were counted: %d/%d", files[0].Additions, files[0].Deletions)
+	}
+}

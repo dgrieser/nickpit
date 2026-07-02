@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/testutil"
@@ -189,5 +190,28 @@ func TestLocalSourceResolveContextKeepsExplicitBranchBaseWhenOriginMissing(t *te
 	}
 	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "main...fix/memleak" {
 		t.Fatalf("diff args = %#v", got)
+	}
+}
+
+func TestParseCommitsParsesAuthorDate(t *testing.T) {
+	out := "abc123\x1fAlice\x1f2026-01-02T03:04:05+01:00\x1ffix: something\n" +
+		"def456\x1fBob\x1fnot-a-date\x1fchore: other\n"
+	commits := parseCommits(out)
+	if len(commits) != 2 {
+		t.Fatalf("commits = %d, want 2", len(commits))
+	}
+	first := commits[0]
+	if first.SHA != "abc123" || first.Author != "Alice" || first.Message != "fix: something" {
+		t.Fatalf("first commit = %#v", first)
+	}
+	if first.Date.IsZero() {
+		t.Fatal("author date not parsed")
+	}
+	if got := first.Date.Format(time.RFC3339); got != "2026-01-02T03:04:05+01:00" {
+		t.Fatalf("date = %q", got)
+	}
+	// An unparsable date degrades to the zero value instead of dropping the commit.
+	if !commits[1].Date.IsZero() {
+		t.Fatalf("invalid date parsed to %v", commits[1].Date)
 	}
 }

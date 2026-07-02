@@ -699,7 +699,7 @@ func TestWorkflowStandaloneNudgeStep(t *testing.T) {
 // When the initial reviewer fails, a following standalone nudge step must error
 // cleanly (the failed review left no session) rather than panic on a nil
 // response.
-func TestWorkflowNudgeAfterFailedReviewErrorsNoPanic(t *testing.T) {
+func TestWorkflowNudgeAfterFailedReviewSkipsGracefully(t *testing.T) {
 	client := &multiAgentLLM{
 		vectorFailErr: map[string]error{"Security": errors.New("security upstream fail")},
 	}
@@ -718,17 +718,55 @@ func TestWorkflowNudgeAfterFailedReviewErrorsNoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{
+	// A soft-failed review must not turn the standalone nudge step into a
+	// hard whole-run failure (verify:/dedupe: no-op on the same condition);
+	// the skip is surfaced as a warning instead.
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatalf("expected graceful skip, got error: %v", err)
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if strings.Contains(w, "Skipped nudge:security") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("warnings = %v, want a 'Skipped nudge:security' warning", result.Warnings)
+	}
+}
+
+// A run whose root context is cancelled must surface the cancellation instead
+// of soft-failing every stage into an empty-findings "patch is correct"
+// verdict at confidence 1.0 (every stage fails soft by design, so only the
+// pipeline's root-context guard can distinguish SIGINT from a clean run).
+func TestWorkflowCancelledRunErrorsInsteadOfFakeSuccess(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+
+	pipeline, err := engine.BuildPipeline(reviewerOnlySpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, _, err := engine.RunSpecPipeline(ctx, pipeline, model.ReviewRequest{
 		Mode:             model.ModeLocal,
 		RepoRoot:         ".",
 		MaxContextTokens: 1000,
 		MaxToolCalls:     1,
 	})
 	if err == nil {
-		t.Fatal("expected error from nudge after failed review")
+		t.Fatalf("expected cancellation error, got result: %+v", result)
 	}
-	if !strings.Contains(err.Error(), "did not complete successfully") {
-		t.Fatalf("error = %q, want a clear 'review did not complete' message", err.Error())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled in chain", err)
 	}
 }
 

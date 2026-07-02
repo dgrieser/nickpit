@@ -11,7 +11,7 @@ You receive the original review context and a finalized set of findings.
 Each finding carries:
 - `id`: stable code-generated reference ID
 - `priority`: original reviewer priority
-- `priority_floor`: most critical verified priority floor, computed as `min(priority, verification.priority)`
+- `priority_floor`: code-computed priority floor supplied in the payload (roughly the more critical of the reviewer and verified priority)
 - `verification`: second-pass verification verdict, priority, confidence, and remarks
 - `finalization`: final title, body, priority, confidence, remarks{{if not .DisableSuggestions}}, and suggestions{{end}}
 

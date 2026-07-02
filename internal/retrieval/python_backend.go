@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
 
 type pythonBackend struct{}
@@ -180,7 +182,7 @@ func buildPythonGraph(repoRoot string, scope lookupScope) (*staticGraph, error) 
 func parsePythonFiles(repoRoot string, files []string) (map[string]*pythonFile, error) {
 	modules := make(map[string]*pythonFile, len(files))
 	for _, fullPath := range files {
-		data, err := os.ReadFile(fullPath)
+		data, err := repofs.ReadFile(repoRoot, fullPath)
 		if err != nil {
 			return nil, err
 		}

@@ -6,4 +6,4 @@ When reviewing a patch, ask yourself:
 {{.QuestionsSnippet}}
 
 IMPORTANT:
-Performance issues NEED a concrete user-visible failure, regression risk, or runtime breakage, otherwise DO NOT report them.
+Performance issues NEED a measurable cost on realistic inputs, e.g. hot paths, loops over unbounded data, or large copies; otherwise DO NOT report them.

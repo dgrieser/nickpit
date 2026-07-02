@@ -442,7 +442,56 @@ func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[st
 	if err != nil {
 		return nil, err
 	}
-	return mergeOrderedJSONObject(data, extraBody)
+	return mergeOrderedJSONObject(data, redactExtraBodyForLog(extraBody))
+}
+
+// sensitiveExtraBodyKeyFragments marks extra_body keys whose values must not
+// appear in logs. Matching is case-insensitive on key substrings; the keys
+// themselves stay visible so the request shape remains debuggable.
+var sensitiveExtraBodyKeyFragments = []string{"key", "token", "secret", "auth", "password", "credential"}
+
+// redactExtraBodyForLog deep-copies extraBody with sensitive values replaced,
+// recursing into nested objects and arrays — credentials buried in sub-objects
+// (e.g. a provider header block) must not leak into verbose logs either. The
+// original map is never mutated.
+func redactExtraBodyForLog(extraBody map[string]any) map[string]any {
+	if len(extraBody) == 0 {
+		return extraBody
+	}
+	redacted := make(map[string]any, len(extraBody))
+	for key, value := range extraBody {
+		if sensitiveExtraBodyKey(key) {
+			redacted[key] = "[redacted]"
+			continue
+		}
+		redacted[key] = redactExtraBodyValueForLog(value)
+	}
+	return redacted
+}
+
+func redactExtraBodyValueForLog(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return redactExtraBodyForLog(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = redactExtraBodyValueForLog(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func sensitiveExtraBodyKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, fragment := range sensitiveExtraBodyKeyFragments {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeOrderedJSONObject(base []byte, extra map[string]any) (json.RawMessage, error) {
@@ -709,7 +758,29 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	var lastEmptyErr *ReasoningOnlyEmptyResponseError
 	var lastEmptyReq *ReviewRequest
 	emptyDetected := false
-	for attemptIndex, effort := range efforts {
+	var lastRejectionErr error
+	var lastOutputLoopErr *OutputLoopDetectedError
+	outputLoopRetried := false
+	// totalUsage accumulates spend across every attempt (effort fallbacks and
+	// no-tools retries included) so the returned TokensUsed reflects what the
+	// whole call cost, not just the final attempt.
+	var totalUsage model.TokenUsage
+	// finishResponse stamps the accumulated spend onto the response that is
+	// about to be returned; finishError does the same for partial responses
+	// carried by invalid-response errors.
+	finishResponse := func(resp *ReviewResponse) *ReviewResponse {
+		resp.TokensUsed = totalUsage
+		return resp
+	}
+	finishError := func(err error) error {
+		var invalidResp *InvalidResponseError
+		if errors.As(err, &invalidResp) && invalidResp.PartialResponse != nil {
+			invalidResp.PartialResponse.TokensUsed = totalUsage
+		}
+		return err
+	}
+	for attemptIndex := 0; attemptIndex < len(efforts); attemptIndex++ {
+		effort := efforts[attemptIndex]
 		attemptReq := cloneReviewRequest(req)
 		attemptReq.ReasoningEffort = effort
 		if req.Urgent {
@@ -721,9 +792,30 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		if loopDetected {
 			addReasoningLoopRetryHint(&attemptReq)
 		}
-		resp, err := c.reviewOnce(ctx, &attemptReq)
+		resp, usage, err := c.reviewOnce(ctx, &attemptReq)
+		addTokenUsage(&totalUsage, usage)
 		if err == nil {
-			return resp, nil
+			return finishResponse(resp), nil
+		}
+		// A provider-reported repeated output chunk is not a reasoning loop:
+		// it happens even with reasoning disabled and is usually a transient
+		// decode/serving fault. Recovery order: one byte-identical retry at
+		// the SAME effort (the only recovery at none/off), then the regular
+		// lower-effort ladder if the repeat persists.
+		var outputLoopErr *OutputLoopDetectedError
+		if errors.As(err, &outputLoopErr) {
+			lastOutputLoopErr = outputLoopErr
+			if !outputLoopRetried {
+				outputLoopRetried = true
+				c.logf(ctx, "Model repeated output chunk, retrying once at same effort: effort=%q", effort)
+				attemptIndex--
+				continue
+			}
+			if attemptIndex+1 < len(efforts) {
+				c.logf(ctx, "Model repeated output chunk again, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
+				continue
+			}
+			break
 		}
 		var budgetErr *ReasoningBudgetExhaustedError
 		if errors.As(err, &budgetErr) {
@@ -761,15 +853,17 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		if isReasoningEffortRejection(err, effort) {
 			if attemptIndex+1 < len(efforts) {
 				c.logf(ctx, "Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				lastRejectionErr = err
 				continue
 			}
 			if attemptIndex > 0 {
 				c.logf(ctx, "Reasoning effort rejected by API, skipping effort: effort=%q error=%v", effort, err)
+				lastRejectionErr = err
 				continue
 			}
-			return nil, err
+			return nil, finishError(err)
 		}
-		return nil, err
+		return nil, finishError(err)
 	}
 	if lastBudgetReq != nil && len(lastBudgetReq.Tools) > 0 {
 		noToolsReq := cloneReviewRequest(lastBudgetReq)
@@ -778,10 +872,11 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.ParallelToolCalls = false
 		addReasoningBudgetRetryHint(&noToolsReq)
 		c.logf(ctx, "Retrying last budget-exhausted reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
-		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		addTokenUsage(&totalUsage, noToolsUsage)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
-			return noToolsResp, nil
+			return finishResponse(noToolsResp), nil
 		}
 		var budgetErr *ReasoningBudgetExhaustedError
 		if errors.As(noToolsErr, &budgetErr) {
@@ -791,7 +886,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			if errors.As(noToolsErr, &invalidResp) {
 				invalidResp.ToolsOmitted = true
 			}
-			return nil, noToolsErr
+			return nil, finishError(noToolsErr)
 		}
 		c.logf(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
@@ -802,10 +897,11 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.ParallelToolCalls = false
 		addReasoningBudgetRetryHint(&noToolsReq)
 		c.logf(ctx, "Retrying last reasoning-only empty effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
-		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		addTokenUsage(&totalUsage, noToolsUsage)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
-			return noToolsResp, nil
+			return finishResponse(noToolsResp), nil
 		}
 		var emptyErr *ReasoningOnlyEmptyResponseError
 		if errors.As(noToolsErr, &emptyErr) {
@@ -815,7 +911,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			if errors.As(noToolsErr, &invalidResp) {
 				invalidResp.ToolsOmitted = true
 			}
-			return nil, noToolsErr
+			return nil, finishError(noToolsErr)
 		}
 		c.logf(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
@@ -826,10 +922,11 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		noToolsReq.ParallelToolCalls = false
 		addReasoningLoopRetryHint(&noToolsReq)
 		c.logf(ctx, "Retrying last loop-detected reasoning effort once without tools: effort=%q", noToolsReq.ReasoningEffort)
-		noToolsResp, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		noToolsResp, noToolsUsage, noToolsErr := c.reviewOnce(ctx, &noToolsReq)
+		addTokenUsage(&totalUsage, noToolsUsage)
 		if noToolsErr == nil {
 			noToolsResp.ToolsOmitted = true
-			return noToolsResp, nil
+			return finishResponse(noToolsResp), nil
 		}
 		var loopErr *ReasoningLoopDetectedError
 		if errors.As(noToolsErr, &loopErr) {
@@ -839,7 +936,7 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 			if errors.As(noToolsErr, &invalidResp) {
 				invalidResp.ToolsOmitted = true
 			}
-			return nil, noToolsErr
+			return nil, finishError(noToolsErr)
 		}
 		c.logf(ctx, "No-tools retry failed: effort=%q error=%v", noToolsReq.ReasoningEffort, noToolsErr)
 	}
@@ -849,8 +946,16 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	if lastLoopErr != nil && lastBudgetErr == nil && lastEmptyErr == nil {
 		return nil, lastLoopErr
 	}
+	if lastOutputLoopErr != nil && lastBudgetErr == nil && lastEmptyErr == nil && lastLoopErr == nil {
+		return nil, lastOutputLoopErr
+	}
 	if lastBudgetErr != nil {
 		return nil, lastBudgetErr
+	}
+	if lastRejectionErr != nil {
+		// Every effort attempt was rejected by the API; surface the underlying
+		// rejection instead of masking it as an internal error.
+		return nil, fmt.Errorf("llm: all reasoning efforts rejected by API: %w", lastRejectionErr)
 	}
 	return nil, fmt.Errorf("llm: internal error: reasoning fallback loop completed without returning")
 }
@@ -1041,9 +1146,13 @@ func isUnknownVariantRejection(message, effort string) bool {
 		strings.Contains(message, "unknown variant \""+effort+"\"")
 }
 
-func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*ReviewResponse, error) {
+// reviewOnce performs one logical review call. The returned TokenUsage is the
+// total spend of the call including stream-level retries, and is reported even
+// when the call fails so Review can accumulate spend across fallback attempts.
+func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*ReviewResponse, model.TokenUsage, error) {
+	var callUsage model.TokenUsage
 	if req == nil {
-		return nil, fmt.Errorf("llm: nil review request")
+		return nil, callUsage, fmt.Errorf("llm: nil review request")
 	}
 
 	payload := openai.ChatCompletionRequest{
@@ -1110,7 +1219,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 
 	payloadForLog, err := requestPayloadForLog(payload, requestExtraBody)
 	if err != nil {
-		return nil, fmt.Errorf("llm: encoding request: %w", err)
+		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
 	}
 
 	c.logf(ctx,
@@ -1130,9 +1239,9 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	)
 	c.logJSON(ctx, "LLM request payload:", payloadForLog)
 
-	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning)
+	streamed, err := c.reviewStream(ctx, payload, requestExtraBody, req.ReasoningSink, req.MaxReasoning, &callUsage)
 	if err != nil {
-		return nil, err
+		return nil, callUsage, err
 	}
 	c.logf(ctx,
 		"LLM stream summary: content_chunks=%t tool_calls=%t reasoning_chunks=%t usage_chunk=%t last_finish_reason=%q raw_response_bytes=%d",
@@ -1146,10 +1255,10 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	c.logRawModelResponse(ctx, streamed)
 
 	if streamed.reasoned && !streamed.sawContent && streamed.lastFinishReason == string(openai.FinishReasonLength) {
-		return nil, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
+		return nil, callUsage, &ReasoningBudgetExhaustedError{ReasoningEffort: payload.ReasoningEffort}
 	}
 	if streamed.reasoned && !streamed.sawContent && !streamed.sawToolCalls && reasoningOnlyEmptyFinish(streamed.lastFinishReason) {
-		return nil, &ReasoningOnlyEmptyResponseError{
+		return nil, callUsage, &ReasoningOnlyEmptyResponseError{
 			ReasoningEffort: payload.ReasoningEffort,
 			FinishReason:    streamed.lastFinishReason,
 		}
@@ -1173,20 +1282,20 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 				invalidResp.ReasoningEffort = payload.ReasoningEffort
 				if resp != nil {
 					resp.RawResponse = content
-					resp.TokensUsed = streamed.usage
+					resp.TokensUsed = callUsage
 					resp.ReasoningEffort = payload.ReasoningEffort
 					resp.Reasoned = streamed.reasoned
 					invalidResp.PartialResponse = resp
 				}
 			}
-			return nil, err
+			return nil, callUsage, err
 		}
 		if overwrittenIDs > 0 {
 			c.logf(ctx, "Generated replacement IDs for invalid finding IDs: count=%d", overwrittenIDs)
 		}
 	}
 	resp.RawResponse = content
-	resp.TokensUsed = streamed.usage
+	resp.TokensUsed = callUsage
 	resp.ReasoningEffort = payload.ReasoningEffort
 	resp.Reasoned = streamed.reasoned
 	c.logf(ctx,
@@ -1197,7 +1306,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		model.HumanTokens(resp.TokensUsed.CompletionTokens),
 		model.HumanTokens(resp.TokensUsed.TotalTokens),
 	)
-	return resp, nil
+	return resp, callUsage, nil
 }
 
 func responseFormatName(kind SchemaKind) string {
@@ -1314,6 +1423,12 @@ func sanitizeToolCalls(toolCalls []ToolCall) []ToolCall {
 }
 
 func NormalizeToolCallArguments(arguments string) (string, bool) {
+	// Models calling zero-parameter tools sometimes send empty arguments.
+	// Normalize to an empty object instead of dropping the call, which would
+	// also drop its paired tool-result message from the history.
+	if strings.TrimSpace(arguments) == "" {
+		return "{}", true
+	}
 	var args any
 	if err := LenientUnmarshal(arguments, &args); err != nil {
 		return "", false
@@ -1325,8 +1440,18 @@ func NormalizeToolCallArguments(arguments string) (string, bool) {
 	return string(normalized), true
 }
 
-func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration) (*streamedResponse, error) {
+func addTokenUsage(total *model.TokenUsage, usage model.TokenUsage) {
+	total.PromptTokens += usage.PromptTokens
+	total.CompletionTokens += usage.CompletionTokens
+	total.TotalTokens += usage.TotalTokens
+}
+
+func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatCompletionRequest, extraBody map[string]any, sink ReasoningSink, maxReasoning time.Duration, totalUsage *model.TokenUsage) (*streamedResponse, error) {
 	ctx = contextWithExtraBody(ctx, extraBody)
+	// rateLimitWaited accumulates every 429 backoff for this request; once the
+	// next wait would push it past the retrier's budget we stop retrying
+	// instead of stalling a lane indefinitely on a hard rate limit.
+	var rateLimitWaited time.Duration
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		streamCtx, slot := contextWithCaptureSlot(streamCtx)
@@ -1340,6 +1465,9 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			c.logf(ctx, "LLM stream opened: status=%s", capture.status)
 		}
 		if err != nil {
+			// The stream never opened, so nothing else can cancel the child
+			// context; release it here to avoid leaking one per failed attempt.
+			streamCancel()
 			if status := statusCodeFromError(err, capture); status > 0 {
 				statusErr := newLLMHTTPStatusError(err, capture)
 				c.logf(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, statusErr)
@@ -1355,6 +1483,11 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					if _, ok := c.retrier.RateLimitMessageDelay(statusErr.message); ok {
 						c.logf(ctx, "Retry honoring 429 reset hint: %s", waitFor)
 					}
+					if budget := c.retrier.MaxTotalRateLimitWait; budget > 0 && rateLimitWaited+waitFor > budget {
+						c.logf(ctx, "Rate limit retry budget exhausted: waited=%s budget=%s", rateLimitWaited, budget)
+						return nil, fmt.Errorf("llm: rate limited for over %s: %w", budget, statusErr)
+					}
+					rateLimitWaited += waitFor
 				}
 				c.logRetryHTTPStatus(ctx, status, attempt+1, waitFor)
 				c.logf(ctx, "Retrying request: status=%d backoff=%s", status, waitFor)
@@ -1378,6 +1511,18 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 		closeErr := stream.Close()
 		timeout.Stop()
 		streamCancel()
+		if totalUsage != nil {
+			// Count what this attempt consumed even when it fails and is
+			// retried, so the response's TokensUsed reflects total spend.
+			if streamErr == nil {
+				addTokenUsage(totalUsage, resp.usage)
+			} else {
+				var usageErr *streamReadError
+				if errors.As(streamErr, &usageErr) && usageErr.partial != nil {
+					addTokenUsage(totalUsage, usageErr.partial.usage)
+				}
+			}
+		}
 		if streamErr != nil {
 			if closeErr != nil {
 				c.logf(ctx, "LLM stream close failed after error: %v", closeErr)
@@ -1385,20 +1530,26 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			var loopErr *ReasoningLoopDetectedError
 			if errors.As(streamErr, &loopErr) {
 				loopErr.ReasoningEffort = payload.ReasoningEffort
-				prefix := "Reasoning loop"
-				if loopErr.RepeatedChunk {
-					prefix = "Repeated chunk"
-					c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
-				} else {
-					c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
-				}
+				c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
 				if c.logger != nil {
 					if loopErr.LoopStartContent != "" {
-						c.logBlock(ctx, prefix+" - content before repeat:", loopErr.LoopStartContent)
+						c.logBlock(ctx, "Reasoning loop - content before repeat:", loopErr.LoopStartContent)
 					}
-					c.logBlock(ctx, prefix+" - repeated portion (aborted):", loopErr.RepeatedContent)
+					c.logBlock(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
 				}
 				return nil, loopErr
+			}
+			var outputLoopErr *OutputLoopDetectedError
+			if errors.As(streamErr, &outputLoopErr) {
+				outputLoopErr.ReasoningEffort = payload.ReasoningEffort
+				c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
+				if c.logger != nil {
+					if outputLoopErr.LoopStartContent != "" {
+						c.logBlock(ctx, "Repeated chunk - content before repeat:", outputLoopErr.LoopStartContent)
+					}
+					c.logBlock(ctx, "Repeated chunk - repeated portion (aborted):", outputLoopErr.RepeatedContent)
+				}
+				return nil, outputLoopErr
 			}
 			if timeout.Expired() {
 				c.logf(ctx, "Reasoning time limit exceeded: effort=%q limit=%s", payload.ReasoningEffort, maxReasoning)
@@ -1491,7 +1642,11 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 		chunk, err := stream.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				if !sawUsage {
+				// A finish reason marks the response as complete even when the
+				// provider never sent the final usage chunk; retrying would
+				// discard a perfectly good response. Only a usage-less EOF
+				// without any finish reason is a genuine interruption.
+				if !sawUsage && lastFinishReason == "" {
 					endSink()
 					return nil, &streamReadError{
 						err:       fmt.Errorf("llm: reading stream: interrupted before final usage chunk"),
@@ -2028,14 +2183,20 @@ func parseXMLToolCallArguments(content string) map[string]any {
 
 func parseXMLToolCallArgumentValue(value string) any {
 	value = strings.TrimSpace(html.UnescapeString(value))
-	if parsed, err := strconv.ParseBool(value); err == nil {
-		return parsed
-	}
+	// Numbers take precedence: ParseBool would otherwise turn "1"/"0" into
+	// booleans and corrupt numeric arguments. Booleans are recognized only for
+	// the literal JSON spellings, not ParseBool's "t"/"T"/"TRUE" variants.
 	if parsed, err := strconv.Atoi(value); err == nil {
 		return parsed
 	}
 	if parsed, err := strconv.ParseFloat(value, 64); err == nil {
 		return parsed
+	}
+	switch value {
+	case "true":
+		return true
+	case "false":
+		return false
 	}
 	return value
 }

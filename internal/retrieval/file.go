@@ -1,7 +1,10 @@
 package retrieval
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,7 +37,7 @@ func (e *LocalEngine) GetFile(_ context.Context, repoRoot, path string) (*FileCo
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", path, err)
 	}
-	data, truncated, err := readFileCapped(fullPath, maxRetrievedFileBytes)
+	data, truncated, err := readFileCapped(repoRoot, fullPath, maxRetrievedFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("retrieval: reading %s: %w", normalizedPath, err)
 	}
@@ -46,11 +49,12 @@ func (e *LocalEngine) GetFile(_ context.Context, repoRoot, path string) (*FileCo
 	}, nil
 }
 
-// readFileCapped reads up to limit bytes from path, reporting whether the file
-// was longer than the limit. It reads at most limit+1 bytes so truncation is
+// readFileCapped reads up to limit bytes from fullPath (which must resolve
+// inside repoRoot, enforced via repofs.Open), reporting whether the file was
+// longer than the limit. It reads at most limit+1 bytes so truncation is
 // detected without buffering the whole file.
-func readFileCapped(path string, limit int) ([]byte, bool, error) {
-	f, err := os.Open(path)
+func readFileCapped(repoRoot, fullPath string, limit int) ([]byte, bool, error) {
+	f, err := repofs.Open(repoRoot, fullPath)
 	if err != nil {
 		return nil, false, err
 	}
@@ -131,28 +135,101 @@ func listFilesRecursive(fullPath, relativePath string, depth int, ignores repofs
 	return files, nil
 }
 
-func (e *LocalEngine) GetFileSlice(ctx context.Context, repoRoot, path string, start, end int) (*FileSlice, error) {
-	full, err := e.GetFile(ctx, repoRoot, path)
+func (e *LocalEngine) GetFileSlice(_ context.Context, repoRoot, path string, start, end int) (*FileSlice, error) {
+	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("retrieval: reading %s: %w", path, err)
 	}
-	lines := splitLines(full.Content)
 	if start <= 0 {
 		start = 1
 	}
-	if end <= 0 || end > len(lines) {
-		end = len(lines)
-	}
-	if start > end {
+	if end > 0 && end < start {
 		return nil, fmt.Errorf("retrieval: invalid line range %d-%d", start, end)
 	}
+	f, err := repofs.Open(repoRoot, fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("retrieval: reading %s: %w", normalizedPath, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	// Stream line by line so ranges beyond the whole-file byte cap stay
+	// reachable: only the selected lines are buffered, and the returned
+	// content itself stays capped at maxRetrievedFileBytes.
+	var (
+		selected  []string
+		byteCount int
+		lineNum   int
+		truncated bool
+	)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64<<10), maxRetrievedFileBytes)
+	scanner.Split(scanLinesAnyEnding)
+	for scanner.Scan() {
+		lineNum++
+		if lineNum < start {
+			continue
+		}
+		if end > 0 && lineNum > end {
+			break
+		}
+		line := scanner.Text()
+		if len(selected) > 0 && byteCount+len(line)+1 > maxRetrievedFileBytes {
+			truncated = true
+			break
+		}
+		selected = append(selected, line)
+		byteCount += len(line) + 1
+	}
+	if err := scanner.Err(); err != nil {
+		if !errors.Is(err, bufio.ErrTooLong) {
+			return nil, fmt.Errorf("retrieval: reading %s: %w", normalizedPath, err)
+		}
+		// A single line larger than the cap: stop here and report the clip.
+		truncated = true
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("retrieval: invalid line range %d-%d", start, lineNum)
+	}
+	actualEnd := start + len(selected) - 1
+	if end > 0 && actualEnd < end {
+		truncated = true
+	}
 	return &FileSlice{
-		Path:      path,
+		Path:      normalizedPath,
 		StartLine: start,
-		EndLine:   end,
-		Content:   strings.Join(lines[start-1:end], "\n"),
-		Language:  full.Language,
+		EndLine:   actualEnd,
+		Content:   strings.Join(selected, "\n"),
+		Language:  detectLanguage(normalizedPath),
+		Truncated: truncated,
 	}, nil
+}
+
+// scanLinesAnyEnding is a bufio.SplitFunc that terminates lines on "\n",
+// "\r\n", or a lone "\r", mirroring NormalizeLineEndings for streamed reads.
+func scanLinesAnyEnding(data []byte, atEOF bool) (int, []byte, error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		if data[i] == '\n' {
+			return i + 1, data[:i], nil
+		}
+		// "\r": one more byte is needed to distinguish "\r\n" from a lone "\r".
+		if i+1 < len(data) {
+			if data[i+1] == '\n' {
+				return i + 2, data[:i], nil
+			}
+			return i + 1, data[:i], nil
+		}
+		if atEOF {
+			return i + 1, data[:i], nil
+		}
+		return 0, nil, nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error) {
@@ -283,7 +360,7 @@ func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string
 		if err != nil {
 			return err
 		}
-		data, err := os.ReadFile(fileFullPath)
+		data, _, err := readFileCapped(repoRoot, fileFullPath, maxRetrievedFileBytes)
 		if err != nil {
 			return nil
 		}

@@ -159,12 +159,14 @@ func TestEnsureFindingIDsRegeneratesDuplicateValidIDs(t *testing.T) {
 	const duplicateID = "11111111-1111-4111-8111-111111111111"
 	findings := []Finding{
 		{ID: duplicateID},
-		{ID: duplicateID},
+		{ID: duplicateID, Verification: &FindingVerification{ID: duplicateID}},
 		{ID: duplicateID},
 	}
 
-	if overwrote := EnsureFindingIDs(findings); overwrote != 0 {
-		t.Fatalf("overwrote = %d, want 0", overwrote)
+	// Reminted duplicates count as overwrites so callers gating a write-back
+	// on the return value do not skip the deduplicated slice.
+	if overwrote := EnsureFindingIDs(findings); overwrote != 2 {
+		t.Fatalf("overwrote = %d, want 2", overwrote)
 	}
 
 	seen := map[string]struct{}{}
@@ -179,6 +181,10 @@ func TestEnsureFindingIDsRegeneratesDuplicateValidIDs(t *testing.T) {
 	}
 	if findings[0].ID != duplicateID {
 		t.Fatalf("first id = %q, want preserved duplicate source id", findings[0].ID)
+	}
+	if findings[1].Verification.ID != findings[1].ID {
+		t.Fatalf("verification id = %q, want resynced to finding id %q",
+			findings[1].Verification.ID, findings[1].ID)
 	}
 }
 

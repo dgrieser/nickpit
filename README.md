@@ -78,9 +78,11 @@ NickPit loads configuration in this order:
 3. Environment variables
 4. CLI flags
 
+The profile to use follows the same order: `active_profile` from the config file selects the profile unless `--profile` is passed explicitly on the command line.
+
 Run `make generate` or `make build` to generate `.nickpit.yaml.example` from the built-in defaults.
 
-The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`.
+The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`. When the active profile ends up with no API key at all, `NICKPIT_API_KEY` is used as a last-resort fallback.
 
 Profiles can also define a cheaper/faster alias for workflow steps:
 
@@ -105,7 +107,7 @@ profiles:
       reasoning_effort: low
 ```
 
-`model: "@small"` in workflow step config selects the nested `small` config. Any unset small field falls back to the primary profile value. Small model settings can also be set with `NICKPIT_SMALL_*` environment variables or `--small-*` flags such as `--small-model`, `--small-reasoning-effort`, `--small-top-k`, `--small-presence-penalty`, and `--small-max-output-tokens`.
+`model: "@small"` in workflow step config selects the nested `small` config. Any unset small field falls back to the primary profile value. Small model settings can also be set with `NICKPIT_SMALL_*` environment variables or `--small-*` flags such as `--small-model`, `--small-reasoning-effort`, `--small-top-k`, `--small-presence-penalty`, and `--small-max-output-tokens`. The primary model has the same environment variables without the `SMALL_` part: `NICKPIT_MODEL`, `NICKPIT_REASONING_EFFORT`, `NICKPIT_MAX_TOKENS`, `NICKPIT_TEMPERATURE`, `NICKPIT_TOP_P`, `NICKPIT_TOP_K`, `NICKPIT_PRESENCE_PENALTY`, and `NICKPIT_EXTRA_BODY`.
 
 The primary `max_tokens` output cap (max completion tokens the model may generate) can also be set with `--max-output-tokens`. This is the output side; the separate `--max-context-tokens` is the input budget used to trim the prompt before sending. Both default to unset for `max_tokens` (provider default) and `120000` for the context budget.
 
@@ -146,7 +148,7 @@ nickpit git uncommitted
 
 # Review PR in GitHub
 nickpit github pr --repo owner/repo --id 123
-nickpit github pr --repo owner/repo --id 123 --local-repo ~/src/repo
+nickpit github pr --repo owner/repo --id 123 --workdir ~/src/repo
 nickpit github pr --url https://github.com/owner/repo/pull/123
 
 # Review a GitHub PR and post the result back as a review (summary + one comment per finding)
@@ -161,6 +163,8 @@ nickpit gitlab mr --repo group/project --id 456 --publish
 ```
 
 With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge and confidence line. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
+
+Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
 
 ### Progress
 
@@ -184,7 +188,7 @@ Append `--verbose` or `--debug` to print step-by-step execution details to stder
 By default, NickPit sends the review schema via the API `response_format` field (json_schema constrained output). When the pre-review model check finds the model does not support it, NickPit warns and automatically falls back to embedding the schema in the system prompt — the review still runs.
 Use `--disable-json-response-format` to force the prompt-embedded schema instead. The same setting can be stored in config as `disable_json_response_format: true` in the active profile, or per workflow step.
 
-NickPit can lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` means unlimited.
+NickPit lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` means unlimited.
 
 Reasoning calls are capped with `--max-reasoning-seconds` or `max_reasoning_seconds`; the default is `300`. When the cap is hit, NickPit aborts the stream and retries through the existing lower-reasoning-effort fallback path. NickPit also watches streamed reasoning for loops; detection is built in and needs no configuration. Three layered signals cover the observed failure modes: degenerate character runs (one character or a short unit repeated back-to-back), exact repeated lines or blocks (whitespace runs collapsed, empty lines ignored), and shingle recurrence — the fraction of recently emitted token shingles (lowercased, punctuation removed, code identifiers and numbers masked) that already appeared earlier in the same stream. Verbatim loops drive that recurrence to ~1.0 and are cancelled quickly; paraphrase loops (the same decision cycle reworded) plateau lower and must persist longer before they fire. Thresholds are staged over the reasoning time budget: early in a stream only ironclad repetition may cancel it, and detection becomes progressively more aggressive as the stream approaches `max_reasoning_seconds`, where it would be cancelled anyway. When a loop is detected, the stream is aborted and retried with lower reasoning effort and an added instruction to avoid repeating the same analysis.
 
@@ -234,4 +238,5 @@ Retrieval supports `go`, `python`, and `nodejs` source files. `inspect file`, `i
 
 - The CLI expects an OpenAI-compatible `/chat/completions` endpoint.
 - Remote reviews clone the requested PR/MR head into a temporary checkout when retrieval needs local files.
-- Use `--local-repo` to reuse an existing clone; NickPit creates a temporary worktree at the requested revision instead of cloning again.
+- Use `--workdir` (or `workdir` in config / the `NICKPIT_WORKDIR` env var) to reuse an existing clone for remote reviews; NickPit creates a temporary worktree at the requested revision instead of cloning again.
+- Note the workdir asymmetry: for local (`nickpit git ...`) reviews only the `--workdir` CLI flag changes the directory the review runs in; `workdir` from config or `NICKPIT_WORKDIR` applies only to where remote PR/MR checkouts (clones/worktrees) are placed.
