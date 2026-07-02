@@ -759,6 +759,8 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	var lastEmptyReq *ReviewRequest
 	emptyDetected := false
 	var lastRejectionErr error
+	var lastOutputLoopErr *OutputLoopDetectedError
+	outputLoopRetried := false
 	// totalUsage accumulates spend across every attempt (effort fallbacks and
 	// no-tools retries included) so the returned TokensUsed reflects what the
 	// whole call cost, not just the final attempt.
@@ -777,7 +779,8 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		}
 		return err
 	}
-	for attemptIndex, effort := range efforts {
+	for attemptIndex := 0; attemptIndex < len(efforts); attemptIndex++ {
+		effort := efforts[attemptIndex]
 		attemptReq := cloneReviewRequest(req)
 		attemptReq.ReasoningEffort = effort
 		if req.Urgent {
@@ -793,6 +796,26 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 		addTokenUsage(&totalUsage, usage)
 		if err == nil {
 			return finishResponse(resp), nil
+		}
+		// A provider-reported repeated output chunk is not a reasoning loop:
+		// it happens even with reasoning disabled and is usually a transient
+		// decode/serving fault. Recovery order: one byte-identical retry at
+		// the SAME effort (the only recovery at none/off), then the regular
+		// lower-effort ladder if the repeat persists.
+		var outputLoopErr *OutputLoopDetectedError
+		if errors.As(err, &outputLoopErr) {
+			lastOutputLoopErr = outputLoopErr
+			if !outputLoopRetried {
+				outputLoopRetried = true
+				c.logf(ctx, "Model repeated output chunk, retrying once at same effort: effort=%q", effort)
+				attemptIndex--
+				continue
+			}
+			if attemptIndex+1 < len(efforts) {
+				c.logf(ctx, "Model repeated output chunk again, retrying with lower effort: from=%q to=%q", effort, efforts[attemptIndex+1])
+				continue
+			}
+			break
 		}
 		var budgetErr *ReasoningBudgetExhaustedError
 		if errors.As(err, &budgetErr) {
@@ -922,6 +945,9 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 	if lastLoopErr != nil && lastBudgetErr == nil && lastEmptyErr == nil {
 		return nil, lastLoopErr
+	}
+	if lastOutputLoopErr != nil && lastBudgetErr == nil && lastEmptyErr == nil && lastLoopErr == nil {
+		return nil, lastOutputLoopErr
 	}
 	if lastBudgetErr != nil {
 		return nil, lastBudgetErr
@@ -1504,20 +1530,26 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			var loopErr *ReasoningLoopDetectedError
 			if errors.As(streamErr, &loopErr) {
 				loopErr.ReasoningEffort = payload.ReasoningEffort
-				prefix := "Reasoning loop"
-				if loopErr.RepeatedChunk {
-					prefix = "Repeated chunk"
-					c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
-				} else {
-					c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
-				}
+				c.logf(ctx, "Reasoning loop detected: effort=%q", payload.ReasoningEffort)
 				if c.logger != nil {
 					if loopErr.LoopStartContent != "" {
-						c.logBlock(ctx, prefix+" - content before repeat:", loopErr.LoopStartContent)
+						c.logBlock(ctx, "Reasoning loop - content before repeat:", loopErr.LoopStartContent)
 					}
-					c.logBlock(ctx, prefix+" - repeated portion (aborted):", loopErr.RepeatedContent)
+					c.logBlock(ctx, "Reasoning loop - repeated portion (aborted):", loopErr.RepeatedContent)
 				}
 				return nil, loopErr
+			}
+			var outputLoopErr *OutputLoopDetectedError
+			if errors.As(streamErr, &outputLoopErr) {
+				outputLoopErr.ReasoningEffort = payload.ReasoningEffort
+				c.logf(ctx, "Model repeated output chunk: effort=%q", payload.ReasoningEffort)
+				if c.logger != nil {
+					if outputLoopErr.LoopStartContent != "" {
+						c.logBlock(ctx, "Repeated chunk - content before repeat:", outputLoopErr.LoopStartContent)
+					}
+					c.logBlock(ctx, "Repeated chunk - repeated portion (aborted):", outputLoopErr.RepeatedContent)
+				}
+				return nil, outputLoopErr
 			}
 			if timeout.Expired() {
 				c.logf(ctx, "Reasoning time limit exceeded: effort=%q limit=%s", payload.ReasoningEffort, maxReasoning)

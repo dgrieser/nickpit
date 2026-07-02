@@ -631,6 +631,10 @@ func sameEffortRetryable(err error) bool {
 	if errors.As(err, &loopErr) {
 		return true
 	}
+	var outputLoopErr *llm.OutputLoopDetectedError
+	if errors.As(err, &outputLoopErr) {
+		return true
+	}
 	var budgetErr *llm.ReasoningBudgetExhaustedError
 	if errors.As(err, &budgetErr) {
 		return true

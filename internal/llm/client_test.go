@@ -1878,6 +1878,105 @@ func TestClientReviewFallsBackAfterReasoningBudgetExhausted(t *testing.T) {
 	}
 }
 
+// repeatedChunkBody returns a stream body that fails mid-stream with the
+// LiteLLM repeated-chunk marker.
+func repeatedChunkBody() io.ReadCloser {
+	return &errorAfterReader{
+		reader: bytes.NewReader(nil),
+		err:    errors.New("error, litellm.MidStreamFallbackError: litellm.InternalServerError: The model is repeating the same chunk = loop loop loop.. Received Model Group=Qwen3.5"),
+	}
+}
+
+// A persistent output repeat falls back to the lower-effort ladder after the
+// single same-effort retry.
+func TestClientReviewOutputLoopFallsBackToLowerEffortAfterSameEffortRetry(t *testing.T) {
+	var efforts []string
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+
+		var body io.ReadCloser
+		if len(efforts) <= 2 {
+			body = repeatedChunkBody()
+		} else {
+			body = io.NopCloser(strings.NewReader(validReviewStream(t)))
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       body,
+			Request:    req,
+		}, nil
+	})
+
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:    "system",
+		UserContent:     "user",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(efforts, ","), "high,high,medium"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if resp.ReasoningEffort != "medium" {
+		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
+	}
+}
+
+// With reasoning disabled and no fallback ladder, the same-effort retry is the
+// only recovery; a persistent repeat surfaces as OutputLoopDetectedError after
+// exactly two attempts instead of giving up without retrying at all.
+func TestClientReviewOutputLoopAtEffortNoneRetriesSameEffortOnce(t *testing.T) {
+	var efforts []string
+	client := NewOpenAIClient("http://example.test", "token", "model")
+	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close request body: %v", err)
+		}
+		effort, _ := payload["reasoning_effort"].(string)
+		efforts = append(efforts, effort)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       repeatedChunkBody(),
+			Request:    req,
+		}, nil
+	})
+
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt:                   "system",
+		UserContent:                    "user",
+		ReasoningEffort:                "none",
+		DisableReasoningEffortFallback: true,
+	})
+	var outErr *OutputLoopDetectedError
+	if !errors.As(err, &outErr) {
+		t.Fatalf("err = %T (%v), want *OutputLoopDetectedError", err, err)
+	}
+	if got, want := strings.Join(efforts, ","), "none,none"; got != want {
+		t.Fatalf("reasoning efforts = %s, want %s", got, want)
+	}
+	if outErr.ReasoningEffort != "none" {
+		t.Fatalf("error effort = %q, want none", outErr.ReasoningEffort)
+	}
+}
+
 func TestClientReviewFallsBackAfterReasoningTimeout(t *testing.T) {
 	var efforts []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2202,7 +2301,7 @@ func TestClientReviewTreatsReasoningOnlyPeerInternalStreamErrorAsBudgetExhausted
 	}
 }
 
-func TestClientReviewTreatsLiteLLMRepeatedChunkErrorAsReasoningLoop(t *testing.T) {
+func TestClientReviewRetriesRepeatedOutputChunkAtSameEffort(t *testing.T) {
 	var efforts []string
 	client := NewOpenAIClient("http://example.test", "token", "model")
 	client.transport.base = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -2243,10 +2342,12 @@ func TestClientReviewTreatsLiteLLMRepeatedChunkErrorAsReasoningLoop(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Join(efforts, ","), "high,medium"; got != want {
+	// A repeated output chunk is a transient serving fault, not a reasoning
+	// loop: the first recovery is a byte-identical retry at the SAME effort.
+	if got, want := strings.Join(efforts, ","), "high,high"; got != want {
 		t.Fatalf("reasoning efforts = %s, want %s", got, want)
 	}
-	if resp.ReasoningEffort != "medium" {
+	if resp.ReasoningEffort != "high" {
 		t.Fatalf("effective reasoning effort = %q", resp.ReasoningEffort)
 	}
 }

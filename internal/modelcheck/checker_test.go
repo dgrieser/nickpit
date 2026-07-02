@@ -355,7 +355,7 @@ func TestAnyErrorRetryable(t *testing.T) {
 	if !anyErrorRetryable(errors.New("transient upstream blip"), "high") {
 		t.Fatal("plain non-rejection error should be retryable")
 	}
-	if !anyErrorRetryable(&llm.ReasoningLoopDetectedError{ReasoningEffort: "high", RepeatedChunk: true}, "high") {
+	if !anyErrorRetryable(&llm.OutputLoopDetectedError{ReasoningEffort: "high"}, "high") {
 		t.Fatal("repeated-chunk loop error should be retryable")
 	}
 }
@@ -367,7 +367,7 @@ func TestSimpleProbeRetriesTransientLoopError(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 			// schema probe: first call hits a repeated-chunk loop, retry succeeds
-			scriptedResponse{err: &llm.ReasoningLoopDetectedError{ReasoningEffort: "high", RepeatedChunk: true}},
+			scriptedResponse{err: &llm.OutputLoopDetectedError{ReasoningEffort: "high"}},
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 		),
 	}
@@ -387,8 +387,8 @@ func TestSimpleProbeRetriesExhaustThenFail(t *testing.T) {
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
 			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
 			// schema probe: persistent loop on every attempt
-			scriptedResponse{err: &llm.ReasoningLoopDetectedError{ReasoningEffort: "high", RepeatedChunk: true}},
-			scriptedResponse{err: &llm.ReasoningLoopDetectedError{ReasoningEffort: "high", RepeatedChunk: true}},
+			scriptedResponse{err: &llm.OutputLoopDetectedError{ReasoningEffort: "high"}},
+			scriptedResponse{err: &llm.OutputLoopDetectedError{ReasoningEffort: "high"}},
 		),
 	}
 	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high", DisableJSONResponseFormat: true, MaxOutputRetries: 1, MaxOutputRetriesConfigured: true})
