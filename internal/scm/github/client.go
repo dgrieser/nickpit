@@ -68,16 +68,30 @@ func (c *Client) Post(ctx context.Context, path string, body any, out any) error
 	return json.Unmarshal(respBody, out)
 }
 
+// maxPaginatedPages bounds how many pages GetPaginated will fetch; a real PR
+// never comes close, so hitting it indicates a broken or malicious endpoint.
+const maxPaginatedPages = 1000
+
 func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	target := reflect.ValueOf(out)
 	if target.Kind() != reflect.Pointer || target.Elem().Kind() != reflect.Slice {
 		return fmt.Errorf("github: paginated output must be pointer to slice")
 	}
 	sliceValue := target.Elem()
+	// visited defends against a server/proxy returning rel="next" links that
+	// cycle (self-loops as well as longer A→B→A cycles), which would loop
+	// forever.
+	visited := make(map[string]struct{})
 	nextPath := path
 	for nextPath != "" {
-		current := nextPath
-		body, resp, err := c.do(ctx, current)
+		if _, seen := visited[nextPath]; seen {
+			break
+		}
+		if len(visited) >= maxPaginatedPages {
+			return fmt.Errorf("github: pagination for %s exceeded %d pages", path, maxPaginatedPages)
+		}
+		visited[nextPath] = struct{}{}
+		body, resp, err := c.do(ctx, nextPath)
 		if err != nil {
 			return err
 		}
@@ -86,13 +100,7 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 			return err
 		}
 		sliceValue.Set(reflect.AppendSlice(sliceValue, page.Elem()))
-		next := nextLink(resp.Header.Get("Link"))
-		if next == current {
-			// Defend against a server/proxy returning a rel="next" link that
-			// points back to the page just fetched, which would loop forever.
-			break
-		}
-		nextPath = next
+		nextPath = nextLink(resp.Header.Get("Link"))
 	}
 	return nil
 }

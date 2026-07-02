@@ -431,3 +431,26 @@ func findVersion(entries []model.ToolchainVersion, source, field string) string 
 	}
 	return ""
 }
+
+func TestExtOfUsesBaseName(t *testing.T) {
+	tests := []struct{ path, want string }{
+		{"main.go", ".go"},
+		{"a/b/c.py", ".py"},
+		{"dir.v1/Makefile", ""}, // a dot in a directory is not an extension
+		{"dir.v1/main.go", ".go"},
+		{"noext", ""},
+		{"UPPER.TS", ".TS"}, // lowercasing stays at the call site
+	}
+	for _, tc := range tests {
+		if got := extOf(tc.path); got != tc.want {
+			t.Fatalf("extOf(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+	// The caller lowercases: a dotted directory must not leak into language detection.
+	if got := languagesForPath("dir.v1/Makefile", ""); got != nil {
+		t.Fatalf("languagesForPath(dir.v1/Makefile) = %v, want nil", got)
+	}
+	if got := languagesForPath("dir.v1/main.go", ""); len(got) != 1 || got[0] != langGo {
+		t.Fatalf("languagesForPath(dir.v1/main.go) = %v, want [go]", got)
+	}
+}

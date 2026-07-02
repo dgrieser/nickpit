@@ -582,7 +582,7 @@ func TestReadFileCappedTrimsPartialRune(t *testing.T) {
 	if err := os.WriteFile(path, []byte("aa€"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	data, truncated, err := readFileCapped(path, 3)
+	data, truncated, err := readFileCapped(dir, path, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,5 +594,167 @@ func TestReadFileCappedTrimsPartialRune(t *testing.T) {
 	}
 	if string(data) != "aa" {
 		t.Fatalf("got %q, want %q (partial rune dropped)", data, "aa")
+	}
+}
+
+func TestLocalEngineGetFileSliceReturnsNormalizedPathAndRange(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "f.txt"), []byte("one\r\ntwo\nthree\nfour\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewLocalEngine()
+	got, err := engine.GetFileSlice(context.Background(), repoRoot, "./f.txt", 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "f.txt" {
+		t.Fatalf("path = %q, want normalized f.txt", got.Path)
+	}
+	if got.StartLine != 2 || got.EndLine != 3 {
+		t.Fatalf("range = %d-%d, want 2-3", got.StartLine, got.EndLine)
+	}
+	if got.Content != "two\nthree" {
+		t.Fatalf("content = %q", got.Content)
+	}
+	if got.Truncated {
+		t.Fatal("in-range slice marked truncated")
+	}
+}
+
+func TestLocalEngineGetFileSliceOpenEndAndClipping(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "f.txt"), []byte("a\nb\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewLocalEngine()
+
+	// end <= 0 reads to EOF and is not a clip.
+	got, err := engine.GetFileSlice(context.Background(), repoRoot, "f.txt", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EndLine != 3 || got.Content != "b\nc" || got.Truncated {
+		t.Fatalf("open-end slice = %#v", got)
+	}
+
+	// An explicit end past EOF is served clipped and flagged.
+	got, err = engine.GetFileSlice(context.Background(), repoRoot, "f.txt", 2, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EndLine != 3 || got.Content != "b\nc" {
+		t.Fatalf("clipped slice = %#v", got)
+	}
+	if !got.Truncated {
+		t.Fatal("clipped slice not marked truncated")
+	}
+}
+
+func TestLocalEngineGetFileSliceInvalidRanges(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "f.txt"), []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewLocalEngine()
+	if _, err := engine.GetFileSlice(context.Background(), repoRoot, "f.txt", 5, 2); err == nil {
+		t.Fatal("start > end accepted")
+	}
+	if _, err := engine.GetFileSlice(context.Background(), repoRoot, "f.txt", 10, 0); err == nil {
+		t.Fatal("start beyond EOF accepted")
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "empty.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.GetFileSlice(context.Background(), repoRoot, "empty.txt", 0, 0); err == nil {
+		t.Fatal("empty file slice accepted")
+	}
+}
+
+func TestLocalEngineGetFileSliceReachesLinesBeyondByteCap(t *testing.T) {
+	repoRoot := t.TempDir()
+	// ~6 MiB file: 65_000 lines of ~100 bytes; the 5 MiB whole-file cap sits
+	// around line 52_400.
+	line := strings.Repeat("x", 99)
+	var sb strings.Builder
+	for i := 0; i < 65000; i++ {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "big.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewLocalEngine()
+	got, err := engine.GetFileSlice(context.Background(), repoRoot, "big.txt", 60000, 60002)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StartLine != 60000 || got.EndLine != 60002 {
+		t.Fatalf("range = %d-%d, want 60000-60002", got.StartLine, got.EndLine)
+	}
+	if got.Content != line+"\n"+line+"\n"+line {
+		t.Fatalf("content mismatch: %d bytes", len(got.Content))
+	}
+	if got.Truncated {
+		t.Fatal("fully served slice marked truncated")
+	}
+	// Reading the whole file as one slice hits the byte cap and reports it.
+	got, err = engine.GetFileSlice(context.Background(), repoRoot, "big.txt", 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Truncated {
+		t.Fatal("byte-capped slice not marked truncated")
+	}
+	if len(got.Content) > maxRetrievedFileBytes {
+		t.Fatalf("slice content exceeds cap: %d bytes", len(got.Content))
+	}
+}
+
+func TestLocalEngineRejectsSymlinkEscapes(t *testing.T) {
+	repoRoot := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("hidden-secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "inside.txt"), []byte("inside content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(repoRoot, "evil.txt")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(repoRoot, "inside.txt"), filepath.Join(repoRoot, "ok.txt")); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewLocalEngine()
+
+	if _, err := engine.GetFile(context.Background(), repoRoot, "evil.txt"); err == nil {
+		t.Fatal("GetFile followed a symlink outside the repo")
+	}
+	if _, err := engine.GetFileSlice(context.Background(), repoRoot, "evil.txt", 1, 1); err == nil {
+		t.Fatal("GetFileSlice followed a symlink outside the repo")
+	}
+	got, err := engine.GetFile(context.Background(), repoRoot, "ok.txt")
+	if err != nil || got.Content != "inside content" {
+		t.Fatalf("in-repo symlink read = %#v, %v", got, err)
+	}
+	if _, err := engine.GetFile(context.Background(), repoRoot, "inside.txt"); err != nil {
+		t.Fatalf("plain file read failed: %v", err)
+	}
+
+	// The search walk must skip the escaping symlink instead of surfacing its target.
+	results, err := engine.Search(context.Background(), repoRoot, "", "hidden-secret", 0, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results.ResultCount != 0 {
+		t.Fatalf("search leaked symlink target: %#v", results.Results)
+	}
+	// Searching the symlinked file directly skips it like any unreadable file.
+	direct, err := engine.Search(context.Background(), repoRoot, "evil.txt", "hidden-secret", 0, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.ResultCount != 0 {
+		t.Fatalf("direct search leaked symlink target: %#v", direct.Results)
 	}
 }

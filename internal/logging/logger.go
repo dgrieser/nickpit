@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/textsan"
@@ -30,12 +31,23 @@ type ReasoningSection struct {
 	logger    *Logger
 	info      ProgressInfo // identity snapshot taken when the section opens
 	startTime time.Time
+	mu        sync.Mutex // guards ended against Append racing End
 	ended     bool
 	callNum   int // incremented by IncrCallNum on each LLM request
 }
 
 func (s *ReasoningSection) Append(delta string) {
 	if s == nil || s.r == nil {
+		return
+	}
+	// Once the section ended the renderer may have recycled its section slice,
+	// so s.id can refer to a newer section. Holding mu across the renderer
+	// call keeps End's "mark ended, then close the renderer section" atomic
+	// with respect to appends: after End returns, no Append can reach the
+	// renderer with the stale id.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ended {
 		return
 	}
 	s.r.Append(s.id, delta)
@@ -60,13 +72,19 @@ func (s *ReasoningSection) IncrCallNum() int {
 }
 
 func (s *ReasoningSection) End() {
-	if s == nil || s.ended {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.ended {
+		s.mu.Unlock()
 		return
 	}
 	s.ended = true
 	if s.r != nil {
 		s.r.End(s.id)
 	}
+	s.mu.Unlock()
 	if !s.info.IsZero() {
 		info := s.info
 		if s.callNum > 0 {

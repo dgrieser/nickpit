@@ -369,3 +369,34 @@ func assertSubstringsInOrder(t *testing.T, got string, wants []string) {
 		offset += idx + len(want)
 	}
 }
+
+// Append on an ended section must be a no-op: after End the renderer recycles
+// its section slice, so a stale handle's ID may point at a newer section.
+func TestReasoningSectionAppendAfterEndIsNoop(t *testing.T) {
+	var buf bytes.Buffer
+	logger := New(&buf, false, false)
+	logger.SetShowReasoning(true)
+
+	first := logger.OpenReasoningSection(ProgressInfo{AgentRole: "review", AgentName: "#1"})
+	first.Append("first-body")
+	first.End()
+	// All sections ended: the renderer resets and the next Begin reuses ID 0.
+	second := logger.OpenReasoningSection(ProgressInfo{AgentRole: "review", AgentName: "#2"})
+
+	first.Append("stale-append")
+	second.Append("second-body")
+	second.End()
+
+	out := buf.String()
+	if strings.Contains(out, "stale-append") {
+		t.Fatalf("stale append after End leaked into output: %q", out)
+	}
+	if !strings.Contains(out, "first-body") || !strings.Contains(out, "second-body") {
+		t.Fatalf("section bodies missing: %q", out)
+	}
+	// End on the stale handle again stays a no-op.
+	first.End()
+	if got := buf.String(); got != out {
+		t.Fatalf("duplicate End changed output: %q -> %q", out, got)
+	}
+}
