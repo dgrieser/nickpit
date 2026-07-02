@@ -155,6 +155,24 @@ func TestReasoningLoopDetectorRepeatedRune(t *testing.T) {
 	}
 }
 
+func TestReasoningLoopDetectorRepeatedMultiByteRuneOffsets(t *testing.T) {
+	d, _, _ := newTestReasoningLoopDetector()
+	d.onDelta("intro\n")
+	d.onDelta(strings.Repeat("ü", charTriggerSpan+32))
+	if !d.Detected() {
+		t.Fatal("expected repeated multi-byte rune loop")
+	}
+	err := d.MakeError()
+	// The run starts right after the intro line; the reported split must not
+	// drift into the repeated region (span is counted in runes, not bytes).
+	if err.LoopStartContent != "intro" {
+		t.Fatalf("loop start content = %q, want %q", err.LoopStartContent, "intro")
+	}
+	if strings.Trim(err.RepeatedContent, "ü") != "" {
+		t.Fatalf("repeated content = %q, want only ü runes", err.RepeatedContent)
+	}
+}
+
 func TestReasoningLoopDetectorNewlineFlood(t *testing.T) {
 	d, _, _ := newTestReasoningLoopDetector()
 	d.onDelta(strings.Repeat("\n", charTriggerSpan+32))

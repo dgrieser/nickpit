@@ -299,7 +299,15 @@ func (d *reasoningLoopDetector) observeRuneLocked(r rune) bool {
 	}
 	d.charSince = 0
 	if unit, span := d.repeatedRunLocked(); unit != "" {
-		d.triggerRawLocked(strings.Repeat(unit, span/len([]rune(unit))), d.raw.Len()-span)
+		// span counts runes; walk back over the raw bytes to find the byte
+		// offset where the repeated run starts.
+		raw := d.raw.String()
+		loopStartOffset := len(raw)
+		for i := 0; i < span && loopStartOffset > 0; i++ {
+			_, size := utf8.DecodeLastRuneInString(raw[:loopStartOffset])
+			loopStartOffset -= size
+		}
+		d.triggerRawLocked(strings.Repeat(unit, span/len([]rune(unit))), loopStartOffset)
 		return true
 	}
 	return false
@@ -351,11 +359,17 @@ func (d *reasoningLoopDetector) repeatedRunLocked() (string, int) {
 		}
 	}
 	if best >= charFreqMinCount && float64(best)/float64(n) >= charFreqMinRate && !ignoredRepeatedRune(bestRune) {
-		runes := make([]rune, 0, n)
-		for i := range n {
+		// Report from the first occurrence of the dominant rune so preceding
+		// unrelated content is not swallowed into the repeated portion.
+		first := 0
+		for first < n && at(first) != bestRune {
+			first++
+		}
+		runes := make([]rune, 0, n-first)
+		for i := first; i < n; i++ {
 			runes = append(runes, at(i))
 		}
-		return string(runes), n
+		return string(runes), n - first
 	}
 	return "", 0
 }

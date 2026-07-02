@@ -69,7 +69,7 @@ def agent_to_label_prefix(agent):
 
 
 def extract_blocks(log_path):
-    with open(log_path, errors="replace") as f:
+    with open(log_path, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     n = len(lines)
 
@@ -154,7 +154,7 @@ def main():
             if key not in seen_keys:
                 unmatched_marks.append((name, key, kind))
 
-    with open(OUT, "w") as f:
+    with open(OUT, "w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r) + "\n")
     counts = {}
