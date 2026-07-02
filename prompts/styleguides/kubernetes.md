@@ -814,6 +814,17 @@ r.Recorder.Event(obj, corev1.EventTypeNormal, "Reconciled",
 - Use `Warning` for errors requiring user attention.
 - Use `Normal` for successful transitions.
 - Do not emit Events on every reconcile — only on state changes.
+- One-shot Jobs/CronJobs may rely on structured logs and exit status when there
+  is no owned object status to update.
+- Do not require Events for every missing transient object in batch cleanup.
+
+Examples:
+- A controller that changes a custom resource state should update status and
+  emit an Event for user-visible transitions.
+- A CronJob that scans resources and exits can report progress through logs and
+  success/failure through its pod status.
+- Missing optional resources in a cleanup pass do not need Events unless users
+  must take action.
 
 ---
 
@@ -858,6 +869,22 @@ func (r *Reconciler) ManageError(ctx context.Context, obj *cachev1.RedisCluster,
 - For permanent errors (bad user input), set a `Stalled` condition, record an Event, and return `ctrl.Result{}, nil` to avoid infinite retry loops.
 - Use `client.IgnoreNotFound(err)` when fetching objects that may not exist.
 - Apply backoff cap of ~6 hours for long-running error states (align with event TTL).
+
+##### Jobs and CronJobs
+
+Idempotent one-shot Jobs and CronJobs can rely on Kubernetes termination and
+safe reruns. Require explicit graceful shutdown only when there is cleanup work
+that process exit cannot handle safely.
+
+Examples:
+- A read-only scan or idempotent garbage-collection job may exit on termination
+  and let the next schedule retry.
+- A job that holds a lease, lock, transaction, or external reservation must
+  release or renew it correctly during shutdown.
+- A job that performs non-idempotent remote writes needs clear interruption and
+  retry semantics.
+- External API calls should still use contexts, timeouts, or Kubernetes
+  `activeDeadlineSeconds`; absence of signal handling alone is not a bug.
 
 ---
 

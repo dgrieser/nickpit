@@ -41,6 +41,17 @@ tool github.com/golangci/golangci-lint/cmd/golangci-lint
 For Go 1.24 and newer modules, use `tool` directives in `go.mod` to track
 executable development tools instead of blank-import `tools.go` files.
 
+Verify library APIs against the actual module versions in `go.mod` before
+claiming an API is missing or unavailable.
+
+Examples:
+- Do not claim a controller-runtime helper is unavailable without checking the
+  pinned `sigs.k8s.io/controller-runtime` version.
+- Say "this API is not available in vX.Y.Z" only when the module version proves
+  it.
+- Do not infer API availability from memory, a newer version's docs, or another
+  project's dependency set.
+
 ##### Generics
 
 Use generics when they remove duplication across real types or express a
@@ -92,6 +103,21 @@ example:
 
 Do not apply generic "modifying a collection while iterating" rules from other
 languages to Go map deletion.
+
+##### Reachability and Domain Bounds
+
+Only report overflow, panic, or invalid-value behavior when the failing path is
+reachable for the declared type and the function's input domain.
+
+Examples:
+- Do not claim byte formatting can index into ZiB/YiB units when an `int64`
+  input cannot grow large enough to reach those unit indexes.
+- Do not require negative byte handling when all callers pass values from
+  `os.FileInfo.Size()` or another source with a non-negative contract.
+- Do report missing negative handling when an exported/general-purpose function
+  accepts user-controlled values and documents no narrower domain.
+- Do not require defensive code for values that cannot be represented by the
+  input type.
 
 #### Error Handling
 
@@ -800,6 +826,18 @@ go build ./...
 Weak hashes are only security-relevant when the hash is used for a security
 property such as authentication, authorization, integrity, signatures, password
 storage, or collision resistance against attacker-controlled input.
+
+For content-addressed storage, distinguish integrity/security boundaries from
+ordinary maintenance behavior.
+
+Examples:
+- Do not require hash verification on every listing unless the listing crosses
+  a trust boundary or an attacker can write to the store.
+- Delete-before-regenerate can be correct when replacing corrupt same-digest
+  content and the store skips writes for content that already exists.
+- Report content-addressed storage issues when untrusted data can be accepted
+  under the wrong digest, when corruption is silently trusted as valid content,
+  or when the repair order can lose the only valid copy.
 
 ##### Races
 
