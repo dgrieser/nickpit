@@ -101,8 +101,13 @@ type loopStage struct {
 
 // loopStages must be ordered by increasing `until`. The last stage also covers
 // streams that exceed the budget (possible when no budget is enforced).
+//
+// The first stage already arms at 0.80: across ~40k corpus blocks, healthy
+// reasoning never held ≥0.70 recurrence for 700 shingles, while
+// re-listing/vacillation loops that finish within the first quarter of the
+// budget (fast streams) routinely sustain 800+ and previously escaped.
 var loopStages = []loopStage{
-	{until: 0.25, blockCopies: 5, lineCopies: 10, shingleArm: 0.90, shinglePlateau: 900},
+	{until: 0.25, blockCopies: 5, lineCopies: 10, shingleArm: 0.80, shinglePlateau: 700},
 	{until: 0.50, blockCopies: 4, lineCopies: 8, shingleArm: 0.80, shinglePlateau: 600},
 	{until: 0.75, blockCopies: 3, lineCopies: 6, shingleArm: 0.70, shinglePlateau: 450},
 	{until: 1.01, blockCopies: 3, lineCopies: 5, shingleArm: 0.60, shinglePlateau: 300},
@@ -336,7 +341,7 @@ func (d *reasoningLoopDetector) repeatedRunLocked() (string, int) {
 	counts := make(map[rune]int, 8)
 	best := 0
 	var bestRune rune
-	for i := 0; i < n; i++ {
+	for i := range n {
 		r := at(i)
 		counts[r]++
 		if counts[r] > best {
@@ -346,7 +351,7 @@ func (d *reasoningLoopDetector) repeatedRunLocked() (string, int) {
 	}
 	if best >= charFreqMinCount && float64(best)/float64(n) >= charFreqMinRate && !ignoredRepeatedRune(bestRune) {
 		runes := make([]rune, 0, n)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			runes = append(runes, at(i))
 		}
 		return string(runes), n
@@ -422,10 +427,7 @@ func (d *reasoningLoopDetector) observeLineLocked(normalized string, rawStart in
 			continue
 		}
 		unitStart := len(d.lines) - p
-		loopLines := copies * p
-		if loopLines > len(d.lines) {
-			loopLines = len(d.lines)
-		}
+		loopLines := min(copies*p, len(d.lines))
 		d.triggerRawLocked(
 			strings.Join(d.lines[unitStart:], "\n"),
 			d.lineStarts[len(d.lines)-loopLines],

@@ -41,7 +41,11 @@ func TestReasoningLoopCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open corpus: %v", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close corpus: %v", err)
+		}
+	}()
 
 	const budget = 300 * time.Second
 	const fallbackCharsPerSecond = 150.0
@@ -78,10 +82,7 @@ func TestReasoningLoopCorpus(t *testing.T) {
 		res := result{id: rec.ID, kind: rec.Kind, durSec: dur}
 		const step = 100
 		for off := 0; off < len(text); off += step {
-			end := off + step
-			if end > len(text) {
-				end = len(text)
-			}
+			end := min(off+step, len(text))
 			clock = base.Add(time.Duration(float64(end) / float64(len(text)) * dur * float64(time.Second)))
 			d.onDelta(text[off:end])
 			if canceled {
@@ -148,7 +149,11 @@ func TestReasoningLoopCorpus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create dump: %v", err)
 		}
-		defer out.Close()
+		defer func() {
+			if err := out.Close(); err != nil {
+				t.Errorf("close dump: %v", err)
+			}
+		}()
 		enc := json.NewEncoder(out)
 		for _, r := range results {
 			_ = enc.Encode(map[string]any{
