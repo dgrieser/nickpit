@@ -76,6 +76,14 @@ const (
 	// LineGapHorizon is the gap in lines at which location similarity decays
 	// to zero.
 	LineGapHorizon = 40.0
+	// OverlapMinTokens and OverlapMinRatio gate the overlap-coefficient term
+	// for title/body similarity. Ungated, any subset scores 1.0, so a short
+	// generic title ("Race condition") would absorb every longer title that
+	// contains it — permanently suppressing new findings at publish time. The
+	// overlap term only applies when the smaller token set is substantial and
+	// the set sizes are comparable.
+	OverlapMinTokens = 4
+	OverlapMinRatio  = 0.5
 )
 
 // Compare classifies how likely a and b describe the same issue. Findings in
@@ -86,19 +94,74 @@ const (
 // the merge agent judges them instead of duplicate-looking findings surviving
 // to the final review. Cross-file pairs never reach Duplicate: mechanical
 // folding assumes one file (extendRange), so the LLM is always in the loop.
+// Findings without any file path are judged on text alone and only fold
+// mechanically when both title and body agree strongly.
 func Compare(a, b model.Finding) Match {
-	if a.CodeLocation.FilePath != b.CodeLocation.FilePath {
+	return compare(prepare(a), prepare(b))
+}
+
+// prepared caches the derived signals of one finding so Clusters' O(n²) pair
+// loop tokenizes each finding once instead of once per pair.
+type prepared struct {
+	f     model.Finding
+	path  string
+	title map[string]struct{}
+	body  map[string]struct{}
+}
+
+func prepare(f model.Finding) prepared {
+	return prepared{
+		f:     f,
+		path:  cleanFilePath(f.CodeLocation.FilePath),
+		title: tokens(f.Title),
+		body:  tokens(f.Body),
+	}
+}
+
+// cleanFilePath normalizes lexical variants ("./x.go" vs "x.go") so they
+// compare as the same file; empty stays empty ("no location", not ".").
+func cleanFilePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	return path.Clean(p)
+}
+
+func compare(a, b prepared) Match {
+	// No file path on either side: repo-level findings. There is no location
+	// evidence to corroborate a fold, so text must carry the whole verdict —
+	// mechanical Duplicate only when title AND body agree strongly, otherwise
+	// route to the LLM at most.
+	if a.path == "" && b.path == "" {
 		m := Match{
-			TitleSim: textSimilarity(a.Title, b.Title),
-			BodySim:  textSimilarity(a.Body, b.Body),
+			TitleSim:    textSetSimilarity(a.title, b.title),
+			BodySim:     textSetSimilarity(a.body, b.body),
+			LocationSim: LocSameRegion,
+		}
+		switch {
+		case a.f.Title == b.f.Title && a.f.Body == b.f.Body && a.f.CodeLocation == b.f.CodeLocation:
+			m.Verdict, m.Reason = Identical, "identical title, body and location"
+		case m.TitleSim >= TitleStrong && m.BodySim >= BodyStrong:
+			m.Verdict, m.Reason = Duplicate, "near-identical text without location"
+		case m.TitleSim >= TitleStrong || (m.TitleSim >= TitleModerate && m.BodySim >= BodyModerate):
+			m.Verdict, m.Reason = Possible, "related text without location"
+		default:
+			m.Verdict, m.Reason = Distinct, "signals below thresholds"
+		}
+		return m
+	}
+
+	if a.path != b.path {
+		m := Match{
+			TitleSim: textSetSimilarity(a.title, b.title),
+			BodySim:  textSetSimilarity(a.body, b.body),
 		}
 		if m.TitleSim >= TitleStrong {
 			m.Verdict, m.Reason = Possible, "near-identical title across files"
 		} else if m.TitleSim >= TitleModerate && m.BodySim >= BodyModerate {
 			m.Verdict, m.Reason = Possible, "related title and body across files"
-		} else if sameReviewFileKind(a.CodeLocation.FilePath, b.CodeLocation.FilePath) &&
-			relatedFiles(a.CodeLocation.FilePath, b.CodeLocation.FilePath) {
-			m.RootCauseSim = rootCauseSimilarity(a, b)
+		} else if sameReviewFileKind(a.path, b.path) && relatedFiles(a.path, b.path) {
+			m.RootCauseSim = rootCauseSimilarity(a.f, b.f)
 			if m.RootCauseSim >= RootCauseStrong {
 				m.Verdict, m.Reason = Possible, "same root-cause signals across related files"
 			} else {
@@ -111,13 +174,13 @@ func Compare(a, b model.Finding) Match {
 	}
 
 	m := Match{
-		TitleSim:    textSimilarity(a.Title, b.Title),
-		BodySim:     textSimilarity(a.Body, b.Body),
-		LocationSim: lineSimilarity(a.CodeLocation.LineRange, b.CodeLocation.LineRange),
+		TitleSim:    textSetSimilarity(a.title, b.title),
+		BodySim:     textSetSimilarity(a.body, b.body),
+		LocationSim: lineSimilarity(a.f.CodeLocation.LineRange, b.f.CodeLocation.LineRange),
 	}
 
 	switch {
-	case a.Title == b.Title && a.Body == b.Body && a.CodeLocation == b.CodeLocation:
+	case a.f.Title == b.f.Title && a.f.Body == b.f.Body && a.f.CodeLocation == b.f.CodeLocation:
 		m.Verdict, m.Reason = Identical, "identical title, body and location"
 
 	// Same code region and either the titles or the bodies agree strongly.
@@ -145,8 +208,9 @@ func Compare(a, b model.Finding) Match {
 // or -1. Ties resolve to the higher combined signal.
 func FindBest(target model.Finding, pool []model.Finding, min Verdict) (int, Match) {
 	best, bestIdx := Match{Verdict: Distinct}, -1
+	pt := prepare(target)
 	for i := range pool {
-		m := Compare(target, pool[i])
+		m := compare(pt, prepare(pool[i]))
 		if m.Verdict < min {
 			continue
 		}
@@ -174,9 +238,13 @@ func Clusters(findings []model.Finding, min Verdict) [][]int {
 		}
 		return parent[x]
 	}
+	preps := make([]prepared, len(findings))
 	for i := range findings {
-		for j := i + 1; j < len(findings); j++ {
-			if Compare(findings[i], findings[j]).Verdict >= min {
+		preps[i] = prepare(findings[i])
+	}
+	for i := range preps {
+		for j := i + 1; j < len(preps); j++ {
+			if compare(preps[i], preps[j]).Verdict >= min {
 				parent[find(i)] = find(j)
 			}
 		}
@@ -199,10 +267,11 @@ func combined(m Match) float64 {
 }
 
 // lineSimilarity scores 1.0 for overlapping ranges and decays linearly with
-// the gap until LineGapHorizon. An unknown range neither confirms nor denies,
-// so it scores the same-region neutral value.
+// the gap until LineGapHorizon. An unknown or malformed range (zero/negative
+// start, inverted bounds — possible from unvalidated LLM output) neither
+// confirms nor denies, so it scores the same-region neutral value.
 func lineSimilarity(a, b model.LineRange) float64 {
-	if (a == model.LineRange{}) || (b == model.LineRange{}) {
+	if !plausibleRange(a) || !plausibleRange(b) {
 		return LocSameRegion
 	}
 	if a.Start <= b.End && b.Start <= a.End {
@@ -218,17 +287,36 @@ func lineSimilarity(a, b model.LineRange) float64 {
 	return 1.0 - gap/LineGapHorizon
 }
 
-// textSimilarity is max(Jaccard, overlap coefficient) over normalized token
-// sets. The overlap coefficient rewards subset phrasings ("X" vs "X enabling
-// Y") that Jaccard alone would punish for the length difference.
-func textSimilarity(a, b string) float64 {
-	ta, tb := tokens(a), tokens(b)
-	return setSimilarity(ta, tb)
+func plausibleRange(r model.LineRange) bool {
+	return r.Start > 0 && r.End >= r.Start
 }
 
+// textSetSimilarity scores normalized token sets of titles/bodies as
+// max(Jaccard, gated overlap coefficient). The overlap coefficient rewards
+// subset phrasings ("X" vs "X enabling Y") that Jaccard alone would punish
+// for the length difference, but only when the smaller set has at least
+// OverlapMinTokens tokens and the sizes are within OverlapMinRatio —
+// otherwise a short generic phrase would score 1.0 against every superset.
+func textSetSimilarity(a, b map[string]struct{}) float64 {
+	jaccard, overlap := setScores(a, b)
+	minLen, maxLen := min(len(a), len(b)), max(len(a), len(b))
+	if minLen < OverlapMinTokens || float64(minLen)/float64(maxLen) < OverlapMinRatio {
+		return jaccard
+	}
+	return max(jaccard, overlap)
+}
+
+// setSimilarity is the ungated max(Jaccard, overlap coefficient). It stays
+// in use for filename-family and root-cause term/anchor sets, which are
+// small by nature and calibrated with the overlap term intact.
 func setSimilarity(a, b map[string]struct{}) float64 {
+	jaccard, overlap := setScores(a, b)
+	return max(jaccard, overlap)
+}
+
+func setScores(a, b map[string]struct{}) (jaccard, overlap float64) {
 	if len(a) == 0 || len(b) == 0 {
-		return 0
+		return 0, 0
 	}
 	inter := 0
 	for t := range a {
@@ -236,9 +324,9 @@ func setSimilarity(a, b map[string]struct{}) float64 {
 			inter++
 		}
 	}
-	jaccard := float64(inter) / float64(len(a)+len(b)-inter)
-	minLen := min(len(a), len(b))
-	return max(jaccard, float64(inter)/float64(minLen))
+	jaccard = float64(inter) / float64(len(a)+len(b)-inter)
+	overlap = float64(inter) / float64(min(len(a), len(b)))
+	return jaccard, overlap
 }
 
 func rootCauseSimilarity(a, b model.Finding) float64 {
@@ -294,6 +382,11 @@ func addAnchorTerms(out map[string]struct{}, raw string) {
 func addStructuredIdentifierAnchors(out map[string]struct{}, text string) {
 	for field := range strings.FieldsSeq(text) {
 		field = strings.Trim(field, " \t\r\n,;:()[]{}<>")
+		// Edge dots are sentence punctuation, not structure: without this trim
+		// every sentence-final word ("paths.") counts as a dotted identifier
+		// and gets deleted from the root-cause term sets. Interior dots
+		// (pkg.Func) survive.
+		field = strings.Trim(field, ".")
 		if !strings.ContainsAny(field, "._") || !hasLetter(field) {
 			continue
 		}
@@ -423,6 +516,10 @@ func tokens(s string) map[string]struct{} {
 	for _, f := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '.'
 	}) {
+		// Dots are token characters so qualified identifiers (pkg.Func)
+		// survive, but that also glues sentence punctuation onto ordinary
+		// words ("element." vs "element"). Trim edge dots; interior stay.
+		f = strings.Trim(f, ".")
 		if _, stop := stopwords[f]; stop || len(f) < 2 {
 			continue
 		}
