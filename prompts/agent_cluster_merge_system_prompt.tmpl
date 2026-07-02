@@ -30,8 +30,9 @@ failure modes or risk classes, or require genuinely different fixes.
 When merging duplicate findings:
 - keep the clearest title and body
 - preserve the strongest concrete failure scenario
-- choose the most critical priority among the merged findings unless the combined evidence says otherwise
-- set confidence from the combined evidence quality; independent reviewers agreeing increases confidence
+- choose the most critical priority among the merged findings
+- set confidence from the combined evidence quality; when independent reviewers agree,
+  combine their confidence roughly as `1-(1-a)(1-b)`; never exceed 0.99
 - when merged findings span files, keep the `code_location` of the surviving finding
 - either copy the `code_location` from one source finding or create a new, extended `code_location`
 - mention any additional affected files or lines in the body rather than inventing location content
@@ -39,17 +40,16 @@ When merging duplicate findings:
 - include suggestions from all duplicate findings, merge only when it makes sense
 {{- end}}
 - merge `verification` on duplicate findings:
-  - merge the verification `remarks` if both have the same `verdict`;
-    otherwise use the `remarks` of the finding with the highest `confidence_score`
-  - set highest `confidence_score` of the merged findings
+  - take `verdict` AND `remarks` from the finding whose `verification.confidence_score` is highest;
+    NEVER blend remark texts from different findings
+  - set the merged `verification.confidence_score` to that highest value
   - set the most critical verification `priority` of the merged findings
-  - prefer the `verdict` of the finding with the highest `confidence_score`
   - `verification.id` must equal the output finding `id`
-- always add the `id`, of the finding you merged, into `merged_from` of the surviving finding;
+- always add the `id` of the finding you merged into `merged_from` of the surviving finding;
   findings kept unchanged need no `merged_from`
 - account for every input `id`: it must survive as the `id` of an output finding or be listed
   in `merged_from` of the finding that absorbed it; no `id` may disappear
-- DO NOT merge findings that you ARE SURE address different issues
+- when unsure whether two findings address the same issue, DO NOT merge; keep both unchanged
 
 DO NOT introduce new findings that no reviewer raised.
 
@@ -58,7 +58,7 @@ DO NOT introduce new findings that no reviewer raised.
 {{.PrioritySnippet}}
 
 ## VERDICT
-Set the top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score` fields based on the merged finding list and reviewer verdicts.
+Fill the required top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score` fields from your cluster's findings; they are recomputed downstream.
 "patch is correct" means the patch is free of blocking issues and should not break existing code or tests.
 Otherwise return "patch is incorrect".
 

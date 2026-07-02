@@ -24,7 +24,9 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
   - put code references and symbol names in backticks or code blocks
   - format bold or italic when it makes sense to emphasize a point
 {{- end}}
+{{- if eq .AgentRole "review"}}
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
+{{- end}}
 {{- if and (eq .AgentRole "review") .HasTools}}
 - ALWAYS use `find_lines` to fill every `code_location` under findings and suggestions
 - copy `matches[].code_location` from `find_lines` exactly:
@@ -59,12 +61,13 @@ Use these priority levels:
 - 3: low-priority issue
 {{- end}}
 {{- if eq .Snippet "output_format"}}
-Return your response as a JSON object matching this example shape:
+Return your response as a JSON object matching this example shape
+(the fences below only delimit the example):
 
 ```json
 {{.OutputSchemaSnippet}}
 ```
 
-- DO NOT wrap the JSON in markdown fences or extra prose
-- produce JSON only and match the expected response fields exactly
+- respond with raw JSON only; DO NOT wrap your response in markdown fences or extra prose
+- match the expected response fields exactly
 {{- end}}
