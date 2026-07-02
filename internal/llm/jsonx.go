@@ -402,6 +402,14 @@ func RepairJSON(data []byte) []byte {
 		}
 		if inString {
 			if c == '\\' {
+				// Single-quoted strings escape their own quote as \'. That
+				// escape is invalid JSON inside the rewritten double-quoted
+				// string, so emit a bare apostrophe instead.
+				if stringQuote == '\'' && i+1 < len(data) && data[i+1] == '\'' {
+					out = append(out, '\'')
+					i++
+					continue
+				}
 				out = append(out, c)
 				escape = true
 				continue

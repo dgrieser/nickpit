@@ -432,3 +432,41 @@ func fuzzyReasoningCycle(first, second, closer string) []string {
 	}
 	return lines
 }
+
+// Fix: the plateau/hard shingle tiers armed with d.rawLineStart, which by the
+// time observeTokensLocked runs already points at the NEXT (still empty) line.
+// The trigger offset must attribute the arming line itself so the reported
+// LoopStart/Repeated split is exact.
+func TestReasoningLoopDetectorShingleArmOffsetsUseArmingLine(t *testing.T) {
+	d := newReasoningLoopDetector(func() {}, time.Minute)
+	line := "alpha beta gamma delta epsilon"
+
+	// First pass registers the line's shingle so replaying it counts as
+	// repeated.
+	d.observeTokensLocked(line, 0)
+
+	// Pretend the stream is deep enough that the recurrence window is full and
+	// one more repeated shingle pushes the fraction over both arm thresholds
+	// (243/256 = 0.949 < 0.95 <= 244/256).
+	d.shingleLen = shingleWindow
+	d.shingleStart = 0
+	d.shingleRepeat = 243
+	// Where the buggy code would point: the start of the next line.
+	d.rawLineStart = 9999
+	const lineStart = 4242
+
+	d.observeTokensLocked(line, lineStart)
+
+	if d.hardLen == 0 {
+		t.Fatal("expected hard tier to arm")
+	}
+	if d.hardOffset != lineStart {
+		t.Fatalf("hardOffset = %d, want %d (the arming line, not the next line)", d.hardOffset, lineStart)
+	}
+	if d.plateauLen == 0 {
+		t.Fatal("expected plateau tier to arm")
+	}
+	if d.plateauOffset != lineStart {
+		t.Fatalf("plateauOffset = %d, want %d (the arming line, not the next line)", d.plateauOffset, lineStart)
+	}
+}

@@ -441,6 +441,45 @@ func TestResultSummaryIncludesCompatibility(t *testing.T) {
 	}
 }
 
+// Fix: whether the optional JSON probes ran was inferred from the error string
+// sentinel "probe did not run". A probe that genuinely ran and failed with
+// that exact message would have been misreported as skipped; the dedicated
+// Skipped flag on the synthetic placeholder decides instead.
+func TestResultSummaryUsesSkippedFlagNotErrorSentinel(t *testing.T) {
+	result := Result{
+		Probes: []ProbeResult{
+			{Name: "configured_no_tools", ReasoningEffort: "high", Status: StatusOK},
+			{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: StatusOK},
+			// Ran and failed, with an error message that collides with the old
+			// string sentinel. configured_json_schema is absent entirely.
+			{Name: "configured_json_output", ReasoningEffort: "high", Status: StatusFailed, Error: "probe did not run"},
+		},
+		PassedEfforts: []string{"high"},
+	}
+	summary := result.Summary()
+	if summary.JSONResponse == nil {
+		t.Fatal("json response probe ran; summary must report it")
+	}
+	if *summary.JSONResponse {
+		t.Fatal("json response probe failed; summary must report false")
+	}
+	if summary.JSONSchema != nil {
+		t.Fatalf("json schema = %v, want nil for a probe that never ran", *summary.JSONSchema)
+	}
+	if summary.Compatible {
+		t.Fatal("summary must not be compatible when the JSON output probe failed")
+	}
+
+	missing := result.ConfiguredJSONSchema()
+	if !missing.Skipped {
+		t.Fatal("placeholder for a probe that never ran must be marked Skipped")
+	}
+	ran := result.ConfiguredJSONOutput()
+	if ran.Skipped {
+		t.Fatal("a probe that ran must not be marked Skipped")
+	}
+}
+
 func TestCheckerRunsProbesInParallelByDefault(t *testing.T) {
 	client := &concurrentClient{}
 	result := New(client, config.Profile{Model: "model", ReasoningEffort: "high"}).Run(context.Background())

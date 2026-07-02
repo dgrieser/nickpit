@@ -278,7 +278,7 @@ func (d *reasoningLoopDetector) finishLineLocked() {
 	if d.observeLineLocked(normalized, lineStart) {
 		return
 	}
-	d.observeTokensLocked(normalized)
+	d.observeTokensLocked(normalized, lineStart)
 }
 
 // --- character runs ---
@@ -480,7 +480,12 @@ func (d *reasoningLoopDetector) lineLoopLocked(period, copies int, stage loopSta
 
 // --- shingle recurrence ---
 
-func (d *reasoningLoopDetector) observeTokensLocked(line string) {
+// observeTokensLocked feeds one finished line's tokens into the shingle
+// detector. lineStart is the byte offset of that line in the raw stream; the
+// plateau/hard tiers record it when they arm so the reported LoopStart/
+// Repeated split starts at the arming line itself (d.rawLineStart already
+// points at the next, still-empty line by the time this runs).
+func (d *reasoningLoopDetector) observeTokensLocked(line string, lineStart int) {
 	tokens := normalizeReasoningTokens(line)
 	if len(tokens) == 0 {
 		return
@@ -513,7 +518,7 @@ func (d *reasoningLoopDetector) observeTokensLocked(line string) {
 		case d.hardLen == 0:
 			if frac >= shingleHardArm {
 				d.hardLen = 1
-				d.hardOffset = d.rawLineStart
+				d.hardOffset = lineStart
 			}
 		case frac >= shingleHardArm-shingleHysteresis:
 			d.hardLen++
@@ -529,7 +534,7 @@ func (d *reasoningLoopDetector) observeTokensLocked(line string) {
 		case d.plateauLen == 0:
 			if frac >= stage.shingleArm {
 				d.plateauLen = 1
-				d.plateauOffset = d.rawLineStart
+				d.plateauOffset = lineStart
 				d.armedAt = stage.shingleArm
 			}
 		case frac >= minFloat(d.armedAt, stage.shingleArm)-shingleHysteresis:

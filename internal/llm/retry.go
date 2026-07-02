@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"math/rand"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -11,19 +12,29 @@ import (
 )
 
 type Retrier struct {
-	MaxRetries        int
-	InitialBackoff    time.Duration
-	MaxBackoff        time.Duration
-	maxRateLimitDelay atomic.Int64
-	RetryableHTTP     map[int]struct{}
-	now               func() time.Time
+	MaxRetries     int
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+	// MaxTotalRateLimitWait caps the cumulative time a single request is
+	// allowed to spend waiting on rate-limit (429) retries. Once the total
+	// would exceed this budget the caller stops retrying and surfaces the
+	// last rate-limit error. Zero disables the cap.
+	MaxTotalRateLimitWait time.Duration
+	maxRateLimitDelay     atomic.Int64
+	RetryableHTTP         map[int]struct{}
+	now                   func() time.Time
+	// rand returns a value in [0, 1) used to jitter computed backoffs so
+	// concurrent lanes do not retry in lockstep. nil uses math/rand; tests
+	// stub it for determinism.
+	rand func() float64
 }
 
 func NewRetrier() *Retrier {
 	r := &Retrier{
-		MaxRetries:     5,
-		InitialBackoff: time.Second,
-		MaxBackoff:     30 * time.Second,
+		MaxRetries:            5,
+		InitialBackoff:        time.Second,
+		MaxBackoff:            30 * time.Second,
+		MaxTotalRateLimitWait: 10 * time.Minute,
 		RetryableHTTP: map[int]struct{}{
 			http.StatusTooManyRequests:     {},
 			http.StatusInternalServerError: {},
@@ -59,13 +70,42 @@ func (r *Retrier) BackoffForHTTPStatus(attempt, status int, resp *http.Response,
 }
 
 func (r *Retrier) Backoff(attempt int, resp *http.Response) time.Duration {
-	backoff := min(r.InitialBackoff*time.Duration(1<<attempt), r.MaxBackoff)
 	if resp != nil {
 		if header := resp.Header.Get("Retry-After"); header != "" {
-			if seconds, err := strconv.Atoi(header); err == nil {
-				backoff = time.Duration(seconds) * time.Second
+			if delay, ok := parseRetryAfter(header, r.timeNow()); ok {
+				// Server-instructed delays are not jittered and may exceed
+				// MaxBackoff: honor them up to the same ceiling as
+				// message-embedded rate-limit reset hints.
+				if delay < r.InitialBackoff {
+					delay = r.InitialBackoff
+				}
+				ceiling := r.MaxRateLimitDelay()
+				if ceiling <= 0 {
+					ceiling = r.MaxBackoff
+				}
+				if delay > ceiling {
+					delay = ceiling
+				}
+				return delay
 			}
 		}
+	}
+	return r.jitter(r.exponentialBackoff(attempt))
+}
+
+// exponentialBackoff computes InitialBackoff*2^attempt saturating at
+// MaxBackoff. Doubling stops as soon as the backoff reaches MaxBackoff, so
+// large attempt counts can never overflow time.Duration (a plain shift
+// overflows int64 at attempt >= 34 and would clamp the wait back down to
+// InitialBackoff).
+func (r *Retrier) exponentialBackoff(attempt int) time.Duration {
+	backoff := r.InitialBackoff
+	for i := 0; i < attempt && backoff > 0 && backoff < r.MaxBackoff; i++ {
+		if backoff > r.MaxBackoff/2 {
+			backoff = r.MaxBackoff
+			break
+		}
+		backoff *= 2
 	}
 	if backoff < r.InitialBackoff {
 		backoff = r.InitialBackoff
@@ -74,6 +114,51 @@ func (r *Retrier) Backoff(attempt int, resp *http.Response) time.Duration {
 		backoff = r.MaxBackoff
 	}
 	return backoff
+}
+
+// jitter spreads a computed backoff by +-20% so concurrent lanes hitting the
+// same failure do not retry in lockstep. Server-instructed delays (Retry-After
+// headers, message-embedded reset hints) are never jittered.
+func (r *Retrier) jitter(backoff time.Duration) time.Duration {
+	if backoff <= 0 {
+		return backoff
+	}
+	random := rand.Float64
+	if r.rand != nil {
+		random = r.rand
+	}
+	factor := 0.8 + 0.4*random()
+	return time.Duration(float64(backoff) * factor)
+}
+
+func (r *Retrier) timeNow() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+// parseRetryAfter parses a Retry-After header value in either RFC 7231 form:
+// delay seconds ("120") or an HTTP-date ("Mon, 02 Jan 2006 15:04:05 GMT").
+func parseRetryAfter(header string, now time.Time) (time.Duration, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.Atoi(header); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	if when, err := http.ParseTime(header); err == nil {
+		delay := when.Sub(now)
+		if delay < 0 {
+			delay = 0
+		}
+		return delay, true
+	}
+	return 0, false
 }
 
 func (r *Retrier) RateLimitMessageDelay(message string) (time.Duration, bool) {
