@@ -26,9 +26,11 @@ class User:
         self._internal_state = {}
 
 # Name mangling: double underscore prefix
+# Avoids subclass attribute collisions -- not true privacy
+# (still reachable as _Base__private)
 class Base:
     def __init__(self):
-        self.__private = "truly private"
+        self.__private = "name-mangled"
 
 # Module-level "private": single underscore
 _module_cache = {}
@@ -65,7 +67,7 @@ users = [
 import os
 import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import Any
 
 # Third-party
 import requests
@@ -85,23 +87,24 @@ from myapp.utils import format_date
 ##### Basic Type Annotations
 
 ```python
-from typing import Optional, List, Dict, Tuple, Union, Any
+# Builtin generics (PEP 585) and X | None unions (PEP 604)
+# need no typing imports
 
 # Variables
 name: str = "John"
 age: int = 30
 active: bool = True
-scores: List[int] = [90, 85, 92]
+scores: list[int] = [90, 85, 92]
 
 # Functions
 def greet(name: str) -> str:
     return f"Hello, {name}!"
 
-def find_user(user_id: int) -> Optional[User]:
+def find_user(user_id: int) -> User | None:
     """Returns User or None if not found."""
     pass
 
-def process_items(items: List[str]) -> Dict[str, int]:
+def process_items(items: list[str]) -> dict[str, int]:
     """Returns count of each item."""
     pass
 ```
@@ -109,14 +112,15 @@ def process_items(items: List[str]) -> Dict[str, int]:
 ##### Advanced Type Hints
 
 ```python
+from collections.abc import Callable
 from typing import (
-    TypeVar, Generic, Protocol, Callable,
+    TypeVar, Generic, Protocol,
     Literal, TypedDict, Final
 )
 
 # TypeVar for generics
 T = TypeVar('T')
-def first(items: List[T]) -> Optional[T]:
+def first(items: list[T]) -> T | None:
     return items[0] if items else None
 
 # Protocol for structural typing
@@ -136,7 +140,7 @@ def set_status(status: Status) -> None:
 class UserDict(TypedDict):
     id: int
     name: str
-    email: Optional[str]
+    email: str | None
 
 # Final for constants
 MAX_SIZE: Final = 100
@@ -156,7 +160,7 @@ class User:
     active: bool = True
 
     # Class variable
-    _instances: ClassVar[Dict[int, 'User']] = {}
+    _instances: ClassVar[dict[int, 'User']] = {}
 
     def deactivate(self) -> Self:
         self.active = False
@@ -226,7 +230,7 @@ class UserService:
     def __init__(
         self,
         db: DatabaseConnection,
-        cache: Optional[Cache] = None
+        cache: Cache | None = None
     ) -> None:
         """Initialize the UserService.
 
@@ -379,6 +383,8 @@ def test_with_patch_decorator(mock_api):
 ##### Exception Patterns
 
 ```python
+from typing import Any
+
 # Define custom exceptions
 class AppError(Exception):
     """Base exception for application errors."""
@@ -431,7 +437,6 @@ def database_transaction(db):
 
 ```python
 from dataclasses import dataclass, field
-from typing import List, Optional
 from datetime import datetime
 
 @dataclass
@@ -441,7 +446,7 @@ class User:
     email: str
     active: bool = True
     created_at: datetime = field(default_factory=datetime.now)
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.email = self.email.lower()
@@ -459,8 +464,8 @@ class Point:
 ##### Context Managers
 
 ```python
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 @contextmanager
 def timer(name: str) -> Generator[None, None, None]:
@@ -496,8 +501,9 @@ class DatabaseConnection:
 ##### Decorators
 
 ```python
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, TypeVar, ParamSpec
+from typing import TypeVar, ParamSpec
 import time
 
 P = ParamSpec('P')
@@ -562,5 +568,9 @@ python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+# Silence missing stubs per dependency, not globally
+[[tool.mypy.overrides]]
+module = "untyped_package.*"
 ignore_missing_imports = true
 ```

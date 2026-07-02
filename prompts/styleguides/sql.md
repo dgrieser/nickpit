@@ -89,7 +89,7 @@ CREATE INDEX idx_metadata ON events USING GIN(metadata);
 
 ##### 3. Query Optimization Patterns
 
-**Avoid SELECT \*:**
+**Avoid SELECT \* Where It Matters:**
 
 ```sql
 -- Bad: Fetches unnecessary columns
@@ -98,6 +98,10 @@ SELECT * FROM users WHERE id = 123;
 -- Good: Fetch only what you need
 SELECT id, email, name FROM users WHERE id = 123;
 ```
+
+This matters most for wide tables, hot paths, enabling index-only scans, and
+keeping column contracts stable. `SELECT *` in an ad-hoc or narrow-table query
+is not a defect; other examples in this guide use `*` for brevity.
 
 **Use WHERE Clause Efficiently:**
 
@@ -114,20 +118,24 @@ SELECT * FROM users WHERE LOWER(email) = 'user@example.com';
 SELECT * FROM users WHERE email = 'user@example.com';
 ```
 
-**Optimize JOINs:**
+**Prefer Explicit JOINs:**
 
 ```sql
--- Bad: Cartesian product then filter
+-- Avoid: Implicit comma join (easy to forget the join predicate)
 SELECT u.name, o.total
 FROM users u, orders o
 WHERE u.id = o.user_id AND u.created_at > '2024-01-01';
 
--- Good: Filter before join
+-- Good: Explicit JOIN keeps the join condition visible
 SELECT u.name, o.total
 FROM users u
 JOIN orders o ON u.id = o.user_id
 WHERE u.created_at > '2024-01-01';
 ```
+
+This is a readability and safety preference, not a performance one: modern
+planners treat both forms identically. Explicit JOIN syntax makes a missing
+join predicate (accidental cross join) much harder to overlook.
 
 #### Optimization Patterns
 
@@ -241,23 +249,27 @@ WHERE created_at > NOW() - INTERVAL '7 days';
 **Optimize GROUP BY:**
 
 ```sql
--- Bad: Filter after grouping (HAVING on non-aggregate condition)
+-- Works, but mixes concerns: non-aggregate condition in HAVING
 SELECT user_id, COUNT(*) as order_count
 FROM orders
 WHERE status = 'completed'
 GROUP BY user_id
 HAVING COUNT(*) > 10 AND user_id > 1000;
 
--- Better: Move non-aggregate filter to WHERE (reduces rows before grouping)
+-- Clearer: Keep non-aggregate filters in WHERE
 SELECT user_id, COUNT(*) as order_count
 FROM orders
 WHERE status = 'completed' AND user_id > 1000
 GROUP BY user_id
 HAVING COUNT(*) > 10;
 
--- Best: Use covering index
-CREATE INDEX idx_orders_user_status ON orders(user_id, status);
+-- Supporting covering index (equality column first)
+CREATE INDEX idx_orders_status_user ON orders(status, user_id);
 ```
+
+Optimizers typically hoist non-aggregate predicates on grouping columns out of
+HAVING automatically, so this is a style/readability preference, not a
+reportable performance defect.
 
 ##### Pattern 4: Subquery Optimization
 
@@ -313,6 +325,9 @@ INSERT INTO users (name, email) VALUES
     ('Carol', 'carol@example.com');
 
 -- Better: Use COPY for bulk inserts (PostgreSQL)
+-- Server-side COPY FROM file reads the file on the DB server and requires
+-- pg_read_server_files membership or superuser. From a client, use
+-- \copy (psql) or COPY ... FROM STDIN instead.
 COPY users (name, email) FROM '/tmp/users.csv' CSV HEADER;
 ```
 
@@ -365,10 +380,13 @@ GROUP BY u.id, u.name;
 -- Add index to materialized view
 CREATE INDEX idx_user_summary_spent ON user_order_summary(total_spent DESC);
 
+-- REFRESH ... CONCURRENTLY requires a unique index on the view
+CREATE UNIQUE INDEX idx_user_summary_id ON user_order_summary (id);
+
 -- Refresh materialized view
 REFRESH MATERIALIZED VIEW user_order_summary;
 
--- Concurrent refresh (PostgreSQL)
+-- Concurrent refresh (PostgreSQL; needs the unique index above)
 REFRESH MATERIALIZED VIEW CONCURRENTLY user_order_summary;
 
 -- Query materialized view (very fast)
@@ -406,9 +424,11 @@ WHERE created_at BETWEEN '2024-02-01' AND '2024-02-28';
 ##### Query Hints and Optimization
 
 ```sql
--- Force index usage (MySQL)
+-- Index hints (MySQL)
+-- USE INDEX only restricts the candidate indexes the optimizer considers;
+-- use FORCE INDEX when you actually mean to force the index.
 SELECT * FROM users
-USE INDEX (idx_users_email)
+FORCE INDEX (idx_users_email)
 WHERE email = 'user@example.com';
 
 -- Parallel query (PostgreSQL)
@@ -430,7 +450,7 @@ SELECT * FROM large_table WHERE condition;
 5. **Normalize Thoughtfully**: Balance normalization vs performance
 6. **Cache Frequently Accessed Data**: Use application-level caching
 7. **Connection Pooling**: Reuse database connections
-8. **Regular Maintenance**: VACUUM, ANALYZE, rebuild indexes
+8. **Regular Maintenance**: VACUUM and ANALYZE; reindex only when bloat warrants it
 
 ```sql
 -- Update statistics
@@ -441,9 +461,10 @@ ANALYZE VERBOSE orders;
 VACUUM ANALYZE users;
 VACUUM FULL users;  -- Reclaim space (locks table)
 
--- Reindex
-REINDEX INDEX idx_users_email;
-REINDEX TABLE users;
+-- Reindex only when bloat warrants it; routine reindexing is usually
+-- unnecessary. Plain REINDEX takes an ACCESS EXCLUSIVE lock; prefer
+-- REINDEX CONCURRENTLY (PostgreSQL 12+).
+REINDEX INDEX CONCURRENTLY idx_users_email;
 ```
 
 #### Common Pitfalls
@@ -452,17 +473,17 @@ REINDEX TABLE users;
 - **Unused Indexes**: Waste space and slow writes
 - **Missing Indexes**: Slow queries, full table scans
 - **Implicit Type Conversion**: Prevents index usage
-- **OR Conditions**: Can't use indexes efficiently
-- **LIKE with Leading Wildcard**: `LIKE '%abc'` can't use index
+- **OR Conditions**: May prevent efficient single-index use; PostgreSQL can BitmapOr across indexes and MySQL has index_merge — check the plan
+- **LIKE with Leading Wildcard**: `LIKE '%abc'` can't use a B-tree index; consider a trigram (pg_trgm) GIN/GiST index or full-text search
 - **Function in WHERE**: Prevents index usage unless functional index exists
 
 #### Monitoring Queries
 
 ```sql
--- Find slow queries (PostgreSQL)
-SELECT query, calls, total_time, mean_time
+-- Find slow queries (PostgreSQL; columns renamed in PostgreSQL 13)
+SELECT query, calls, total_exec_time, mean_exec_time
 FROM pg_stat_statements
-ORDER BY mean_time DESC
+ORDER BY mean_exec_time DESC
 LIMIT 10;
 
 -- Find missing indexes (PostgreSQL)
