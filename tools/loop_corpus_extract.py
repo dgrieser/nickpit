@@ -21,12 +21,17 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(REPO, "loop_corpus.jsonl")
 
+# Two log formats exist: the pre-June-2026 one ("Reasoning: [label] #1 Done 2s",
+# markers "+ [agent, turn: #1] ...") and the current one ("Reasoning  [label]
+# #1 done 2s", markers "+ [agent] #1 ...").
 LOGLINE = re.compile(
-    r"^(?:\+ \[|(?:Reasoning|Response|Tool|Agent|Model|ModelCheck|Progress|Review|Verify|Context|Findings|Summary|Nudge|Retry|Publish|Dedupe|Collect|Filter|Sanitize|Repair|Location|Time|Budget|Error|Warning|Info|Debug|Git|SCM|Step|Workflow|Engine|Pipeline|Lane|Extract|Judge)\s+\[)"
+    r"^(?:\+ \[|(?:Reasoning|Response|Request|Tool|Agent|Model|ModelCheck|Progress|Review|Verify|Context|Findings|Summary|Nudge|Retry|Publish|Dedupe|Collect|Filter|Sanitize|Repair|Location|Time|Budget|Error|Warning|Info|Debug|Git|SCM|Step|Workflow|Engine|Pipeline|Lane|Extract|Judge)(?:\s+\[|: ))"
 )
 HEADER = re.compile(r"^Reasoning for (?P<label>.+?)\.\.\.$")
-DONE = re.compile(r"^Reasoning\s+\[(?P<agent>[^\]]+)\]\s+#(?P<attempt>\d+) done (?:(?P<hours>\d+)h)?(?:(?P<mins>\d+)m)?(?P<secs>\d+(?:\.\d+)?)s")
-MARKER = re.compile(r"^\+ \[(?P<agent>.+?)\] #(?P<call>\d+) (?P<msg>Reasoning loop detected, retrying|Repeated chunk|Reasoning time limit exceeded|Reasoning-only empty response, retrying)")
+DONE = re.compile(r"^Reasoning:?\s+\[(?P<agent>[^\]]+)\]\s+#(?P<attempt>\d+) [Dd]one (?:(?P<hours>\d+)h)?(?:(?P<mins>\d+)m)?(?P<secs>\d+(?:\.\d+)?)s")
+MARKER_MSGS = r"(?P<msg>Reasoning loop detected, retrying|Repeated chunk|Reasoning time limit exceeded|Reasoning-only empty response, retrying)"
+MARKER = re.compile(r"^\+ \[(?P<agent>.+?)\] #(?P<call>\d+) " + MARKER_MSGS)
+MARKER_OLD = re.compile(r"^\+ \[(?P<agent>.+?), turn: #(?P<call>\d+)\] " + MARKER_MSGS)
 
 KIND_RANK = {"clean": 0, "empty": 1, "timeout": 2, "loopdet": 3, "chunk": 4}
 
@@ -71,7 +76,7 @@ def extract_blocks(log_path):
     # pass 1: markers -> {(label_prefix, call_no): kind}
     marks = {}
     for line in lines:
-        m = MARKER.match(line)
+        m = MARKER.match(line) or MARKER_OLD.match(line)
         if not m:
             continue
         key = (agent_to_label_prefix(m.group("agent")), int(m.group("call")))
@@ -119,9 +124,9 @@ def extract_blocks(log_path):
 
 
 def main():
-    logs = sorted(
+    logs = sorted(sys.argv[1:]) or sorted(
         p for p in os.listdir(REPO)
-        if re.match(r"review_test-2026-(06-30|07-01)-.*\.log$", p)
+        if re.match(r"review_test-.*\.log$", p)
     )
     records = []
     unmatched_marks = []
@@ -134,7 +139,7 @@ def main():
                 seen_keys.add((lm.group("base"), int(lm.group("no"))))
             if not text:
                 continue
-            stamp = name.replace("review_test-2026-", "").replace(".log", "")
+            stamp = os.path.basename(name).replace("review_test-", "").replace("2026-", "").replace(".log", "")
             records.append({
                 "id": f"{stamp}:{header_lineno}",
                 "log": name,

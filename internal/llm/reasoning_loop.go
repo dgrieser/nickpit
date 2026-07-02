@@ -30,10 +30,11 @@ import (
 // repetition may cancel the stream; the closer the stream gets to the budget
 // (where it would be cancelled anyway), the more aggressive detection becomes,
 // because the cost of a false positive shrinks while the expected saving
-// grows. All constants below were tuned against a corpus of ~1900 reasoning
-// traces extracted from real review runs (verbatim loops, paraphrase loops,
-// provider-detected repeated chunks, timed-out vacillation loops, and clean
-// long reasoning).
+// grows. All constants below were tuned against a corpus of ~40k reasoning
+// traces extracted from every archived review run (verbatim loops, paraphrase
+// loops, re-listing loops, provider-detected repeated chunks, timed-out
+// vacillation loops, and clean long reasoning); see tools/loop_corpus_extract.py
+// and TestReasoningLoopCorpus.
 
 const (
 	// loopStagingFallbackBudget stages thresholds when no reasoning time limit
