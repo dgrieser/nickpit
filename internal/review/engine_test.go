@@ -1614,7 +1614,7 @@ func TestBuildAgentLoopRequestZeroOutputRetriesIsUnlimited(t *testing.T) {
 func TestRunAgent_ZeroOutputRetriesRetriesBeyondDefault(t *testing.T) {
 	invalidCalls := defaultMaxOutputRetries + 2
 	results := make([]scriptedLLMResult, 0, invalidCalls+1)
-	for i := 0; i < invalidCalls; i++ {
+	for range invalidCalls {
 		results = append(results, scriptedLLMResult{err: &llm.InvalidResponseError{
 			Reason:        "bad json",
 			MissingFields: []string{"findings"},

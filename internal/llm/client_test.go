@@ -4642,13 +4642,22 @@ func TestRequestPayloadForLogRedactsSensitiveExtraBodyValues(t *testing.T) {
 		"custom_token":  "tok-value",
 		"PASSWORD":      "hunter2",
 		"top_k":         20,
+		// Sensitive keys nested in sub-objects and arrays must be redacted too.
+		"headers": map[string]any{
+			"x-api-key":  "nested-secret",
+			"user-agent": "nickpit",
+		},
+		"fallbacks": []any{
+			map[string]any{"credentials": "deep-secret", "model": "alt"},
+			"plain-string",
+		},
 	}
 	logPayload, err := requestPayloadForLog(openai.ChatCompletionRequest{Model: "model"}, extraBody)
 	if err != nil {
 		t.Fatalf("requestPayloadForLog returned error: %v", err)
 	}
 	got := string(logPayload)
-	for _, secret := range []string{"sk-super-secret", "Bearer abc123", "tok-value", "hunter2"} {
+	for _, secret := range []string{"sk-super-secret", "Bearer abc123", "tok-value", "hunter2", "nested-secret", "deep-secret"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("log payload leaks %q:\n%s", secret, got)
 		}
@@ -4658,14 +4667,19 @@ func TestRequestPayloadForLogRedactsSensitiveExtraBodyValues(t *testing.T) {
 			t.Fatalf("log payload should keep key %s visible:\n%s", key, got)
 		}
 	}
-	if count := strings.Count(got, `"[redacted]"`); count != 4 {
-		t.Fatalf("redacted %d values, want 4:\n%s", count, got)
+	if count := strings.Count(got, `"[redacted]"`); count != 6 {
+		t.Fatalf("redacted %d values, want 6:\n%s", count, got)
 	}
-	if !strings.Contains(got, `"top_k":20`) {
-		t.Fatalf("non-sensitive extra_body value must stay visible:\n%s", got)
+	for _, visible := range []string{`"top_k":20`, `"user-agent":"nickpit"`, `"model":"alt"`, `"plain-string"`} {
+		if !strings.Contains(got, visible) {
+			t.Fatalf("non-sensitive extra_body value %s must stay visible:\n%s", visible, got)
+		}
 	}
-	// The map used for the real request must stay untouched.
+	// The map used for the real request must stay untouched, nested too.
 	if extraBody["api_key"] != "sk-super-secret" {
 		t.Fatalf("extra body mutated: %v", extraBody["api_key"])
+	}
+	if extraBody["headers"].(map[string]any)["x-api-key"] != "nested-secret" {
+		t.Fatalf("nested extra body mutated: %v", extraBody["headers"])
 	}
 }

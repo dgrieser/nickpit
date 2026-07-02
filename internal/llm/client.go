@@ -450,6 +450,10 @@ func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[st
 // themselves stay visible so the request shape remains debuggable.
 var sensitiveExtraBodyKeyFragments = []string{"key", "token", "secret", "auth", "password", "credential"}
 
+// redactExtraBodyForLog deep-copies extraBody with sensitive values replaced,
+// recursing into nested objects and arrays — credentials buried in sub-objects
+// (e.g. a provider header block) must not leak into verbose logs either. The
+// original map is never mutated.
 func redactExtraBodyForLog(extraBody map[string]any) map[string]any {
 	if len(extraBody) == 0 {
 		return extraBody
@@ -460,9 +464,24 @@ func redactExtraBodyForLog(extraBody map[string]any) map[string]any {
 			redacted[key] = "[redacted]"
 			continue
 		}
-		redacted[key] = value
+		redacted[key] = redactExtraBodyValueForLog(value)
 	}
 	return redacted
+}
+
+func redactExtraBodyValueForLog(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		return redactExtraBodyForLog(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = redactExtraBodyValueForLog(item)
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func sensitiveExtraBodyKey(key string) bool {

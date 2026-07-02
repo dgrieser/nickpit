@@ -152,11 +152,7 @@ func parseRetryAfter(header string, now time.Time) (time.Duration, bool) {
 		return time.Duration(seconds) * time.Second, true
 	}
 	if when, err := http.ParseTime(header); err == nil {
-		delay := when.Sub(now)
-		if delay < 0 {
-			delay = 0
-		}
-		return delay, true
+		return max(when.Sub(now), 0), true
 	}
 	return 0, false
 }

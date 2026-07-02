@@ -676,7 +676,7 @@ func TestLocalEngineGetFileSliceReachesLinesBeyondByteCap(t *testing.T) {
 	// around line 52_400.
 	line := strings.Repeat("x", 99)
 	var sb strings.Builder
-	for i := 0; i < 65000; i++ {
+	for range 65000 {
 		sb.WriteString(line)
 		sb.WriteByte('\n')
 	}
