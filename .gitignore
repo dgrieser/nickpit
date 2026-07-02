@@ -3,5 +3,6 @@
 .zed/
 .nickpit.yaml.example
 bin/
+events/
 *.swp
 *.log
