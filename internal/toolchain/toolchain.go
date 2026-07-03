@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -550,9 +551,9 @@ func languagesForPath(path, hint string) []string {
 	return nil
 }
 
+// extOf returns the extension of the path's base name. Using the base name
+// matters: a dot in a directory (dir.v1/Makefile) must not yield
+// ".v1/makefile" as the extension. Lowercasing stays at the call site.
 func extOf(path string) string {
-	if i := strings.LastIndexByte(path, '.'); i >= 0 {
-		return path[i:]
-	}
-	return ""
+	return filepath.Ext(filepath.Base(path))
 }

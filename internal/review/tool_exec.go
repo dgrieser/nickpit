@@ -117,23 +117,35 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 		return callHierarchyDedupKey(toolCall.Name, normalizeToolPath(args.Path), strings.TrimSpace(args.Symbol), args.Depth)
 	case "search":
 		var args struct {
-			Path  string `json:"path"`
-			Query string `json:"query"`
+			Path          string `json:"path"`
+			Query         string `json:"query"`
+			ContextLines  int    `json:"context_lines"`
+			MaxResults    int    `json:"max_results"`
+			CaseSensitive bool   `json:"case_sensitive"`
 		}
 		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
 		query := strings.TrimSpace(args.Query)
+		if query == "" {
+			// Executes as a missing_argument error without dedup state.
+			return uniqueKey
+		}
+		normalizedPath := normalizeToolPath(strings.TrimSpace(args.Path))
 		// Mirror executeSearch's rewrite condition so the dedup key matches how the
 		// call actually executes: a function-name search only collapses into the
 		// find_callers key when the optimization is on AND a backend supports the
-		// target language; otherwise it runs as its own literal search.
-		if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizeToolPath(args.Path)) {
+		// target language; otherwise it runs as its own literal search keyed by
+		// its normalized arguments.
+		if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizedPath) {
 			if matches := searchFunctionQueryPattern.FindStringSubmatch(query); len(matches) == 2 {
-				return callHierarchyDedupKey("find_callers", normalizeToolPath(args.Path), matches[1], defaultCallHierarchyDepth)
+				return callHierarchyDedupKey("find_callers", normalizedPath, matches[1], defaultCallHierarchyDepth)
 			}
 		}
-		return uniqueKey
+		if args.ContextLines < 0 {
+			args.ContextLines = defaultSearchContextLines
+		}
+		return searchDedupKey(normalizedPath, query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	default:
 		return uniqueKey
 	}
@@ -220,15 +232,20 @@ func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCa
 	normalizedPath := normalizeToolPath(args.Path)
 	unlock := state.fileLocks.lock(normalizedPath)
 	defer unlock()
+	rangedRequest := args.LineStart > 0 || args.LineEnd > 0
 	state.mu.Lock()
 	seenContent, ok := state.seenFiles[normalizedPath]
 	state.mu.Unlock()
-	if ok {
+	// A stored full-file read dedupes repeated full-file requests always, but
+	// only blocks ranged follow-ups when the stored content was complete: a
+	// truncated read does not cover ranges past the cap, and its result note
+	// explicitly tells the model to request specific line ranges.
+	if ok && (!rangedRequest || !seenContent.Truncated) {
 		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
 		return toolError(seenContent.Path, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_file"}))
 	}
 
-	if args.LineStart > 0 || args.LineEnd > 0 {
+	if rangedRequest {
 		e.logf(ctx, "Executing tool call: name=%s path=%s line_start=%d line_end=%d", toolCall.Name, normalizedPath, args.LineStart, args.LineEnd)
 		content, err := e.retrieval.GetFileSlice(ctx, repoRoot, normalizedPath, args.LineStart, args.LineEnd)
 		if err != nil {
@@ -360,6 +377,16 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			}, true, state)
 		}
 	}
+	key := searchDedupKey(normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
+	unlock := state.toolLocks.lock(key)
+	defer unlock()
+	state.mu.Lock()
+	_, seen := state.seenToolCalls[key]
+	state.mu.Unlock()
+	if seen {
+		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s query=%q", toolCall.Name, normalizedPath, args.Query)
+		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
+	}
 	e.logf(ctx, "Executing tool call: name=%s path=%s query=%q context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	results, err := e.retrieval.Search(ctx, repoRoot, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
 	if err != nil {
@@ -385,6 +412,9 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		}
 	}
 
+	state.mu.Lock()
+	state.seenToolCalls[key] = struct{}{}
+	state.mu.Unlock()
 	return mustToolResultJSON(map[string]any{
 		"path":           results.Path,
 		"query":          results.Query,
@@ -534,6 +564,15 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, norm
 
 func callHierarchyDedupKey(name, path, symbol string, depth int) string {
 	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", name, path, symbol, depth)
+}
+
+// searchDedupKey identifies one literal search invocation. It must be computed
+// from the normalized arguments exactly as executeSearch runs them (trimmed
+// path/query, defaulted context lines) so identical repeated searches dedupe
+// into a single execution plus already_requested errors, consistent with
+// inspect_file/find_lines/list_files.
+func searchDedupKey(path, query string, contextLines, maxResults int, caseSensitive bool) string {
+	return fmt.Sprintf("search\x00%s\x00%s\x00%d\x00%d\x00%t", path, query, contextLines, maxResults, caseSensitive)
 }
 
 func findLinesDedupKey(path, code string) string {

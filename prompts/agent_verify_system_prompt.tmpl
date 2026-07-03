@@ -29,8 +29,13 @@ When evaluating the finding:
 Apply these gates in order. Stop as soon as one gate applies.
 
 1. Non-finding gate:
+  - Judge the finding AS A WHOLE:
+    treat it as a non-finding ONLY when the finding as a whole affirms correct or intended behavior.
+  - A finding that contrasts correct old behavior with broken new behavior IS a real finding;
+    a phrase praising part of the code does not make the finding a non-finding.
   - If the submitted "finding" does not report a problem, return `refuted`.
   - Set `remarks` to exactly: `no issue`
+  - Never use the phrase "no issue" anywhere in `remarks` except as this standalone non-finding sentinel.
   - When `refuted` because the input is a non-finding, do not cite code and do not add any other remarks.
   - Do NOT verify whether the positive statement is true. A correct-code affirmation is still not a review finding.
   - Non-findings include items that:
@@ -39,7 +44,9 @@ Apply these gates in order. Stop as soon as one gate applies.
     - say a change is intentional
     - say a change is acceptable
     - report no problem or only praise/confirm behavior
-  - Treat titles or bodies containing phrases like these (or similar) as non-findings:
+  - Affirmative findings often contain phrases like these;
+    treat them as illustrations of whole-finding affirmation,
+    NOT as substring triggers:
     - "no finding"
     - "no issue"
     - "no problem"
@@ -63,7 +70,7 @@ Apply these gates in order. Stop as soon as one gate applies.
     - the finding applies a generic rule from another language or ecosystem, but the styleguide gives different rules for this toolchain
     - the finding treats syntax, quoting, naming, or validation as broken even though the styleguide says it is valid for the relevant context
     - the finding requires a stricter test, security, or compatibility guarantee than the styleguide requires for this kind of change
-  - If the styleguide clearly weakens but does not contradict the claim, return `unverified`.
+  - If the styleguide clearly weakens but does not contradict the claim, continue to the next gate and reflect the weakening in `confidence_score`.
   - Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide.
 
 3. Confirm gate:
@@ -113,11 +120,12 @@ Set `priority` to the same value as the original finding's `priority` UNLESS you
 ## OUTPUT FORMAT
 {{.OutputFormatSnippet}}
 {{- if .OutputSchemaSnippet}}
-- `verification.id` is the same UUID as the input `finding.id`; copy that actual UUID, never the `<uuid-v4>` placeholder
-- `verification.verdict` is one of `confirmed`, `refuted`, `unverified`
-- `verification.priority` is an integer 0-3
-- `verification.confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
-- `verification.remarks` is a short markdown explanation of the verdict; when `refuted` because an actual issue claim is false, MUST cite the concrete code or invariant that contradicts the finding
+- `id`, `verdict`, `priority`, `confidence_score`, and `remarks` are TOP-LEVEL keys of the JSON object; do NOT wrap them in a `verification` object
+- `id` is the same UUID as the input `finding.id`; copy that actual UUID, never the `<uuid-v4>` placeholder
+- `verdict` is one of `confirmed`, `refuted`, `unverified`
+- `priority` is an integer 0-3
+- `confidence_score` is a number between 0 and 1 expressing your confidence in the verdict
+- `remarks` is a short markdown explanation of the verdict; when `refuted` because an actual issue claim is false, MUST cite the concrete code or invariant that contradicts the finding
   - when `refuted` because the input is a non-finding, `remarks` MUST be exactly "no issue"
   - add paragraphs, e.g. an empty line, between distinct points to improve readability
   - put code references and symbol names in backticks or code blocks

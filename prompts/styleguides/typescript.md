@@ -115,7 +115,7 @@ type Status = "pending" | "active" | "completed";
 type UserId = string;
 
 // Computed/mapped types
-type Readonly<T> = {
+type Immutable<T> = {
   readonly [P in keyof T]: T[P];
 };
 
@@ -291,14 +291,18 @@ type DeepReadonly<T> = {
 
 ##### Prefer const Objects Over Enums
 
+Alternative 1: enum (has runtime overhead)
+
 ```typescript
-// Enums have runtime overhead
 enum Status {
   Pending = "pending",
   Active = "active",
 }
+```
 
-// Prefer const objects
+Alternative 2: const object (preferred)
+
+```typescript
 const Status = {
   Pending: "pending",
   Active: "active",

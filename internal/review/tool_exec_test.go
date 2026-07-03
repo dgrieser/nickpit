@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -521,18 +522,28 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 			want: searchRewriteKey("src/demo.rs"),
 		},
 		{
-			name:   "search ruby function name stays unique",
-			call:   llm.ToolCall{ID: "j", Name: "search", Arguments: `{"path":"src/demo.rb","query":"Run()"}`},
-			unique: true,
+			name: "search ruby function name keys as literal search",
+			call: llm.ToolCall{ID: "j", Name: "search", Arguments: `{"path":"src/demo.rb","query":"Run()"}`},
+			want: searchDedupKey("src/demo.rb", "Run()", 0, 0, false),
 		},
 		{
-			name:   "search java function name stays unique",
-			call:   llm.ToolCall{ID: "k", Name: "search", Arguments: `{"path":"src/Demo.java","query":"Run()"}`},
-			unique: true,
+			name: "search java function name keys as literal search",
+			call: llm.ToolCall{ID: "k", Name: "search", Arguments: `{"path":"src/Demo.java","query":"Run()"}`},
+			want: searchDedupKey("src/Demo.java", "Run()", 0, 0, false),
 		},
 		{
-			name:   "search non-function query stays unique",
-			call:   llm.ToolCall{ID: "l", Name: "search", Arguments: `{"path":"src/demo.go","query":"return x"}`},
+			name: "search non-function query keys as literal search",
+			call: llm.ToolCall{ID: "l", Name: "search", Arguments: `{"path":"src/demo.go","query":"return x"}`},
+			want: searchDedupKey("src/demo.go", "return x", 0, 0, false),
+		},
+		{
+			name: "search normalizes path and query for the dedup key",
+			call: llm.ToolCall{ID: "m", Name: "search", Arguments: `{"path":"./src/demo.go","query":"  return x ","context_lines":-1}`},
+			want: searchDedupKey("src/demo.go", "return x", defaultSearchContextLines, 0, false),
+		},
+		{
+			name:   "search empty query stays unique",
+			call:   llm.ToolCall{ID: "n", Name: "search", Arguments: `{"path":"src/demo.go","query":"  "}`},
 			unique: true,
 		},
 	}
@@ -550,5 +561,166 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 				t.Fatalf("key = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// truncatingRetrieval returns a truncated full-file read and records slice
+// requests, for the truncated-file lockout regression tests.
+type truncatingRetrieval struct {
+	stubRetrieval
+	mu        sync.Mutex
+	truncated bool
+	fullReads int
+	slices    []string
+}
+
+func (r *truncatingRetrieval) GetFile(_ context.Context, _ string, path string) (*retrieval.FileContent, error) {
+	r.mu.Lock()
+	r.fullReads++
+	r.mu.Unlock()
+	return &retrieval.FileContent{Path: path, Content: "package big", Language: "go", Truncated: r.truncated}, nil
+}
+
+func (r *truncatingRetrieval) GetFileSlice(_ context.Context, _ string, path string, start, end int) (*retrieval.FileSlice, error) {
+	r.mu.Lock()
+	r.slices = append(r.slices, fmt.Sprintf("%s:%d-%d", path, start, end))
+	r.mu.Unlock()
+	return &retrieval.FileSlice{Path: path, StartLine: start, EndLine: end, Content: "sliced", Language: "go"}, nil
+}
+
+// TestExecuteInspectFileTruncatedFullReadAllowsRangedFollowups is the direct
+// regression test for the truncated-file lockout: a full-file inspect of an
+// over-cap file tells the model to "request specific line ranges for the
+// remainder", so subsequent ranged requests on that path must execute instead
+// of returning already_requested. Full-file repeats and repeated identical
+// ranges still dedupe.
+func TestExecuteInspectFileTruncatedFullReadAllowsRangedFollowups(t *testing.T) {
+	retrievalEngine := &truncatingRetrieval{truncated: true}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "full", Name: "inspect_file", Arguments: `{"path":"big.go"}`},
+		{ID: "ranged", Name: "inspect_file", Arguments: `{"path":"big.go","line_start":100,"line_end":120}`},
+		{ID: "ranged_dup", Name: "inspect_file", Arguments: `{"path":"big.go","line_start":100,"line_end":120}`},
+		{ID: "full_dup", Name: "inspect_file", Arguments: `{"path":"big.go"}`},
+	}, state)
+
+	fullPayload := decodeToolPayload(t, results[0].Content)
+	if fullPayload["truncated"] != true {
+		t.Fatalf("full read payload = %#v, want truncated=true", fullPayload)
+	}
+	rangedPayload := decodeToolPayload(t, results[1].Content)
+	if _, isErr := rangedPayload["error"]; isErr {
+		t.Fatalf("ranged follow-up after truncated full read = %#v, want content instead of already_requested", rangedPayload)
+	}
+	if rangedPayload["content"] != "sliced" {
+		t.Fatalf("ranged payload = %#v, want sliced content", rangedPayload)
+	}
+	if got := nestedString(decodeToolPayload(t, results[2].Content), "error", "code"); got != "already_requested" {
+		t.Fatalf("repeated identical range error code = %q, want already_requested", got)
+	}
+	if got := nestedString(decodeToolPayload(t, results[3].Content), "error", "code"); got != "already_requested" {
+		t.Fatalf("repeated full read error code = %q, want already_requested", got)
+	}
+	if retrievalEngine.fullReads != 1 {
+		t.Fatalf("full reads = %d, want 1", retrievalEngine.fullReads)
+	}
+	// Ranged dedup intentionally fetches before checking coverage (the returned
+	// range may be clamped), so both ranged requests hit retrieval even though
+	// the second reports already_requested.
+	if len(retrievalEngine.slices) != 2 {
+		t.Fatalf("slice reads = %#v, want two fetches with the second deduped after clamping", retrievalEngine.slices)
+	}
+}
+
+// TestExecuteInspectFileCompleteFullReadStillDedupesRangedFollowups pins the
+// unchanged half of the behavior: after a complete (untruncated) full-file
+// read, ranged follow-ups remain duplicates because the whole file is already
+// in context.
+func TestExecuteInspectFileCompleteFullReadStillDedupesRangedFollowups(t *testing.T) {
+	retrievalEngine := &truncatingRetrieval{truncated: false}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "full", Name: "inspect_file", Arguments: `{"path":"small.go"}`},
+		{ID: "ranged", Name: "inspect_file", Arguments: `{"path":"small.go","line_start":1,"line_end":2}`},
+	}, state)
+
+	if _, isErr := decodeToolPayload(t, results[0].Content)["error"]; isErr {
+		t.Fatalf("full read errored: %s", results[0].Content)
+	}
+	if got := nestedString(decodeToolPayload(t, results[1].Content), "error", "code"); got != "already_requested" {
+		t.Fatalf("ranged follow-up error code = %q, want already_requested after complete read", got)
+	}
+	if len(retrievalEngine.slices) != 0 {
+		t.Fatalf("slice reads = %#v, want none", retrievalEngine.slices)
+	}
+}
+
+// TestExecuteSearchDedupesIdenticalCalls covers the search dedup gap: identical
+// repeated searches must execute once and return the standard already_requested
+// payload afterwards, consistent with inspect_file/find_lines/list_files.
+func TestExecuteSearchDedupesIdenticalCalls(t *testing.T) {
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "s1", Name: "search", Arguments: `{"path":"pkg","query":"needle"}`},
+		// Identical after normalization: leading "./" and query whitespace.
+		{ID: "s2", Name: "search", Arguments: `{"path":"./pkg","query":" needle "}`},
+		{ID: "s3", Name: "search", Arguments: `{"path":"pkg","query":"other"}`},
+	}, state)
+
+	firstPayload := decodeToolPayload(t, results[0].Content)
+	if _, isErr := firstPayload["error"]; isErr {
+		t.Fatalf("first search errored: %#v", firstPayload)
+	}
+	if got := nestedString(decodeToolPayload(t, results[1].Content), "error", "code"); got != "already_requested" {
+		t.Fatalf("duplicate search error code = %q, want already_requested", got)
+	}
+	thirdPayload := decodeToolPayload(t, results[2].Content)
+	if _, isErr := thirdPayload["error"]; isErr {
+		t.Fatalf("distinct search errored: %#v", thirdPayload)
+	}
+
+	searches := 0
+	for _, p := range retrievalEngine.paths {
+		if strings.HasPrefix(p, "search:") {
+			searches++
+		}
+	}
+	if searches != 2 {
+		t.Fatalf("search executions = %d (%v), want 2 (needle once, other once)", searches, retrievalEngine.paths)
+	}
+}
+
+// TestExecuteSearchDedupesAcrossRounds mirrors the duplicate-call cascade seen
+// in real runs: the same search repeated in a later round of the same agent
+// loop must hit the shared seen-state.
+func TestExecuteSearchDedupesAcrossRounds(t *testing.T) {
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+
+	first := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "r1", Name: "search", Arguments: `{"path":"pkg","query":"needle","context_lines":3,"max_results":10}`},
+	}, state)
+	second := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "r2", Name: "search", Arguments: `{"path":"pkg","query":"needle","context_lines":3,"max_results":10}`},
+		// Different max_results is a different invocation and must run.
+		{ID: "r3", Name: "search", Arguments: `{"path":"pkg","query":"needle","context_lines":3,"max_results":20}`},
+	}, state)
+
+	if _, isErr := decodeToolPayload(t, first[0].Content)["error"]; isErr {
+		t.Fatalf("first search errored: %s", first[0].Content)
+	}
+	if got := nestedString(decodeToolPayload(t, second[0].Content), "error", "code"); got != "already_requested" {
+		t.Fatalf("cross-round duplicate error code = %q, want already_requested", got)
+	}
+	if _, isErr := decodeToolPayload(t, second[1].Content)["error"]; isErr {
+		t.Fatalf("search with different params errored: %s", second[1].Content)
 	}
 }

@@ -62,7 +62,8 @@ Web standards for semantic markup, maintainable styling, and accessibility.
   <p>Article content...</p>
 
   <footer>
-    <p>Written by <address>Author Name</address></p>
+    <!-- <address> is not allowed inside <p>; use it standalone -->
+    <address>Written by Author Name</address>
   </footer>
 </article>
 
@@ -271,6 +272,8 @@ Web standards for semantic markup, maintainable styling, and accessibility.
 
 <!-- Tabindex usage -->
 <!-- tabindex="0": Add to tab order -->
+<!-- Prefer a native <button>; a div-button is a last resort and also
+     requires a keydown handler for Enter/Space to be operable -->
 <div tabindex="0" role="button">Custom button</div>
 
 <!-- tabindex="-1": Programmatically focusable only -->
@@ -295,10 +298,9 @@ Web standards for semantic markup, maintainable styling, and accessibility.
   border: 0;
 }
 
-/* Hide from screen readers */
-[aria-hidden="true"] {
-  /* Decorative content */
-}
+/* Note: aria-hidden="true" alone hides content from assistive
+   technology — no CSS rule is needed or involved. Add CSS only if the
+   content should also be hidden visually (e.g. display: none). */
 ```
 
 ```html

@@ -63,7 +63,8 @@ func (r *codeLocationRepairer) repairResponse(ctx context.Context, resp *llm.Rev
 	for i := range resp.Findings {
 		finding := &resp.Findings[i]
 		prefix := fmt.Sprintf("findings[%d]", i)
-		result.Repaired += r.repairLocation(ctx, prefix+".code_location", &finding.CodeLocation, &result)
+		changed, _ := r.repairLocation(ctx, prefix+".code_location", &finding.CodeLocation, &result)
+		result.Repaired += changed
 		result.Repaired += r.repairSuggestions(ctx, prefix+".suggestions", finding.Suggestions, &result)
 		if finding.Finalization != nil {
 			result.Repaired += r.repairSuggestions(ctx, prefix+".finalization.suggestions", finding.Finalization.Suggestions, &result)
@@ -82,42 +83,50 @@ func (r *codeLocationRepairer) repairSuggestions(ctx context.Context, prefix str
 	repaired := 0
 	for i := range suggestions {
 		field := fmt.Sprintf("%s[%d].code_location", prefix, i)
-		if r.repairLocation(ctx, field, &suggestions[i].CodeLocation, result) > 0 {
+		changed, ok := r.repairLocation(ctx, field, &suggestions[i].CodeLocation, result)
+		if ok {
+			// Sync the top-level line range from the validated code location
+			// unconditionally on success — a location that validated without
+			// needing changes can still disagree with a stale LineRange copy.
 			suggestions[i].LineRange = suggestions[i].CodeLocation.LineRange
-			repaired++
 		}
+		repaired += changed
 	}
 	return repaired
 }
 
-func (r *codeLocationRepairer) repairLocation(ctx context.Context, field string, loc *model.CodeLocation, result *codeLocationRepairResult) int {
+// repairLocation validates (and where needed repairs) one code location.
+// It returns how many locations actually changed (0 or 1) and whether the
+// location validated successfully; a false second return means a retry field
+// was recorded.
+func (r *codeLocationRepairer) repairLocation(ctx context.Context, field string, loc *model.CodeLocation, result *codeLocationRepairResult) (int, bool) {
 	if loc == nil {
 		r.addRetry(result, field)
-		return 0
+		return 0, false
 	}
 	loc.FilePath = normalizeToolPath(strings.TrimSpace(loc.FilePath))
 	loc.Content = normalizeCodeLocationContent(loc.Content)
 	if loc.FilePath == "" {
 		r.addRetry(result, field+".file_path")
-		return 0
+		return 0, false
 	}
 	original := *loc
 	if loc.Content != "" {
 		switch r.repairFromContent(ctx, field, loc) {
 		case contentRepairRepaired:
-			return changedCodeLocation(original, *loc)
+			return changedCodeLocation(original, *loc), true
 		case contentRepairInconclusive:
 			r.addRetry(result, field+".content_or_line_range")
-			return 0
+			return 0, false
 		}
 	}
 	if hasAnyLineAnchor(loc.LineRange) {
 		if r.repairFromRange(ctx, field, loc) {
-			return changedCodeLocation(original, *loc)
+			return changedCodeLocation(original, *loc), true
 		}
 	}
 	r.addRetry(result, field+".content_or_line_range")
-	return 0
+	return 0, false
 }
 
 func (r *codeLocationRepairer) repairFromContent(ctx context.Context, field string, loc *model.CodeLocation) contentRepairStatus {

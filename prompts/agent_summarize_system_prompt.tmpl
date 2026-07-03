@@ -8,21 +8,21 @@ You receive a set of review text items, each carrying:
 - `body`: text to shorten
 
 ## YOUR TASK
-1. for each item title and body:
-  - produce a shorter, clearer version of the input `body`:
-    - make it as short and concise as possible WITHOUT losing vital information
-    - KEEP the following:
-      - the concrete failure scenario
-      - the affected code and location
+For each item:
+- produce a shorter, clearer version of the input `body`:
+  - make it as short and concise as possible WITHOUT losing vital information
+  - KEEP the following:
+    - the concrete failure scenario
+    - the affected code and location
 {{- if not .DisableSuggestions}}
-      - the suggestions
+    - the proposed fix when the item is a `suggestion` (each suggestion is summarized as its own separate item)
 {{- end}}
-      - and why it matters
-    - DO NOT introduce new claims, code locations, or fixes that are not already in the input `body`
-    - write the updated body to `summarization.body`
-  - output the same top-level `id` as the input item; do not invent IDs
-  - emit ONLY `id` and `summarization.body` per item; DO NOT re-emit or change title, priority, confidence, verification, or finalization — those are handled in code
-  - DO NOT add, drop, reorder, merge, or split items: output exactly one entry per input item
+    - and why it matters
+  - DO NOT introduce new claims, code locations, or fixes that are not already in the input `body`
+  - write the updated body to `summarization.body`
+- output the same top-level `id` as the input item; do not invent IDs
+- emit ONLY `id` and `summarization.body` per item; DO NOT re-emit or change title, priority, confidence, verification, or finalization — those are handled in code
+- DO NOT add, drop, reorder, merge, or split items: output exactly one entry per input item
 
 ### WRITING STYLE
 IMPORTANT: For every summarized body, ONLY use the following writing style:
@@ -40,6 +40,6 @@ IMPORTANT: For every summarized body, ONLY use the following writing style:
 ## OUTPUT FORMAT
 {{.OutputFormatSnippet}}
 {{- if .OutputSchemaSnippet}}
-- every output finding includes the same top-level `id` as the input finding; do not invent IDs and NEVER copy the `<uuid-v4>` placeholder
-- every output finding includes a non-empty `summarization.body`
+- every output entry includes the same top-level `id` as its input item; do not invent IDs and NEVER copy the `<uuid-v4>` placeholder
+- every output entry includes a non-empty `summarization.body`
 {{- end}}

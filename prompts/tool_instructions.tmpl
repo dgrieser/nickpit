@@ -1,8 +1,9 @@
 {{if eq .AgentRole "context"}}Call one of the following tools:
 {{else if eq .AgentRole "review"}}Another senior engineer already collected the code context needed for your code review.
-In some cases, you might still need more code context, use the following tools, if necessary:
+In some cases you might still need more code context; if necessary, use the following tools:
 {{else if eq .AgentRole "verify"}}Multiple senior engineers already collected the code context needed.
-In the rare case that you still need more code context for your verification, use the following tools:{{end}}
+In the rare case that you still need more code context for your verification, use the following tools:
+{{end}}
 {{.ToolListing}}
 
 Important:

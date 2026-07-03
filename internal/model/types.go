@@ -275,15 +275,24 @@ func StripSuggestions(findings []Finding) {
 	}
 }
 
+// EnsureFindingIDs backfills invalid IDs and remints duplicates so every
+// finding is uniquely addressable downstream. It returns the number of
+// findings whose ID changed (invalid or duplicate). Any rewrite also re-syncs
+// Verification.ID, which mirrors the parent Finding.ID by design.
 func EnsureFindingIDs(findings []Finding) int {
 	seen := make(map[string]struct{}, len(findings))
 	overwrote := 0
 	for i := range findings {
-		if EnsureFindingID(&findings[i]) {
-			overwrote++
-		}
+		rewrote := EnsureFindingID(&findings[i])
 		if _, ok := seen[findings[i].ID]; ok {
 			findings[i].ID = newUniqueUUID(seen)
+			rewrote = true
+		}
+		if rewrote {
+			overwrote++
+			if findings[i].Verification != nil {
+				findings[i].Verification.ID = findings[i].ID
+			}
 		}
 		seen[findings[i].ID] = struct{}{}
 	}
@@ -528,10 +537,10 @@ type RemoteCheckoutSource interface {
 	ResolveCheckout(ctx context.Context, req ReviewRequest) (*CheckoutSpec, error)
 }
 
-// ReviewPublisher is an optional capability for review sources that can post the
-// finished review back to the origin (e.g. as GitLab MR comments). runReview
-// type-asserts the source to this interface and only publishes when PostReview
-// is set, so non-publishing sources (github, local) are unaffected.
+// ReviewPublisher is an optional capability for review sources that can post
+// the finished review back to the origin (GitLab MR and GitHub PR comments).
+// runReview type-asserts the source to this interface and only publishes when
+// PostReview is set, so non-publishing sources (local) are unaffected.
 type ReviewPublisher interface {
 	PublishReview(ctx context.Context, req ReviewRequest, result *ReviewResult) error
 }

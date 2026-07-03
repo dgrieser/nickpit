@@ -30,6 +30,9 @@ type FileSlice struct {
 	EndLine   int    `json:"end_line"`
 	Content   string `json:"content"`
 	Language  string `json:"language"`
+	// Truncated is set when the requested range was clipped: the file ended
+	// before the requested end line, or the slice hit the byte cap.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 type DirectoryListing struct {

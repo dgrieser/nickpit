@@ -486,6 +486,30 @@ func applyEnv(cfg *Config, profileName string) error {
 	if value := os.Getenv("NICKPIT_SMALL_REASONING_EFFORT"); value != "" {
 		profile.Small.ReasoningEffort = value
 	}
+	if value := os.Getenv("NICKPIT_REASONING_EFFORT"); value != "" {
+		profile.ReasoningEffort = value
+	}
+	if value := os.Getenv("NICKPIT_MAX_TOKENS"); value != "" {
+		parsed, err := parseEnvInt("NICKPIT_MAX_TOKENS", value)
+		if err != nil {
+			return err
+		}
+		profile.MaxTokens = &parsed
+	}
+	if value := os.Getenv("NICKPIT_TEMPERATURE"); value != "" {
+		parsed, err := parseEnvFloat("NICKPIT_TEMPERATURE", value)
+		if err != nil {
+			return err
+		}
+		profile.Temperature = &parsed
+	}
+	if value := os.Getenv("NICKPIT_TOP_P"); value != "" {
+		parsed, err := parseEnvFloat("NICKPIT_TOP_P", value)
+		if err != nil {
+			return err
+		}
+		profile.TopP = &parsed
+	}
 	if value := os.Getenv("NICKPIT_TOP_K"); value != "" {
 		parsed, err := parseEnvInt("NICKPIT_TOP_K", value)
 		if err != nil {
@@ -499,6 +523,13 @@ func applyEnv(cfg *Config, profileName string) error {
 			return err
 		}
 		profile.PresencePenalty = &parsed
+	}
+	if value := os.Getenv("NICKPIT_EXTRA_BODY"); strings.TrimSpace(value) != "" {
+		extraBody, err := parseEnvExtraBody("NICKPIT_EXTRA_BODY", value)
+		if err != nil {
+			return err
+		}
+		profile.ExtraBody = extraBody
 	}
 	if value := os.Getenv("NICKPIT_SMALL_MAX_TOKENS"); value != "" {
 		parsed, err := parseEnvInt("NICKPIT_SMALL_MAX_TOKENS", value)
@@ -565,6 +596,13 @@ func applyEnv(cfg *Config, profileName string) error {
 	}
 	if value := os.Getenv("NICKPIT_GITLAB_BASE_URL"); value != "" {
 		profile.GitLabBaseURL = value
+	}
+	// NICKPIT_API_KEY is the last-resort API key: it applies only when the
+	// active profile's api_key (after resolving an $ENV reference such as
+	// $OPENROUTER_API_KEY) would be empty. Configured keys, profile-specific
+	// env vars, and --api-key all take precedence.
+	if value := os.Getenv("NICKPIT_API_KEY"); value != "" && expandEnvReference(profile.APIKey) == "" {
+		profile.APIKey = value
 	}
 	cfg.Profiles[profileName] = profile
 	return nil
@@ -810,9 +848,14 @@ func expandPath(path string) string {
 	if path == "" {
 		return path
 	}
-	if strings.HasPrefix(path, "~") {
+	// Only expand "~" and "~/..."; "~user/..." is left untouched (expanding it
+	// against the current user's home would mangle the path).
+	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err == nil {
+			if path == "~" {
+				return home
+			}
 			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
 		}
 	}

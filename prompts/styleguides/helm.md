@@ -18,12 +18,13 @@ appVersion: "2.5.0"     # application version — any string, not required to be
 `version` follows SemVer: MAJOR for breaking changes, MINOR for new features, PATCH for fixes.
 `appVersion` is independent of `version` — do not conflate them.
 
-Pin dependency versions exactly:
+Prefer exact dependency pins (a house rule for reproducibility, not a Helm
+requirement); when ranges are used, `Chart.lock` pins the resolved version:
 
 ```yaml
 dependencies:
   - name: postgresql
-    version: "12.0.0"   # exact version, no ranges
+    version: "12.0.0"   # prefer exact pins; Chart.lock pins resolution for ranges
     repository: "https://charts.bitnami.com/bitnami"
     condition: postgresql.enabled
 ```
@@ -201,7 +202,7 @@ resources:
   {{- toYaml .Values.resources | nindent 2 }}
 ```
 
-Use `indent N` (no leading newline) only when the output continues an existing line.
+`indent N` prefixes every line — including the first — with N spaces. Use it when the action sits alone at the start of its own line without `{{-`; use `nindent` with `{{-` when the action follows existing indentation or content.
 
 The `{{-` prefix strips whitespace/newlines **before** the action; `-}}` strips **after**. Use `{{-` on lines that would otherwise leave a blank line or unwanted indent:
 
@@ -212,7 +213,7 @@ spec:
   {{- end }}
 ```
 
-N must equal the YAML nesting depth in spaces. Off-by-two errors are a common source of broken renders — verify with `helm template` before committing.
+N must be greater than the parent key's indentation and consistent within the block — more than one value can be valid. Wrong N is a common source of broken renders — verify with `helm template` before committing.
 
 #### Templating Patterns
 
@@ -271,7 +272,7 @@ spec:
           command: ["./migrate"]
 ```
 
-Hook types: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-delete`, `post-delete`, `test`.
+Hook types: `pre-install`, `post-install`, `pre-upgrade`, `post-upgrade`, `pre-rollback`, `post-rollback`, `pre-delete`, `post-delete`, `test`.
 
 #### Tests
 
@@ -299,14 +300,14 @@ Run with: `helm test <release-name>`
 
 #### Best Practices
 
-1. Pin dependency versions exactly — no version ranges
+1. Prefer exact dependency pins; `Chart.lock` pins resolution when ranges are used
 2. Commit `Chart.lock`
 3. Document every value in `values.yaml` with inline comments
 4. Add `values.schema.json` to validate required fields
 5. Use `_helpers.tpl` for all repeated logic — never inline
 6. Apply `app.kubernetes.io/*` labels on every resource via helpers
 7. Always set security context: non-root user, `readOnlyRootFilesystem: true`, drop all capabilities
-8. Use `nindent` for block values; match N to YAML nesting depth exactly
+8. Use `nindent` for block values; keep N deeper than the parent key and consistent within the block
 9. Quote all string values with `| quote`
 10. Gate optional resources with `{{- if .Values.feature.enabled }}`
 11. Use `pre-install,pre-upgrade` hooks for DB migrations with `hook-delete-policy`

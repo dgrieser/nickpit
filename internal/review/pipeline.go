@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -57,6 +58,9 @@ type PipelineState struct {
 	contextReasoning string
 	contextErr       error
 	dedupeRuns       []model.AgentRun
+	// Per-vector dedupe runs, keyed so telemetry orders them by groupOrder
+	// instead of the nondeterministic lane-completion order.
+	dedupeVectorRuns map[string][]model.AgentRun
 	mergeRuns        []model.AgentRun
 	mergeReasoning   string
 	finalizeRuns     []model.AgentRun
@@ -354,10 +358,15 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 			}(i, lane)
 		}
 		wg.Wait()
-		for _, err := range errs {
-			if err != nil {
-				return nil, nil, err
-			}
+		if err := errors.Join(errs...); err != nil {
+			return nil, nil, err
+		}
+		// Every stage fails soft by design (a failed reviewer records a failed
+		// group and returns nil), so without this guard a cancelled run would
+		// sail through to an empty-findings "patch is correct" verdict. Lane
+		// and step time budgets use child contexts; only the run root aborts.
+		if err := ctx.Err(); err != nil {
+			return nil, nil, fmt.Errorf("review run aborted: %w", err)
 		}
 		segments = append(segments, unitSegment(unit, unitStart))
 		if len(unit.lanes) > 1 {
@@ -494,6 +503,13 @@ func (st *PipelineState) aggregateTelemetry() ([]model.AgentRun, model.TokenUsag
 		toolCalls += g.result.run.ToolCalls
 		if g.result.reasoningEffort != "" {
 			reasoning = g.result.reasoningEffort
+		}
+	}
+	for _, id := range st.groupOrder {
+		for _, run := range st.dedupeVectorRuns[id] {
+			runs = append(runs, run)
+			usage = addTokenUsage(usage, run.TokensUsed)
+			toolCalls += run.ToolCalls
 		}
 	}
 	for _, run := range st.dedupeRuns {
@@ -653,14 +669,15 @@ func loadFindingsFiles(paths []string) ([]injectedGroup, error) {
 		groups = append(groups, g)
 		all = append(all, g.findings...)
 	}
-	if model.EnsureFindingIDs(all) > 0 {
-		// Reflect normalized/unique IDs back into per-group slices.
-		idx := 0
-		for gi := range groups {
-			for fi := range groups[gi].findings {
-				groups[gi].findings[fi] = all[idx]
-				idx++
-			}
+	// Write back unconditionally: EnsureFindingIDs mutates the flat copy, so
+	// gating on its return value would silently skip reflecting reminted
+	// duplicate IDs into the groups.
+	model.EnsureFindingIDs(all)
+	idx := 0
+	for gi := range groups {
+		for fi := range groups[gi].findings {
+			groups[gi].findings[fi] = all[idx]
+			idx++
 		}
 	}
 	return groups, nil
@@ -677,12 +694,16 @@ func loadFindingsFile(path string) (injectedGroup, error) {
 		if err := json.Unmarshal(data, &findings); err != nil {
 			return injectedGroup{}, fmt.Errorf("workflow: parsing findings %s: %w", path, err)
 		}
+		// merged_from is intra-step provenance; injected files must not smuggle
+		// it past the merge validator into results.
+		stripMergedFrom(findings)
 		return injectedGroup{findings: findings}, nil
 	}
 	var rr model.ReviewResult
 	if err := json.Unmarshal(data, &rr); err != nil {
 		return injectedGroup{}, fmt.Errorf("workflow: parsing findings %s: %w", path, err)
 	}
+	stripMergedFrom(rr.Findings)
 	return injectedGroup{
 		findings:           rr.Findings,
 		overallCorrectness: rr.OverallCorrectness,

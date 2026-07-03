@@ -40,8 +40,8 @@
 #
 # `scope` makes a step's fan-out explicit — the work unit each agent operates on
 # (not parallelism; concurrency is the run-level --concurrency cap). Values:
-#   all       one agent over the whole finding set (merge?/finalize/summarize/
-#             verdict/verify/dedupe → see allowed set below)
+#   all       one agent over the whole finding set (flat finalize/summarize
+#             and verdict — see the allowed set below)
 #   cluster   one agent per merge cluster   (merge, finalize, summarize)
 #   finding   one agent per finding         (verify)
 #   reviewer  one agent per reviewer group  (dedupe)

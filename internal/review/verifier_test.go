@@ -427,12 +427,12 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 	sysPrompt := llmClient.requests[0].Messages[0].Content
 	for _, want := range []string{
 		"Non-finding gate",
-		"non-findings",
+		"Judge the finding AS A WHOLE",
 		"no issue",
 		"Do NOT verify whether the positive statement is true",
-		"Do NOT confirm because a description of correct behavior is accurate",
+		"Never use the phrase \"no issue\" anywhere in `remarks` except",
 		"When `refuted` because the input is a non-finding",
-		"is sound",
+		"NOT as substring triggers",
 	} {
 		if !strings.Contains(sysPrompt, want) {
 			t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
@@ -487,6 +487,62 @@ func TestVerifyRetriesMissingVerification(t *testing.T) {
 	}
 }
 
+// TestVerifyOuterRetryReusesToolDedupState pins that the outer
+// missing-verification retry loop shares one agent-loop state: a retry attempt
+// repeating an earlier attempt's tool call must hit the duplicate detector
+// instead of re-fetching the same file with a fresh budget.
+func TestVerifyOuterRetryReusesToolDedupState(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{
+		responses: []*llm.ReviewResponse{
+			// Attempt 1: fetch main.go, then finish without a verification.
+			{ToolCalls: []llm.ToolCall{{ID: "c1", Name: "inspect_file", Arguments: `{"path":"main.go"}`}}},
+			{RawResponse: "still no verification"},
+			// Attempt 2 (outer retry): repeats the same fetch — must dedupe.
+			{ToolCalls: []llm.ToolCall{{ID: "c2", Name: "inspect_file", Arguments: `{"path":"main.go"}`}}},
+			{Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.9, Remarks: "confirmed"}},
+		},
+	}
+	counting := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, llmClient, counting, config.Profile{Model: "test"})
+
+	verification, _, err := engine.Verify(context.Background(), VerifyRequest{
+		ReviewCtx:        sampleReviewCtx(),
+		Finding:          model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		MaxToolCalls:     4,
+		MaxOutputRetries: 2,
+		RepoRoot:         "/repo",
+	})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	if verification == nil || verification.Remarks != "confirmed" {
+		t.Fatalf("verification = %#v", verification)
+	}
+	fullReads := 0
+	for _, p := range counting.paths {
+		if p == "main.go" {
+			fullReads++
+		}
+	}
+	if fullReads != 1 {
+		t.Fatalf("GetFile(main.go) calls = %d (%v), want 1: retry must reuse the tool-dedup state", fullReads, counting.paths)
+	}
+	if len(llmClient.requests) != 4 {
+		t.Fatalf("llm calls = %d, want 4", len(llmClient.requests))
+	}
+	// The deduped repeat must surface as the standard already_requested error.
+	lastMessages := llmClient.requests[3].Messages
+	dupSeen := false
+	for _, msg := range lastMessages {
+		if msg.Role == "tool" && msg.ToolCallID == "c2" && strings.Contains(msg.Content, "already_requested") {
+			dupSeen = true
+		}
+	}
+	if !dupSeen {
+		t.Fatalf("expected already_requested tool result for repeated call, messages = %#v", lastMessages)
+	}
+}
+
 func TestVerifyIncludesStyleGuides(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
@@ -515,7 +571,7 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if !strings.Contains(system, "## STYLEGUIDES") {
 		t.Fatalf("verify system prompt missing styleguide section: %q", system)
 	}
-	if !strings.Contains(system, "Treat styleguides as verification evidence") || !strings.Contains(system, "they are rules to follow") {
+	if !strings.Contains(system, "Treat styleguides as verification evidence") || !strings.Contains(system, "They are rules to follow") {
 		t.Fatalf("verify system prompt missing styleguide evidence rule: %q", system)
 	}
 	if !strings.Contains(system, "Styleguide contradiction gate") || !strings.Contains(system, "Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide") {

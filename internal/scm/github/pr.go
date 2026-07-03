@@ -60,12 +60,16 @@ type reviewResponse struct {
 }
 
 type commentResponse struct {
-	Body      string    `json:"body"`
-	Path      string    `json:"path"`
-	Line      int       `json:"line"`
-	Side      string    `json:"side"`
-	CreatedAt time.Time `json:"created_at"`
-	User      userRef   `json:"user"`
+	Body string `json:"body"`
+	Path string `json:"path"`
+	// Line is null for comments whose anchor is no longer part of the diff
+	// (outdated comments); OriginalLine then still carries the position the
+	// comment was made on.
+	Line         int       `json:"line"`
+	OriginalLine int       `json:"original_line"`
+	Side         string    `json:"side"`
+	CreatedAt    time.Time `json:"created_at"`
+	User         userRef   `json:"user"`
 }
 
 type issueCommentResponse struct {
@@ -114,11 +118,17 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		var lineComments []commentResponse
 		_ = c.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/comments", escaped, number), &lineComments)
 		for _, item := range lineComments {
+			line := item.Line
+			if line == 0 {
+				// Outdated comments carry a null line; fall back to the line
+				// the comment was originally made on instead of Line:0.
+				line = item.OriginalLine
+			}
 			comments = append(comments, model.Comment{
 				Author:    item.User.Login,
 				Body:      item.Body,
 				Path:      item.Path,
-				Line:      item.Line,
+				Line:      line,
 				Side:      item.Side,
 				CreatedAt: item.CreatedAt,
 				IsReview:  true,

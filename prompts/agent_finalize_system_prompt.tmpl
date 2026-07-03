@@ -14,9 +14,7 @@ You receive the original review context (patch, changed files, diff hunks) and t
 ## YOUR TASK
 For each finding, you will:
 - decide on the final `finalization.priority` by reasoning about current `verification.priority` and `finding.priority`
-    - the "priority floor" of a finding is
-    - the more critical (lower integer) of `finding.priority` and `verification.priority`
-    - i.e. `min(finding.priority, verification.priority)`
+    - each finding has a code-computed "priority floor" (roughly the more critical of the reviewer and verified priority)
     - priorities run from 0 (most critical) to 3 (least critical)
     - `finalization.priority` MUST NOT be more critical than the priority floor: never assign a smaller integer than the floor, though you MAY keep it at the floor or make it less critical
     - pay attention to the original `finding.review_confidence_score` and `verification.confidence_score` in your reasoning
@@ -44,10 +42,15 @@ For each finding, you will:
 {{- end}}
 - copy `verification` verbatim from the input finding into the output;
   finalization must NEVER drop verification
+- copy the schema-required top-level `title`, `body`, `confidence_score`, and `priority`
+  verbatim from the input finding; code ignores them and your decisions go in `finalization.*`
 - output the same top-level `id` as the input finding; do not invent IDs
 - explain what you did in `finalization.remarks`
 
-DO NOT introduce new findings that no engineer raised
+Output exactly one entry per input finding, in any order.
+NEVER drop, add, or merge findings.
+
+DO NOT introduce new findings that no engineer raised.
 
 {{.PrioritySnippet}}
 

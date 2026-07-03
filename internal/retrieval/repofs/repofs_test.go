@@ -182,3 +182,74 @@ func writeFile(t *testing.T, root, rel, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestVerifyNoSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("plain"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "plain.txt"), filepath.Join(root, "inside-link.txt")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "escape-link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "escape-dir")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := VerifyNoSymlinkEscape(root, filepath.Join(root, "plain.txt")); err != nil {
+		t.Fatalf("plain file rejected: %v", err)
+	}
+	if err := VerifyNoSymlinkEscape(root, filepath.Join(root, "inside-link.txt")); err != nil {
+		t.Fatalf("in-repo symlink rejected: %v", err)
+	}
+	if err := VerifyNoSymlinkEscape(root, filepath.Join(root, "escape-link.txt")); err == nil {
+		t.Fatal("symlink to outside target accepted")
+	}
+	if err := VerifyNoSymlinkEscape(root, filepath.Join(root, "escape-dir", "secret.txt")); err == nil {
+		t.Fatal("path through symlinked outside directory accepted")
+	}
+	// Non-existent path below a symlinked-outside directory is still an escape.
+	if err := VerifyNoSymlinkEscape(root, filepath.Join(root, "escape-dir", "missing.txt")); err == nil {
+		t.Fatal("non-existent path through symlinked outside directory accepted")
+	}
+	// Non-existent path below the plain root stays contained.
+	if err := VerifyNoSymlinkEscape(root, filepath.Join(root, "sub", "missing.txt")); err != nil {
+		t.Fatalf("non-existent contained path rejected: %v", err)
+	}
+}
+
+func TestOpenAndReadFileEnforceContainment(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plain.txt"), []byte("plain"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "escape-link.txt")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+
+	f, err := Open(root, filepath.Join(root, "plain.txt"))
+	if err != nil {
+		t.Fatalf("plain open failed: %v", err)
+	}
+	_ = f.Close()
+	if _, err := Open(root, filepath.Join(root, "escape-link.txt")); err == nil {
+		t.Fatal("Open followed a symlink escape")
+	}
+	data, err := ReadFile(root, filepath.Join(root, "plain.txt"))
+	if err != nil || string(data) != "plain" {
+		t.Fatalf("plain read = %q, %v", data, err)
+	}
+	if _, err := ReadFile(root, filepath.Join(root, "escape-link.txt")); err == nil {
+		t.Fatal("ReadFile followed a symlink escape")
+	}
+}

@@ -130,6 +130,10 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if progress.IsZero() {
 		progress = e.progressInfo(agentKind, "Verify Findings", "")
 	}
+	// One loop state is shared across the outer missing-verification attempts so
+	// tool-dedup and retry budgets carry over instead of resetting per attempt
+	// (a fresh state would let every retry re-fetch the same files).
+	state := newAgentLoopState()
 	for attempt := 0; ; attempt++ {
 		loopResult, err := e.runAgentLoop(ctx, agentLoopRequest{
 			AgentName:                         "Verify Findings",
@@ -153,6 +157,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			MaxDuplicateToolCalls:             req.MaxDuplicateToolCalls,
 			MaxOutputRetries:                  req.MaxOutputRetries,
 			MaxReasoningSeconds:               req.MaxReasoningSeconds,
+			State:                             state,
 			Section:                           req.Section,
 			NoToolsSystem:                     systemTemplate,
 			NoToolsSchemaSnippet:              systemSnippet,

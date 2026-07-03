@@ -40,6 +40,7 @@ type app struct {
 	apiKey                        string
 	workDir                       string
 	profile                       string
+	profileSet                    bool
 	temperature                   float64
 	temperatureSet                bool
 	topP                          float64
@@ -149,6 +150,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			rootFlags := cmd.Root().PersistentFlags()
+			cli.profileSet = rootFlags.Changed("profile")
 			cli.includePathsSet = rootFlags.Changed("include-path")
 			cli.excludePathsSet = rootFlags.Changed("exclude-path")
 			cli.includeContentSet = rootFlags.Changed("include-content")
@@ -342,8 +344,15 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	if a.excludeContentSet {
 		excludeContent = &a.excludeContent
 	}
+	// Only override the profile when --profile was given explicitly (or set
+	// programmatically via loadProfileNamed); the flag default "default" must
+	// not shadow an active_profile from the config file.
+	profileOverride := ""
+	if a.profileSet {
+		profileOverride = a.profile
+	}
 	cfg, profile, err := config.Load(a.configPath, config.Overrides{
-		Profile: a.profile,
+		Profile: profileOverride,
 		Model:   a.model,
 		Small: config.SmallModelConfig{
 			Model:           a.smallModel,
@@ -843,7 +852,7 @@ func (a *app) newCheckCmd() *cobra.Command {
 		Use:   "model",
 		Short: "Check the configured model",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			profileName, profile, err := a.loadProfile()
+			profileName, profile, err := a.loadProfileForSpec()
 			if err != nil {
 				return err
 			}
@@ -1107,10 +1116,11 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 	if err := formatter.FormatFindings(result); err != nil {
 		return err
 	}
-	// Publish the review back to the origin (GitLab MR) when requested. The
-	// review already succeeded and printed to stdout, so a publish failure is a
-	// warning, never a hard error. Only sources implementing ReviewPublisher
-	// (GitLab) act here; github/local are unaffected.
+	// Publish the review back to the origin (GitHub PR or GitLab MR) when
+	// requested. The review already succeeded and printed to stdout, so a
+	// publish failure is a warning, never a hard error. Only sources
+	// implementing ReviewPublisher (GitHub, GitLab) act here; local reviews
+	// are unaffected.
 	if req.PostReview && (len(result.Findings) > 0 || strings.TrimSpace(result.OverallExplanation) != "") {
 		if publisher, ok := source.(model.ReviewPublisher); ok {
 			// GitLab numbers MRs with "!", GitHub PRs with "#".
@@ -1243,9 +1253,9 @@ func seedFindings(spec *workflow.Spec, findings []string) error {
 // loadProfileNamed loads a profile by name (e.g. a spec's `profile:` field),
 // applying the same CLI overrides as loadProfile.
 func (a *app) loadProfileNamed(name string) (string, config.Profile, error) {
-	saved := a.profile
-	a.profile = name
-	defer func() { a.profile = saved }()
+	savedProfile, savedSet := a.profile, a.profileSet
+	a.profile, a.profileSet = name, true
+	defer func() { a.profile, a.profileSet = savedProfile, savedSet }()
 	return a.loadProfile()
 }
 

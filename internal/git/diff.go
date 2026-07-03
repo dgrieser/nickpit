@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 )
@@ -147,12 +148,7 @@ func (s *LocalSource) commitSummaries(ctx context.Context, req model.ReviewReque
 	default:
 		rangeArg = "-5"
 	}
-	args := []string{"log", "--format=%H%x1f%an%x1f%aI%x1f%s"}
-	if strings.HasPrefix(rangeArg, "-") {
-		args = append(args, rangeArg)
-	} else {
-		args = append(args, rangeArg)
-	}
+	args := []string{"log", "--format=%H%x1f%an%x1f%aI%x1f%s", rangeArg}
 	out, err := s.git.Run(ctx, args...)
 	if err != nil {
 		return nil, nil
@@ -171,9 +167,11 @@ func parseCommits(out string) []model.CommitSummary {
 		if len(parts) != 4 {
 			continue
 		}
+		date, _ := time.Parse(time.RFC3339, parts[2])
 		commits = append(commits, model.CommitSummary{
 			SHA:     parts[0],
 			Author:  parts[1],
+			Date:    date,
 			Message: parts[3],
 		})
 	}
