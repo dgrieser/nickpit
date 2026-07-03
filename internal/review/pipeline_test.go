@@ -224,6 +224,41 @@ func TestWorkflowMergeTwoFilesInvokesMergeAgent(t *testing.T) {
 	}
 }
 
+func TestWorkflowMergeSourcelessIncludesAdditionalStyleGuides(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+	engine.SetAdditionalStyleGuides([]model.StyleGuide{
+		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	})
+
+	// Same clustering setup as TestWorkflowMergeTwoFilesInvokesMergeAgent so
+	// the merge LLM actually runs: ensurePrompts never fires in a source-less
+	// merge, and the additional guides must still reach the merge prompt.
+	a := writeFindingsFile(t, "a.json", model.ReviewResult{
+		Findings:           []model.Finding{{ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Title: "Fix cleanup behavior alpha", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 1, End: 1}}}},
+		OverallCorrectness: "patch is incorrect",
+	})
+	b := writeFindingsFile(t, "b.json", model.ReviewResult{
+		Findings:           []model.Finding{{ID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Title: "Fix cleanup behavior beta", Body: "body", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "m.go", LineRange: model.LineRange{Start: 13, End: 13}}}},
+		OverallCorrectness: "patch is incorrect",
+	})
+	pipeline, err := engine.BuildPipeline(workflow.SingleStepSpec(workflow.StepMerge, []string{a, b}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal}); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.mergeRequests) == 0 {
+		t.Fatal("merge agent was not invoked")
+	}
+	system := client.mergeRequests[0].Messages[0].Content
+	if !strings.Contains(system, "### Additional styleguide: team.md") {
+		t.Fatalf("merge system prompt misses additional guide: %.200q", system)
+	}
+}
+
 func TestWorkflowFusedPostMergeFinalizesVerdictsAndSummarizes(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := pipelineTestEngine(client)

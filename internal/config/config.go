@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/mappings"
 	"gopkg.in/yaml.v3"
 )
 
@@ -60,6 +62,8 @@ type Profile struct {
 	ExcludePaths                       []string            `yaml:"exclude_paths"`
 	IncludeContent                     []string            `yaml:"include_content"`
 	ExcludeContent                     []string            `yaml:"exclude_content"`
+	StyleGuides                        []string            `yaml:"styleguides"`
+	DisableStyleGuides                 []string            `yaml:"disable_styleguides"`
 	DiffFormat                         model.DiffFormat    `yaml:"diff_format"`
 	MaxContextTokens                   int                 `yaml:"max_context_tokens"`
 	MaxToolCalls                       int                 `yaml:"max_tool_calls"`
@@ -130,6 +134,11 @@ type Overrides struct {
 	ExcludePaths              *[]string
 	IncludeContent            *[]string
 	ExcludeContent            *[]string
+	// StyleGuides and DisableStyleGuides are plain slices, not *[]string like
+	// the filter lists: CLI values append to the profile's list, so nil and
+	// empty behave identically.
+	StyleGuides               []string
+	DisableStyleGuides        []string
 	DiffFormat                model.DiffFormat
 	MaxContextTokens          *int
 	ToolCalls                 *int
@@ -263,6 +272,8 @@ func cloneProfile(profile Profile) Profile {
 	profile.ExcludePaths = slices.Clone(profile.ExcludePaths)
 	profile.IncludeContent = slices.Clone(profile.IncludeContent)
 	profile.ExcludeContent = slices.Clone(profile.ExcludeContent)
+	profile.StyleGuides = slices.Clone(profile.StyleGuides)
+	profile.DisableStyleGuides = slices.Clone(profile.DisableStyleGuides)
 	return profile
 }
 
@@ -652,6 +663,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	if overrides.ExcludeContent != nil {
 		profile.ExcludeContent = slices.Clone(*overrides.ExcludeContent)
 	}
+	// CLI styleguides and disabled languages append to the profile's lists
+	// instead of replacing them; duplicates are dropped during normalization.
+	profile.StyleGuides = append(slices.Clone(profile.StyleGuides), overrides.StyleGuides...)
+	profile.DisableStyleGuides = append(slices.Clone(profile.DisableStyleGuides), overrides.DisableStyleGuides...)
 	if overrides.DiffFormat != "" {
 		profile.DiffFormat = overrides.DiffFormat
 	}
@@ -820,7 +835,100 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if err := validateRegexList("exclude_content", profile.ExcludeContent); err != nil {
 		return Profile{}, err
 	}
+	styleGuides, err := normalizeStyleGuideSpecs(profile.StyleGuides)
+	if err != nil {
+		return Profile{}, err
+	}
+	profile.StyleGuides = styleGuides
+	disabledStyleGuides, err := normalizeDisabledStyleGuideLanguages(profile.DisableStyleGuides)
+	if err != nil {
+		return Profile{}, err
+	}
+	profile.DisableStyleGuides = disabledStyleGuides
 	return profile, nil
+}
+
+// normalizeDisabledStyleGuideLanguages trims, lowercases, and dedupes the
+// disable_styleguides list (first occurrence wins) and rejects languages that
+// have no built-in styleguide. The special value "all" expands to every
+// built-in styleguide language; other entries are still validated first so
+// typos never hide behind it.
+func normalizeDisabledStyleGuideLanguages(languages []string) ([]string, error) {
+	if len(languages) == 0 {
+		return nil, nil
+	}
+	sawAll := false
+	normalized := make([]string, 0, len(languages))
+	seen := make(map[string]struct{}, len(languages))
+	for i, value := range languages {
+		language := strings.ToLower(strings.TrimSpace(value))
+		if language == "" {
+			continue
+		}
+		if language == "all" {
+			sawAll = true
+			continue
+		}
+		if _, ok := mappings.StyleGuideFile(language); !ok {
+			return nil, fmt.Errorf("config: disable_styleguides[%d] unknown language %q; available: all, %s", i, value, strings.Join(mappings.StyleGuideOrder(), ", "))
+		}
+		if _, ok := seen[language]; ok {
+			continue
+		}
+		seen[language] = struct{}{}
+		normalized = append(normalized, language)
+	}
+	if sawAll {
+		return mappings.StyleGuideOrder(), nil
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+// normalizeStyleGuideSpecs trims specs, drops empties, dedupes exact
+// duplicates (first occurrence wins), and shape-validates URL specs. Whether a
+// file exists or a URL is fetchable is checked at resolution time, not here:
+// config load also runs for commands that never fetch styleguides.
+func normalizeStyleGuideSpecs(specs []string) ([]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	normalized := make([]string, 0, len(specs))
+	seen := make(map[string]struct{}, len(specs))
+	for i, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		if _, ok := seen[spec]; ok {
+			continue
+		}
+		seen[spec] = struct{}{}
+		if styleGuideSpecIsURL(spec) {
+			parsed, err := url.Parse(spec)
+			if err != nil {
+				return nil, fmt.Errorf("config: styleguides[%d] invalid URL %q: %w", i, spec, err)
+			}
+			if parsed.Host == "" {
+				return nil, fmt.Errorf("config: styleguides[%d] invalid URL %q: missing host", i, spec)
+			}
+		}
+		normalized = append(normalized, spec)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+// styleGuideSpecIsURL reports whether a styleguide spec addresses a remote
+// guide. Only an explicit http(s):// prefix counts; every other spec is a
+// file path (so Windows drive paths or odd strings never turn into fetches).
+func styleGuideSpecIsURL(spec string) bool {
+	lower := strings.ToLower(spec)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 func validateRegexList(key string, patterns []string) error {

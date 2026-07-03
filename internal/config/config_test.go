@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -677,6 +678,169 @@ profiles:
 	}
 	if strings.Join(profile.ExcludeContent, ",") != "generated" {
 		t.Fatalf("override exclude content = %#v", profile.ExcludeContent)
+	}
+}
+
+func TestLoadConfigStyleGuidesAppendOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    styleguides: ["a.md", "https://example.com/rules.md"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.StyleGuides, ",") != "a.md,https://example.com/rules.md" {
+		t.Fatalf("styleguides = %#v", profile.StyleGuides)
+	}
+
+	// CLI values append to the file's list (unlike the filter lists, which
+	// replace); exact duplicates and empties are dropped, specs are trimmed.
+	_, profile, err = Load(path, Overrides{StyleGuides: []string{" b.md ", "a.md", ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.StyleGuides, ",") != "a.md,https://example.com/rules.md,b.md" {
+		t.Fatalf("appended styleguides = %#v", profile.StyleGuides)
+	}
+}
+
+func TestLoadConfigRejectsInvalidStyleGuideURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    styleguides: ["https:///no-host.md"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "styleguides[0] invalid URL") {
+		t.Fatalf("error = %v, want invalid URL", err)
+	}
+}
+
+func TestMergeProfilesReplacesStyleGuides(t *testing.T) {
+	base := Profile{StyleGuides: []string{"base.md"}, DisableStyleGuides: []string{"go"}}
+	merged := mergeProfiles(base, Profile{StyleGuides: []string{"override.md"}, DisableStyleGuides: []string{"python"}})
+	if strings.Join(merged.StyleGuides, ",") != "override.md" {
+		t.Fatalf("merged styleguides = %#v", merged.StyleGuides)
+	}
+	if strings.Join(merged.DisableStyleGuides, ",") != "python" {
+		t.Fatalf("merged disable styleguides = %#v", merged.DisableStyleGuides)
+	}
+	kept := mergeProfiles(base, Profile{})
+	if strings.Join(kept.StyleGuides, ",") != "base.md" {
+		t.Fatalf("kept styleguides = %#v", kept.StyleGuides)
+	}
+	if strings.Join(kept.DisableStyleGuides, ",") != "go" {
+		t.Fatalf("kept disable styleguides = %#v", kept.DisableStyleGuides)
+	}
+}
+
+func TestLoadConfigWorkdirFromFileSurvivesBuiltinMerge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// "default" exists as a built-in profile, so the file profile goes through
+	// mergeProfiles; workdir must survive that merge.
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    workdir: /some/repo
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Workdir != "/some/repo" {
+		t.Fatalf("workdir = %q, want /some/repo", profile.Workdir)
+	}
+}
+
+func TestLoadConfigDisableStyleGuidesAppendOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    disable_styleguides: ["SQL", "python"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{DisableStyleGuides: []string{"go", "sql", ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.DisableStyleGuides, ",") != "sql,python,go" {
+		t.Fatalf("disable styleguides = %#v", profile.DisableStyleGuides)
+	}
+}
+
+func TestLoadConfigDisableStyleGuidesAll(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    disable_styleguides: ["python"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "all" (from either source) expands to every built-in language.
+	_, profile, err := Load(path, Overrides{DisableStyleGuides: []string{"ALL"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.DisableStyleGuides) < 10 || !slices.Contains(profile.DisableStyleGuides, "go") || !slices.Contains(profile.DisableStyleGuides, "kubernetes") {
+		t.Fatalf("disable styleguides = %#v, want all built-in languages", profile.DisableStyleGuides)
+	}
+
+	// Typos are still rejected even when "all" is present.
+	_, _, err = Load(path, Overrides{DisableStyleGuides: []string{"all", "cobol"}})
+	if err == nil || !strings.Contains(err.Error(), `unknown language "cobol"`) {
+		t.Fatalf("error = %v, want unknown language despite all", err)
+	}
+}
+
+func TestLoadConfigRejectsUnknownDisabledStyleGuide(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    disable_styleguides: ["cobol"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil || !strings.Contains(err.Error(), `disable_styleguides[0] unknown language "cobol"`) {
+		t.Fatalf("error = %v, want unknown language", err)
 	}
 }
 

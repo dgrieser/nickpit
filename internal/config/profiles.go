@@ -66,6 +66,12 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.ExcludeContent != nil {
 		base.ExcludeContent = slices.Clone(override.ExcludeContent)
 	}
+	if override.StyleGuides != nil {
+		base.StyleGuides = slices.Clone(override.StyleGuides)
+	}
+	if override.DisableStyleGuides != nil {
+		base.DisableStyleGuides = slices.Clone(override.DisableStyleGuides)
+	}
 	if override.DiffFormat != "" {
 		base.DiffFormat = override.DiffFormat
 	}
@@ -122,6 +128,9 @@ func mergeProfiles(base, override Profile) Profile {
 	}
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
+	}
+	if override.Workdir != "" {
+		base.Workdir = override.Workdir
 	}
 	if override.GitHubToken != "" {
 		base.GitHubToken = override.GitHubToken

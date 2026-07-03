@@ -128,6 +128,35 @@ Deleted files have no post-change content, so a non-empty `include_content` alwa
 
 The same filters can be set per run with repeatable flags such as `--include-path`, `--exclude-path`, `--include-content`, and `--exclude-content`.
 
+### Additional Styleguides
+
+Beyond the built-in language styleguides (selected automatically from the languages in the diff), profiles can list additional styleguides that every agent receives — review, verification, finalization, verdict, and merge. Each entry is a local file path or an HTTP(S) URL:
+
+```yaml
+profiles:
+  default:
+    styleguides:
+      - docs/team-style.md
+      - https://raw.githubusercontent.com/org/styleguides/main/go.md
+```
+
+The repeatable `--styleguide` flag adds more per run. Unlike the filter flags, CLI values **append** to the profile's list instead of replacing it.
+
+Rules:
+
+- Guides are loaded before the review starts; an unreadable file or failed fetch aborts the run immediately.
+- URLs are fetched fresh on every run with a plain unauthenticated GET (no caching); redirects are followed.
+- Each guide is capped at 1 MiB and must be non-empty text.
+- Relative file paths resolve against the effective workdir — from `--workdir`, the profile's `workdir`, or `NICKPIT_WORKDIR` — and against the invocation directory when none is set.
+
+Built-in styleguides can be turned off per language with the `disable_styleguides` profile list or the repeatable `--disable-styleguide` flag (e.g. `--disable-styleguide python --disable-styleguide sql`); CLI values append to the profile's list. The flag's `--help` text lists the available languages. The special value `all` disables every built-in styleguide (`--disable-styleguide all` or `disable_styleguides: [all]`); additional styleguides from `--styleguide`/`styleguides` are unaffected. Note that some languages share one guide file (`html`, `css`, and `scss` all map to the HTML & CSS guide), so the shared guide is only dropped when every language selecting it is disabled or absent from the diff.
+
+```yaml
+profiles:
+  default:
+    disable_styleguides: [python, sql]
+```
+
 ## Usage
 
 ```bash
