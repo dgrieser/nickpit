@@ -183,6 +183,10 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				e.logJSONRetry(loopCtx, req, state.jsonRetries, invalidResp)
 				if strings.TrimSpace(invalidResp.RawContent) != "" {
 					messages = append(messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+				} else {
+					// Keep the history alternating for strict-role providers
+					// when the invalid response carried no appendable content.
+					messages = append(messages, llm.Message{Role: "assistant", Content: "[invalid response]"})
 				}
 				feedback, err := e.renderJSONRetryFeedback(invalidResp, req.JSONRetryExampleSnippet)
 				if err != nil {
@@ -262,7 +266,11 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				} else {
 					// Without raw content the retry would resend byte-identical
 					// messages; inject a short corrective note describing the
-					// invalid calls so the retry request can differ.
+					// invalid calls so the retry request can differ. The
+					// placeholder assistant turn keeps the history alternating
+					// for strict-role providers (the failed turn produced no
+					// appendable content of its own).
+					messages = append(messages, llm.Message{Role: "assistant", Content: "[invalid tool calls]"})
 					messages = append(messages, llm.Message{Role: "user", Content: invalidToolCallFeedback(invalidToolCalls)})
 					syntheticFollowup = nil
 				}

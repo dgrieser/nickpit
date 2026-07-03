@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 )
@@ -45,7 +46,13 @@ func outputSnippet(out []byte) string {
 		return ""
 	}
 	if len(text) > maxErrorOutputBytes {
-		text = "..." + text[len(text)-maxErrorOutputBytes:]
+		// Advance to a rune boundary so the cut cannot split a multi-byte
+		// character (localized git messages are not ASCII-only).
+		start := len(text) - maxErrorOutputBytes
+		for start < len(text) && !utf8.RuneStart(text[start]) {
+			start++
+		}
+		text = "..." + text[start:]
 	}
 	return ": " + text
 }

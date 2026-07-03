@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestOutputSnippet(t *testing.T) {
@@ -27,6 +28,16 @@ func TestOutputSnippet(t *testing.T) {
 	}
 	if len(got) > maxErrorOutputBytes+len(": ...") {
 		t.Fatalf("snippet not truncated: %d bytes", len(got))
+	}
+	// The truncation cut must land on a rune boundary: place a multi-byte
+	// rune exactly across the byte cut and require valid UTF-8 output.
+	multibyte := strings.Repeat("ü", maxErrorOutputBytes) + "Zusammenführung"
+	trimmed := outputSnippet([]byte(multibyte))
+	if !utf8.ValidString(trimmed) {
+		t.Fatalf("snippet is not valid UTF-8: %q", trimmed[:12])
+	}
+	if !strings.HasSuffix(trimmed, "Zusammenführung") {
+		t.Fatalf("snippet lost the tail: %q", trimmed[len(trimmed)-20:])
 	}
 }
 

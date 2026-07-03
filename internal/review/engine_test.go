@@ -1636,6 +1636,47 @@ func TestRunAgent_ZeroOutputRetriesRetriesBeyondDefault(t *testing.T) {
 	}
 }
 
+// A response consisting only of invalid tool calls with no raw content must
+// retry with a corrective note while keeping the history alternating: a
+// placeholder assistant turn precedes the user feedback, so strict-role
+// providers do not see two consecutive user messages.
+func TestRunAgentInvalidToolCallsEmptyRawRetriesWithAlternatingRoles(t *testing.T) {
+	invalid := &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "1", Name: "bogus_tool", Arguments: "{}"}}}
+	results := []scriptedLLMResult{
+		{resp: invalid},
+		{resp: nudgeReviewResponse("final", 1, nudgeFinding("A", 1))},
+	}
+	llmClient := &scriptedLLM{results: results}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("review"), model.ReviewRequest{})
+	if err != nil {
+		t.Fatalf("runAgent returned err: %v", err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want 2", len(llmClient.reqs))
+	}
+	retry := llmClient.reqs[1].Messages
+	if len(retry) < 2 {
+		t.Fatalf("retry messages = %#v, want at least placeholder + feedback", retry)
+	}
+	placeholder, feedback := retry[len(retry)-2], retry[len(retry)-1]
+	if placeholder.Role != "assistant" || placeholder.Content != "[invalid tool calls]" {
+		t.Fatalf("placeholder = %#v, want assistant [invalid tool calls]", placeholder)
+	}
+	if feedback.Role != "user" || !strings.Contains(feedback.Content, "bogus_tool") {
+		t.Fatalf("feedback = %#v, want user message naming the invalid call", feedback)
+	}
+	for i := 1; i < len(retry); i++ {
+		if retry[i].Role == retry[i-1].Role {
+			t.Fatalf("retry history has consecutive %q roles at %d: %#v", retry[i].Role, i, retry)
+		}
+	}
+}
+
 func TestAppendNewFindingsDuplicateKeys(t *testing.T) {
 	base := nudgeFinding("Same", 1)
 	sameIDSameTitle := nudgeFinding(" same ", 2)
