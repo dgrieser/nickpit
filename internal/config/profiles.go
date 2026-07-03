@@ -129,6 +129,9 @@ func mergeProfiles(base, override Profile) Profile {
 	if override.ReasoningEffort != "" {
 		base.ReasoningEffort = override.ReasoningEffort
 	}
+	if override.Workdir != "" {
+		base.Workdir = override.Workdir
+	}
 	if override.GitHubToken != "" {
 		base.GitHubToken = override.GitHubToken
 	}

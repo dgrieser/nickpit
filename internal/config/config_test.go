@@ -750,6 +750,30 @@ func TestMergeProfilesReplacesStyleGuides(t *testing.T) {
 	}
 }
 
+func TestLoadConfigWorkdirFromFileSurvivesBuiltinMerge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// "default" exists as a built-in profile, so the file profile goes through
+	// mergeProfiles; workdir must survive that merge.
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    workdir: /some/repo
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Workdir != "/some/repo" {
+		t.Fatalf("workdir = %q, want /some/repo", profile.Workdir)
+	}
+}
+
 func TestLoadConfigDisableStyleGuidesAppendOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

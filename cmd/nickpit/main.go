@@ -985,8 +985,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 
 	// Resolve additional styleguides (files/URLs) before the credential gate,
 	// model check, and checkout: a broken spec should fail immediately, not
-	// after expensive setup.
-	additionalGuides, err := styleguide.Resolve(ctx, profile.StyleGuides)
+	// after expensive setup. profile.Workdir anchors relative paths because
+	// only the --workdir flag chdirs; a workdir from the profile or
+	// NICKPIT_WORKDIR must still resolve them correctly.
+	additionalGuides, err := styleguide.Resolve(ctx, profile.StyleGuides, profile.Workdir)
 	if err != nil {
 		return err
 	}

@@ -147,7 +147,7 @@ Rules:
 - Guides are loaded before the review starts; an unreadable file or failed fetch aborts the run immediately.
 - URLs are fetched fresh on every run with a plain unauthenticated GET (no caching); redirects are followed.
 - Each guide is capped at 1 MiB and must be non-empty text.
-- Relative file paths resolve against `--workdir` when given, otherwise against the invocation directory.
+- Relative file paths resolve against the effective workdir — from `--workdir`, the profile's `workdir`, or `NICKPIT_WORKDIR` — and against the invocation directory when none is set.
 
 Built-in styleguides can be turned off per language with the `disable_styleguides` profile list or the repeatable `--disable-styleguide` flag (e.g. `--disable-styleguide python --disable-styleguide sql`); CLI values append to the profile's list. The flag's `--help` text lists the available languages. The special value `all` disables every built-in styleguide (`--disable-styleguide all` or `disable_styleguides: [all]`); additional styleguides from `--styleguide`/`styleguides` are unaffected. Note that some languages share one guide file (`html`, `css`, and `scss` all map to the HTML & CSS guide), so the shared guide is only dropped when every language selecting it is disabled or absent from the diff.
 

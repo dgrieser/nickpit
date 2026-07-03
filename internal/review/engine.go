@@ -2333,12 +2333,12 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 // user-supplied additional guides.
 func (e *Engine) mergeStyleGuides(st *PipelineState) ([]model.StyleGuide, error) {
 	st.mu.Lock()
-	ready, guides := st.promptsReady, st.styleGuides
+	ready, guides, enriched := st.promptsReady, st.styleGuides, st.Enriched
 	st.mu.Unlock()
 	if ready {
 		return guides, nil
 	}
-	return e.styleGuidesFor(st.Enriched)
+	return e.styleGuidesFor(enriched)
 }
 
 func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool) (string, error) {

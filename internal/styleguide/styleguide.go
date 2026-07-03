@@ -29,8 +29,11 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 // prompt-ready StyleGuide, preserving order. Any failure aborts the whole run
 // (fail fast): a review without an explicitly requested guide would silently
 // judge by incomplete rules. URLs are fetched fresh on every call with a
-// plain unauthenticated GET.
-func Resolve(ctx context.Context, specs []string) ([]model.StyleGuide, error) {
+// plain unauthenticated GET. Relative file specs resolve against baseDir when
+// it is non-empty (the effective workdir — the --workdir flag chdirs, but a
+// profile/env workdir does not), otherwise against the process working
+// directory.
+func Resolve(ctx context.Context, specs []string, baseDir string) ([]model.StyleGuide, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
@@ -41,7 +44,7 @@ func Resolve(ctx context.Context, specs []string) ([]model.StyleGuide, error) {
 		if isURL(spec) {
 			content, err = fetchURL(ctx, spec)
 		} else {
-			content, err = readFile(spec)
+			content, err = readFile(spec, baseDir)
 		}
 		if err != nil {
 			return nil, err
@@ -103,8 +106,11 @@ func fetchURL(ctx context.Context, rawURL string) (string, error) {
 	return string(body), nil
 }
 
-func readFile(path string) (string, error) {
+func readFile(path, baseDir string) (string, error) {
 	expanded := expandPath(path)
+	if baseDir != "" && !filepath.IsAbs(expanded) {
+		expanded = filepath.Join(baseDir, expanded)
+	}
 	// Stat before open: opening a FIFO blocks until a writer appears, so the
 	// regular-file check must happen on the path first.
 	info, err := os.Stat(expanded)
