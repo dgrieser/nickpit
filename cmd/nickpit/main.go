@@ -29,53 +29,59 @@ import (
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/workflow"
+	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
 )
 
 type app struct {
-	model                         string
-	smallModel                    string
-	baseURL                       string
-	apiKey                        string
-	workDir                       string
-	profile                       string
-	profileSet                    bool
-	temperature                   float64
-	temperatureSet                bool
-	topP                          float64
-	topPSet                       bool
-	topK                          int
-	topKSet                       bool
-	presencePenalty               float64
-	presencePenaltySet            bool
-	extraBody                     string
-	maxOutputTokens               int
-	maxOutputTokensSet            bool
-	smallMaxTokens                int
-	smallMaxTokensSet             bool
-	smallTemperature              float64
-	smallTemperatureSet           bool
-	smallTopP                     float64
-	smallTopPSet                  bool
-	smallTopK                     int
-	smallTopKSet                  bool
-	smallPresencePenalty          float64
-	smallPresencePenaltySet       bool
-	smallExtraBody                string
-	maxContextTokens              int
-	maxContextTokensSet           bool
-	includeFullFiles              bool
-	includeComments               bool
-	includeCommits                bool
-	includePaths                  []string
-	includePathsSet               bool
-	excludePaths                  []string
-	excludePathsSet               bool
-	includeContent                []string
-	includeContentSet             bool
-	excludeContent                []string
-	excludeContentSet             bool
+	model                   string
+	smallModel              string
+	baseURL                 string
+	apiKey                  string
+	workDir                 string
+	profile                 string
+	profileSet              bool
+	temperature             float64
+	temperatureSet          bool
+	topP                    float64
+	topPSet                 bool
+	topK                    int
+	topKSet                 bool
+	presencePenalty         float64
+	presencePenaltySet      bool
+	extraBody               string
+	maxOutputTokens         int
+	maxOutputTokensSet      bool
+	smallMaxTokens          int
+	smallMaxTokensSet       bool
+	smallTemperature        float64
+	smallTemperatureSet     bool
+	smallTopP               float64
+	smallTopPSet            bool
+	smallTopK               int
+	smallTopKSet            bool
+	smallPresencePenalty    float64
+	smallPresencePenaltySet bool
+	smallExtraBody          string
+	maxContextTokens        int
+	maxContextTokensSet     bool
+	includeFullFiles        bool
+	includeComments         bool
+	includeCommits          bool
+	includePaths            []string
+	includePathsSet         bool
+	excludePaths            []string
+	excludePathsSet         bool
+	includeContent          []string
+	includeContentSet       bool
+	excludeContent          []string
+	excludeContentSet       bool
+	// styleGuides needs no companion Set bool: CLI values append to the
+	// profile's list, so an unset (nil) flag is indistinguishable from empty.
+	styleGuides                   []string
+	disableStyleGuides            []string
 	diffFormat                    string
 	jsonOutput                    bool
 	disableJSONResponseFormat     bool
@@ -201,6 +207,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.excludePaths, "exclude-path", nil, "Exclude changed files whose repo-relative path matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.includeContent, "include-content", nil, "Include changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.excludeContent, "exclude-content", nil, "Exclude changed files whose full post-change content matches this regex; repeatable")
+	root.PersistentFlags().StringArrayVar(&cli.styleGuides, "styleguide", nil, "Additional styleguide for all agents: file path or HTTP(S) URL, appended to the profile's styleguides; repeatable")
+	root.PersistentFlags().StringArrayVar(&cli.disableStyleGuides, "disable-styleguide", nil, "Disable the built-in styleguide for a language; available: "+strings.Join(mappings.StyleGuideOrder(), ", ")+"; repeatable")
 	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.disableJSONResponseFormat, "disable-json-response-format", false, "Disable the API-enforced JSON response format (response_format json_schema); on by default, falls back to prompt-embedded schema")
@@ -378,6 +386,8 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		ExcludePaths:              excludePaths,
 		IncludeContent:            includeContent,
 		ExcludeContent:            excludeContent,
+		StyleGuides:               a.styleGuides,
+		DisableStyleGuides:        a.disableStyleGuides,
 		DiffFormat:                model.DiffFormat(a.diffFormat),
 		MaxContextTokens:          maxContextTokens,
 		ToolCalls:                 toolCalls,
@@ -973,6 +983,14 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return err
 	}
 
+	// Resolve additional styleguides (files/URLs) before the credential gate,
+	// model check, and checkout: a broken spec should fail immediately, not
+	// after expensive setup.
+	additionalGuides, err := styleguide.Resolve(ctx, profile.StyleGuides)
+	if err != nil {
+		return err
+	}
+
 	// Source-less workflows (e.g. --step merge / --step finalize on imported
 	// findings) operate on injected findings and may make no LLM call at all — a
 	// single-input merge is a passthrough, finalize on empty findings is a no-op.
@@ -1093,6 +1111,8 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
+	engine.SetAdditionalStyleGuides(additionalGuides)
+	engine.SetDisabledStyleGuides(profile.DisableStyleGuides)
 
 	// Single path: the embedded DefaultSpec and any user-supplied spec run
 	// identically. The pipeline may skip source/repo resolution (e.g.

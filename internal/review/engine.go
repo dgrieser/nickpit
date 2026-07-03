@@ -36,6 +36,14 @@ type Engine struct {
 	logger                 *logging.Logger
 	searchToolOptimization bool
 	toolchainCapture       func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion
+	// additionalStyleGuides holds user-supplied guides (files/URLs, already
+	// resolved) appended to every agent's language styleguides. Written once
+	// before the pipeline runs and read-only afterwards, so withConfig's
+	// shallow clones and concurrent agents can share it without locking.
+	additionalStyleGuides []model.StyleGuide
+	// disabledStyleGuides holds built-in styleguide languages the user turned
+	// off. Same write-once-before-pipeline contract as additionalStyleGuides.
+	disabledStyleGuides map[string]struct{}
 	// structuralSupport memoizes retrieval.SupportsStructuralAnalysis per
 	// (repoRoot, path). The result is deterministic over a review's fixed
 	// checkout, so caching it avoids a redundant os.Stat on every search call
@@ -107,6 +115,28 @@ func (e *Engine) SetLogger(logger *logging.Logger) {
 
 func (e *Engine) SetSearchToolOptimization(enabled bool) {
 	e.searchToolOptimization = enabled
+}
+
+// SetAdditionalStyleGuides installs user-supplied styleguides appended to
+// every agent's language styleguides. Must be called before the pipeline
+// runs; the slice must not be mutated afterwards.
+func (e *Engine) SetAdditionalStyleGuides(guides []model.StyleGuide) {
+	e.additionalStyleGuides = guides
+}
+
+// SetDisabledStyleGuides turns off built-in styleguides for the given
+// (already validated, lowercased) languages. Must be called before the
+// pipeline runs.
+func (e *Engine) SetDisabledStyleGuides(languages []string) {
+	if len(languages) == 0 {
+		e.disabledStyleGuides = nil
+		return
+	}
+	disabled := make(map[string]struct{}, len(languages))
+	for _, language := range languages {
+		disabled[language] = struct{}{}
+	}
+	e.disabledStyleGuides = disabled
 }
 
 // RunSpecPipeline executes an already-built pipeline. When the pipeline needs a
@@ -2272,6 +2302,9 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 	guides := make([]model.StyleGuide, 0, len(languages))
 	seenFiles := make(map[string]struct{})
 	for _, language := range languages {
+		if _, off := e.disabledStyleGuides[language]; off {
+			continue
+		}
 		name, ok := mappings.StyleGuideFile(language)
 		if !ok {
 			continue
@@ -2289,6 +2322,7 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 			Content:  content,
 		})
 	}
+	guides = append(guides, e.additionalStyleGuides...)
 	return guides, nil
 }
 

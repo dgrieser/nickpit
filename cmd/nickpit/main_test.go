@@ -224,6 +224,66 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppendsStyleGuideCLIValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    styleguides: ["team.md"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:     "default",
+		configPath:  path,
+		styleGuides: []string{"https://example.com/rules.md"},
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.StyleGuides, ",") != "team.md,https://example.com/rules.md" {
+		t.Fatalf("styleguides = %#v", profile.StyleGuides)
+	}
+}
+
+func TestLoadProfileAppendsDisableStyleGuideCLIValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    disable_styleguides: ["python"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:            "default",
+		configPath:         path,
+		disableStyleGuides: []string{" Go ", "python"},
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(profile.DisableStyleGuides, ",") != "python,go" {
+		t.Fatalf("disable styleguides = %#v", profile.DisableStyleGuides)
+	}
+
+	app.disableStyleGuides = []string{"cobol"}
+	_, _, err = app.loadProfile()
+	if err == nil || !strings.Contains(err.Error(), `disable_styleguides[1] unknown language "cobol"`) || !strings.Contains(err.Error(), "go, python") {
+		t.Fatalf("error = %v, want unknown language listing available ones", err)
+	}
+}
+
 func TestLoadProfileAppliesRateLimitDelayCLIOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

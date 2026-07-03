@@ -103,6 +103,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/logging/reasoning_renderer.go`: Live reasoning renderer for terminal output.
 - `internal/logging/verbose.go`: Verbose log blocks, JSON pretty-printing, and context-aware formatting.
 - `internal/filetype/language.go`: File extension/content language detection.
+- `internal/styleguide/styleguide.go`: Resolves user-supplied additional styleguides (local files or HTTP(S) URLs) into prompt-ready guides.
 - `internal/toolchain/toolchain.go`: Toolchain version capture and normalization.
 - `internal/tools/catalog.go`: Tool catalog exposed to agents.
 - `internal/textsan/textsan.go`: Text sanitization utilities.

@@ -140,6 +140,95 @@ func TestEngineAddsPythonStyleGuideForPythonDiffs(t *testing.T) {
 	}
 }
 
+func TestEngineDisablesStyleGuidesByLanguage(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	engine.SetDisabledStyleGuides([]string{"python"})
+	engine.SetAdditionalStyleGuides([]model.StyleGuide{
+		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	})
+
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	system := llmClient.reqs[0].Messages[0].Content
+	if strings.Contains(system, "### Python Style Guide") {
+		t.Fatalf("system prompt should not contain disabled python guide: %.200q", system)
+	}
+	if !strings.Contains(system, "### Additional styleguide: team.md") {
+		t.Fatalf("additional guide must survive disabling built-ins: %.200q", system)
+	}
+}
+
+func TestEngineIncludesAdditionalStyleGuides(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	engine.SetAdditionalStyleGuides([]model.StyleGuide{
+		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	})
+
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	system := llmClient.reqs[0].Messages[0].Content
+	if !strings.Contains(system, "### Python Style Guide") {
+		t.Fatalf("system prompt misses python guide: %.200q", system)
+	}
+	if !strings.Contains(system, "### Additional styleguide: team.md\n\nNo TODO comments.") {
+		t.Fatalf("system prompt misses additional guide: %.200q", system)
+	}
+}
+
+type markdownOnlyDiffSource struct{}
+
+func (markdownOnlyDiffSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{
+		Mode: model.ModeLocal,
+		Repository: model.RepositoryInfo{
+			FullName: "repo",
+		},
+		Title:       "title",
+		Description: "description",
+		ChangedFiles: []model.ChangedFile{
+			{Path: "README.md", Status: model.FileModified, Additions: 1},
+		},
+	}, nil
+}
+
+func TestEngineIncludesAdditionalStyleGuidesWithoutLanguageGuides(t *testing.T) {
+	llmClient := &capturingLLM{}
+	engine := NewEngine(markdownOnlyDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	engine.SetAdditionalStyleGuides([]model.StyleGuide{
+		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	})
+
+	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		MaxContextTokens: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	system := llmClient.reqs[0].Messages[0].Content
+	if !strings.Contains(system, "## STYLEGUIDES") {
+		t.Fatalf("system prompt misses styleguide section: %.200q", system)
+	}
+	if !strings.Contains(system, "### Additional styleguide: team.md") {
+		t.Fatalf("system prompt misses additional guide: %.200q", system)
+	}
+}
+
 type styleGuideDiffSource struct{}
 
 func (styleGuideDiffSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
