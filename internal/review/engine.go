@@ -2326,6 +2326,21 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 	return guides, nil
 }
 
+// mergeStyleGuides returns the styleguides for merge prompts. A source-less
+// merge workflow (e.g. --step merge --findings a.json) never runs
+// ensurePrompts, so st.styleGuides stays unset; fall back to resolving
+// directly — a nil context yields no language guides but still carries the
+// user-supplied additional guides.
+func (e *Engine) mergeStyleGuides(st *PipelineState) ([]model.StyleGuide, error) {
+	st.mu.Lock()
+	ready, guides := st.promptsReady, st.styleGuides
+	st.mu.Unlock()
+	if ready {
+		return guides, nil
+	}
+	return e.styleGuidesFor(st.Enriched)
+}
+
 func (e *Engine) renderStyleGuideToolchainSnippet(agentRole string, guides []model.StyleGuide, hasToolchainVersions bool) (string, error) {
 	agentRole = strings.TrimSpace(agentRole)
 	if len(guides) == 0 && !hasToolchainVersions {

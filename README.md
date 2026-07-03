@@ -149,7 +149,7 @@ Rules:
 - Each guide is capped at 1 MiB and must be non-empty text.
 - Relative file paths resolve against `--workdir` when given, otherwise against the invocation directory.
 
-Built-in styleguides can be turned off per language with the `disable_styleguides` profile list or the repeatable `--disable-styleguide` flag (e.g. `--disable-styleguide python --disable-styleguide sql`); CLI values append to the profile's list. The flag's `--help` text lists the available languages. Note that some languages share one guide file (`html`, `css`, and `scss` all map to the HTML & CSS guide), so the shared guide is only dropped when every language selecting it is disabled or absent from the diff.
+Built-in styleguides can be turned off per language with the `disable_styleguides` profile list or the repeatable `--disable-styleguide` flag (e.g. `--disable-styleguide python --disable-styleguide sql`); CLI values append to the profile's list. The flag's `--help` text lists the available languages. The special value `all` disables every built-in styleguide (`--disable-styleguide all` or `disable_styleguides: [all]`); additional styleguides from `--styleguide`/`styleguides` are unaffected. Note that some languages share one guide file (`html`, `css`, and `scss` all map to the HTML & CSS guide), so the shared guide is only dropped when every language selecting it is disabled or absent from the diff.
 
 ```yaml
 profiles:

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,16 @@ func TestResolveBinaryFile(t *testing.T) {
 	_, err := Resolve(context.Background(), []string{path})
 	if err == nil || !strings.Contains(err.Error(), "is not text") {
 		t.Fatalf("error = %v, want not-text error", err)
+	}
+}
+
+func TestResolveNonRegularFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no /dev/null device file on windows")
+	}
+	_, err := Resolve(context.Background(), []string{"/dev/null"})
+	if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+		t.Fatalf("error = %v, want not-a-regular-file error", err)
 	}
 }
 

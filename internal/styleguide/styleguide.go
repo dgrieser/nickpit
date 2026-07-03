@@ -105,6 +105,8 @@ func fetchURL(ctx context.Context, rawURL string) (string, error) {
 
 func readFile(path string) (string, error) {
 	expanded := expandPath(path)
+	// Stat before open: opening a FIFO blocks until a writer appears, so the
+	// regular-file check must happen on the path first.
 	info, err := os.Stat(expanded)
 	if err != nil {
 		return "", fmt.Errorf("styleguide %q: %w", path, err)
@@ -112,12 +114,33 @@ func readFile(path string) (string, error) {
 	if info.IsDir() {
 		return "", fmt.Errorf("styleguide %q is a directory", path)
 	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("styleguide %q is not a regular file", path)
+	}
+	file, err := os.Open(expanded)
+	if err != nil {
+		return "", fmt.Errorf("styleguide %q: %w", path, err)
+	}
+	defer func() { _ = file.Close() }()
+	// Re-check on the descriptor so a swap between Stat and Open cannot
+	// bypass the checks, and enforce the cap while reading: Stat sizes are 0
+	// for procfs-style files regardless of content.
+	info, err = file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("styleguide %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("styleguide %q is not a regular file", path)
+	}
 	if info.Size() > MaxBytes {
 		return "", fmt.Errorf("styleguide %q exceeds %d bytes", path, MaxBytes)
 	}
-	data, err := os.ReadFile(expanded)
+	data, err := io.ReadAll(io.LimitReader(file, MaxBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("styleguide %q: %w", path, err)
+		return "", fmt.Errorf("styleguide %q: reading: %w", path, err)
+	}
+	if len(data) > MaxBytes {
+		return "", fmt.Errorf("styleguide %q exceeds %d bytes", path, MaxBytes)
 	}
 	return string(data), nil
 }

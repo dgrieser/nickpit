@@ -208,7 +208,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.includeContent, "include-content", nil, "Include changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.excludeContent, "exclude-content", nil, "Exclude changed files whose full post-change content matches this regex; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.styleGuides, "styleguide", nil, "Additional styleguide for all agents: file path or HTTP(S) URL, appended to the profile's styleguides; repeatable")
-	root.PersistentFlags().StringArrayVar(&cli.disableStyleGuides, "disable-styleguide", nil, "Disable the built-in styleguide for a language; available: "+strings.Join(mappings.StyleGuideOrder(), ", ")+"; repeatable")
+	root.PersistentFlags().StringArrayVar(&cli.disableStyleGuides, "disable-styleguide", nil, "Disable the built-in styleguide for a language; available: all, "+strings.Join(mappings.StyleGuideOrder(), ", ")+"; repeatable")
 	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
 	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
 	root.PersistentFlags().BoolVar(&cli.disableJSONResponseFormat, "disable-json-response-format", false, "Disable the API-enforced JSON response format (response_format json_schema); on by default, falls back to prompt-embedded schema")

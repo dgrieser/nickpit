@@ -850,11 +850,14 @@ func normalizeProfile(profile Profile) (Profile, error) {
 
 // normalizeDisabledStyleGuideLanguages trims, lowercases, and dedupes the
 // disable_styleguides list (first occurrence wins) and rejects languages that
-// have no built-in styleguide.
+// have no built-in styleguide. The special value "all" expands to every
+// built-in styleguide language; other entries are still validated first so
+// typos never hide behind it.
 func normalizeDisabledStyleGuideLanguages(languages []string) ([]string, error) {
 	if len(languages) == 0 {
 		return nil, nil
 	}
+	sawAll := false
 	normalized := make([]string, 0, len(languages))
 	seen := make(map[string]struct{}, len(languages))
 	for i, value := range languages {
@@ -862,14 +865,21 @@ func normalizeDisabledStyleGuideLanguages(languages []string) ([]string, error) 
 		if language == "" {
 			continue
 		}
+		if language == "all" {
+			sawAll = true
+			continue
+		}
 		if _, ok := mappings.StyleGuideFile(language); !ok {
-			return nil, fmt.Errorf("config: disable_styleguides[%d] unknown language %q; available: %s", i, value, strings.Join(mappings.StyleGuideOrder(), ", "))
+			return nil, fmt.Errorf("config: disable_styleguides[%d] unknown language %q; available: all, %s", i, value, strings.Join(mappings.StyleGuideOrder(), ", "))
 		}
 		if _, ok := seen[language]; ok {
 			continue
 		}
 		seen[language] = struct{}{}
 		normalized = append(normalized, language)
+	}
+	if sawAll {
+		return mappings.StyleGuideOrder(), nil
 	}
 	if len(normalized) == 0 {
 		return nil, nil

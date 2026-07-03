@@ -509,7 +509,11 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 			if strings.TrimSpace(userPrompt) == "" {
 				userPrompt = "{}"
 			}
-			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgentsWithStyleGuides(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, st.styleGuides, st.hasToolchain)
+			mergeStyleGuides, err := sc.Engine.mergeStyleGuides(st)
+			if err != nil {
+				return err
+			}
+			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgentsWithStyleGuides(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, mergeStyleGuides, st.hasToolchain)
 		}
 		if mergeResult.resp != nil {
 			mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
@@ -639,6 +643,10 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		if strings.TrimSpace(userPrompt) == "" {
 			userPrompt = "{}"
 		}
+		mergeStyleGuides, err := mergeSC.Engine.mergeStyleGuides(st)
+		if err != nil {
+			return err
+		}
 
 		findings, reviewerByID := flattenMergeMembers(mergeInputs)
 		clusters := dedupe.Clusters(findings, dedupe.Possible)
@@ -666,7 +674,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				defer mergeWG.Done()
 				mergeCtx, mergeCancel := mergeBudget.startOrCanceled()
 				defer mergeCancel()
-				merged, run := mergeSC.Engine.runClusterMergeAgentWithStyleGuides(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, st.styleGuides, st.hasToolchain)
+				merged, run := mergeSC.Engine.runClusterMergeAgentWithStyleGuides(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergeStyleGuides, st.hasToolchain)
 				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
 			}(ci, reduced)
 		}

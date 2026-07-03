@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -768,6 +769,35 @@ profiles:
 	}
 	if strings.Join(profile.DisableStyleGuides, ",") != "sql,python,go" {
 		t.Fatalf("disable styleguides = %#v", profile.DisableStyleGuides)
+	}
+}
+
+func TestLoadConfigDisableStyleGuidesAll(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    disable_styleguides: ["python"]
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "all" (from either source) expands to every built-in language.
+	_, profile, err := Load(path, Overrides{DisableStyleGuides: []string{"ALL"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profile.DisableStyleGuides) < 10 || !slices.Contains(profile.DisableStyleGuides, "go") || !slices.Contains(profile.DisableStyleGuides, "kubernetes") {
+		t.Fatalf("disable styleguides = %#v, want all built-in languages", profile.DisableStyleGuides)
+	}
+
+	// Typos are still rejected even when "all" is present.
+	_, _, err = Load(path, Overrides{DisableStyleGuides: []string{"all", "cobol"}})
+	if err == nil || !strings.Contains(err.Error(), `unknown language "cobol"`) {
+		t.Fatalf("error = %v, want unknown language despite all", err)
 	}
 }
 
