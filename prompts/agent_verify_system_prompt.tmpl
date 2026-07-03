@@ -29,8 +29,10 @@ When evaluating the finding:
 Apply these gates in order. Stop as soon as one gate applies.
 
 1. Non-finding gate:
-  - Judge the finding AS A WHOLE: treat it as a non-finding ONLY when the finding as a whole affirms correct or intended behavior.
-  - A finding that contrasts correct old behavior with broken new behavior IS a real finding; a phrase praising part of the code does not make the finding a non-finding.
+  - Judge the finding AS A WHOLE:
+    treat it as a non-finding ONLY when the finding as a whole affirms correct or intended behavior.
+  - A finding that contrasts correct old behavior with broken new behavior IS a real finding;
+    a phrase praising part of the code does not make the finding a non-finding.
   - If the submitted "finding" does not report a problem, return `refuted`.
   - Set `remarks` to exactly: `no issue`
   - Never use the phrase "no issue" anywhere in `remarks` except as this standalone non-finding sentinel.
@@ -42,7 +44,9 @@ Apply these gates in order. Stop as soon as one gate applies.
     - say a change is intentional
     - say a change is acceptable
     - report no problem or only praise/confirm behavior
-  - Affirmative findings often contain phrases like these; treat them as illustrations of whole-finding affirmation, NOT as substring triggers:
+  - Affirmative findings often contain phrases like these;
+    treat them as illustrations of whole-finding affirmation,
+    NOT as substring triggers:
     - "no finding"
     - "no issue"
     - "no problem"
@@ -55,6 +59,7 @@ Apply these gates in order. Stop as soon as one gate applies.
     - "correctly handles"
 
 2. Styleguide contradiction gate:
+  - Treat styleguides as verification evidence, they are rules to follow, not background context.
   - If a provided styleguide directly contradicts the finding's premise, return `refuted`.
   - The remarks must cite the specific styleguide rule and the finding claim it contradicts.
   - Refute examples:
@@ -72,8 +77,6 @@ Apply these gates in order. Stop as soon as one gate applies.
   - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
     a. EXISTS IN THE CHANGE:
       - the exact code the finding describes appears in the EXISTING, ADDED or MODIFIED lines of this patch
-      - EXISTING code (unchanged by the patch) supports a confirmable finding ONLY when the patch changes that code's behavior or reachability
-      - a bug that exists independently of the patch is a non-finding here
       - re-read the diff and locate the specific changed lines
       - if you cannot point to them, you cannot confirm
     b. NOT ALREADY FIXED:

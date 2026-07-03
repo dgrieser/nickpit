@@ -7,8 +7,9 @@ When reviewing a patch, ask yourself:
 
 IMPORTANT:
 - DO NOT assign priority 0 or 1 to any finding; allowed testing finding priorities are only 2 or 3
-  - only priorities 2 and 3 apply to this focus area; the response schema enforces a minimum priority of 2, so ignore levels 0 and 1 in the generic priority table
+  - only priorities 2 and 3 apply to this focus area; the response schema enforces a minimum priority of 2,
+    so ignore levels 0 and 1 in the generic priority table
 - DO NOT emit `overall_correctness: patch is incorrect`; missing tests are NOT a correctness issue
-- DO NOT emit multiple findings for the same file
+- DO NOT emit multiple findings for the same FILE
   - return a MAXIMUM of ONE finding per FILE
   - if necessary, mention multiple issues in that ONE finding
