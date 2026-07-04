@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -795,6 +796,72 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 	}
 	if gotReq.DisableSuggestions {
 		t.Fatal("explicit false disable_suggestions not applied")
+	}
+}
+
+func TestStepOverrideResolveMaxFindings(t *testing.T) {
+	base := config.Profile{Model: "base", MaxFindings: 20}
+	req := model.ReviewRequest{MaxFindings: 20}
+	five := 5
+	gotProfile, gotReq := (&StepOverride{MaxFindings: &five}).Resolve(base, req)
+	if gotProfile.MaxFindings != 5 || gotReq.MaxFindings != 5 {
+		t.Fatalf("max_findings override not applied: profile=%d req=%d", gotProfile.MaxFindings, gotReq.MaxFindings)
+	}
+	zero := 0
+	gotProfile, gotReq = (&StepOverride{MaxFindings: &zero}).Resolve(base, req)
+	if gotProfile.MaxFindings != 0 || gotReq.MaxFindings != 0 {
+		t.Fatalf("explicit zero max_findings not applied: profile=%d req=%d", gotProfile.MaxFindings, gotReq.MaxFindings)
+	}
+	gotProfile, gotReq = (&StepOverride{}).Resolve(base, req)
+	if gotProfile.MaxFindings != 20 || gotReq.MaxFindings != 20 {
+		t.Fatalf("unset max_findings did not inherit: profile=%d req=%d", gotProfile.MaxFindings, gotReq.MaxFindings)
+	}
+}
+
+func TestValidateRejectsNegativeMaxFindings(t *testing.T) {
+	neg := -1
+	spec := Spec{Version: SpecVersion, Steps: []StepEntry{
+		{Type: StepReviewPrefix + "security", Config: &StepOverride{MaxFindings: &neg}},
+	}}
+	err := spec.Validate()
+	if err == nil {
+		t.Fatal("expected negative max_findings to be rejected")
+	}
+	if !strings.Contains(err.Error(), "max_findings must be non-negative") {
+		t.Fatalf("error = %q, want max_findings non-negative message", err)
+	}
+
+	pipelineSpec := Spec{Version: SpecVersion, Steps: []StepEntry{
+		{Pipeline: []StepEntry{
+			{Type: StepMerge, Config: &StepOverride{MaxFindings: &neg}},
+			{Type: StepFinalize},
+			{Type: StepVerdict},
+		}},
+	}}
+	err = pipelineSpec.Validate()
+	if err == nil || !strings.Contains(err.Error(), "max_findings must be non-negative") {
+		t.Fatalf("pipeline error = %v, want max_findings non-negative message", err)
+	}
+}
+
+func TestLoadParsesMaxFindingsOverride(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: review:security
+    config:
+      max_findings: 10
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	cfg := spec.Steps[0].Config
+	if cfg == nil || cfg.MaxFindings == nil || *cfg.MaxFindings != 10 {
+		t.Fatalf("max_findings override not parsed: %+v", cfg)
 	}
 }
 

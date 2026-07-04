@@ -57,10 +57,13 @@ type ReviewRequest struct {
 	// Concurrency caps concurrent LLM agent loops across the whole pipeline
 	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
 	// summarize); 0 = unlimited.
-	Concurrency               int
-	VerifyDropPolicy          string
-	ConfidenceThreshold       float64
-	NudgeCount                int
+	Concurrency         int
+	VerifyDropPolicy    string
+	ConfidenceThreshold float64
+	NudgeCount          int
+	// MaxFindings caps the findings each review agent may report across its
+	// initial pass and nudges; 0 = unlimited.
+	MaxFindings               int
 	DisableParallelToolCalls  bool
 	DisableReasoningExtract   bool
 	DisablePatchSummary       bool

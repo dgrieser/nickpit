@@ -152,6 +152,7 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 		hasTools:                      true,
 		reviewSessionValidateResponse: vector.validateResponse,
 		reviewSessionEnforceResponse:  vector.enforceResponse,
+		maxFindings:                   req.MaxFindings,
 	}, nil
 }
 
@@ -350,6 +351,10 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 		}
 		if sess == nil {
 			st.addWarningf("Skipped nudge:%s because review:%s did not complete successfully", vectorID, vectorID)
+			return nil
+		}
+		if sess.findingLimitReached() {
+			sc.Engine.logf(ctx, "Skipped nudge:%s, finding limit reached: limit=%d", vectorID, sess.agent.maxFindings)
 			return nil
 		}
 		delta := ""

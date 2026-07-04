@@ -1,0 +1,10 @@
+You may report at most {{.Limit}} finding{{if ne .Limit 1}}s{{end}} in total for this review.
+{{- if .Existing}}
+You already reported {{.Existing}} finding{{if ne .Existing 1}}s{{end}} earlier in this session, so this response may add at most {{.Allowed}} new finding{{if ne .Allowed 1}}s{{end}}; the previous response added {{.Got}}.
+{{- else}}
+The previous response included {{.Got}} findings.
+{{- end}}
+
+Retry with these rules:
+- keep only the {{.Allowed}} most critical, highest-confidence finding{{if ne .Allowed 1}}s{{end}}
+- do not merge unrelated issues into one finding to fit the limit; drop the weakest ones instead

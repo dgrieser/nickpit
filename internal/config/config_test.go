@@ -1368,6 +1368,94 @@ profiles:
 	}
 }
 
+func TestLoadConfigMaxFindingsFromFileAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_findings: 10
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxFindings != 10 {
+		t.Fatalf("max findings = %d", profile.MaxFindings)
+	}
+	if !profile.MaxFindingsConfigured {
+		t.Fatal("expected max_findings to be marked as configured")
+	}
+
+	_, profile, err = Load(path, Overrides{MaxFindings: intPtr(4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxFindings != 4 {
+		t.Fatalf("override max findings = %d", profile.MaxFindings)
+	}
+
+	// Explicit zero from the CLI must win over the config file (unlimited).
+	_, profile, err = Load(path, Overrides{MaxFindings: intPtr(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxFindings != 0 {
+		t.Fatalf("explicit zero max findings = %d", profile.MaxFindings)
+	}
+}
+
+func TestLoadConfigMaxFindingsDefaultsToUnlimited(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxFindings != 0 {
+		t.Fatalf("default max findings = %d, want 0 (unlimited)", profile.MaxFindings)
+	}
+	if profile.MaxFindingsConfigured {
+		t.Fatal("unset max_findings marked as configured")
+	}
+}
+
+func TestLoadConfigRejectsNegativeMaxFindings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_findings: -1
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil {
+		t.Fatal("expected negative max findings error")
+	}
+	if got, want := err.Error(), "max_findings must be non-negative"; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want containing %q", got, want)
+	}
+}
+
 func TestLoadConfigExplicitZeroToolCallOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

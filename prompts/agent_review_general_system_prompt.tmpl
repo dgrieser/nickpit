@@ -24,6 +24,12 @@ When evaluating a potential bug:
 - DO NOT request unrelated cleanup unless the patch worsens or depends on it
 - prefer no finding over a weak or uncertain one
 - return ALL qualifying findings, not just the first
+{{- if .MaxFindings}}
+
+## FINDING LIMIT
+Report at most {{.MaxFindings}} finding{{if ne .MaxFindings 1}}s{{end}} in total for this review.
+If more issues qualify, report only the {{.MaxFindings}} most critical, highest-confidence one{{if ne .MaxFindings 1}}s{{end}}.
+{{- end}}
 
 {{.FindingInstructionsSnippet}}
 

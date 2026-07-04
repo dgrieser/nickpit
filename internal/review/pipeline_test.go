@@ -731,6 +731,46 @@ func TestWorkflowStandaloneNudgeStep(t *testing.T) {
 	}
 }
 
+// A standalone nudge step is skipped outright when the reviewer session already
+// reached its max_findings limit: the round could only return findings destined
+// to be cut.
+func TestWorkflowStandaloneNudgeStepSkippedAtFindingLimit(t *testing.T) {
+	client := &multiAgentLLM{}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+
+	zero := 0
+	one := 1
+	spec := workflow.Spec{
+		Version: workflow.SpecVersion,
+		Steps: []workflow.StepEntry{
+			{Type: workflow.StepReviewPrefix + "security", Config: &workflow.StepOverride{NudgeCount: &zero, MaxFindings: &one}},
+			{Type: workflow.StepNudgePrefix + "security"},
+		},
+	}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{
+		Mode:             model.ModeLocal,
+		RepoRoot:         ".",
+		MaxContextTokens: 1000,
+		MaxToolCalls:     1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Initial pass: tool call + final response (2 calls). The nudge step must
+	// not add a third: the single finding already fills the limit.
+	if got := client.vectorCalls["Security"]; got != 2 {
+		t.Fatalf("Security reviewer calls = %d, want 2 (nudge skipped at finding limit)", got)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %d, want the initial finding kept", len(result.Findings))
+	}
+}
+
 // When the initial reviewer fails, a following standalone nudge step must error
 // cleanly (the failed review left no session) rather than panic on a nil
 // response.
