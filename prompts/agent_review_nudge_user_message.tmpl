@@ -13,6 +13,9 @@ Ask yourself these original questions again:
 {{- else}}
 - Respond in the same format as before
 {{- end}}
+{{- if .MaxFindings}}
+- The finding limit for this review is {{.MaxFindings}} in total; you may add at most {{.RemainingFindings}} more finding{{if ne .RemainingFindings 1}}s{{end}}, so only report additional issues that are truly critical
+{{- end}}
 {{- if .ReasoningFindings}}
 
 Another engineer also noted some additional possible findings.

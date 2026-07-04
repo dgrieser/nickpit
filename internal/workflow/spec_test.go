@@ -798,6 +798,46 @@ func TestStepOverrideResolveApplies(t *testing.T) {
 	}
 }
 
+func TestStepOverrideResolveMaxFindings(t *testing.T) {
+	base := config.Profile{Model: "base", MaxFindings: 20}
+	req := model.ReviewRequest{MaxFindings: 20}
+	five := 5
+	gotProfile, gotReq := (&StepOverride{MaxFindings: &five}).Resolve(base, req)
+	if gotProfile.MaxFindings != 5 || gotReq.MaxFindings != 5 {
+		t.Fatalf("max_findings override not applied: profile=%d req=%d", gotProfile.MaxFindings, gotReq.MaxFindings)
+	}
+	zero := 0
+	gotProfile, gotReq = (&StepOverride{MaxFindings: &zero}).Resolve(base, req)
+	if gotProfile.MaxFindings != 0 || gotReq.MaxFindings != 0 {
+		t.Fatalf("explicit zero max_findings not applied: profile=%d req=%d", gotProfile.MaxFindings, gotReq.MaxFindings)
+	}
+	gotProfile, gotReq = (&StepOverride{}).Resolve(base, req)
+	if gotProfile.MaxFindings != 20 || gotReq.MaxFindings != 20 {
+		t.Fatalf("unset max_findings did not inherit: profile=%d req=%d", gotProfile.MaxFindings, gotReq.MaxFindings)
+	}
+}
+
+func TestLoadParsesMaxFindingsOverride(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: review:security
+    config:
+      max_findings: 10
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	cfg := spec.Steps[0].Config
+	if cfg == nil || cfg.MaxFindings == nil || *cfg.MaxFindings != 10 {
+		t.Fatalf("max_findings override not parsed: %+v", cfg)
+	}
+}
+
 // Disabling response_format is monotonic: a per-step override may turn it off
 // but must never re-enable it once the run disabled it (e.g. the model-check
 // fallback for a model that lacks json_schema). Otherwise the step would send

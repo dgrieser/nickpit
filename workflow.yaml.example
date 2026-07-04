@@ -238,6 +238,7 @@ steps:
 #             config:
 #               model: claude-opus-4-8
 #               nudge_count: 5
+#               max_findings: 10
 #               max_output_retries: 8
 #               time_budget:
 #                 weight: 70
@@ -303,7 +304,7 @@ steps:
 #   extra_body, reasoning_effort, time_budget, scope,
 #   max_tool_calls, max_duplicate_tool_calls,
 #   max_output_retries, max_reasoning_seconds,
-#   nudge_count, disable_reasoning_extract, disable_parallel_tool_calls,
+#   nudge_count, max_findings, disable_reasoning_extract, disable_parallel_tool_calls,
 #   disable_patch_summary, disable_suggestions, disable_json_response_format, verify_drop_policy,
 #   confidence_threshold, priority_threshold
 # Review steps also accept internal-agent subconfigs: mine_reasoning,

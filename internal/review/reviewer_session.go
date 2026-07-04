@@ -284,14 +284,22 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 		s.nudgeReasoningEffort = e.config.ReasoningEffort
 	}
 	e.logf(nudgeCtx, "Nudge round: round=%d/%d", iterIdx+1, total)
+	remainingFindings := 0
+	if s.agent.maxFindings > 0 {
+		remainingFindings = max(s.agent.maxFindings-len(s.totalFindings), 0)
+	}
 	nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
 		HasResponseFormat bool
 		QuestionsSnippet  string
 		ReasoningFindings string
+		MaxFindings       int
+		RemainingFindings int
 	}{
 		HasResponseFormat: s.agent.schemaKind != llm.SchemaKindText,
 		QuestionsSnippet:  strings.TrimSpace(s.agent.questionsSnippet),
 		ReasoningFindings: formattedReasoningFindings,
+		MaxFindings:       s.agent.maxFindings,
+		RemainingFindings: remainingFindings,
 	})
 	if err != nil {
 		s.nudgeErr = err
@@ -340,12 +348,23 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	return true
 }
 
+// findingLimitReached reports whether the per-agent finding limit is set and
+// the session has already accumulated it, so a further nudge round could only
+// return findings destined to be cut.
+func (s *reviewerSession) findingLimitReached() bool {
+	return s.agent.maxFindings > 0 && len(s.totalFindings) >= s.agent.maxFindings
+}
+
 // reviewerNudges drives req.NudgeCount rounds of extract+nudge. It returns an
 // error only for the rare reasoning-findings marshalling failure; a failed nudge
 // round stops the loop and is reported via the session's nudgeErr (a partial,
 // not a hard error), matching the legacy behavior.
 func (e *Engine) reviewerNudges(ctx context.Context, s *reviewerSession, req model.ReviewRequest, compileBudget timeBudgetStarter, compileEngine *Engine, compileReq model.ReviewRequest, nudgeBudget timeBudgetStarter, nudgeEngine *Engine, nudgeReq model.ReviewRequest) error {
 	for i := 0; i < req.NudgeCount; i++ {
+		if s.findingLimitReached() {
+			e.logf(ctx, "Nudge phase skipped, finding limit reached: limit=%d completed=%d/%d", s.agent.maxFindings, i, req.NudgeCount)
+			return nil
+		}
 		compileCtx, compileCancel := compileBudget.startOrCanceled()
 		if compileCtx.Err() != nil {
 			compileCancel()
@@ -439,7 +458,13 @@ func (s *reviewerSession) partialResult(req model.ReviewRequest) agentResult {
 }
 
 func (s *reviewerSession) responseValidator(existing []model.Finding) func(*llm.ReviewResponse) *llm.InvalidResponseError {
-	if s.agent.validateResponse == nil && s.agent.reviewSessionValidateResponse == nil {
+	// The max-findings validator is created fresh per turn so its single retry
+	// resets for every agent-loop turn (initial pass and each nudge round).
+	var validateMaxFindings func([]model.Finding, *llm.ReviewResponse) *llm.InvalidResponseError
+	if s.agent.maxFindings > 0 {
+		validateMaxFindings = newMaxFindingsValidator(s.agent.maxFindings)
+	}
+	if s.agent.validateResponse == nil && s.agent.reviewSessionValidateResponse == nil && validateMaxFindings == nil {
 		return nil
 	}
 	existing = append([]model.Finding(nil), existing...)
@@ -450,19 +475,28 @@ func (s *reviewerSession) responseValidator(existing []model.Finding) func(*llm.
 			}
 		}
 		if s.agent.reviewSessionValidateResponse != nil {
-			return s.agent.reviewSessionValidateResponse(existing, resp)
+			if invalid := s.agent.reviewSessionValidateResponse(existing, resp); invalid != nil {
+				return invalid
+			}
+		}
+		if validateMaxFindings != nil {
+			return validateMaxFindings(existing, resp)
 		}
 		return nil
 	}
 }
 
 func (s *reviewerSession) enforceResponse(agentName string, existing []model.Finding, resp *llm.ReviewResponse) {
-	if s.agent.reviewSessionEnforceResponse == nil {
-		return
+	// Vector-specific enforcement runs first: it may prune duplicates, which
+	// reduces the count the max-findings cut sees.
+	if s.agent.reviewSessionEnforceResponse != nil {
+		if msg := strings.TrimSpace(s.agent.reviewSessionEnforceResponse(agentName, existing, resp)); msg != "" {
+			s.validationErrors = append(s.validationErrors, msg)
+		}
 	}
-	msg := strings.TrimSpace(s.agent.reviewSessionEnforceResponse(agentName, existing, resp))
-	if msg == "" {
-		return
+	if s.agent.maxFindings > 0 {
+		if msg := strings.TrimSpace(enforceMaxFindingsResponse(agentName, s.agent.maxFindings, existing, resp)); msg != "" {
+			s.validationErrors = append(s.validationErrors, msg)
+		}
 	}
-	s.validationErrors = append(s.validationErrors, msg)
 }

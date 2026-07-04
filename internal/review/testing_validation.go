@@ -61,7 +61,7 @@ func testingDuplicateFileDiagnostics(existing, response []model.Finding) []testi
 		existingByFile[file] = append(existingByFile[file], testingFindingTitle(finding))
 	}
 
-	appendable := testingAppendableFindings(existing, response)
+	appendable := appendableFindings(existing, response)
 	responseByFile := make(map[string][]string)
 	fileOrder := make([]string, 0)
 	for _, finding := range appendable {
@@ -129,7 +129,10 @@ func pruneTestingDuplicateFileFindings(existing, candidates []model.Finding) ([]
 	return kept, dropped
 }
 
-func testingAppendableFindings(existing, candidates []model.Finding) []model.Finding {
+// appendableFindings returns the candidates that appendNewFindings would
+// actually add to the session (i.e. not duplicates of existing findings or of
+// an earlier candidate), preserving response order.
+func appendableFindings(existing, candidates []model.Finding) []model.Finding {
 	seenIDTitles := make(map[string]struct{})
 	seenTitleLocations := make(map[string]struct{})
 	for _, finding := range existing {

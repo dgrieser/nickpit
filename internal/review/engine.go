@@ -353,6 +353,10 @@ type agentSpec struct {
 	// reviewSessionEnforceResponse repairs a reviewer response after retry
 	// exhaustion. It may mutate resp and returns a partial-run message.
 	reviewSessionEnforceResponse func(string, []model.Finding, *llm.ReviewResponse) string
+	// maxFindings caps the findings the reviewer session may accumulate across
+	// its initial pass and nudges; 0 = unlimited. Enforced by a one-retry
+	// validator per turn, then by cutting the weakest findings.
+	maxFindings int
 }
 
 type agentResult struct {
@@ -1859,6 +1863,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		FocusSnippet               string
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
+		MaxFindings                int
 	}{
 		OutputSchemaSnippet:        outputSchemaSnippet,
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
@@ -1869,6 +1874,7 @@ func (e *Engine) renderReviewSystemWithFocus(template, focusSnippet string, req 
 		FocusSnippet:               strings.TrimSpace(focusSnippet),
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
+		MaxFindings:                req.MaxFindings,
 	})
 	if err != nil {
 		return "", fmt.Errorf("review: rendering review system prompt: %w", err)

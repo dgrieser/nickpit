@@ -33,6 +33,7 @@ profiles:
     max_reasoning_seconds: 5
     max_rate_limit_delay_seconds: 6
     nudge_count: 7
+    max_findings: 8
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -53,6 +54,8 @@ profiles:
 		maxRateLimitDelaySecondsSet: true,
 		nudgeCount:                  0,
 		nudgeCountSet:               true,
+		maxFindings:                 0,
+		maxFindingsSet:              true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
@@ -75,6 +78,9 @@ profiles:
 	}
 	if profile.NudgeCount != 0 {
 		t.Fatalf("nudge count = %d", profile.NudgeCount)
+	}
+	if profile.MaxFindings != 0 {
+		t.Fatalf("max findings = %d", profile.MaxFindings)
 	}
 }
 
@@ -1054,6 +1060,7 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 	req := model.ReviewRequest{
 		DisableJSONResponseFormat: false,
 		NudgeCount:                3,
+		MaxFindings:               10,
 		MaxOutputRetries:          5,
 		MaxReasoningSeconds:       300,
 		MaxDuplicateToolCalls:     5,
@@ -1066,7 +1073,7 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		PriorityThreshold:         "p1",
 	}
 	got := agentSummary(profile, req)
-	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, ≤10 findings, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}

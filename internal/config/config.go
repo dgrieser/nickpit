@@ -72,6 +72,7 @@ type Profile struct {
 	MaxReasoningSeconds                int                 `yaml:"max_reasoning_seconds"`
 	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
 	NudgeCount                         int                 `yaml:"nudge_count"`
+	MaxFindings                        int                 `yaml:"max_findings"`
 	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
 	DisableSuggestions                 bool                `yaml:"disable_suggestions"`
 	DisableWorkflowTimeBudget          bool                `yaml:"disable_workflow_time_budget"`
@@ -89,6 +90,7 @@ type Profile struct {
 	MaxReasoningSecondsConfigured      bool                `yaml:"-"`
 	MaxRateLimitDelaySecondsConfigured bool                `yaml:"-"`
 	NudgeCountConfigured               bool                `yaml:"-"`
+	MaxFindingsConfigured              bool                `yaml:"-"`
 }
 
 type SmallModelConfig struct {
@@ -147,6 +149,7 @@ type Overrides struct {
 	ReasoningSeconds          *int
 	RateLimitDelaySeconds     *int
 	NudgeCount                *int
+	MaxFindings               *int
 	DisablePatchSummary       bool
 	DisableSuggestions        bool
 	DisableWorkflowTimeBudget bool
@@ -698,6 +701,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.NudgeCount = *overrides.NudgeCount
 		profile.NudgeCountConfigured = true
 	}
+	if overrides.MaxFindings != nil {
+		profile.MaxFindings = *overrides.MaxFindings
+		profile.MaxFindingsConfigured = true
+	}
 	if overrides.DisablePatchSummary {
 		profile.DisablePatchSummary = true
 	}
@@ -813,6 +820,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	if profile.NudgeCount < 0 {
 		return Profile{}, fmt.Errorf("config: nudge_count must be non-negative")
+	}
+	if profile.MaxFindings < 0 {
+		return Profile{}, fmt.Errorf("config: max_findings must be non-negative")
 	}
 	if profile.DiffFormat != model.DiffFormatGit && profile.DiffFormat != model.DiffFormatGitJson {
 		return Profile{}, fmt.Errorf("config: diff_format must be one of: git, git-json")
@@ -991,6 +1001,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile.MaxReasoningSecondsConfigured = mappingValue(profileNode, "max_reasoning_seconds") != nil
 		profile.MaxRateLimitDelaySecondsConfigured = mappingValue(profileNode, "max_rate_limit_delay_seconds") != nil
 		profile.NudgeCountConfigured = mappingValue(profileNode, "nudge_count") != nil
+		profile.MaxFindingsConfigured = mappingValue(profileNode, "max_findings") != nil
 		cfg.Profiles[name] = profile
 	}
 	return nil

@@ -97,6 +97,8 @@ type app struct {
 	maxRateLimitDelaySecondsSet   bool
 	nudgeCount                    int
 	nudgeCountSet                 bool
+	maxFindings                   int
+	maxFindingsSet                bool
 	priorityThreshold             string
 	configPath                    string
 	githubToken                   string
@@ -218,6 +220,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxReasoningSeconds, &cli.maxReasoningSecondsSet), "max-reasoning-seconds", "Maximum seconds to allow reasoning before falling back to lower effort")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxRateLimitDelaySeconds, &cli.maxRateLimitDelaySecondsSet), "max-rate-limit-delay-seconds", "Maximum seconds to wait for rate-limit reset times parsed from 429 responses (0 disables)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.nudgeCount, &cli.nudgeCountSet), "nudge-count", "Number of nudge rounds asking each reviewer to look again (0 disables)")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxFindings, &cli.maxFindingsSet), "max-findings", "Maximum findings each review agent may report; weakest findings are cut when exceeded (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "3", "Minimum priority to display: 0 (highest) to 3 (lowest)")
 	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
@@ -279,6 +282,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	var nudgeCount *int
 	if a.nudgeCountSet {
 		nudgeCount = &a.nudgeCount
+	}
+	var maxFindings *int
+	if a.maxFindingsSet {
+		maxFindings = &a.maxFindings
 	}
 	var temperature *float64
 	if a.temperatureSet {
@@ -396,6 +403,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		ReasoningSeconds:          reasoningSeconds,
 		RateLimitDelaySeconds:     rateLimitDelaySeconds,
 		NudgeCount:                nudgeCount,
+		MaxFindings:               maxFindings,
 		DisablePatchSummary:       a.disablePatchSummary,
 		DisableSuggestions:        a.disableSuggestions,
 		DisableWorkflowTimeBudget: a.disableWorkflowTimeBudget,
@@ -527,6 +535,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 				MaxOutputRetries:          profile.MaxOutputRetries,
 				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
 				NudgeCount:                profile.NudgeCount,
+				MaxFindings:               profile.MaxFindings,
 				DisablePatchSummary:       profile.DisablePatchSummary,
 				DisableSuggestions:        profile.DisableSuggestions,
 				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
@@ -607,6 +616,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				MaxOutputRetries:          profile.MaxOutputRetries,
 				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
 				NudgeCount:                profile.NudgeCount,
+				MaxFindings:               profile.MaxFindings,
 				DisablePatchSummary:       profile.DisablePatchSummary,
 				DisableSuggestions:        profile.DisableSuggestions,
 				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
@@ -686,6 +696,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				MaxOutputRetries:          profile.MaxOutputRetries,
 				MaxReasoningSeconds:       profile.MaxReasoningSeconds,
 				NudgeCount:                profile.NudgeCount,
+				MaxFindings:               profile.MaxFindings,
 				DisablePatchSummary:       profile.DisablePatchSummary,
 				DisableSuggestions:        profile.DisableSuggestions,
 				DisableJSONResponseFormat: profile.DisableJSONResponseFormat,
@@ -2201,6 +2212,10 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 		disablable(profile.MaxRateLimitDelaySeconds, "s", "rate-limit-delay"),
 		unlimited(req.Concurrency, "", "concurrency"),
 		unlimited(req.MaxToolCalls, "", "tool calls"),
+	}
+	// Unset (0) means unlimited and is the default; only surface a real cap.
+	if req.MaxFindings > 0 {
+		flags = append(flags, fmt.Sprintf("≤%d findings", req.MaxFindings))
 	}
 	if !req.DisableParallelToolCalls {
 		flags = append(flags, "parallel")

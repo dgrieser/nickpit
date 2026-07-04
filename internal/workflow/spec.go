@@ -199,6 +199,7 @@ type StepOverride struct {
 
 	// Stage-specific tunables.
 	NudgeCount                *int     `yaml:"nudge_count"`
+	MaxFindings               *int     `yaml:"max_findings"`
 	DisableReasoningExtract   *bool    `yaml:"disable_reasoning_extract"`
 	DisableParallelToolCalls  *bool    `yaml:"disable_parallel_tool_calls"`
 	DisablePatchSummary       *bool    `yaml:"disable_patch_summary"`
@@ -221,7 +222,7 @@ var stepOverrideKeys = []string{
 	"scope",
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds",
-	"nudge_count", "disable_reasoning_extract", "disable_parallel_tool_calls",
+	"nudge_count", "max_findings", "disable_reasoning_extract", "disable_parallel_tool_calls",
 	"disable_patch_summary", "disable_suggestions", "disable_json_response_format", "verify_drop_policy",
 	"confidence_threshold", "priority_threshold",
 }
@@ -324,6 +325,10 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.NudgeCount != nil {
 		p.NudgeCount = *o.NudgeCount
 		req.NudgeCount = *o.NudgeCount
+	}
+	if o.MaxFindings != nil {
+		p.MaxFindings = *o.MaxFindings
+		req.MaxFindings = *o.MaxFindings
 	}
 	if o.DisableJSONResponseFormat != nil && *o.DisableJSONResponseFormat {
 		// Disabling response_format is monotonic: a per-step override may turn it
