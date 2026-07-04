@@ -113,6 +113,7 @@ nickpit_args=(
     --profile "${profile}"
     --show-progress
     --show-reasoning
+    --max-findings 6
     --verbose
 )
 
