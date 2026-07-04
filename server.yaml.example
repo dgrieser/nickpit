@@ -1,0 +1,43 @@
+# nickpit gitlab serve configuration (--serve-config, default: server.yaml).
+# ${VAR} references are expanded from the environment at load time.
+
+# HTTP listen address for webhooks and /healthz.
+listen: ":8080"
+
+# Directory for per-review child process logs.
+log_dir: "logs"
+
+# Maximum parallel review child processes.
+review_concurrency: 2
+
+# How long running reviews may finish after SIGTERM before being terminated.
+shutdown_grace: "10m"
+
+# GitLab instance the webhooks come from and the reviews are posted to.
+gitlab_base_url: "https://gitlab.example.com"
+
+# Projects carrying this topic are auto-reviewed on MR activity.
+topic: "nickpit"
+
+# Awarding this emoji on an MR requests a review (any project, drafts too).
+trigger_emoji: "nickpit"
+
+# Emoji the daemon awards on the MR when a review starts ("" disables).
+start_emoji: "eyes"
+
+# One entry per GitLab group. Events are routed to the longest matching path
+# prefix. token: group access token (role Developer, scope api); reviews are
+# posted as its bot user. webhook_secret: the group webhook's secret token.
+groups:
+  - path: "platform"
+    token: "${NICKPIT_GL_TOKEN_PLATFORM}"
+    webhook_secret: "${NICKPIT_GL_SECRET_PLATFORM}"
+  # Nested groups may carry their own token/secret; the longer prefix wins.
+  # - path: "platform/legacy"
+  #   token: "${NICKPIT_GL_TOKEN_LEGACY}"
+  #   webhook_secret: "${NICKPIT_GL_SECRET_LEGACY}"
+
+# Extra CLI arguments appended verbatim to every review child process.
+review:
+  extra_args: []
+  # extra_args: ["--profile", "default", "--show-progress"]

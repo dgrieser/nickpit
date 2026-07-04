@@ -1,0 +1,14 @@
+{
+  "object_kind": "merge_request",
+  "user": {"id": 10, "username": "alice"},
+  "project": {"id": 42, "path_with_namespace": "platform/api", "default_branch": "main"},
+  "object_attributes": {
+    "action": "update",
+    "iid": 7,
+    "draft": false,
+    "state": "opened",
+    "oldrev": "sha-old",
+    "last_commit": {"id": "sha-new-2"}
+  },
+  "changes": {}
+}

@@ -87,10 +87,23 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/github/publish.go`: GitHub review/comment publishing.
 - `internal/scm/gitlab/adapter.go`: GitLab adapter wiring.
 - `internal/scm/gitlab/client.go`: GitLab API client.
-- `internal/scm/gitlab/mr.go`: Merge request loading and review source construction.
+- `internal/scm/gitlab/mr.go`: Merge request loading, review source construction, and live MR status (`FetchMRStatus`).
+- `internal/scm/gitlab/project.go`: Project lookup (topics), current-user lookup, and award-emoji posting.
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
 - `internal/scm/reviewmd/render.go`: Markdown review report rendering.
+
+## GitLab Webhook Daemon (`nickpit gitlab serve`)
+
+- `internal/serve/server.go`: HTTP server wiring, /healthz, and graceful-shutdown sequencing.
+- `internal/serve/handler.go`: Webhook endpoint: body limit, group match, constant-time secret check, event classification, fast-ack enqueue.
+- `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs ignore).
+- `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
+- `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, and shutdown grace handling.
+- `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.
+- `internal/serve/runner.go`: `ReviewRunner` seam and `ExecRunner` spawning `nickpit gitlab mr --publish` children with log capture.
+- `internal/serve/topics.go`: TTL + singleflight cache for project topics.
+- `internal/config/serve.go`: `server.yaml` schema, loading (env expansion), defaults, and validation for the daemon.
 
 ## Output, Logging, and Support Packages
 
