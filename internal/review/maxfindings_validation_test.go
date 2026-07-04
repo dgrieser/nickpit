@@ -252,8 +252,8 @@ func TestRunAgent_MaxFindingsNudgeBudgetAndRetry(t *testing.T) {
 		t.Fatalf("llm calls = %d, want initial, nudge, retry", len(llmClient.reqs))
 	}
 	nudgeMessage := llmClient.reqs[1].Messages[len(llmClient.reqs[1].Messages)-1].Content
-	if !strings.Contains(nudgeMessage, "finding limit for this review is 2") || !strings.Contains(nudgeMessage, "at most 1 more finding") {
-		t.Fatalf("nudge message missing remaining-budget line:\n%s", nudgeMessage)
+	if strings.Contains(nudgeMessage, "finding limit") || strings.Contains(nudgeMessage, "at most") {
+		t.Fatalf("nudge message mentions the finding limit:\n%s", nudgeMessage)
 	}
 	retryMessage := llmClient.reqs[2].Messages[len(llmClient.reqs[2].Messages)-1].Content
 	if !strings.Contains(retryMessage, "already reported 1 finding") || !strings.Contains(retryMessage, "may add at most 1 new finding") {

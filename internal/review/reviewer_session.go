@@ -284,22 +284,14 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 		s.nudgeReasoningEffort = e.config.ReasoningEffort
 	}
 	e.logf(nudgeCtx, "Nudge round: round=%d/%d", iterIdx+1, total)
-	remainingFindings := 0
-	if s.agent.maxFindings > 0 {
-		remainingFindings = max(s.agent.maxFindings-len(s.totalFindings), 0)
-	}
 	nudgeText, err := renderPromptFile("agent_review_nudge_user_message.tmpl", struct {
 		HasResponseFormat bool
 		QuestionsSnippet  string
 		ReasoningFindings string
-		MaxFindings       int
-		RemainingFindings int
 	}{
 		HasResponseFormat: s.agent.schemaKind != llm.SchemaKindText,
 		QuestionsSnippet:  strings.TrimSpace(s.agent.questionsSnippet),
 		ReasoningFindings: formattedReasoningFindings,
-		MaxFindings:       s.agent.maxFindings,
-		RemainingFindings: remainingFindings,
 	})
 	if err != nil {
 		s.nudgeErr = err
