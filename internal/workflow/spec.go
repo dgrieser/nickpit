@@ -804,6 +804,9 @@ func (s Spec) Validate() error {
 		if err := validateScope(entry.Type, entry.Config); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 		}
+		if err := validateStepOverrideValues(entry.Config); err != nil {
+			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
+		}
 		if err := validateStepTimeBudgets(entry); err != nil {
 			return "", fmt.Errorf("workflow: step %d: %w", idx, err)
 		}
@@ -1065,6 +1068,9 @@ func validatePipelineGroup(entry StepEntry, idx *int) error {
 		if err := validateScope(child.Type, child.Config); err != nil {
 			return fmt.Errorf("workflow: step %d: %w", *idx, err)
 		}
+		if err := validateStepOverrideValues(child.Config); err != nil {
+			return fmt.Errorf("workflow: step %d: %w", *idx, err)
+		}
 		if err := validateStepTimeBudgets(child); err != nil {
 			return fmt.Errorf("workflow: step %d: %w", *idx, err)
 		}
@@ -1074,6 +1080,18 @@ func validatePipelineGroup(entry StepEntry, idx *int) error {
 		if child.Type != StepMerge && len(child.FindingsFrom) > 0 {
 			return fmt.Errorf("workflow: step %d: findings_from is only allowed on the merge step of a pipeline", *idx)
 		}
+	}
+	return nil
+}
+
+// validateStepOverrideValues rejects override values that are malformed in any
+// step context, mirroring the profile-level config validation.
+func validateStepOverrideValues(cfg *StepOverride) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.MaxFindings != nil && *cfg.MaxFindings < 0 {
+		return fmt.Errorf("max_findings must be non-negative")
 	}
 	return nil
 }

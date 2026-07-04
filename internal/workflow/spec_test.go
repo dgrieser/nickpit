@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -814,6 +815,32 @@ func TestStepOverrideResolveMaxFindings(t *testing.T) {
 	gotProfile, gotReq = (&StepOverride{}).Resolve(base, req)
 	if gotProfile.MaxFindings != 20 || gotReq.MaxFindings != 20 {
 		t.Fatalf("unset max_findings did not inherit: profile=%d req=%d", gotProfile.MaxFindings, gotReq.MaxFindings)
+	}
+}
+
+func TestValidateRejectsNegativeMaxFindings(t *testing.T) {
+	neg := -1
+	spec := Spec{Version: SpecVersion, Steps: []StepEntry{
+		{Type: StepReviewPrefix + "security", Config: &StepOverride{MaxFindings: &neg}},
+	}}
+	err := spec.Validate()
+	if err == nil {
+		t.Fatal("expected negative max_findings to be rejected")
+	}
+	if !strings.Contains(err.Error(), "max_findings must be non-negative") {
+		t.Fatalf("error = %q, want max_findings non-negative message", err)
+	}
+
+	pipelineSpec := Spec{Version: SpecVersion, Steps: []StepEntry{
+		{Pipeline: []StepEntry{
+			{Type: StepMerge, Config: &StepOverride{MaxFindings: &neg}},
+			{Type: StepFinalize},
+			{Type: StepVerdict},
+		}},
+	}}
+	err = pipelineSpec.Validate()
+	if err == nil || !strings.Contains(err.Error(), "max_findings must be non-negative") {
+		t.Fatalf("pipeline error = %v, want max_findings non-negative message", err)
 	}
 }
 

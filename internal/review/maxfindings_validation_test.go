@@ -137,6 +137,20 @@ func TestEnforceMaxFindingsResponseCutsWeakest(t *testing.T) {
 	if len(full.Findings) != 0 {
 		t.Fatalf("at-limit findings = %d, want all cut", len(full.Findings))
 	}
+
+	// Duplicate entries are pruned even within budget: reviewerInitial stores
+	// resp.Findings verbatim and duplicates would inflate the session count.
+	dup := nudgeReviewResponse("dup", 1,
+		maxFindingsTestFinding("A", 1, 0.8),
+		maxFindingsTestFinding("A", 1, 0.8),
+		maxFindingsTestFinding("B", 0, 0.9),
+	)
+	if msg := enforceMaxFindingsResponse("Code Quality", 3, nil, dup); msg != "" {
+		t.Fatalf("within-budget duplicate prune message = %q, want none", msg)
+	}
+	if got, want := findingTitles(dup.Findings), []string{"A", "B"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("deduplicated findings = %#v, want %#v", got, want)
+	}
 }
 
 func TestRunAgent_MaxFindingsInitialRetry(t *testing.T) {
@@ -244,6 +258,35 @@ func TestRunAgent_MaxFindingsNudgeBudgetAndRetry(t *testing.T) {
 	retryMessage := llmClient.reqs[2].Messages[len(llmClient.reqs[2].Messages)-1].Content
 	if !strings.Contains(retryMessage, "already reported 1 finding") || !strings.Contains(retryMessage, "may add at most 1 new finding") {
 		t.Fatalf("nudge retry message missing session budget guidance:\n%s", retryMessage)
+	}
+}
+
+func TestRunAgent_MaxFindingsDuplicatesDoNotBlockNudges(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("initial", 1,
+				maxFindingsTestFinding("A", 1, 0.8),
+				maxFindingsTestFinding("A", 1, 0.8),
+			)},
+			{resp: nudgeReviewResponse("nudge", 1, maxFindingsTestFinding("B", 0, 0.9))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	// The duplicate initial entry collapses to one unique finding, so the
+	// session is below the limit and the nudge round must still run.
+	result, err := engine.runAgent(context.Background(), maxFindingsNudgeTestAgent(2), model.ReviewRequest{NudgeCount: 1, MaxOutputRetries: 1, MaxFindings: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := findingTitles(result.resp.Findings), []string{"A", "B"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("findings = %#v, want %#v", got, want)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want initial plus nudge (duplicates must not fill the limit)", len(llmClient.reqs))
+	}
+	if got, want := result.run.Status, model.AgentRunStatusOK; got != want {
+		t.Fatalf("status = %q, want clean run", got)
 	}
 }
 

@@ -59,6 +59,12 @@ func enforceMaxFindingsResponse(agentName string, limit int, existing []model.Fi
 	appendable := appendableFindings(existing, resp.Findings)
 	budget := max(limit-len(existing), 0)
 	if len(appendable) <= budget {
+		// Shed duplicate entries even within budget: reviewerInitial stores
+		// resp.Findings verbatim, and duplicates would inflate the session
+		// count against the limit (findingLimitReached, nudge budgets).
+		if len(appendable) != len(resp.Findings) {
+			resp.Findings = appendable
+		}
 		return ""
 	}
 	kept, dropped := splitStrongestFindings(appendable, budget)
