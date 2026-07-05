@@ -184,7 +184,7 @@ var defaultProfiles = []defaultProfile{
 			Temperature:     ptrTo(0.6),
 			TopP:            ptrTo(0.95),
 			TopK:            ptrTo(20),
-			PresencePenalty: ptrTo(0.0),
+			PresencePenalty: ptrTo(1.0),
 			Small: SmallModelConfig{
 				Model:           "Qwen3.6-35B-A3B-FP8",
 				ReasoningEffort: "none",
