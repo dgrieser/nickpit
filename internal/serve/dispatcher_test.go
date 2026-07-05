@@ -58,6 +58,7 @@ type fakeRunner struct {
 	mu    sync.Mutex
 	specs []ReviewSpec
 	gate  chan struct{}
+	exit  int
 	peak  atomic.Int64
 	live  atomic.Int64
 }
@@ -80,7 +81,7 @@ func (r *fakeRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 		case <-ctx.Done():
 		}
 	}
-	return 0, "fake.log", nil
+	return r.exit, "fake.log", nil
 }
 
 func (r *fakeRunner) ran() []ReviewSpec {
@@ -271,6 +272,24 @@ func TestEnqueuePendingPreservesManualKind(t *testing.T) {
 		t.Fatalf("pending = kind %v sha %q, want manual with newest sha", kind, sha)
 	}
 	close(env.runner.gate)
+}
+
+// Workers must not start queued jobs once the intake context is cancelled —
+// only already-running reviews get the shutdown grace period.
+func TestWorkersDoNotStartQueuedJobsAfterCancel(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	for iid := 1; iid <= 5; iid++ {
+		dispatcher.Enqueue(autoEvent(iid, fmt.Sprintf("sha-%d", iid), group))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dispatcher.Start(ctx, 2)
+	dispatcher.Shutdown(time.Second)
+	if got := len(runner.ran()); got != 0 {
+		t.Fatalf("runs = %d, want 0 after pre-cancelled context", got)
+	}
 }
 
 func TestSHALRUEviction(t *testing.T) {

@@ -151,6 +151,14 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 	for range workers {
 		d.workers.Go(func() {
 			for {
+				// Check cancellation first: with a backlog, the two-way
+				// select below could keep picking queued jobs after shutdown
+				// began — only already-running reviews get the grace period.
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 				select {
 				case <-ctx.Done():
 					return

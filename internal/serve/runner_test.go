@@ -70,6 +70,73 @@ func TestExecRunnerInvocation(t *testing.T) {
 	}
 }
 
+// The child environment must not contain other groups' tokens or any
+// webhook secret, regardless of which env var names carry them.
+func TestExecRunnerScrubsSecretsFromChildEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake not portable to windows")
+	}
+	path := filepath.Join(t.TempDir(), "envdump")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nenv\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SMOKE_OTHER_GROUP_TOKEN", "other-secret-token")
+	t.Setenv("SMOKE_HOOK_SECRET", "hook-secret-value")
+	t.Setenv("SMOKE_HARMLESS", "keep-me")
+
+	runner := &ExecRunner{
+		Executable:  path,
+		scrubValues: map[string]bool{"other-secret-token": true, "hook-secret-value": true},
+		now:         time.Now,
+	}
+	_, logPath, err := runner.Run(context.Background(), testSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := string(data)
+	if strings.Contains(env, "other-secret-token") || strings.Contains(env, "hook-secret-value") {
+		t.Fatalf("child env leaks daemon secrets:\n%s", env)
+	}
+	if !strings.Contains(env, "SMOKE_HARMLESS=keep-me") {
+		t.Fatal("unrelated env vars must pass through")
+	}
+	if !strings.Contains(env, "NICKPIT_GITLAB_TOKEN=group-token") {
+		t.Fatal("own group token must be injected")
+	}
+}
+
+func TestExecRunnerPrivateLogPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions")
+	}
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	spec := testSpec(t)
+	spec.LogDir = filepath.Join(t.TempDir(), "logs")
+
+	_, logPath, err := runner.Run(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirInfo, err := os.Stat(spec.LogDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := dirInfo.Mode().Perm(); mode != 0o700 {
+		t.Fatalf("log dir mode = %o, want 700", mode)
+	}
+	fileInfo, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := fileInfo.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("log file mode = %o, want 600", mode)
+	}
+}
+
 func TestExecRunnerChildFailureExitCode(t *testing.T) {
 	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
 	spec := testSpec(t)

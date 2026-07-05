@@ -41,7 +41,11 @@ func NewServer(listen string, handler *Handler, dispatcher *Dispatcher, grace ti
 // Run serves until ctx is cancelled, then drains: stop accepting requests,
 // let running reviews finish within the grace period, terminate stragglers.
 func (s *Server) Run(ctx context.Context, workers int) error {
-	s.dispatcher.Start(ctx, workers)
+	// Workers run on a derived context so a listen failure (port in use, bad
+	// address) can stop them too — Shutdown alone only waits for them.
+	workerCtx, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+	s.dispatcher.Start(workerCtx, workers)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -52,6 +56,7 @@ func (s *Server) Run(ctx context.Context, workers int) error {
 	select {
 	case err := <-errCh:
 		// Listen failed outright; still stop workers before returning.
+		stopWorkers()
 		s.dispatcher.Shutdown(0)
 		return err
 	case <-ctx.Done():

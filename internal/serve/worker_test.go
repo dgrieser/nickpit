@@ -102,6 +102,31 @@ func TestWorkerStartEmojiDisabled(t *testing.T) {
 	}
 }
 
+// A failed run must not mark the head as reviewed: the next auto event for
+// the same SHA has to retry instead of being dropped.
+func TestWorkerFailedRunDoesNotMarkReviewed(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.exit = 1
+
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 1 {
+		t.Fatal("review must have been attempted")
+	}
+	if dispatcher.alreadyReviewed(42, 7, "sha-1") {
+		t.Fatal("failed run must not mark the SHA reviewed")
+	}
+
+	runner.exit = 0
+	dispatcher.process(context.Background(), autoEvent(7, "sha-1", group))
+	if len(runner.ran()) != 2 {
+		t.Fatal("retry after failure must run")
+	}
+	if !dispatcher.alreadyReviewed(42, 7, "sha-1") {
+		t.Fatal("successful run must mark the SHA reviewed")
+	}
+}
+
 func TestWorkerAuthoritativeSHABeatsPayload(t *testing.T) {
 	// Payload carried sha-1 but the MR moved on to sha-2 before the worker
 	// ran: the LRU must record sha-2 so the follow-up webhook for sha-2 is

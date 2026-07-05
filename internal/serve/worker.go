@@ -42,7 +42,6 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 		log.Info("skipping review", "reason", "head already reviewed", "sha", status.HeadSHA)
 		return
 	}
-	d.markReviewed(event.ProjectID, event.IID, status.HeadSHA)
 
 	if d.cfg.StartEmoji != "" {
 		if err := event.Group.Client.AwardMREmoji(ctx, event.ProjectID, event.IID, d.cfg.StartEmoji); err != nil {
@@ -69,6 +68,10 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 	case exitCode != 0:
 		log.Error("review exited with error", "exit_code", exitCode, "duration", duration, "log", logPath)
 	default:
+		// Only a successful run marks the head reviewed: a transient failure
+		// must not make later auto events for the same SHA drop as
+		// "already reviewed" when nothing was published.
+		d.markReviewed(event.ProjectID, event.IID, status.HeadSHA)
 		log.Info("review finished", "duration", duration, "log", logPath)
 	}
 }
