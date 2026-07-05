@@ -19,7 +19,7 @@ func NewTrimmer(maxTokens int, estimator model.TokenEstimator) *Trimmer {
 		estimator = model.SimpleEstimator{}
 	}
 	if maxTokens <= 0 {
-		maxTokens = 120000
+		maxTokens = 240000
 	}
 	return &Trimmer{maxTokens: maxTokens, estimator: estimator}
 }

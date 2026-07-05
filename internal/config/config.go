@@ -20,7 +20,7 @@ import (
 const (
 	DefaultProfileName         = "default"
 	DefaultFallbackProfileName = "openrouter"
-	DefaultMaxContextToken     = 120000
+	DefaultMaxContextToken     = 240000
 	// DefaultMaxToolCalls is 0, meaning unlimited tool calls per agent.
 	DefaultMaxToolCalls             = 0
 	DefaultMaxDuplicateToolCalls    = 5
