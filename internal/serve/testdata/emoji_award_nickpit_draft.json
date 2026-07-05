@@ -1,0 +1,18 @@
+{
+  "object_kind": "emoji",
+  "event_type": "award",
+  "user": {"id": 10, "username": "alice"},
+  "project": {"id": 43, "path_with_namespace": "platform/legacy/tool", "default_branch": "main"},
+  "object_attributes": {
+    "action": "award",
+    "name": "nickpit",
+    "awardable_type": "MergeRequest",
+    "awardable_id": 1235
+  },
+  "merge_request": {
+    "iid": 12,
+    "draft": true,
+    "state": "opened",
+    "last_commit": {"id": "sha-emoji-2"}
+  }
+}

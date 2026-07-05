@@ -1571,3 +1571,25 @@ func TestMissingAPIKeyHintUsesDefaultProfileEnv(t *testing.T) {
 		})
 	}
 }
+
+func TestGitLabServeCommandFlags(t *testing.T) {
+	cmd := newRootCmd()
+	found, _, err := cmd.Find([]string{"gitlab", "serve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"serve-config", "listen", "review-concurrency", "serve-log-dir", "shutdown-grace"} {
+		if found.Flags().Lookup(flag) == nil {
+			t.Fatalf("serve command missing --%s flag", flag)
+		}
+	}
+}
+
+func TestGitLabServeFailsWithoutConfig(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"gitlab", "serve", "--serve-config", filepath.Join(t.TempDir(), "absent.yaml")})
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "serve config") {
+		t.Fatalf("err = %v, want serve config error", err)
+	}
+}

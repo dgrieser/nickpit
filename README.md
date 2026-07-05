@@ -195,6 +195,63 @@ With `--publish`, findings whose lines are part of the diff are posted inline an
 
 Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
 
+### GitLab Webhook Daemon
+
+`nickpit gitlab serve` runs an HTTP daemon that reviews MRs automatically from GitLab **group webhooks** — no CI pipeline integration needed. Each review runs as a separate `nickpit gitlab mr --publish` child process; comment fingerprints keep re-reviews idempotent.
+
+Triggers:
+
+- **Auto**: MR opened, reopened, new commits pushed, or marked ready — only for projects carrying the opt-in topic (default `nickpit`). Draft MRs are skipped.
+- **Manual**: a user awards the trigger emoji (default a custom emoji named `nickpit`) on an MR — works regardless of topic and also on drafts.
+
+When a review starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables).
+
+```bash
+nickpit gitlab serve --serve-config server.yaml
+```
+
+The daemon config is a separate file (default `server.yaml`, see [`server.yaml.example`](server.yaml.example)); `${VAR}` references are expanded from the environment:
+
+```yaml
+gitlab_base_url: "https://gitlab.example.com"
+groups:
+  - path: "platform"                              # group (or subgroup) path prefix
+    token: "${NICKPIT_GL_TOKEN_PLATFORM}"         # group access token, api scope
+    webhook_secret: "${NICKPIT_GL_SECRET_PLATFORM}"
+```
+
+Events are routed to the group with the longest matching path prefix, so nested groups can carry their own token and secret. The regular `.nickpit.yaml` (LLM profile) is still read by the review child processes; `--config` is forwarded to them, and the group token/base URL are injected via `NICKPIT_GITLAB_TOKEN`/`NICKPIT_GITLAB_BASE_URL`.
+
+GitLab setup per group (group webhooks require GitLab Premium; emoji events require GitLab >= 17.5):
+
+1. Create a group access token (role Developer, scope `api`) — reviews are posted as this bot user.
+2. Create the custom emoji `nickpit` in the group (for manual trigger).
+3. Group → Settings → Webhooks: URL `https://<daemon>/webhooks/gitlab`, the secret token, and enable **Merge request events** and **Emoji events**.
+4. Opt projects into auto-review by adding the topic `nickpit` (Project → Settings → General → Topics).
+
+Docker compose example:
+
+```yaml
+services:
+  nickpit:
+    image: nickpit
+    command: ["gitlab", "serve"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nickpit.yaml:/work/.nickpit.yaml:ro
+      - ./server.yaml:/work/server.yaml:ro
+      - nickpit-logs:/work/logs
+    environment:
+      OPENROUTER_API_KEY: "..."
+      NICKPIT_GL_TOKEN_PLATFORM: "..."
+      NICKPIT_GL_SECRET_PLATFORM: "..."
+volumes:
+  nickpit-logs:
+```
+
+Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints. Queue state is in-memory only; events arriving while the daemon is down are recovered on the next push or by awarding the trigger emoji.
+
 ### Progress
 
 Append `--show-progress` to print review details and tool calls on stderr.

@@ -41,6 +41,8 @@ ENV GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0=safe.directory \
     GIT_CONFIG_VALUE_0=* \
     GIT_EXEC_PATH=/usr/lib/git-core
+# Webhook daemon default port (nickpit gitlab serve --listen :8080).
+EXPOSE 8080
 # /work ships from the bundle at mode 1777 (world-writable + sticky, like /tmp).
 # WORKDIR would otherwise auto-create it as root:root 0755, blocking the default
 # nonroot user (and any `--user <uid>`) from writing it when no volume is mounted.

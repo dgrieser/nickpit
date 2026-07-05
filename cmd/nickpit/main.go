@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -29,6 +30,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/review"
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
@@ -712,7 +714,101 @@ func (a *app) newGitLabCmd() *cobra.Command {
 	mrCmd.Flags().StringVar(&rawURL, "url", "", "GitLab merge request URL")
 	mrCmd.Flags().BoolVar(&publish, "publish", false, "Post the review back to the GitLab MR as comments (summary + one per finding)")
 	cmd.AddCommand(mrCmd)
+	cmd.AddCommand(a.newGitLabServeCmd())
 	return cmd
+}
+
+func (a *app) newGitLabServeCmd() *cobra.Command {
+	var serveConfigPath string
+	var listen string
+	var reviewConcurrency int
+	var logDir string
+	var shutdownGrace time.Duration
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Run a webhook daemon reviewing GitLab MRs automatically",
+		Long: "Run an HTTP daemon receiving GitLab group webhooks (merge request + emoji events). " +
+			"MR activity triggers reviews on projects carrying the opt-in topic; awarding the trigger " +
+			"emoji on an MR requests a review explicitly. Each review runs as a separate nickpit child process.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.LoadServe(serveConfigPath)
+			if err != nil {
+				return err
+			}
+			if cmd.Flags().Changed("listen") {
+				cfg.Listen = listen
+			}
+			if cmd.Flags().Changed("review-concurrency") {
+				cfg.ReviewConcurrency = reviewConcurrency
+			}
+			if cmd.Flags().Changed("serve-log-dir") {
+				cfg.LogDir = logDir
+			}
+			if cmd.Flags().Changed("shutdown-grace") {
+				cfg.ShutdownGrace = shutdownGrace.String()
+			}
+			if err := cfg.Validate(); err != nil {
+				return fmt.Errorf("serve config: %w", err)
+			}
+			baseURL := cfg.GitLabBaseURL
+			if a.gitlabBaseURL != "" {
+				baseURL = a.gitlabBaseURL
+			}
+			baseURL = glscm.NormalizeBaseURL(baseURL)
+
+			logLevel := slog.LevelInfo
+			if a.verbose {
+				logLevel = slog.LevelDebug
+			}
+			var logHandler slog.Handler
+			if a.jsonOutput {
+				logHandler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
+			} else {
+				logHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
+			}
+			log := slog.New(logHandler)
+
+			groups, warnings := serve.NewGroupSet(cmd.Context(), cfg.Groups, baseURL, func(ctx context.Context, client *glscm.Client) (int, error) {
+				user, err := client.CurrentUser(ctx)
+				if err != nil {
+					return 0, err
+				}
+				return user.ID, nil
+			})
+			for _, warning := range warnings {
+				log.Warn("bot user lookup failed; own emoji awards are filtered by name only (start_emoji never equals trigger_emoji, enforced at config validation)", "error", warning)
+			}
+
+			// Group tokens and webhook secrets typically sit in the daemon's
+			// environment (server.yaml ${VAR} references); review children
+			// must only receive their own group's injected token.
+			scrub := make([]string, 0, len(cfg.Groups)*2)
+			for _, group := range cfg.Groups {
+				scrub = append(scrub, group.Token, group.WebhookSecret)
+			}
+			runner, err := serve.NewExecRunner(scrub)
+			if err != nil {
+				return err
+			}
+			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, serve.WorkerConfig{
+				Topic:      cfg.Topic,
+				StartEmoji: cfg.StartEmojiName(),
+				BaseURL:    baseURL,
+				ConfigPath: a.configPath,
+				ExtraArgs:  cfg.Review.ExtraArgs,
+				LogDir:     cfg.LogDir,
+			}, log)
+			handler := serve.NewHandler(groups, dispatcher, cfg.TriggerEmoji, log)
+			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
+			return server.Run(cmd.Context(), cfg.ReviewConcurrency)
+		},
+	}
+	serveCmd.Flags().StringVar(&serveConfigPath, "serve-config", config.DefaultServeConfigPath, "Serve daemon config file (groups, tokens, webhook secrets)")
+	serveCmd.Flags().StringVar(&listen, "listen", config.DefaultServeListen, "HTTP listen address")
+	serveCmd.Flags().IntVar(&reviewConcurrency, "review-concurrency", config.DefaultServeReviewConcurrency, "Maximum parallel review child processes")
+	serveCmd.Flags().StringVar(&logDir, "serve-log-dir", config.DefaultServeLogDir, "Directory for per-review child process logs")
+	serveCmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Minute, "How long running reviews may finish after SIGTERM before being terminated (an interrupted publish heals on the next run via comment fingerprints)")
+	return serveCmd
 }
 
 func (a *app) newInspectCmd() *cobra.Command {

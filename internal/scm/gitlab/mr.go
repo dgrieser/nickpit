@@ -15,6 +15,8 @@ type mrResponse struct {
 	Description     string `json:"description"`
 	WebURL          string `json:"web_url"`
 	SHA             string `json:"sha"`
+	State           string `json:"state"`
+	Draft           bool   `json:"draft"`
 	SourceBranch    string `json:"source_branch"`
 	TargetBranch    string `json:"target_branch"`
 	SourceProjectID int    `json:"source_project_id"`
@@ -191,6 +193,24 @@ func (c *Client) projectCloneURL(ctx context.Context, projectID int, fallbackPro
 		return "", err
 	}
 	return project.HTTPURLToRepo, nil
+}
+
+// MRStatus is the minimal live state of an MR, fetched by the serve daemon
+// right before starting a review so closed/merged/draft MRs are skipped on
+// authoritative data rather than a possibly stale webhook payload.
+type MRStatus struct {
+	State   string
+	Draft   bool
+	HeadSHA string
+}
+
+// FetchMRStatus fetches an MR's current state by numeric project ID.
+func (c *Client) FetchMRStatus(ctx context.Context, projectID, iid int) (*MRStatus, error) {
+	var mr mrResponse
+	if err := c.Get(ctx, fmt.Sprintf("/projects/%d/merge_requests/%d", projectID, iid), &mr); err != nil {
+		return nil, err
+	}
+	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA}, nil
 }
 
 // DiffRefs holds the three commit SHAs GitLab requires in a diff-note position.
