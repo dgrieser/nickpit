@@ -776,7 +776,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				return user.ID, nil
 			})
 			for _, warning := range warnings {
-				log.Warn("bot user lookup failed; emoji-loop guard limited to name matching", "error", warning)
+				log.Warn("bot user lookup failed; own emoji awards are filtered by name only (start_emoji never equals trigger_emoji, enforced at config validation)", "error", warning)
 			}
 
 			runner, err := serve.NewExecRunner()

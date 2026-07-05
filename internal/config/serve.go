@@ -136,5 +136,14 @@ func (c *ServeConfig) Validate() error {
 	if c.TriggerEmoji == "" {
 		errs = append(errs, errors.New("trigger_emoji must not be empty"))
 	}
+	if c.LogDir == "" {
+		errs = append(errs, errors.New("log_dir must not be empty"))
+	}
+	// The daemon awards start_emoji on every review it launches; if that were
+	// also the trigger emoji, each award would fire an emoji webhook that
+	// requests the next review.
+	if c.StartEmojiName() != "" && c.StartEmojiName() == c.TriggerEmoji {
+		errs = append(errs, fmt.Errorf("start_emoji must differ from trigger_emoji (%q): the daemon's own award would trigger another review", c.TriggerEmoji))
+	}
 	return errors.Join(errs...)
 }

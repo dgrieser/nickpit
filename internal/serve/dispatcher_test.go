@@ -228,6 +228,51 @@ func TestDispatcherConcurrencyBound(t *testing.T) {
 	}
 }
 
+// A queued manual trigger must not be downgraded by a later auto event for
+// the same MR — the auto rules (topic, draft, SHA LRU) would drop the review
+// the user explicitly requested. The newer event's payload still wins.
+func TestEnqueueCoalescePreservesManualKind(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	manual := autoEvent(7, "sha-1", group)
+	manual.Kind = TriggerManual
+	dispatcher.Enqueue(manual)
+	dispatcher.Enqueue(autoEvent(7, "sha-2", group))
+
+	dispatcher.mu.Lock()
+	state := dispatcher.states[jobKey{ProjectID: 42, IID: 7}]
+	latest := state.latest
+	dispatcher.mu.Unlock()
+	if latest.Kind != TriggerManual {
+		t.Fatalf("kind = %v, manual must survive coalescing", latest.Kind)
+	}
+	if latest.HeadSHA != "sha-2" {
+		t.Fatalf("sha = %q, newest payload must win", latest.HeadSHA)
+	}
+}
+
+func TestEnqueuePendingPreservesManualKind(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true)
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+
+	// While MR 7 runs: manual arrives, then auto — pending must stay manual.
+	manual := autoEvent(7, "sha-2", env.group)
+	manual.Kind = TriggerManual
+	env.dispatcher.Enqueue(manual)
+	env.dispatcher.Enqueue(autoEvent(7, "sha-3", env.group))
+
+	env.dispatcher.mu.Lock()
+	pending := env.dispatcher.states[jobKey{ProjectID: 42, IID: 7}].pending
+	kind, sha := pending.Kind, pending.HeadSHA
+	env.dispatcher.mu.Unlock()
+	if kind != TriggerManual || sha != "sha-3" {
+		t.Fatalf("pending = kind %v sha %q, want manual with newest sha", kind, sha)
+	}
+	close(env.runner.gate)
+}
+
 func TestSHALRUEviction(t *testing.T) {
 	lru := newSHALRU(2)
 	lru.Add("a")

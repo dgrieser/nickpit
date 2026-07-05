@@ -94,6 +94,8 @@ func TestServeConfigValidate(t *testing.T) {
 		{"bad duration", "shutdown_grace: nope\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "shutdown_grace"},
 		{"bad concurrency", "review_concurrency: 0\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "review_concurrency"},
 		{"empty topic", "topic: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "topic must not be empty"},
+		{"empty log dir", "log_dir: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "log_dir must not be empty"},
+		{"start equals trigger emoji", "start_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "start_emoji must differ from trigger_emoji"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

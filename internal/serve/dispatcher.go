@@ -115,9 +115,12 @@ func (d *Dispatcher) Enqueue(event Event) {
 		switch state.status {
 		case stateRunning:
 			pending := event
+			if state.pending != nil {
+				pending = mergeEvents(*state.pending, event)
+			}
 			state.pending = &pending
 		default:
-			state.latest = event
+			state.latest = mergeEvents(state.latest, event)
 		}
 		return
 	}
@@ -128,6 +131,17 @@ func (d *Dispatcher) Enqueue(event Event) {
 		d.dropped++
 		d.log.Error("job queue full, dropping event", "project", event.ProjectPath, "iid", event.IID, "dropped_total", d.dropped)
 	}
+}
+
+// mergeEvents coalesces a newer event onto a not-yet-executed one. The newer
+// event wins (freshest head SHA), but a pending manual trigger is never
+// downgraded: an explicit user request must not lose its topic/draft/LRU
+// bypasses to a later auto event.
+func mergeEvents(existing, incoming Event) Event {
+	if existing.Kind == TriggerManual {
+		incoming.Kind = TriggerManual
+	}
+	return incoming
 }
 
 // Start launches the worker pool. Workers stop picking up new jobs once ctx
