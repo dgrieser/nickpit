@@ -12,7 +12,7 @@ NickPit is a CLI that reviews local git changes, GitHub pull requests, and GitLa
 
 Most LLM review tools are one prompt in a trench coat. NickPit is a pipeline. Here's what you actually get:
 
-### 6️⃣ specialists, not one generalist
+### 6️⃣ Six specialists, not one generalist
 
 Every review starts with a
 
