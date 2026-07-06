@@ -167,6 +167,13 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 				case <-ctx.Done():
 					return
 				case key := <-d.queue:
+					// The select above picks randomly when both cases are
+					// ready; don't start a job picked after cancellation
+					// (Shutdown may not have marked the dispatcher closed
+					// yet — the HTTP drain runs first).
+					if ctx.Err() != nil {
+						return
+					}
 					event, jobCtx, ok := d.take(key)
 					if !ok {
 						continue
@@ -234,6 +241,12 @@ func (d *Dispatcher) Stats() (queued, running int) {
 func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// Once shutdown began, no new review may start: only already-running
+	// reviews get the grace period. The worker loop's cancellation checks
+	// alone can lose the select race against a non-empty queue.
+	if d.closed {
+		return Event{}, nil, false
+	}
 	state, ok := d.states[key]
 	if !ok || state.status != stateQueued {
 		return Event{}, nil, false

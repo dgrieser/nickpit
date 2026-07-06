@@ -440,6 +440,18 @@ func TestDispatcherJobInfo(t *testing.T) {
 	close(env.runner.gate)
 }
 
+// Once shutdown began, take must refuse queued jobs even when a worker wins
+// the select race and hands it a key.
+func TestTakeRefusesJobsAfterShutdown(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.Enqueue(autoEvent(7, "sha-1", group))
+	dispatcher.Shutdown(0) // no workers started: returns immediately, marks closed
+	if _, _, ok := dispatcher.take(jobKey{ProjectID: 42, IID: 7}); ok {
+		t.Fatal("take must refuse jobs once shutdown began")
+	}
+}
+
 func TestSHALRUEviction(t *testing.T) {
 	lru := newSHALRU(2)
 	lru.Add("a")
