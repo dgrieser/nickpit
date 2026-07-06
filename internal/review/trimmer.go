@@ -56,11 +56,7 @@ func NewTrimmer(maxTokens int, estimator model.TokenEstimator, opts ...TrimmerOp
 }
 
 func (t *Trimmer) budget() int {
-	budget := t.maxTokens - t.headroom
-	if budget < 1 {
-		budget = 1
-	}
-	return budget
+	return max(t.maxTokens-t.headroom, 1)
 }
 
 func (t *Trimmer) overBudget(ctx *model.ReviewContext) bool {
@@ -428,11 +424,13 @@ func appendEvictionOmission(ctx *model.ReviewContext, label string, droppedBytes
 
 // promptOverheadTokens measures how many tokens the JSON prompt envelope adds
 // on top of the raw context text, so the trimmer can reserve headroom for it.
-func promptOverheadTokens(estimator model.TokenEstimator, ctx *model.ReviewContext, maxTokens int) int {
+// The payload is rendered with the diff format the review will actually use —
+// git-json carries per-hunk metadata the default format does not.
+func promptOverheadTokens(estimator model.TokenEstimator, ctx *model.ReviewContext, format model.DiffFormat, maxTokens int) int {
 	if ctx == nil || estimator == nil {
 		return 0
 	}
-	payload, err := llm.RenderJSON(model.PromptPayloadFromContext(ctx))
+	payload, err := llm.RenderJSON(model.PromptPayloadFromContextWithDiffFormat(ctx, format))
 	if err != nil {
 		return 0
 	}

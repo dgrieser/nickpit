@@ -158,9 +158,11 @@ func DetectLanguageContent(path, content string) string {
 	if language, ok := m.baseLang[base]; ok {
 		return language
 	}
-	for _, rule := range m.languageContentRules {
-		if ruleMatches(rule.matchAny, rule.matchAll, normalized, base, signal) {
-			return rule.language
+	if signal != "" {
+		for _, rule := range m.languageContentRules {
+			if ruleMatches(rule.matchAny, rule.matchAll, normalized, base, signal) {
+				return rule.language
+			}
 		}
 	}
 	return m.languages.Default
@@ -178,7 +180,7 @@ func IsGenerated(path, content string) bool {
 			return true
 		}
 	}
-	signal := normalizeSignalContent(content)
+	signal := normalizeAddedSignalContent(content)
 	for _, rule := range m.generatedRules {
 		if ruleMatches(rule.matchAny, rule.matchAll, normalized, base, signal) {
 			return true
@@ -685,6 +687,31 @@ func normalizeSignalContent(content string) string {
 		}
 		if line[0] == '+' || line[0] == '-' || line[0] == ' ' {
 			line = strings.TrimSpace(line[1:])
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+// normalizeAddedSignalContent is normalizeSignalContent restricted to
+// post-change content: unified-diff removed lines (column-0 "-") are dropped
+// entirely, so a patch that deletes a signal (e.g. a generated-code marker)
+// no longer matches it. Diff prefixes are only recognized at column 0, which
+// keeps context/added lines whose own text starts with "-" (SQL comments,
+// YAML lists) intact.
+func normalizeAddedSignalContent(content string) string {
+	var out strings.Builder
+	for line := range strings.SplitSeq(content, "\n") {
+		switch {
+		case strings.HasPrefix(line, "-"):
+			continue
+		case strings.HasPrefix(line, "+"), strings.HasPrefix(line, " "):
+			line = line[1:]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
 		out.WriteString(line)
 		out.WriteByte('\n')

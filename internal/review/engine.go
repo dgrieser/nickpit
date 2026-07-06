@@ -233,7 +233,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 			maxTokens = config.DefaultMaxContextToken
 		}
 		estimator := model.SimpleEstimator{}
-		headroom := promptOverheadTokens(estimator, reviewCtx, maxTokens)
+		headroom := promptOverheadTokens(estimator, reviewCtx, req.DiffFormat, maxTokens)
 		trimmer = NewTrimmer(maxTokens, estimator, WithHeadroomTokens(headroom))
 	}
 

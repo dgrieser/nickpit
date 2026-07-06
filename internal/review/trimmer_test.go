@@ -249,6 +249,27 @@ func TestTrimmerHeadroomReducesBudget(t *testing.T) {
 	}
 }
 
+func TestPromptOverheadTokensUsesDiffFormat(t *testing.T) {
+	ctx := &model.ReviewContext{
+		Diff: strings.Repeat("x", 400),
+		DiffFiles: []model.DiffFile{
+			{FilePath: "a.go", Language: "go", Content: strings.Repeat("a", 400)},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "a.go", Language: "go", OldStart: 1, OldLines: 2, NewStart: 1, NewLines: 2, Content: strings.Repeat("h", 50)},
+			{FilePath: "a.go", Language: "go", OldStart: 10, OldLines: 2, NewStart: 10, NewLines: 2, Content: strings.Repeat("h", 50)},
+		},
+	}
+	gitOverhead := promptOverheadTokens(exactEstimator{}, ctx, model.DiffFormatGit, 1_000_000)
+	jsonOverhead := promptOverheadTokens(exactEstimator{}, ctx, model.DiffFormatGitJson, 1_000_000)
+	if gitOverhead == jsonOverhead {
+		t.Fatalf("overhead identical for both diff formats (%d); format not honored", gitOverhead)
+	}
+	if gitOverhead <= 0 || jsonOverhead <= 0 {
+		t.Fatalf("overheads = %d (git), %d (git-json), want both positive", gitOverhead, jsonOverhead)
+	}
+}
+
 func TestTrimmerResultFitsBudgetWithSimpleEstimator(t *testing.T) {
 	ctx := &model.ReviewContext{
 		Title: strings.Repeat("t", 200),
