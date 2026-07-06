@@ -23,8 +23,13 @@ func namedChildren(n *sitter.Node) []*sitter.Node {
 	return out
 }
 
-// field returns the child of n for the named grammar field, or nil.
+// field returns the child of n for the named grammar field, or nil. Unlike
+// the BoundTree accessors, Node.ChildByFieldName is not nil-safe, so guard
+// here once for every call site.
 func field(bt *sitter.BoundTree, n *sitter.Node, name string) *sitter.Node {
+	if n == nil {
+		return nil
+	}
 	return n.ChildByFieldName(name, bt.Language())
 }
 

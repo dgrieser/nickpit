@@ -10,7 +10,7 @@ import (
 func parsePython(path string, src []byte) (*FileIR, error) {
 	ir := &FileIR{Path: path}
 	bt, err := tsParse("x.py", src)
-	if err != nil {
+	if err != nil || bt == nil {
 		// The runtime failed outright (tree-sitter itself is error-tolerant);
 		// degrade to "no structural information" rather than failing the file.
 		ir.HasError = true
@@ -57,6 +57,10 @@ func (w *pyWalker) walk(n *sitter.Node, class string, cur *Symbol) {
 		w.class(n, cur, n)
 	case "decorated_definition":
 		def := field(w.bt, n, "definition")
+		if def == nil {
+			w.walkChildren(n, class, cur)
+			return
+		}
 		switch w.bt.NodeType(def) {
 		case "function_definition":
 			w.function(def, n, class, cur)

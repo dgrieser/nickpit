@@ -16,7 +16,7 @@ var rustSkippedCalls = map[string]struct{}{
 func parseRust(path string, src []byte) (*FileIR, error) {
 	ir := &FileIR{Path: path}
 	bt, err := tsParse("x.rs", src)
-	if err != nil {
+	if err != nil || bt == nil {
 		ir.HasError = true
 		return ir, nil
 	}
