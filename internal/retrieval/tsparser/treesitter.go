@@ -13,8 +13,11 @@ func tsParse(canonicalName string, src []byte) (*sitter.BoundTree, error) {
 	return grammars.ParseFilePooled(canonicalName, src)
 }
 
-// namedChildren returns the named children of n.
+// namedChildren returns the named children of n (nil-safe, like field).
 func namedChildren(n *sitter.Node) []*sitter.Node {
+	if n == nil {
+		return nil
+	}
 	count := n.NamedChildCount()
 	out := make([]*sitter.Node, 0, count)
 	for i := range count {
