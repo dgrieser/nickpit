@@ -3,6 +3,7 @@
 .zed/
 .nickpit.yaml.example
 bin/
+dist/
 events/
 *.swp
 *.log

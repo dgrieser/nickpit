@@ -37,6 +37,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is overridden at release build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 type app struct {
 	model                   string
 	smallModel              string
@@ -156,6 +159,7 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "nickpit",
 		Short:         "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
