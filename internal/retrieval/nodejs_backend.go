@@ -3,16 +3,17 @@ package retrieval
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 
-	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
+	"github.com/dgrieser/nickpit/internal/retrieval/tsparser"
 )
 
+// nodejsBackend is the structural backend for the JavaScript/TypeScript family.
+// Parsing is AST-based (see internal/retrieval/tsparser); this file resolves
+// the extracted IR across files (import bindings, export tables, class
+// methods) into the shared static call graph.
 type nodejsBackend struct{}
 
 type nodeImportBinding struct {
@@ -29,7 +30,10 @@ type nodeSymbol struct {
 	endLine   int
 	source    string
 	className string
-	bodyLines []string
+	calls     []tsparser.Call
+	dynamic   bool
+	hasError  bool
+	nested    bool
 	exported  bool
 }
 
@@ -40,36 +44,20 @@ type nodeFile struct {
 	classMethod map[string]map[string]string
 	symbols     map[string]*nodeSymbol
 	exports     map[string]string
+	// byName lists symbol ids per name in declaration order, including nested
+	// definitions (used as a same-file fallback for bare-call resolution).
+	byName map[string][]string
 }
-
-var (
-	nodeFuncPattern        = regexp.MustCompile(`^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
-	nodeVarFuncPattern     = regexp.MustCompile(`^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s+)?(?:function\s*\(|\([^)]*\)\s*=>|[A-Za-z_$][A-Za-z0-9_$]*\s*=>)`)
-	nodeClassPattern       = regexp.MustCompile(`^(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)\b`)
-	nodeMethodPattern      = regexp.MustCompile(`^(?:async\s+)?(?:static\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
-	nodeImportNamedPattern = regexp.MustCompile(`^import\s+\{([^}]+)\}\s+from\s+["']([^"']+)["']`)
-	nodeImportNSPattern    = regexp.MustCompile(`^import\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s+["']([^"']+)["']`)
-	nodeRequireObjPattern  = regexp.MustCompile(`^(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*require\(["']([^"']+)["']\)`)
-	nodeRequireDestrPat    = regexp.MustCompile(`^(?:const|let|var)\s+\{([^}]+)\}\s*=\s*require\(["']([^"']+)["']\)`)
-	nodeExportListPattern  = regexp.MustCompile(`^export\s+\{([^}]+)\}`)
-	nodeExportsAssignPat   = regexp.MustCompile(`^(?:module\.)?exports\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)`)
-	nodeModuleObjectPat    = regexp.MustCompile(`^module\.exports\s*=\s*\{([^}]+)\}`)
-	nodeAttrCallPattern    = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
-	nodeBareCallPattern    = regexp.MustCompile(`\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(`)
-	nodeDynamicCallPattern = regexp.MustCompile(`\)\s*\(|\[[^\]]+\]\s*\(`)
-)
 
 var nodeSupportedExts = map[string]struct{}{
 	".js":  {},
 	".mjs": {},
 	".cjs": {},
+	".jsx": {},
 	".ts":  {},
 	".mts": {},
 	".cts": {},
-}
-
-var nodeIgnoredCalls = map[string]struct{}{
-	"if": {}, "for": {}, "while": {}, "switch": {}, "catch": {}, "require": {}, "console": {},
+	".tsx": {},
 }
 
 func (nodejsBackend) language() string { return "nodejs" }
@@ -80,45 +68,22 @@ func (nodejsBackend) supportsExt(ext string) bool {
 }
 
 func (nodejsBackend) findSymbols(_ context.Context, repoRoot, name string, scope lookupScope) ([]*SymbolInfo, error) {
-	files, err := collectFilesByExt(repoRoot, scope, nodeSupportedExts)
+	if scope.IsFile {
+		modules, err := parseNodeFiles(repoRoot, []string{filepath.Join(repoRoot, filepath.FromSlash(scope.Path))})
+		if err != nil {
+			return nil, err
+		}
+		return nodeSymbolsNamed(modules, name), nil
+	}
+	graph, err := nodeGraphCached(repoRoot, scopeForHierarchy(scope))
 	if err != nil {
 		return nil, err
 	}
-	modules, err := parseNodeFiles(repoRoot, files)
-	if err != nil {
-		return nil, err
-	}
-	var out []*SymbolInfo
-	for _, module := range modules {
-		for _, symbolID := range module.topLevel {
-			symbol := module.symbols[symbolID]
-			if symbol.name == name {
-				out = append(out, nodeSymbolInfo(symbol))
-			}
-		}
-		for _, methods := range module.classMethod {
-			for _, symbolID := range methods {
-				symbol := module.symbols[symbolID]
-				if symbol.name == name {
-					out = append(out, nodeSymbolInfo(symbol))
-				}
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Path == out[j].Path {
-			return out[i].StartLine < out[j].StartLine
-		}
-		return out[i].Path < out[j].Path
-	})
-	return out, nil
+	return graph.symbolsNamed(name, scope.Path), nil
 }
 
 func (nodejsBackend) findCallers(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	hierScope := scopeForHierarchy(scope)
-	graph, err := buildStaticGraphCached("nodejs", repoRoot, hierScope, func() (*staticGraph, error) {
-		return buildNodeGraph(repoRoot, hierScope)
-	})
+	graph, err := nodeGraphCached(repoRoot, scopeForHierarchy(scope))
 	if err != nil {
 		return nil, err
 	}
@@ -126,14 +91,28 @@ func (nodejsBackend) findCallers(_ context.Context, repoRoot string, symbol *Sym
 }
 
 func (nodejsBackend) findCallees(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	hierScope := scopeForHierarchy(scope)
-	graph, err := buildStaticGraphCached("nodejs", repoRoot, hierScope, func() (*staticGraph, error) {
-		return buildNodeGraph(repoRoot, hierScope)
-	})
+	graph, err := nodeGraphCached(repoRoot, scopeForHierarchy(scope))
 	if err != nil {
 		return nil, err
 	}
 	return graph.find(symbol.Name, symbol.Path, depth, false)
+}
+
+func nodeGraphCached(repoRoot string, hierScope lookupScope) (*staticGraph, error) {
+	return buildStaticGraphCached("nodejs", repoRoot, hierScope, func() (*staticGraph, error) {
+		return buildNodeGraph(repoRoot, hierScope)
+	})
+}
+
+func nodeSymbolsNamed(modules map[string]*nodeFile, name string) []*SymbolInfo {
+	var out []*SymbolInfo
+	for _, module := range modules {
+		for _, id := range module.byName[name] {
+			out = append(out, nodeSymbolInfo(module.symbols[id]))
+		}
+	}
+	sortSymbolInfos(out)
+	return out
 }
 
 func buildNodeGraph(repoRoot string, scope lookupScope) (*staticGraph, error) {
@@ -159,32 +138,26 @@ func buildNodeGraph(repoRoot string, scope lookupScope) (*staticGraph, error) {
 	}
 	for _, module := range modules {
 		for _, symbol := range module.symbols {
-			lowConfidence := false
-			for _, line := range symbol.bodyLines {
-				clean := stripNodeLine(line)
-				if strings.Contains(clean, "?.") || nodeDynamicCallPattern.MatchString(clean) {
-					lowConfidence = true
-				}
-				for _, match := range nodeAttrCallPattern.FindAllStringSubmatch(clean, -1) {
-					targetID, ok := resolveNodeAttrCall(modules, module, symbol, match[1], match[2])
-					if ok {
+			lowConfidence := symbol.dynamic || symbol.hasError
+			for _, call := range symbol.calls {
+				switch call.Kind {
+				case tsparser.CallSelf:
+					if symbol.className == "" {
+						continue
+					}
+					if targetID, ok := module.classMethod[symbol.className][call.Name]; ok {
 						graph.addEdge(symbol.id, targetID)
-						continue
 					}
-					if match[1] != "this" {
-						lowConfidence = true
+				case tsparser.CallMember:
+					// An unresolved member call (a method on a local value,
+					// console.log, ...) yields no edge but does not degrade
+					// confidence: the parser attributes calls precisely, so
+					// only truly dynamic constructs (symbol.dynamic) do.
+					if targetID, ok := resolveNodeAttrCall(modules, module, call.Base, call.Name); ok {
+						graph.addEdge(symbol.id, targetID)
 					}
-				}
-				for _, match := range nodeBareCallPattern.FindAllStringSubmatchIndex(clean, -1) {
-					name := clean[match[2]:match[3]]
-					if _, ignored := nodeIgnoredCalls[name]; ignored {
-						continue
-					}
-					if match[0] > 0 && clean[match[0]-1] == '.' {
-						continue
-					}
-					targetID, ok := resolveNodeBareCall(modules, module, name)
-					if ok {
+				case tsparser.CallBare:
+					if targetID, ok := resolveNodeBareCall(modules, module, call.Name); ok {
 						graph.addEdge(symbol.id, targetID)
 					}
 				}
@@ -197,19 +170,15 @@ func buildNodeGraph(repoRoot string, scope lookupScope) (*staticGraph, error) {
 	return graph, nil
 }
 
+// parseNodeFiles parses the given files into per-file symbol/import/export
+// tables, resolving import specifiers to repository paths.
 func parseNodeFiles(repoRoot string, files []string) (map[string]*nodeFile, error) {
-	modules := make(map[string]*nodeFile, len(files))
-	for _, fullPath := range files {
-		data, err := repofs.ReadFile(repoRoot, fullPath)
-		if err != nil {
-			return nil, err
-		}
-		rel, err := filepath.Rel(repoRoot, fullPath)
-		if err != nil {
-			return nil, err
-		}
-		rel = filepath.ToSlash(rel)
-		lines := splitLines(string(data))
+	irs, err := parseIRFiles(repoRoot, files)
+	if err != nil {
+		return nil, err
+	}
+	modules := make(map[string]*nodeFile, len(irs))
+	for rel, ir := range irs {
 		module := &nodeFile{
 			path:        rel,
 			imports:     map[string]nodeImportBinding{},
@@ -217,99 +186,54 @@ func parseNodeFiles(repoRoot string, files []string) (map[string]*nodeFile, erro
 			classMethod: map[string]map[string]string{},
 			symbols:     map[string]*nodeSymbol{},
 			exports:     map[string]string{},
+			byName:      map[string][]string{},
 		}
-		for i := 0; i < len(lines); i++ {
-			line := strings.TrimSpace(lines[i])
-			if line == "" {
-				continue
+		for _, irSymbol := range ir.Symbols {
+			symbol := &nodeSymbol{
+				name:      irSymbol.Name,
+				path:      rel,
+				startLine: irSymbol.StartLine,
+				endLine:   irSymbol.EndLine,
+				source:    irSymbol.Source,
+				className: irSymbol.Container,
+				calls:     irSymbol.Calls,
+				dynamic:   irSymbol.Dynamic,
+				hasError:  irSymbol.HasError || ir.HasError,
+				nested:    irSymbol.Nested,
+				exported:  irSymbol.Exported,
 			}
-			if bindings, ok := parseNodeImports(repoRoot, rel, line); ok {
-				maps.Copy(module.imports, bindings)
-				continue
-			}
-			parseNodeExports(module, line)
-			if match := nodeFuncPattern.FindStringSubmatch(line); len(match) == 2 {
-				end := nodeBlockEnd(lines, i)
-				exported := strings.HasPrefix(line, "export ")
-				symbol := &nodeSymbol{
-					id:        fmt.Sprintf("%s#%s@%d", rel, match[1], i+1),
-					name:      match[1],
-					path:      rel,
-					startLine: i + 1,
-					endLine:   end,
-					source:    strings.Join(lines[i:end], "\n"),
-					bodyLines: lines[i:end],
-					exported:  exported,
+			if symbol.className != "" {
+				symbol.id = fmt.Sprintf("%s#%s.%s@%d", rel, symbol.className, symbol.name, symbol.startLine)
+				if module.classMethod[symbol.className] == nil {
+					module.classMethod[symbol.className] = map[string]string{}
 				}
-				module.symbols[symbol.id] = symbol
-				module.topLevel[symbol.name] = symbol.id
-				if exported {
-					module.exports[symbol.name] = symbol.id
-				}
-				i = end - 1
-				continue
-			}
-			if match := nodeVarFuncPattern.FindStringSubmatch(line); len(match) == 2 {
-				end := nodeExpressionEnd(lines, i)
-				exported := strings.HasPrefix(line, "export ")
-				symbol := &nodeSymbol{
-					id:        fmt.Sprintf("%s#%s@%d", rel, match[1], i+1),
-					name:      match[1],
-					path:      rel,
-					startLine: i + 1,
-					endLine:   end,
-					source:    strings.Join(lines[i:end], "\n"),
-					bodyLines: lines[i:end],
-					exported:  exported,
-				}
-				module.symbols[symbol.id] = symbol
-				module.topLevel[symbol.name] = symbol.id
-				if exported {
-					module.exports[symbol.name] = symbol.id
-				}
-				i = end - 1
-				continue
-			}
-			if match := nodeClassPattern.FindStringSubmatch(line); len(match) == 2 {
-				className := match[1]
-				end := nodeBlockEnd(lines, i)
-				if module.classMethod[className] == nil {
-					module.classMethod[className] = map[string]string{}
-				}
-				classDepth := 0
-				for j := i; j < end; j++ {
-					if j == i {
-						classDepth += strings.Count(lines[j], "{") - strings.Count(lines[j], "}")
-						continue
+				module.classMethod[symbol.className][symbol.name] = symbol.id
+			} else {
+				symbol.id = fmt.Sprintf("%s#%s@%d", rel, symbol.name, symbol.startLine)
+				if !symbol.nested {
+					module.topLevel[symbol.name] = symbol.id
+					if symbol.exported {
+						module.exports[symbol.name] = symbol.id
 					}
-					trimmed := strings.TrimSpace(lines[j])
-					if trimmed == "" {
-						classDepth += strings.Count(lines[j], "{") - strings.Count(lines[j], "}")
-						continue
-					}
-					if classDepth == 1 {
-						if methodMatch := nodeMethodPattern.FindStringSubmatch(trimmed); len(methodMatch) == 2 && methodMatch[1] != "constructor" {
-							methodEnd := nodeBlockEnd(lines, j)
-							symbol := &nodeSymbol{
-								id:        fmt.Sprintf("%s#%s.%s@%d", rel, className, methodMatch[1], j+1),
-								name:      methodMatch[1],
-								path:      rel,
-								startLine: j + 1,
-								endLine:   methodEnd,
-								source:    strings.Join(lines[j:methodEnd], "\n"),
-								className: className,
-								bodyLines: lines[j:methodEnd],
-							}
-							module.symbols[symbol.id] = symbol
-							module.classMethod[className][symbol.name] = symbol.id
-							j = methodEnd - 1
-							classDepth = 1
-							continue
-						}
-					}
-					classDepth += strings.Count(lines[j], "{") - strings.Count(lines[j], "}")
 				}
-				i = end - 1
+			}
+			module.symbols[symbol.id] = symbol
+			module.byName[symbol.name] = append(module.byName[symbol.name], symbol.id)
+		}
+		for _, irImport := range ir.Imports {
+			modulePath, ok := resolveNodeModulePath(repoRoot, rel, irImport.ModuleSpec)
+			if !ok {
+				continue
+			}
+			module.imports[irImport.Alias] = nodeImportBinding{
+				kind:       irImport.Kind,
+				modulePath: modulePath,
+				symbolName: irImport.SymbolName,
+			}
+		}
+		for _, irExport := range ir.Exports {
+			if targetID, ok := module.topLevel[irExport.LocalName]; ok {
+				module.exports[irExport.ExportedName] = targetID
 			}
 		}
 		modules[rel] = module
@@ -317,110 +241,8 @@ func parseNodeFiles(repoRoot string, files []string) (map[string]*nodeFile, erro
 	return modules, nil
 }
 
-func parseNodeImports(repoRoot, currentPath, line string) (map[string]nodeImportBinding, bool) {
-	if match := nodeImportNamedPattern.FindStringSubmatch(line); len(match) == 3 {
-		modulePath, ok := resolveNodeModulePath(repoRoot, currentPath, match[2])
-		if !ok {
-			return nil, true
-		}
-		out := map[string]nodeImportBinding{}
-		for rawPart := range strings.SplitSeq(match[1], ",") {
-			part := strings.TrimSpace(rawPart)
-			name := part
-			alias := ""
-			if strings.Contains(part, " as ") {
-				chunks := strings.SplitN(part, " as ", 2)
-				name = strings.TrimSpace(chunks[0])
-				alias = strings.TrimSpace(chunks[1])
-			}
-			if alias == "" {
-				alias = name
-			}
-			out[alias] = nodeImportBinding{kind: "symbol", modulePath: modulePath, symbolName: name}
-		}
-		return out, true
-	}
-	if match := nodeImportNSPattern.FindStringSubmatch(line); len(match) == 3 {
-		modulePath, ok := resolveNodeModulePath(repoRoot, currentPath, match[2])
-		if !ok {
-			return nil, true
-		}
-		return map[string]nodeImportBinding{
-			match[1]: {kind: "module", modulePath: modulePath},
-		}, true
-	}
-	if match := nodeRequireObjPattern.FindStringSubmatch(line); len(match) == 3 {
-		modulePath, ok := resolveNodeModulePath(repoRoot, currentPath, match[2])
-		if !ok {
-			return nil, true
-		}
-		return map[string]nodeImportBinding{
-			match[1]: {kind: "module", modulePath: modulePath},
-		}, true
-	}
-	if match := nodeRequireDestrPat.FindStringSubmatch(line); len(match) == 3 {
-		modulePath, ok := resolveNodeModulePath(repoRoot, currentPath, match[2])
-		if !ok {
-			return nil, true
-		}
-		out := map[string]nodeImportBinding{}
-		for rawPart := range strings.SplitSeq(match[1], ",") {
-			part := strings.TrimSpace(rawPart)
-			name := part
-			alias := ""
-			if strings.Contains(part, ":") {
-				chunks := strings.SplitN(part, ":", 2)
-				name = strings.TrimSpace(chunks[0])
-				alias = strings.TrimSpace(chunks[1])
-			}
-			if alias == "" {
-				alias = name
-			}
-			out[alias] = nodeImportBinding{kind: "symbol", modulePath: modulePath, symbolName: name}
-		}
-		return out, true
-	}
-	return nil, false
-}
-
-func parseNodeExports(module *nodeFile, line string) {
-	if match := nodeExportListPattern.FindStringSubmatch(line); len(match) == 2 {
-		for rawPart := range strings.SplitSeq(match[1], ",") {
-			part := strings.TrimSpace(rawPart)
-			name := part
-			exportName := part
-			if strings.Contains(part, " as ") {
-				chunks := strings.SplitN(part, " as ", 2)
-				name = strings.TrimSpace(chunks[0])
-				exportName = strings.TrimSpace(chunks[1])
-			}
-			if symbolID, ok := module.topLevel[name]; ok {
-				module.exports[exportName] = symbolID
-			}
-		}
-	}
-	if match := nodeExportsAssignPat.FindStringSubmatch(line); len(match) == 3 {
-		if symbolID, ok := module.topLevel[match[2]]; ok {
-			module.exports[match[1]] = symbolID
-		}
-	}
-	if match := nodeModuleObjectPat.FindStringSubmatch(line); len(match) == 2 {
-		for rawPart := range strings.SplitSeq(match[1], ",") {
-			part := strings.TrimSpace(rawPart)
-			name := part
-			exportName := part
-			if strings.Contains(part, ":") {
-				chunks := strings.SplitN(part, ":", 2)
-				exportName = strings.TrimSpace(chunks[0])
-				name = strings.TrimSpace(chunks[1])
-			}
-			if symbolID, ok := module.topLevel[name]; ok {
-				module.exports[exportName] = symbolID
-			}
-		}
-	}
-}
-
+// resolveNodeModulePath resolves a relative import specifier to a repo-relative
+// file path; bare specifiers (packages) resolve to nothing.
 func resolveNodeModulePath(repoRoot, currentPath, spec string) (string, bool) {
 	if !strings.HasPrefix(spec, ".") {
 		return "", false
@@ -432,9 +254,11 @@ func resolveNodeModulePath(repoRoot, currentPath, spec string) (string, bool) {
 		filepath.ToSlash(joined) + ".js",
 		filepath.ToSlash(joined) + ".mjs",
 		filepath.ToSlash(joined) + ".cjs",
+		filepath.ToSlash(joined) + ".jsx",
 		filepath.ToSlash(joined) + ".ts",
 		filepath.ToSlash(joined) + ".mts",
 		filepath.ToSlash(joined) + ".cts",
+		filepath.ToSlash(joined) + ".tsx",
 		filepath.ToSlash(filepath.Join(joined, "index.js")),
 		filepath.ToSlash(filepath.Join(joined, "index.ts")),
 	}
@@ -448,9 +272,16 @@ func resolveNodeModulePath(repoRoot, currentPath, spec string) (string, bool) {
 	return "", false
 }
 
+// resolveNodeBareCall resolves a plain `name(...)` call: top-level definitions
+// win, then same-file nested definitions, then imported symbols.
 func resolveNodeBareCall(modules map[string]*nodeFile, module *nodeFile, name string) (string, bool) {
 	if targetID, ok := module.topLevel[name]; ok {
 		return targetID, true
+	}
+	for _, id := range module.byName[name] {
+		if symbol := module.symbols[id]; symbol.className == "" {
+			return id, true
+		}
 	}
 	binding, ok := module.imports[name]
 	if !ok || binding.kind != "symbol" {
@@ -464,15 +295,9 @@ func resolveNodeBareCall(modules map[string]*nodeFile, module *nodeFile, name st
 	return targetID, ok
 }
 
-func resolveNodeAttrCall(modules map[string]*nodeFile, module *nodeFile, symbol *nodeSymbol, base, name string) (string, bool) {
-	if base == "this" {
-		if symbol.className == "" {
-			return "", false
-		}
-		methods := module.classMethod[symbol.className]
-		targetID, ok := methods[name]
-		return targetID, ok
-	}
+// resolveNodeAttrCall resolves a `base.name(...)` call through a whole-module
+// import binding to the target module's exports.
+func resolveNodeAttrCall(modules map[string]*nodeFile, module *nodeFile, base, name string) (string, bool) {
 	binding, ok := module.imports[base]
 	if !ok || binding.kind != "module" {
 		return "", false
@@ -494,36 +319,4 @@ func nodeSymbolInfo(symbol *nodeSymbol) *SymbolInfo {
 		Source:    symbol.source,
 		Language:  "nodejs",
 	}
-}
-
-func nodeBlockEnd(lines []string, start int) int {
-	balance := 0
-	seenOpen := false
-	for i := start; i < len(lines); i++ {
-		line := stripNodeLine(lines[i])
-		balance += strings.Count(line, "{")
-		if strings.Contains(line, "{") {
-			seenOpen = true
-		}
-		balance -= strings.Count(line, "}")
-		if seenOpen && balance <= 0 {
-			return i + 1
-		}
-	}
-	return len(lines)
-}
-
-func nodeExpressionEnd(lines []string, start int) int {
-	line := stripNodeLine(lines[start])
-	if strings.Contains(line, "{") {
-		return nodeBlockEnd(lines, start)
-	}
-	return start + 1
-}
-
-func stripNodeLine(line string) string {
-	if before, _, ok := strings.Cut(line, "//"); ok {
-		return before
-	}
-	return line
 }

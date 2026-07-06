@@ -44,7 +44,7 @@ Hallucinated line numbers and confidently-wrong nitpicks get bounced at the door
 NickPit gives the model special retrieval tools:
 - list and fetch files
 - deep search
-- language-aware **callers and callees** (go, python, nodejs)
+- language-aware **callers and callees** (go, python, nodejs, rust)
 - exact line number lookups
 - language detection
 - versions of the toolchain
@@ -453,7 +453,7 @@ nickpit inspect search --path internal/review --query inspect_file --context-lin
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 --json
 ```
 
-Retrieval supports `go`, `python`, and `nodejs` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis.
+Retrieval supports `go`, `python`, `nodejs` (including `.jsx`/`.tsx`), and `rust` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis: Go is resolved with the type checker (`go/packages`), TypeScript/JavaScript with esbuild's parser, and Python/Rust with a pure-Go tree-sitter runtime — all CGo-free, so the single static binary stays self-contained.
 
 ## Notes
 

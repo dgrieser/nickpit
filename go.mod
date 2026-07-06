@@ -5,6 +5,8 @@ go 1.25.0
 require (
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/google/uuid v1.6.0
+	github.com/ije/esbuild-internal v0.28.1
+	github.com/odvcencio/gotreesitter v0.21.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/mod v0.35.0
@@ -26,6 +28,7 @@ require (
 	github.com/dlclark/regexp2 v1.11.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect

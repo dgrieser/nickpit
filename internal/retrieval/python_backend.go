@@ -3,16 +3,17 @@ package retrieval
 import (
 	"context"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 
-	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
+	"github.com/dgrieser/nickpit/internal/retrieval/tsparser"
 )
 
+// pythonBackend is the structural backend for Python. Parsing is AST-based
+// (see internal/retrieval/tsparser); this file resolves the extracted IR
+// across files (import bindings, class methods) into the shared static call
+// graph.
 type pythonBackend struct{}
 
 type pythonImportBinding struct {
@@ -29,7 +30,10 @@ type pythonSymbol struct {
 	endLine   int
 	source    string
 	className string
-	bodyLines []string
+	calls     []tsparser.Call
+	dynamic   bool
+	hasError  bool
+	nested    bool
 }
 
 type pythonFile struct {
@@ -38,69 +42,41 @@ type pythonFile struct {
 	topLevel    map[string]string
 	classMethod map[string]map[string]string
 	symbols     map[string]*pythonSymbol
+	// byName lists symbol ids per name in declaration order, including nested
+	// definitions (used as a same-file fallback for bare-call resolution).
+	byName map[string][]string
 }
 
-var (
-	pythonClassPattern      = regexp.MustCompile(`^class\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
-	pythonFuncPattern       = regexp.MustCompile(`^(?:async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
-	pythonImportPattern     = regexp.MustCompile(`^import\s+(.+)$`)
-	pythonFromImportPattern = regexp.MustCompile(`^from\s+([\.A-Za-z0-9_]+)\s+import\s+(.+)$`)
-	pythonAttrCallPattern   = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
-	pythonBareCallPattern   = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
-	pythonDynamicCallPat    = regexp.MustCompile(`\)\s*\(|\[[^\]]+\]\s*\(`)
-)
-
-var pythonIgnoredCalls = map[string]struct{}{
-	"if": {}, "for": {}, "while": {}, "return": {}, "print": {}, "len": {}, "str": {}, "int": {}, "float": {},
-	"dict": {}, "list": {}, "set": {}, "tuple": {}, "range": {}, "enumerate": {}, "super": {},
-}
+var pythonSupportedExts = map[string]struct{}{".py": {}}
 
 func (pythonBackend) language() string { return "python" }
 
 func (pythonBackend) supportsExt(ext string) bool { return ext == ".py" }
 
 func (pythonBackend) findSymbols(_ context.Context, repoRoot, name string, scope lookupScope) ([]*SymbolInfo, error) {
-	files, err := collectFilesByExt(repoRoot, scope, map[string]struct{}{".py": {}})
+	if scope.IsFile {
+		modules, err := parsePythonFiles(repoRoot, []string{filepath.Join(repoRoot, filepath.FromSlash(scope.Path))})
+		if err != nil {
+			return nil, err
+		}
+		var out []*SymbolInfo
+		for _, module := range modules {
+			for _, id := range module.byName[name] {
+				out = append(out, pythonSymbolInfo(module.symbols[id]))
+			}
+		}
+		sortSymbolInfos(out)
+		return out, nil
+	}
+	graph, err := pythonGraphCached(repoRoot, scopeForHierarchy(scope))
 	if err != nil {
 		return nil, err
 	}
-	modules, err := parsePythonFiles(repoRoot, files)
-	if err != nil {
-		return nil, err
-	}
-	var out []*SymbolInfo
-	for _, module := range modules {
-		for _, symbolID := range module.topLevel {
-			symbol := module.symbols[symbolID]
-			if symbol.name != name {
-				continue
-			}
-			out = append(out, pythonSymbolInfo(symbol))
-		}
-		for _, methods := range module.classMethod {
-			for _, symbolID := range methods {
-				symbol := module.symbols[symbolID]
-				if symbol.name != name {
-					continue
-				}
-				out = append(out, pythonSymbolInfo(symbol))
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Path == out[j].Path {
-			return out[i].StartLine < out[j].StartLine
-		}
-		return out[i].Path < out[j].Path
-	})
-	return out, nil
+	return graph.symbolsNamed(name, scope.Path), nil
 }
 
 func (pythonBackend) findCallers(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	hierScope := scopeForHierarchy(scope)
-	graph, err := buildStaticGraphCached("python", repoRoot, hierScope, func() (*staticGraph, error) {
-		return buildPythonGraph(repoRoot, hierScope)
-	})
+	graph, err := pythonGraphCached(repoRoot, scopeForHierarchy(scope))
 	if err != nil {
 		return nil, err
 	}
@@ -108,18 +84,21 @@ func (pythonBackend) findCallers(_ context.Context, repoRoot string, symbol *Sym
 }
 
 func (pythonBackend) findCallees(_ context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error) {
-	hierScope := scopeForHierarchy(scope)
-	graph, err := buildStaticGraphCached("python", repoRoot, hierScope, func() (*staticGraph, error) {
-		return buildPythonGraph(repoRoot, hierScope)
-	})
+	graph, err := pythonGraphCached(repoRoot, scopeForHierarchy(scope))
 	if err != nil {
 		return nil, err
 	}
 	return graph.find(symbol.Name, symbol.Path, depth, false)
 }
 
+func pythonGraphCached(repoRoot string, hierScope lookupScope) (*staticGraph, error) {
+	return buildStaticGraphCached("python", repoRoot, hierScope, func() (*staticGraph, error) {
+		return buildPythonGraph(repoRoot, hierScope)
+	})
+}
+
 func buildPythonGraph(repoRoot string, scope lookupScope) (*staticGraph, error) {
-	files, err := collectFilesByExt(repoRoot, scope, map[string]struct{}{".py": {}})
+	files, err := collectFilesByExt(repoRoot, scope, pythonSupportedExts)
 	if err != nil {
 		return nil, err
 	}
@@ -141,32 +120,26 @@ func buildPythonGraph(repoRoot string, scope lookupScope) (*staticGraph, error) 
 	}
 	for _, module := range modules {
 		for _, symbol := range module.symbols {
-			lowConfidence := false
-			for _, line := range symbol.bodyLines {
-				clean := stripPythonComment(line)
-				if strings.Contains(clean, "getattr(") || pythonDynamicCallPat.MatchString(clean) {
-					lowConfidence = true
-				}
-				for _, match := range pythonAttrCallPattern.FindAllStringSubmatch(clean, -1) {
-					targetID, ok := resolvePythonAttrCall(modules, module, symbol, match[1], match[2])
-					if ok {
+			lowConfidence := symbol.dynamic || symbol.hasError
+			for _, call := range symbol.calls {
+				switch call.Kind {
+				case tsparser.CallSelf:
+					if symbol.className == "" {
+						continue
+					}
+					if targetID, ok := module.classMethod[symbol.className][call.Name]; ok {
 						graph.addEdge(symbol.id, targetID)
-						continue
 					}
-					if match[1] != "self" && match[1] != "cls" {
-						lowConfidence = true
+				case tsparser.CallMember:
+					// An unresolved member call (a method on a local value)
+					// yields no edge but does not degrade confidence: the
+					// parser attributes calls precisely, so only truly
+					// dynamic constructs (symbol.dynamic) do.
+					if targetID, ok := resolvePythonAttrCall(modules, module, call.Base, call.Name); ok {
+						graph.addEdge(symbol.id, targetID)
 					}
-				}
-				for _, match := range pythonBareCallPattern.FindAllStringSubmatchIndex(clean, -1) {
-					name := clean[match[2]:match[3]]
-					if _, ignored := pythonIgnoredCalls[name]; ignored {
-						continue
-					}
-					if match[0] > 0 && clean[match[0]-1] == '.' {
-						continue
-					}
-					targetID, ok := resolvePythonBareCall(modules, module, name)
-					if ok {
+				case tsparser.CallBare:
+					if targetID, ok := resolvePythonBareCall(modules, module, call.Name); ok {
 						graph.addEdge(symbol.id, targetID)
 					}
 				}
@@ -179,87 +152,60 @@ func buildPythonGraph(repoRoot string, scope lookupScope) (*staticGraph, error) 
 	return graph, nil
 }
 
+// parsePythonFiles parses the given files into per-file symbol/import tables,
+// resolving import specifiers to repository paths.
 func parsePythonFiles(repoRoot string, files []string) (map[string]*pythonFile, error) {
-	modules := make(map[string]*pythonFile, len(files))
-	for _, fullPath := range files {
-		data, err := repofs.ReadFile(repoRoot, fullPath)
-		if err != nil {
-			return nil, err
-		}
-		rel, err := filepath.Rel(repoRoot, fullPath)
-		if err != nil {
-			return nil, err
-		}
-		rel = filepath.ToSlash(rel)
+	irs, err := parseIRFiles(repoRoot, files)
+	if err != nil {
+		return nil, err
+	}
+	modules := make(map[string]*pythonFile, len(irs))
+	for rel, ir := range irs {
 		module := &pythonFile{
 			path:        rel,
 			imports:     map[string]pythonImportBinding{},
 			topLevel:    map[string]string{},
 			classMethod: map[string]map[string]string{},
 			symbols:     map[string]*pythonSymbol{},
+			byName:      map[string][]string{},
 		}
-		lines := splitLines(string(data))
-		for i := 0; i < len(lines); i++ {
-			trimmed := strings.TrimSpace(lines[i])
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
+		for _, irSymbol := range ir.Symbols {
+			symbol := &pythonSymbol{
+				name:      irSymbol.Name,
+				path:      rel,
+				startLine: irSymbol.StartLine,
+				endLine:   irSymbol.EndLine,
+				source:    irSymbol.Source,
+				className: irSymbol.Container,
+				calls:     irSymbol.Calls,
+				dynamic:   irSymbol.Dynamic,
+				hasError:  irSymbol.HasError,
+				nested:    irSymbol.Nested,
 			}
-			indent := pythonIndent(lines[i])
-			if indent != 0 {
-				continue
-			}
-			if binding, ok := parsePythonImport(repoRoot, rel, trimmed); ok {
-				maps.Copy(module.imports, binding)
-				continue
-			}
-			if match := pythonFuncPattern.FindStringSubmatch(trimmed); len(match) == 2 {
-				end := pythonBlockEnd(lines, i, indent)
-				symbol := &pythonSymbol{
-					id:        fmt.Sprintf("%s#%s@%d", rel, match[1], i+1),
-					name:      match[1],
-					path:      rel,
-					startLine: i + 1,
-					endLine:   end,
-					source:    strings.Join(lines[i:end], "\n"),
-					bodyLines: lines[i:end],
+			if symbol.className != "" {
+				symbol.id = fmt.Sprintf("%s#%s.%s@%d", rel, symbol.className, symbol.name, symbol.startLine)
+				if module.classMethod[symbol.className] == nil {
+					module.classMethod[symbol.className] = map[string]string{}
 				}
-				module.symbols[symbol.id] = symbol
-				module.topLevel[symbol.name] = symbol.id
-				i = end - 1
+				module.classMethod[symbol.className][symbol.name] = symbol.id
+			} else {
+				symbol.id = fmt.Sprintf("%s#%s@%d", rel, symbol.name, symbol.startLine)
+				if !symbol.nested {
+					module.topLevel[symbol.name] = symbol.id
+				}
+			}
+			module.symbols[symbol.id] = symbol
+			module.byName[symbol.name] = append(module.byName[symbol.name], symbol.id)
+		}
+		for _, irImport := range ir.Imports {
+			modulePath, ok := resolvePythonModulePath(repoRoot, rel, irImport.ModuleSpec)
+			if !ok {
 				continue
 			}
-			if match := pythonClassPattern.FindStringSubmatch(trimmed); len(match) == 2 {
-				className := match[1]
-				classEnd := pythonBlockEnd(lines, i, indent)
-				if module.classMethod[className] == nil {
-					module.classMethod[className] = map[string]string{}
-				}
-				for j := i + 1; j < classEnd; j++ {
-					classLine := strings.TrimSpace(lines[j])
-					if classLine == "" || strings.HasPrefix(classLine, "#") {
-						continue
-					}
-					if pythonIndent(lines[j]) != indent+4 {
-						continue
-					}
-					if fnMatch := pythonFuncPattern.FindStringSubmatch(classLine); len(fnMatch) == 2 {
-						end := pythonBlockEnd(lines, j, indent+4)
-						symbol := &pythonSymbol{
-							id:        fmt.Sprintf("%s#%s.%s@%d", rel, className, fnMatch[1], j+1),
-							name:      fnMatch[1],
-							path:      rel,
-							startLine: j + 1,
-							endLine:   end,
-							source:    strings.Join(lines[j:end], "\n"),
-							className: className,
-							bodyLines: lines[j:end],
-						}
-						module.symbols[symbol.id] = symbol
-						module.classMethod[className][symbol.name] = symbol.id
-						j = end - 1
-					}
-				}
-				i = classEnd - 1
+			module.imports[irImport.Alias] = pythonImportBinding{
+				kind:       irImport.Kind,
+				modulePath: modulePath,
+				symbolName: irImport.SymbolName,
 			}
 		}
 		modules[rel] = module
@@ -267,59 +213,8 @@ func parsePythonFiles(repoRoot string, files []string) (map[string]*pythonFile, 
 	return modules, nil
 }
 
-func parsePythonImport(repoRoot, currentPath, line string) (map[string]pythonImportBinding, bool) {
-	if match := pythonImportPattern.FindStringSubmatch(line); len(match) == 2 {
-		out := map[string]pythonImportBinding{}
-		parts := strings.SplitSeq(match[1], ",")
-		for part := range parts {
-			part = strings.TrimSpace(part)
-			name := part
-			alias := ""
-			if strings.Contains(part, " as ") {
-				chunks := strings.SplitN(part, " as ", 2)
-				name = strings.TrimSpace(chunks[0])
-				alias = strings.TrimSpace(chunks[1])
-			}
-			modulePath, ok := resolvePythonModulePath(repoRoot, currentPath, name)
-			if !ok {
-				continue
-			}
-			if alias == "" {
-				pieces := strings.Split(name, ".")
-				alias = pieces[len(pieces)-1]
-			}
-			out[alias] = pythonImportBinding{kind: "module", modulePath: modulePath}
-		}
-		return out, true
-	}
-	if match := pythonFromImportPattern.FindStringSubmatch(line); len(match) == 3 {
-		modulePath, ok := resolvePythonModulePath(repoRoot, currentPath, strings.TrimSpace(match[1]))
-		if !ok {
-			return nil, true
-		}
-		out := map[string]pythonImportBinding{}
-		for rawPart := range strings.SplitSeq(match[2], ",") {
-			part := strings.TrimSpace(rawPart)
-			if part == "*" || part == "" {
-				continue
-			}
-			name := part
-			alias := ""
-			if strings.Contains(part, " as ") {
-				chunks := strings.SplitN(part, " as ", 2)
-				name = strings.TrimSpace(chunks[0])
-				alias = strings.TrimSpace(chunks[1])
-			}
-			if alias == "" {
-				alias = name
-			}
-			out[alias] = pythonImportBinding{kind: "symbol", modulePath: modulePath, symbolName: name}
-		}
-		return out, true
-	}
-	return nil, false
-}
-
+// resolvePythonModulePath resolves a module spec (absolute "pkg.mod" or
+// relative "..mod") to a repo-relative file path.
 func resolvePythonModulePath(repoRoot, currentPath, module string) (string, bool) {
 	dots := 0
 	for dots < len(module) && module[dots] == '.' {
@@ -353,15 +248,10 @@ func resolvePythonModulePath(repoRoot, currentPath, module string) (string, bool
 	return "", false
 }
 
-func resolvePythonAttrCall(modules map[string]*pythonFile, module *pythonFile, symbol *pythonSymbol, base, name string) (string, bool) {
-	if base == "self" || base == "cls" {
-		if symbol.className == "" {
-			return "", false
-		}
-		methods := module.classMethod[symbol.className]
-		targetID, ok := methods[name]
-		return targetID, ok
-	}
+// resolvePythonAttrCall resolves a `base.name(...)` call through a
+// whole-module import binding to the target module's top-level definitions
+// (self./cls. calls are resolved by the caller via classMethod).
+func resolvePythonAttrCall(modules map[string]*pythonFile, module *pythonFile, base, name string) (string, bool) {
 	binding, ok := module.imports[base]
 	if !ok || binding.kind != "module" {
 		return "", false
@@ -374,9 +264,16 @@ func resolvePythonAttrCall(modules map[string]*pythonFile, module *pythonFile, s
 	return targetID, ok
 }
 
+// resolvePythonBareCall resolves a plain `name(...)` call: top-level
+// definitions win, then same-file nested definitions, then imported symbols.
 func resolvePythonBareCall(modules map[string]*pythonFile, module *pythonFile, name string) (string, bool) {
 	if targetID, ok := module.topLevel[name]; ok {
 		return targetID, true
+	}
+	for _, id := range module.byName[name] {
+		if symbol := module.symbols[id]; symbol.className == "" {
+			return id, true
+		}
 	}
 	binding, ok := module.imports[name]
 	if !ok || binding.kind != "symbol" {
@@ -399,42 +296,4 @@ func pythonSymbolInfo(symbol *pythonSymbol) *SymbolInfo {
 		Source:    symbol.source,
 		Language:  "python",
 	}
-}
-
-func pythonIndent(line string) int {
-	count := 0
-	for _, ch := range line {
-		if ch == ' ' {
-			count++
-			continue
-		}
-		if ch == '\t' {
-			count += 4
-			continue
-		}
-		break
-	}
-	return count
-}
-
-func pythonBlockEnd(lines []string, start, indent int) int {
-	end := len(lines)
-	for i := start + 1; i < len(lines); i++ {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if pythonIndent(lines[i]) <= indent {
-			end = i
-			break
-		}
-	}
-	return end
-}
-
-func stripPythonComment(line string) string {
-	if before, _, ok := strings.Cut(line, "#"); ok {
-		return before
-	}
-	return line
 }

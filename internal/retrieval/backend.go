@@ -131,8 +131,8 @@ func FallbackSearchScope(repoRoot, path string) string {
 // scopeForHierarchy converts a lookup scope into the scope used to build a call
 // graph. A file scope is widened to repo-wide (the empty scope), because call
 // hierarchy traversal is not meaningful when restricted to a single file's
-// definitions; a directory scope is kept as-is. Shared by the regex backends
-// (python/node/rust).
+// definitions; a directory scope is kept as-is. Shared by the AST-based
+// backends (python/node/rust).
 func scopeForHierarchy(scope lookupScope) lookupScope {
 	if scope.IsDir {
 		return scope

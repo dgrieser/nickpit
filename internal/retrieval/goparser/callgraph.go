@@ -21,7 +21,7 @@ import (
 // LLM/CLI-supplied argument and only the low side was clamped, so a runaway
 // value could request an explosively large hierarchy on a dense graph. The
 // graph is the trusted local repo, so this is a generous safety ceiling.
-// Exported so the regex backends and the tool schema share one source of truth.
+// Exported so the static-graph backends and the tool schema share one source of truth.
 const MaxCallHierarchyDepth = 50
 
 type graphCacheEntry struct {

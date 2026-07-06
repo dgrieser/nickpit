@@ -69,7 +69,13 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/retrieval/callgraph.go`: Call hierarchy API and orchestration.
 - `internal/retrieval/static_graph.go`: Static call graph storage and lookup.
 - `internal/retrieval/symbols.go`: Symbol references and symbol lookup helpers.
-- `internal/retrieval/nodejs_backend.go`, `python_backend.go`, `rust_backend.go`: Language-specific retrieval backends.
+- `internal/retrieval/nodejs_backend.go`, `python_backend.go`, `rust_backend.go`: Language-specific retrieval backends; cross-file resolution (imports, exports, class methods) over the tsparser IR.
+- `internal/retrieval/irparse.go`: Parallel tsparser parsing helper and graph-backed symbol lookup shared by the non-Go backends.
+- `internal/retrieval/tsparser/tsparser.go`: Language dispatch and line indexing for the AST extraction layer.
+- `internal/retrieval/tsparser/ir.go`: Language-neutral IR (symbols, classified calls, imports, exports).
+- `internal/retrieval/tsparser/javascript.go`: JS/TS/JSX/TSX symbol and call extraction via esbuild's parser.
+- `internal/retrieval/tsparser/python.go`, `internal/retrieval/tsparser/rust.go`: Python and Rust extraction via the pure-Go tree-sitter runtime.
+- `internal/retrieval/tsparser/treesitter.go`: Shared tree-sitter parsing and error-scan helpers.
 - `internal/retrieval/goparser/parser.go`: Go parser wrapper for symbols and call information.
 - `internal/retrieval/goparser/callgraph.go`: Go call graph extraction.
 - `internal/retrieval/repofs/repofs.go`: Filesystem abstraction over repository roots.
