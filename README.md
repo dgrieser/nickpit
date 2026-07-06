@@ -100,7 +100,7 @@ The daemon reacts with 👀 when it picks the review up. Comment `/nickpit abort
 
 Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, idempotent re-reviews.  
 
-### 🛑 Publishing that doesn't spam
+### 🔕 Publishing that doesn't spam
 
 `--publish` posts results back to the PR/MR:
 - a summary plus one inline comment per finding
