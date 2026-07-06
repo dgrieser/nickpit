@@ -89,10 +89,7 @@ func (w *jsWalker) current() *Symbol {
 // addSymbol registers a symbol spanning startLoc..endLoc (byte offsets).
 func (w *jsWalker) addSymbol(name, container string, startLoc, endLoc int, exported bool) *Symbol {
 	startLine := w.ix.lineOf(startLoc)
-	endLine := w.ix.lineOf(endLoc)
-	if endLine < startLine {
-		endLine = startLine
-	}
+	endLine := max(w.ix.lineOf(endLoc), startLine)
 	symbol := &Symbol{
 		Name:      name,
 		Container: container,
@@ -700,4 +697,4 @@ func maxLocIn(fragment any) int {
 	return max
 }
 
-var locType = reflect.TypeOf(logger.Loc{})
+var locType = reflect.TypeFor[logger.Loc]()

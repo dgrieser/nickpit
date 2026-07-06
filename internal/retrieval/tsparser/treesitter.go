@@ -17,7 +17,7 @@ func tsParse(canonicalName string, src []byte) (*sitter.BoundTree, error) {
 func namedChildren(n *sitter.Node) []*sitter.Node {
 	count := n.NamedChildCount()
 	out := make([]*sitter.Node, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		out = append(out, n.NamedChild(i))
 	}
 	return out

@@ -22,14 +22,9 @@ func parseIRFiles(repoRoot string, files []string) (map[string]*tsparser.FileIR,
 	jobs := make(chan string)
 	results := make(chan result)
 	var wg sync.WaitGroup
-	workers := runtime.GOMAXPROCS(0)
-	if workers > len(files) {
-		workers = len(files)
-	}
+	workers := min(runtime.GOMAXPROCS(0), len(files))
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for fullPath := range jobs {
 				rel, err := filepath.Rel(repoRoot, fullPath)
 				if err != nil {
@@ -45,7 +40,7 @@ func parseIRFiles(repoRoot string, files []string) (map[string]*tsparser.FileIR,
 				ir, err := tsparser.ParseFile(rel, data)
 				results <- result{rel: rel, ir: ir, err: err}
 			}
-		}()
+		})
 	}
 	go func() {
 		for _, fullPath := range files {
