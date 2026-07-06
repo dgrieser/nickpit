@@ -4,7 +4,7 @@
 
 # NickPit
 
-**AI code review that behaves like a review *team*, not a vending machine.**
+**AI assisted code review, so you can merge with confidence** :100:
 
 NickPit is a CLI that reviews local git changes, GitHub pull requests, and GitLab merge requests using any OpenAI-compatible LLM endpoint. Point it at a diff and it dispatches a small army of specialist agents who read your code, argue about it, double-check each other, throw out the duplicates, and hand you back a ranked, verified, de-duplicated list of findings — instead of one giant model monologue that confidently flags a bug on a line that doesn't exist.
 
@@ -14,39 +14,99 @@ Most LLM review tools are one prompt in a trench coat. NickPit is a pipeline. He
 
 ### 🧠 Six specialists, not one generalist
 
-Every review starts with a **context agent** that scouts the change, then fans out into **six parallel reviewer lanes**: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Each lane is a focused agent with its own system prompt and its own question set — because the reviewer hunting SQL injection should not be the same one worrying about your test coverage. It's the difference between "a doctor" and "a hospital."
+Every review starts with a
+
+1. **context agent** that scouts the change and
+2. fans out into **six parallel reviewer lanes**:
+  - Code Quality
+  - Security
+  - Architecture
+  - Performance
+  - Testing
+  - Best Practices
+
+Each lane is a focused agent with its own system prompt and its own question set — because the reviewer hunting SQL injection should not be the same one worrying about your test coverage.  
+
+It's the difference between "a doctor" and "a hospital."
 
 ### 🕵️ Findings are verified before you see them
 
-Each lane runs **review → verify → dedupe** on its own findings the moment its reviewer finishes. A separate verification agent adversarially checks every finding against the actual code, and a dedupe stage collapses the echoes. Only clean, confirmed findings reach the merge stage. Hallucinated line numbers and confidently-wrong nitpicks get bounced at the door.
+Each lane runs **review → verify → dedupe** on its own findings the moment its reviewer finishes.  
+
+A separate verification agent adversarially checks every finding against the actual code, and a dedupe stage collapses the echoes.  
+
+Only clean, confirmed findings reach the merge stage.  
+
+Hallucinated line numbers and confidently-wrong nitpicks get bounced at the door.  
 
 ### 📚 Reviewers can actually read your code
 
-NickPit gives the model retrieval tools: fetch files, line slices, symbols, **callers and callees** (language-aware for Go, Python, and Node.js). When a reviewer wonders "who calls this function?", it looks it up instead of guessing. Duplicate tool-call detection and per-agent call limits stop any agent from doom-scrolling your repo.
+NickPit gives the model special retrieval tools:
+- list and fetch files
+- deep search
+- language-aware **callers and callees** (go, python, nodejs)
+- exact line number lookups
+- language detection
+- versions of the toolchain
+
+When a reviewer wonders "who calls this function?", it not only gets the call stack, but all fucntion bodies on that stack.  
+
+Duplicate tool-call detection and per-agent call limits stop any LLM from doom-scrolling your repo.  
 
 ### 🔁 The "look again" machine
 
-After the first pass, each reviewer gets **nudge rounds** (3 by default) asking it to look again — and a **reasoning-extractor agent** mines the reviewer's chain-of-thought for issues it *noticed but never reported*. Yes, NickPit reads the model's mind and files tickets for it.
+After the first pass, each reviewer gets **nudge rounds** (3 by default) asking it to look again — and a **reasoning-extractor agent** mines the reviewer's chain-of-thought for issues it *noticed but never reported*.  
+
+Yes, NickPit reads the model's mind and files tickets for it.  
 
 ### 🌀 Loop detection for rambling models
 
-Reasoning models sometimes get stuck rethinking the same thing forever, at your expense. NickPit watches the reasoning stream with a **three-layer loop detector** — degenerate character runs, repeated lines/blocks, and shingle-recurrence analysis that catches even *paraphrased* rumination — then aborts, lowers the reasoning effort, and retries with an instruction to stop going in circles. No configuration needed. Your token bill will thank you.
+Reasoning models sometimes get stuck rethinking the same thing forever, at your expense.  
+
+NickPit watches the reasoning stream with a **three-layer loop detector**:
+- degenerate character runs
+- repeated lines/blocks
+- and shingle-recurrence analysis that catches even *paraphrased* rumination
+
+On detection the stream aborts, retries multiple times with lower reasoning effort, down to the lowest setting, and retries with special instructions to stop going in circles.  
+
+No configuration needed. Your token bill will thank you. :moneybag:
 
 ### 🧩 The whole pipeline is a YAML file
 
-The review workflow is a portable spec — the single source of truth for execution, with zero hidden magic in code. Rewire it: reorder steps, drop lanes, add nudges, run per-step model overrides, or pipe previously-exported findings back in with `findings_from:`. Or skip workflows entirely and run a single step (`--step merge`, `--step verdict`, …) on findings JSON you already have.
+The review workflow is a portable spec — the single source of truth for execution, with zero hidden magic in code.  
+Rewire it:
+- reorder steps
+- drop lanes
+- add nudges
+- run per-step model overrides
+- or pipe previously-exported findings back in with `findings_from:`.
+
+Or skip workflows entirely and run a single step (`--step merge`, `--step verdict`, …) on findings JSON you already have.
 
 ### 💸 Cheap where cheap works
 
-Profiles can define a nested **`small` model alias** — put an expensive model on review and a budget model on summarize with `model: "@small"` per step. Every parameter (temperature, reasoning effort, token caps, …) can be overridden per step. JSON output includes a full `agent_runs` accounting of every agent's token and tool usage, so you can see exactly where the money went.
+Profiles can define a nested **`small` model alias** — put an expensive model on review and a budget model on summarize with `model: "@small"` per step.  
+
+Every parameter (temperature, reasoning effort, token caps, …) can be overridden per step.  
+
+JSON output includes a full `agent_runs` accounting of every agent's token and tool usage, so you can see exactly where the money went.
 
 ### 🤖 A GitLab review bot with no CI required
 
-`nickpit gitlab serve` is a webhook daemon that auto-reviews MRs for opted-in projects — and anyone can summon a review on *any* MR (drafts included) by awarding a custom **`nickpit` emoji**. The daemon reacts with 👀 when it picks the review up. Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, idempotent re-reviews.
+`nickpit gitlab serve` is a webhook daemon that auto-reviews MRs for opted-in projects — and anyone can summon a review on *any* MR (drafts included) by awarding a custom **`nickpit` emoji**.  
+
+The daemon reacts with 👀 when it picks the review up.  
+
+Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, idempotent re-reviews.  
 
 ### 📮 Publishing that doesn't spam
 
-`--publish` posts results back to the PR/MR: a summary plus one inline comment per finding, anchored to diff lines where possible. Hidden fingerprint markers make re-runs **idempotent** — already-posted findings are skipped, and an interrupted publish heals itself on the next run.
+`--publish` posts results back to the PR/MR:
+- a summary plus one inline comment per finding
+- anchored to diff lines where possible
+
+Hidden fingerprint markers make re-runs **idempotent** — already-posted findings are skipped, and an interrupted publish heals itself on the next run.
 
 ### 🛡️ Structured output, enforced by the API
 
