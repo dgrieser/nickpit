@@ -731,9 +731,11 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 	serveCmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run a webhook daemon reviewing GitLab MRs automatically",
-		Long: "Run an HTTP daemon receiving GitLab group webhooks (merge request + emoji events). " +
+		Long: "Run an HTTP daemon receiving GitLab group webhooks (merge request + emoji + comment events). " +
 			"MR activity triggers reviews on projects carrying the opt-in topic; awarding the trigger " +
-			"emoji on an MR requests a review explicitly. Each review runs as a separate nickpit child process.",
+			"emoji on an MR requests a review explicitly, revoking it aborts. MR comments starting with " +
+			"the command keyword control the daemon: /nickpit review|abort|status|help. Each review runs " +
+			"as a separate nickpit child process.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.LoadServe(serveConfigPath)
 			if err != nil {
@@ -780,7 +782,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				return user.ID, nil
 			})
 			for _, warning := range warnings {
-				log.Warn("bot user lookup failed; own emoji awards are filtered by name only (start_emoji never equals trigger_emoji, enforced at config validation)", "error", warning)
+				log.Warn("bot user lookup failed; own emoji awards are filtered by name only (start_emoji never equals trigger_emoji, enforced at config validation) and own note replies are only kept out of command parsing by never starting with the command keyword", "error", warning)
 			}
 
 			// Group tokens and webhook secrets typically sit in the daemon's
@@ -802,7 +804,11 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				ExtraArgs:  cfg.Review.ExtraArgs,
 				LogDir:     cfg.LogDir,
 			}, log)
-			handler := serve.NewHandler(groups, dispatcher, cfg.TriggerEmoji, log)
+			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
+				TriggerEmoji:   cfg.TriggerEmoji,
+				CommandKeyword: cfg.CommandKeyword,
+				AckEmoji:       cfg.AckEmojiName(),
+			}, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)
 		},

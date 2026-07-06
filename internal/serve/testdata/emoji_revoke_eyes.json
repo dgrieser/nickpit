@@ -1,0 +1,27 @@
+{
+  "object_kind": "emoji",
+  "event_type": "revoke",
+  "user": {
+    "id": 10,
+    "username": "alice"
+  },
+  "project": {
+    "id": 43,
+    "path_with_namespace": "platform/legacy/tool",
+    "default_branch": "main"
+  },
+  "object_attributes": {
+    "action": "revoke",
+    "name": "eyes",
+    "awardable_type": "MergeRequest",
+    "awardable_id": 1234
+  },
+  "merge_request": {
+    "iid": 11,
+    "draft": false,
+    "state": "opened",
+    "last_commit": {
+      "id": "sha-emoji-1"
+    }
+  }
+}

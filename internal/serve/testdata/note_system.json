@@ -1,0 +1,20 @@
+{
+  "object_kind": "note",
+  "event_type": "note",
+  "user": {"id": 10, "username": "alice"},
+  "project": {"id": 43, "path_with_namespace": "platform/legacy/tool", "default_branch": "main"},
+  "object_attributes": {
+    "id": 308,
+    "note": "/nickpit review",
+    "noteable_type": "MergeRequest",
+    "system": true,
+    "discussion_id": "disc-308",
+    "action": "create"
+  },
+  "merge_request": {
+    "iid": 11,
+    "draft": false,
+    "state": "opened",
+    "last_commit": {"id": "sha-note-1"}
+  }
+}

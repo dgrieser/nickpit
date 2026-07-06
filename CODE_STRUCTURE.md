@@ -89,6 +89,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/client.go`: GitLab API client.
 - `internal/scm/gitlab/mr.go`: Merge request loading, review source construction, and live MR status (`FetchMRStatus`).
 - `internal/scm/gitlab/project.go`: Project lookup (topics), current-user lookup, and award-emoji posting.
+- `internal/scm/gitlab/notes.go`: Note-level operations used by the serve daemon: note award-emoji, plain MR notes, and threaded discussion replies.
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
 - `internal/scm/reviewmd/render.go`: Markdown review report rendering.
@@ -96,10 +97,11 @@ This document maps the production Go code. Test files live beside the code they 
 ## GitLab Webhook Daemon (`nickpit gitlab serve`)
 
 - `internal/serve/server.go`: HTTP server wiring, /healthz, and graceful-shutdown sequencing.
-- `internal/serve/handler.go`: Webhook endpoint: body limit, group match, constant-time secret check, event classification, fast-ack enqueue.
-- `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs ignore).
+- `internal/serve/handler.go`: Webhook endpoint: body limit, group match, constant-time secret check, event classification, fast-ack enqueue, and command routing (ack emoji and replies posted async).
+- `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs ignore).
+- `internal/serve/command.go`: `/keyword` note-command parsing and the help/status/abort reply texts.
 - `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
-- `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, and shutdown grace handling.
+- `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.
 - `internal/serve/runner.go`: `ReviewRunner` seam and `ExecRunner` spawning `nickpit gitlab mr --publish` children with log capture.
 - `internal/serve/topics.go`: TTL + singleflight cache for project topics.

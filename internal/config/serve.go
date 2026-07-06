@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +25,8 @@ const (
 	DefaultServeTopic             = "nickpit"
 	DefaultServeTriggerEmoji      = "nickpit"
 	DefaultServeStartEmoji        = "eyes"
+	DefaultServeCommandKeyword    = "nickpit"
+	DefaultServeAckEmoji          = "white_check_mark"
 )
 
 // ServeConfig configures the `nickpit gitlab serve` webhook daemon.
@@ -35,6 +39,8 @@ type ServeConfig struct {
 	Topic             string       `yaml:"topic"`
 	TriggerEmoji      string       `yaml:"trigger_emoji"`
 	StartEmoji        *string      `yaml:"start_emoji"`
+	CommandKeyword    string       `yaml:"command_keyword"`
+	AckEmoji          *string      `yaml:"ack_emoji"`
 	Groups            []ServeGroup `yaml:"groups"`
 	Review            ServeReview  `yaml:"review"`
 }
@@ -72,6 +78,7 @@ func LoadServe(path string) (*ServeConfig, error) {
 		ShutdownGrace:     DefaultServeShutdownGrace,
 		Topic:             DefaultServeTopic,
 		TriggerEmoji:      DefaultServeTriggerEmoji,
+		CommandKeyword:    DefaultServeCommandKeyword,
 	}
 	if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 		return nil, fmt.Errorf("serve config: parsing %s: %w", path, err)
@@ -79,6 +86,10 @@ func LoadServe(path string) (*ServeConfig, error) {
 	if cfg.StartEmoji == nil {
 		startEmoji := DefaultServeStartEmoji
 		cfg.StartEmoji = &startEmoji
+	}
+	if cfg.AckEmoji == nil {
+		ackEmoji := DefaultServeAckEmoji
+		cfg.AckEmoji = &ackEmoji
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("serve config: %s: %w", path, err)
@@ -93,6 +104,17 @@ func (c *ServeConfig) StartEmojiName() string {
 		return DefaultServeStartEmoji
 	}
 	return *c.StartEmoji
+}
+
+// AckEmojiName returns the emoji awarded on a command comment to acknowledge
+// it; empty means disabled. Unlike start_emoji it needs no anti-loop check
+// against trigger_emoji: it is awarded on a Note, and only MergeRequest
+// awardables can trigger reviews.
+func (c *ServeConfig) AckEmojiName() string {
+	if c.AckEmoji == nil {
+		return DefaultServeAckEmoji
+	}
+	return *c.AckEmoji
 }
 
 // ShutdownGraceDuration parses the configured shutdown grace period. Validate
@@ -135,6 +157,14 @@ func (c *ServeConfig) Validate() error {
 	}
 	if c.TriggerEmoji == "" {
 		errs = append(errs, errors.New("trigger_emoji must not be empty"))
+	}
+	switch {
+	case c.CommandKeyword == "":
+		errs = append(errs, errors.New("command_keyword must not be empty"))
+	case strings.HasPrefix(c.CommandKeyword, "/"):
+		errs = append(errs, fmt.Errorf("command_keyword must not start with '/' (got %q): the slash is implied", c.CommandKeyword))
+	case strings.ContainsFunc(c.CommandKeyword, unicode.IsSpace):
+		errs = append(errs, fmt.Errorf("command_keyword must not contain whitespace (got %q)", c.CommandKeyword))
 	}
 	if c.LogDir == "" {
 		errs = append(errs, errors.New("log_dir must not be empty"))
