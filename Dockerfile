@@ -5,7 +5,7 @@ RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /nickpit ./cmd/nickpit
+RUN CGO_ENABLED=0 go build -tags "grammar_subset,grammar_subset_python,grammar_subset_rust" -trimpath -ldflags="-s -w" -o /nickpit ./cmd/nickpit
 
 # ---- Stage git + its shared libs (bookworm, matches base-debian12) -------
 FROM debian:12-slim AS gitpkg
