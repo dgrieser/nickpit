@@ -4,19 +4,65 @@
 
 # NickPit
 
-NickPit is a CLI for LLM-assisted code review across local git changes, GitHub pull requests, and GitLab merge requests.  
-It uses a normalized review context, a provider-compatible chat completions client, and optional tool-driven retrieval rounds for additional code context.
+**AI code review that behaves like a review *team*, not a vending machine.**
 
-## Features
+NickPit is a CLI that reviews local git changes, GitHub pull requests, and GitLab merge requests using any OpenAI-compatible LLM endpoint. Point it at a diff and it dispatches a small army of specialist agents who read your code, argue about it, double-check each other, throw out the duplicates, and hand you back a ranked, verified, de-duplicated list of findings — instead of one giant model monologue that confidently flags a bug on a line that doesn't exist.
 
-- Local review modes for uncommitted changes, commit ranges, and branch diffs
-- GitHub PR and GitLab MR review via direct REST clients
-- OpenAI-compatible chat completions client
-- Structured JSON findings with priority filtering and overall verdicts
-- Default multi-agent review with context collection, specialist reviewers, merge, and verification stages
-- API-enforced JSON response format (`response_format` json_schema) by default, with automatic fallback to a prompt-embedded schema when the model lacks support
-- Retrieval commands for files, slices, symbols, callers, and callees
-- Terminal and JSON output modes
+## Why NickPit?
+
+Most LLM review tools are one prompt in a trench coat. NickPit is a pipeline. Here's what you actually get:
+
+### 🧠 Six specialists, not one generalist
+
+Every review starts with a **context agent** that scouts the change, then fans out into **six parallel reviewer lanes**: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Each lane is a focused agent with its own system prompt and its own question set — because the reviewer hunting SQL injection should not be the same one worrying about your test coverage. It's the difference between "a doctor" and "a hospital."
+
+### 🕵️ Findings are verified before you see them
+
+Each lane runs **review → verify → dedupe** on its own findings the moment its reviewer finishes. A separate verification agent adversarially checks every finding against the actual code, and a dedupe stage collapses the echoes. Only clean, confirmed findings reach the merge stage. Hallucinated line numbers and confidently-wrong nitpicks get bounced at the door.
+
+### 📚 Reviewers can actually read your code
+
+NickPit gives the model retrieval tools: fetch files, line slices, symbols, **callers and callees** (language-aware for Go, Python, and Node.js). When a reviewer wonders "who calls this function?", it looks it up instead of guessing. Duplicate tool-call detection and per-agent call limits stop any agent from doom-scrolling your repo.
+
+### 🔁 The "look again" machine
+
+After the first pass, each reviewer gets **nudge rounds** (3 by default) asking it to look again — and a **reasoning-extractor agent** mines the reviewer's chain-of-thought for issues it *noticed but never reported*. Yes, NickPit reads the model's mind and files tickets for it.
+
+### 🌀 Loop detection for rambling models
+
+Reasoning models sometimes get stuck rethinking the same thing forever, at your expense. NickPit watches the reasoning stream with a **three-layer loop detector** — degenerate character runs, repeated lines/blocks, and shingle-recurrence analysis that catches even *paraphrased* rumination — then aborts, lowers the reasoning effort, and retries with an instruction to stop going in circles. No configuration needed. Your token bill will thank you.
+
+### 🧩 The whole pipeline is a YAML file
+
+The review workflow is a portable spec — the single source of truth for execution, with zero hidden magic in code. Rewire it: reorder steps, drop lanes, add nudges, run per-step model overrides, or pipe previously-exported findings back in with `findings_from:`. Or skip workflows entirely and run a single step (`--step merge`, `--step verdict`, …) on findings JSON you already have.
+
+### 💸 Cheap where cheap works
+
+Profiles can define a nested **`small` model alias** — put an expensive model on review and a budget model on summarize with `model: "@small"` per step. Every parameter (temperature, reasoning effort, token caps, …) can be overridden per step. JSON output includes a full `agent_runs` accounting of every agent's token and tool usage, so you can see exactly where the money went.
+
+### 🤖 A GitLab review bot with no CI required
+
+`nickpit gitlab serve` is a webhook daemon that auto-reviews MRs for opted-in projects — and anyone can summon a review on *any* MR (drafts included) by awarding a custom **`nickpit` emoji**. The daemon reacts with 👀 when it picks the review up. Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, idempotent re-reviews.
+
+### 📮 Publishing that doesn't spam
+
+`--publish` posts results back to the PR/MR: a summary plus one inline comment per finding, anchored to diff lines where possible. Hidden fingerprint markers make re-runs **idempotent** — already-posted findings are skipped, and an interrupted publish heals itself on the next run.
+
+### 🛡️ Structured output, enforced by the API
+
+Findings are structured JSON with `p0`–`p3` priorities, confidence scores, optional fix suggestions, and an overall verdict. NickPit uses API-enforced `response_format` json_schema by default and **automatically falls back** to a prompt-embedded schema when the model doesn't support it (a pre-review model check figures this out for you — also runnable standalone via `nickpit check`).
+
+### 🧰 Everything else you'd expect, plus some you wouldn't
+
+- **Local review modes**: uncommitted changes, commit ranges, branch diffs.
+- **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id` or just the URL.
+- **Diff filters**: regex include/exclude by path *and* by file content.
+- **Styleguides**: built-in per-language guides selected from the diff, plus your own from local files or URLs.
+- **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
+- **Terminal and JSON output**, `--show-progress` live progress, `--verbose`/`--debug` down to raw LLM payloads.
+- **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
+- **Rootless, distroless, multi-arch Docker image.**
+- **`nickpit inspect`**: the retrieval toolbox (files, search, callers, callees) as a standalone command tree — no review required.
 
 ## Installation
 
@@ -69,9 +115,18 @@ Notes:
 - Only **HTTPS** clone URLs are supported in the container (use a token); SSH clone URLs
   are not, as no `ssh` client is bundled.
 
+## Quick Start
+
+```bash
+export OPENROUTER_API_KEY=sk-...
+nickpit git branch --model some/model --show-progress
+```
+
+That's it: current branch vs. default branch, six reviewers, verified findings, verdict.
+
 ## Configuration
 
-NickPit loads configuration in this order:
+NickPit loads configuration in this order (later wins):
 
 1. Built-in defaults
 2. YAML config file from `--config` or `.nickpit.yaml`
@@ -84,7 +139,9 @@ Run `make generate` or `make build` to generate `.nickpit.yaml.example` from the
 
 The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`. When the active profile ends up with no API key at all, `NICKPIT_API_KEY` is used as a last-resort fallback.
 
-Profiles can also define a cheaper/faster alias for workflow steps:
+### The `small` model alias
+
+Profiles can define a cheaper/faster alias for workflow steps:
 
 ```yaml
 profiles:
@@ -191,11 +248,13 @@ nickpit gitlab mr --url https://gitlab.example.com/group/project/-/merge_request
 nickpit gitlab mr --repo group/project --id 456 --publish
 ```
 
+### Publishing
+
 With `--publish`, findings whose lines are part of the diff are posted inline anchored to those lines; the rest fall back to general comments that include `file:line` after the priority badge and confidence line. On GitHub this is a single PR review (the summary as the review body, findings as inline review comments); on GitLab it is a summary note plus one inline discussion per finding. Hidden markers make re-runs idempotent (already-posted comments are skipped), and a publish failure is reported as a warning without failing the review.
 
 Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
 
-### GitLab Webhook Daemon
+## GitLab Webhook Daemon
 
 `nickpit gitlab serve` runs an HTTP daemon that reviews MRs automatically from GitLab **group webhooks** — no CI pipeline integration needed. Each review runs as a separate `nickpit gitlab mr --publish` child process; comment fingerprints keep re-reviews idempotent.
 
@@ -252,6 +311,8 @@ volumes:
 
 Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints. Queue state is in-memory only; events arriving while the daemon is down are recovered on the next push or by awarding the trigger emoji.
 
+## Tuning a Review
+
 ### Progress
 
 Append `--show-progress` to print review details and tool calls on stderr.
@@ -268,21 +329,28 @@ By default, NickPit may include suggested fixes when an obvious replacement exis
 
 Append `--verbose` or `--debug` to print step-by-step execution details to stderr, including prompt rendering and raw LLM request/response payloads.
 
-
 ### Output Schema Mode
 
 By default, NickPit sends the review schema via the API `response_format` field (json_schema constrained output). When the pre-review model check finds the model does not support it, NickPit warns and automatically falls back to embedding the schema in the system prompt — the review still runs.
 Use `--disable-json-response-format` to force the prompt-embedded schema instead. The same setting can be stored in config as `disable_json_response_format: true` in the active profile, or per workflow step.
 
+### Tool Calls and Retries
+
 NickPit lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` means unlimited.
+
+### Finding Caps
 
 Cap how many findings each review agent may report with `--max-findings` or `max_findings` in config (also overridable per `review:` step in a workflow). The default is `0`, meaning unlimited. When a limit is set it is added to the reviewer prompt; a response exceeding the limit is retried once with guidance to keep only the strongest findings, after which the weakest findings (lowest priority, then lowest confidence) are cut and the agent run is marked partial. The limit counts the agent's whole session: initial pass plus nudge rounds; once the limit is reached, remaining nudge rounds (including standalone `nudge:` steps) are skipped.
 
+### Reasoning Caps and Loop Detection
+
 Reasoning calls are capped with `--max-reasoning-seconds` or `max_reasoning_seconds`; the default is `300`. When the cap is hit, NickPit aborts the stream and retries through the existing lower-reasoning-effort fallback path. NickPit also watches streamed reasoning for loops; detection is built in and needs no configuration. Three layered signals cover the observed failure modes: degenerate character runs (one character or a short unit repeated back-to-back), exact repeated lines or blocks (whitespace runs collapsed, empty lines ignored), and shingle recurrence — the fraction of recently emitted token shingles (lowercased, punctuation removed, code identifiers and numbers masked) that already appeared earlier in the same stream. Verbatim loops drive that recurrence to ~1.0 and are cancelled quickly; paraphrase loops (the same decision cycle reworded) plateau lower and must persist longer before they fire. Thresholds are staged over the reasoning time budget: early in a stream only ironclad repetition may cancel it, and detection becomes progressively more aggressive as the stream approaches `max_reasoning_seconds`, where it would be cancelled anyway. When a loop is detected, the stream is aborted and retried with lower reasoning effort and an added instruction to avoid repeating the same analysis.
+
+### Concurrency and Accounting
 
 Reviews run a context agent first, then six specialist reviewer lanes in parallel: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Each lane verifies and de-duplicates its reviewer's findings as soon as that reviewer finishes, so only clean findings reach the merge agent. Concurrent LLM agent loops — reviewers, verifiers, dedupe, merge, finalize, verdict, summarize — are capped globally with `--concurrency` (default `10`, `0` = unlimited). Tool-call limits apply independently to each context, reviewer, and verifier agent. JSON output includes `total_tool_calls` at the root plus an `agent_runs` summary with each agent's token usage, tool usage, duplicate tool calls, and configured tool-call limits.
 
-### Workflows
+## Workflows
 
 The review pipeline is driven by a portable workflow spec. The spec is the single source of truth for execution — there is no auto-fusion or hidden execution-shape decisions in code. By default `nickpit git`/`github`/`gitlab` run the built-in workflow (collect context → six reviewer lanes in parallel, each running review → verify → dedupe for its vector → then a `pipeline:` tail that streams merge → finalize → verdict → summarize). You can supply your own spec or run a single step instead, on any of those commands:
 
@@ -299,11 +367,11 @@ nickpit git branch --step summarize --findings finalized.json --json
 
 See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); a parallel child can be a `lane:` — a list of steps that run sequentially within the group, e.g. one reviewer's `review:` → `verify:` → `dedupe:` chain. A `pipeline:` group is the explicit, streamed post-review tail (`merge` → `finalize` → `verdict`, optionally `summarize`): its steps overlap with no barrier between them — each merge cluster flows straight into finalize/summarize while other clusters are still merging, and verdict gates on all finalizes. Listing those steps flat instead runs them strictly sequentially, each over the whole finding set. Each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, top_p, top_k, presence_penalty, reasoning_effort, scope, max_tool_calls, max_output_retries, nudge_count, max_findings, disable_patch_summary, disable_suggestions, verify_drop_policy, confidence_threshold, …) — anything unset inherits the active profile/flags. `scope` makes a step's fan-out explicit — the work unit each agent operates on: `all` (whole finding set), `cluster` (per merge cluster, `merge`/`finalize`/`summarize`), `finding` (per finding, `verify`), or `reviewer` (per reviewer group, `dedupe`); cluster-scoped finalize/summarize is valid only inside a `pipeline:`. Use `model: "@small"` to select the configured nested `small` profile for a step. `review:<vector>` configs can also override internal agents with `mine_reasoning:`, `compile_findings:`, and `nudge:` subconfigs. LLM concurrency is run-level only (`--concurrency`, default `10`, `0` = unlimited): one shared cap across every agent loop in the run — it is intentionally not in the spec. Per-vector steps are addressed as `review:security`, `verify:security`, `dedupe:security`, …; `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any global step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group); inside a `pipeline:` only the `merge` step may carry it. Steps that only consume injected findings (e.g. `merge`, `finalize`, `verdict`, `summarize`) run without a git/PR source. `finalize` now only finalizes finding wording/priority/confidence; include `verdict` after it when a workflow needs final top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score`. `confidence_threshold` is applied only by the `verdict` step.
 
-### Filtering Review Output
+## Filtering Review Output
 
 Review output filtering uses `--priority-threshold` with `0` through `3`, where `0` is highest priority and `3` is lowest (the default, showing everything). Findings are still displayed with `p0`–`p3` badges. `--confidence-threshold` filters findings at the start of the `verdict` step using finalized confidence; workflows without `verdict` do not apply the confidence threshold and emit a warning.
 
-### Inspect Commands
+## Inspect Commands
 
 The `inspect` command is a standalone retrieval command tree for using retrieval without review.
 
