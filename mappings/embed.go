@@ -19,19 +19,35 @@ import (
 var FS embed.FS
 
 type LanguageMappings struct {
-	Default   string              `yaml:"default"`
-	Extension map[string][]string `yaml:"extensions"`
-	Basename  map[string][]string `yaml:"basenames"`
-	PathRules []LanguagePathRule  `yaml:"path_rules"`
+	Default      string              `yaml:"default"`
+	Extension    map[string][]string `yaml:"extensions"`
+	Basename     map[string][]string `yaml:"basenames"`
+	PathRules    []LanguagePathRule  `yaml:"path_rules"`
+	ContentRules []LanguagePathRule  `yaml:"content_rules"`
 }
 
 type LanguagePathRule struct {
 	Language string     `yaml:"language"`
 	MatchAny PatternSet `yaml:"match_any"`
+	MatchAll PatternSet `yaml:"match_all"`
 }
 
 type FileMappings struct {
-	GeneratedSuffixes []string `yaml:"generated_suffixes"`
+	GeneratedSuffixes  []string           `yaml:"generated_suffixes"`
+	GeneratedRules     []GeneratedRule    `yaml:"generated_rules"`
+	EvictionPriorities []EvictionPriority `yaml:"eviction_priorities"`
+}
+
+type GeneratedRule struct {
+	Reason   string     `yaml:"reason"`
+	MatchAny PatternSet `yaml:"match_any"`
+	MatchAll PatternSet `yaml:"match_all"`
+}
+
+type EvictionPriority struct {
+	Name     string     `yaml:"name"`
+	MatchAny PatternSet `yaml:"match_any"`
+	MatchAll PatternSet `yaml:"match_all"`
 }
 
 type StyleGuideMappings struct {
@@ -51,6 +67,7 @@ type StyleGuideDetector struct {
 type PatternSet struct {
 	Extensions       []string `yaml:"extensions"`
 	Basenames        []string `yaml:"basenames"`
+	BasenamePrefixes []string `yaml:"basename_prefixes"`
 	BasenameSuffixes []string `yaml:"basename_suffixes"`
 	PathSegments     []string `yaml:"path_segments"`
 	PathPrefixes     []string `yaml:"path_prefixes"`
@@ -66,19 +83,36 @@ var (
 )
 
 type loadedMappings struct {
-	languages           LanguageMappings
-	files               FileMappings
-	styleGuides         StyleGuideMappings
-	extLang             map[string]string
-	baseLang            map[string]string
-	ctxExt              map[string]string
-	languagePathRules   []compiledLanguagePathRule
-	styleGuideDetectors []compiledStyleGuideDetector
+	languages            LanguageMappings
+	files                FileMappings
+	styleGuides          StyleGuideMappings
+	extLang              map[string]string
+	baseLang             map[string]string
+	ctxExt               map[string]string
+	languagePathRules    []compiledLanguagePathRule
+	languageContentRules []compiledLanguagePathRule
+	generatedSuffixes    []string
+	generatedRules       []compiledGeneratedRule
+	evictionPriorities   []compiledEvictionPriority
+	styleGuideDetectors  []compiledStyleGuideDetector
 }
 
 type compiledLanguagePathRule struct {
 	language string
 	matchAny compiledPatternSet
+	matchAll compiledPatternSet
+}
+
+type compiledGeneratedRule struct {
+	reason   string
+	matchAny compiledPatternSet
+	matchAll compiledPatternSet
+}
+
+type compiledEvictionPriority struct {
+	name     string
+	matchAny compiledPatternSet
+	matchAll compiledPatternSet
 }
 
 type compiledStyleGuideDetector struct {
@@ -91,6 +125,7 @@ type compiledStyleGuideDetector struct {
 type compiledPatternSet struct {
 	extensions       []string
 	basenames        []string
+	basenamePrefixes []string
 	basenameSuffixes []string
 	pathSegments     []string
 	pathPrefixes     []string
@@ -100,11 +135,20 @@ type compiledPatternSet struct {
 }
 
 func DetectLanguage(path string) string {
+	return DetectLanguageContent(path, "")
+}
+
+// DetectLanguageContent resolves the language for a repo path, optionally
+// consulting file or unified-diff content: path_rules, extensions, basenames,
+// content_rules, default. Content rules only fire when every path-based step
+// missed, so content signals can never override an extension mapping.
+func DetectLanguageContent(path, content string) string {
 	m := mustLoadMappings()
 	normalized := strings.ToLower(filepath.ToSlash(path))
 	base := filepath.Base(normalized)
+	signal := normalizeSignalContent(content)
 	for _, rule := range m.languagePathRules {
-		if rule.matchAny.matchesPath(normalized, base) {
+		if ruleMatches(rule.matchAny, rule.matchAll, normalized, base, signal) {
 			return rule.language
 		}
 	}
@@ -114,17 +158,65 @@ func DetectLanguage(path string) string {
 	if language, ok := m.baseLang[base]; ok {
 		return language
 	}
+	for _, rule := range m.languageContentRules {
+		if ruleMatches(rule.matchAny, rule.matchAll, normalized, base, signal) {
+			return rule.language
+		}
+	}
 	return m.languages.Default
 }
 
-func IsGeneratedFile(path string) bool {
+// IsGenerated reports whether a path is generated or lockfile-like noise.
+// Path matching is case-insensitive; content signals (e.g. "DO NOT EDIT"
+// markers) match against file or unified-diff content.
+func IsGenerated(path, content string) bool {
 	m := mustLoadMappings()
-	for _, suffix := range m.files.GeneratedSuffixes {
-		if strings.HasSuffix(path, suffix) {
+	normalized := strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(normalized)
+	for _, suffix := range m.generatedSuffixes {
+		if strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
+	signal := normalizeSignalContent(content)
+	for _, rule := range m.generatedRules {
+		if ruleMatches(rule.matchAny, rule.matchAll, normalized, base, signal) {
 			return true
 		}
 	}
 	return false
+}
+
+// EvictionClass ranks a path for context trimming: the index of the first
+// matching eviction_priorities rule (lower = evicted earlier), or the number
+// of rules when nothing matches (regular source, evicted last).
+func EvictionClass(path string) int {
+	m := mustLoadMappings()
+	normalized := strings.ToLower(filepath.ToSlash(path))
+	base := filepath.Base(normalized)
+	for i, rule := range m.evictionPriorities {
+		if ruleMatches(rule.matchAny, rule.matchAll, normalized, base, "") {
+			return i
+		}
+	}
+	return len(m.evictionPriorities)
+}
+
+// ruleMatches implements the shared match_any/match_all rule semantics: a
+// non-empty match_any needs at least one hit, a non-empty match_all needs
+// every configured matcher group to hit, and a rule with no matchers at all
+// never matches.
+func ruleMatches(matchAny, matchAll compiledPatternSet, normalizedPath, base, content string) bool {
+	if matchAny.empty() && matchAll.empty() {
+		return false
+	}
+	if !matchAny.empty() && !matchAny.matches(normalizedPath, base, content) {
+		return false
+	}
+	if !matchAll.empty() && !matchAll.matchesAll(normalizedPath, base, content) {
+		return false
+	}
+	return true
 }
 
 func StyleGuideFile(language string) (string, bool) {
@@ -167,13 +259,7 @@ func StyleGuideDetectorLanguages(path, content string) []string {
 	var out []string
 	seen := make(map[string]struct{})
 	for _, detector := range m.styleGuideDetectors {
-		if !detector.matchAny.empty() && !detector.matchAny.matches(normalized, base, content) {
-			continue
-		}
-		if !detector.matchAll.empty() && !detector.matchAll.matchesAll(normalized, base, content) {
-			continue
-		}
-		if detector.matchAny.empty() && detector.matchAll.empty() {
+		if !ruleMatches(detector.matchAny, detector.matchAll, normalized, base, content) {
 			continue
 		}
 		if _, ok := seen[detector.language]; ok {
@@ -256,15 +342,25 @@ func parseLanguagesYAML(data []byte) (LanguageMappings, error) {
 	if len(mappings.Extension) == 0 {
 		return LanguageMappings{}, fmt.Errorf("mappings: languages.yaml missing extensions")
 	}
-	for i, rule := range mappings.PathRules {
-		if rule.Language == "" {
-			return LanguageMappings{}, fmt.Errorf("mappings: languages.yaml path_rules[%d] missing language", i)
-		}
-		if rule.MatchAny.empty() {
-			return LanguageMappings{}, fmt.Errorf("mappings: languages.yaml path_rules[%d] missing match_any", i)
-		}
+	if err := validateLanguageRules("path_rules", mappings.PathRules); err != nil {
+		return LanguageMappings{}, err
+	}
+	if err := validateLanguageRules("content_rules", mappings.ContentRules); err != nil {
+		return LanguageMappings{}, err
 	}
 	return mappings, nil
+}
+
+func validateLanguageRules(section string, rules []LanguagePathRule) error {
+	for i, rule := range rules {
+		if rule.Language == "" {
+			return fmt.Errorf("mappings: languages.yaml %s[%d] missing language", section, i)
+		}
+		if rule.MatchAny.empty() && rule.MatchAll.empty() {
+			return fmt.Errorf("mappings: languages.yaml %s[%d] missing match rules", section, i)
+		}
+	}
+	return nil
 }
 
 func parseFilesYAML(data []byte) (FileMappings, error) {
@@ -274,6 +370,19 @@ func parseFilesYAML(data []byte) (FileMappings, error) {
 	}
 	if len(mappings.GeneratedSuffixes) == 0 {
 		return FileMappings{}, fmt.Errorf("mappings: files.yaml missing generated suffixes")
+	}
+	for i, rule := range mappings.GeneratedRules {
+		if rule.MatchAny.empty() && rule.MatchAll.empty() {
+			return FileMappings{}, fmt.Errorf("mappings: files.yaml generated_rules[%d] missing match rules", i)
+		}
+	}
+	for i, rule := range mappings.EvictionPriorities {
+		if rule.Name == "" {
+			return FileMappings{}, fmt.Errorf("mappings: files.yaml eviction_priorities[%d] missing name", i)
+		}
+		if rule.MatchAny.empty() && rule.MatchAll.empty() {
+			return FileMappings{}, fmt.Errorf("mappings: files.yaml eviction_priorities[%d] missing match rules", i)
+		}
 	}
 	return mappings, nil
 }
@@ -323,7 +432,19 @@ func buildLoadedMappings(languages LanguageMappings, files FileMappings, styleGu
 			return loadedMappings{}, fmt.Errorf("mappings: styleguides.yaml detector[%d] references unknown style guide language %q", i, detector.Language)
 		}
 	}
-	languageRules, err := compileLanguagePathRules(languages.PathRules)
+	languageRules, err := compileLanguagePathRules("path_rules", languages.PathRules)
+	if err != nil {
+		return loadedMappings{}, err
+	}
+	contentRules, err := compileLanguagePathRules("content_rules", languages.ContentRules)
+	if err != nil {
+		return loadedMappings{}, err
+	}
+	generatedRules, err := compileGeneratedRules(files.GeneratedRules)
+	if err != nil {
+		return loadedMappings{}, err
+	}
+	evictionPriorities, err := compileEvictionPriorities(files.EvictionPriorities)
 	if err != nil {
 		return loadedMappings{}, err
 	}
@@ -332,27 +453,76 @@ func buildLoadedMappings(languages LanguageMappings, files FileMappings, styleGu
 		return loadedMappings{}, err
 	}
 	return loadedMappings{
-		languages:           languages,
-		files:               files,
-		styleGuides:         styleGuides,
-		extLang:             extLang,
-		baseLang:            baseLang,
-		ctxExt:              ctxExt,
-		languagePathRules:   languageRules,
-		styleGuideDetectors: styleDetectors,
+		languages:            languages,
+		files:                files,
+		styleGuides:          styleGuides,
+		extLang:              extLang,
+		baseLang:             baseLang,
+		ctxExt:               ctxExt,
+		languagePathRules:    languageRules,
+		languageContentRules: contentRules,
+		generatedSuffixes:    lowerStrings(files.GeneratedSuffixes),
+		generatedRules:       generatedRules,
+		evictionPriorities:   evictionPriorities,
+		styleGuideDetectors:  styleDetectors,
 	}, nil
 }
 
-func compileLanguagePathRules(rules []LanguagePathRule) ([]compiledLanguagePathRule, error) {
+func compileLanguagePathRules(section string, rules []LanguagePathRule) ([]compiledLanguagePathRule, error) {
 	out := make([]compiledLanguagePathRule, 0, len(rules))
 	for i, rule := range rules {
-		matchAny, err := compilePatternSet(fmt.Sprintf("languages.yaml path_rules[%d].match_any", i), rule.MatchAny)
+		matchAny, err := compilePatternSet(fmt.Sprintf("languages.yaml %s[%d].match_any", section, i), rule.MatchAny)
+		if err != nil {
+			return nil, err
+		}
+		matchAll, err := compilePatternSet(fmt.Sprintf("languages.yaml %s[%d].match_all", section, i), rule.MatchAll)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, compiledLanguagePathRule{
 			language: rule.Language,
 			matchAny: matchAny,
+			matchAll: matchAll,
+		})
+	}
+	return out, nil
+}
+
+func compileGeneratedRules(rules []GeneratedRule) ([]compiledGeneratedRule, error) {
+	out := make([]compiledGeneratedRule, 0, len(rules))
+	for i, rule := range rules {
+		matchAny, err := compilePatternSet(fmt.Sprintf("files.yaml generated_rules[%d].match_any", i), rule.MatchAny)
+		if err != nil {
+			return nil, err
+		}
+		matchAll, err := compilePatternSet(fmt.Sprintf("files.yaml generated_rules[%d].match_all", i), rule.MatchAll)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, compiledGeneratedRule{
+			reason:   rule.Reason,
+			matchAny: matchAny,
+			matchAll: matchAll,
+		})
+	}
+	return out, nil
+}
+
+func compileEvictionPriorities(rules []EvictionPriority) ([]compiledEvictionPriority, error) {
+	out := make([]compiledEvictionPriority, 0, len(rules))
+	for i, rule := range rules {
+		matchAny, err := compilePatternSet(fmt.Sprintf("files.yaml eviction_priorities[%d].match_any", i), rule.MatchAny)
+		if err != nil {
+			return nil, err
+		}
+		matchAll, err := compilePatternSet(fmt.Sprintf("files.yaml eviction_priorities[%d].match_all", i), rule.MatchAll)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, compiledEvictionPriority{
+			name:     rule.Name,
+			matchAny: matchAny,
+			matchAll: matchAll,
 		})
 	}
 	return out, nil
@@ -387,6 +557,7 @@ func compilePatternSet(label string, set PatternSet) (compiledPatternSet, error)
 	out := compiledPatternSet{
 		extensions:       lowerStrings(set.Extensions),
 		basenames:        lowerStrings(set.Basenames),
+		basenamePrefixes: lowerStrings(set.BasenamePrefixes),
 		basenameSuffixes: lowerStrings(set.BasenameSuffixes),
 		pathSegments:     lowerStrings(set.PathSegments),
 		pathPrefixes:     lowerSlashStrings(set.PathPrefixes),
@@ -426,6 +597,7 @@ func flattenStringSlices(label string, values map[string][]string) (map[string]s
 func (set PatternSet) empty() bool {
 	return len(set.Extensions) == 0 &&
 		len(set.Basenames) == 0 &&
+		len(set.BasenamePrefixes) == 0 &&
 		len(set.BasenameSuffixes) == 0 &&
 		len(set.PathSegments) == 0 &&
 		len(set.PathPrefixes) == 0 &&
@@ -437,6 +609,7 @@ func (set PatternSet) empty() bool {
 func (set compiledPatternSet) empty() bool {
 	return len(set.extensions) == 0 &&
 		len(set.basenames) == 0 &&
+		len(set.basenamePrefixes) == 0 &&
 		len(set.basenameSuffixes) == 0 &&
 		len(set.pathSegments) == 0 &&
 		len(set.pathPrefixes) == 0 &&
@@ -454,6 +627,9 @@ func (set compiledPatternSet) matchesAll(normalizedPath, base, content string) b
 		return false
 	}
 	if len(set.basenames) > 0 && !contains(set.basenames, base) {
+		return false
+	}
+	if len(set.basenamePrefixes) > 0 && !hasAnyPrefix(base, set.basenamePrefixes) {
 		return false
 	}
 	if len(set.basenameSuffixes) > 0 && !hasAnySuffix(base, set.basenameSuffixes) {
@@ -480,6 +656,7 @@ func (set compiledPatternSet) matchesAll(normalizedPath, base, content string) b
 func (set compiledPatternSet) matchesPath(normalizedPath, base string) bool {
 	return contains(set.extensions, filepath.Ext(base)) ||
 		contains(set.basenames, base) ||
+		hasAnyPrefix(base, set.basenamePrefixes) ||
 		hasAnySuffix(base, set.basenameSuffixes) ||
 		hasAnyPathSegment(normalizedPath, set.pathSegments) ||
 		hasAnyPrefix(normalizedPath, set.pathPrefixes) ||
@@ -617,6 +794,7 @@ func clonePatternSet(in PatternSet) PatternSet {
 	return PatternSet{
 		Extensions:       append([]string(nil), in.Extensions...),
 		Basenames:        append([]string(nil), in.Basenames...),
+		BasenamePrefixes: append([]string(nil), in.BasenamePrefixes...),
 		BasenameSuffixes: append([]string(nil), in.BasenameSuffixes...),
 		PathSegments:     append([]string(nil), in.PathSegments...),
 		PathPrefixes:     append([]string(nil), in.PathPrefixes...),

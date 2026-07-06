@@ -193,6 +193,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	}
 	reviewCtx.CheckoutRoot = req.RepoRoot
 	reviewCtx.Identifier = req.Identifier
+	stampGeneratedFlags(reviewCtx)
 	if allFiltered, err := e.applyReviewContextFilter(ctx, reviewCtx, req, contextFilter); err != nil {
 		return nil, err
 	} else if allFiltered {
@@ -227,7 +228,13 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 
 	trimmer := e.trimmer
 	if trimmer == nil {
-		trimmer = NewTrimmer(req.MaxContextTokens, model.SimpleEstimator{})
+		maxTokens := req.MaxContextTokens
+		if maxTokens <= 0 {
+			maxTokens = config.DefaultMaxContextToken
+		}
+		estimator := model.SimpleEstimator{}
+		headroom := promptOverheadTokens(estimator, reviewCtx, maxTokens)
+		trimmer = NewTrimmer(maxTokens, estimator, WithHeadroomTokens(headroom))
 	}
 
 	trimmed, err := trimmer.Trim(reviewCtx)
