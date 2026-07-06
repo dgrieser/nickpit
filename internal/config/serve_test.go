@@ -34,6 +34,9 @@ groups:
 	if cfg.Topic != "nickpit" || cfg.TriggerEmoji != "nickpit" || cfg.StartEmojiName() != "eyes" {
 		t.Fatalf("emoji/topic defaults = %+v", cfg)
 	}
+	if cfg.CommandKeyword != "nickpit" || cfg.AckEmojiName() != "white_check_mark" {
+		t.Fatalf("command defaults = %+v", cfg)
+	}
 	if cfg.ShutdownGraceDuration() != 10*time.Minute {
 		t.Fatalf("shutdown grace = %v", cfg.ShutdownGraceDuration())
 	}
@@ -74,6 +77,23 @@ groups:
 	}
 }
 
+func TestLoadServeAckEmojiDisabled(t *testing.T) {
+	path := writeServeConfig(t, `
+ack_emoji: ""
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AckEmojiName() != "" {
+		t.Fatalf("ack emoji = %q, want disabled", cfg.AckEmojiName())
+	}
+}
+
 func TestLoadServeMissingFile(t *testing.T) {
 	_, err := LoadServe(filepath.Join(t.TempDir(), "absent.yaml"))
 	if err == nil {
@@ -96,6 +116,9 @@ func TestServeConfigValidate(t *testing.T) {
 		{"empty topic", "topic: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "topic must not be empty"},
 		{"empty log dir", "log_dir: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "log_dir must not be empty"},
 		{"start equals trigger emoji", "start_emoji: nickpit\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "start_emoji must differ from trigger_emoji"},
+		{"empty command keyword", "command_keyword: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not be empty"},
+		{"slash command keyword", "command_keyword: \"/nickpit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not start with '/'"},
+		{"whitespace command keyword", "command_keyword: \"nick pit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not contain whitespace"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

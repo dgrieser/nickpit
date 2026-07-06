@@ -16,8 +16,8 @@ func TestServerRunReturnsListenError(t *testing.T) {
 	}
 	defer func() { _ = listener.Close() }()
 
-	handler, dispatcher, _ := newHandlerEnv(t)
-	server := NewServer(listener.Addr().String(), handler, dispatcher, time.Second, discardLogger())
+	env := newHandlerEnv(t)
+	server := NewServer(listener.Addr().String(), env.handler, env.dispatcher, time.Second, discardLogger())
 
 	done := make(chan error, 1)
 	go func() { done <- server.Run(context.Background(), 2) }()

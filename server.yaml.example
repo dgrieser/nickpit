@@ -25,6 +25,12 @@ trigger_emoji: "nickpit"
 # Emoji the daemon awards on the MR when a review starts ("" disables).
 start_emoji: "eyes"
 
+# Keyword for MR comment commands: /<keyword> review|abort|status|help.
+command_keyword: "nickpit"
+
+# Emoji the daemon awards on a command comment to acknowledge it ("" disables).
+ack_emoji: "white_check_mark"
+
 # One entry per GitLab group. Events are routed to the longest matching path
 # prefix. token: group access token (role Developer, scope api); reviews are
 # posted as its bot user. webhook_secret: the group webhook's secret token.

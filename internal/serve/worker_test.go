@@ -142,6 +142,27 @@ func TestWorkerAuthoritativeSHABeatsPayload(t *testing.T) {
 	}
 }
 
+// An aborted run (per-job cancel while the pool is alive) must not mark the
+// head reviewed, even though the fake runner exits 0.
+func TestWorkerAbortedRunNotMarkedReviewed(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	runner.gate = make(chan struct{}) // never released; only ctx cancel frees it
+
+	ctx, cancel := context.WithCancel(dispatcher.jobCtx)
+	done := make(chan struct{})
+	go func() {
+		dispatcher.process(ctx, autoEvent(7, "sha-1", group))
+		close(done)
+	}()
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+	cancel()
+	<-done
+	if dispatcher.alreadyReviewed(42, 7, "sha-1") {
+		t.Fatal("aborted run must not mark the SHA reviewed")
+	}
+}
+
 func TestDispatcherShutdownGraceKillsChild(t *testing.T) {
 	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
 	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())

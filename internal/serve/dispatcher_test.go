@@ -8,14 +8,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// fakeGitLab serves the minimal API surface the worker touches: MR status,
-// project topics, award emoji.
+// fakeGitLab serves the minimal API surface the daemon touches: MR status,
+// project topics, award emoji, notes, and discussion replies.
 type fakeGitLab struct {
 	mu       sync.Mutex
 	topics   []string
@@ -23,7 +24,17 @@ type fakeGitLab struct {
 	draft    bool
 	headSHA  string
 	awards   []string
+	posts    []recordedPost
 	topicGET int
+	// failDiscussions makes discussion-reply POSTs 404 to exercise the
+	// plain-note fallback.
+	failDiscussions bool
+}
+
+// recordedPost is one captured POST request.
+type recordedPost struct {
+	Path string
+	Body map[string]string
 }
 
 func (f *fakeGitLab) handler() http.Handler {
@@ -35,7 +46,15 @@ func (f *fakeGitLab) handler() http.Handler {
 			var body map[string]string
 			data, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(data, &body)
-			f.awards = append(f.awards, body["name"])
+			if f.failDiscussions && strings.Contains(r.URL.Path, "/discussions/") {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"404 Not found"}`))
+				return
+			}
+			f.posts = append(f.posts, recordedPost{Path: r.URL.Path, Body: body})
+			if name := body["name"]; name != "" {
+				f.awards = append(f.awards, name)
+			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{}`))
 		case r.URL.Path == "/api/v4/projects/42":
@@ -51,6 +70,12 @@ func (f *fakeGitLab) awarded() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.awards...)
+}
+
+func (f *fakeGitLab) posted() []recordedPost {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]recordedPost(nil), f.posts...)
 }
 
 // fakeRunner records specs and optionally blocks until released.
@@ -290,6 +315,129 @@ func TestWorkersDoNotStartQueuedJobsAfterCancel(t *testing.T) {
 	if got := len(runner.ran()); got != 0 {
 		t.Fatalf("runs = %d, want 0 after pre-cancelled context", got)
 	}
+}
+
+func TestDispatcherAbortQueued(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.Enqueue(autoEvent(7, "sha-1", group))
+
+	outcome := dispatcher.Abort(42, 7)
+	if !outcome.Found || outcome.Running {
+		t.Fatalf("outcome = %+v, want found queued job", outcome)
+	}
+
+	// The stale key left in the queue channel must be skipped by take.
+	ctx, cancel := context.WithCancel(context.Background())
+	dispatcher.Start(ctx, 1)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	dispatcher.Shutdown(time.Second)
+	if got := len(runner.ran()); got != 0 {
+		t.Fatalf("runs = %d, want 0 after abort of queued job", got)
+	}
+}
+
+func TestDispatcherAbortRunning(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true) // gate never closed: only ctx cancel frees the runner
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+
+	outcome := env.dispatcher.Abort(42, 7)
+	if !outcome.Found || !outcome.Running || outcome.Since < 0 {
+		t.Fatalf("outcome = %+v, want running abort", outcome)
+	}
+	// The cancelled job finishes and clears its state.
+	waitFor(t, 3*time.Second, func() bool {
+		env.dispatcher.mu.Lock()
+		defer env.dispatcher.mu.Unlock()
+		_, ok := env.dispatcher.states[jobKey{ProjectID: 42, IID: 7}]
+		return !ok
+	})
+	// An aborted run must not mark the head reviewed: the same SHA stays
+	// re-reviewable by a later auto event.
+	if env.dispatcher.alreadyReviewed(42, 7, "sha-1") {
+		t.Fatal("aborted run must not mark the SHA reviewed")
+	}
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 2 })
+}
+
+func TestDispatcherAbortNothing(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, _ := newWorkerEnv(t, fake, workerCfg())
+	if outcome := dispatcher.Abort(42, 7); outcome.Found || outcome.Running {
+		t.Fatalf("outcome = %+v, want zero", outcome)
+	}
+}
+
+func TestDispatcherAbortClearsPending(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true)
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+	// Parked re-run behind the running review; abort must clear both.
+	env.dispatcher.Enqueue(autoEvent(7, "sha-2", env.group))
+
+	if outcome := env.dispatcher.Abort(42, 7); !outcome.Running {
+		t.Fatalf("outcome = %+v, want running abort", outcome)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		env.dispatcher.mu.Lock()
+		defer env.dispatcher.mu.Unlock()
+		return len(env.dispatcher.states) == 0
+	})
+	time.Sleep(50 * time.Millisecond)
+	if got := len(env.runner.ran()); got != 1 {
+		t.Fatalf("runs = %d, want 1 (pending cleared by abort)", got)
+	}
+}
+
+func TestDispatcherAbortThenReenqueue(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, runner, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.Enqueue(autoEvent(7, "sha-1", group))
+	dispatcher.Abort(42, 7)
+	// Fresh request after the abort: exactly one run despite the stale key
+	// still sitting in the queue channel.
+	dispatcher.Enqueue(autoEvent(7, "sha-1", group))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dispatcher.Start(ctx, 1)
+	t.Cleanup(func() {
+		cancel()
+		dispatcher.Shutdown(time.Second)
+	})
+	waitFor(t, 3*time.Second, func() bool { return len(runner.ran()) == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if got := len(runner.ran()); got != 1 {
+		t.Fatalf("runs = %d, want exactly 1", got)
+	}
+}
+
+func TestDispatcherJobInfo(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true)
+	if info := env.dispatcher.JobInfo(42, 7); info.Queued || info.Running {
+		t.Fatalf("info = %+v, want idle", info)
+	}
+
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return env.dispatcher.JobInfo(42, 7).Running })
+	if info := env.dispatcher.JobInfo(42, 7); info.Since < 0 || info.Pending {
+		t.Fatalf("info = %+v, want running without pending", info)
+	}
+
+	// Second event parks behind the running review.
+	env.dispatcher.Enqueue(autoEvent(7, "sha-2", env.group))
+	if info := env.dispatcher.JobInfo(42, 7); !info.Running || !info.Pending {
+		t.Fatalf("info = %+v, want running with pending", info)
+	}
+
+	// A job queued behind the busy worker reports queued.
+	env.dispatcher.Enqueue(autoEvent(8, "sha-3", env.group))
+	if info := env.dispatcher.JobInfo(42, 8); !info.Queued || info.Running {
+		t.Fatalf("info = %+v, want queued", info)
+	}
+	close(env.runner.gate)
 }
 
 func TestSHALRUEviction(t *testing.T) {

@@ -63,6 +63,11 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 	exitCode, logPath, err := d.runner.Run(ctx, spec)
 	duration := time.Since(start).Round(time.Second)
 	switch {
+	// Per-job cancel while the pool is alive is a user abort, not a failure;
+	// a SIGTERM'd child exits non-zero, so this case must come first. The
+	// head is not marked reviewed: the same SHA stays re-reviewable.
+	case ctx.Err() != nil && d.jobCtx.Err() == nil:
+		log.Info("review aborted", "duration", duration, "log", logPath)
 	case err != nil:
 		log.Error("review failed to run", "error", err, "duration", duration)
 	case exitCode != 0:

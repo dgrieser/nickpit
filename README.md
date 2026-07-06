@@ -94,9 +94,9 @@ JSON output includes a full `agent_runs` accounting of every agent's token and t
 
 ### 🤖 A GitLab review bot with no CI required
 
-`nickpit gitlab serve` is a webhook daemon that auto-reviews MRs for opted-in projects — and anyone can summon a review on *any* MR (drafts included) by awarding a custom **`nickpit` emoji**.  
+`nickpit gitlab serve` is a webhook daemon that auto-reviews MRs for opted-in projects — and anyone can summon a review on *any* MR (drafts included) by awarding a custom **`nickpit` emoji** or commenting **`/nickpit review`**.  
 
-The daemon reacts with 👀 when it picks the review up.  
+The daemon reacts with 👀 when it picks the review up. Comment `/nickpit abort` (or revoke the trigger emoji) to cancel a review, `/nickpit status` to see where it stands.  
 
 Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, idempotent re-reviews.  
 
@@ -321,9 +321,14 @@ Known limitation: the hidden fingerprint markers are read from all existing PR/M
 Triggers:
 
 - **Auto**: MR opened, reopened, new commits pushed, or marked ready — only for projects carrying the opt-in topic (default `nickpit`). Draft MRs are skipped.
-- **Manual**: a user awards the trigger emoji (default a custom emoji named `nickpit`) on an MR — works regardless of topic and also on drafts.
+- **Manual**: a user awards the trigger emoji (default a custom emoji named `nickpit`) on an MR — works regardless of topic and also on drafts. Revoking the trigger emoji aborts the MR's queued or running review.
+- **Commands**: an MR comment starting with `/nickpit <command>` (keyword configurable via `command_keyword`):
+  - `/nickpit review` — request a review (same semantics as the trigger emoji: any project, drafts too)
+  - `/nickpit abort` — cancel the queued or running review for this MR
+  - `/nickpit status` — reply with the MR's review state
+  - `/nickpit help` — reply with the command list
 
-When a review starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables).
+When a review starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables). Command comments are acknowledged with a reaction emoji (default `:white_check_mark:`, `ack_emoji: ""` disables); `status`, `help`, and `abort` also get a comment reply, threaded under the command.
 
 ```bash
 nickpit gitlab serve --serve-config server.yaml
@@ -345,7 +350,7 @@ GitLab setup per group (group webhooks require GitLab Premium; emoji events requ
 
 1. Create a group access token (role Developer, scope `api`) — reviews are posted as this bot user.
 2. Create the custom emoji `nickpit` in the group (for manual trigger).
-3. Group → Settings → Webhooks: URL `https://<daemon>/webhooks/gitlab`, the secret token, and enable **Merge request events** and **Emoji events**.
+3. Group → Settings → Webhooks: URL `https://<daemon>/webhooks/gitlab`, the secret token, and enable **Merge request events**, **Emoji events**, and **Comment events** (for the `/nickpit` commands).
 4. Opt projects into auto-review by adding the topic `nickpit` (Project → Settings → General → Topics).
 
 Docker compose example:

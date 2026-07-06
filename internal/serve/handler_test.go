@@ -10,23 +10,47 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
 
+type handlerEnv struct {
+	handler    *Handler
+	dispatcher *Dispatcher
+	lookup     *countingTopicLookup
+	gitlab     *fakeGitLab
+	group      *Group
+}
+
 // newHandlerEnv wires a handler to a dispatcher with no started workers, so
-// enqueued jobs stay observable and nothing runs.
-func newHandlerEnv(t *testing.T) (*Handler, *Dispatcher, *countingTopicLookup) {
+// enqueued jobs stay observable and nothing runs. The groups' API client
+// points at the fake GitLab so command acknowledgements and replies are
+// observable too.
+func newHandlerEnv(t *testing.T) *handlerEnv {
 	t.Helper()
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	server := httptest.NewServer(fake.handler())
+	t.Cleanup(server.Close)
 	set, _ := NewGroupSet(context.Background(), []config.ServeGroup{
 		{Path: "platform", Token: "t1", WebhookSecret: "hook-secret"},
 		{Path: "platform/legacy", Token: "t2", WebhookSecret: "legacy-secret"},
-	}, "https://gitlab.example.com", nil)
+	}, server.URL, nil)
 	lookup := &countingTopicLookup{}
 	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
-	handler := NewHandler(set, dispatcher, "nickpit", discardLogger())
-	return handler, dispatcher, lookup
+	handler := NewHandler(set, dispatcher, HandlerConfig{
+		TriggerEmoji:   "nickpit",
+		CommandKeyword: "nickpit",
+		AckEmoji:       "white_check_mark",
+	}, discardLogger())
+	return &handlerEnv{
+		handler:    handler,
+		dispatcher: dispatcher,
+		lookup:     lookup,
+		gitlab:     fake,
+		group:      set.Match("platform/legacy/tool"),
+	}
 }
 
 type countingTopicLookup struct{ calls int }
@@ -66,98 +90,269 @@ func queuedJobs(d *Dispatcher) int {
 }
 
 func TestHandlerQueuesTrigger(t *testing.T) {
-	handler, dispatcher, lookup := newHandlerEnv(t)
-	recorder := postWebhook(t, handler, "mr_open.json", "hook-secret")
+	env := newHandlerEnv(t)
+	recorder := postWebhook(t, env.handler, "mr_open.json", "hook-secret")
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"queued"`) {
 		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if queuedJobs(dispatcher) != 1 {
-		t.Fatalf("queued = %d", queuedJobs(dispatcher))
+	if queuedJobs(env.dispatcher) != 1 {
+		t.Fatalf("queued = %d", queuedJobs(env.dispatcher))
 	}
-	if lookup.calls != 0 {
+	if env.lookup.calls != 0 {
 		t.Fatal("handler must not call the topics API")
 	}
 }
 
 func TestHandlerIgnoresNonTrigger(t *testing.T) {
-	handler, dispatcher, _ := newHandlerEnv(t)
+	env := newHandlerEnv(t)
 	cases := map[string]string{
-		"mr_open_draft.json": "hook-secret",
-		"mr_close.json":      "hook-secret",
-		"emoji_revoke.json":  "legacy-secret", // fixture project is under platform/legacy
+		"mr_open_draft.json":     "hook-secret",
+		"mr_close.json":          "hook-secret",
+		"emoji_revoke_eyes.json": "legacy-secret", // fixture project is under platform/legacy
+		"note_plain.json":        "legacy-secret",
+		"note_system.json":       "legacy-secret",
+		"note_on_issue.json":     "legacy-secret",
 	}
 	for fixture, secret := range cases {
-		recorder := postWebhook(t, handler, fixture, secret)
+		recorder := postWebhook(t, env.handler, fixture, secret)
 		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ignored"`) {
 			t.Fatalf("%s: code=%d body=%s", fixture, recorder.Code, recorder.Body.String())
 		}
 	}
-	if queuedJobs(dispatcher) != 0 {
-		t.Fatalf("queued = %d, want 0", queuedJobs(dispatcher))
+	if queuedJobs(env.dispatcher) != 0 {
+		t.Fatalf("queued = %d, want 0", queuedJobs(env.dispatcher))
+	}
+	time.Sleep(50 * time.Millisecond)
+	if posts := env.gitlab.posted(); len(posts) != 0 {
+		t.Fatalf("posts = %v, want none for ignored events", posts)
+	}
+}
+
+// The bot's own note events are ignored via bot user IDs, exactly like its
+// emoji awards: replies the daemon posts must not loop back as commands.
+func TestHandlerIgnoresBotNoteByID(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.groups.botIDs[999] = true
+	recorder := postWebhook(t, env.handler, "note_command_bot.json", "legacy-secret")
+	if !strings.Contains(recorder.Body.String(), `"ignored"`) {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+}
+
+func TestHandlerCommandReview(t *testing.T) {
+	env := newHandlerEnv(t)
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"command":"review"`) {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if queuedJobs(env.dispatcher) != 1 {
+		t.Fatalf("queued = %d, want 1", queuedJobs(env.dispatcher))
+	}
+	env.dispatcher.mu.Lock()
+	state := env.dispatcher.states[jobKey{ProjectID: 43, IID: 11}]
+	env.dispatcher.mu.Unlock()
+	if state == nil || state.latest.Kind != TriggerManual {
+		t.Fatalf("state = %+v, want queued manual job", state)
+	}
+	// The command note gets the acknowledgement emoji, no reply.
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
+	post := env.gitlab.posted()[0]
+	if post.Path != "/api/v4/projects/43/merge_requests/11/notes/301/award_emoji" || post.Body["name"] != "white_check_mark" {
+		t.Fatalf("post = %+v", post)
+	}
+}
+
+func TestHandlerCommandAbortNothingRunning(t *testing.T) {
+	env := newHandlerEnv(t)
+	recorder := postWebhook(t, env.handler, "note_command_abort.json", "legacy-secret")
+	if !strings.Contains(recorder.Body.String(), `"command":"abort"`) {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+	// Ack emoji plus a threaded reply saying there was nothing to abort.
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 2 })
+	var reply recordedPost
+	for _, post := range env.gitlab.posted() {
+		if post.Body["body"] != "" {
+			reply = post
+		}
+	}
+	if reply.Path != "/api/v4/projects/43/merge_requests/11/discussions/disc-302/notes" {
+		t.Fatalf("reply path = %q, want threaded reply", reply.Path)
+	}
+	if !strings.Contains(reply.Body["body"], "No review is queued or running") {
+		t.Fatalf("reply = %q", reply.Body["body"])
+	}
+}
+
+func TestHandlerCommandAbortQueuedJob(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.dispatcher.Enqueue(Event{Kind: TriggerAuto, ProjectID: 43, ProjectPath: "platform/legacy/tool", IID: 11, HeadSHA: "sha-1", Group: env.group})
+	if queuedJobs(env.dispatcher) != 1 {
+		t.Fatal("job must be queued")
+	}
+	postWebhook(t, env.handler, "note_command_abort.json", "legacy-secret")
+	if queuedJobs(env.dispatcher) != 0 {
+		t.Fatalf("queued = %d, want 0 after abort", queuedJobs(env.dispatcher))
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		for _, post := range env.gitlab.posted() {
+			if strings.Contains(post.Body["body"], "Removed the queued review") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestHandlerCommandStatusIdle(t *testing.T) {
+	env := newHandlerEnv(t)
+	recorder := postWebhook(t, env.handler, "note_command_status.json", "legacy-secret")
+	if !strings.Contains(recorder.Body.String(), `"command":"status"`) {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
+	post := env.gitlab.posted()[0]
+	if !strings.Contains(post.Body["body"], "No review is queued or running") {
+		t.Fatalf("reply = %q", post.Body["body"])
+	}
+}
+
+func TestHandlerCommandStatusQueued(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.dispatcher.Enqueue(Event{Kind: TriggerAuto, ProjectID: 43, ProjectPath: "platform/legacy/tool", IID: 11, HeadSHA: "sha-1", Group: env.group})
+	postWebhook(t, env.handler, "note_command_status.json", "legacy-secret")
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
+	if post := env.gitlab.posted()[0]; !strings.Contains(post.Body["body"], "queued") {
+		t.Fatalf("reply = %q", post.Body["body"])
+	}
+}
+
+func TestHandlerCommandHelp(t *testing.T) {
+	env := newHandlerEnv(t)
+	postWebhook(t, env.handler, "note_command_help.json", "legacy-secret")
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
+	if post := env.gitlab.posted()[0]; !strings.Contains(post.Body["body"], "/nickpit review") {
+		t.Fatalf("reply = %q", post.Body["body"])
+	}
+}
+
+func TestHandlerCommandUnknown(t *testing.T) {
+	env := newHandlerEnv(t)
+	postWebhook(t, env.handler, "note_command_unknown.json", "legacy-secret")
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
+	post := env.gitlab.posted()[0]
+	if !strings.Contains(post.Body["body"], `Unknown command "frobnicate"`) {
+		t.Fatalf("reply = %q", post.Body["body"])
+	}
+}
+
+// When GitLab rejects the threaded reply the answer falls back to a plain MR
+// note.
+func TestHandlerReplyFallsBackToPlainNote(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.gitlab.mu.Lock()
+	env.gitlab.failDiscussions = true
+	env.gitlab.mu.Unlock()
+	postWebhook(t, env.handler, "note_command_help.json", "legacy-secret")
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
+	if post := env.gitlab.posted()[0]; post.Path != "/api/v4/projects/43/merge_requests/11/notes" {
+		t.Fatalf("post path = %q, want plain note fallback", post.Path)
+	}
+}
+
+// Revoking the trigger emoji aborts the MR's review and confirms with a plain
+// MR note (there is no command note to answer).
+func TestHandlerEmojiRevokeAborts(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.dispatcher.Enqueue(Event{Kind: TriggerManual, ProjectID: 43, ProjectPath: "platform/legacy/tool", IID: 11, HeadSHA: "sha-1", Group: env.group})
+	recorder := postWebhook(t, env.handler, "emoji_revoke.json", "legacy-secret")
+	if !strings.Contains(recorder.Body.String(), `"command":"abort"`) {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+	if queuedJobs(env.dispatcher) != 0 {
+		t.Fatalf("queued = %d, want 0 after revoke", queuedJobs(env.dispatcher))
+	}
+	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 1 })
+	post := env.gitlab.posted()[0]
+	if post.Path != "/api/v4/projects/43/merge_requests/11/notes" || !strings.Contains(post.Body["body"], "Removed the queued review") {
+		t.Fatalf("post = %+v", post)
+	}
+}
+
+// A revoke with nothing to abort stays silent: revoking a stale award is
+// routine cleanup, not a question.
+func TestHandlerEmojiRevokeNothingSilent(t *testing.T) {
+	env := newHandlerEnv(t)
+	postWebhook(t, env.handler, "emoji_revoke.json", "legacy-secret")
+	time.Sleep(50 * time.Millisecond)
+	if posts := env.gitlab.posted(); len(posts) != 0 {
+		t.Fatalf("posts = %v, want silence", posts)
 	}
 }
 
 func TestHandlerSecretPerGroup(t *testing.T) {
-	handler, dispatcher, _ := newHandlerEnv(t)
+	env := newHandlerEnv(t)
 	// emoji fixtures live under platform/legacy → legacy-secret required.
-	if recorder := postWebhook(t, handler, "emoji_award_nickpit.json", "hook-secret"); recorder.Code != http.StatusUnauthorized {
+	if recorder := postWebhook(t, env.handler, "emoji_award_nickpit.json", "hook-secret"); recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong-group secret: code=%d", recorder.Code)
 	}
-	if recorder := postWebhook(t, handler, "emoji_award_nickpit.json", "legacy-secret"); recorder.Code != http.StatusOK {
+	if recorder := postWebhook(t, env.handler, "emoji_award_nickpit.json", "legacy-secret"); recorder.Code != http.StatusOK {
 		t.Fatalf("correct secret: code=%d", recorder.Code)
 	}
-	if queuedJobs(dispatcher) != 1 {
-		t.Fatalf("queued = %d", queuedJobs(dispatcher))
+	if queuedJobs(env.dispatcher) != 1 {
+		t.Fatalf("queued = %d", queuedJobs(env.dispatcher))
 	}
 }
 
 func TestHandlerRejectsWrongSecret(t *testing.T) {
-	handler, dispatcher, _ := newHandlerEnv(t)
+	env := newHandlerEnv(t)
 	for _, secret := range []string{"", "wrong"} {
-		if recorder := postWebhook(t, handler, "mr_open.json", secret); recorder.Code != http.StatusUnauthorized {
-			t.Fatalf("secret %q: code=%d", secret, recorder.Code)
+		for _, fixture := range []string{"mr_open.json", "note_command_review.json"} {
+			if recorder := postWebhook(t, env.handler, fixture, secret); recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("%s secret %q: code=%d", fixture, secret, recorder.Code)
+			}
 		}
 	}
-	if queuedJobs(dispatcher) != 0 {
+	if queuedJobs(env.dispatcher) != 0 {
 		t.Fatal("nothing must be queued")
 	}
 }
 
 func TestHandlerRejectsUnknownGroup(t *testing.T) {
-	handler, _, _ := newHandlerEnv(t)
+	env := newHandlerEnv(t)
 	body := []byte(`{"object_kind":"merge_request","project":{"id":1,"path_with_namespace":"other/repo"},"object_attributes":{"action":"open","iid":1}}`)
-	if recorder := postWebhookBody(t, handler, body, "hook-secret"); recorder.Code != http.StatusUnauthorized {
+	if recorder := postWebhookBody(t, env.handler, body, "hook-secret"); recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("code=%d", recorder.Code)
 	}
 }
 
 func TestHandlerRejectsBadJSON(t *testing.T) {
-	handler, _, _ := newHandlerEnv(t)
-	if recorder := postWebhookBody(t, handler, []byte("{nope"), "hook-secret"); recorder.Code != http.StatusBadRequest {
+	env := newHandlerEnv(t)
+	if recorder := postWebhookBody(t, env.handler, []byte("{nope"), "hook-secret"); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("code=%d", recorder.Code)
 	}
 }
 
 func TestHandlerRejectsOversizedBody(t *testing.T) {
-	handler, _, _ := newHandlerEnv(t)
+	env := newHandlerEnv(t)
 	big := bytes.Repeat([]byte("x"), maxWebhookBody+1)
-	if recorder := postWebhookBody(t, handler, big, "hook-secret"); recorder.Code != http.StatusRequestEntityTooLarge {
+	if recorder := postWebhookBody(t, env.handler, big, "hook-secret"); recorder.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("code=%d", recorder.Code)
 	}
 }
 
 func TestHandlerRejectsGet(t *testing.T) {
-	handler, _, _ := newHandlerEnv(t)
+	env := newHandlerEnv(t)
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/webhooks/gitlab", nil))
+	env.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/webhooks/gitlab", nil))
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("code=%d", recorder.Code)
 	}
 }
 
 func TestServerHealthz(t *testing.T) {
-	handler, dispatcher, _ := newHandlerEnv(t)
-	server := NewServer(":0", handler, dispatcher, 0, discardLogger())
+	env := newHandlerEnv(t)
+	server := NewServer(":0", env.handler, env.dispatcher, 0, discardLogger())
 	recorder := httptest.NewRecorder()
 	server.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ok"`) {

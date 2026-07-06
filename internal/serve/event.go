@@ -1,7 +1,7 @@
 // Package serve implements the `nickpit gitlab serve` webhook daemon: it
-// receives GitLab group webhooks, decides which merge-request and emoji
-// events warrant a review, and spawns each review as a separate child
-// process of the nickpit binary.
+// receives GitLab group webhooks, decides which merge-request, emoji, and
+// comment events warrant a review (or a command such as abort/status), and
+// spawns each review as a separate child process of the nickpit binary.
 package serve
 
 import "encoding/json"
@@ -56,8 +56,9 @@ type eventProject struct {
 	DefaultBranch     string `json:"default_branch"`
 }
 
-// eventAttributes covers both merge_request events (action, iid, draft,
-// oldrev) and emoji events (action, name, awardable_type, awardable_id).
+// eventAttributes covers merge_request events (action, iid, draft, oldrev),
+// emoji events (action, name, awardable_type, awardable_id), and note events
+// (id, note, noteable_type, system, discussion_id).
 type eventAttributes struct {
 	Action string `json:"action"`
 	IID    int    `json:"iid"`
@@ -72,6 +73,13 @@ type eventAttributes struct {
 	Name          string `json:"name"`
 	AwardableType string `json:"awardable_type"`
 	AwardableID   int    `json:"awardable_id"`
+	// Note-event fields. ID is the note's id (present on other kinds too,
+	// unused there).
+	ID           int    `json:"id"`
+	Note         string `json:"note"`
+	NoteableType string `json:"noteable_type"`
+	System       bool   `json:"system"`
+	DiscussionID string `json:"discussion_id"`
 }
 
 type eventChanges struct {
@@ -81,7 +89,7 @@ type eventChanges struct {
 	} `json:"draft"`
 }
 
-// eventMR is the merge_request object embedded in emoji events.
+// eventMR is the merge_request object embedded in emoji and note events.
 type eventMR struct {
 	IID        int    `json:"iid"`
 	Draft      bool   `json:"draft"`
@@ -109,18 +117,33 @@ type Decision struct {
 	// the payload does not carry one (open events, emoji events).
 	IID     int
 	HeadSHA string
+	// Command is set for note commands and the trigger-emoji revoke;
+	// CommandNone otherwise. CommandReview additionally sets Kind to
+	// TriggerManual so it flows through the normal enqueue path.
+	Command CommandKind
+	// NoteID is the command note to acknowledge; 0 when there is none (emoji
+	// revoke).
+	NoteID int
+	// DiscussionID threads replies under the command note; empty falls back
+	// to a plain MR note.
+	DiscussionID string
+	// UnknownArg is the raw subcommand for CommandUnknown replies.
+	UnknownArg string
 }
 
 // Decide classifies a webhook event. Pure function — no I/O — so the trigger
 // policy is exhaustively unit-testable. triggerEmoji is the award-emoji name
-// requesting a manual review; botIDs are the daemon's own user IDs whose
-// emoji events are ignored to prevent reaction loops.
-func Decide(event *WebhookEvent, triggerEmoji string, botIDs map[int]bool) Decision {
+// requesting a manual review; commandKeyword is the "/<keyword> <command>"
+// note-command keyword; botIDs are the daemon's own user IDs whose emoji and
+// note events are ignored to prevent reaction loops.
+func Decide(event *WebhookEvent, triggerEmoji, commandKeyword string, botIDs map[int]bool) Decision {
 	switch event.ObjectKind {
 	case "merge_request":
 		return decideMR(event)
 	case "emoji":
 		return decideEmoji(event, triggerEmoji, botIDs)
+	case "note":
+		return decideNote(event, commandKeyword, botIDs)
 	default:
 		return Decision{Kind: TriggerNone, Reason: "object_kind " + event.ObjectKind}
 	}
@@ -164,9 +187,6 @@ func readyTransition(changes eventChanges) bool {
 
 func decideEmoji(event *WebhookEvent, triggerEmoji string, botIDs map[int]bool) Decision {
 	attrs := event.ObjectAttributes
-	if attrs.Action != "award" {
-		return Decision{Kind: TriggerNone, Reason: "emoji " + attrs.Action}
-	}
 	if attrs.Name != triggerEmoji {
 		return Decision{Kind: TriggerNone, Reason: "emoji name " + attrs.Name}
 	}
@@ -174,17 +194,75 @@ func decideEmoji(event *WebhookEvent, triggerEmoji string, botIDs map[int]bool) 
 		return Decision{Kind: TriggerNone, Reason: "awardable " + attrs.AwardableType}
 	}
 	if botIDs[event.User.ID] {
-		return Decision{Kind: TriggerNone, Reason: "own award"}
+		return Decision{Kind: TriggerNone, Reason: "own " + attrs.Action}
 	}
 	if event.MergeRequest == nil {
 		return Decision{Kind: TriggerNone, Reason: "emoji event without merge_request"}
 	}
-	// Draft is deliberately NOT checked: an explicit human request reviews
-	// draft MRs too.
-	return Decision{
-		Kind:    TriggerManual,
-		Reason:  "emoji " + triggerEmoji,
-		IID:     event.MergeRequest.IID,
-		HeadSHA: event.MergeRequest.LastCommit.ID,
+	switch attrs.Action {
+	case "award":
+		// Draft is deliberately NOT checked: an explicit human request
+		// reviews draft MRs too.
+		return Decision{
+			Kind:    TriggerManual,
+			Reason:  "emoji " + triggerEmoji,
+			IID:     event.MergeRequest.IID,
+			HeadSHA: event.MergeRequest.LastCommit.ID,
+		}
+	case "revoke":
+		// Taking the trigger emoji back withdraws the request: abort the
+		// MR's queued or running review.
+		return Decision{
+			Command: CommandAbort,
+			Reason:  "emoji " + triggerEmoji + " revoked",
+			IID:     event.MergeRequest.IID,
+		}
+	default:
+		return Decision{Kind: TriggerNone, Reason: "emoji " + attrs.Action}
 	}
+}
+
+// decideNote classifies comment (Note Hook) events: new MR comments whose
+// first line is "/<keyword> <command>" control the daemon.
+func decideNote(event *WebhookEvent, commandKeyword string, botIDs map[int]bool) Decision {
+	attrs := event.ObjectAttributes
+	if attrs.NoteableType != "MergeRequest" {
+		return Decision{Kind: TriggerNone, Reason: "noteable " + attrs.NoteableType}
+	}
+	if attrs.System {
+		return Decision{Kind: TriggerNone, Reason: "system note"}
+	}
+	// Note Hooks fire on creation; older GitLab versions send no action
+	// field. Anything else (e.g. "update" edits) is ignored so editing an old
+	// command comment cannot re-trigger it.
+	if attrs.Action != "" && attrs.Action != "create" {
+		return Decision{Kind: TriggerNone, Reason: "note " + attrs.Action}
+	}
+	// The daemon's own replies fire note webhooks back at it; drop them
+	// before parsing.
+	if botIDs[event.User.ID] {
+		return Decision{Kind: TriggerNone, Reason: "own note"}
+	}
+	command, arg := ParseCommand(attrs.Note, commandKeyword)
+	if command == CommandNone {
+		return Decision{Kind: TriggerNone, Reason: "no command"}
+	}
+	if event.MergeRequest == nil {
+		return Decision{Kind: TriggerNone, Reason: "note event without merge_request"}
+	}
+	decision := Decision{
+		Command:      command,
+		Reason:       "command " + command.String(),
+		IID:          event.MergeRequest.IID,
+		NoteID:       attrs.ID,
+		DiscussionID: attrs.DiscussionID,
+		UnknownArg:   arg,
+	}
+	if command == CommandReview {
+		// A comment command is an explicit human request, exactly like the
+		// trigger emoji: manual kind, drafts included.
+		decision.Kind = TriggerManual
+		decision.HeadSHA = event.MergeRequest.LastCommit.ID
+	}
+	return decision
 }

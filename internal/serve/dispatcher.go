@@ -44,6 +44,10 @@ type jobState struct {
 	status  int
 	latest  Event
 	pending *Event
+	// cancel aborts the running review's context; set while running.
+	cancel context.CancelFunc
+	// startedAt stamps the running review's start for status/abort replies.
+	startedAt time.Time
 }
 
 // WorkerConfig is the static per-review configuration shared by all workers.
@@ -163,11 +167,11 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 				case <-ctx.Done():
 					return
 				case key := <-d.queue:
-					event, ok := d.take(key)
+					event, jobCtx, ok := d.take(key)
 					if !ok {
 						continue
 					}
-					d.process(d.jobCtx, event)
+					d.process(jobCtx, event)
 					d.finish(key)
 				}
 			}
@@ -196,6 +200,27 @@ func (d *Dispatcher) Shutdown(grace time.Duration) {
 	<-done
 }
 
+// AbortOutcome reports what Abort found and did.
+type AbortOutcome struct {
+	// Found is true when a queued or running job existed for the MR.
+	Found bool
+	// Running is true when a running review was cancelled (else it was only
+	// queued).
+	Running bool
+	// Since is the elapsed run time when Running.
+	Since time.Duration
+}
+
+// JobInfo reports one MR's review state for the status command.
+type JobInfo struct {
+	Queued  bool
+	Running bool
+	// Since is the elapsed run time when Running.
+	Since time.Duration
+	// Pending is true when a re-run is parked behind the running review.
+	Pending bool
+}
+
 // Stats reports queue depth for /healthz.
 func (d *Dispatcher) Stats() (queued, running int) {
 	d.mu.Lock()
@@ -203,17 +228,22 @@ func (d *Dispatcher) Stats() (queued, running int) {
 	return len(d.states) - d.running, d.running
 }
 
-// take claims a queued job for execution.
-func (d *Dispatcher) take(key jobKey) (Event, bool) {
+// take claims a queued job for execution. The returned context is the job's
+// own child of jobCtx so Abort can cancel this one review without touching
+// the rest of the pool.
+func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	state, ok := d.states[key]
 	if !ok || state.status != stateQueued {
-		return Event{}, false
+		return Event{}, nil, false
 	}
 	state.status = stateRunning
+	ctx, cancel := context.WithCancel(d.jobCtx)
+	state.cancel = cancel
+	state.startedAt = time.Now()
 	d.running++
-	return state.latest, true
+	return state.latest, ctx, true
 }
 
 // finish completes a job; a pending event received mid-run re-queues the MR.
@@ -225,6 +255,11 @@ func (d *Dispatcher) finish(key jobKey) {
 	if !ok {
 		return
 	}
+	if state.cancel != nil {
+		state.cancel()
+		state.cancel = nil
+	}
+	state.startedAt = time.Time{}
 	if state.pending == nil || d.closed {
 		delete(d.states, key)
 		return
@@ -239,6 +274,45 @@ func (d *Dispatcher) finish(key jobKey) {
 		delete(d.states, key)
 		d.log.Error("job queue full, dropping pending re-run", "project", state.latest.ProjectPath, "iid", state.latest.IID)
 	}
+}
+
+// Abort cancels the MR's review: a queued job is removed (its stale queue key
+// is skipped by take), a running job's context is cancelled (the child
+// process receives SIGTERM), and any pending re-run is cleared. An abort that
+// races a finishing review may find nothing — the reply then says no review
+// was running even though one just completed, which is accurate enough.
+func (d *Dispatcher) Abort(projectID, iid int) AbortOutcome {
+	key := jobKey{ProjectID: projectID, IID: iid}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state, ok := d.states[key]
+	if !ok {
+		return AbortOutcome{}
+	}
+	state.pending = nil
+	if state.status == stateRunning {
+		if state.cancel != nil {
+			state.cancel()
+		}
+		return AbortOutcome{Found: true, Running: true, Since: time.Since(state.startedAt)}
+	}
+	delete(d.states, key)
+	return AbortOutcome{Found: true}
+}
+
+// JobInfo reports the MR's review state for the status command.
+func (d *Dispatcher) JobInfo(projectID, iid int) JobInfo {
+	key := jobKey{ProjectID: projectID, IID: iid}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	state, ok := d.states[key]
+	if !ok {
+		return JobInfo{}
+	}
+	if state.status == stateRunning {
+		return JobInfo{Running: true, Since: time.Since(state.startedAt), Pending: state.pending != nil}
+	}
+	return JobInfo{Queued: true}
 }
 
 // markReviewed records an authoritative head SHA so duplicate auto-triggers
