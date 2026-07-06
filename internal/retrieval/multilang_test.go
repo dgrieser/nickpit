@@ -17,6 +17,8 @@ func TestDetectLanguageNormalizesNodeFamily(t *testing.T) {
 		"main.ts":   "nodejs",
 		"main.mts":  "nodejs",
 		"main.cts":  "nodejs",
+		"main.jsx":  "nodejs",
+		"main.tsx":  "nodejs",
 		"main.go":   "go",
 		"README.md": "markdown",
 	}
@@ -246,6 +248,156 @@ func TestLocalEngineGetSymbolSkipsIgnoredDirectoriesDuringRepoWideSearch(t *test
 	}
 	if symbol.Path != "pkg/run.py" {
 		t.Fatalf("symbol = %#v", symbol)
+	}
+}
+
+func TestLocalEngineFindTSXComponentCallHierarchy(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "src/util.ts", `export function helper(it: string): string {
+  return it.trim()
+}
+`)
+	writeRetrievalFile(t, repoRoot, "src/App.tsx", `import { helper } from "./util"
+
+export function App({ items }: { items: string[] }) {
+  return (
+    <ul>
+      {items.map((it) => (
+        <li key={it}>{helper(it)}</li>
+      ))}
+    </ul>
+  )
+}
+`)
+
+	engine := NewLocalEngine()
+	callers, err := engine.FindCallers(context.Background(), repoRoot, SymbolRef{Name: "helper", Path: "src/util.ts"}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "App" || callers.Root.Children[0].Path != "src/App.tsx" {
+		t.Fatalf("tsx callers = %#v", callers.Root.Children)
+	}
+
+	symbol, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "App", Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if symbol.Language != "nodejs" || !strings.Contains(symbol.Source, "<ul>") {
+		t.Fatalf("tsx symbol = %#v", symbol)
+	}
+}
+
+func TestLocalEngineFindsMultiLineTypedSignatureCallers(t *testing.T) {
+	// Multi-line signatures and typed arrow functions broke the previous
+	// line-regex extraction; the AST parser must resolve them.
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "svc/format.ts", `export const format = (
+  value: string,
+  options: { upper?: boolean } = {},
+): string => value.trim()
+`)
+	writeRetrievalFile(t, repoRoot, "svc/run.ts", `import { format } from "./format"
+
+export async function run(
+  input: string,
+): Promise<string> {
+  return format(input)
+}
+`)
+
+	engine := NewLocalEngine()
+	callers, err := engine.FindCallers(context.Background(), repoRoot, SymbolRef{Name: "format", Path: "svc/format.ts"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "run" {
+		t.Fatalf("callers = %#v", callers.Root.Children)
+	}
+	symbol, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "run", Path: "svc/run.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if symbol.StartLine != 3 || symbol.EndLine != 7 {
+		t.Fatalf("run range = %d-%d, want 3-7", symbol.StartLine, symbol.EndLine)
+	}
+}
+
+func TestLocalEngineFindDecoratedPythonMethodCallers(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "app.py", `class Service:
+    @property
+    def name(self):
+        return self.compose()
+
+    @staticmethod
+    def compose():
+        return "x"
+`)
+
+	engine := NewLocalEngine()
+	callers, err := engine.FindCallers(context.Background(), repoRoot, SymbolRef{Name: "compose", Path: "app.py"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "name" {
+		t.Fatalf("callers = %#v", callers.Root.Children)
+	}
+	symbol, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "compose", Path: "app.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(symbol.Source, "@staticmethod") {
+		t.Fatalf("decorator missing from source: %q", symbol.Source)
+	}
+}
+
+func TestLocalEngineOptionalChainingStaysLowConfidence(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "opt.ts", `export function start(client?: { run: () => void }) {
+  client?.run()
+}
+`)
+
+	engine := NewLocalEngine()
+	_, err := engine.FindCallees(context.Background(), repoRoot, SymbolRef{Name: "start", Path: "opt.ts"}, 1)
+	if err == nil || !strings.Contains(err.Error(), "could not be resolved confidently for nodejs") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLocalEngineFindRustCallHierarchy(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "src/lib.rs", `pub fn format_name(n: &str) -> String
+where
+    String: Clone,
+{
+    n.to_string()
+}
+`)
+	writeRetrievalFile(t, repoRoot, "src/main.rs", `struct Greeter;
+
+impl Greeter {
+    fn greet(&self, n: &str) -> String {
+        crate::format_name(n)
+    }
+}
+`)
+
+	engine := NewLocalEngine()
+	callers, err := engine.FindCallers(context.Background(), repoRoot, SymbolRef{Name: "format_name", Path: "src/lib.rs"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "greet" || callers.Root.Children[0].Path != "src/main.rs" {
+		t.Fatalf("rust callers = %#v", callers.Root.Children)
+	}
+	symbol, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "format_name", Path: "src/lib.rs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if symbol.StartLine != 1 || symbol.EndLine != 6 {
+		t.Fatalf("format_name range = %d-%d, want 1-6 (where clause)", symbol.StartLine, symbol.EndLine)
 	}
 }
 
