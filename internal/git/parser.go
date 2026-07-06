@@ -98,7 +98,19 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 	if currentEntry != nil {
 		files = append(files, *currentEntry)
 	}
-	return DiffFilesFromUnifiedDiff(diff), hunks, files, nil
+	diffFiles := DiffFilesFromUnifiedDiff(diff)
+	// Hunk languages come from path-only detection; refine them with the
+	// content-aware per-file classification.
+	langByPath := make(map[string]string, len(diffFiles))
+	for _, file := range diffFiles {
+		langByPath[file.FilePath] = file.Language
+	}
+	for i := range hunks {
+		if language, ok := langByPath[hunks[i].FilePath]; ok {
+			hunks[i].Language = language
+		}
+	}
+	return diffFiles, hunks, files, nil
 }
 
 func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
@@ -108,10 +120,12 @@ func DiffFilesFromUnifiedDiff(diff string) []model.DiffFile {
 		if section.path == "" {
 			continue
 		}
+		classification := filetype.Classify(section.path, section.text)
 		files = append(files, model.DiffFile{
-			FilePath: section.path,
-			Language: filetype.DetectLanguage(section.path),
-			Content:  section.text,
+			FilePath:  section.path,
+			Language:  classification.Language,
+			Content:   section.text,
+			Generated: classification.Generated,
 		})
 	}
 	return files

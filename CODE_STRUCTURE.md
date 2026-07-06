@@ -115,7 +115,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/logging/progress.go`: Progress-line data model, formatting, coloring, and workflow labels.
 - `internal/logging/reasoning_renderer.go`: Live reasoning renderer for terminal output.
 - `internal/logging/verbose.go`: Verbose log blocks, JSON pretty-printing, and context-aware formatting.
-- `internal/filetype/language.go`: File extension/content language detection.
+- `internal/filetype/language.go`: Unified file classification API (language detection, generated-file flags, trim eviction classes) backed by the mappings data.
 - `internal/styleguide/styleguide.go`: Resolves user-supplied additional styleguides (local files or HTTP(S) URLs) into prompt-ready guides.
 - `internal/toolchain/toolchain.go`: Toolchain version capture and normalization.
 - `internal/tools/catalog.go`: Tool catalog exposed to agents.
@@ -132,6 +132,6 @@ This document maps the production Go code. Test files live beside the code they 
 - `prompts/`: Agent system prompts and shared prompt snippets.
 - `prompts/styleguides/`: Language/tool style rules injected into review and verification prompts.
 - `workflows/`: Embedded workflow YAML definitions.
-- `mappings/`: Language and file mapping data.
+- `mappings/`: Data backend for file classification: language path/content rules (incl. shebangs), generated-file patterns and markers, trim eviction classes, and styleguide detectors. All detection rules live in the YAML files; the Go code is a generic PatternSet matching engine.
 - `assets/`: Static assets used by output or packaging.
 - `testdata/`: Fixtures and golden data used by tests.

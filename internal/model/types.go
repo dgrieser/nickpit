@@ -204,12 +204,14 @@ type ChangedFile struct {
 	Additions int        `json:"additions"`
 	Deletions int        `json:"deletions"`
 	PatchURL  string     `json:"patch_url,omitempty"`
+	Generated bool       `json:"generated,omitempty"`
 }
 
 type DiffFile struct {
-	FilePath string `json:"file_path"`
-	Language string `json:"language,omitempty"`
-	Content  string `json:"content"`
+	FilePath  string `json:"file_path"`
+	Language  string `json:"language,omitempty"`
+	Content   string `json:"content"`
+	Generated bool   `json:"generated,omitempty"`
 }
 
 type DiffHunk struct {
@@ -560,10 +562,21 @@ type TokenEstimator interface {
 	Estimate(text string) int
 }
 
+// LengthEstimator enables incremental token accounting: for estimators whose
+// Estimate depends only on len(text), EstimateLen(n) must equal Estimate of
+// any string of length n.
+type LengthEstimator interface {
+	EstimateLen(length int) int
+}
+
 type SimpleEstimator struct{}
 
 func (SimpleEstimator) Estimate(text string) int {
 	return len(text) / 4
+}
+
+func (SimpleEstimator) EstimateLen(length int) int {
+	return length / 4
 }
 
 func PriorityRank(priority *int) int {

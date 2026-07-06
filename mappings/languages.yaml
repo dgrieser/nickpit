@@ -1,24 +1,29 @@
 # Language mappings are embedded into the binary and used by
-# filetype.DetectLanguage. They decide the `language` field attached to changed
-# files, which affects prompt payloads, syntax labels, retrieval backends, and
-# styleguide fallback selection.
+# filetype.DetectLanguage / filetype.Classify. They decide the `language`
+# field attached to changed files, which affects prompt payloads, syntax
+# labels, retrieval backends, and styleguide fallback selection.
 #
 # Detection order:
 #   1. path_rules, in the order listed below
 #   2. extensions, using the file extension from the basename
 #   3. basenames, using the lowercased basename
-#   4. default
+#   4. content_rules, in the order listed below (only when content is given)
+#   5. default
 #
 # All path and extension matching is lowercased before comparison. Extensions
-# must include the leading dot. Basenames should be lowercase. Path rules use
-# `match_any`: if any configured path matcher hits, the rule's language wins.
+# must include the leading dot. Basenames should be lowercase.
 #
-# Supported path-rule matchers:
-#   extensions, basenames, basename_suffixes, path_segments, path_prefixes,
-#   path_contains, content_contains, content_regex
+# Rules support `match_any` (rule wins if any configured matcher hits) and
+# `match_all` (every configured matcher group must hit); a rule may combine
+# both. Supported matchers:
+#   extensions, basenames, basename_prefixes, basename_suffixes,
+#   path_segments, path_prefixes, path_contains, content_contains,
+#   content_regex
 #
-# Only path-based matchers are useful here today because DetectLanguage receives
-# only a path, not file content.
+# Content matchers run against normalized content (unified-diff +/- prefixes
+# and blank lines stripped), so the same rules work for full files and diffs.
+# content_rules run only after every path-based step missed, so a content
+# signal (e.g. a shebang) can never override an extension mapping.
 default: text
 
 extensions:
@@ -107,6 +112,33 @@ extensions:
   dockerfile:
     - .dockerfile
     - .containerfile
+  protobuf:
+    - .proto
+  terraform:
+    - .tf
+    - .hcl
+  lua:
+    - .lua
+  elixir:
+    - .ex
+    - .exs
+  dart:
+    - .dart
+  powershell:
+    - .ps1
+  groovy:
+    - .gradle
+    - .groovy
+  graphql:
+    - .graphql
+  cmake:
+    - .cmake
+  perl:
+    - .pl
+  haskell:
+    - .hs
+  r:
+    - .r
 
 basenames:
   dockerfile:
@@ -115,16 +147,69 @@ basenames:
   makefile:
     - makefile
     - gnumakefile
+  cmake:
+    - cmakelists.txt
 
 path_rules:
+  # Strong helm signals anywhere in the tree.
   - language: helm
     match_any:
       basenames:
         - chart.yaml
         - chart.lock
-        - values.yaml
       basename_suffixes:
         - .tpl
+  # Chart payloads: only chart-ish files under a charts/ segment, so source
+  # files in unrelated charts/ directories keep their own language.
+  - language: helm
+    match_all:
       path_segments:
         - charts
+      extensions:
+        - .yaml
+        - .yml
+        - .txt
+        - .lock
+  # Manifest templates: yaml under a templates/ segment; other template
+  # systems (html, go templates, ...) keep their extension language.
+  - language: helm
+    match_all:
+      path_segments:
         - templates
+      extensions:
+        - .yaml
+        - .yml
+  - language: helm
+    match_all:
+      path_segments:
+        - templates
+      basenames:
+        - notes.txt
+
+# Shebang detection for extensionless scripts; version suffixes such as
+# python3.12 are handled inside the patterns.
+content_rules:
+  - language: python
+    match_any:
+      content_regex:
+        - '(?m)^#!\S*(?:/|env[ \t]+)python[0-9.]*(?:[ \t]|$)'
+  - language: shell
+    match_any:
+      content_regex:
+        - '(?m)^#!\S*(?:/|env[ \t]+)(?:sh|bash|zsh|ksh|dash|ash)(?:[ \t]|$)'
+  - language: nodejs
+    match_any:
+      content_regex:
+        - '(?m)^#!\S*(?:/|env[ \t]+)node(?:[ \t]|$)'
+  - language: ruby
+    match_any:
+      content_regex:
+        - '(?m)^#!\S*(?:/|env[ \t]+)ruby[0-9.]*(?:[ \t]|$)'
+  - language: perl
+    match_any:
+      content_regex:
+        - '(?m)^#!\S*(?:/|env[ \t]+)perl[0-9.]*(?:[ \t]|$)'
+  - language: php
+    match_any:
+      content_regex:
+        - '(?m)^#!\S*(?:/|env[ \t]+)php[0-9.]*(?:[ \t]|$)'

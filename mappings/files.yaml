@@ -1,14 +1,26 @@
-# File mappings are embedded into the binary and used by the review context
-# trimmer. Keep this file data-only: changing these values changes which files
-# NickPit treats as generated or lockfile-like noise.
+# File mappings are embedded into the binary and used by filetype.Classify
+# and the review context trimmer. Keep this file data-only: changing these
+# values changes which files NickPit treats as generated or lockfile-like
+# noise, and in which order diff content is evicted under budget pressure.
 #
 # generated_suffixes:
 #   Any changed file whose path ends with one of these strings is classified as
 #   generated. Generated files are still present in the diff, but context
 #   trimming can deprioritize or omit their full content so reviewers focus on
 #   source changes. Entries may be exact basenames such as "go.sum" or suffixes
-#   such as ".pb.go". Matching is case-sensitive and uses the repository path as
-#   reported by Git.
+#   such as ".pb.go". Matching is case-insensitive against the repository path
+#   as reported by Git.
+#
+# generated_rules:
+#   PatternSet rules (match_any / match_all) for generated files that suffixes
+#   cannot express: basename prefixes, path segments, and content markers.
+#   Content matchers run against normalized content (unified-diff +/- prefixes
+#   stripped), so they work for full files and diffs alike.
+#
+# eviction_priorities:
+#   Ordered classes for context trimming: when the diff must shrink, files
+#   matching an earlier class are evicted before files matching a later class;
+#   files matching no class are regular source and evicted last.
 generated_suffixes:
   - .pb.go
   - go.sum
@@ -17,5 +29,67 @@ generated_suffixes:
   - _pb2.py
   - _pb2_grpc.py
   - poetry.lock
-  - Pipfile.lock
+  - pipfile.lock
   - uv.lock
+
+generated_rules:
+  - reason: lockfiles
+    match_any:
+      basenames:
+        - cargo.lock
+        - composer.lock
+        - gemfile.lock
+        - pnpm-lock.yaml
+        - bun.lockb
+        - bun.lock
+        - deno.lock
+        - flake.lock
+        - mix.lock
+        - packages.lock.json
+        - gradle.lockfile
+  - reason: generated-code prefix
+    match_any:
+      basename_prefixes:
+        - zz_generated
+  - reason: minified assets
+    match_any:
+      basename_suffixes:
+        - .min.js
+        - .min.css
+  - reason: test snapshots
+    match_any:
+      basename_suffixes:
+        - .snap
+  - reason: generated-code markers
+    match_any:
+      content_regex:
+        - '(?m)^\W{0,8}Code generated .* DO NOT EDIT'
+        - '(?m)^\W{0,8}@generated\b'
+
+eviction_priorities:
+  - name: docs
+    match_any:
+      extensions:
+        - .md
+        - .markdown
+        - .rst
+        - .txt
+      path_segments:
+        - docs
+        - doc
+  - name: tests
+    match_any:
+      basename_suffixes:
+        - _test.go
+        - .spec.ts
+        - .spec.js
+        - .test.ts
+        - .test.js
+      basename_prefixes:
+        - test_
+      path_segments:
+        - test
+        - tests
+        - __tests__
+        - testdata
+        - spec

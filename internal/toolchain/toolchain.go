@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/mappings"
 	"golang.org/x/mod/modfile"
@@ -524,7 +525,7 @@ func languagesForPath(path, hint string) []string {
 	}
 	styleLang := ""
 	if path != "" {
-		styleLang = mappings.StyleGuideLanguageForPath(path, mappings.DetectLanguage)
+		styleLang = mappings.StyleGuideLanguageForPath(path, filetype.DetectLanguage)
 	}
 	switch styleLang {
 	case langJavaScript:

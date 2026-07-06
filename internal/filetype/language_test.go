@@ -31,6 +31,26 @@ func TestDetectLanguage(t *testing.T) {
 		"charts/api/templates/deploy.yaml":  "helm",
 		"charts/api/templates/NOTES.txt":    "helm",
 		"charts/api/templates/_helpers.tpl": "helm",
+		"templates/values.yaml":             "helm",
+		"app/templates/main.go":             "go",
+		"src/charts/line.ts":                "nodejs",
+		"config/values.yaml":                "yaml",
+		"app/templates/index.html":          "html",
+		"api/v1/api.proto":                  "protobuf",
+		"infra/main.tf":                     "terraform",
+		"infra/vars.hcl":                    "terraform",
+		"CMakeLists.txt":                    "cmake",
+		"cmake/deps.cmake":                  "cmake",
+		"scripts/build.ps1":                 "powershell",
+		"lib/app.ex":                        "elixir",
+		"test/app_test.exs":                 "elixir",
+		"lib/util.lua":                      "lua",
+		"app/main.dart":                     "dart",
+		"build.gradle":                      "groovy",
+		"schema/api.graphql":                "graphql",
+		"scripts/legacy.pl":                 "perl",
+		"src/Main.hs":                       "haskell",
+		"analysis/plot.R":                   "r",
 		"Dockerfile":                        "dockerfile",
 		"build.Containerfile":               "dockerfile",
 		"Makefile":                          "makefile",
@@ -39,6 +59,25 @@ func TestDetectLanguage(t *testing.T) {
 	for path, want := range tests {
 		if got := DetectLanguage(path); got != want {
 			t.Fatalf("DetectLanguage(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestClassify(t *testing.T) {
+	tests := []struct {
+		path    string
+		content string
+		want    Classification
+	}{
+		{"pkg/service.pb.go", "", Classification{Language: "go", Generated: true}},
+		{"bin/deploy", "#!/usr/bin/env python\n", Classification{Language: "python", Generated: false}},
+		{"api/zz_generated.deepcopy.go", "", Classification{Language: "go", Generated: true}},
+		{"Cargo.lock", "", Classification{Language: "text", Generated: true}},
+		{"pkg/service.go", "+package pkg\n", Classification{Language: "go", Generated: false}},
+	}
+	for _, tc := range tests {
+		if got := Classify(tc.path, tc.content); got != tc.want {
+			t.Fatalf("Classify(%q) = %+v, want %+v", tc.path, got, tc.want)
 		}
 	}
 }
