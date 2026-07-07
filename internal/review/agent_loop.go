@@ -216,9 +216,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			}
 		}
 
-		if resp != nil {
-			result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
-		}
+		result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 		if !repairedFromPartial {
 			if retryInvalid := e.repairResponseOrRetry(loopCtx, req, resp); retryInvalid != nil {
 				queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true)
