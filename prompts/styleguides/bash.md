@@ -72,6 +72,14 @@ set -euo pipefail
 | `-o pipefail` | Pipeline fails if **any** command in it fails | Without this, `false \| true` returns 0[^2] |
 | `-x` | Trace every command (debug) | Use in CI or dev, not production by default |
 | `-E` | Inherit `ERR` trap in functions/subshells | Required for `trap ... ERR` to propagate into functions[^3] |
+| `-T` | Inherit `DEBUG`/`RETURN` traps in functions | Like `-E`, but for `DEBUG`/`RETURN` traps |
+| `-C` | `noclobber`: refuse to overwrite files with `>` | Force with `>\|`; see §12 |
+| `-n` | `noexec`: parse but do not execute | `bash -n script.sh` = syntax check in CI |
+
+Every flag also has a long name via `set -o`: `errexit` (-e), `nounset` (-u),
+`xtrace` (-x), `errtrace` (-E), `functrace` (-T), `noclobber` (-C), `noexec` (-n).
+The remaining `set -o` names (`allexport`, `noglob`, `monitor`, `posix`,
+`histexpand`, `vi`/`emacs`, …) are mostly for interactive or niche use.
 
 ```bash
 # Full production header
@@ -90,6 +98,25 @@ fi
 # Deliberately ignore a command's failure
 some_command || true          # explicit ignore
 some_command || { echo "failed" >&2; exit 1; }  # handle gracefully
+```
+
+**`set -e` does not reach into command substitutions or subshells.** In
+non-POSIX mode Bash clears `-e` inside `$(...)` and `( ... )`, so a command that
+fails there does not abort the script. Re-enable it with `shopt -s
+inherit_errexit` (Bash 4.4+):
+
+```bash
+set -euo pipefail
+shopt -s inherit_errexit      # $(...) and ( ) subshells now honor set -e
+```
+
+**`local`/`declare`/`export`/`readonly` mask a command's exit status.** In
+`local x=$(cmd)` the status seen is that of `local` (always 0), so `set -e` never
+sees `cmd` fail (ShellCheck SC2155). Declare, then assign, separately:
+
+```bash
+local x
+x=$(cmd) || return            # cmd's failure is now visible to set -e / callers
 ```
 
 **`set -u` caveats:**
@@ -454,6 +481,12 @@ echo "$var"          # prints nothing on some systems (interprets -n flag!)
 printf '%s\n' "$var"  # always prints: -n tricky
 printf 'Count: %d\n' "$count"
 printf '%s\t%s\n' "$key" "$value"
+
+# %q — shell-quote a value so it can be safely reused as shell input.
+# Ideal for logging or reconstructing a command line without quoting bugs.
+printf '%q\n' "$var"              # -> -n\ tricky
+printf 'running: %q ' "$@"; echo # -> running: cmd arg\ with\ spaces ...
+# Bash 4.4+: %Q applies a precision and re-quotes for the current locale.
 ```
 
 ##### Quoted newlines are literal, not command separators
@@ -632,6 +665,42 @@ walk_tree() {
   done
 }
 ```
+
+##### Option parsing: `getopts`
+
+`getopts` is the POSIX builtin for parsing **short** options. It is a valid,
+portable alternative to a manual `while`/`case` loop (see the Appendix template)
+and handles bundling (`-xv`) and option arguments (`-o file`) for you.
+
+```bash
+usage() { echo "usage: $0 [-v] [-o file] [-j n] args..." >&2; exit "${1:-0}"; }
+
+verbose=false output="" jobs=1
+# Leading ':' = silent error mode: getopts reports errors via $OPTARG, not stderr.
+# A trailing ':' after a letter means that option takes an argument.
+while getopts ':vo:j:h' opt; do
+  case "$opt" in
+    v) verbose=true ;;
+    o) output="$OPTARG" ;;
+    j) jobs="$OPTARG" ;;
+    h) usage 0 ;;
+    :)  echo "option -$OPTARG requires an argument" >&2; usage 2 ;;
+    \?) echo "unknown option: -$OPTARG" >&2; usage 2 ;;
+  esac
+done
+shift "$((OPTIND - 1))"   # drop parsed options; "$@" is now the positional args
+```
+
+**Limitations — use a manual `while`/`case` loop when you need any of these:**
+
+- **No GNU long options** (`--verbose`, `--output=file`). `getopts` handles only
+  single-character options.
+- Stops at the first non-option argument (no interspersing options and operands).
+- `OPTIND` is global; reset `OPTIND=1` before re-parsing in the same shell/function.
+- No built-in `--` handling beyond terminating option parsing.
+
+For long options, keep the manual `while [[ $# -gt 0 ]]; do case "$1" in …` pattern
+shown in the Appendix.
 
 ***
 
