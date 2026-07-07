@@ -670,67 +670,11 @@ func duplicateSuggestion(a, b model.Suggestion) bool {
 	if aBody == bBody {
 		return true
 	}
-	if sharedSuggestionCodeLine(a.Body, b.Body) {
-		return true
-	}
 	return sameSuggestionAnchor(a, b) && suggestionTokenSimilarity(a.Body, b.Body) >= 0.75
 }
 
 func normalizeSuggestionBody(body string) string {
 	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(body))), " ")
-}
-
-func sharedSuggestionCodeLine(a, b string) bool {
-	aLines := suggestionCodeLines(a)
-	if len(aLines) == 0 {
-		return false
-	}
-	for line := range suggestionCodeLines(b) {
-		if _, ok := aLines[line]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func suggestionCodeLines(body string) map[string]struct{} {
-	out := map[string]struct{}{}
-	for raw := range strings.SplitSeq(body, "\n") {
-		line := normalizeSuggestionCodeLine(raw)
-		if !suggestionLineLooksLikeCode(line) {
-			continue
-		}
-		out[line] = struct{}{}
-	}
-	return out
-}
-
-func normalizeSuggestionCodeLine(line string) string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(line, "- ")
-	line = strings.TrimPrefix(line, "* ")
-	line = strings.TrimPrefix(line, "+ ")
-	line = strings.TrimSpace(line)
-	line = strings.Trim(line, "`")
-	line = strings.TrimSpace(line)
-	return strings.Join(strings.Fields(line), " ")
-}
-
-func suggestionLineLooksLikeCode(line string) bool {
-	if line == "" {
-		return false
-	}
-	lower := strings.ToLower(line)
-	if strings.HasPrefix(lower, "from ") && strings.Contains(lower, " import ") {
-		return true
-	}
-	if strings.HasPrefix(lower, "import ") {
-		return true
-	}
-	if strings.ContainsAny(line, "{}[]=();") {
-		return true
-	}
-	return false
 }
 
 func sameSuggestionAnchor(a, b model.Suggestion) bool {
