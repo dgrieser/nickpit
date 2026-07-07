@@ -39,6 +39,8 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
 {{- else if eq .AgentRole "review"}}
 - generate one or more `suggestions` entries, each including `body` and `code_location`,
   if you think obvious fixes exist; suggestions are not required
+- do not output duplicate suggestions for the same fix; if two suggestions propose the same edit,
+  keep only the clearer one
 {{- if .HasTools}}
 - use `find_lines` for each `suggestions[].code_location`;
   this code location should identify the exact code the suggestion replaces or edits
@@ -49,7 +51,7 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
   - or before/after patches
 {{- else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}
 - copy `suggestions` from the source findings, each including `body` and the full `code_location`;
-  merge them only when it makes sense and DO NOT invent new suggestions
+  keep distinct fixes only, merge duplicates only when it makes sense, and DO NOT invent new suggestions
 {{- end}}
 {{- end}}
 {{- if eq .Snippet "priority"}}

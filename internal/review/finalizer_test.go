@@ -64,7 +64,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 		t.Fatalf("schema kind = %v, want finalize", req.SchemaKind)
 	}
 	systemPrompt := req.Messages[0].Content
-	for _, want := range []string{`"verification"`, `"finalization"`, `"title"`, `"body"`, `"remarks"`, "produce final `finalization.suggestions`", "DO NOT invent new suggestions", "DO NOT drop existing suggestions"} {
+	for _, want := range []string{`"verification"`, `"finalization"`, `"title"`, `"body"`, `"remarks"`, "produce final `finalization.suggestions`", "duplicate suggestions propose the same fix", "DO NOT invent new suggestions", "DO NOT drop distinct existing suggestions"} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("finalize system prompt missing %s:\n%s", want, systemPrompt)
 		}
@@ -517,6 +517,84 @@ func TestFinalizeRestoresSuggestionCountWhenLLMPartiallyDropsThem(t *testing.T) 
 	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("finalization suggestions = %+v, want %+v", got, want)
+	}
+}
+
+func TestFinalizeDropsDuplicateSuggestions(t *testing.T) {
+	inputSuggestions := []model.Suggestion{
+		{
+			Body:      "Add the missing import statement at the top of `edit.py`:\n\nfrom datetime import date",
+			LineRange: model.LineRange{Start: 1, End: 1},
+		},
+		{
+			Body:      "Add the missing import at the top of `edit.py`:\n\nfrom datetime import date",
+			LineRange: model.LineRange{Start: 1, End: 1},
+		},
+		{
+			Body:      "Keep the score timestamp update call.",
+			LineRange: model.LineRange{Start: 436, End: 440},
+		},
+	}
+	llmClient := &capturingLLM{
+		resps: []*llm.ReviewResponse{
+			{
+				Findings: []model.Finding{
+					{
+						Title:           "Fix issue",
+						Body:            "body",
+						ConfidenceScore: 0.7,
+						Priority:        intPtr(1),
+						CodeLocation:    model.CodeLocation{FilePath: "edit.py", LineRange: model.LineRange{Start: 436, End: 440}},
+						Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+						Finalization: &model.FindingFinalization{
+							Title:           "Final issue",
+							Body:            "final body",
+							Priority:        1,
+							ConfidenceScore: 0.75,
+							Remarks:         "refined",
+							Suggestions: []model.Suggestion{
+								{Body: "Add `date` import.\n\nfrom datetime import date", LineRange: model.LineRange{Start: 99, End: 99}},
+								{Body: "Duplicate polished suggestion should be ignored.", LineRange: model.LineRange{Start: 99, End: 99}},
+								{Body: "Keep the score timestamp update call.", LineRange: model.LineRange{Start: 99, End: 99}},
+							},
+						},
+					},
+				},
+				OverallCorrectness: "patch is correct",
+			},
+		},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{
+		Findings: []model.Finding{
+			{
+				Title:           "Fix issue",
+				Body:            "body",
+				ConfidenceScore: 0.7,
+				Priority:        intPtr(1),
+				CodeLocation:    model.CodeLocation{FilePath: "edit.py", LineRange: model.LineRange{Start: 436, End: 440}},
+				Suggestions:     inputSuggestions,
+				Verification:    &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+			},
+		},
+		OverallCorrectness: "patch is correct",
+	}
+
+	out, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+	if err != nil {
+		t.Fatalf("Finalize returned err: %v", err)
+	}
+	gotTop := out.Findings[0].Suggestions
+	if len(gotTop) != 2 || gotTop[0] != inputSuggestions[0] || gotTop[1] != inputSuggestions[2] {
+		t.Fatalf("top-level suggestions = %+v, want duplicate import collapsed", gotTop)
+	}
+	gotFinal := out.Findings[0].Finalization.Suggestions
+	wantFinal := []model.Suggestion{
+		{Body: "Add `date` import.\n\nfrom datetime import date", LineRange: inputSuggestions[0].LineRange},
+		{Body: "Keep the score timestamp update call.", LineRange: inputSuggestions[2].LineRange},
+	}
+	if len(gotFinal) != len(wantFinal) || gotFinal[0] != wantFinal[0] || gotFinal[1] != wantFinal[1] {
+		t.Fatalf("finalization suggestions = %+v, want %+v", gotFinal, wantFinal)
 	}
 }
 

@@ -316,6 +316,7 @@ func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
 		"full replacement code",
 		"full patches",
 		"or before/after patches",
+		"do not output duplicate suggestions for the same fix",
 		"put the following in `suggestions[].body`",
 	} {
 		if !strings.Contains(withTools, want) {
@@ -329,6 +330,42 @@ func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
 	}
 	if strings.Contains(withoutTools, "find_lines") {
 		t.Fatalf("no-tools prompt mentions find_lines:\n%s", withoutTools)
+	}
+}
+
+func TestMergeAndDedupePromptsAvoidDuplicateSuggestions(t *testing.T) {
+	commonSnippets, err := agentCommonSystemPromptSnippets("merge", exampleSnippetFor(llm.SchemaKindMerge, false), false)
+	if err != nil {
+		t.Fatalf("agentCommonSystemPromptSnippets returned err: %v", err)
+	}
+	for _, file := range []string{"agent_dedupe_system_prompt.tmpl", "agent_cluster_merge_system_prompt.tmpl"} {
+		template, err := prompts.Load(file)
+		if err != nil {
+			t.Fatalf("load %s: %v", file, err)
+		}
+		system, err := llm.RenderPrompt(template, struct {
+			FindingInstructionsSnippet string
+			PrioritySnippet            string
+			OutputFormatSnippet        string
+			DisableSuggestions         bool
+			StyleGuideToolchainSnippet string
+		}{
+			FindingInstructionsSnippet: commonSnippets.findingInstructions,
+			PrioritySnippet:            commonSnippets.priority,
+			OutputFormatSnippet:        commonSnippets.outputFormat,
+		})
+		if err != nil {
+			t.Fatalf("render %s: %v", file, err)
+		}
+		for _, want := range []string{
+			"include distinct suggestions from duplicate findings",
+			"keep only the clearest one",
+			"keep distinct fixes only",
+		} {
+			if !strings.Contains(system, want) {
+				t.Fatalf("%s missing duplicate suggestion guidance %q:\n%s", file, want, system)
+			}
+		}
 	}
 }
 

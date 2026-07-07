@@ -432,7 +432,7 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 		"Do NOT verify whether the positive statement is true",
 		"Never use the phrase \"no issue\" anywhere in `remarks` except",
 		"When `refuted` because the input is a non-finding",
-		"NOT as substring triggers",
+		"often contain phrases similar to these",
 	} {
 		if !strings.Contains(sysPrompt, want) {
 			t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
