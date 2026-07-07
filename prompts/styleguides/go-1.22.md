@@ -1,4 +1,4 @@
-# Go 1.22 — Complete Developer Guideline
+### Go 1.22 — Complete Developer Guideline
 
 > **Version**: Go 1.22.0 (released 2024-02-06)
 > **Scope**: Full language spec, all 1.22 changes delta over 1.21, idioms, concurrency, performance, CLI, file I/O, testing, and best practices — with examples throughout.
@@ -6,7 +6,7 @@
 
 ---
 
-## Table of Contents
+#### Table of Contents
 
 1. [What's New in Go 1.22](#whats-new-in-go-122)
 2. [Project Layout & Modules](#project-layout--modules)
@@ -33,13 +33,13 @@
 
 ---
 
-## What's New in Go 1.22
+#### What's New in Go 1.22
 
 Go 1.22.0 shipped 2024-02-06. It brings **two significant language changes** to `for` loops, the **first v2 standard library package** (`math/rand/v2`), enhanced HTTP routing in `net/http.ServeMux`, and a range of library and performance improvements.
 
-### Language changes
+##### Language changes
 
-#### 1. Loop variables are now per-iteration [NEW in 1.22] ★★★
+###### 1. Loop variables are now per-iteration [NEW in 1.22] ★★★
 
 This is the most impactful change in 1.22 and resolves a decade-old Go gotcha.
 
@@ -77,7 +77,7 @@ for i := 0; i < 10; i++ { go func() { fmt.Println(i) }() } // safe in 1.22
 // While-style (only applies if variables declared in for)
 ```
 
-**Important nuance for C-style loops**: in 1.22, the variable `i` in `for i := 0; ...` is still a single variable per *loop*, but it's now automatically copied for each iteration when captured. The key change: closures and goroutines launched in the loop body see the value at the time of launch, not the final value.
+**Important nuance for C-style loops**: in 1.22, each iteration of `for i := 0; ...` gets its own `i` — initialized from the previous iteration's final value, then the post-statement (`i++`) runs on that per-iteration copy. So closures and goroutines launched in the loop body capture the value for their own iteration, not the loop's final value.
 
 **Activation**: This change only applies to packages with `go 1.22` or later in `go.mod`. Packages with `go 1.21` or earlier retain the old semantics automatically for backward compatibility.
 
@@ -112,7 +112,7 @@ for _, tt := range tests {
 }
 ```
 
-#### 2. Range over integers [NEW in 1.22]
+###### 2. Range over integers [NEW in 1.22]
 
 You can now range over an integer to iterate from 0 to N-1:
 
@@ -136,7 +136,7 @@ n := min(len(s), 10)
 for i := range n { process(s[i]) }
 ```
 
-#### 3. Range-over-function iterators (preview) [NEW in 1.22]
+###### 3. Range-over-function iterators (preview) [NEW in 1.22]
 
 An experimental preview of ranging over functions is available with `GOEXPERIMENT=rangefunc`. This is not yet stable — it becomes stable in Go 1.23.
 
@@ -166,9 +166,9 @@ for n := range Fibonacci() {
 }
 ```
 
-### Toolchain changes
+##### Toolchain changes
 
-#### go test -cover improvement [NEW in 1.22]
+###### go test -cover improvement [NEW in 1.22]
 
 ```bash
 # Now reports 0.0% for packages with no test files (instead of skipping them)
@@ -177,7 +177,7 @@ go test -cover ./...
 # After  1.22: "mymod/pkg coverage: 0.0% of statements"
 ```
 
-#### go work vendor [NEW in 1.22]
+###### go work vendor [NEW in 1.22]
 
 Workspace vendor directories are now supported:
 ```bash
@@ -185,7 +185,7 @@ go work vendor   # creates vendor/ for the entire workspace
 go build -mod=vendor ./...  # uses workspace vendor
 ```
 
-### Vet improvements [NEW in 1.22]
+##### Vet improvements [NEW in 1.22]
 
 Three new vet checks:
 
@@ -206,7 +206,7 @@ slog.Info("msg", 42, "value")      // vet: key 42 is not string or slog.Attr
 slog.Info("msg", "key", "value")   // ok
 ```
 
-### Runtime
+##### Runtime
 
 - GC metadata moved closer to heap objects: **1–3% CPU improvement**, ~1% less memory overhead.
 - Heap allocator size class boundaries adjusted — some objects move to next size class (small potential regression in allocation size).
@@ -214,14 +214,14 @@ slog.Info("msg", "key", "value")   // ok
 - New stop-the-world pause metrics in `runtime/metrics`.
 - Execution tracer completely overhauled — streaming, OS-clock based, goroutine thread info.
 
-### Standard Library — new packages
+##### Standard Library — new packages
 
 | Package | Purpose |
 |---|---|
 | `math/rand/v2` | First standard library v2; cleaner API, faster algorithms (ChaCha8/PCG) |
 | `go/version` | Validate and compare Go version strings |
 
-### Standard Library — selected changes
+##### Standard Library — selected changes
 
 | Package | Change |
 |---|---|
@@ -238,7 +238,7 @@ slog.Info("msg", "key", "value")   // ok
 
 ---
 
-## Project Layout & Modules
+#### Project Layout & Modules
 
 ```
 myapp/
@@ -252,7 +252,7 @@ myapp/
 └── go.sum
 ```
 
-### go.mod minimum version
+##### go.mod minimum version
 
 ```
 module github.com/yourname/myapp
@@ -264,15 +264,27 @@ toolchain go1.22.3
 
 Setting `go 1.22.0` activates per-iteration loop variables for all files in the module. If you rely on the old loop semantics anywhere, audit before bumping.
 
-### Package naming
+##### Verify library APIs against the pinned version
+
+Verify library APIs against the actual module versions in `go.mod` before
+claiming an API is missing or unavailable.
+
+- Do not claim a controller-runtime helper is unavailable without checking the
+  pinned `sigs.k8s.io/controller-runtime` version.
+- Say "this API is not available in vX.Y.Z" only when the module version proves
+  it.
+- Do not infer API availability from memory, a newer version's docs, or another
+  project's dependency set.
+
+##### Package naming
 
 Lowercase, single word, no underscores. File names: snake_case.
 
 ---
 
-## Basic Types & Variables
+#### Basic Types & Variables
 
-### Numeric types
+##### Numeric types
 
 | Type | Size | Notes |
 |---|---|---|
@@ -291,7 +303,7 @@ m := min(x, 20) // 10
 M := max(x, 20) // 20
 ```
 
-### iota
+##### iota
 
 ```go
 type Direction int
@@ -310,7 +322,7 @@ const (
 
 ---
 
-## Pointers
+#### Pointers
 
 ```go
 x := 42
@@ -323,7 +335,7 @@ p1 := new(int)
 p2 := &Point{X: 1, Y: 2}
 ```
 
-### Loop variable capture — solved in 1.22
+##### Loop variable capture — solved in 1.22
 
 ```go
 // Go 1.22 with go 1.22.0 in go.mod — no workaround needed
@@ -340,9 +352,9 @@ for i := 0; i < 3; i++ {
 
 ---
 
-## Control Flow
+#### Control Flow
 
-### if / else
+##### if / else
 
 ```go
 if x > 0 {
@@ -362,7 +374,7 @@ if err != nil { return err }
 use(f)
 ```
 
-### for — all forms
+##### for — all forms
 
 ```go
 for i := 0; i < 10; i++ {}         // C-style
@@ -388,7 +400,7 @@ for i := range 10 { }   // i = 0..9
 for range 5 { }          // 5 times, no index
 ```
 
-### switch
+##### switch
 
 ```go
 switch x {
@@ -416,7 +428,7 @@ func describe(i any) {
 
 No fallthrough by default. `fallthrough` is explicit and rare.
 
-### select
+##### select
 
 ```go
 select {
@@ -427,7 +439,7 @@ default:                        fmt.Println("non-blocking")
 }
 ```
 
-### break / continue / labels
+##### break / continue / labels
 
 ```go
 outer:
@@ -441,7 +453,7 @@ for i := range 5 {       // 1.22: range over integer
 
 ---
 
-## Functions
+#### Functions
 
 ```go
 func add(a, b int) int { return a + b }
@@ -463,7 +475,7 @@ func counter() func() int {
 }
 ```
 
-### init
+##### init
 
 ```go
 func init() { /* runs once before main */ }
@@ -471,9 +483,9 @@ func init() { /* runs once before main */ }
 
 ---
 
-## Defer, Panic & Recover
+#### Defer, Panic & Recover
 
-### defer — LIFO
+##### defer — LIFO
 
 ```go
 func readFile(name string) error {
@@ -491,7 +503,7 @@ x = 20
 
 **Avoid defer in hot inner loops** — overhead per call.
 
-### time.Since in defer — vet warning in 1.22
+##### time.Since in defer — vet warning in 1.22
 
 ```go
 // WRONG — time.Since evaluated when defer is called, not when fn returns
@@ -502,7 +514,7 @@ defer log.Println(time.Since(t))  // measures ~0ns, not function duration
 defer func() { log.Println(time.Since(t)) }()
 ```
 
-### panic and recover
+##### panic and recover
 
 ```go
 // panic(nil) 1.21+ semantics: recover() is non-nil for any panic
@@ -523,7 +535,7 @@ func safe(fn func()) (err error) {
 
 ---
 
-## Structs & Methods
+#### Structs & Methods
 
 ```go
 type User struct {
@@ -545,7 +557,7 @@ func (u User) Display() string { return u.Name }
 func (u *User) Promote()       { u.admin = true }
 ```
 
-### Value vs. Pointer receivers
+##### Value vs. Pointer receivers
 
 | Condition | Receiver |
 |---|---|
@@ -555,7 +567,7 @@ func (u *User) Promote()       { u.admin = true }
 | Read-only, small | `T` |
 | Any method uses `*T` | Use `*T` for ALL |
 
-### Functional options
+##### Functional options
 
 ```go
 type Option func(*Server)
@@ -571,7 +583,7 @@ func NewServer(host string, port int, opts ...Option) *Server {
 
 ---
 
-## Interfaces & Embedding
+#### Interfaces & Embedding
 
 ```go
 type Writer interface { Write(p []byte) (n int, err error) }
@@ -595,7 +607,7 @@ case string: fmt.Println("string", v)
 
 ---
 
-## Generics
+#### Generics
 
 ```go
 func Map[T, U any](s []T, f func(T) U) []U {
@@ -625,7 +637,7 @@ func (s *Stack[T]) Pop() T {
 }
 ```
 
-### cmp.Or [NEW in 1.22]
+##### cmp.Or [NEW in 1.22]
 
 ```go
 import "cmp"
@@ -642,9 +654,9 @@ timeout := cmp.Or(flags.Timeout, cfg.Timeout, 30*time.Second)
 
 ---
 
-## Collection Types: Arrays, Slices, Maps
+#### Collection Types: Arrays, Slices, Maps
 
-### Arrays
+##### Arrays
 
 ```go
 b := [3]int{1, 2, 3}
@@ -654,7 +666,7 @@ s := []byte{1, 2, 3, 4, 5}
 arr := [4]byte(s) // 1.20+: value copy; panics if len(s) < 4
 ```
 
-### Slices
+##### Slices
 
 ```go
 s := []int{1, 2, 3}
@@ -673,7 +685,7 @@ result := make([]string, 0, len(items))
 for _, item := range items { result = append(result, process(item)) }
 ```
 
-### slices package (1.21+, updated in 1.22)
+##### slices package (1.21+, updated in 1.22)
 
 ```go
 import "slices"
@@ -716,7 +728,7 @@ nodes = slices.Delete(nodes, 1, 3) // b and c are now nil — GC can collect the
 // Before 1.22: b and c remained in backing array, preventing GC
 ```
 
-#### Modifying during iteration
+###### Modifying during iteration
 
 ```go
 // Safe: modify in place
@@ -733,7 +745,7 @@ for _, v := range s {
 s = s[:n]
 ```
 
-### Maps
+##### Maps
 
 ```go
 m := make(map[string]int)
@@ -742,7 +754,7 @@ delete(m, "key")
 clear(m)          // 1.21+: removes all entries
 ```
 
-### maps package (1.21+)
+##### maps package (1.21+)
 
 ```go
 import "maps"
@@ -753,9 +765,27 @@ maps.Equal(m1, m2)
 maps.EqualFunc(m1, m2, fn)
 ```
 
+##### Map rules and mutation during iteration
+
+- `var m map[string]int` is nil — writing panics. Always use `make`.
+- Iteration order is randomized every run.
+- Maps are reference types — assignment shares the underlying map.
+- Maps are **not safe for concurrent access** — use `sync.RWMutex` or `sync.Map`.
+
+Deleting map entries while ranging over the same map is allowed. Only flag map
+mutation during iteration when there is a concrete Go issue, for example:
+
+- unsynchronized concurrent map access
+- inserting or updating entries while depending on deterministic iteration
+- deleting entries changes required business behavior
+- callbacks are invoked while holding a lock and can re-enter the same lock
+
+Do not apply generic "modifying a collection while iterating" rules from other
+languages to Go map deletion.
+
 ---
 
-## Strings
+#### Strings
 
 ```go
 s := "héllo"
@@ -781,7 +811,7 @@ before, found := strings.CutSuffix("Gopher", "er")  // "Goph", true (1.20+)
 
 ---
 
-## Error Handling
+#### Error Handling
 
 ```go
 type error interface { Error() string }
@@ -808,9 +838,17 @@ wrapped  := fmt.Errorf("two: %w and %w", err1, err2)
 if errors.Is(err, errors.ErrUnsupported) { /* fallback */ }
 ```
 
+**Always check errors.** A few discards are idiomatic and should not be flagged:
+
+- deferred `Close()` on files opened only for reading
+- `defer tx.Rollback()`, which is a no-op after a successful commit
+- writes to `bytes.Buffer` or `strings.Builder`, which never return an error
+
+For everything else, handle the error or make the discard explicit with `_ =`.
+
 ---
 
-## math/rand/v2 [NEW in 1.22]
+#### math/rand/v2 [NEW in 1.22]
 
 The first standard library v2 package. Use it for all new code.
 
@@ -837,7 +875,7 @@ n2 := rng.IntN(100)
 rng.Shuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
 ```
 
-### v1 vs v2 API differences
+##### v1 vs v2 API differences
 
 | math/rand (v1) | math/rand/v2 | Notes |
 |---|---|---|
@@ -852,7 +890,7 @@ rng.Shuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
 | `rand.NewSource(seed)` | `rand.NewPCG(s1, s2)` or `rand.NewChaCha8(seed)` | |
 | LFSR source | ChaCha8 / PCG | Faster, better distribution |
 
-### When to use which
+##### When to use which
 
 ```go
 // Non-cryptographic randomness (games, simulations, tests)
@@ -866,9 +904,9 @@ crypto/rand.Read(buf)
 
 ---
 
-## Structured Logging with log/slog
+#### Structured Logging with log/slog
 
-### Basics (from 1.21)
+##### Basics (from 1.21)
 
 ```go
 import "log/slog"
@@ -885,7 +923,7 @@ logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 slog.SetDefault(logger)
 ```
 
-### SetLogLoggerLevel [NEW in 1.22]
+##### SetLogLoggerLevel [NEW in 1.22]
 
 ```go
 // Control the minimum level for calls through the old log package
@@ -897,7 +935,7 @@ slog.Debug("message")           // was filtered before, now shown
 log.Println("legacy log msg")   // also filtered by slog level
 ```
 
-### Key practices
+##### Key practices
 
 ```go
 // Structured key-value — never format in message
@@ -922,7 +960,15 @@ dbLogger.Error("query failed", "err", err)
 slog.InfoContext(ctx, "processing", "id", id)
 ```
 
-### Vet check for slog calls (1.22)
+##### slog best practices
+
+- **Always use structured key-value pairs** — never format strings into the message.
+- **Keys should be lowercase snake_case** for consistent log querying.
+- **Pass `context.Context` through** and use `InfoContext`/`ErrorContext` for trace IDs.
+- **Group related attributes** with `slog.Group` or `logger.WithGroup`.
+- **Never log secrets, tokens, credentials, or full request/response bodies** unless they are explicitly scrubbed.
+
+##### Vet check for slog calls (1.22)
 
 ```go
 // go vet now catches these:
@@ -933,9 +979,9 @@ slog.With("a", "b", "c")           // odd number of args
 
 ---
 
-## Concurrency
+#### Concurrency
 
-### Goroutines — 1.22 loop fix
+##### Goroutines — 1.22 loop fix
 
 ```go
 // Safe in 1.22 (go 1.22.0 in go.mod):
@@ -946,7 +992,7 @@ for _, v := range items { go func() { process(v) }() }
 for i := 0; i < 5; i++ { i := i; go func() { fmt.Println(i) }() }
 ```
 
-### Channels
+##### Channels
 
 ```go
 ch := make(chan int)       // unbuffered
@@ -962,7 +1008,7 @@ v, ok := <-ch; if !ok { /* closed */ }
 
 **Rules**: sender closes; sending to closed panics; receiving from closed returns zero value.
 
-### sync.WaitGroup
+##### sync.WaitGroup
 
 ```go
 var wg sync.WaitGroup
@@ -976,7 +1022,7 @@ for _, item := range items {
 wg.Wait()
 ```
 
-### sync.Mutex / sync.RWMutex
+##### sync.Mutex / sync.RWMutex
 
 ```go
 type SafeMap struct {
@@ -995,7 +1041,7 @@ func (s *SafeMap) Set(k string, v int) {
 
 **Never copy a mutex.**
 
-### sync.Once and helpers (1.21+)
+##### sync.Once and helpers (1.21+)
 
 ```go
 var once sync.Once
@@ -1011,7 +1057,7 @@ getConn := sync.OnceValues(func() (*sql.DB, error) { return sql.Open("postgres",
 db, err := getConn()
 ```
 
-### sync.Map with 1.20+ atomic methods
+##### sync.Map with 1.20+ atomic methods
 
 ```go
 var m sync.Map
@@ -1024,7 +1070,7 @@ ok = m.CompareAndDelete("k", "value")
 m.Range(func(k, v any) bool { return true })
 ```
 
-### Atomic types
+##### Atomic types
 
 ```go
 var counter atomic.Int64
@@ -1036,7 +1082,7 @@ ptr.Store(newConfig)
 cfg := ptr.Load()
 ```
 
-### Worker pool
+##### Worker pool
 
 ```go
 func workerPool(jobs <-chan Job, results chan<- Result, n int) {
@@ -1052,11 +1098,11 @@ func workerPool(jobs <-chan Job, results chan<- Result, n int) {
 }
 ```
 
-### Mutex profile improvement (1.22)
+##### Mutex profile improvement (1.22)
 
 In 1.22, mutex profiles scale contention **by goroutine count**. If 100 goroutines wait 10ms on a mutex, the profile now records 1 second of delay (not 10ms). This gives a more accurate picture of mutex bottlenecks.
 
-### Concurrency pitfalls
+##### Concurrency pitfalls
 
 | Pitfall | Fix |
 |---|---|
@@ -1067,9 +1113,19 @@ In 1.22, mutex profiles scale contention **by goroutine count**. If 100 goroutin
 | Loop variable capture (< 1.22) | Shadow `i := i` or pass as arg |
 | Copying mutex | Embed + pointer receiver |
 
+##### Classifying races before reporting
+
+Separate true data races from lifecycle, shutdown, or ordering races. Only call
+something a data race after confirming unsynchronized shared-memory access with
+at least one write.
+
+Check a library's concurrency contract before assuming concurrent method calls
+are unsafe. Some Go types are explicitly safe for concurrent use, while others
+require caller-side synchronization.
+
 ---
 
-## Context Package
+#### Context Package
 
 ```go
 ctx := context.Background()
@@ -1097,7 +1153,7 @@ stop := context.AfterFunc(ctx, cleanupResources)
 
 ---
 
-## File I/O & Streaming
+#### File I/O & Streaming
 
 ```go
 f, err := os.Open("file.txt")
@@ -1128,7 +1184,7 @@ filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 })
 ```
 
-### fs.FS additions [NEW in 1.22]
+##### fs.FS additions [NEW in 1.22]
 
 ```go
 // archive/tar and archive/zip: Writer.AddFS
@@ -1140,7 +1196,7 @@ http.Handle("/static/", http.FileServerFS(os.DirFS("./static")))
 http.ServeFileFS(w, r, os.DirFS("./public"), "index.html")
 ```
 
-### JSON
+##### JSON
 
 ```go
 enc := json.NewEncoder(w); enc.SetIndent("", "  "); enc.Encode(data)
@@ -1156,9 +1212,9 @@ type User struct {
 
 ---
 
-## HTTP Servers
+#### HTTP Servers
 
-### Enhanced ServeMux routing [NEW in 1.22] ★★★
+##### Enhanced ServeMux routing [NEW in 1.22] ★★★
 
 The standard `net/http.ServeMux` now supports method prefixes and path wildcards, reducing the need for third-party routers.
 
@@ -1188,7 +1244,7 @@ mux.HandleFunc("GET /health/{$}", healthHandler) // matches /health/ only, not /
 mux.HandleFunc("/metrics", metricsHandler)
 ```
 
-#### Routing rules
+###### Routing rules
 
 - **Method + path** takes precedence over path-only.
 - **More specific patterns** take precedence over less specific ones regardless of registration order.
@@ -1201,14 +1257,14 @@ mux.HandleFunc("GET /users/{id}", h1)
 mux.HandleFunc("GET /{resource}/{id}", h2) // PANIC at startup
 ```
 
-#### Backwards compatibility
+###### Backwards compatibility
 
 If you use `{` or `}` in existing patterns, or rely on old escape behaviour:
 ```bash
 GODEBUG=httpmuxgo121=1 ./myapp  # restore old routing behaviour
 ```
 
-#### SetPathValue — testing and middleware
+###### SetPathValue — testing and middleware
 
 ```go
 // In tests or middleware: manually set captured values
@@ -1216,7 +1272,7 @@ r = r.WithContext(r.Context())
 r.SetPathValue("id", "42") // 1.22+
 ```
 
-### ResponseController (1.20+)
+##### ResponseController (1.20+)
 
 ```go
 func streamHandler(w http.ResponseWriter, r *http.Request) {
@@ -1229,7 +1285,7 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-### Middleware pattern
+##### Middleware pattern
 
 ```go
 func LoggingMiddleware(next http.Handler) http.Handler {
@@ -1251,7 +1307,7 @@ http.ListenAndServe(":8080", LoggingMiddleware(mux))
 
 ---
 
-## database/sql — Null[T] [NEW in 1.22]
+#### database/sql — Null[T] [NEW in 1.22]
 
 ```go
 import "database/sql"
@@ -1281,7 +1337,7 @@ if createdAt.Valid {
 
 ---
 
-## reflect.TypeFor [NEW in 1.22]
+#### reflect.TypeFor [NEW in 1.22]
 
 ```go
 import "reflect"
@@ -1297,9 +1353,9 @@ t3 := reflect.TypeFor[map[string]int]()
 
 ---
 
-## Testing & Benchmarking
+#### Testing & Benchmarking
 
-### Unit tests
+##### Unit tests
 
 ```go
 func TestAdd(t *testing.T) {
@@ -1309,7 +1365,7 @@ func TestAdd(t *testing.T) {
 }
 ```
 
-### Table-driven (1.22: no shadow needed)
+##### Table-driven (1.22: no shadow needed)
 
 ```go
 func TestDivide(t *testing.T) {
@@ -1334,7 +1390,39 @@ func TestDivide(t *testing.T) {
 }
 ```
 
-### go test -cover improvement (1.22)
+##### Test helpers
+
+Helper functions should call `t.Helper()` so failures report the caller's line.
+
+```go
+func newTestUser(t *testing.T) *User {
+    t.Helper()
+    return &User{ID: uuid.New().String(), Name: "Test User", Email: "test@example.com"}
+}
+
+func assertNoError(t *testing.T, err error) {
+    t.Helper()
+    if err != nil {
+        t.Fatalf("unexpected error: %v", err)
+    }
+}
+
+func assertEqual[T comparable](t *testing.T, got, want T) {
+    t.Helper()
+    if got != want {
+        t.Errorf("got %v; want %v", got, want)
+    }
+}
+```
+
+Prefer the built-in test lifecycle helpers over manual bookkeeping where
+available in Go 1.22: `t.TempDir()` (1.15), `t.Setenv()` (1.17), and
+`t.Cleanup()` (1.14).
+
+Note: `t.Context()` and `t.Chdir()` are Go 1.24 additions and are not available
+in Go 1.22.
+
+##### go test -cover improvement (1.22)
 
 ```bash
 go test -cover ./...
@@ -1342,7 +1430,7 @@ go test -cover ./...
 # Previously: "? mymod/pkg [no test files]" — silently omitted
 ```
 
-### Benchmarks
+##### Benchmarks
 
 ```go
 func BenchmarkProcess(b *testing.B) {
@@ -1353,7 +1441,7 @@ func BenchmarkProcess(b *testing.B) {
 // go test -bench=. -benchmem ./...
 ```
 
-### Fuzz testing
+##### Fuzz testing
 
 ```go
 func FuzzParse(f *testing.F) {
@@ -1363,7 +1451,7 @@ func FuzzParse(f *testing.F) {
 // go test -fuzz=FuzzParse -fuzztime=30s
 ```
 
-### Vet checks to know (cumulative)
+##### Vet checks to know (cumulative)
 
 ```go
 // 1.20: loop variable capture after t.Parallel (removed in 1.22 when go 1.22 in go.mod)
@@ -1376,9 +1464,9 @@ go vet ./...
 
 ---
 
-## CLI Development
+#### CLI Development
 
-### Standard flag
+##### Standard flag
 
 ```go
 host    := flag.String("host", "localhost", "server host")
@@ -1389,7 +1477,7 @@ flag.BoolFunc("json", "JSON output", func(string) error { format = "json"; retur
 flag.Parse()
 ```
 
-### Cobra (production CLIs)
+##### Cobra (production CLIs)
 
 ```go
 var rootCmd = &cobra.Command{Use: "myapp"}
@@ -1417,7 +1505,7 @@ func main() {
 }
 ```
 
-### Clean main
+##### Clean main
 
 ```go
 func main() {
@@ -1431,7 +1519,7 @@ func run() error { return nil }
 
 ---
 
-## go/version package [NEW in 1.22]
+#### go/version package [NEW in 1.22]
 
 ```go
 import "go/version"
@@ -1454,9 +1542,9 @@ Useful for: build tools, CI scripts, code that needs to adapt based on the Go ve
 
 ---
 
-## Performance Caveats & PGO
+#### Performance Caveats & PGO
 
-### PGO (GA since 1.21, improved in 1.22)
+##### PGO (GA since 1.21, improved in 1.22)
 
 PGO is auto-enabled when `default.pgo` exists in the main package directory.
 
@@ -1477,20 +1565,20 @@ mv merged.pprof cmd/myapp/default.pgo
 
 In 1.22, PGO can devirtualise a **higher proportion** of interface method calls. Combined with interleaved devirtualisation and inlining, most programs see **2–14% improvement** with PGO.
 
-### GC metadata improvement (1.22)
+##### GC metadata improvement (1.22)
 
 Metadata is now stored closer to heap objects:
 - **1–3% CPU improvement** in most programs.
 - ~1% memory reduction.
 - Side effect: some heap addresses are now 8-byte aligned instead of 16-byte. If you have assembly code that assumes 16-byte heap alignment, audit it.
 
-### slices package performance
+##### slices package performance
 
 `slices.Sort` is faster than `sort.Slice` in almost all cases:
 - No `interface{}` boxing for comparison.
 - `slices.Concat` pre-allocates exact capacity (no reallocation).
 
-### slices shrinking functions zero freed elements (1.22)
+##### slices shrinking functions zero freed elements (1.22)
 
 After `slices.Delete`, `slices.Compact`, etc., freed slots are now nil/zero. This is slightly slower but prevents memory leaks with pointer slices:
 
@@ -1500,7 +1588,7 @@ records = slices.DeleteFunc(records, func(r *Record) bool { return r.stale })
 // Freed slots now nil — GC can collect *Record objects
 ```
 
-### sync.Pool
+##### sync.Pool
 
 ```go
 var bufPool = sync.Pool{New: func() any { return &bytes.Buffer{} }}
@@ -1514,24 +1602,24 @@ func process(data []byte) string {
 }
 ```
 
-### Escape analysis
+##### Escape analysis
 
 ```bash
 go build -gcflags="-m" ./...
 ```
 
-### Struct layout
+##### Struct layout
 
 ```go
 type Bad    struct { A bool; B int64; C bool } // 24 bytes
 type Better struct { B int64; A bool; C bool } // 16 bytes
 ```
 
-### math/rand/v2 performance
+##### math/rand/v2 performance
 
 ChaCha8 and PCG (v2) are faster than the LFSR used in math/rand (v1) with better statistical properties. Prefer v2 for all new code.
 
-### Profiling
+##### Profiling
 
 ```bash
 go test -bench=. -cpuprofile=cpu.prof -memprofile=mem.prof
@@ -1544,9 +1632,9 @@ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 
 ---
 
-## Idioms & Things to Avoid
+#### Idioms & Things to Avoid
 
-### Do (1.22 additions)
+##### Do (1.22 additions)
 
 - **Remove `i := i` shadow patterns** after bumping `go.mod` to 1.22 — they're dead code.
 - **Use `for i := range N`** instead of `for i := 0; i < N; i++` for simple countups.
@@ -1560,7 +1648,7 @@ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 - **Use `go vet`** — it now catches slog mismatches, append no-ops, and deferred `time.Since`.
 - **Use `go/version`** for build tools that parse or compare Go versions.
 
-### Don't
+##### Don't
 
 | Anti-pattern | Why | Instead |
 |---|---|---|
@@ -1582,7 +1670,38 @@ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 | `append(s)` with no values | No-op, almost always a bug (vet catches) | Remove the call |
 | Assuming 16-byte heap alignment in assembly | 1.22 aligns to 8 bytes | Fix alignment assumptions |
 
-### Naming conventions
+##### Reachability and domain bounds
+
+Only report overflow, panic, or invalid-value behavior when the failing path is
+reachable for the declared type and the function's input domain.
+
+- Do not claim byte formatting can index into ZiB/YiB units when an `int64`
+  input cannot grow large enough to reach those unit indexes.
+- Do not require negative byte handling when all callers pass values from
+  `os.FileInfo.Size()` or another source with a non-negative contract.
+- Do report missing negative handling when an exported/general-purpose function
+  accepts user-controlled values and documents no narrower domain.
+- Do not require defensive code for values that cannot be represented by the
+  input type.
+
+##### Security
+
+Weak hashes are only security-relevant when the hash is used for a security
+property such as authentication, authorization, integrity, signatures, password
+storage, or collision resistance against attacker-controlled input.
+
+For content-addressed storage, distinguish integrity/security boundaries from
+ordinary maintenance behavior.
+
+- Do not require hash verification on every listing unless the listing crosses
+  a trust boundary or an attacker can write to the store.
+- Delete-before-regenerate can be correct when replacing corrupt same-digest
+  content and the store skips writes for content that already exists.
+- Report content-addressed storage issues when untrusted data can be accepted
+  under the wrong digest, when corruption is silently trusted as valid content,
+  or when the repair order can lose the only valid copy.
+
+##### Naming conventions
 
 ```go
 // Exported: PascalCase
@@ -1603,7 +1722,7 @@ type Stringer interface{ String() string }
 // No stuttering: user.Name not user.UserName
 ```
 
-### Formatting & linting
+##### Formatting & linting
 
 ```bash
 gofmt -w .
@@ -1611,6 +1730,39 @@ goimports -w .
 go vet ./...
 staticcheck ./...
 golangci-lint run
+```
+
+A `golangci-lint` v2 configuration (the tool version is independent of the Go
+language version and lints Go 1.22 code fine):
+
+```yaml
+# .golangci.yml (golangci-lint v2)
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck # includes the former gosimple checks
+    - unused
+    - gocritic
+  settings:
+    govet:
+      enable:
+        - shadow
+    errcheck:
+      check-type-assertions: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 ```
 
 ---
