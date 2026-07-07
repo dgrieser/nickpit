@@ -119,8 +119,8 @@ entry points only, not in files meant to be `source`d.
 # SCREAMING_SNAKE_CASE for exported/environment variables
 export DATABASE_URL="postgres://localhost/mydb"
 
-# lowercase_snake_case for local script variables
-local retry_count=0
+# lowercase_snake_case for local/script variables (use `local` only inside functions)
+retry_count=0
 
 # _prefixed for "private" helpers
 _tmp_file=$(mktemp)
@@ -759,7 +759,7 @@ log() {
   local level="$1"; shift
   local msg="$*"
   local ts
-  ts=$(date '+%Y-%m-%dT%H:%M:%S%z')
+  printf -v ts '%(%Y-%m-%dT%H:%M:%S%z)T' -1   # Bash 4.2+: builtin, no date fork
 
   # Numeric comparison for log level filtering
   local current_level="${_LOG_LEVELS[$LOG_LEVEL]:-1}"
@@ -1128,7 +1128,7 @@ declare -x       # or: export -p
 
 #### 18. Conditionals & Tests
 
-##### `
+##### Double brackets `[[ ... ]]`
 
 ```bash
 # Use [[ ]] in Bash scripts — safer, richer, no word splitting
@@ -1369,7 +1369,7 @@ rg "pattern" .                       # recursive by default, respects .gitignore
 rg -l "pattern" .                    # files only
 rg -t go "pattern" .                 # filter by file type
 rg --no-ignore "pattern" .           # ignore .gitignore/.rgignore
-rg --null "pattern" . | xargs -0 ... # null-delimited output (rg has no -0 short flag)
+rg --null "pattern" . | xargs -0 ... # null-delimited output (rg also supports -0)
 rg -e "pattern1" -e "pattern2" .    # multiple patterns
 rg --hidden "pattern" .             # include hidden files
 rg --glob "*.go" "pattern" .        # glob filter
@@ -1683,7 +1683,7 @@ mkdir "$dir"                # errors if the directory already exists
 | Bash 5.1 associative array compound assign | **5.1** | |
 | `[[ -R var ]]` nameref test | **4.3** | |
 | `printf -v` print to variable | **3.1** | |
-| `BASH_REMATCH` / `=~` | **3.0** | 3.2 changed RHS-quoting rule | |
+| `BASH_REMATCH` / `=~` | **3.0** | 3.2 changed RHS-quoting rule |
 | `PIPESTATUS` array | **2.0** | |
 | `shopt -s globstar` (`**`) | **4.0** | |
 | `shopt -s nullglob` | **2.0** | |
@@ -1732,7 +1732,7 @@ readonly LOG_FILE="${LOG_FILE:-/tmp/${SCRIPT_NAME%.sh}.log}"
 DRY_RUN="${DRY_RUN:-false}"   # not readonly: reassigned by --dry-run below
 
 # ── Logging ──────────────────────────────────────────────────
-log()  { printf '[%s] [%s] %s\n' "$(date '+%T')" "$1" "${*:2}" >&2; }
+log()  { printf '[%(%T)T] [%s] %s\n' -1 "$1" "${*:2}" >&2; }
 info() { log INFO  "$@"; }
 warn() { log WARN  "$@"; }
 err()  { log ERROR "$@"; }
