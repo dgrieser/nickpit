@@ -2,17 +2,17 @@
   <img src="assets/nickpit.png" alt="NickPit logo" width="320">
 </p>
 
-# NickPit
+# NickPit 🔎🐞
 
-**AI assisted code review, so you can merge with confidence** :100:
+> **AI assisted code review, so you can merge with confidence** :100:
 
 NickPit is a CLI that reviews local git changes, GitHub pull requests, and GitLab merge requests using any OpenAI-compatible LLM endpoint. Point it at a diff and it dispatches a small army of specialist agents who read your code, argue about it, double-check each other, throw out the duplicates, and hand you back a ranked, verified, de-duplicated list of findings — instead of one giant model monologue that confidently flags a bug on a line that doesn't exist.
 
-## Why NickPit?
+## Why NickPit? 🎯
 
 Most LLM review tools are one prompt in a trench coat. NickPit is a pipeline. Here's what you actually get:
 
-### 🧠 Six specialists, not one generalist
+### 6️⃣ Six specialists, not one generalist
 
 Every review starts with a
 
@@ -29,7 +29,7 @@ Each lane is a focused agent with its own system prompt and its own question set
 
 It's the difference between "a doctor" and "a hospital."
 
-### 🕵️ Findings are verified before you see them
+### ✔️ Findings are verified before you see them
 
 Each lane runs **review → verify → dedupe** on its own findings the moment its reviewer finishes.  
 
@@ -39,7 +39,7 @@ Only clean, confirmed findings reach the merge stage.
 
 Hallucinated line numbers and confidently-wrong nitpicks get bounced at the door.  
 
-### 📚 Reviewers can actually read your code
+### 💻 Reviewers can actually read your code
 
 NickPit gives the model special retrieval tools:
 - list and fetch files
@@ -53,7 +53,7 @@ When a reviewer wonders "who calls this function?", it not only gets the call st
 
 Duplicate tool-call detection and per-agent call limits stop any LLM from doom-scrolling your repo.  
 
-### 🔁 The "look again" machine
+### 👀 The "look again" machine
 
 After the first pass, each reviewer gets **nudge rounds** (3 by default) asking it to look again — and a **reasoning-extractor agent** mines the reviewer's chain-of-thought for issues it *noticed but never reported*.  
 
@@ -70,9 +70,10 @@ NickPit watches the reasoning stream with a **three-layer loop detector**:
 
 On detection the stream aborts, retries multiple times with lower reasoning effort, down to the lowest setting, and retries with special instructions to stop going in circles.  
 
-No configuration needed. Your token bill will thank you. :moneybag:
+No configuration needed.   
+Your token bill will thank you. 🤑
 
-### 🧩 The whole pipeline is a YAML file
+### 🗒️ The whole pipeline is a `YAML` file
 
 The review workflow is a portable spec — the single source of truth for execution, with zero hidden magic in code.  
 Rewire it:
@@ -100,7 +101,7 @@ The daemon reacts with 👀 when it picks the review up. Comment `/nickpit abort
 
 Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, idempotent re-reviews.  
 
-### 📮 Publishing that doesn't spam
+### 🔕 Publishing that doesn't spam
 
 `--publish` posts results back to the PR/MR:
 - a summary plus one inline comment per finding
@@ -112,12 +113,12 @@ Hidden fingerprint markers make re-runs **idempotent** — already-posted findin
 
 Findings are structured JSON with `p0`–`p3` priorities, confidence scores, optional fix suggestions, and an overall verdict. NickPit uses API-enforced `response_format` json_schema by default and **automatically falls back** to a prompt-embedded schema when the model doesn't support it (a pre-review model check figures this out for you — also runnable standalone via `nickpit check`).
 
-### 🧰 Everything else you'd expect, plus some you wouldn't
+### 🔋 Everything else you'd expect, plus some you wouldn't
 
 - **Local review modes**: uncommitted changes, commit ranges, branch diffs.
 - **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id` or just the URL.
 - **Diff filters**: regex include/exclude by path *and* by file content.
-- **Styleguides**: built-in per-language guides selected from the diff, plus your own from local files or URLs.
+- **Styleguides**: built-in per-language guides automatically injected based on the diff, plus your own from local files or URLs.
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
 - **Terminal and JSON output**, `--show-progress` live progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
