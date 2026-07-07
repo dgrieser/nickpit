@@ -119,6 +119,16 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		state = newAgentLoopState()
 	}
 	var syntheticFollowup *llm.Message
+	recordInvalidResponseTokens := func(invalidResp *llm.InvalidResponseError) {
+		if invalidResp == nil {
+			return
+		}
+		usage := invalidResp.TokensUsed
+		if usage == (model.TokenUsage{}) && invalidResp.PartialResponse != nil {
+			usage = invalidResp.PartialResponse.TokensUsed
+		}
+		result.tokensUsed = addTokenUsage(result.tokensUsed, usage)
+	}
 
 	for {
 		state.callNum++
@@ -161,6 +171,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 						return result, err
 					}
 					if queued {
+						recordInvalidResponseTokens(invalidResp)
 						continue
 					}
 					e.logf(loopCtx, "Code location repair needed retry but retry budget is exhausted; using partial parsed response: missing=%v", retryInvalid.MissingFields)
@@ -194,6 +205,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				}
 				messages = append(messages, llm.Message{Role: "user", Content: feedback})
 				syntheticFollowup = nil
+				recordInvalidResponseTokens(invalidResp)
 				continue
 			}
 			if err != nil && invalidResp.PartialResponse != nil {
@@ -204,6 +216,9 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			}
 		}
 
+		if resp != nil {
+			result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
+		}
 		if !repairedFromPartial {
 			if retryInvalid := e.repairResponseOrRetry(loopCtx, req, resp); retryInvalid != nil {
 				queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true)
@@ -221,7 +236,6 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			result.reasoningEffort = resp.ReasoningEffort
 			llmReq.ReasoningEffort = resp.ReasoningEffort
 		}
-		result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 		result.contentMessages = appendResponseContent(result.contentMessages, resp)
 		result.resp = resp
 		if req.ValidateResponse != nil {
