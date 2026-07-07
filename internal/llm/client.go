@@ -53,6 +53,7 @@ type InvalidResponseError struct {
 	ValidationFailure     bool
 	RetryGuidanceTemplate string
 	RetryGuidanceData     any
+	TokensUsed            model.TokenUsage
 	PartialResponse       *ReviewResponse
 }
 
@@ -774,8 +775,11 @@ func (c *OpenAIClient) Review(ctx context.Context, req *ReviewRequest) (*ReviewR
 	}
 	finishError := func(err error) error {
 		var invalidResp *InvalidResponseError
-		if errors.As(err, &invalidResp) && invalidResp.PartialResponse != nil {
-			invalidResp.PartialResponse.TokensUsed = totalUsage
+		if errors.As(err, &invalidResp) {
+			invalidResp.TokensUsed = totalUsage
+			if invalidResp.PartialResponse != nil {
+				invalidResp.PartialResponse.TokensUsed = totalUsage
+			}
 		}
 		return err
 	}

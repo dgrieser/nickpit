@@ -1130,8 +1130,8 @@ func TestRunAgent_InvalidJSONRetryExhaustionUsesPartialResponse(t *testing.T) {
 	if len(llmClient.reqs) != 2 {
 		t.Fatalf("llm calls = %d, want initial plus retry", len(llmClient.reqs))
 	}
-	if result.run.TokensUsed.TotalTokens != 2 {
-		t.Fatalf("tokens = %d, want partial retry tokens", result.run.TokensUsed.TotalTokens)
+	if result.run.TokensUsed.TotalTokens != 3 {
+		t.Fatalf("tokens = %d, want initial plus partial retry tokens", result.run.TokensUsed.TotalTokens)
 	}
 }
 
@@ -2311,6 +2311,14 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	}
 	if result.VerifyTokensUsed.TotalTokens != len(reviewVectors)*2 {
 		t.Fatalf("verify tokens = %d, want %d", result.VerifyTokensUsed.TotalTokens, len(reviewVectors)*2)
+	}
+	wantUsage := model.TokenUsage{
+		PromptTokens:     1 + len(reviewVectors)*2 + 3 + len(reviewVectors),
+		CompletionTokens: 1 + len(reviewVectors)*1 + 1 + len(reviewVectors),
+		TotalTokens:      2 + len(reviewVectors)*3 + 4 + len(reviewVectors)*2,
+	}
+	if result.TokensUsed != wantUsage {
+		t.Fatalf("total tokens = %+v, want %+v including verifier spend", result.TokensUsed, wantUsage)
 	}
 	if got := llmClient.events[len(llmClient.events)-1]; got != "merge" {
 		t.Fatalf("last event = %q, want merge after verification", got)

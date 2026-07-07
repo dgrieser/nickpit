@@ -416,6 +416,25 @@ Reasoning calls are capped with `--max-reasoning-seconds` or `max_reasoning_seco
 
 Reviews run a context agent first, then six specialist reviewer lanes in parallel: Code Quality, Security, Architecture, Performance, Testing, and Best Practices. Each lane verifies and de-duplicates its reviewer's findings as soon as that reviewer finishes, so only clean findings reach the merge agent. Concurrent LLM agent loops — reviewers, verifiers, dedupe, merge, finalize, verdict, summarize — are capped globally with `--concurrency` (default `10`, `0` = unlimited). Tool-call limits apply independently to each context, reviewer, and verifier agent. JSON output includes `total_tool_calls` at the root plus an `agent_runs` summary with each agent's token usage, tool usage, duplicate tool calls, and configured tool-call limits.
 
+Token accounting in the JSON output works as follows:
+- `tokens_used` at root is the grand total for the whole run (including retried calls)
+- `verify_tokens_used` is a breakdown of tokens used by the verifier agents
+- `finalize_tokens_used` is a breakdown of tokens used by the finalizer agents
+- `verdict_tokens_used` is a breakdown of tokens used by the verdict agent
+- `summarize_tokens_used` is a breakdown of tokens used by the summarizer agent
+- `agent_runs` entries each carry their own `tokens_used` breakdown per `role`:
+  - `context` — the context-gathering agent that scouts the change before the reviewer lanes
+  - `review` — a reviewer lane's whole session: initial pass, all nudge rounds, and reasoning-extraction
+  - `verify` — a **per-finding** verification agent
+  - `dedupe` — a **per-reviewer** de-duplication agent
+  - `merge` — the cross-lane merge agent, one entry **per merge cluster**
+  - `finalize` — the finalizer that fixes finding wording, priority, and confidence
+  - `verdict` — the verdict agent that sets the top-level `overall_*` fields
+  - `summarize` — the review summarizer
+
+The root `tokens_used` is already the sum of everything, so **do not sum any of the breakdowns**.
+
+
 ## Workflows
 
 The review pipeline is driven by a portable workflow spec. The spec is the single source of truth for execution — there is no auto-fusion or hidden execution-shape decisions in code. By default `nickpit git`/`github`/`gitlab` run the built-in workflow (collect context → six reviewer lanes in parallel, each running review → verify → dedupe for its vector → then a `pipeline:` tail that streams merge → finalize → verdict → summarize). You can supply your own spec or run a single step instead, on any of those commands:

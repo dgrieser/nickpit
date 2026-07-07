@@ -119,6 +119,12 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		state = newAgentLoopState()
 	}
 	var syntheticFollowup *llm.Message
+	recordTokens := func(usage model.TokenUsage) {
+		result.tokensUsed = addTokenUsage(result.tokensUsed, usage)
+	}
+	recordInvalidResponseTokens := func(invalidResp *llm.InvalidResponseError) {
+		recordTokens(invalidResponseTokens(invalidResp))
+	}
 
 	for {
 		state.callNum++
@@ -161,6 +167,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 						return result, err
 					}
 					if queued {
+						recordInvalidResponseTokens(invalidResp)
 						continue
 					}
 					e.logf(loopCtx, "Code location repair needed retry but retry budget is exhausted; using partial parsed response: missing=%v", retryInvalid.MissingFields)
@@ -194,16 +201,19 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				}
 				messages = append(messages, llm.Message{Role: "user", Content: feedback})
 				syntheticFollowup = nil
+				recordInvalidResponseTokens(invalidResp)
 				continue
 			}
 			if err != nil && invalidResp.PartialResponse != nil {
 				e.logf(loopCtx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
 				resp = invalidResp.PartialResponse
 			} else if err != nil {
+				recordInvalidResponseTokens(invalidResp)
 				return result, err
 			}
 		}
 
+		result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 		if !repairedFromPartial {
 			if retryInvalid := e.repairResponseOrRetry(loopCtx, req, resp); retryInvalid != nil {
 				queued, err := e.tryQueueCodeLocationRetry(loopCtx, req, state, retryInvalid, &messages, &syntheticFollowup, llmReq, true)
@@ -221,7 +231,6 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			result.reasoningEffort = resp.ReasoningEffort
 			llmReq.ReasoningEffort = resp.ReasoningEffort
 		}
-		result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 		result.contentMessages = appendResponseContent(result.contentMessages, resp)
 		result.resp = resp
 		if req.ValidateResponse != nil {
@@ -291,11 +300,12 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 			if strings.TrimSpace(resp.RawResponse) != "" {
 				finalMessages = append(finalMessages, llm.Message{Role: "assistant", Content: resp.RawResponse})
 			}
-			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, finalMessages, state)
+			// reviewWithoutTools accounts every attempt's tokens via recordTokens,
+			// so no manual aggregation of resp.TokensUsed is needed here.
+			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, finalMessages, state, recordTokens)
 			if err != nil {
 				return result, err
 			}
-			result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 			result.contentMessages = appendResponseContent(result.contentMessages, resp)
 			result.resp = resp
 			break
@@ -314,11 +324,12 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		state.toolCalls += pendingToolCalls
 		if req.MaxDuplicateToolCalls > 0 && state.duplicateToolCalls >= req.MaxDuplicateToolCalls {
 			e.logf(loopCtx, "Duplicate tool call limit reached, making final call without tools: limit=%d duplicates=%d", req.MaxDuplicateToolCalls, state.duplicateToolCalls)
-			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, messages, state)
+			// reviewWithoutTools accounts every attempt's tokens via recordTokens,
+			// so no manual aggregation of resp.TokensUsed is needed here.
+			resp, err = e.agentLoopReviewWithoutTools(loopCtx, llmReq, req, messages, state, recordTokens)
 			if err != nil {
 				return result, err
 			}
-			result.tokensUsed = addTokenUsage(result.tokensUsed, resp.TokensUsed)
 			result.contentMessages = appendResponseContent(result.contentMessages, resp)
 			result.resp = resp
 			break
@@ -435,13 +446,44 @@ func (e *Engine) queueCodeLocationRetry(ctx context.Context, req agentLoopReques
 	return nil
 }
 
-func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, req agentLoopRequest, messages []llm.Message, state *agentLoopState) (*llm.ReviewResponse, error) {
+func (e *Engine) agentLoopReviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, req agentLoopRequest, messages []llm.Message, state *agentLoopState, recordTokens func(model.TokenUsage)) (*llm.ReviewResponse, error) {
 	noToolsReq := *llmReq
 	noToolsReq.Tools = nil
 	noToolsReq.ParallelToolCalls = false
 	// reviewWithoutTools computes the no-tools transcript itself, preferring
 	// req.NoToolsMessages when set (which is always the case for loop agents).
-	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.DisableSuggestions, req.MaxOutputRetries, req.Section, req, state)
+	return e.reviewWithoutTools(ctx, &noToolsReq, req.AgentKind, req.NoToolsSystem, messages, req.NoToolsSchemaSnippet, req.NoToolsStyleGuideToolchainSnippet, req.DisableSuggestions, req.MaxOutputRetries, req.Section, req, state, recordTokens)
+}
+
+// invalidResponseTokens returns the token usage carried by an invalid-response
+// error, preferring the error's own accounting and falling back to any partial
+// response it salvaged.
+func invalidResponseTokens(invalidResp *llm.InvalidResponseError) model.TokenUsage {
+	if invalidResp == nil {
+		return model.TokenUsage{}
+	}
+	usage := invalidResp.TokensUsed
+	if usage == (model.TokenUsage{}) && invalidResp.PartialResponse != nil {
+		usage = invalidResp.PartialResponse.TokensUsed
+	}
+	return usage
+}
+
+// reviewCallTokens extracts the tokens spent by a single review call from its
+// (resp, err) outcome, so every attempt can be accounted regardless of whether
+// it succeeded, returned a partial/invalid response, or failed outright.
+func reviewCallTokens(resp *llm.ReviewResponse, err error) model.TokenUsage {
+	if err != nil {
+		var invalidResp *llm.InvalidResponseError
+		if errors.As(err, &invalidResp) {
+			return invalidResponseTokens(invalidResp)
+		}
+		return model.TokenUsage{}
+	}
+	if resp != nil {
+		return resp.TokensUsed
+	}
+	return model.TokenUsage{}
 }
 
 func (e *Engine) logJSONRetry(ctx context.Context, req agentLoopRequest, attempt int, invalidResp *llm.InvalidResponseError) {

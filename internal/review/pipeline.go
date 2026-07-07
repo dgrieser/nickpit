@@ -468,7 +468,9 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	allRuns, usage, toolCalls, reasoning := st.aggregateTelemetry()
 	res.AgentRuns = allRuns
 	res.Warnings = appendAgentRunWarnings(st.warnings, allRuns, st.contextErr)
-	res.TokensUsed = usage
+	// Verifier calls are tracked as phase telemetry rather than AgentRuns, but
+	// they still count toward the review's total model spend.
+	res.TokensUsed = addTokenUsage(usage, st.verifyUsage)
 	res.VerifyTokensUsed = st.verifyUsage
 	res.FinalizeTokensUsed = st.finalizeUsage
 	res.VerdictTokensUsed = st.verdictUsage

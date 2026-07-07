@@ -260,7 +260,7 @@ func (e *Engine) applyResultMetadata(result *model.ReviewResult, req model.Revie
 	}
 }
 
-func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, disableSuggestions bool, maxOutputRetries int, sec *logging.ReasoningSection, loopReq agentLoopRequest, state *agentLoopState) (*llm.ReviewResponse, error) {
+func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewRequest, agentRole string, systemTemplate string, messages []llm.Message, systemSnippet string, styleGuideToolchainSnippet string, disableSuggestions bool, maxOutputRetries int, sec *logging.ReasoningSection, loopReq agentLoopRequest, state *agentLoopState, recordTokens func(model.TokenUsage)) (*llm.ReviewResponse, error) {
 	// When the loop request already knows how to build the no-tools transcript,
 	// use it. Review/context agents carry an already-RENDERED system prompt in
 	// systemTemplate; re-parsing it as a Go template breaks on prompts that embed
@@ -282,6 +282,9 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	exampleSnippet := exampleSnippetFor(llmReq.SchemaKind, disableSuggestions)
 	for attempt := 0; ; attempt++ {
 		resp, err := e.loggedReview(ctx, llmReq, sec)
+		if recordTokens != nil {
+			recordTokens(reviewCallTokens(resp, err))
+		}
 		if err == nil {
 			if retryInvalid := e.repairResponseOrRetry(ctx, loopReq, resp); retryInvalid != nil {
 				retryMessages := append([]llm.Message(nil), llmReq.Messages...)
