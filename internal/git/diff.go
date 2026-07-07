@@ -59,8 +59,8 @@ func (s *LocalSource) ResolveContext(ctx context.Context, req model.ReviewReques
 }
 
 func (s *LocalSource) resolveDefaults(ctx context.Context, req model.ReviewRequest) (model.ReviewRequest, error) {
-	if req.Submode == "uncommitted" {
-		req.HeadRef = "uncommitted"
+	if req.Submode == "uncommitted" || req.Submode == "staged" || req.Submode == "unstaged" {
+		req.HeadRef = req.Submode
 		if req.BaseRef == "" {
 			if branch, err := s.currentBranch(ctx); err == nil && branch != "" {
 				req.BaseRef = branch
@@ -122,6 +122,10 @@ func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewReques
 	switch req.Submode {
 	case "uncommitted":
 		return s.git.Run(ctx, "diff", "HEAD")
+	case "staged":
+		return s.git.Run(ctx, "diff", "--cached")
+	case "unstaged":
+		return s.git.Run(ctx, "diff")
 	case "commits":
 		if req.BaseRef == "" || req.HeadRef == "" {
 			return "", fmt.Errorf("git: commits mode requires --from and --to")
@@ -182,6 +186,10 @@ func localTitle(req model.ReviewRequest) string {
 	switch req.Submode {
 	case "uncommitted":
 		return "Local uncommitted changes"
+	case "staged":
+		return "Local staged changes"
+	case "unstaged":
+		return "Local unstaged changes"
 	case "commits":
 		return fmt.Sprintf("Local review for %s..%s", req.BaseRef, req.HeadRef)
 	default:

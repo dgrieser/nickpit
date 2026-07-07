@@ -81,6 +81,116 @@ func stringJoin(parts []string, sep string) string {
 	return strings.Join(parts, sep)
 }
 
+func TestLocalSourceDiffForLocalChangeSubmodes(t *testing.T) {
+	diff := string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff")))
+	tests := []struct {
+		name    string
+		submode string
+		args    []string
+	}{
+		{
+			name:    "uncommitted",
+			submode: "uncommitted",
+			args:    []string{"diff", "HEAD"},
+		},
+		{
+			name:    "staged",
+			submode: "staged",
+			args:    []string{"diff", "--cached"},
+		},
+		{
+			name:    "unstaged",
+			submode: "unstaged",
+			args:    []string{"diff"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &stubGitRunner{
+				outputs: map[string]string{
+					joinArgs(tt.args): diff,
+				},
+			}
+			source := &LocalSource{
+				repoRoot: t.TempDir(),
+				git:      runner,
+			}
+
+			got, err := source.diffForRequest(context.Background(), model.ReviewRequest{Submode: tt.submode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != diff {
+				t.Fatalf("diff output = %.80q", got)
+			}
+			if len(runner.calls) != 1 {
+				t.Fatalf("calls = %d, want 1", len(runner.calls))
+			}
+			if gotArgs := joinArgs(runner.calls[0]); gotArgs != joinArgs(tt.args) {
+				t.Fatalf("diff args = %#v, want %#v", runner.calls[0], tt.args)
+			}
+		})
+	}
+}
+
+func TestLocalSourceResolveContextDefaultsLocalChangeRefs(t *testing.T) {
+	diff := string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff")))
+	tests := []struct {
+		name    string
+		submode string
+		args    []string
+	}{
+		{
+			name:    "uncommitted",
+			submode: "uncommitted",
+			args:    []string{"diff", "HEAD"},
+		},
+		{
+			name:    "staged",
+			submode: "staged",
+			args:    []string{"diff", "--cached"},
+		},
+		{
+			name:    "unstaged",
+			submode: "unstaged",
+			args:    []string{"diff"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &stubGitRunner{
+				outputs: map[string]string{
+					joinArgs([]string{"symbolic-ref", "--short", "HEAD"}): "feature/local-modes\n",
+					joinArgs(tt.args): diff,
+				},
+			}
+			source := &LocalSource{
+				repoRoot: t.TempDir(),
+				git:      runner,
+			}
+
+			ctx, err := source.ResolveContext(context.Background(), model.ReviewRequest{
+				Mode:    model.ModeLocal,
+				Submode: tt.submode,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ctx.Repository.BaseRef != "feature/local-modes" {
+				t.Fatalf("base ref = %q", ctx.Repository.BaseRef)
+			}
+			if ctx.Repository.HeadRef != tt.submode {
+				t.Fatalf("head ref = %q", ctx.Repository.HeadRef)
+			}
+			if gotArgs := joinArgs(runner.calls[1]); gotArgs != joinArgs(tt.args) {
+				t.Fatalf("diff args = %#v, want %#v", runner.calls[1], tt.args)
+			}
+		})
+	}
+}
+
 func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T) {
 	runner := &stubGitRunner{
 		outputs: map[string]string{

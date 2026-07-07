@@ -290,8 +290,15 @@ nickpit git branch --base main --head feature/my-branch --workdir /path/to/dir
 # Review specific commit range in current directory
 nickpit git commits --from HEAD~3 --to HEAD
 
-# Review uncommitted changes in current directory
+# Review staged + unstaged tracked changes in current directory
+# Plain untracked files are excluded until staged with git add.
 nickpit git uncommitted
+
+# Review staged changes only
+nickpit git staged
+
+# Review unstaged tracked changes only
+nickpit git unstaged
 
 # Review PR in GitHub
 nickpit github pr --repo owner/repo --id 123
