@@ -695,7 +695,7 @@ func sharedSuggestionCodeLine(a, b string) bool {
 
 func suggestionCodeLines(body string) map[string]struct{} {
 	out := map[string]struct{}{}
-	for _, raw := range strings.Split(body, "\n") {
+	for raw := range strings.SplitSeq(body, "\n") {
 		line := normalizeSuggestionCodeLine(raw)
 		if !suggestionLineLooksLikeCode(line) {
 			continue
@@ -783,7 +783,7 @@ func suggestionTokenSimilarity(a, b string) float64 {
 func suggestionTokenSet(body string) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, token := range strings.FieldsFunc(strings.ToLower(body), func(r rune) bool {
-		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_')
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_'
 	}) {
 		if len(token) < 2 {
 			continue
