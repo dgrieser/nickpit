@@ -502,6 +502,8 @@ func (v *trackedFloatValue) Type() string {
 func (a *app) newGitCmd() *cobra.Command {
 	local := &cobra.Command{Use: "git", Short: "Review local git changes"}
 	local.AddCommand(a.newLocalReviewCmd("uncommitted"))
+	local.AddCommand(a.newLocalReviewCmd("staged"))
+	local.AddCommand(a.newLocalReviewCmd("unstaged"))
 	local.AddCommand(a.newLocalReviewCmd("commits"))
 	local.AddCommand(a.newLocalReviewCmd("branch"))
 	return local
@@ -511,7 +513,7 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 	var from, to, base, head string
 	cmd := &cobra.Command{
 		Use:   submode,
-		Short: "Run a local review",
+		Short: localReviewShort(submode),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			repoRoot, err := os.Getwd()
 			if err != nil {
@@ -561,6 +563,19 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 		cmd.Flags().StringVar(&head, "head", "HEAD", "Head branch, e.g. the source branch; usually the branch to review")
 	}
 	return cmd
+}
+
+func localReviewShort(submode string) string {
+	switch submode {
+	case "uncommitted":
+		return "Review staged and unstaged tracked changes against HEAD; untracked files excluded"
+	case "staged":
+		return "Review staged changes"
+	case "unstaged":
+		return "Review unstaged tracked changes"
+	default:
+		return "Run a local review"
+	}
 }
 
 func (a *app) newGitHubCmd() *cobra.Command {

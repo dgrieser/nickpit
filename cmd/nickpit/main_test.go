@@ -574,6 +574,40 @@ func TestRootCmdHasCheckModel(t *testing.T) {
 	}
 }
 
+func TestGitLocalChangeCommandsPresent(t *testing.T) {
+	cmd := newRootCmd()
+	tests := []struct {
+		args      []string
+		wantShort string
+	}{
+		{
+			args:      []string{"git", "uncommitted"},
+			wantShort: "Review staged and unstaged tracked changes against HEAD; untracked files excluded",
+		},
+		{
+			args:      []string{"git", "staged"},
+			wantShort: "Review staged changes",
+		},
+		{
+			args:      []string{"git", "unstaged"},
+			wantShort: "Review unstaged tracked changes",
+		},
+	}
+
+	for _, tt := range tests {
+		found, _, err := cmd.Find(tt.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found == nil || found.Use != tt.args[len(tt.args)-1] {
+			t.Fatalf("%s command missing: %#v", strings.Join(tt.args, " "), found)
+		}
+		if found.Short != tt.wantShort {
+			t.Fatalf("%s short = %q, want %q", strings.Join(tt.args, " "), found.Short, tt.wantShort)
+		}
+	}
+}
+
 func TestPRAndMRCommandsHaveURLFlag(t *testing.T) {
 	cmd := newRootCmd()
 	for _, args := range [][]string{{"github", "pr"}, {"gitlab", "mr"}} {
