@@ -388,18 +388,19 @@ func synthesizedFinalization(finding model.Finding) *model.FindingFinalization {
 }
 
 // normalizeFinalizedSuggestions lets the finalizer polish suggestion text in
-// finalization.suggestions while preserving the input suggestion set and line
-// ranges. Top-level suggestions stay as reviewer-provenance input. If the
-// finalizer omits or changes the suggestion count, input suggestions fill the
-// gaps and extras are discarded.
+// finalization.suggestions while preserving the distinct input suggestion set
+// and line ranges. Top-level suggestions stay as reviewer-provenance input. If
+// the finalizer omits or changes suggestions, input suggestions fill the gaps
+// and extras are discarded.
 func normalizeFinalizedSuggestions(out, in []model.Finding) {
 	for i := range out {
 		src := findInputMatch(out[i], in)
 		if src == nil {
 			continue
 		}
-		out[i].Suggestions = cloneSuggestions(src.Suggestions)
-		if len(src.Suggestions) == 0 {
+		keptSuggestionIndexes := distinctSuggestionIndexes(src.Suggestions)
+		out[i].Suggestions = cloneSuggestionsAt(src.Suggestions, keptSuggestionIndexes)
+		if len(keptSuggestionIndexes) == 0 {
 			if out[i].Finalization != nil {
 				out[i].Finalization.Suggestions = nil
 			}
@@ -409,11 +410,15 @@ func normalizeFinalizedSuggestions(out, in []model.Finding) {
 			out[i].Finalization = synthesizedFinalization(out[i])
 		}
 		candidates := out[i].Finalization.Suggestions
-		normalized := make([]model.Suggestion, len(src.Suggestions))
-		for j := range src.Suggestions {
-			normalized[j] = src.Suggestions[j]
-			if j < len(candidates) && strings.TrimSpace(candidates[j].Body) != "" {
-				normalized[j].Body = candidates[j].Body
+		normalized := make([]model.Suggestion, len(keptSuggestionIndexes))
+		for outIdx, srcIdx := range keptSuggestionIndexes {
+			normalized[outIdx] = src.Suggestions[srcIdx]
+			candidateIdx := srcIdx
+			if candidateIdx >= len(candidates) {
+				candidateIdx = outIdx
+			}
+			if candidateIdx < len(candidates) && strings.TrimSpace(candidates[candidateIdx].Body) != "" {
+				normalized[outIdx].Body = candidates[candidateIdx].Body
 			}
 		}
 		out[i].Finalization.Suggestions = normalized
@@ -603,7 +608,7 @@ func reviewFinalization(finding model.Finding) *model.FindingFinalization {
 		Body:            finding.Body,
 		Priority:        model.PriorityRank(finding.Priority),
 		ConfidenceScore: finding.ConfidenceScore,
-		Suggestions:     cloneSuggestions(finding.Suggestions),
+		Suggestions:     distinctSuggestions(finding.Suggestions),
 	}
 }
 
@@ -613,6 +618,178 @@ func cloneSuggestions(src []model.Suggestion) []model.Suggestion {
 	}
 	out := make([]model.Suggestion, len(src))
 	copy(out, src)
+	return out
+}
+
+func distinctSuggestions(src []model.Suggestion) []model.Suggestion {
+	return cloneSuggestionsAt(src, distinctSuggestionIndexes(src))
+}
+
+func cloneSuggestionsAt(src []model.Suggestion, indexes []int) []model.Suggestion {
+	if len(indexes) == 0 {
+		return nil
+	}
+	out := make([]model.Suggestion, 0, len(indexes))
+	for _, idx := range indexes {
+		if idx >= 0 && idx < len(src) {
+			out = append(out, src[idx])
+		}
+	}
+	return out
+}
+
+func distinctSuggestionIndexes(src []model.Suggestion) []int {
+	if len(src) == 0 {
+		return nil
+	}
+	indexes := make([]int, 0, len(src))
+	for i := range src {
+		duplicate := false
+		for _, keptIdx := range indexes {
+			if duplicateSuggestion(src[i], src[keptIdx]) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
+}
+
+func duplicateSuggestion(a, b model.Suggestion) bool {
+	aBody := normalizeSuggestionBody(a.Body)
+	bBody := normalizeSuggestionBody(b.Body)
+	if aBody == "" || bBody == "" {
+		return false
+	}
+	if !sameSuggestionAnchor(a, b) && !unanchoredSuggestion(a, b) {
+		return false
+	}
+	if aBody == bBody {
+		return true
+	}
+	if sharedSuggestionCodeLine(a.Body, b.Body) {
+		return true
+	}
+	return sameSuggestionAnchor(a, b) && suggestionTokenSimilarity(a.Body, b.Body) >= 0.75
+}
+
+func normalizeSuggestionBody(body string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(body))), " ")
+}
+
+func sharedSuggestionCodeLine(a, b string) bool {
+	aLines := suggestionCodeLines(a)
+	if len(aLines) == 0 {
+		return false
+	}
+	for line := range suggestionCodeLines(b) {
+		if _, ok := aLines[line]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func suggestionCodeLines(body string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, raw := range strings.Split(body, "\n") {
+		line := normalizeSuggestionCodeLine(raw)
+		if !suggestionLineLooksLikeCode(line) {
+			continue
+		}
+		out[line] = struct{}{}
+	}
+	return out
+}
+
+func normalizeSuggestionCodeLine(line string) string {
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "- ")
+	line = strings.TrimPrefix(line, "* ")
+	line = strings.TrimPrefix(line, "+ ")
+	line = strings.TrimSpace(line)
+	line = strings.Trim(line, "`")
+	line = strings.TrimSpace(line)
+	return strings.Join(strings.Fields(line), " ")
+}
+
+func suggestionLineLooksLikeCode(line string) bool {
+	if line == "" {
+		return false
+	}
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "from ") && strings.Contains(lower, " import ") {
+		return true
+	}
+	if strings.HasPrefix(lower, "import ") {
+		return true
+	}
+	if strings.ContainsAny(line, "{}[]=();") {
+		return true
+	}
+	return false
+}
+
+func sameSuggestionAnchor(a, b model.Suggestion) bool {
+	aLoc := suggestionLocation(a)
+	bLoc := suggestionLocation(b)
+	aPath := strings.TrimSpace(aLoc.FilePath)
+	bPath := strings.TrimSpace(bLoc.FilePath)
+	if aPath != "" || bPath != "" {
+		return aPath != "" && bPath != "" && sameCodeLocationAnchor(aLoc, bLoc)
+	}
+	return aLoc.LineRange != (model.LineRange{}) && aLoc.LineRange.SameAnchor(bLoc.LineRange)
+}
+
+func unanchoredSuggestion(a, b model.Suggestion) bool {
+	aLoc := suggestionLocation(a)
+	bLoc := suggestionLocation(b)
+	return strings.TrimSpace(aLoc.FilePath) == "" &&
+		strings.TrimSpace(bLoc.FilePath) == "" &&
+		aLoc.LineRange == (model.LineRange{}) &&
+		bLoc.LineRange == (model.LineRange{})
+}
+
+func suggestionLocation(s model.Suggestion) model.CodeLocation {
+	loc := s.CodeLocation
+	if loc.LineRange == (model.LineRange{}) {
+		loc.LineRange = s.LineRange
+	}
+	return loc
+}
+
+func suggestionTokenSimilarity(a, b string) float64 {
+	aTokens := suggestionTokenSet(a)
+	bTokens := suggestionTokenSet(b)
+	if len(aTokens) == 0 || len(bTokens) == 0 {
+		return 0
+	}
+	intersection := 0
+	for token := range aTokens {
+		if _, ok := bTokens[token]; ok {
+			intersection++
+		}
+	}
+	union := len(aTokens) + len(bTokens) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+func suggestionTokenSet(body string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, token := range strings.FieldsFunc(strings.ToLower(body), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_')
+	}) {
+		if len(token) < 2 {
+			continue
+		}
+		out[token] = struct{}{}
+	}
 	return out
 }
 

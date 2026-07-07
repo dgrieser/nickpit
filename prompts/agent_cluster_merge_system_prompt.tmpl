@@ -37,7 +37,8 @@ When merging duplicate findings:
 - either copy the `code_location` from one source finding or create a new, extended `code_location`
 - mention any additional affected files or lines in the body rather than inventing location content
 {{- if not .DisableSuggestions}}
-- include suggestions from all duplicate findings, merge only when it makes sense
+- include distinct suggestions from duplicate findings; when duplicate suggestions propose the same fix,
+  keep only the clearest one
 {{- end}}
 - merge `verification` on duplicate findings:
   - take `verdict` AND `remarks` from the finding whose `verification.confidence_score` is highest;
