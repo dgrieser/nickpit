@@ -69,7 +69,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 			t.Fatalf("finalize system prompt missing %s:\n%s", want, systemPrompt)
 		}
 	}
-	if !strings.Contains(systemPrompt, "# Go Style Guide") || strings.Contains(systemPrompt, "### Go Style Guide (go)") {
+	if !strings.Contains(systemPrompt, "# Go — Common Developer Guideline") || strings.Contains(systemPrompt, "### Go — Common Developer Guideline (go)") {
 		t.Fatalf("finalize system prompt missing styleguide content:\n%s", systemPrompt)
 	}
 	userPrompt := taskMessageContent(req)
@@ -204,7 +204,7 @@ func TestVerdictContextNotesInPrompt(t *testing.T) {
 	// The system prompt tasks the model to merge notes into overall_explanation.
 	if sys := withNotes.reqs[0].Messages[0].Content; !strings.Contains(sys, "notes") || !strings.Contains(sys, "priority_floor") || !strings.Contains(sys, "even if `finalization.priority` downgraded it") {
 		t.Fatalf("verdict system prompt does not mention notes:\n%s", sys)
-	} else if !strings.Contains(sys, "# Go Style Guide") || strings.Contains(sys, "### Go Style Guide (go)") {
+	} else if !strings.Contains(sys, "# Go — Common Developer Guideline") || strings.Contains(sys, "### Go — Common Developer Guideline (go)") {
 		t.Fatalf("verdict system prompt missing styleguide content:\n%s", sys)
 	}
 

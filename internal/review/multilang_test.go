@@ -348,7 +348,7 @@ func TestEngineAddsKubernetesStyleGuideForGoOperatorSignals(t *testing.T) {
 			},
 		},
 	})
-	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go Style Guide") {
+	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go — Common Developer Guideline") {
 		t.Fatalf("go style guide content = %.80q", content)
 	}
 	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
@@ -507,7 +507,7 @@ func TestStyleGuideDetectorAddsSQLFromEmbeddedQuery(t *testing.T) {
 			},
 		},
 	})
-	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go Style Guide") {
+	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go — Common Developer Guideline") {
 		t.Fatalf("go style guide content = %.80q", content)
 	}
 	if content := contentsByLanguage["sql"]; !strings.Contains(content, "# SQL Optimization Patterns") {
@@ -697,7 +697,7 @@ func styleGuideContentsFromSystem(system string) map[string]string {
 	titleLanguages := map[string]string{
 		"Bash Style Guide":          "shell",
 		"C# Style Guide":            "csharp",
-		"Go Style Guide":            "go",
+		"Go — Common Developer Guideline":            "go",
 		"Helm Style Guide":          "helm",
 		"HTML & CSS Style Guide":    "html",
 		"JavaScript Style Guide":    "javascript",

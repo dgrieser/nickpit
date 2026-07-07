@@ -38,7 +38,7 @@ func TestStyleGuidesForSelectsVersionSpecificBuiltin(t *testing.T) {
 	if !strings.Contains(all, "### Go 1.19 — Complete Developer Guideline") {
 		t.Fatalf("expected go 1.19 guide, got: %.120q", all)
 	}
-	if strings.Contains(all, "### Go Style Guide") {
+	if strings.Contains(all, "### Go — Common Developer Guideline") {
 		t.Fatalf("default go guide must not appear when 1.19 detected: %.120q", all)
 	}
 }
@@ -46,13 +46,13 @@ func TestStyleGuidesForSelectsVersionSpecificBuiltin(t *testing.T) {
 func TestStyleGuidesForFallsBackToDefaultBuiltin(t *testing.T) {
 	e := &Engine{}
 	// A non-matching version and no detected version both fall back to default.
-	for _, ctx := range []*model.ReviewContext{goReviewContext("1.20"), goReviewContext()} {
+	for _, ctx := range []*model.ReviewContext{goReviewContext("1.30"), goReviewContext()} {
 		guides, err := e.styleGuidesFor(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		all := styleGuideContents(guides)
-		if !strings.Contains(all, "### Go Style Guide") {
+		if !strings.Contains(all, "### Go — Common Developer Guideline") {
 			t.Fatalf("expected default go guide, got: %.120q", all)
 		}
 		if strings.Contains(all, "### Go 1.19 — Complete Developer Guideline") {

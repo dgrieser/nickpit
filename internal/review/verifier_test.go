@@ -577,7 +577,7 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 	if !strings.Contains(system, "Styleguide contradiction gate") || !strings.Contains(system, "Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide") {
 		t.Fatalf("verify system prompt missing styleguide contradiction gate: %q", system)
 	}
-	if !strings.Contains(system, "# Go Style Guide") || strings.Contains(system, "### Go Style Guide (go)") {
+	if !strings.Contains(system, "# Go — Common Developer Guideline") || strings.Contains(system, "### Go — Common Developer Guideline (go)") {
 		t.Fatalf("verify system prompt missing Go styleguide content: %q", system)
 	}
 }
