@@ -41,6 +41,13 @@ style_guides:
     default: styleguides/go.md
     versions:
       "1.19": styleguides/go-1.19.md
+      "1.20": styleguides/go-1.20.md
+      "1.21": styleguides/go-1.21.md
+      "1.22": styleguides/go-1.22.md
+      "1.23": styleguides/go-1.23.md
+      "1.24": styleguides/go-1.24.md
+      "1.25": styleguides/go-1.25.md
+      "1.26": styleguides/go-1.26.md
   python: styleguides/python.md
   javascript: styleguides/javascript.md
   typescript: styleguides/typescript.md
