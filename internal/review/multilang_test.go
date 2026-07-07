@@ -552,7 +552,7 @@ func TestStyleGuideDetectorAddsBashFromExtensionlessScript(t *testing.T) {
 			},
 		},
 	})
-	if content := contentsByLanguage["shell"]; !strings.Contains(content, "# Bash Style Guide") {
+	if content := contentsByLanguage["shell"]; !strings.Contains(content, "# Bash Production Coding Guidelines") {
 		t.Fatalf("bash style guide content = %.80q", content)
 	}
 }
@@ -573,7 +573,7 @@ func TestStyleGuideDetectorAddsBashFromWorkflowRunStep(t *testing.T) {
 			},
 		},
 	})
-	if content := contentsByLanguage["shell"]; !strings.Contains(content, "# Bash Style Guide") {
+	if content := contentsByLanguage["shell"]; !strings.Contains(content, "# Bash Production Coding Guidelines") {
 		t.Fatalf("bash style guide content = %.80q", content)
 	}
 }
@@ -695,16 +695,16 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 
 func styleGuideContentsFromSystem(system string) map[string]string {
 	titleLanguages := map[string]string{
-		"Bash Style Guide":                "shell",
-		"C# Style Guide":                  "csharp",
-		"Go — Common Developer Guideline": "go",
-		"Helm Style Guide":                "helm",
-		"HTML & CSS Style Guide":          "html",
-		"JavaScript Style Guide":          "javascript",
-		"Kubernetes Style Guide":          "kubernetes",
-		"Python Style Guide":              "python",
-		"SQL Optimization Patterns":       "sql",
-		"TypeScript Style Guide":          "typescript",
+		"Bash Production Coding Guidelines": "shell",
+		"C# Style Guide":                    "csharp",
+		"Go — Common Developer Guideline":   "go",
+		"Helm Style Guide":                  "helm",
+		"HTML & CSS Style Guide":            "html",
+		"JavaScript Style Guide":            "javascript",
+		"Kubernetes Style Guide":            "kubernetes",
+		"Python Style Guide":                "python",
+		"SQL Optimization Patterns":         "sql",
+		"TypeScript Style Guide":            "typescript",
 	}
 	type guideStart struct {
 		language string
