@@ -70,9 +70,10 @@ NickPit watches the reasoning stream with a **three-layer loop detector**:
 
 On detection the stream aborts, retries multiple times with lower reasoning effort, down to the lowest setting, and retries with special instructions to stop going in circles.  
 
-No configuration needed. Your token bill will thank you. :moneybag:
+No configuration needed.   
+Your token bill will thank you. 🤑
 
-### 🗒️ The whole pipeline is a YAML file
+### 🗒️ The whole pipeline is a `YAML` file
 
 The review workflow is a portable spec — the single source of truth for execution, with zero hidden magic in code.  
 Rewire it:
@@ -117,7 +118,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 - **Local review modes**: uncommitted changes, commit ranges, branch diffs.
 - **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id` or just the URL.
 - **Diff filters**: regex include/exclude by path *and* by file content.
-- **Styleguides**: built-in per-language guides selected from the diff, plus your own from local files or URLs.
+- **Styleguides**: built-in per-language guides automatically injected based on the diff, plus your own from local files or URLs.
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
 - **Terminal and JSON output**, `--show-progress` live progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
