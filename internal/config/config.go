@@ -46,51 +46,51 @@ type Config struct {
 }
 
 type Profile struct {
-	Model                              string              `yaml:"model"`
-	Small                              SmallModelConfig    `yaml:"small"`
-	BaseURL                            string              `yaml:"base_url"`
-	APIKey                             string              `yaml:"api_key"`
-	SupportedModels                    []ModelCapabilities `yaml:"supported_models"`
-	MaxTokens                          *int                `yaml:"max_tokens"`
-	Temperature                        *float64            `yaml:"temperature"`
-	TopP                               *float64            `yaml:"top_p"`
-	TopK                               *int                `yaml:"top_k"`
-	PresencePenalty                    *float64            `yaml:"presence_penalty"`
-	ExtraBody                          map[string]any      `yaml:"extra_body"`
-	DisableJSONResponseFormat          bool                `yaml:"disable_json_response_format"`
-	IncludePaths                       []string            `yaml:"include_paths"`
-	ExcludePaths                       []string            `yaml:"exclude_paths"`
-	IncludeContent                     []string            `yaml:"include_content"`
-	ExcludeContent                     []string            `yaml:"exclude_content"`
-	StyleGuides                        []string            `yaml:"styleguides"`
-	DisableStyleGuides                 []string            `yaml:"disable_styleguides"`
-	DiffFormat                         model.DiffFormat    `yaml:"diff_format"`
-	MaxContextTokens                   int                 `yaml:"max_context_tokens"`
-	MaxToolCalls                       int                 `yaml:"max_tool_calls"`
-	MaxDuplicateToolCalls              int                 `yaml:"max_duplicate_tool_calls"`
-	MaxOutputRetries                   int                 `yaml:"max_output_retries"`
-	MaxReasoningSeconds                int                 `yaml:"max_reasoning_seconds"`
-	MaxRateLimitDelaySeconds           int                 `yaml:"max_rate_limit_delay_seconds"`
-	NudgeCount                         int                 `yaml:"nudge_count"`
-	MaxFindings                        int                 `yaml:"max_findings"`
-	DisablePatchSummary                bool                `yaml:"disable_patch_summary"`
-	DisableSuggestions                 bool                `yaml:"disable_suggestions"`
-	DisableWorkflowTimeBudget          bool                `yaml:"disable_workflow_time_budget"`
-	ReasoningEffort                    string              `yaml:"reasoning_effort"`
-	Workdir                            string              `yaml:"workdir"`
-	GitHubToken                        string              `yaml:"github_token"`
-	GitLabToken                        string              `yaml:"gitlab_token"`
-	GitLabBaseURL                      string              `yaml:"gitlab_base_url"`
-	AssetBaseURL                       string              `yaml:"asset_base_url"`
-	MaxContextTokensConfigured         bool                `yaml:"-"`
-	APIKeyConfigured                   bool                `yaml:"-"`
-	MaxToolCallsConfigured             bool                `yaml:"-"`
-	MaxDuplicateToolCallsConfigured    bool                `yaml:"-"`
-	MaxOutputRetriesConfigured         bool                `yaml:"-"`
-	MaxReasoningSecondsConfigured      bool                `yaml:"-"`
-	MaxRateLimitDelaySecondsConfigured bool                `yaml:"-"`
-	NudgeCountConfigured               bool                `yaml:"-"`
-	MaxFindingsConfigured              bool                `yaml:"-"`
+	Model                              string                 `yaml:"model"`
+	Small                              SmallModelConfig       `yaml:"small"`
+	BaseURL                            string                 `yaml:"base_url"`
+	APIKey                             string                 `yaml:"api_key"`
+	SupportedModels                    []ModelCapabilities    `yaml:"supported_models"`
+	MaxTokens                          *int                   `yaml:"max_tokens"`
+	Temperature                        *float64               `yaml:"temperature"`
+	TopP                               *float64               `yaml:"top_p"`
+	TopK                               *int                   `yaml:"top_k"`
+	PresencePenalty                    *float64               `yaml:"presence_penalty"`
+	ExtraBody                          map[string]any         `yaml:"extra_body"`
+	DisableJSONResponseFormat          bool                   `yaml:"disable_json_response_format"`
+	IncludePaths                       []string               `yaml:"include_paths"`
+	ExcludePaths                       []string               `yaml:"exclude_paths"`
+	IncludeContent                     []string               `yaml:"include_content"`
+	ExcludeContent                     []string               `yaml:"exclude_content"`
+	StyleGuides                        []model.StyleGuideSpec `yaml:"styleguides"`
+	DisableStyleGuides                 []string               `yaml:"disable_styleguides"`
+	DiffFormat                         model.DiffFormat       `yaml:"diff_format"`
+	MaxContextTokens                   int                    `yaml:"max_context_tokens"`
+	MaxToolCalls                       int                    `yaml:"max_tool_calls"`
+	MaxDuplicateToolCalls              int                    `yaml:"max_duplicate_tool_calls"`
+	MaxOutputRetries                   int                    `yaml:"max_output_retries"`
+	MaxReasoningSeconds                int                    `yaml:"max_reasoning_seconds"`
+	MaxRateLimitDelaySeconds           int                    `yaml:"max_rate_limit_delay_seconds"`
+	NudgeCount                         int                    `yaml:"nudge_count"`
+	MaxFindings                        int                    `yaml:"max_findings"`
+	DisablePatchSummary                bool                   `yaml:"disable_patch_summary"`
+	DisableSuggestions                 bool                   `yaml:"disable_suggestions"`
+	DisableWorkflowTimeBudget          bool                   `yaml:"disable_workflow_time_budget"`
+	ReasoningEffort                    string                 `yaml:"reasoning_effort"`
+	Workdir                            string                 `yaml:"workdir"`
+	GitHubToken                        string                 `yaml:"github_token"`
+	GitLabToken                        string                 `yaml:"gitlab_token"`
+	GitLabBaseURL                      string                 `yaml:"gitlab_base_url"`
+	AssetBaseURL                       string                 `yaml:"asset_base_url"`
+	MaxContextTokensConfigured         bool                   `yaml:"-"`
+	APIKeyConfigured                   bool                   `yaml:"-"`
+	MaxToolCallsConfigured             bool                   `yaml:"-"`
+	MaxDuplicateToolCallsConfigured    bool                   `yaml:"-"`
+	MaxOutputRetriesConfigured         bool                   `yaml:"-"`
+	MaxReasoningSecondsConfigured      bool                   `yaml:"-"`
+	MaxRateLimitDelaySecondsConfigured bool                   `yaml:"-"`
+	NudgeCountConfigured               bool                   `yaml:"-"`
+	MaxFindingsConfigured              bool                   `yaml:"-"`
 }
 
 type SmallModelConfig struct {
@@ -668,7 +668,12 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 	}
 	// CLI styleguides and disabled languages append to the profile's lists
 	// instead of replacing them; duplicates are dropped during normalization.
-	profile.StyleGuides = append(slices.Clone(profile.StyleGuides), overrides.StyleGuides...)
+	// CLI --styleguide values are always ungated (applied to every agent);
+	// version gating is expressed only in the config file.
+	profile.StyleGuides = slices.Clone(profile.StyleGuides)
+	for _, source := range overrides.StyleGuides {
+		profile.StyleGuides = append(profile.StyleGuides, model.StyleGuideSpec{Source: source})
+	}
 	profile.DisableStyleGuides = append(slices.Clone(profile.DisableStyleGuides), overrides.DisableStyleGuides...)
 	if overrides.DiffFormat != "" {
 		profile.DiffFormat = overrides.DiffFormat
@@ -879,7 +884,7 @@ func normalizeDisabledStyleGuideLanguages(languages []string) ([]string, error) 
 			sawAll = true
 			continue
 		}
-		if _, ok := mappings.StyleGuideFile(language); !ok {
+		if !mappings.HasStyleGuide(language) {
 			return nil, fmt.Errorf("config: disable_styleguides[%d] unknown language %q; available: all, %s", i, value, strings.Join(mappings.StyleGuideOrder(), ", "))
 		}
 		if _, ok := seen[language]; ok {
@@ -897,32 +902,44 @@ func normalizeDisabledStyleGuideLanguages(languages []string) ([]string, error) 
 	return normalized, nil
 }
 
-// normalizeStyleGuideSpecs trims specs, drops empties, dedupes exact
-// duplicates (first occurrence wins), and shape-validates URL specs. Whether a
-// file exists or a URL is fetchable is checked at resolution time, not here:
-// config load also runs for commands that never fetch styleguides.
-func normalizeStyleGuideSpecs(specs []string) ([]string, error) {
+// normalizeStyleGuideSpecs trims spec fields, drops empties, dedupes exact
+// duplicate tuples (first occurrence wins), shape-validates URL sources, and
+// validates gating metadata: a version gate requires a language, and a gated
+// language must have a built-in styleguide (that is what makes it a detectable,
+// change-gated language). Whether a file exists or a URL is fetchable is
+// checked at resolution time, not here: config load also runs for commands
+// that never fetch styleguides.
+func normalizeStyleGuideSpecs(specs []model.StyleGuideSpec) ([]model.StyleGuideSpec, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
-	normalized := make([]string, 0, len(specs))
+	normalized := make([]model.StyleGuideSpec, 0, len(specs))
 	seen := make(map[string]struct{}, len(specs))
 	for i, spec := range specs {
-		spec = strings.TrimSpace(spec)
-		if spec == "" {
+		spec.Source = strings.TrimSpace(spec.Source)
+		spec.Language = strings.ToLower(strings.TrimSpace(spec.Language))
+		spec.Version = strings.TrimSpace(spec.Version)
+		if spec.Source == "" {
 			continue
 		}
-		if _, ok := seen[spec]; ok {
+		if spec.Version != "" && spec.Language == "" {
+			return nil, fmt.Errorf("config: styleguides[%d] has version %q but no language", i, spec.Version)
+		}
+		if spec.Language != "" && !mappings.HasStyleGuide(spec.Language) {
+			return nil, fmt.Errorf("config: styleguides[%d] unknown language %q; available: %s", i, spec.Language, strings.Join(mappings.StyleGuideOrder(), ", "))
+		}
+		key := spec.Source + "\x00" + spec.Language + "\x00" + spec.Version
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[spec] = struct{}{}
-		if styleGuideSpecIsURL(spec) {
-			parsed, err := url.Parse(spec)
+		seen[key] = struct{}{}
+		if styleGuideSpecIsURL(spec.Source) {
+			parsed, err := url.Parse(spec.Source)
 			if err != nil {
-				return nil, fmt.Errorf("config: styleguides[%d] invalid URL %q: %w", i, spec, err)
+				return nil, fmt.Errorf("config: styleguides[%d] invalid URL %q: %w", i, spec.Source, err)
 			}
 			if parsed.Host == "" {
-				return nil, fmt.Errorf("config: styleguides[%d] invalid URL %q: missing host", i, spec)
+				return nil, fmt.Errorf("config: styleguides[%d] invalid URL %q: missing host", i, spec.Source)
 			}
 		}
 		normalized = append(normalized, spec)

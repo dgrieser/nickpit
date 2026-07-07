@@ -14,6 +14,15 @@ func intPtr(v int) *int {
 	return &v
 }
 
+// sgSources joins the Source of each styleguide spec for concise assertions.
+func sgSources(specs []model.StyleGuideSpec) string {
+	sources := make([]string, len(specs))
+	for i, spec := range specs {
+		sources[i] = spec.Source
+	}
+	return strings.Join(sources, ",")
+}
+
 func TestDefaultConfigUsesProviderDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	profile := cfg.Profiles[DefaultProfileName]
@@ -698,7 +707,7 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(profile.StyleGuides, ",") != "a.md,https://example.com/rules.md" {
+	if sgSources(profile.StyleGuides) != "a.md,https://example.com/rules.md" {
 		t.Fatalf("styleguides = %#v", profile.StyleGuides)
 	}
 
@@ -708,7 +717,7 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(profile.StyleGuides, ",") != "a.md,https://example.com/rules.md,b.md" {
+	if sgSources(profile.StyleGuides) != "a.md,https://example.com/rules.md,b.md" {
 		t.Fatalf("appended styleguides = %#v", profile.StyleGuides)
 	}
 }
@@ -732,17 +741,84 @@ profiles:
 	}
 }
 
+func TestLoadConfigParsesStructuredStyleGuides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    styleguides:
+      - team.md
+      - source: go-1.19.md
+        language: go
+        version: "1.19"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.StyleGuideSpec{
+		{Source: "team.md"},
+		{Source: "go-1.19.md", Language: "go", Version: "1.19"},
+	}
+	if !slices.Equal(profile.StyleGuides, want) {
+		t.Fatalf("styleguides = %#v, want %#v", profile.StyleGuides, want)
+	}
+}
+
+func TestLoadConfigRejectsStyleGuideVersionWithoutLanguage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    styleguides:
+      - source: x.md
+        version: "1.19"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(path, Overrides{}); err == nil || !strings.Contains(err.Error(), "no language") {
+		t.Fatalf("error = %v, want version-without-language error", err)
+	}
+}
+
+func TestLoadConfigRejectsUnknownStyleGuideLanguage(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    styleguides:
+      - source: x.md
+        language: klingon
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Load(path, Overrides{}); err == nil || !strings.Contains(err.Error(), "unknown language") {
+		t.Fatalf("error = %v, want unknown-language error", err)
+	}
+}
+
 func TestMergeProfilesReplacesStyleGuides(t *testing.T) {
-	base := Profile{StyleGuides: []string{"base.md"}, DisableStyleGuides: []string{"go"}}
-	merged := mergeProfiles(base, Profile{StyleGuides: []string{"override.md"}, DisableStyleGuides: []string{"python"}})
-	if strings.Join(merged.StyleGuides, ",") != "override.md" {
+	base := Profile{StyleGuides: []model.StyleGuideSpec{{Source: "base.md"}}, DisableStyleGuides: []string{"go"}}
+	merged := mergeProfiles(base, Profile{StyleGuides: []model.StyleGuideSpec{{Source: "override.md"}}, DisableStyleGuides: []string{"python"}})
+	if sgSources(merged.StyleGuides) != "override.md" {
 		t.Fatalf("merged styleguides = %#v", merged.StyleGuides)
 	}
 	if strings.Join(merged.DisableStyleGuides, ",") != "python" {
 		t.Fatalf("merged disable styleguides = %#v", merged.DisableStyleGuides)
 	}
 	kept := mergeProfiles(base, Profile{})
-	if strings.Join(kept.StyleGuides, ",") != "base.md" {
+	if sgSources(kept.StyleGuides) != "base.md" {
 		t.Fatalf("kept styleguides = %#v", kept.StyleGuides)
 	}
 	if strings.Join(kept.DisableStyleGuides, ",") != "go" {

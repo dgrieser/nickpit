@@ -252,7 +252,11 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(profile.StyleGuides, ",") != "team.md,https://example.com/rules.md" {
+	var sources []string
+	for _, spec := range profile.StyleGuides {
+		sources = append(sources, spec.Source)
+	}
+	if strings.Join(sources, ",") != "team.md,https://example.com/rules.md" {
 		t.Fatalf("styleguides = %#v", profile.StyleGuides)
 	}
 }

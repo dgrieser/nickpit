@@ -228,8 +228,8 @@ func TestWorkflowMergeSourcelessIncludesAdditionalStyleGuides(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 	engine.SetLogger(logging.New(os.Stderr, false, false))
-	engine.SetAdditionalStyleGuides([]model.StyleGuide{
-		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
+		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
 	})
 
 	// Same clustering setup as TestWorkflowMergeTwoFilesInvokesMergeAgent so

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dgrieser/nickpit/internal/versionmatch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,10 +52,31 @@ type EvictionPriority struct {
 }
 
 type StyleGuideMappings struct {
-	StyleGuides                  map[string]string    `yaml:"style_guides"`
-	StyleGuideOrder              []string             `yaml:"style_guide_order"`
-	StyleGuideExtensionOverrides map[string][]string  `yaml:"extension_overrides"`
-	Detectors                    []StyleGuideDetector `yaml:"detectors"`
+	StyleGuides                  map[string]StyleGuideEntry `yaml:"style_guides"`
+	StyleGuideOrder              []string                   `yaml:"style_guide_order"`
+	StyleGuideExtensionOverrides map[string][]string        `yaml:"extension_overrides"`
+	Detectors                    []StyleGuideDetector       `yaml:"detectors"`
+}
+
+// StyleGuideEntry is the styleguide selection for one language. In YAML it is
+// either a scalar file path (the default, applied to every version) or a
+// mapping with a `default` plus version-specific `versions` overrides. When a
+// detected toolchain version matches a version key, that guide is used instead
+// of the default; otherwise the default applies.
+type StyleGuideEntry struct {
+	Default  string            `yaml:"default"`
+	Versions map[string]string `yaml:"versions,omitempty"`
+}
+
+// UnmarshalYAML accepts either a scalar (back-compat: `go: styleguides/go.md`)
+// or a mapping (`go: {default: ..., versions: {...}}`).
+func (e *StyleGuideEntry) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		e.Default = node.Value
+		return nil
+	}
+	type raw StyleGuideEntry
+	return node.Decode((*raw)(e))
 }
 
 type StyleGuideDetector struct {
@@ -221,10 +243,34 @@ func ruleMatches(matchAny, matchAll compiledPatternSet, normalizedPath, base, co
 	return true
 }
 
-func StyleGuideFile(language string) (string, bool) {
+// StyleGuideFile returns the styleguide file for a language given the detected
+// toolchain versions for that language. A version-specific guide is chosen
+// when one of the detected versions matches a configured version key (lowest
+// detected version wins); otherwise the language default is returned. Pass nil
+// detected versions to always get the default.
+func StyleGuideFile(language string, detected []string) (string, bool) {
 	m := mustLoadMappings()
-	name, ok := m.styleGuides.StyleGuides[language]
-	return name, ok
+	entry, ok := m.styleGuides.StyleGuides[language]
+	if !ok {
+		return "", false
+	}
+	if len(entry.Versions) > 0 && len(detected) > 0 {
+		keys := make([]string, 0, len(entry.Versions))
+		for key := range entry.Versions {
+			keys = append(keys, key)
+		}
+		if key, matched := versionmatch.SelectLowest(detected, keys); matched {
+			return entry.Versions[key], true
+		}
+	}
+	return entry.Default, entry.Default != ""
+}
+
+// HasStyleGuide reports whether a language has any built-in styleguide.
+func HasStyleGuide(language string) bool {
+	m := mustLoadMappings()
+	_, ok := m.styleGuides.StyleGuides[language]
+	return ok
 }
 
 func StyleGuideOrder() []string {
@@ -276,7 +322,7 @@ func StyleGuideDetectorLanguages(path, content string) []string {
 func Context() StyleGuideMappings {
 	m := mustLoadMappings()
 	return StyleGuideMappings{
-		StyleGuides:                  cloneStringMap(m.styleGuides.StyleGuides),
+		StyleGuides:                  cloneStyleGuideEntries(m.styleGuides.StyleGuides),
 		StyleGuideOrder:              append([]string(nil), m.styleGuides.StyleGuideOrder...),
 		StyleGuideExtensionOverrides: cloneStringSliceMap(m.styleGuides.StyleGuideExtensionOverrides),
 		Detectors:                    cloneStyleGuideDetectors(m.styleGuides.Detectors),
@@ -399,6 +445,19 @@ func parseStyleGuidesYAML(data []byte) (StyleGuideMappings, error) {
 	}
 	if len(mappings.StyleGuideOrder) == 0 {
 		return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml missing style guide order")
+	}
+	for language, entry := range mappings.StyleGuides {
+		if entry.Default == "" {
+			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml style guide %q missing default file", language)
+		}
+		for version, file := range entry.Versions {
+			if strings.TrimSpace(version) == "" {
+				return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml style guide %q has an empty version key", language)
+			}
+			if file == "" {
+				return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml style guide %q version %q missing file", language, version)
+			}
+		}
 	}
 	for i, detector := range mappings.Detectors {
 		if detector.Language == "" {
@@ -800,6 +859,17 @@ func cloneStringSliceMap(in map[string][]string) map[string][]string {
 	out := make(map[string][]string, len(in))
 	for key, value := range in {
 		out[key] = append([]string(nil), value...)
+	}
+	return out
+}
+
+func cloneStyleGuideEntries(in map[string]StyleGuideEntry) map[string]StyleGuideEntry {
+	out := make(map[string]StyleGuideEntry, len(in))
+	for key, entry := range in {
+		out[key] = StyleGuideEntry{
+			Default:  entry.Default,
+			Versions: cloneStringMap(entry.Versions),
+		}
 	}
 	return out
 }

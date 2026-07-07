@@ -144,8 +144,8 @@ func TestEngineDisablesStyleGuidesByLanguage(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	engine.SetDisabledStyleGuides([]string{"python"})
-	engine.SetAdditionalStyleGuides([]model.StyleGuide{
-		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
+		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
 	})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
@@ -168,8 +168,8 @@ func TestEngineDisablesStyleGuidesByLanguage(t *testing.T) {
 func TestEngineIncludesAdditionalStyleGuides(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	engine.SetAdditionalStyleGuides([]model.StyleGuide{
-		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
+		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
 	})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
@@ -208,8 +208,8 @@ func (markdownOnlyDiffSource) ResolveContext(context.Context, model.ReviewReques
 func TestEngineIncludesAdditionalStyleGuidesWithoutLanguageGuides(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(markdownOnlyDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	engine.SetAdditionalStyleGuides([]model.StyleGuide{
-		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
+		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
 	})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
@@ -348,7 +348,7 @@ func TestEngineAddsKubernetesStyleGuideForGoOperatorSignals(t *testing.T) {
 			},
 		},
 	})
-	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go Style Guide") {
+	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go — Common Developer Guideline") {
 		t.Fatalf("go style guide content = %.80q", content)
 	}
 	if content := contentsByLanguage["kubernetes"]; !strings.Contains(content, "# Kubernetes Style Guide") {
@@ -507,7 +507,7 @@ func TestStyleGuideDetectorAddsSQLFromEmbeddedQuery(t *testing.T) {
 			},
 		},
 	})
-	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go Style Guide") {
+	if content := contentsByLanguage["go"]; !strings.Contains(content, "# Go — Common Developer Guideline") {
 		t.Fatalf("go style guide content = %.80q", content)
 	}
 	if content := contentsByLanguage["sql"]; !strings.Contains(content, "# SQL Optimization Patterns") {
@@ -695,16 +695,16 @@ func styleGuideContentsForContext(t *testing.T, reviewCtx *model.ReviewContext) 
 
 func styleGuideContentsFromSystem(system string) map[string]string {
 	titleLanguages := map[string]string{
-		"Bash Style Guide":          "shell",
-		"C# Style Guide":            "csharp",
-		"Go Style Guide":            "go",
-		"Helm Style Guide":          "helm",
-		"HTML & CSS Style Guide":    "html",
-		"JavaScript Style Guide":    "javascript",
-		"Kubernetes Style Guide":    "kubernetes",
-		"Python Style Guide":        "python",
-		"SQL Optimization Patterns": "sql",
-		"TypeScript Style Guide":    "typescript",
+		"Bash Style Guide":                "shell",
+		"C# Style Guide":                  "csharp",
+		"Go — Common Developer Guideline": "go",
+		"Helm Style Guide":                "helm",
+		"HTML & CSS Style Guide":          "html",
+		"JavaScript Style Guide":          "javascript",
+		"Kubernetes Style Guide":          "kubernetes",
+		"Python Style Guide":              "python",
+		"SQL Optimization Patterns":       "sql",
+		"TypeScript Style Guide":          "typescript",
 	}
 	type guideStart struct {
 		language string

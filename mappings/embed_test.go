@@ -19,8 +19,11 @@ func TestEmbeddedMappingsLoad(t *testing.T) {
 	if loaded.ctxExt[".tsx"] != "typescript" {
 		t.Fatalf(".tsx style guide language = %q", loaded.ctxExt[".tsx"])
 	}
-	if loaded.styleGuides.StyleGuides["kubernetes"] != "styleguides/kubernetes.md" {
-		t.Fatalf("kubernetes style guide = %q", loaded.styleGuides.StyleGuides["kubernetes"])
+	if loaded.styleGuides.StyleGuides["kubernetes"].Default != "styleguides/kubernetes.md" {
+		t.Fatalf("kubernetes style guide = %q", loaded.styleGuides.StyleGuides["kubernetes"].Default)
+	}
+	if loaded.styleGuides.StyleGuides["go"].Versions["1.19"] != "styleguides/go-1.19.md" {
+		t.Fatalf("go 1.19 style guide = %q", loaded.styleGuides.StyleGuides["go"].Versions["1.19"])
 	}
 	if len(loaded.styleGuideDetectors) == 0 {
 		t.Fatal("style guide detectors empty")
@@ -40,9 +43,15 @@ func TestEmbeddedMappingsLoad(t *testing.T) {
 	if len(loaded.evictionPriorities) == 0 {
 		t.Fatal("eviction priorities empty")
 	}
-	for language, name := range loaded.styleGuides.StyleGuides {
-		if _, err := prompts.Load(name); err != nil {
-			t.Fatalf("style guide for %s points to unreadable file %q: %v", language, name, err)
+	for language, entry := range loaded.styleGuides.StyleGuides {
+		files := []string{entry.Default}
+		for _, versionFile := range entry.Versions {
+			files = append(files, versionFile)
+		}
+		for _, name := range files {
+			if _, err := prompts.Load(name); err != nil {
+				t.Fatalf("style guide for %s points to unreadable file %q: %v", language, name, err)
+			}
 		}
 	}
 }
@@ -171,7 +180,7 @@ func TestMappingValidationRejectsDuplicateKeys(t *testing.T) {
 	}
 	files := FileMappings{GeneratedSuffixes: []string{"go.sum"}}
 	styleGuides := StyleGuideMappings{
-		StyleGuides:     map[string]string{"go": "styleguides/go.md"},
+		StyleGuides:     map[string]StyleGuideEntry{"go": {Default: "styleguides/go.md"}},
 		StyleGuideOrder: []string{"go"},
 	}
 
@@ -188,7 +197,7 @@ func TestMappingValidationRejectsUnknownOrderedStyleGuide(t *testing.T) {
 	}
 	files := FileMappings{GeneratedSuffixes: []string{"go.sum"}}
 	styleGuides := StyleGuideMappings{
-		StyleGuides:     map[string]string{"go": "styleguides/go.md"},
+		StyleGuides:     map[string]StyleGuideEntry{"go": {Default: "styleguides/go.md"}},
 		StyleGuideOrder: []string{"go", "python"},
 	}
 
@@ -200,7 +209,7 @@ func TestMappingValidationRejectsUnknownOrderedStyleGuide(t *testing.T) {
 
 func TestMappingValidationRejectsInvalidDetectorRegex(t *testing.T) {
 	styleGuides := StyleGuideMappings{
-		StyleGuides:     map[string]string{"go": "styleguides/go.md"},
+		StyleGuides:     map[string]StyleGuideEntry{"go": {Default: "styleguides/go.md"}},
 		StyleGuideOrder: []string{"go"},
 		Detectors: []StyleGuideDetector{
 			{Language: "go", MatchAny: PatternSet{ContentRegex: []string{"("}}},

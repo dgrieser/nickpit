@@ -23,6 +23,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/toolchain"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/versionmatch"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
 )
@@ -37,10 +38,13 @@ type Engine struct {
 	searchToolOptimization bool
 	toolchainCapture       func(ctx context.Context, repoRoot string, reviewCtx *model.ReviewContext) []model.ToolchainVersion
 	// additionalStyleGuides holds user-supplied guides (files/URLs, already
-	// resolved) appended to every agent's language styleguides. Written once
-	// before the pipeline runs and read-only afterwards, so withConfig's
-	// shallow clones and concurrent agents can share it without locking.
-	additionalStyleGuides []model.StyleGuide
+	// resolved) added to a review's language styleguides. Each carries optional
+	// gating metadata: an ungated guide is appended for every agent, a gated one
+	// only when its language changed and (when set) the detected toolchain
+	// version matches. Written once before the pipeline runs and read-only
+	// afterwards, so withConfig's shallow clones and concurrent agents can share
+	// it without locking.
+	additionalStyleGuides []model.AdditionalStyleGuide
 	// disabledStyleGuides holds built-in styleguide languages the user turned
 	// off. Same write-once-before-pipeline contract as additionalStyleGuides.
 	disabledStyleGuides map[string]struct{}
@@ -117,10 +121,11 @@ func (e *Engine) SetSearchToolOptimization(enabled bool) {
 	e.searchToolOptimization = enabled
 }
 
-// SetAdditionalStyleGuides installs user-supplied styleguides appended to
-// every agent's language styleguides. Must be called before the pipeline
-// runs; the slice must not be mutated afterwards.
-func (e *Engine) SetAdditionalStyleGuides(guides []model.StyleGuide) {
+// SetAdditionalStyleGuides installs user-supplied styleguides added to a
+// review's language styleguides (subject to each guide's gating metadata).
+// Must be called before the pipeline runs; the slice must not be mutated
+// afterwards.
+func (e *Engine) SetAdditionalStyleGuides(guides []model.AdditionalStyleGuide) {
 	e.additionalStyleGuides = guides
 }
 
@@ -2315,13 +2320,17 @@ func agentCommonSystemPromptSnippetsForTools(agentRole string, outputSchemaSnipp
 
 func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, error) {
 	languages := changedLanguages(ctx)
-	guides := make([]model.StyleGuide, 0, len(languages))
+	changed := make(map[string]struct{}, len(languages))
+	for _, language := range languages {
+		changed[language] = struct{}{}
+	}
+	guides := make([]model.StyleGuide, 0, len(languages)+len(e.additionalStyleGuides))
 	seenFiles := make(map[string]struct{})
 	for _, language := range languages {
 		if _, off := e.disabledStyleGuides[language]; off {
 			continue
 		}
-		name, ok := mappings.StyleGuideFile(language)
+		name, ok := mappings.StyleGuideFile(language, detectedVersionsFor(ctx, language))
 		if !ok {
 			continue
 		}
@@ -2338,8 +2347,72 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 			Content:  content,
 		})
 	}
-	guides = append(guides, e.additionalStyleGuides...)
+	guides = append(guides, e.gatedAdditionalStyleGuides(ctx, changed)...)
 	return guides, nil
+}
+
+// gatedAdditionalStyleGuides selects which user-supplied guides apply to this
+// review, preserving their configured order. An ungated guide always applies;
+// a language-gated guide applies when that language changed; a version-gated
+// guide applies only for the version that wins its language (lowest detected
+// version, matching the built-in selection rule).
+func (e *Engine) gatedAdditionalStyleGuides(ctx *model.ReviewContext, changed map[string]struct{}) []model.StyleGuide {
+	if len(e.additionalStyleGuides) == 0 {
+		return nil
+	}
+	// Resolve the winning version per language for version-gated guides.
+	versionKeysByLang := make(map[string][]string)
+	for _, g := range e.additionalStyleGuides {
+		if g.GateLanguage != "" && g.GateVersion != "" {
+			versionKeysByLang[g.GateLanguage] = append(versionKeysByLang[g.GateLanguage], g.GateVersion)
+		}
+	}
+	winningByLang := make(map[string]string, len(versionKeysByLang))
+	for language, keys := range versionKeysByLang {
+		if _, ok := changed[language]; !ok {
+			continue
+		}
+		if key, matched := versionmatch.SelectLowest(detectedVersionsFor(ctx, language), keys); matched {
+			winningByLang[language] = key
+		}
+	}
+	out := make([]model.StyleGuide, 0, len(e.additionalStyleGuides))
+	for _, g := range e.additionalStyleGuides {
+		switch {
+		case g.GateLanguage == "":
+			// unconditional (back-compat scalar spec)
+		case g.GateVersion == "":
+			if _, ok := changed[g.GateLanguage]; !ok {
+				continue
+			}
+		default:
+			if winningByLang[g.GateLanguage] != g.GateVersion {
+				continue
+			}
+		}
+		out = append(out, g.StyleGuide)
+	}
+	return out
+}
+
+// detectedVersionsFor returns the usable toolchain versions detected for a
+// language, skipping Unavailable/Error/empty entries. A language can carry
+// several (go.mod go directive, toolchain directive, Dockerfile, CI); the
+// selection rules resolve conflicts (lowest version wins).
+func detectedVersionsFor(ctx *model.ReviewContext, language string) []string {
+	if ctx == nil {
+		return nil
+	}
+	var out []string
+	for _, tv := range ctx.ToolchainVersions {
+		if tv.Language != language || tv.Unavailable || tv.Error != "" {
+			continue
+		}
+		if version := strings.TrimSpace(tv.Version); version != "" {
+			out = append(out, version)
+		}
+	}
+	return out
 }
 
 // mergeStyleGuides returns the styleguides for merge prompts. A source-less
@@ -2431,7 +2504,7 @@ func addLanguage(seen map[string]struct{}, language string) {
 	if language == "" {
 		return
 	}
-	if _, ok := mappings.StyleGuideFile(language); !ok {
+	if !mappings.HasStyleGuide(language) {
 		return
 	}
 	seen[language] = struct{}{}

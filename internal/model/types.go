@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 )
 
 type ReviewMode string
@@ -227,6 +228,37 @@ type DiffHunk struct {
 type StyleGuide struct {
 	Language string `json:"language"`
 	Content  string `json:"content"`
+}
+
+// StyleGuideSpec is a user-configured additional styleguide. In YAML it is
+// either a scalar string (a file path or http(s) URL applied to every agent,
+// back-compat) or a mapping that gates the guide to a language and optionally a
+// version/semver range, so it is injected only when that language changed and
+// (when set) the detected toolchain version matches.
+type StyleGuideSpec struct {
+	Source   string `yaml:"source"`
+	Language string `yaml:"language,omitempty"`
+	Version  string `yaml:"version,omitempty"`
+}
+
+// UnmarshalYAML accepts a scalar (=> Source only) or a mapping (full spec).
+func (s *StyleGuideSpec) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		s.Source = node.Value
+		return nil
+	}
+	type raw StyleGuideSpec
+	return node.Decode((*raw)(s))
+}
+
+// AdditionalStyleGuide is a resolved user-configured styleguide plus the
+// gating metadata that decides when it is injected. GateLanguage == "" means
+// unconditional (back-compat scalar spec); GateVersion == "" means inject
+// whenever GateLanguage is among the changed languages.
+type AdditionalStyleGuide struct {
+	StyleGuide
+	GateLanguage string
+	GateVersion  string
 }
 
 type Comment struct {

@@ -1,14 +1,13 @@
-### Go — Common Developer Guideline
+### Go 1.19 — Complete Developer Guideline
 
-> **Version**: Common ground for Go 1.19 – 1.26
+> **Version**: Go 1.19 (released 2022-08-02)
 > **Scope**: Language spec, idioms, concurrency, performance, CLI, file I/O, testing, and best practices — with examples throughout.
-> **Note**: This is the base/fallback guide covering what holds across Go 1.19 – 1.26. Features introduced after Go 1.19 are tagged with the version that added them and are available only when the module's `go` directive is at least that version. For version-specific detail, consult the matching guide (`go-1.19.md` … `go-1.26.md`).
 
 ---
 
 #### Table of Contents
 
-1. [Version-Aware Go](#version-aware-go)
+1. [What's New in Go 1.19](#whats-new-in-go-119)
 2. [Project Layout & Modules](#project-layout--modules)
 3. [Basic Types & Variables](#basic-types--variables)
 4. [Pointers](#pointers)
@@ -17,58 +16,55 @@
 7. [Defer, Panic & Recover](#defer-panic--recover)
 8. [Structs & Methods](#structs--methods)
 9. [Interfaces & Embedding](#interfaces--embedding)
-10. [Generics](#generics)
+10. [Generics (1.18 / 1.19)](#generics-118--119)
 11. [Collection Types: Arrays, Slices, Maps](#collection-types-arrays-slices-maps)
 12. [Strings](#strings)
 13. [Error Handling](#error-handling)
-14. [Structured Logging with log/slog](#structured-logging-with-logslog)
-15. [Concurrency](#concurrency)
-16. [Context Package](#context-package)
-17. [File I/O & Streaming](#file-io--streaming)
-18. [Testing & Benchmarking](#testing--benchmarking)
-19. [CLI Development](#cli-development)
-20. [Performance Caveats](#performance-caveats)
-21. [Idioms & Things to Avoid](#idioms--things-to-avoid)
+14. [Concurrency](#concurrency)
+15. [Context Package](#context-package)
+16. [File I/O & Streaming](#file-io--streaming)
+17. [Testing & Benchmarking](#testing--benchmarking)
+18. [CLI Development](#cli-development)
+19. [Performance Caveats](#performance-caveats)
+20. [Idioms & Things to Avoid](#idioms--things-to-avoid)
 
 ---
 
-#### Version-Aware Go
+#### What's New in Go 1.19
 
-Check the module's `go` directive before reviewing language semantics or
-suggesting newer APIs. The `go` directive controls language version behavior;
-the installed toolchain may be newer than the module target. A feature is
-available only when the `go` directive is at least the version that introduced
-it. Consult the matching version guide (`go-1.19.md` … `go-1.26.md`) for detail.
+Go 1.19 shipped 2022-08-02. There are **no new language keywords or syntax**; the changes are in runtime, toolchain, and standard library.
+
+##### Language
+
+- **Memory Model clarification**: The formal definition of the happens-before relation was revised to align with C++, Java, JavaScript, Rust, and Swift. Existing correct programs are unaffected.
+- **Generics bug fixes**: Numerous corner cases found in the 1.18 generics release were fixed. Performance of some generic programs improved up to ~20%.
+
+##### Runtime
+
+- **Soft memory limit** (`GOMEMLIMIT` env or `runtime/debug.SetMemoryLimit`): caps total Go memory usage. Useful in containers with fixed memory budgets. Replaces the "memory ballast" hack.
+- **Dynamic goroutine stack sizing**: initial goroutine stack is now sized based on historical average usage per call site, reducing stack-copying overhead.
+- **Jump tables** for large `switch` statements on `amd64` and `arm64`: `switch` on large integers/strings up to ~20% faster.
 
 ```go
-module example.com/app
+import "runtime/debug"
 
-go 1.21.0
+func main() {
+    // Limit Go runtime to 256 MiB of memory (soft limit)
+    debug.SetMemoryLimit(256 << 20)
+}
 ```
 
-##### Feature timeline (1.19 – 1.26)
+##### Standard Library (selected)
 
-| Since | Key language / standard-library additions |
-|---|---|
-| 1.18/1.19 | Generics; type-safe `sync/atomic` types (`atomic.Int64`, `atomic.Pointer[T]`); `GOMEMLIMIT` soft memory limit |
-| 1.20 | `errors.Join` and multiple `%w` in `fmt.Errorf`; `context.WithCancelCause`/`Cause`; slice-to-array value conversion |
-| 1.21 | `slices`, `maps`, `cmp` packages; `clear`/`min`/`max` builtins; `log/slog`; `context.WithoutCancel`/`AfterFunc`; `sync.OnceFunc`/`OnceValue`/`OnceValues` |
-| 1.22 | Per-iteration loop variables; range over integers; enhanced `net/http.ServeMux` routing; `math/rand/v2` |
-| 1.23 | Range-over-function iterators + `iter`; `slices`/`maps` iterator functions; `unique`; `sync.Map.Clear`; `atomic.And`/`Or`; `os.CopyFS` |
-| 1.24 | Generic type aliases; `go.mod` `tool` directive; `os.Root`; `testing.B.Loop`, `T.Context`, `T.Chdir`; `omitzero` JSON tag; `runtime.AddCleanup`; `weak` |
-| 1.25 | `sync.WaitGroup.Go`; `testing/synctest` (stable); container-aware `GOMAXPROCS`; `T.Attr`/`Output`; expanded `os.Root` |
-| 1.26 | `new(expr)`; recursive type constraints; `errors.AsType`; `crypto/hpke`; Green Tea GC default; `go fix` modernizers |
-
-Verify library APIs against the actual module versions in `go.mod` before
-claiming an API is missing or unavailable.
-
-Examples:
-- Do not claim a controller-runtime helper is unavailable without checking the
-  pinned `sigs.k8s.io/controller-runtime` version.
-- Say "this API is not available in vX.Y.Z" only when the module version proves
-  it.
-- Do not infer API availability from memory, a newer version's docs, or another
-  project's dependency set.
+| Package | Addition | Notes |
+|---|---|---|
+| `sync/atomic` | `atomic.Bool`, `atomic.Int32`, `atomic.Int64`, `atomic.Uint32`, `atomic.Uint64`, `atomic.Uintptr`, `atomic.Pointer[T]` | Type-safe atomics; prefer over raw `atomic.LoadInt64` etc. |
+| `fmt` | `fmt.Append`, `fmt.Appendf`, `fmt.Appendln` | Append formatted data to `[]byte` without allocation if cap allows |
+| `sort` | `sort.Find` | Binary search returning smallest index satisfying a comparator |
+| `flag` | `flag.TextVar` | Bind any `encoding.TextUnmarshaler` as a flag |
+| `net/url` | `url.JoinPath`, `URL.JoinPath` | Safe URL path joining |
+| `os/exec` | Security: no relative paths in `PATH` lookups | Prevents accidental execution of local binaries |
+| `time` | `Duration.Abs()`, `Time.ZoneBounds()` | Utility helpers |
 
 ---
 
@@ -83,8 +79,17 @@ go mod init github.com/yourname/myapp
 
 This creates `go.mod`. Never edit it manually for dependencies; use `go get`, `go mod tidy`.
 
-For Go 1.24 and newer modules, use `tool` directives in `go.mod` to track
-executable development tools instead of blank-import `tools.go` files.
+##### Verify library APIs against the pinned version
+
+Verify library APIs against the actual module versions in `go.mod` before
+claiming an API is missing or unavailable.
+
+- Do not claim a controller-runtime helper is unavailable without checking the
+  pinned `sigs.k8s.io/controller-runtime` version.
+- Say "this API is not available in vX.Y.Z" only when the module version proves
+  it.
+- Do not infer API availability from memory, a newer version's docs, or another
+  project's dependency set.
 
 ##### Recommended directory layout
 
@@ -223,10 +228,6 @@ p2 := &Point{X: 1, Y: 2} // *Point
 
 **Prefer `&T{...}` over `new(T)` for structs** — more readable and allows field initialization.
 
-Go 1.26+ allows `new(expr)` to allocate and initialise from any expression
-(e.g. `new(30)` returns a `*int` pointing to `30`); useful for optional
-pointer fields. Not available before 1.26.
-
 ##### When to use pointers
 
 - **Mutation**: a function that must modify its argument needs a pointer.
@@ -234,34 +235,23 @@ pointer fields. Not available before 1.26.
 - **Optional values**: `*T` can be `nil` to represent absence (though prefer a sentinel or `bool` return when possible).
 - **Interfaces**: if any method has a pointer receiver, the concrete type must be passed as a pointer to satisfy the interface.
 
-##### Loop variable capture
-
-In modules on **Go 1.21 or earlier** you MUST shadow the loop variable before
-capturing it in a closure or goroutine; otherwise all iterations share one
-variable. **Go 1.22+** makes loop variables per-iteration automatically, so the
-copy is unnecessary (and `go vet` no longer flags the old pattern there).
+##### Loop variable capture (critical in Go 1.19)
 
 ```go
-// Go 1.21 or earlier — WRONG: all goroutines share the same i
+// WRONG in Go 1.19 — all goroutines share the same i
 ptrs := make([]*int, 3)
 for i := 0; i < 3; i++ {
-    ptrs[i] = &i  // all point to the same address
+    ptrs[i] = &i  // all point to same address
 }
 
-// Go 1.21 or earlier — CORRECT: shadow i to create a new binding each iteration
+// CORRECT — shadow i to create new binding each iteration
 for i := 0; i < 3; i++ {
     i := i
     ptrs[i] = &i
 }
-
-// Go 1.22+ — safe without the copy; each iteration has its own i
-for i := 0; i < 3; i++ {
-    ptrs[i] = &i
-}
+// Note: Go 1.22+ fixes loop variable semantics automatically.
+// In 1.19 you MUST shadow.
 ```
-
-Do not add manual loop-variable copies in modules that require Go 1.22 or newer
-unless the copy has another purpose.
 
 ---
 
@@ -323,6 +313,11 @@ for i, v := range s {
     fmt.Println(i, v)
 }
 
+// Range — index only
+for i := range s {
+    fmt.Println(i)
+}
+
 // Range — value only (blank identifier)
 for _, v := range s {
     fmt.Println(v)
@@ -347,10 +342,6 @@ for v := range ch {
     fmt.Println(v)
 }
 ```
-
-Go 1.22+ also allows ranging over an integer (`for i := range 10 { ... }`), and
-Go 1.23+ allows ranging over iterator functions (`for v := range seq { ... }`).
-Neither form is available in earlier modules — see the version guides.
 
 ##### break / continue / labels
 
@@ -383,6 +374,14 @@ default:
     fmt.Println("other")
 }
 
+// Init statement
+switch os := runtime.GOOS; os {
+case "darwin":
+    fmt.Println("macOS")
+case "linux":
+    fmt.Println("Linux")
+}
+
 // No condition (replaces if-else chains)
 switch {
 case x < 0:
@@ -394,7 +393,7 @@ default:
 }
 
 // Type switch — used with interfaces
-func describe(i any) {
+func describe(i interface{}) {
     switch v := i.(type) {
     case int:
         fmt.Printf("int: %d\n", v)
@@ -403,6 +402,15 @@ func describe(i any) {
     default:
         fmt.Printf("unknown: %T\n", v)
     }
+}
+
+// Explicit fallthrough (rare)
+switch x {
+case 1:
+    fmt.Println("one")
+    fallthrough
+case 2:
+    fmt.Println("also runs for case 1 and 2")
 }
 ```
 
@@ -472,7 +480,26 @@ s := []int{1, 2, 3}
 sum(s...)  // spread a slice
 ```
 
-##### First-class functions and closures
+##### First-class functions
+
+```go
+type Transformer func(string) string
+
+func apply(s string, fns ...Transformer) string {
+    for _, fn := range fns {
+        s = fn(s)
+    }
+    return s
+}
+
+result := apply("hello",
+    strings.ToUpper,
+    func(s string) string { return s + "!" },
+)
+// "HELLO!"
+```
+
+##### Closures
 
 ```go
 func counter() func() int {
@@ -487,13 +514,11 @@ c := counter()
 fmt.Println(c(), c(), c()) // 1 2 3
 ```
 
-**Watch out**: closures capture variables by reference. In modules on Go 1.21 or
-earlier, shadow the loop variable before capturing it (Go 1.22+ does this
-automatically):
+**Watch out**: closures capture variables by reference. In loops, shadow the loop variable:
 
 ```go
 for i := 0; i < 3; i++ {
-    i := i  // new variable each iteration (unnecessary on Go 1.22+)
+    i := i  // new variable each iteration
     go func() { fmt.Println(i) }()
 }
 ```
@@ -528,6 +553,21 @@ func readFile(name string) error {
     // process f...
     return nil
 }
+```
+
+```go
+// Multiple defers — LIFO order
+func demo() {
+    defer fmt.Println("first deferred, runs last")
+    defer fmt.Println("second deferred, runs second")
+    defer fmt.Println("third deferred, runs first")
+    fmt.Println("function body")
+}
+// Output:
+// function body
+// third deferred, runs first
+// second deferred, runs second
+// first deferred, runs last
 ```
 
 **Defer arguments are evaluated immediately**, not when the defer executes:
@@ -664,7 +704,11 @@ type Bad struct {
 type Better struct {
     Val  int64 // 8 bytes
     Flag bool  // 1 byte (+ 7 trailing padding)
-}
+} // 16 bytes total, but for multi-field structs this matters a lot
+
+// Check sizes
+fmt.Println(unsafe.Sizeof(Bad{}))    // 16
+fmt.Println(unsafe.Sizeof(Better{})) // 16
 ```
 
 For structs with many fields of mixed sizes, grouping fields of the same size minimises padding and total size.
@@ -754,7 +798,7 @@ func Copy(dst Writer, src Reader) (int64, error) { /* ... */ }
 // Small interfaces are better — prefer 1-2 methods
 // io.Reader, io.Writer, fmt.Stringer are exemplary
 
-// Empty interface — holds any value (use sparingly; prefer `any`)
+// Empty interface — holds any value (use sparingly; prefer `any` in 1.18+)
 var anything any = 42
 anything = "now a string"
 
@@ -801,9 +845,9 @@ type UserWriter interface {
 
 ---
 
-#### Generics
+#### Generics (1.18 / 1.19)
 
-Go 1.18+ supports generics; they are available in every module in this range.
+Go 1.18 introduced generics; Go 1.19 fixes bugs and improves performance up to ~20% for some generic programs.
 
 ##### Type parameters
 
@@ -849,9 +893,6 @@ func Sum[T Number](s []T) T {
 
 The `~` prefix means "any type whose underlying type is T" — e.g., `~int` includes `type MyInt int`.
 
-Use `any` instead of `interface{}` for unconstrained type parameters. Keep
-constraints small and local when possible.
-
 ##### Generic structs
 
 ```go
@@ -866,20 +907,31 @@ func (s *Stack[T]) Pop() T {
     s.items = s.items[:n-1]
     return v
 }
+func (s *Stack[T]) Len() int { return len(s.items) }
+
+var intStack Stack[int]
+intStack.Push(1)
+intStack.Push(2)
+fmt.Println(intStack.Pop()) // 2
 ```
 
-##### When to use generics
+##### When to use generics (Go 1.19 guidance)
 
-Use generics for utility functions on slices/maps/channels, generic data
-structures (Stack, Queue, Set), and algorithms identical across many types.
-Prefer ordinary functions and interfaces when there is only one concrete caller
-or behavior differs by type.
+Use generics for:
+- Utility functions on slices/maps/channels (filter, map, reduce).
+- Generic data structures (Stack, Queue, Set).
+- Functions whose algorithm is identical across many types.
 
-##### Version notes
+Avoid generics when:
+- A simple interface is equally clear.
+- You are writing a concrete domain model.
+- You would need to constrain to methods — just use an interface.
 
-- **Type parameters on methods** are not allowed (only on the receiver type) in any version — use a free function.
-- **Generic type aliases** (`type MySlice[T any] = []T`) require Go 1.24+.
-- **Recursive type constraints** (a type referring to itself in its own type parameter list) require Go 1.26+.
+##### Known limitations in 1.19
+
+- **No generic methods**: type parameters cannot be added to individual methods (only to the receiver type). Use a free function instead.
+- **Type inference is partial**: sometimes you must specify types explicitly: `Map[int, string](...)`.
+- **No parameterised type aliases**: not supported until later versions.
 
 ---
 
@@ -899,6 +951,8 @@ d[0] = 99
 fmt.Println(b[0]) // still 1
 ```
 
+Arrays are rarely used directly; slices are preferred.
+
 ##### Slices
 
 A slice is a **view** into an underlying array: it has a pointer, a length, and a capacity.
@@ -915,8 +969,18 @@ sl := arr[1:4] // [1,2,3] — shares memory with arr
 
 // Append
 s2 = append(s2, 1, 2, 3)
+
+// Append another slice
 extra := []int{4, 5}
 s2 = append(s2, extra...)
+```
+
+###### Slice internals
+
+```
+slice header: [ pointer | len | cap ]
+                   |
+underlying array: [0][1][2][3][4][5]...
 ```
 
 Slicing `s[1:4]` does NOT copy data; it creates a new header pointing into the same array. **Modifying through the slice modifies the backing array.**
@@ -930,6 +994,15 @@ fmt.Println(a) // [1, 99, 3, 4, 5] — a was modified!
 // To get an independent copy:
 c := make([]int, len(b))
 copy(c, b)
+```
+
+###### Growing slices
+
+When `append` exceeds capacity, Go allocates a new, larger backing array and copies data over. Up to ~1024 elements it doubles; beyond that it grows ~25%.
+
+```go
+// ALWAYS capture the return of append — the pointer may change
+s = append(s, newItem)
 ```
 
 ###### Preallocate when size is known
@@ -948,11 +1021,17 @@ for _, item := range items {
 }
 ```
 
-Always capture the return of `append` — the backing pointer may change.
-
 ###### Modifying a slice while iterating
 
-Modifying slice **elements** during a range loop is safe with index-based access. **Appending** during a range loop is dangerous — range evaluates the slice header at entry:
+Modifying slice **elements** during a range loop is safe with index-based access:
+
+```go
+for i := range s {
+    s[i] *= 2  // safe
+}
+```
+
+**Appending** during a range loop is dangerous — range evaluates the slice header at entry:
 
 ```go
 // DO NOT do this
@@ -972,19 +1051,16 @@ for _, v := range s {
 s = append(s, extra...)
 ```
 
-##### Standard library helpers (Go 1.21+)
+###### Deleting elements
 
-For Go 1.21 and newer modules, prefer standard library helpers and language
-builtins over local generic utilities:
+```go
+// Delete at index i — preserves order
+s = append(s[:i], s[i+1:]...)
 
-- `slices` for sorting, searching, cloning, compacting, and comparing slices.
-- `maps` for cloning, copying, deleting, and iterating map contents.
-- `cmp` for ordered comparisons.
-- `clear` builtin for clearing maps or zeroing slice contents.
-- `min` and `max` builtins for simple ordered comparisons.
-
-For modules on Go 1.19 or 1.20, use the `sort` package and hand-written helpers
-instead; `slices`/`maps`/`cmp` and `clear`/`min`/`max` are not available there.
+// Delete at index i — does NOT preserve order (faster)
+s[i] = s[len(s)-1]
+s = s[:len(s)-1]
+```
 
 ##### Maps
 
@@ -1005,19 +1081,37 @@ if !ok {
 
 m["gamma"] = 3
 delete(m, "alpha")
+fmt.Println(len(m))
 ```
 
-Map iteration order is randomised every run. To iterate deterministically,
-collect and sort the keys first (`slices.Sort` on Go 1.21+, `sort.Strings` on
-1.19/1.20).
+###### Map iteration — order is randomised
+
+```go
+for k, v := range m {
+    fmt.Println(k, v)
+}
+
+// Sorted iteration
+keys := make([]string, 0, len(m))
+for k := range m {
+    keys = append(keys, k)
+}
+sort.Strings(keys)
+for _, k := range keys {
+    fmt.Println(k, m[k])
+}
+```
 
 ###### Modifying a map while iterating
 
-Deleting keys during `range m` is allowed. Do not flag it as a bug by itself:
+Deleting keys during `range m` is safe. Adding keys during iteration may or may not be visited — explicitly undefined behaviour.
 
 ```go
-for key := range values {
-    delete(values, key)
+// Safe: delete during range
+for k := range m {
+    if shouldDelete(k) {
+        delete(m, k)
+    }
 }
 ```
 
@@ -1032,35 +1126,32 @@ example:
 Do not apply generic "modifying a collection while iterating" rules from other
 languages to Go map deletion.
 
-###### Maps are reference types and not concurrency-safe
+###### Maps are reference types
 
 ```go
 a := map[string]int{"x": 1}
 b := a           // b and a point to the same map
 b["x"] = 99
 fmt.Println(a["x"]) // 99
-
-// Concurrent access requires synchronization
-var mu sync.RWMutex
-var mp = make(map[string]int)
-
-mu.Lock();  mp["a"] = 1; mu.Unlock()
-mu.RLock(); _ = mp["a"]; mu.RUnlock()
 ```
 
-###### Reachability and domain bounds
+###### Maps are NOT safe for concurrent access
 
-Only report overflow, panic, or invalid-value behavior when the failing path is
-reachable for the declared type and the function's input domain.
+```go
+// Use sync.RWMutex or sync.Map for concurrent access
+var mu sync.RWMutex
+var m = make(map[string]int)
 
-- Do not claim byte formatting can index into ZiB/YiB units when an `int64`
-  input cannot grow large enough to reach those unit indexes.
-- Do not require negative byte handling when all callers pass values from
-  `os.FileInfo.Size()` or another source with a non-negative contract.
-- Do report missing negative handling when an exported/general-purpose function
-  accepts user-controlled values and documents no narrower domain.
-- Do not require defensive code for values that cannot be represented by the
-  input type.
+// Write
+mu.Lock()
+m["a"] = 1
+mu.Unlock()
+
+// Read
+mu.RLock()
+v := m["a"]
+mu.RUnlock()
+```
 
 ---
 
@@ -1109,11 +1200,13 @@ import "strings"
 strings.Contains("foobar", "bar")        // true
 strings.HasPrefix("foobar", "foo")       // true
 strings.HasSuffix("foobar", "bar")       // true
+strings.Index("foobar", "bar")           // 3
 strings.Split("a,b,c", ",")             // ["a","b","c"]
 strings.Join([]string{"a","b"}, "-")    // "a-b"
 strings.TrimSpace("  hello  ")          // "hello"
 strings.ToUpper("hello")                // "HELLO"
 strings.ReplaceAll("aabbcc", "b", "x")  // "aaxxcc"
+strings.Count("hello", "l")             // 2
 
 // Formatting
 s := fmt.Sprintf("user %d: %s", id, name)
@@ -1133,7 +1226,7 @@ type error interface {
 
 Errors are **values**. The idiomatic contract: if a function can fail, return `error` as the last value.
 
-##### Explicit error checking
+##### Basic pattern
 
 ```go
 result, err := doSomething()
@@ -1143,7 +1236,9 @@ if err != nil {
 use(result)
 ```
 
-**Always check errors.** A few discards are idiomatic and should not be flagged:
+**Always check errors.** Never use `_` for an error unless deliberately documented.
+
+A few discards are idiomatic and should not be flagged:
 
 - deferred `Close()` on files opened only for reading
 - `defer tx.Rollback()`, which is a no-op after a successful commit
@@ -1151,25 +1246,7 @@ use(result)
 
 For everything else, handle the error or make the discard explicit with `_ =`.
 
-##### Error wrapping with %w
-
-```go
-// Wrap — preserves the original error in the chain
-return fmt.Errorf("opening config: %w", err)
-
-// errors.Is traverses the chain
-errors.Is(wrappedErr, os.ErrNotExist)
-
-// errors.As extracts a type from the chain
-var pe *os.PathError
-errors.As(wrappedErr, &pe)
-```
-
-Do not use `%v` when you need chain inspection later — it breaks the chain.
-(Go 1.26+ adds `errors.AsType[T](err)`, a type-safe generic alternative to
-`errors.As`.)
-
-##### Sentinel and custom error types
+##### Sentinel errors
 
 ```go
 var ErrNotFound = errors.New("not found")
@@ -1181,6 +1258,15 @@ func FindUser(id int) (*User, error) {
     // ...
 }
 
+u, err := FindUser(0)
+if errors.Is(err, ErrNotFound) {
+    // handle specifically
+}
+```
+
+##### Custom error types
+
+```go
 type ValidationError struct {
     Field   string
     Message string
@@ -1196,28 +1282,36 @@ if errors.As(err, &ve) {
 }
 ```
 
-##### Multiple errors (Go 1.20+)
-
-Use `errors.Join` or multiple `%w` operands in one `fmt.Errorf` (both Go 1.20+)
-when an operation can fail in more than one independent way and callers should
-still be able to use `errors.Is` or `errors.As`. In modules on Go 1.19,
-aggregate failures manually or wrap a single primary cause with `%w`.
+##### Error wrapping with %w
 
 ```go
-var errs []error
-if err := closer.Close(); err != nil {
-    errs = append(errs, fmt.Errorf("closing file: %w", err))
-}
-if err := cleanup(); err != nil {
-    errs = append(errs, fmt.Errorf("cleaning up: %w", err))
-}
-return errors.Join(errs...) // Go 1.20+
+// Wrap — preserves the original error in the chain
+return fmt.Errorf("opening config: %w", err)
+
+// errors.Is traverses the chain
+errors.Is(wrappedErr, os.ErrNotExist)
+
+// errors.As extracts a type from the chain
+var pe *os.PathError
+errors.As(wrappedErr, &pe)
 ```
 
 ##### What NOT to do
 
-Do not log AND return the same error — pick one (return the error; log at the
-top boundary). Otherwise every layer logs it again.
+```go
+// Don't log AND return — pick one
+func bad() error {
+    err := db.Query()
+    if err != nil {
+        log.Println(err) // logs here
+        return err       // AND propagates — caller logs again
+    }
+    return nil
+}
+
+// Don't use %v when you need chain inspection later
+return fmt.Errorf("failed: %v", err) // breaks chain — use %w
+```
 
 ##### Concurrent error collection
 
@@ -1226,7 +1320,7 @@ import "golang.org/x/sync/errgroup"
 
 g, ctx := errgroup.WithContext(context.Background())
 for _, url := range urls {
-    url := url // unnecessary on Go 1.22+
+    url := url
     g.Go(func() error {
         return fetch(ctx, url)
     })
@@ -1235,33 +1329,6 @@ if err := g.Wait(); err != nil {
     return err
 }
 ```
-
----
-
-#### Structured Logging with log/slog
-
-`log/slog` is available in **Go 1.21+**. In modules targeting Go 1.20 or
-earlier, use the standard `log` package or a third-party structured logger.
-
-Use `log/slog` for structured application logs. Prefer stable key names and
-typed values over formatted strings.
-
-```go
-logger.InfoContext(ctx, "request complete",
-    "method", r.Method,
-    "path", r.URL.Path,
-    "status", status,
-    "duration", elapsed,
-)
-```
-
-Best practices:
-
-- **Always use structured key-value pairs** — never format strings into the message.
-- **Keys should be lowercase snake_case** for consistent log querying.
-- **Pass `context.Context` through** and use `InfoContext`/`ErrorContext` for trace IDs.
-- **Group related attributes** with `slog.Group` or `logger.WithGroup`.
-- **Never log secrets, tokens, credentials, or full request/response bodies** unless they are explicitly scrubbed.
 
 ---
 
@@ -1278,7 +1345,7 @@ go func() {
     fmt.Println("running concurrently")
 }()
 
-// On Go 1.21 or earlier, pass the loop variable as an argument to avoid capture
+// Pass loop variable as argument to avoid capture
 for i := 0; i < 5; i++ {
     go func(n int) {
         fmt.Println(n)
@@ -1332,12 +1399,27 @@ for _, item := range items {
 wg.Wait()
 ```
 
-On **Go 1.25+**, `wg.Go(func() { process(item) })` combines `Add(1)`, the
-goroutine launch, and `defer Done()` into one call.
-
 ##### sync.Mutex / sync.RWMutex
 
 ```go
+type SafeCounter struct {
+    mu sync.Mutex
+    v  map[string]int
+}
+
+func (c *SafeCounter) Inc(key string) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.v[key]++
+}
+
+func (c *SafeCounter) Value(key string) int {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    return c.v[key]
+}
+
+// RWMutex: multiple concurrent readers, exclusive writer
 type Cache struct {
     mu   sync.RWMutex
     data map[string]string
@@ -1357,34 +1439,55 @@ func (c *Cache) Set(key, val string) {
 }
 ```
 
-**Never copy a `sync.Mutex` or `sync.RWMutex`** after first use. Embed them in structs used through pointer receivers.
+**Never copy a `sync.Mutex` or `sync.RWMutex`** after first use. Embed them in structs with pointer receivers.
 
-##### sync.Once and sync.Map
+##### sync.Once
 
 ```go
-var once sync.Once
+var (
+    instance *Config
+    once     sync.Once
+)
+
 func GetConfig() *Config {
-    once.Do(func() { instance = loadConfig() })
+    once.Do(func() {
+        instance = loadConfig()
+    })
     return instance
 }
-
-// sync.Map — concurrent map for read-heavy or disjoint-key workloads
-var m sync.Map
-m.Store("key", "value")
-v, ok := m.Load("key")
-m.Delete("key")
 ```
 
-`sync.OnceFunc`/`OnceValue`/`OnceValues` (Go 1.21+) memoize lazy initialisation.
-`sync.Map.Clear` and `atomic.And`/`atomic.Or` are Go 1.23+.
+##### sync.Map
 
-##### Atomic types
+For concurrent maps with read-heavy workloads or disjoint keys across goroutines:
+
+```go
+var m sync.Map
+
+m.Store("key", "value")
+
+v, ok := m.Load("key")
+if ok {
+    fmt.Println(v.(string))
+}
+
+m.Delete("key")
+
+m.Range(func(k, v interface{}) bool {
+    fmt.Println(k, v)
+    return true // return false to stop iteration
+})
+```
+
+##### Atomic types (new in Go 1.19)
 
 ```go
 import "sync/atomic"
 
 var counter atomic.Int64
+
 counter.Add(1)
+counter.Add(-1)
 fmt.Println(counter.Load())
 
 // Type-safe atomic pointer
@@ -1412,6 +1515,19 @@ func workerPool(jobs <-chan Job, results chan<- Result, numWorkers int) {
         close(results)
     }()
 }
+
+jobs    := make(chan Job, 100)
+results := make(chan Result, 100)
+workerPool(jobs, results, runtime.NumCPU())
+
+for _, j := range work {
+    jobs <- j
+}
+close(jobs)
+
+for r := range results {
+    handle(r)
+}
 ```
 
 ##### Concurrency pitfalls
@@ -1422,7 +1538,7 @@ func workerPool(jobs <-chan Job, results chan<- Result, numWorkers int) {
 | Race condition | Occasional wrong values / crashes | Run `go test -race` |
 | Deadlock | Program hangs | Ensure every send has a receive; avoid circular locks |
 | Closing closed channel | Panic | Only sender closes; use `sync.Once` if multiple potential closers |
-| Loop variable capture (Go ≤1.21) | Wrong values in goroutines | Shadow `i := i`, or upgrade to Go 1.22+ |
+| Loop variable capture | Wrong values in goroutines | Shadow: `i := i` before `go func()` |
 | Copying mutex | Silently broken locking | Use pointer receivers when struct has a mutex |
 
 ##### Race detector
@@ -1469,11 +1585,6 @@ defer cancel()
 
 ctx = context.WithValue(parent, myKey{}, "value")
 ```
-
-Use cancellation causes (`context.WithCancelCause`/`context.Cause`, Go 1.20+)
-when callers need to distinguish why a context ended. `context.WithoutCancel`
-and `context.AfterFunc` are Go 1.21+. In modules on Go 1.19, carry the reason
-out of band.
 
 ##### Convention: context as first parameter
 
@@ -1523,10 +1634,25 @@ if id, ok := ctx.Value(requestIDKey).(string); ok {
 
 **Rules:**
 - Only store request-scoped data (trace IDs, auth tokens).
-- Never store optional function parameters or mutable data.
+- Never store optional function parameters.
+- Never store mutable data.
 - Always use an unexported key type.
-- **Never store context in a struct** — pass it as the first function parameter.
-- **Never pass a nil context** — use `context.Background()`.
+
+##### Common mistakes
+
+```go
+// Never store context in a struct
+type Service struct {
+    ctx context.Context // wrong
+}
+
+// Pass context as parameter — always
+func (s *Service) Do(ctx context.Context) error { /*...*/ }
+
+// Never pass nil context
+FetchUser(context.Background(), 1) // correct
+FetchUser(nil, 1)                  // wrong — may panic
+```
 
 ---
 
@@ -1574,7 +1700,8 @@ for _, line := range lines {
 // Line-by-line reader
 scanner := bufio.NewScanner(f)
 for scanner.Scan() {
-    process(scanner.Text())
+    line := scanner.Text()
+    process(line)
 }
 if err := scanner.Err(); err != nil {
     return err
@@ -1597,10 +1724,19 @@ if err != nil {
 ##### Streaming with io.Reader / io.Writer
 
 ```go
+// Copy between streams
+src, _ := os.Open("source.bin")
+defer src.Close()
+dst, _ := os.Create("dest.bin")
+defer dst.Close()
+
 written, err := io.Copy(dst, src)
 
 // Limit reader — max N bytes
 limited := io.LimitReader(src, 1<<20) // 1 MB
+
+// Multi-reader — concatenate streams
+combined := io.MultiReader(r1, r2, r3)
 
 // Tee reader — read and simultaneously write to a writer
 var buf bytes.Buffer
@@ -1638,12 +1774,14 @@ err = filepath.WalkDir("./data", func(path string, d fs.DirEntry, err error) err
 ##### JSON encoding / decoding
 
 ```go
+// Stream encoding to writer
 enc := json.NewEncoder(w)
 enc.SetIndent("", "  ")
 if err := enc.Encode(data); err != nil {
     return err
 }
 
+// Stream decoding from reader
 dec := json.NewDecoder(r)
 var result MyStruct
 if err := dec.Decode(&result); err != nil {
@@ -1658,8 +1796,6 @@ type User struct {
     pass  string // unexported — never marshalled
 }
 ```
-
-The `omitzero` struct tag (which correctly omits zero `time.Time` values) is Go 1.24+.
 
 ---
 
@@ -1682,6 +1818,12 @@ func TestAdd(t *testing.T) {
         t.Errorf("Add(2,3) = %d; want %d", got, want)
     }
 }
+```
+
+```bash
+go test ./...
+go test -v ./...
+go test -run TestAdd ./...
 ```
 
 ##### Table-driven tests (idiomatic Go)
@@ -1727,53 +1869,52 @@ func BenchmarkAdd(b *testing.B) {
 go test -bench=. -benchmem ./...
 ```
 
-`-benchmem` shows allocations per operation. On **Go 1.24+**, prefer
-`for b.Loop() { ... }` over `for i := 0; i < b.N; i++`.
+`-benchmem` shows allocations per operation — critical for performance work.
 
 ##### Test helpers
 
-Helper functions should call `t.Helper()` so failures report the caller's line.
-
 ```go
-func newTestUser(t *testing.T) *User {
-    t.Helper()
-    return &User{ID: uuid.New().String(), Name: "Test User", Email: "test@example.com"}
-}
-
-func assertNoError(t *testing.T, err error) {
-    t.Helper()
+func mustOpen(t *testing.T, name string) *os.File {
+    t.Helper() // marks this as a helper; failures show caller's line
+    f, err := os.Open(name)
     if err != nil {
-        t.Fatalf("unexpected error: %v", err)
+        t.Fatalf("mustOpen: %v", err)
     }
-}
-
-func assertEqual[T comparable](t *testing.T, got, want T) {
-    t.Helper()
-    if got != want {
-        t.Errorf("got %v; want %v", got, want)
-    }
+    return f
 }
 ```
 
-Prefer the built-in lifecycle helpers over manual cleanup: `t.TempDir()`
-(1.15+), `t.Setenv()` (1.17+), and `t.Cleanup()` (1.14+). `t.Context()` and
-`t.Chdir()` require Go 1.24+.
-
-##### Fuzzing
-
-Add fuzz tests (Go 1.18+) for parsers, decoders, validators, and other code that accepts complex external input.
+Prefer the built-in test lifecycle helpers over manual bookkeeping where
+available in Go 1.19: `t.TempDir()` (1.15), `t.Setenv()` (1.17), and
+`t.Cleanup()` (1.14).
 
 ```go
-func FuzzParse(f *testing.F) {
-    f.Add("valid input")
-    f.Fuzz(func(t *testing.T, input string) {
-        _, _ = Parse(input) // must not panic
+func TestWithTempDir(t *testing.T) {
+    dir := t.TempDir()          // auto-removed after the test
+    t.Setenv("HOME", dir)       // restored after the test
+    t.Cleanup(func() {
+        // runs in LIFO order after the test finishes
     })
 }
 ```
 
-`testing/synctest` (Go 1.25+) tests concurrent, time-dependent code with a fake
-clock instead of real `time.Sleep`.
+Note: `t.Context()` and `t.Chdir()` are Go 1.24 additions and are not available
+in Go 1.19.
+
+##### Fuzz testing (1.18+, refined in 1.19)
+
+```go
+func FuzzParseURL(f *testing.F) {
+    f.Add("https://example.com/path?q=1")
+    f.Fuzz(func(t *testing.T, input string) {
+        _, _ = url.Parse(input) // must not panic
+    })
+}
+```
+
+```bash
+go test -fuzz=FuzzParseURL -fuzztime=30s
+```
 
 ##### Race detector in tests
 
@@ -1790,10 +1931,23 @@ Always run this in CI pipelines.
 ##### Standard `flag` package (simple CLIs)
 
 ```go
+package main
+
+import (
+    "flag"
+    "fmt"
+    "os"
+    "time"
+)
+
 func main() {
     host    := flag.String("host", "localhost", "server host")
     port    := flag.Int("port", 8080, "server port")
     verbose := flag.Bool("verbose", false, "enable verbose output")
+
+    // Go 1.19: flag.TextVar for any encoding.TextUnmarshaler
+    var t time.Time
+    flag.TextVar(&t, "time", time.Now(), "timestamp (RFC3339)")
 
     flag.Parse()
     args := flag.Args() // positional arguments after flags
@@ -1809,7 +1963,19 @@ func main() {
 
 Used by `kubectl`, GitHub CLI, Docker, and most serious Go CLI tools.
 
+```bash
+go get github.com/spf13/cobra@latest
+```
+
 ```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "github.com/spf13/cobra"
+)
+
 var rootCmd = &cobra.Command{
     Use:   "myapp",
     Short: "My CLI application",
@@ -1820,15 +1986,28 @@ var serveCmd = &cobra.Command{
     Short: "Start the server",
     RunE: func(cmd *cobra.Command, args []string) error {
         port, _ := cmd.Flags().GetInt("port")
+        fmt.Printf("Starting server on port %d\n", port)
         return startServer(port)
     },
 }
 
+var getCmd = &cobra.Command{
+    Use:   "get [resource]",
+    Args:  cobra.ExactArgs(1),
+    RunE: func(cmd *cobra.Command, args []string) error {
+        return getResource(args[0])
+    },
+}
+
 func init() {
+    // Persistent flag: available to this command and all subcommands
     rootCmd.PersistentFlags().Bool("verbose", false, "verbose output")
+
+    // Local flag: only for serveCmd
     serveCmd.Flags().IntP("port", "p", 8080, "port to listen on")
     serveCmd.MarkFlagRequired("port")
-    rootCmd.AddCommand(serveCmd)
+
+    rootCmd.AddCommand(serveCmd, getCmd)
 }
 
 func main() {
@@ -1842,6 +2021,12 @@ func main() {
 ##### Exit codes and stderr
 
 ```go
+// Always write errors to stderr
+fmt.Fprintln(os.Stderr, "error:", err)
+
+// Non-zero exit on failure
+os.Exit(1)
+
 // Recommended main pattern — all logic in run()
 func main() {
     if err := run(); err != nil {
@@ -1855,8 +2040,6 @@ func run() error {
     return nil
 }
 ```
-
-Always write errors to stderr and use a non-zero exit code on failure.
 
 ---
 
@@ -1873,11 +2056,24 @@ go build -gcflags="-m" ./...
 
 Values escape to the heap when a pointer is returned, stored in an interface, sent on a channel, or captured by an escaping closure.
 
+```go
+// Escapes to heap — avoid in hot paths
+func newPoint(x, y int) *Point {
+    return &Point{x, y}
+}
+
+// Stays on stack — no GC pressure
+func calcDist(x, y int) float64 {
+    p := Point{x, y}
+    return math.Sqrt(float64(p.X*p.X + p.Y*p.Y))
+}
+```
+
 ##### sync.Pool — reuse objects
 
 ```go
 var bufPool = sync.Pool{
-    New: func() any { return &bytes.Buffer{} },
+    New: func() interface{} { return &bytes.Buffer{} },
 }
 
 func process(data []byte) string {
@@ -1892,9 +2088,43 @@ func process(data []byte) string {
 
 `sync.Pool` objects may be evicted by GC at any time — never use for persistent state.
 
+##### String building
+
+```go
+// O(n^2) — new allocation every iteration
+s := ""
+for i := 0; i < n; i++ { s += "x" }
+
+// O(n) — pre-allocate if size is known
+var b strings.Builder
+b.Grow(n)
+for i := 0; i < n; i++ { b.WriteByte('x') }
+s := b.String()
+```
+
 ##### Interface boxing costs
 
 Storing a concrete value in `interface{}` (or `any`) allocates a new object on the heap (the "box"). In tight loops prefer concrete types.
+
+```go
+// Repeated boxing — slow
+func sumInterface(nums []any) int {
+    sum := 0
+    for _, n := range nums {
+        sum += n.(int)
+    }
+    return sum
+}
+
+// Concrete type — no boxing
+func sum(nums []int) int {
+    sum := 0
+    for _, n := range nums {
+        sum += n
+    }
+    return sum
+}
+```
 
 ##### Struct memory layout
 
@@ -1914,28 +2144,42 @@ type Optimised struct {
 }
 ```
 
-##### GC tuning
+##### GC tuning (Go 1.19)
 
 ```go
 // GOGC: % heap growth before GC (default 100)
-debug.SetGCPercent(200) // less frequent GC, more memory used
+os.Setenv("GOGC", "200") // less frequent GC, more memory used
 
-// GOMEMLIMIT (Go 1.19+): soft total memory limit
+// GOMEMLIMIT (new in 1.19): soft total memory limit
 debug.SetMemoryLimit(512 << 20) // 512 MiB
+
+// Programmatic
+debug.SetGCPercent(200)
 ```
 
 In containerised deployments: set `GOMEMLIMIT` to ~90% of your container's memory limit to avoid OOM kills while letting the GC run efficiently.
 
+##### Goroutine and channel overhead
+
+- Creating a goroutine costs ~2-4 KB stack + scheduler overhead.
+- For millions of tiny tasks, use a **worker pool** rather than spawning one goroutine per task.
+- Buffered channels reduce blocking but consume memory proportional to buffer size.
+
 ##### Profiling
 
 ```bash
-# CPU / memory profiles
-go test -bench=. -cpuprofile=cpu.prof -memprofile=mem.prof
+# CPU profile
+go test -bench=. -cpuprofile=cpu.prof
 go tool pprof cpu.prof
+
+# Memory/heap profile
+go test -bench=. -memprofile=mem.prof
+go tool pprof mem.prof
 
 # HTTP pprof endpoint (add to long-running servers)
 import _ "net/http/pprof"
 go http.ListenAndServe(":6060", nil)
+# then:
 go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 ```
 
@@ -1953,10 +2197,10 @@ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 - **Write table-driven tests** for any function with multiple input shapes.
 - **Use `context.Context` as the first parameter** for any function that does I/O or can be cancelled.
 - **Preallocate slices and maps** when the final size is known: `make([]T, 0, n)`.
+- **Shadow loop variables** before goroutines: `i := i`.
 - **Use `strings.Builder`** for multi-step string construction.
 - **Use `fmt.Errorf("context: %w", err)`** to preserve error chains.
 - **Always `defer cancel()`** immediately after `context.WithCancel/Timeout/Deadline`.
-- **Shadow loop variables** before goroutines on Go ≤1.21 (`i := i`); unnecessary on Go 1.22+.
 
 ##### Don't
 
@@ -1975,6 +2219,20 @@ go tool pprof http://localhost:6060/debug/pprof/profile?seconds=30
 | String concatenation with `+` in loops | O(n^2) allocations | `strings.Builder` |
 | Storing context in a struct | Anti-pattern | Pass as first function parameter |
 | Appending to a slice during range | Undefined, confusing | Collect then append after loop |
+
+##### Reachability and domain bounds
+
+Only report overflow, panic, or invalid-value behavior when the failing path is
+reachable for the declared type and the function's input domain.
+
+- Do not claim byte formatting can index into ZiB/YiB units when an `int64`
+  input cannot grow large enough to reach those unit indexes.
+- Do not require negative byte handling when all callers pass values from
+  `os.FileInfo.Size()` or another source with a non-negative contract.
+- Do report missing negative handling when an exported/general-purpose function
+  accepts user-controlled values and documents no narrower domain.
+- Do not require defensive code for values that cannot be represented by the
+  input type.
 
 ##### Security
 
@@ -2002,6 +2260,7 @@ func ParseConfig() {}
 
 // Unexported: camelCase
 type httpClient struct{}
+func validateToken() {}
 
 // Acronyms stay all-caps
 type HTTPClient struct{}
@@ -2018,6 +2277,7 @@ type Stringer interface { String() string }
 func (u *User) IsAdmin() bool {}
 
 // No stuttering: user.Name not user.UserName
+// No redundant package prefix: strings.NewReader not strings.NewStringReader
 ```
 
 ##### Formatting
@@ -2037,8 +2297,10 @@ staticcheck ./...    # deeper static analysis
 golangci-lint run    # comprehensive lint suite (recommended for CI)
 ```
 
+Run `go vet` at minimum. Add `staticcheck` or `golangci-lint` for production code.
+
 A `golangci-lint` v2 configuration (the tool version is independent of the Go
-language version):
+language version and lints Go 1.19 code fine):
 
 ```yaml
 # .golangci.yml (golangci-lint v2)
@@ -2072,4 +2334,4 @@ formatters:
 
 ---
 
-*End of Go Common Developer Guideline*
+*End of Go 1.19 Complete Developer Guideline*
