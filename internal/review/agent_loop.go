@@ -212,6 +212,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 				e.logf(loopCtx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
 				resp = invalidResp.PartialResponse
 			} else if err != nil {
+				recordInvalidResponseTokens(invalidResp)
 				return result, err
 			}
 		}
