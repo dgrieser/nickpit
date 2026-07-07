@@ -227,6 +227,18 @@ go mod init github.com/yourname/myapp
 
 This creates `go.mod`. Never edit it manually for dependencies; use `go get`, `go mod tidy`.
 
+### Verify library APIs against the pinned version
+
+Verify library APIs against the actual module versions in `go.mod` before
+claiming an API is missing or unavailable.
+
+- Do not claim a controller-runtime helper is unavailable without checking the
+  pinned `sigs.k8s.io/controller-runtime` version.
+- Say "this API is not available in vX.Y.Z" only when the module version proves
+  it.
+- Do not infer API availability from memory, a newer version's docs, or another
+  project's dependency set.
+
 ### Recommended directory layout
 
 ```
@@ -1007,6 +1019,17 @@ for k := range m {
 }
 ```
 
+Only flag map mutation during iteration when there is a concrete Go issue, for
+example:
+
+- unsynchronized concurrent map access
+- inserting or updating entries while depending on deterministic iteration
+- deleting entries changes required business behavior
+- callbacks are invoked while holding a lock and can re-enter the same lock
+
+Do not apply generic "modifying a collection while iterating" rules from other
+languages to Go map deletion.
+
 #### Maps are reference types
 
 ```go
@@ -1097,6 +1120,14 @@ if err != nil {
     return fmt.Errorf("doSomething failed: %w", err)
 }
 ```
+
+**Always check errors.** A few discards are idiomatic and should not be flagged:
+
+- deferred `Close()` on files opened only for reading
+- `defer tx.Rollback()`, which is a no-op after a successful commit
+- writes to `bytes.Buffer` or `strings.Builder`, which never return an error
+
+For everything else, handle the error or make the discard explicit with `_ =`.
 
 ### Sentinel errors
 
@@ -1378,6 +1409,16 @@ go run -race main.go
 ```
 
 **Always run with `-race` in CI.**
+
+### Classifying races before reporting
+
+Separate true data races from lifecycle, shutdown, or ordering races. Only call
+something a data race after confirming unsynchronized shared-memory access with
+at least one write.
+
+Check a library's concurrency contract before assuming concurrent method calls
+are unsafe. Some Go types are explicitly safe for concurrent use, while others
+require caller-side synchronization.
 
 ---
 
@@ -1664,6 +1705,38 @@ func TestDivide(t *testing.T) {
     }
 }
 ```
+
+### Test helpers
+
+Helper functions should call `t.Helper()` so failures report the caller's line.
+
+```go
+func newTestUser(t *testing.T) *User {
+    t.Helper()
+    return &User{ID: uuid.New().String(), Name: "Test User", Email: "test@example.com"}
+}
+
+func assertNoError(t *testing.T, err error) {
+    t.Helper()
+    if err != nil {
+        t.Fatalf("unexpected error: %v", err)
+    }
+}
+
+func assertEqual[T comparable](t *testing.T, got, want T) {
+    t.Helper()
+    if got != want {
+        t.Errorf("got %v; want %v", got, want)
+    }
+}
+```
+
+Prefer the built-in test lifecycle helpers over manual bookkeeping where
+available in Go 1.20: `t.TempDir()` (1.15), `t.Setenv()` (1.17), and
+`t.Cleanup()` (1.14).
+
+Note: `t.Context()` and `t.Chdir()` are Go 1.24 additions and are not available
+in Go 1.20.
 
 ### Benchmarks
 
@@ -2055,6 +2128,37 @@ func handler(w http.ResponseWriter, r *http.Request) {
 | `[4]byte(s)` without len check | Runtime panic | Check `len(s) >= 4` first |
 | Using `comparable` with interfaces carelessly | Runtime panic on hash | Document that type must be hashable |
 
+### Reachability and domain bounds
+
+Only report overflow, panic, or invalid-value behavior when the failing path is
+reachable for the declared type and the function's input domain.
+
+- Do not claim byte formatting can index into ZiB/YiB units when an `int64`
+  input cannot grow large enough to reach those unit indexes.
+- Do not require negative byte handling when all callers pass values from
+  `os.FileInfo.Size()` or another source with a non-negative contract.
+- Do report missing negative handling when an exported/general-purpose function
+  accepts user-controlled values and documents no narrower domain.
+- Do not require defensive code for values that cannot be represented by the
+  input type.
+
+### Security
+
+Weak hashes are only security-relevant when the hash is used for a security
+property such as authentication, authorization, integrity, signatures, password
+storage, or collision resistance against attacker-controlled input.
+
+For content-addressed storage, distinguish integrity/security boundaries from
+ordinary maintenance behavior.
+
+- Do not require hash verification on every listing unless the listing crosses
+  a trust boundary or an attacker can write to the store.
+- Delete-before-regenerate can be correct when replacing corrupt same-digest
+  content and the store skips writes for content that already exists.
+- Report content-addressed storage issues when untrusted data can be accepted
+  under the wrong digest, when corruption is silently trusted as valid content,
+  or when the repair order can lose the only valid copy.
+
 ### Naming conventions
 
 ```go
@@ -2094,6 +2198,39 @@ goimports -w .   # also sorts imports
 go vet ./...         # built-in — run always
 staticcheck ./...    # deeper analysis
 golangci-lint run    # comprehensive suite for CI
+```
+
+A `golangci-lint` v2 configuration (the tool version is independent of the Go
+language version and lints Go 1.20 code fine):
+
+```yaml
+# .golangci.yml (golangci-lint v2)
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck # includes the former gosimple checks
+    - unused
+    - gocritic
+  settings:
+    govet:
+      enable:
+        - shadow
+    errcheck:
+      check-type-assertions: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 ```
 
 ---
