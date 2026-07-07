@@ -1,8 +1,10 @@
 // Package styleguide resolves user-supplied additional styleguides — local
-// files or http(s) URLs — into prompt-ready model.StyleGuide values. The
-// built-in language styleguides live in prompts/styleguides and are selected
-// by language detection; the guides resolved here are appended for every
-// agent regardless of the languages in the diff.
+// files or http(s) URLs — into prompt-ready model.AdditionalStyleGuide values.
+// The built-in language styleguides live in prompts/styleguides and are
+// selected by language (and detected version) detection. The guides resolved
+// here carry optional gating metadata (language + version); an ungated guide
+// is appended for every agent, while a gated one is injected only when its
+// language changed and, when set, the detected toolchain version matches.
 package styleguide
 
 import (
@@ -33,32 +35,37 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 // it is non-empty (the effective workdir — the --workdir flag chdirs, but a
 // profile/env workdir does not), otherwise against the process working
 // directory.
-func Resolve(ctx context.Context, specs []string, baseDir string) ([]model.StyleGuide, error) {
+func Resolve(ctx context.Context, specs []model.StyleGuideSpec, baseDir string) ([]model.AdditionalStyleGuide, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
-	guides := make([]model.StyleGuide, 0, len(specs))
+	guides := make([]model.AdditionalStyleGuide, 0, len(specs))
 	for _, spec := range specs {
+		source := spec.Source
 		var content string
 		var err error
-		if isURL(spec) {
-			content, err = fetchURL(ctx, spec)
+		if isURL(source) {
+			content, err = fetchURL(ctx, source)
 		} else {
-			content, err = readFile(spec, baseDir)
+			content, err = readFile(source, baseDir)
 		}
 		if err != nil {
 			return nil, err
 		}
 		content = strings.TrimSpace(content)
 		if content == "" {
-			return nil, fmt.Errorf("styleguide %q is empty", spec)
+			return nil, fmt.Errorf("styleguide %q is empty", source)
 		}
 		if !utf8.ValidString(content) || strings.ContainsRune(content, 0) {
-			return nil, fmt.Errorf("styleguide %q is not text", spec)
+			return nil, fmt.Errorf("styleguide %q is not text", source)
 		}
-		guides = append(guides, model.StyleGuide{
-			Language: spec,
-			Content:  decorate(spec, content),
+		guides = append(guides, model.AdditionalStyleGuide{
+			StyleGuide: model.StyleGuide{
+				Language: source,
+				Content:  decorate(source, content),
+			},
+			GateLanguage: spec.Language,
+			GateVersion:  spec.Version,
 		})
 	}
 	return guides, nil

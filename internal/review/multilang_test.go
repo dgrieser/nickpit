@@ -144,8 +144,8 @@ func TestEngineDisablesStyleGuidesByLanguage(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	engine.SetDisabledStyleGuides([]string{"python"})
-	engine.SetAdditionalStyleGuides([]model.StyleGuide{
-		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
+		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
 	})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
@@ -168,8 +168,8 @@ func TestEngineDisablesStyleGuidesByLanguage(t *testing.T) {
 func TestEngineIncludesAdditionalStyleGuides(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(pythonDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	engine.SetAdditionalStyleGuides([]model.StyleGuide{
-		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
+		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
 	})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{
@@ -208,8 +208,8 @@ func (markdownOnlyDiffSource) ResolveContext(context.Context, model.ReviewReques
 func TestEngineIncludesAdditionalStyleGuidesWithoutLanguageGuides(t *testing.T) {
 	llmClient := &capturingLLM{}
 	engine := NewEngine(markdownOnlyDiffSource{}, llmClient, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
-	engine.SetAdditionalStyleGuides([]model.StyleGuide{
-		{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."},
+	engine.SetAdditionalStyleGuides([]model.AdditionalStyleGuide{
+		{StyleGuide: model.StyleGuide{Language: "team.md", Content: "### Additional styleguide: team.md\n\nNo TODO comments."}},
 	})
 
 	_, _, err := runReviewPipeline(engine, context.Background(), model.ReviewRequest{

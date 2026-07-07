@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/model"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,7 +63,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("exclude_paths", stringSliceNode(profile.ExcludePaths)),
 		yamlEntry("include_content", stringSliceNode(profile.IncludeContent)),
 		yamlEntry("exclude_content", stringSliceNode(profile.ExcludeContent)),
-		yamlEntry("styleguides", stringSliceNode(profile.StyleGuides)),
+		yamlEntry("styleguides", styleGuideSpecsNode(profile.StyleGuides)),
 		yamlEntry("disable_styleguides", stringSliceNode(profile.DisableStyleGuides)),
 		yamlEntry("diff_format", yamlScalar(string(profile.DiffFormat))),
 		yamlEntry("max_context_tokens", yamlInt(profile.MaxContextTokens)),
@@ -126,6 +127,29 @@ func stringSliceNode(values []string) *yaml.Node {
 	seq := &yaml.Node{Kind: yaml.SequenceNode}
 	for _, value := range values {
 		seq.Content = append(seq.Content, yamlScalar(value))
+	}
+	return seq
+}
+
+// styleGuideSpecsNode renders styleguide specs as a YAML sequence: an ungated
+// spec (source only) becomes a scalar path/URL for readability, while a
+// language/version-gated spec becomes a mapping. This mirrors the scalar-or-
+// mapping shape accepted by model.StyleGuideSpec.UnmarshalYAML.
+func styleGuideSpecsNode(specs []model.StyleGuideSpec) *yaml.Node {
+	seq := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, spec := range specs {
+		if spec.Language == "" && spec.Version == "" {
+			seq.Content = append(seq.Content, yamlScalar(spec.Source))
+			continue
+		}
+		entries := []yamlNodeEntry{yamlEntry("source", yamlScalar(spec.Source))}
+		if spec.Language != "" {
+			entries = append(entries, yamlEntry("language", yamlScalar(spec.Language)))
+		}
+		if spec.Version != "" {
+			entries = append(entries, yamlEntry("version", yamlScalar(spec.Version)))
+		}
+		seq.Content = append(seq.Content, yamlMapping(entries...))
 	}
 	return seq
 }

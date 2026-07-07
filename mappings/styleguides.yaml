@@ -3,7 +3,12 @@
 # summarize agents.
 #
 # style_guides:
-#   Maps a styleguide language key to a Markdown file under prompts/.
+#   Maps a styleguide language key to a Markdown file under prompts/. An entry
+#   is either a scalar file path (used for every version) or a mapping with a
+#   `default` plus version-specific `versions` overrides keyed by a version or
+#   semver range (e.g. "1.19", ">=1.22"). When a detected toolchain version
+#   (from go.mod, Dockerfile, CI, ...) matches a version key, that guide is used
+#   instead of the default; the lowest detected version wins on conflict.
 #   Add a new key here when adding a new styleguide file.
 #
 # style_guide_order:
@@ -32,7 +37,10 @@
 # case-sensitive. content_regex uses Go regular expressions; prefer simple,
 # bounded expressions because detectors run over changed-file content.
 style_guides:
-  go: styleguides/go.md
+  go:
+    default: styleguides/go.md
+    versions:
+      "1.19": styleguides/go-1.19.md
   python: styleguides/python.md
   javascript: styleguides/javascript.md
   typescript: styleguides/typescript.md

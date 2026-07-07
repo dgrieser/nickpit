@@ -9,7 +9,18 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/dgrieser/nickpit/internal/model"
 )
+
+// srcs builds ungated (scalar) styleguide specs from source strings.
+func srcs(sources ...string) []model.StyleGuideSpec {
+	specs := make([]model.StyleGuideSpec, len(sources))
+	for i, s := range sources {
+		specs[i] = model.StyleGuideSpec{Source: s}
+	}
+	return specs
+}
 
 func writeGuide(t *testing.T, name, content string) string {
 	t.Helper()
@@ -22,7 +33,7 @@ func writeGuide(t *testing.T, name, content string) string {
 
 func TestResolveFile(t *testing.T) {
 	path := writeGuide(t, "team.md", "No TODO comments.\n")
-	guides, err := Resolve(context.Background(), []string{path}, "")
+	guides, err := Resolve(context.Background(), srcs(path), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +58,7 @@ func TestResolveEmptySpecs(t *testing.T) {
 
 func TestResolveMissingFile(t *testing.T) {
 	spec := filepath.Join(t.TempDir(), "missing.md")
-	_, err := Resolve(context.Background(), []string{spec}, "")
+	_, err := Resolve(context.Background(), srcs(spec), "")
 	if err == nil || !strings.Contains(err.Error(), spec) {
 		t.Fatalf("error = %v, want to name %q", err, spec)
 	}
@@ -55,7 +66,7 @@ func TestResolveMissingFile(t *testing.T) {
 
 func TestResolveDirectory(t *testing.T) {
 	dir := t.TempDir()
-	_, err := Resolve(context.Background(), []string{dir}, "")
+	_, err := Resolve(context.Background(), srcs(dir), "")
 	if err == nil || !strings.Contains(err.Error(), "is a directory") {
 		t.Fatalf("error = %v, want directory error", err)
 	}
@@ -63,7 +74,7 @@ func TestResolveDirectory(t *testing.T) {
 
 func TestResolveEmptyFile(t *testing.T) {
 	path := writeGuide(t, "empty.md", "  \n\t\n")
-	_, err := Resolve(context.Background(), []string{path}, "")
+	_, err := Resolve(context.Background(), srcs(path), "")
 	if err == nil || !strings.Contains(err.Error(), "is empty") {
 		t.Fatalf("error = %v, want empty error", err)
 	}
@@ -71,7 +82,7 @@ func TestResolveEmptyFile(t *testing.T) {
 
 func TestResolveOversizedFile(t *testing.T) {
 	path := writeGuide(t, "big.md", strings.Repeat("a", MaxBytes+1))
-	_, err := Resolve(context.Background(), []string{path}, "")
+	_, err := Resolve(context.Background(), srcs(path), "")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("error = %v, want size error", err)
 	}
@@ -79,7 +90,7 @@ func TestResolveOversizedFile(t *testing.T) {
 
 func TestResolveBinaryFile(t *testing.T) {
 	path := writeGuide(t, "bin.md", "rules\x00rules")
-	_, err := Resolve(context.Background(), []string{path}, "")
+	_, err := Resolve(context.Background(), srcs(path), "")
 	if err == nil || !strings.Contains(err.Error(), "is not text") {
 		t.Fatalf("error = %v, want not-text error", err)
 	}
@@ -89,7 +100,7 @@ func TestResolveNonRegularFile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no /dev/null device file on windows")
 	}
-	_, err := Resolve(context.Background(), []string{"/dev/null"}, "")
+	_, err := Resolve(context.Background(), srcs("/dev/null"), "")
 	if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
 		t.Fatalf("error = %v, want not-a-regular-file error", err)
 	}
@@ -101,7 +112,7 @@ func TestResolveRelativePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(dir)
-	guides, err := Resolve(context.Background(), []string{"guide.md"}, "")
+	guides, err := Resolve(context.Background(), srcs("guide.md"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +128,7 @@ func TestResolveRelativePathAgainstBaseDir(t *testing.T) {
 	}
 	// The process cwd is elsewhere; baseDir must anchor the relative spec.
 	t.Chdir(t.TempDir())
-	guides, err := Resolve(context.Background(), []string{"guide.md"}, dir)
+	guides, err := Resolve(context.Background(), srcs("guide.md"), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +141,7 @@ func TestResolveRelativePathAgainstBaseDir(t *testing.T) {
 
 	// Absolute specs ignore baseDir.
 	absolute := writeGuide(t, "abs.md", "absolute rules")
-	guides, err = Resolve(context.Background(), []string{absolute}, dir)
+	guides, err = Resolve(context.Background(), srcs(absolute), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +159,7 @@ func TestResolveURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	guides, err := Resolve(context.Background(), []string{server.URL}, "")
+	guides, err := Resolve(context.Background(), srcs(server.URL), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +179,7 @@ func TestResolveURLFollowsRedirect(t *testing.T) {
 	}))
 	defer server.Close()
 
-	guides, err := Resolve(context.Background(), []string{server.URL}, "")
+	guides, err := Resolve(context.Background(), srcs(server.URL), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +194,7 @@ func TestResolveURLNotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := Resolve(context.Background(), []string{server.URL}, "")
+	_, err := Resolve(context.Background(), srcs(server.URL), "")
 	if err == nil || !strings.Contains(err.Error(), "HTTP 404") || !strings.Contains(err.Error(), server.URL) {
 		t.Fatalf("error = %v, want HTTP 404 naming the URL", err)
 	}
@@ -195,7 +206,7 @@ func TestResolveURLOversizedBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := Resolve(context.Background(), []string{server.URL}, "")
+	_, err := Resolve(context.Background(), srcs(server.URL), "")
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("error = %v, want size error", err)
 	}
@@ -206,7 +217,7 @@ func TestResolveURLUnreachable(t *testing.T) {
 	url := server.URL
 	server.Close()
 
-	_, err := Resolve(context.Background(), []string{url}, "")
+	_, err := Resolve(context.Background(), srcs(url), "")
 	if err == nil || !strings.Contains(err.Error(), url) {
 		t.Fatalf("error = %v, want to name %q", err, url)
 	}
@@ -215,7 +226,7 @@ func TestResolveURLUnreachable(t *testing.T) {
 func TestResolveOrderAndFailFast(t *testing.T) {
 	first := writeGuide(t, "first.md", "First.")
 	second := writeGuide(t, "second.md", "Second.")
-	guides, err := Resolve(context.Background(), []string{first, second}, "")
+	guides, err := Resolve(context.Background(), srcs(first, second), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +235,7 @@ func TestResolveOrderAndFailFast(t *testing.T) {
 	}
 
 	missing := filepath.Join(t.TempDir(), "missing.md")
-	if _, err := Resolve(context.Background(), []string{first, missing, second}, ""); err == nil {
+	if _, err := Resolve(context.Background(), srcs(first, missing, second), ""); err == nil {
 		t.Fatal("want error when any spec fails")
 	}
 }
