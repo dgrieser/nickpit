@@ -592,6 +592,14 @@ func TestGitLocalChangeCommandsPresent(t *testing.T) {
 			args:      []string{"git", "unstaged"},
 			wantShort: "Review unstaged tracked changes",
 		},
+		{
+			args:      []string{"git", "commits"},
+			wantShort: "Review a specific commit range",
+		},
+		{
+			args:      []string{"git", "branch"},
+			wantShort: "Review a branch against a base branch",
+		},
 	}
 
 	for _, tt := range tests {

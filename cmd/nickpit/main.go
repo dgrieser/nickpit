@@ -573,6 +573,10 @@ func localReviewShort(submode string) string {
 		return "Review staged changes"
 	case "unstaged":
 		return "Review unstaged tracked changes"
+	case "commits":
+		return "Review a specific commit range"
+	case "branch":
+		return "Review a branch against a base branch"
 	default:
 		return "Run a local review"
 	}
