@@ -77,7 +77,6 @@ set -euo pipefail
 # Full production header
 #!/usr/bin/env bash
 set -euo pipefail
-IFS=$'\n\t'       # safer default IFS — no accidental word splitting on spaces
 ```
 
 **`set -e` caveats:**
@@ -477,20 +476,31 @@ already correctly quoted.
 
 #### 7. Whitespace Handling & IFS
 
-`IFS` (Internal Field Separator) defaults to space, tab, newline. Changing it affects `read`, `for`, and word splitting.[^7]
+`IFS` (Internal Field Separator) defaults to space, tab, newline.
+Changing it affects `read`, `for`, and word splitting.
+
+**Prefer scoping `IFS` to the command or function that needs it over setting a
+global default.** A global `IFS=$'\n\t'` is a common recommendation but changes
+word-splitting everywhere and has surprising effects: `"$*"` and `"${*:2}"` join
+on IFS's **first character**, so under `$'\n\t'` they concatenate with newlines
+instead of spaces. Scope it instead:[^7]
 
 ```bash
-# Safe IFS for production scripts — prevents splitting on spaces
-IFS=$'\n\t'
+# Scope IFS to a single command — does NOT persist (best)
+IFS=',' read -ra csv_fields <<< "a,b,c"
+IFS=':'  read -ra path_parts <<< "$PATH"
 
-# Always restore IFS after temporary change
+# Scope IFS to a function with `local`
+join_words() {
+  local IFS=' '        # ensures "$*" joins with spaces regardless of caller's IFS
+  printf '%s\n' "$*"
+}
+
+# If you must change IFS in the current shell, save and restore it
 old_IFS="$IFS"
 IFS=':'
-read -ra path_parts <<< "$PATH"
+read -ra parts <<< "$PATH"
 IFS="$old_IFS"
-
-# Or scope IFS change to a single command (does NOT persist)
-IFS=',' read -ra csv_fields <<< "a,b,c"
 ```
 
 ##### Trimming whitespace
@@ -728,11 +738,15 @@ usage() {
 [[ $# -eq 0 ]] && usage
 [[ -f "$1" ]] || { echo "File not found: $1" >&2; exit "$EX_NOINPUT"; }
 
-# Check exit codes explicitly when set -e is off or insufficient
+# Check exit codes explicitly when set -e is off or insufficient.
+# NOTE: inside `if ! cmd; then`, $? is the negated test's status (0), NOT cmd's.
 if ! command_that_might_fail; then
-  echo "Failed with: $?" >&2
+  echo "command_that_might_fail failed" >&2   # do NOT read $? here — it is 0
   exit 1
 fi
+
+# When you need the actual exit code, capture it without `!`:
+command_that_might_fail || { rc=$?; echo "Failed with: $rc" >&2; exit 1; }
 
 # Propagate exit code from subshell
 run_in_subshell() (
@@ -757,13 +771,14 @@ declare -rA _LOG_LEVELS=([DEBUG]=0 [INFO]=1 [WARN]=2 [ERROR]=3)  # -A is require
 
 log() {
   local level="$1"; shift
+  local IFS=' '        # scope IFS: keep "$*" space-joined regardless of caller's IFS
   local msg="$*"
   local ts
   printf -v ts '%(%Y-%m-%dT%H:%M:%S%z)T' -1   # Bash 4.2+: builtin, no date fork
 
   # Numeric comparison for log level filtering
-  local current_level="${_LOG_LEVELS[$LOG_LEVEL]:-1}"
-  local msg_level="${_LOG_LEVELS[$level]:-1}"
+  local current_level="${_LOG_LEVELS[${LOG_LEVEL:-INFO}]:-1}"  # default guards empty subscript
+  local msg_level="${_LOG_LEVELS[${level:-INFO}]:-1}"          # empty assoc key = "bad array subscript"
   (( msg_level < current_level )) && return 0
 
   printf '[%s] [%s] %s\n' "$ts" "$level" "$msg" >&2
@@ -1277,7 +1292,8 @@ awk '{printf "%-20s %5d\n", $1, $2}' data.txt
 # Named variables
 awk -v threshold=50 '$2 > threshold {print $1}' data.txt
 
-# Process specific columns of CSV (handles quoted fields — use proper CSV tools for complex cases)
+# Process CSV columns — WARNING: awk -F',' splits on EVERY comma and does NOT handle
+# quoted commas; use a CSV-aware tool (csvkit, miller, python csv) whenever fields may be quoted
 awk -F',' 'NR>1 {print $1, $3}' data.csv   # skip header, print cols 1 and 3
 
 # Multiline records
@@ -1369,7 +1385,7 @@ rg "pattern" .                       # recursive by default, respects .gitignore
 rg -l "pattern" .                    # files only
 rg -t go "pattern" .                 # filter by file type
 rg --no-ignore "pattern" .           # ignore .gitignore/.rgignore
-rg --null "pattern" . | xargs -0 ... # null-delimited output (rg also supports -0)
+rg -l --null "pattern" . | xargs -0 ... # -l = NUL-terminated FILE LIST (without -l, rg NUL-terminates only the path and still prints match text; -0 is a short alias for --null)
 rg -e "pattern1" -e "pattern2" .    # multiple patterns
 rg --hidden "pattern" .             # include hidden files
 rg --glob "*.go" "pattern" .        # glob filter
@@ -1723,7 +1739,6 @@ fi
 # Requires: Bash 4.3+
 # ============================================================
 set -euo pipefail
-IFS=$'\n\t'
 
 # ── Constants ────────────────────────────────────────────────
 readonly SCRIPT_NAME="${0##*/}"
@@ -1732,7 +1747,7 @@ readonly LOG_FILE="${LOG_FILE:-/tmp/${SCRIPT_NAME%.sh}.log}"
 DRY_RUN="${DRY_RUN:-false}"   # not readonly: reassigned by --dry-run below
 
 # ── Logging ──────────────────────────────────────────────────
-log()  { printf '[%(%T)T] [%s] %s\n' -1 "$1" "${*:2}" >&2; }
+log()  { local IFS=' '; printf '[%(%T)T] [%s] %s\n' -1 "$1" "${*:2}" >&2; }
 info() { log INFO  "$@"; }
 warn() { log WARN  "$@"; }
 err()  { log ERROR "$@"; }
@@ -1755,6 +1770,7 @@ require_cmd() {
 
 run() {
   if [[ "$DRY_RUN" == "true" ]]; then
+    local IFS=' '
     info "[dry-run] $*"
   else
     "$@"
