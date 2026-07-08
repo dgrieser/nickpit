@@ -1,0 +1,139 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+{{- fail "nickpit-serve MUST run as a singleton; replicaCount cannot exceed 1 (in-memory review queue + dedup LRU would duplicate reviews)." }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nickpit-serve.fullname" . }}
+  labels:
+    {{- include "nickpit-serve.labels" . | nindent 4 }}
+spec:
+  # Singleton daemon (in-memory queue + dedup LRU); do not scale beyond 1.
+  replicas: {{ .Values.replicaCount }}
+  # Recreate guarantees the old daemon fully drains before a new one starts, so
+  # two daemons never receive webhooks at once during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "nickpit-serve.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if not .Values.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "nickpit-serve.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "nickpit-serve.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: nickpit-serve
+          image: {{ include "nickpit-serve.imageRef" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - gitlab
+            - serve
+            - --config
+            - /etc/nickpit/nickpit.yaml
+            - --serve-config
+            - /etc/nickpit/server.yaml
+            {{- if .Values.verbose }}
+            - --verbose
+            {{- end }}
+            {{- if .Values.jsonLog }}
+            - --json
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            # Injected per-group by the daemon into each review child; setting a
+            # base value here keeps ${NICKPIT_GITLAB_BASE_URL} in nickpit.yaml
+            # non-empty even before injection.
+            - name: NICKPIT_GITLAB_BASE_URL
+              value: {{ .Values.serve.gitlabBaseURL | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "nickpit-serve.secretName" . }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nickpit
+              readOnly: true
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/nonroot
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "nickpit-serve.fullname" . }}
+            items:
+              - key: nickpit.yaml
+                path: nickpit.yaml
+              - key: server.yaml
+                path: server.yaml
+        - name: work
+          emptyDir:
+            {{- with .Values.volumes.work.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
+        - name: tmp
+          emptyDir:
+            {{- with .Values.volumes.tmp.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
+        - name: home
+          emptyDir:
+            {{- with .Values.volumes.home.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,231 @@
+# Default values for nickpit-serve.
+# Deploy target (from the current kube-context): cluster coabkube-prod,
+# namespace mw-internal. Install with `-n mw-internal`.
+
+# -- Number of daemon replicas. MUST stay 1: the daemon holds an in-memory
+# review queue and a per-(project,iid,sha) "already reviewed" LRU. Two replicas
+# behind one Service would each receive a share of webhooks and could review the
+# same MR twice (comment publishing is idempotent via fingerprints, so it is not
+# catastrophic, but it wastes LLM calls).
+replicaCount: 1
+
+image:
+  repository: ghcr.io/dgrieser/nickpit
+  # Pinned for reproducible prod deploys. Bump on release. Empty -> appVersion.
+  # The image is published by the repo's Docker workflow on `v*` tags.
+  tag: "v0.0.10"
+  pullPolicy: IfNotPresent
+
+# Image pull secrets, e.g. for a private ghcr.io package.
+# - name: ghcr-pull-secret
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  # The daemon never calls the Kubernetes API; no token needs mounting.
+  automount: false
+  annotations: {}
+
+# Extra pod annotations (merged with the config checksum annotation that forces
+# a rollout when the ConfigMap changes).
+podAnnotations: {}
+podLabels: {}
+
+# Pod-level security context. The image runs as the distroless "nonroot" user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. The image ships git + config via env, so the
+# root filesystem can be read-only; writable paths are emptyDir mounts.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  # GitLab must be able to POST webhooks to the daemon, so external reachability
+  # is usually required. Set `host` before installing.
+  enabled: true
+  className: "nginx-internal"
+  annotations: {}
+  # Public hostname GitLab sends webhooks to.
+  host: nickpit.prod.mittwald.systems
+  # Only the webhook path needs to be public; /healthz stays cluster-internal.
+  path: /webhooks/gitlab
+  pathType: Prefix
+  # nginx-internal serves a default wildcard cert for *.prod.mittwald.systems,
+  # so a tls block naming the host with no secretName is enough (dominant
+  # pattern across the cluster). For a cert-manager per-host cert instead, set
+  # secretName and add annotation kubernetes.io/tls-acme: "true".
+  tls:
+    enabled: true
+    secretName: ""
+
+# Container resources. Reviews clone the repo (git) and stream from the LLM;
+# concurrency is bounded by serve.reviewConcurrency.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+# Ephemeral scratch volumes (root fs is read-only). work holds git clones +
+# per-review logs; tmp and home cover git's incidental writes.
+volumes:
+  work:
+    sizeLimit: 5Gi
+  tmp:
+    sizeLimit: 1Gi
+  home:
+    sizeLimit: 256Mi
+
+# MUST exceed serve.shutdownGrace (600s for "10m") so Kubernetes lets in-flight
+# reviews finish before SIGKILL. 660 = 10m grace + 60s buffer.
+terminationGracePeriodSeconds: 660
+
+# Extra daemon flags. --verbose and --json toggle the daemon's own slog output.
+verbose: false
+jsonLog: false
+extraArgs: []
+
+# Guards the init window: the daemon resolves each group token's bot-user ID via
+# GitLab lookups before /healthz serves. Liveness/readiness are suppressed until
+# this passes, so a slow GitLab can't trigger a crash loop. ~60s window.
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 3
+  failureThreshold: 20
+  timeoutSeconds: 3
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 20
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# Secrets. All secret material is injected as environment variables and pulled
+# into the two config files via ${VAR} expansion (both files are env-expanded
+# before YAML parsing). Do NOT commit real values here.
+#
+# Provide values one of two ways:
+#   1. existingSecret: reference a Secret you created out-of-band (recommended
+#      for prod; e.g. from Vault / External Secrets). Its keys must match the
+#      env var names referenced below (serve.groups[].tokenEnv, .webhookSecretEnv
+#      and the LLM key, e.g. MITTWALD_LLM_API_KEY).
+#   2. secrets: let the chart create the Secret from the map below. Populate at
+#      install time via `--set-file` or `--set`, never in a committed values file.
+# ---------------------------------------------------------------------------
+existingSecret: ""
+secrets:
+  MITTWALD_LLM_API_KEY: ""
+  # Per-group tokens + webhook secrets referenced by serve.groups below.
+  NICKPIT_GROUP_ASYLUM_TOKEN: ""
+  NICKPIT_GROUP_ASYLUM_SECRET: ""
+  # Optional; only if reviewing GitHub repos too.
+  # NICKPIT_GITHUB_TOKEN: ""
+
+# ---------------------------------------------------------------------------
+# serve.yaml — daemon config (groups, trigger policy). Rendered to a ConfigMap.
+# Token / webhook_secret values are pulled from env (the Secret above) via the
+# *Env fields, so no secret text lands in the ConfigMap.
+# ---------------------------------------------------------------------------
+serve:
+  listen: ":8080"
+  logDir: "/work/logs"
+  reviewConcurrency: 2
+  shutdownGrace: "10m"
+  gitlabBaseURL: "https://gitlab.mittwald.it"
+  topic: "nickpit"
+  triggerEmoji: "nickpit"
+  # "eyes" awarded at review start; "" disables. Must differ from triggerEmoji.
+  startEmoji: "eyes"
+  commandKeyword: "nickpit"
+  ackEmoji: "white_check_mark"
+  # One entry per GitLab group. path = group full path (longest-prefix matched
+  # at '/' boundaries). tokenEnv / webhookSecretEnv name the env vars (Secret
+  # keys) holding the group access token and webhook secret.
+  groups:
+    - path: "asylum"
+      tokenEnv: "NICKPIT_GROUP_ASYLUM_TOKEN"
+      webhookSecretEnv: "NICKPIT_GROUP_ASYLUM_SECRET"
+  review:
+    # Extra args appended to every `nickpit gitlab mr --publish` child, e.g.
+    # ["--profile", "mittwald"].
+    extraArgs:
+      - "--profile"
+      - "mittwald"
+
+# ---------------------------------------------------------------------------
+# .nickpit.yaml — main config read by each review child (LLM provider, model).
+# Provided as a raw block so you have full control. Secrets stay as ${VAR}.
+# Default = the "mittwald" internal-LLM profile.
+# ---------------------------------------------------------------------------
+config:
+  nickpitYaml: |
+    active_profile: mittwald
+    profiles:
+      mittwald:
+        model: Qwen3.5-122B-A10B-FP8
+        small:
+          model: Qwen3.6-35B-A3B-FP8
+          temperature: 0.7
+          top_p: !!float 1
+          top_k: 40
+          presence_penalty: !!float 2
+          extra_body:
+            chat_template_kwargs:
+              enable_thinking: false
+          reasoning_effort: none
+        base_url: https://llm.aihosting.mittwald.de/v1
+        api_key: ${MITTWALD_LLM_API_KEY}
+        temperature: 0.6
+        top_p: 0.95
+        top_k: 20
+        presence_penalty: !!float 1
+        diff_format: git
+        max_context_tokens: 240000
+        max_reasoning_seconds: 300
+        max_rate_limit_delay_seconds: 300
+        reasoning_effort: high
+        github_token: ${NICKPIT_GITHUB_TOKEN}
+        gitlab_token: ${NICKPIT_GITLAB_TOKEN}
+        gitlab_base_url: ${NICKPIT_GITLAB_BASE_URL}
+        asset_base_url: https://dgrieser.github.io/nickpit/
