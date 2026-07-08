@@ -57,7 +57,7 @@ Duplicate tool-call detection and per-agent call limits stop any LLM from doom-s
 
 Most tools bet on a giant model that already *knows* every language's rules.  
 
-NickPit takes the opposite bet: it carries **dense, opinionated coding guides**:  
+NickPit takes the opposite bet, it carries **dense, opinionated coding guides**:  
 - Go
 - Helm
 - Kubernetes
@@ -69,7 +69,7 @@ NickPit takes the opposite bet: it carries **dense, opinionated coding guides**:
 - C#
 - HTML/CSS
 
-These guides are automatically injected based on your diff as **hard rules** into every agent.  
+[These guides](https://github.com/dgrieser/nickpit/tree/main/prompts/styleguides) are automatically injected based on your diff as **hard rules** into every agent.  
 
 The guides are even **version-aware**:
 - the Go guide tracks `1.19`–`1.26`
@@ -77,8 +77,9 @@ The guides are even **version-aware**:
 
 So NickPit picks the correct guide for the toolchain version it detects.  
 
-Selection isn't done by the LLM, nor is it just file extensions,  
-**content detectors** catch embedded languages too:
+Selection isn't done by the LLM, nor is it just file extensions.  
+
+**Content detectors** catch embedded languages too:
 - SQL inside Go
 - Kubernetes YAML inside Helm templates
 
@@ -86,7 +87,9 @@ The verifier reads them as **evidence** — a finding that breaks a rule is conf
 
 Because the expertise rides in the system prompt, **a small, cheap model reviews like it memorized the styleguide** — no huge knowledge-model required.  
 
-Bring your own guides (local files or URLs), or turn built-ins off per language.
+The guides are **constantly updated**, so you get the latest best practices.  
+
+Bring your own guides (local files or URLs), or turn built-ins off per language.  
 
 
 ### 👀 The "look again" machine
