@@ -1,0 +1,8 @@
+# Patterns to ignore when packaging the chart.
+.git/
+.gitignore
+*.tmp
+*.bak
+*.orig
+.DS_Store
+*~

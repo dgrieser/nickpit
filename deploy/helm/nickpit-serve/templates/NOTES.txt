@@ -1,0 +1,37 @@
+nickpit-serve deployed as {{ include "nickpit-serve.fullname" . }} (namespace {{ .Release.Namespace }}).
+
+1. Check the daemon is up:
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "nickpit-serve.fullname" . }}
+   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "nickpit-serve.fullname" . }} -f
+
+{{- if .Values.ingress.enabled }}
+
+2. Webhook endpoint (point GitLab group webhooks here):
+   https://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- if eq .Values.ingress.host "nickpit.example.com" }}
+
+   >>> ingress.host is still the placeholder "nickpit.example.com". Set it with
+       --set ingress.host=<your-host> and reinstall/upgrade. <<<
+{{- end }}
+{{- else }}
+
+2. Ingress is disabled. Expose the Service ({{ include "nickpit-serve.fullname" . }}:{{ .Values.service.port }})
+   yourself, or port-forward for testing:
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nickpit-serve.fullname" . }} 8080:{{ .Values.service.port }}
+{{- end }}
+
+3. In each GitLab group (from serve.groups), add a Group Webhook:
+     URL      : the endpoint above
+     Secret   : the value behind webhookSecretEnv for that group
+     Triggers : Merge request events, Comments, Emoji events
+   And give each group's access token (tokenEnv) api + read/write scope.
+
+4. Opt a project in by adding the topic "{{ .Values.serve.topic }}", or award the
+   :{{ .Values.serve.triggerEmoji }}: emoji on an MR for a one-off review.
+
+{{- if not .Values.existingSecret }}
+
+WARNING: the chart-managed Secret carries whatever you passed in `secrets`.
+Prefer `existingSecret` (Vault / External Secrets) for production and keep real
+tokens out of any committed values file.
+{{- end }}
