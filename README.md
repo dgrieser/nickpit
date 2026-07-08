@@ -93,6 +93,18 @@ Every parameter (temperature, reasoning effort, token caps, …) can be overridd
 
 JSON output includes a full `agent_runs` accounting of every agent's token and tool usage, so you can see exactly where the money went.
 
+### 📚 Expert knowledge ships in the box
+
+Most tools bet on a giant model that already *knows* every language's rules. NickPit takes the opposite bet: it carries **dense, opinionated coding guides** — Go, Python, JavaScript, TypeScript, C#, SQL, Bash, HTML/CSS, Helm, Kubernetes — and injects the ones matching your diff as **hard rules** into every agent (context, review, verify, merge, finalize, verdict).  
+
+The guides are **version-aware**: the Go guide tracks `1.19`–`1.26` and Bash `3.2`–`5.2`, and NickPit picks the guide for the toolchain version it detects (go.mod, Dockerfile, CI) — lowest detected version wins.  
+
+Selection isn't just file extensions — **content detectors** catch embedded languages too: SQL inside Go, Kubernetes YAML inside Helm templates.  
+
+The verifier reads them as **evidence** — a finding that breaks a rule is confirmed, a nitpick a rule explicitly allows gets bounced.  
+
+Because the expertise rides in the prompt, **a small, cheap model reviews like it memorized the styleguide** — no huge knowledge-model required. Bring your own guides (local files or URLs), or turn built-ins off per language.
+
 ### 🤖 A GitLab review bot with no CI required
 
 `nickpit gitlab serve` is a webhook daemon that auto-reviews MRs for opted-in projects — and anyone can summon a review on *any* MR (drafts included) by awarding a custom **`nickpit` emoji** or commenting **`/nickpit review`**.  
@@ -118,7 +130,6 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 - **Local review modes**: uncommitted changes, commit ranges, branch diffs.
 - **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id` or just the URL.
 - **Diff filters**: regex include/exclude by path *and* by file content.
-- **Styleguides**: built-in per-language guides automatically injected based on the diff, plus your own from local files or URLs.
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
 - **Terminal and JSON output**, `--show-progress` live progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
