@@ -53,6 +53,42 @@ When a reviewer wonders "who calls this function?", it not only gets the call st
 
 Duplicate tool-call detection and per-agent call limits stop any LLM from doom-scrolling your repo.  
 
+### 📚 Expert knowledge ships in the box
+
+Most tools bet on a giant model that already *knows* every language's rules.  
+
+NickPit takes the opposite bet: it carries **dense, opinionated coding guides**:  
+- Go
+- Helm
+- Kubernetes
+- Python
+- Bash
+- SQL
+- JavaScript
+- TypeScript
+- C#
+- HTML/CSS
+
+These guides are automatically injected based on your diff as **hard rules** into every agent.  
+
+The guides are even **version-aware**:
+- the Go guide tracks `1.19`–`1.26`
+- Bash `3.2`–`5.2`
+
+So NickPit picks the correct guide for the toolchain version it detects.  
+
+Selection isn't done by the LLM, nor is it just file extensions,  
+**content detectors** catch embedded languages too:
+- SQL inside Go
+- Kubernetes YAML inside Helm templates
+
+The verifier reads them as **evidence** — a finding that breaks a rule is confirmed, a nitpick, a rule explicitly allows, gets bounced.  
+
+Because the expertise rides in the system prompt, **a small, cheap model reviews like it memorized the styleguide** — no huge knowledge-model required.  
+
+Bring your own guides (local files or URLs), or turn built-ins off per language.
+
+
 ### 👀 The "look again" machine
 
 After the first pass, each reviewer gets **nudge rounds** (3 by default) asking it to look again — and a **reasoning-extractor agent** mines the reviewer's chain-of-thought for issues it *noticed but never reported*.  
@@ -92,18 +128,6 @@ Profiles can define a nested **`small` model alias** — put an expensive model 
 Every parameter (temperature, reasoning effort, token caps, …) can be overridden per step.  
 
 JSON output includes a full `agent_runs` accounting of every agent's token and tool usage, so you can see exactly where the money went.
-
-### 📚 Expert knowledge ships in the box
-
-Most tools bet on a giant model that already *knows* every language's rules. NickPit takes the opposite bet: it carries **dense, opinionated coding guides** — Go, Python, JavaScript, TypeScript, C#, SQL, Bash, HTML/CSS, Helm, Kubernetes — and injects the ones matching your diff as **hard rules** into every agent (context, review, verify, merge, finalize, verdict).  
-
-The guides are **version-aware**: the Go guide tracks `1.19`–`1.26` and Bash `3.2`–`5.2`, and NickPit picks the guide for the toolchain version it detects (go.mod, Dockerfile, CI) — lowest detected version wins.  
-
-Selection isn't just file extensions — **content detectors** catch embedded languages too: SQL inside Go, Kubernetes YAML inside Helm templates.  
-
-The verifier reads them as **evidence** — a finding that breaks a rule is confirmed, a nitpick a rule explicitly allows gets bounced.  
-
-Because the expertise rides in the prompt, **a small, cheap model reviews like it memorized the styleguide** — no huge knowledge-model required. Bring your own guides (local files or URLs), or turn built-ins off per language.
 
 ### 🤖 A GitLab review bot with no CI required
 
