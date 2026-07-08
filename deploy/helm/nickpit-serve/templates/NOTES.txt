@@ -8,11 +8,6 @@ nickpit-serve deployed as {{ include "nickpit-serve.fullname" . }} (namespace {{
 
 2. Webhook endpoint (point GitLab group webhooks here):
    https://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
-{{- if eq .Values.ingress.host "nickpit.example.com" }}
-
-   >>> ingress.host is still the placeholder "nickpit.example.com". Set it with
-       --set ingress.host=<your-host> and reinstall/upgrade. <<<
-{{- end }}
 {{- else }}
 
 2. Ingress is disabled. Expose the Service ({{ include "nickpit-serve.fullname" . }}:{{ .Values.service.port }})

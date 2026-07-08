@@ -107,6 +107,17 @@ verbose: false
 jsonLog: false
 extraArgs: []
 
+# Guards the init window: the daemon resolves each group token's bot-user ID via
+# GitLab lookups before /healthz serves. Liveness/readiness are suppressed until
+# this passes, so a slow GitLab can't trigger a crash loop. ~60s window.
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 3
+  failureThreshold: 20
+  timeoutSeconds: 3
+
 livenessProbe:
   httpGet:
     path: /healthz

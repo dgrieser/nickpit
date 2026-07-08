@@ -1,3 +1,6 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+{{- fail "nickpit-serve MUST run as a singleton; replicaCount cannot exceed 1 (in-memory review queue + dedup LRU would duplicate reviews)." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -72,6 +75,10 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
@@ -105,13 +112,19 @@ spec:
                 path: server.yaml
         - name: work
           emptyDir:
-            sizeLimit: {{ .Values.volumes.work.sizeLimit }}
+            {{- with .Values.volumes.work.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
         - name: tmp
           emptyDir:
-            sizeLimit: {{ .Values.volumes.tmp.sizeLimit }}
+            {{- with .Values.volumes.tmp.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
         - name: home
           emptyDir:
-            sizeLimit: {{ .Values.volumes.home.sizeLimit }}
+            {{- with .Values.volumes.home.sizeLimit }}
+            sizeLimit: {{ . | quote }}
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

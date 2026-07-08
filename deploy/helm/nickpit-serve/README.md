@@ -36,29 +36,28 @@ Do not put real secrets in a committed values file. Create your own
 `prod-values.yaml` for non-secret config (host, groups) and pass secrets on the
 command line or via `existingSecret`.
 
+Host, ingress class, TLS and the `asylum` group are baked into `values.yaml`, so
+install only needs the secret.
+
 ```sh
 # 1. (recommended) create the secret out-of-band
 kubectl -n mw-internal create secret generic nickpit-serve \
   --from-literal=MITTWALD_LLM_API_KEY=... \
-  --from-literal=NICKPIT_GROUP_EXAMPLE_TOKEN=glpat-... \
-  --from-literal=NICKPIT_GROUP_EXAMPLE_SECRET=...
+  --from-literal=NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
+  --from-literal=NICKPIT_GROUP_ASYLUM_SECRET=...
 
-# 2. install (namespace already set by your kube-context, shown here explicitly)
-helm upgrade --install nickpit-serve deploy/helm/nickpit-serve \
-  -n mw-internal \
-  --set existingSecret=nickpit-serve \
-  --set ingress.host=nickpit.mittwald.it \
-  -f prod-values.yaml
+# 2. install (namespace also comes from your kube-context; shown explicitly)
+helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
+  --set existingSecret=nickpit-serve
 ```
 
 Or let the chart create the Secret (fine for a quick test):
 
 ```sh
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
-  --set ingress.host=nickpit.mittwald.it \
   --set secrets.MITTWALD_LLM_API_KEY=... \
-  --set secrets.NICKPIT_GROUP_EXAMPLE_TOKEN=glpat-... \
-  --set secrets.NICKPIT_GROUP_EXAMPLE_SECRET=...
+  --set secrets.NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
+  --set secrets.NICKPIT_GROUP_ASYLUM_SECRET=...
 ```
 
 ## Key values
@@ -66,7 +65,7 @@ helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
 | Key | Default | Notes |
 | --- | --- | --- |
 | `image.repository` / `image.tag` | `ghcr.io/dgrieser/nickpit` / `""`→appVersion | |
-| `ingress.enabled` / `ingress.host` | `true` / `nickpit.example.com` | Set the host. GitLab must reach it. |
+| `ingress.enabled` / `ingress.host` | `true` / `nickpit.prod.mittwald.systems` | GitLab must reach it. |
 | `serve.groups` | one example | `path`, `tokenEnv`, `webhookSecretEnv` per group. |
 | `serve.reviewConcurrency` | `2` | Max parallel review child processes. |
 | `serve.shutdownGrace` | `10m` | In-flight reviews finish on SIGTERM. |

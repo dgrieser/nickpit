@@ -77,8 +77,5 @@ groups:
     webhook_secret: {{ printf "${%s}" .webhookSecretEnv | quote }}
 {{- end }}
 review:
-  extra_args:
-{{- range .Values.serve.review.extraArgs }}
-    - {{ . | quote }}
-{{- end }}
+  extra_args: {{ toYaml .Values.serve.review.extraArgs | nindent 4 }}
 {{- end -}}
