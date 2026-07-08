@@ -804,12 +804,13 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				log.Warn("bot user lookup failed; own emoji awards are filtered by name only (start_emoji never equals trigger_emoji, enforced at config validation) and own note replies are only kept out of command parsing by never starting with the command keyword", "error", warning)
 			}
 
-			// Group tokens and webhook secrets typically sit in the daemon's
-			// environment (server.yaml ${VAR} references); review children
-			// must only receive their own group's injected token.
-			scrub := make([]string, 0, len(cfg.Groups)*2)
+			// Group tokens, webhook secrets, and signing tokens typically sit
+			// in the daemon's environment (server.yaml ${VAR} references);
+			// review children must only receive their own group's injected
+			// token.
+			scrub := make([]string, 0, len(cfg.Groups)*3)
 			for _, group := range cfg.Groups {
-				scrub = append(scrub, group.Token, group.WebhookSecret)
+				scrub = append(scrub, group.Token, group.WebhookSecret, group.SigningToken)
 			}
 			runner, err := serve.NewExecRunner(scrub)
 			if err != nil {

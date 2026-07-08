@@ -15,7 +15,7 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
 | Service | ClusterIP on port 8080 (`/webhooks/gitlab`, `/healthz`). |
 | Ingress | Public webhook endpoint (set `ingress.host`). |
 | ConfigMap | `server.yaml` (rendered from `serve.*`) + `nickpit.yaml` (from `config.nickpitYaml`). Secrets stay as `${VAR}`. |
-| Secret | Group tokens, webhook secrets, LLM API key — unless `existingSecret` is used. |
+| Secret | Group access tokens, signing tokens (or legacy webhook secrets), LLM API key — unless `existingSecret` is used. |
 | ServiceAccount | No RBAC; token not mounted (daemon never calls the k8s API). |
 
 ## Prerequisites
@@ -27,7 +27,12 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
   docker push ghcr.io/dgrieser/nickpit:dev
   ```
   If the ghcr package is private, create a pull secret and set `imagePullSecrets`.
-- A GitLab group access token (scope: api) and a webhook secret per group.
+- A GitLab group access token (scope: api) per group.
+- A webhook signing token per group: when adding the group webhook, choose
+  "Generate signing token" and copy the `whsec_...` value (GitLab shows it once
+  and never returns it via API). The daemon verifies each delivery's
+  HMAC-SHA256 signature (headers `webhook-id` / `webhook-timestamp` /
+  `webhook-signature`). A legacy plaintext secret token is still supported.
 - An LLM API key (default profile uses the mittwald internal endpoint).
 
 ## Install
@@ -44,7 +49,7 @@ install only needs the secret.
 kubectl -n mw-internal create secret generic nickpit-serve \
   --from-literal=MITTWALD_LLM_API_KEY=... \
   --from-literal=NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
-  --from-literal=NICKPIT_GROUP_ASYLUM_SECRET=...
+  --from-literal=NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN=whsec_...
 
 # 2. install (namespace also comes from your kube-context; shown explicitly)
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
@@ -57,7 +62,7 @@ Or let the chart create the Secret (fine for a quick test):
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
   --set secrets.MITTWALD_LLM_API_KEY=... \
   --set secrets.NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
-  --set secrets.NICKPIT_GROUP_ASYLUM_SECRET=...
+  --set secrets.NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN=whsec_...
 ```
 
 ## Key values
@@ -66,7 +71,7 @@ helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
 | --- | --- | --- |
 | `image.repository` / `image.tag` | `ghcr.io/dgrieser/nickpit` / `""`→appVersion | |
 | `ingress.enabled` / `ingress.host` | `true` / `nickpit.prod.mittwald.systems` | GitLab must reach it. |
-| `serve.groups` | one example | `path`, `tokenEnv`, `webhookSecretEnv` per group. |
+| `serve.groups` | `asylum` | `path`, `tokenEnv`, and `signingTokenEnv` (or legacy `webhookSecretEnv`) per group. |
 | `serve.reviewConcurrency` | `2` | Max parallel review child processes. |
 | `serve.shutdownGrace` | `10m` | In-flight reviews finish on SIGTERM. |
 | `terminationGracePeriodSeconds` | `660` | Must exceed `serve.shutdownGrace`. |

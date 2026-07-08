@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,54 @@ groups:
 	}
 }
 
+func TestLoadServeSigningToken(t *testing.T) {
+	// A group with only a signing token (no webhook_secret) is valid, and the
+	// token decodes to a non-empty HMAC key.
+	token := "whsec_" + base64.StdEncoding.EncodeToString([]byte("super-secret-key"))
+	path := writeServeConfig(t, `
+groups:
+  - path: "platform"
+    token: "tok"
+    signing_token: "`+token+`"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Groups[0].SigningToken != token {
+		t.Fatalf("signing token = %q", cfg.Groups[0].SigningToken)
+	}
+	key, err := ParseSigningKey(cfg.Groups[0].SigningToken)
+	if err != nil {
+		t.Fatalf("ParseSigningKey: %v", err)
+	}
+	if string(key) != "super-secret-key" {
+		t.Fatalf("key = %q", key)
+	}
+}
+
+func TestParseSigningKey(t *testing.T) {
+	cases := []struct {
+		name    string
+		token   string
+		wantErr bool
+	}{
+		{"with prefix", "whsec_" + base64.StdEncoding.EncodeToString([]byte("k")), false},
+		{"without prefix", base64.StdEncoding.EncodeToString([]byte("k")), false},
+		{"empty", "", true},
+		{"prefix only", "whsec_", true},
+		{"bad base64", "whsec_not!!base64", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseSigningKey(tc.token)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadServeStartEmojiDisabled(t *testing.T) {
 	path := writeServeConfig(t, `
 start_emoji: ""
@@ -109,7 +158,8 @@ func TestServeConfigValidate(t *testing.T) {
 	}{
 		{"no groups", `listen: ":8080"`, "at least one group"},
 		{"empty token", "groups:\n  - path: p\n    webhook_secret: s\n", "token must not be empty"},
-		{"empty secret", "groups:\n  - path: p\n    token: t\n", "webhook_secret must not be empty"},
+		{"no credential", "groups:\n  - path: p\n    token: t\n", "either signing_token or webhook_secret must be set"},
+		{"bad signing token", "groups:\n  - path: p\n    token: t\n    signing_token: \"whsec_not!!base64\"\n", "not valid base64"},
 		{"duplicate path", "groups:\n  - path: p\n    token: t\n    webhook_secret: s\n  - path: p\n    token: t2\n    webhook_secret: s2\n", "duplicate path"},
 		{"bad duration", "shutdown_grace: nope\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "shutdown_grace"},
 		{"bad concurrency", "review_concurrency: 0\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "review_concurrency"},

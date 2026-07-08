@@ -15,9 +15,12 @@ nickpit-serve deployed as {{ include "nickpit-serve.fullname" . }} (namespace {{
    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "nickpit-serve.fullname" . }} 8080:{{ .Values.service.port }}
 {{- end }}
 
-3. In each GitLab group (from serve.groups), add a Group Webhook:
+3. In each GitLab group (from serve.groups): Settings > Webhooks > Add new webhook:
      URL      : the endpoint above
-     Secret   : the value behind webhookSecretEnv for that group
+     Auth     : select "Generate signing token", COPY it (shown once), and put it
+                in the group's signingTokenEnv Secret key. GitLab never returns it
+                again. (Legacy alternative: a plaintext Secret token in
+                webhookSecretEnv.)
      Triggers : Merge request events, Comments, Emoji events
    And give each group's access token (tokenEnv) api + read/write scope.
 

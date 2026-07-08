@@ -13,7 +13,8 @@ image:
   repository: ghcr.io/dgrieser/nickpit
   # Pinned for reproducible prod deploys. Bump on release. Empty -> appVersion.
   # The image is published by the repo's Docker workflow on `v*` tags.
-  tag: "v0.0.10"
+  # v0.0.11 adds GitLab signing-token (HMAC) webhook verification.
+  tag: "v0.0.11"
   pullPolicy: IfNotPresent
 
 # Image pull secrets, e.g. for a private ghcr.io package.
@@ -148,24 +149,27 @@ affinity: {}
 # Provide values one of two ways:
 #   1. existingSecret: reference a Secret you created out-of-band (recommended
 #      for prod; e.g. from Vault / External Secrets). Its keys must match the
-#      env var names referenced below (serve.groups[].tokenEnv, .webhookSecretEnv
-#      and the LLM key, e.g. MITTWALD_LLM_API_KEY).
+#      env var names referenced below (serve.groups[].tokenEnv,
+#      .signingTokenEnv / .webhookSecretEnv and the LLM key, e.g.
+#      MITTWALD_LLM_API_KEY).
 #   2. secrets: let the chart create the Secret from the map below. Populate at
 #      install time via `--set-file` or `--set`, never in a committed values file.
 # ---------------------------------------------------------------------------
 existingSecret: ""
 secrets:
   MITTWALD_LLM_API_KEY: ""
-  # Per-group tokens + webhook secrets referenced by serve.groups below.
+  # Per-group access token + signing token referenced by serve.groups below.
+  # The signing token is the whsec_... value from GitLab's "Generate signing
+  # token" (shown once at webhook creation).
   NICKPIT_GROUP_ASYLUM_TOKEN: ""
-  NICKPIT_GROUP_ASYLUM_SECRET: ""
+  NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN: ""
   # Optional; only if reviewing GitHub repos too.
   # NICKPIT_GITHUB_TOKEN: ""
 
 # ---------------------------------------------------------------------------
 # serve.yaml — daemon config (groups, trigger policy). Rendered to a ConfigMap.
-# Token / webhook_secret values are pulled from env (the Secret above) via the
-# *Env fields, so no secret text lands in the ConfigMap.
+# token / signing_token / webhook_secret values are pulled from env (the Secret
+# above) via the *Env fields, so no secret text lands in the ConfigMap.
 # ---------------------------------------------------------------------------
 serve:
   listen: ":8080"
@@ -180,12 +184,14 @@ serve:
   commandKeyword: "nickpit"
   ackEmoji: "white_check_mark"
   # One entry per GitLab group. path = group full path (longest-prefix matched
-  # at '/' boundaries). tokenEnv / webhookSecretEnv name the env vars (Secret
-  # keys) holding the group access token and webhook secret.
+  # at '/' boundaries). tokenEnv names the env var (Secret key) holding the
+  # group access token. For webhook verification set exactly one of:
+  #   signingTokenEnv  - GitLab signing token (whsec_..., HMAC-SHA256, recommended)
+  #   webhookSecretEnv - legacy plaintext secret token (X-Gitlab-Token)
   groups:
     - path: "asylum"
       tokenEnv: "NICKPIT_GROUP_ASYLUM_TOKEN"
-      webhookSecretEnv: "NICKPIT_GROUP_ASYLUM_SECRET"
+      signingTokenEnv: "NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN"
   review:
     # Extra args appended to every `nickpit gitlab mr --publish` child, e.g.
     # ["--profile", "mittwald"].

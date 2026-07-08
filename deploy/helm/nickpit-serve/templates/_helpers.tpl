@@ -55,9 +55,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
-Renders server.yaml (the serve daemon config). Group token/webhook_secret are
-emitted as ${ENV} placeholders resolved at runtime from the injected Secret; no
-secret text ever lands in the ConfigMap.
+Renders server.yaml (the serve daemon config). Group credentials are emitted as
+${ENV} placeholders resolved at runtime from the injected Secret; no secret text
+ever lands in the ConfigMap. Each group uses a GitLab signing token
+(signingTokenEnv, HMAC verification, recommended) or the legacy plaintext secret
+token (webhookSecretEnv) — set exactly one per group.
 */}}
 {{- define "nickpit-serve.serverYaml" -}}
 listen: {{ .Values.serve.listen | quote }}
@@ -74,7 +76,13 @@ groups:
 {{- range .Values.serve.groups }}
   - path: {{ .path | quote }}
     token: {{ printf "${%s}" .tokenEnv | quote }}
+    {{- if .signingTokenEnv }}
+    signing_token: {{ printf "${%s}" .signingTokenEnv | quote }}
+    {{- else if .webhookSecretEnv }}
     webhook_secret: {{ printf "${%s}" .webhookSecretEnv | quote }}
+    {{- else }}
+    {{- fail (printf "serve.groups entry %q needs signingTokenEnv or webhookSecretEnv" .path) }}
+    {{- end }}
 {{- end }}
 review:
   extra_args: {{ toYaml .Values.serve.review.extraArgs | nindent 4 }}

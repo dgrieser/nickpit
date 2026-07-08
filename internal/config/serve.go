@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -45,12 +46,41 @@ type ServeConfig struct {
 	Review            ServeReview  `yaml:"review"`
 }
 
-// ServeGroup maps one GitLab group (path prefix) to its access token and
-// webhook secret.
+// ServeGroup maps one GitLab group (path prefix) to its access token and the
+// credential verifying its webhooks: a GitLab signing token (recommended,
+// HMAC-SHA256) or the legacy plaintext secret token. Exactly one is required;
+// SigningToken takes precedence when both are set.
 type ServeGroup struct {
 	Path          string `yaml:"path"`
 	Token         string `yaml:"token"`
 	WebhookSecret string `yaml:"webhook_secret"`
+	// SigningToken is the GitLab webhook signing token ("whsec_<base64>"),
+	// generated per webhook via "Generate signing token". GitLab signs each
+	// delivery (Standard Webhooks: headers webhook-id/-timestamp/-signature)
+	// and the daemon verifies the HMAC instead of comparing a plaintext token.
+	SigningToken string `yaml:"signing_token"`
+}
+
+// signingTokenPrefix is the GitLab / Standard Webhooks marker on a signing
+// token; the HMAC key is the base64 decode of everything after it.
+const signingTokenPrefix = "whsec_"
+
+// ParseSigningKey extracts the raw HMAC key from a GitLab signing token. The
+// token is "whsec_<base64>" (the prefix is optional/tolerated); the key is the
+// standard-base64 decode of the remainder.
+func ParseSigningKey(token string) ([]byte, error) {
+	raw := strings.TrimPrefix(token, signingTokenPrefix)
+	if raw == "" {
+		return nil, errors.New("signing token is empty")
+	}
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("signing token is not valid base64: %w", err)
+	}
+	if len(key) == 0 {
+		return nil, errors.New("signing token decodes to an empty key")
+	}
+	return key, nil
 }
 
 // ServeReview holds settings forwarded to spawned review child processes.
@@ -142,8 +172,13 @@ func (c *ServeConfig) Validate() error {
 		if group.Token == "" {
 			errs = append(errs, fmt.Errorf("groups[%d] (%s): token must not be empty", i, group.Path))
 		}
-		if group.WebhookSecret == "" {
-			errs = append(errs, fmt.Errorf("groups[%d] (%s): webhook_secret must not be empty", i, group.Path))
+		switch {
+		case group.SigningToken == "" && group.WebhookSecret == "":
+			errs = append(errs, fmt.Errorf("groups[%d] (%s): either signing_token or webhook_secret must be set", i, group.Path))
+		case group.SigningToken != "":
+			if _, err := ParseSigningKey(group.SigningToken); err != nil {
+				errs = append(errs, fmt.Errorf("groups[%d] (%s): %w", i, group.Path, err))
+			}
 		}
 	}
 	if c.ReviewConcurrency < 1 {

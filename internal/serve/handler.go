@@ -72,8 +72,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown group", http.StatusUnauthorized)
 		return
 	}
-	if !group.CheckSecret(r.Header.Get("X-Gitlab-Token")) {
-		h.log.Warn("webhook secret mismatch", "project", event.Project.PathWithNamespace, "group", group.Path)
+	if !h.authenticate(group, r, body) {
+		h.log.Warn("webhook authentication failed", "project", event.Project.PathWithNamespace, "group", group.Path, "method", authMethod(group))
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
@@ -99,6 +99,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Info("review queued", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "queued"})
 	}
+}
+
+// authenticate verifies the webhook against the group's configured credential:
+// a GitLab signing token (HMAC over the raw body) when present, otherwise the
+// legacy plaintext secret token.
+func (h *Handler) authenticate(group *Group, r *http.Request, body []byte) bool {
+	if group.UsesSigning() {
+		return group.CheckSignature(
+			r.Header.Get("Webhook-Id"),
+			r.Header.Get("Webhook-Timestamp"),
+			r.Header.Get("Webhook-Signature"),
+			body,
+			time.Now(),
+		)
+	}
+	return group.CheckSecret(r.Header.Get("X-Gitlab-Token"))
+}
+
+// authMethod labels the group's verification method for logs.
+func authMethod(group *Group) string {
+	if group.UsesSigning() {
+		return "signing_token"
+	}
+	return "secret_token"
 }
 
 // handleCommand executes one note command (or trigger-emoji revoke). Review
