@@ -828,6 +828,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AckEmoji:       cfg.AckEmojiName(),
+				AbortEmoji:     cfg.AbortEmojiName(),
 			}, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)

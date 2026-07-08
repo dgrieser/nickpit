@@ -27,7 +27,8 @@ const (
 	DefaultServeTriggerEmoji      = "nickpit"
 	DefaultServeStartEmoji        = "eyes"
 	DefaultServeCommandKeyword    = "nickpit"
-	DefaultServeAckEmoji          = "white_check_mark"
+	DefaultServeAckEmoji          = "eyes"
+	DefaultServeAbortEmoji        = "stop_button"
 )
 
 // ServeConfig configures the `nickpit gitlab serve` webhook daemon.
@@ -42,6 +43,7 @@ type ServeConfig struct {
 	StartEmoji        *string      `yaml:"start_emoji"`
 	CommandKeyword    string       `yaml:"command_keyword"`
 	AckEmoji          *string      `yaml:"ack_emoji"`
+	AbortEmoji        *string      `yaml:"abort_emoji"`
 	Groups            []ServeGroup `yaml:"groups"`
 	Review            ServeReview  `yaml:"review"`
 }
@@ -121,6 +123,10 @@ func LoadServe(path string) (*ServeConfig, error) {
 		ackEmoji := DefaultServeAckEmoji
 		cfg.AckEmoji = &ackEmoji
 	}
+	if cfg.AbortEmoji == nil {
+		abortEmoji := DefaultServeAbortEmoji
+		cfg.AbortEmoji = &abortEmoji
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("serve config: %s: %w", path, err)
 	}
@@ -145,6 +151,16 @@ func (c *ServeConfig) AckEmojiName() string {
 		return DefaultServeAckEmoji
 	}
 	return *c.AckEmoji
+}
+
+// AbortEmojiName returns the emoji awarded on a /<keyword> abort command note to
+// acknowledge it; empty means disabled. Like AckEmoji it is awarded on a Note,
+// so it needs no anti-loop check against trigger_emoji.
+func (c *ServeConfig) AbortEmojiName() string {
+	if c.AbortEmoji == nil {
+		return DefaultServeAbortEmoji
+	}
+	return *c.AbortEmoji
 }
 
 // ShutdownGraceDuration parses the configured shutdown grace period. Validate

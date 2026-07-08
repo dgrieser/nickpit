@@ -182,7 +182,10 @@ serve:
   # "eyes" awarded at review start; "" disables. Must differ from triggerEmoji.
   startEmoji: "eyes"
   commandKeyword: "nickpit"
-  ackEmoji: "white_check_mark"
+  # Reaction awarded on a /nickpit review command note. "eyes" = on it; "" disables.
+  ackEmoji: "eyes"
+  # Reaction awarded on a /nickpit abort command note. "stop_button"; "" disables.
+  abortEmoji: "stop_button"
   # One entry per GitLab group. path = group full path (longest-prefix matched
   # at '/' boundaries). tokenEnv names the env var (Secret key) holding the
   # group access token. For webhook verification set exactly one of:

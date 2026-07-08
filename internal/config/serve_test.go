@@ -35,7 +35,7 @@ groups:
 	if cfg.Topic != "nickpit" || cfg.TriggerEmoji != "nickpit" || cfg.StartEmojiName() != "eyes" {
 		t.Fatalf("emoji/topic defaults = %+v", cfg)
 	}
-	if cfg.CommandKeyword != "nickpit" || cfg.AckEmojiName() != "white_check_mark" {
+	if cfg.CommandKeyword != "nickpit" || cfg.AckEmojiName() != "eyes" || cfg.AbortEmojiName() != "stop_button" {
 		t.Fatalf("command defaults = %+v", cfg)
 	}
 	if cfg.ShutdownGraceDuration() != 10*time.Minute {

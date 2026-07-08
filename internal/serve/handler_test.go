@@ -43,6 +43,7 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 		TriggerEmoji:   "nickpit",
 		CommandKeyword: "nickpit",
 		AckEmoji:       "white_check_mark",
+		AbortEmoji:     "stop_button",
 	}, discardLogger())
 	return &handlerEnv{
 		handler:    handler,
@@ -171,10 +172,17 @@ func TestHandlerCommandAbortNothingRunning(t *testing.T) {
 	// Ack emoji plus a threaded reply saying there was nothing to abort.
 	waitFor(t, 3*time.Second, func() bool { return len(env.gitlab.posted()) == 2 })
 	var reply recordedPost
+	var ackEmoji string
 	for _, post := range env.gitlab.posted() {
 		if post.Body["body"] != "" {
 			reply = post
 		}
+		if strings.HasSuffix(post.Path, "/award_emoji") {
+			ackEmoji = post.Body["name"]
+		}
+	}
+	if ackEmoji != "stop_button" {
+		t.Fatalf("abort ack emoji = %q, want stop_button", ackEmoji)
 	}
 	if reply.Path != "/api/v4/projects/43/merge_requests/11/discussions/disc-302/notes" {
 		t.Fatalf("reply path = %q, want threaded reply", reply.Path)

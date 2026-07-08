@@ -18,7 +18,7 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 			return
 		}
 		if !optedIn {
-			log.Debug("project not opted in", "topic", d.cfg.Topic)
+			log.Info("skipping review", "reason", "not opted in", "topic", d.cfg.Topic)
 			return
 		}
 	}

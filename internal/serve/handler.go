@@ -25,8 +25,12 @@ type HandlerConfig struct {
 	TriggerEmoji string
 	// CommandKeyword is the "/<keyword> <command>" note-command keyword.
 	CommandKeyword string
-	// AckEmoji is awarded on command notes to acknowledge them; "" disables.
+	// AckEmoji is awarded on a review command note to acknowledge it; ""
+	// disables.
 	AckEmoji string
+	// AbortEmoji is awarded on an abort command note to acknowledge it; ""
+	// disables.
+	AbortEmoji string
 }
 
 // Handler is the webhook HTTP endpoint. It only parses, authenticates, and
@@ -96,7 +100,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			HeadSHA:     decision.HeadSHA,
 			Group:       group,
 		})
-		h.log.Info("review queued", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String(), "reason", decision.Reason)
+		h.log.Info("event received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "queued"})
 	}
 }
@@ -142,11 +146,11 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			HeadSHA:     decision.HeadSHA,
 			Group:       group,
 		})
-		go h.ackNote(group, projectID, decision)
+		go h.ackNote(group, projectID, decision, h.cfg.AckEmoji)
 	case CommandAbort:
 		outcome := h.dispatcher.Abort(projectID, decision.IID)
 		go func() {
-			h.ackNote(group, projectID, decision)
+			h.ackNote(group, projectID, decision, h.cfg.AbortEmoji)
 			// The emoji revoke has no note to answer; it only gets a
 			// confirmation when something was actually aborted — revoking a
 			// stale award is routine cleanup, not a question.
@@ -165,16 +169,16 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 	}
 }
 
-// ackNote awards the acknowledgement emoji on the command note. Failures are
-// logged, never fatal: the command itself has already been executed.
-func (h *Handler) ackNote(group *Group, projectID int, decision Decision) {
-	if h.cfg.AckEmoji == "" || decision.NoteID == 0 {
+// ackNote awards the given acknowledgement emoji on the command note ("" skips).
+// Failures are logged, never fatal: the command itself has already been executed.
+func (h *Handler) ackNote(group *Group, projectID int, decision Decision, emoji string) {
+	if emoji == "" || decision.NoteID == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), commandReplyTimeout)
 	defer cancel()
-	if err := group.Client.AwardNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, h.cfg.AckEmoji); err != nil {
-		h.log.Warn("acknowledging command note failed", "iid", decision.IID, "note", decision.NoteID, "error", err)
+	if err := group.Client.AwardNoteEmoji(ctx, projectID, decision.IID, decision.NoteID, emoji); err != nil {
+		h.log.Warn("acknowledging command note failed", "iid", decision.IID, "note", decision.NoteID, "emoji", emoji, "error", err)
 	}
 }
 

@@ -72,6 +72,7 @@ trigger_emoji: {{ .Values.serve.triggerEmoji | quote }}
 start_emoji: {{ .Values.serve.startEmoji | quote }}
 command_keyword: {{ .Values.serve.commandKeyword | quote }}
 ack_emoji: {{ .Values.serve.ackEmoji | quote }}
+abort_emoji: {{ .Values.serve.abortEmoji | quote }}
 groups:
 {{- range .Values.serve.groups }}
   - path: {{ .path | quote }}
