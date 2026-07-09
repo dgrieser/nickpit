@@ -7,3 +7,4 @@
   - python
 - allow feedback and send it somewhere
 - send verbose logs via email maybe? or store on s3?
+- add tty progress on maybe N=parallel lines to show progress and current state of lanes
