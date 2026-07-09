@@ -1,0 +1,9 @@
+- fix emoji responses
+- fix suggestions; only use one
+- enforce code block formatting
+- improve styleguides:
+  - helm
+  - kubernetes
+  - python
+- allow feedback and send it somewhere
+- send verbose logs via email maybe? or store on s3?
