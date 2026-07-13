@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"maps"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -53,6 +54,7 @@ type EvictionPriority struct {
 
 type StyleGuideMappings struct {
 	StyleGuides                  map[string]StyleGuideEntry `yaml:"style_guides"`
+	VersionSourcePriority        map[string][]string        `yaml:"version_source_priority"`
 	StyleGuideOrder              []string                   `yaml:"style_guide_order"`
 	StyleGuideExtensionOverrides map[string][]string        `yaml:"extension_overrides"`
 	Detectors                    []StyleGuideDetector       `yaml:"detectors"`
@@ -244,10 +246,11 @@ func ruleMatches(matchAny, matchAll compiledPatternSet, normalizedPath, base, co
 }
 
 // StyleGuideFile returns the styleguide file for a language given the detected
-// toolchain versions for that language. A version-specific guide is chosen
-// when one of the detected versions matches a configured version key (lowest
-// detected version wins); otherwise the language default is returned. Pass nil
-// detected versions to always get the default.
+// toolchain versions for that language. Callers pre-filter the versions to the
+// most authoritative source tier (see VersionSourceRank); a version-specific
+// guide is chosen when one of them matches a configured version key (lowest
+// version within the tier wins); otherwise the language default is returned.
+// Pass nil detected versions to always get the default.
 func StyleGuideFile(language string, detected []string) (string, bool) {
 	m := mustLoadMappings()
 	entry, ok := m.styleGuides.StyleGuides[language]
@@ -264,6 +267,32 @@ func StyleGuideFile(language string, detected []string) (string, bool) {
 		}
 	}
 	return entry.Default, entry.Default != ""
+}
+
+// VersionSourceRank returns the priority tier of a toolchain version source
+// for a language: 0 is most authoritative, higher ranks less so. Matching is
+// case-insensitive on the slash-normalized source path; configured patterns
+// may use path.Match globs (".github/workflows/*") and always use "/" as
+// separator. A pattern without a slash matches the source's base name, so a
+// nested manifest (services/api/go.mod) ranks like a root one. Sources
+// matching no pattern — and every source of a language without a
+// version_source_priority entry — share the rank after the last configured
+// tier, which preserves the plain lowest-version-wins behavior among them.
+func VersionSourceRank(language, source string) int {
+	m := mustLoadMappings()
+	patterns := m.styleGuides.VersionSourcePriority[language]
+	normalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(source)))
+	for i, pattern := range patterns {
+		pattern = strings.ToLower(pattern)
+		target := normalized
+		if !strings.Contains(pattern, "/") {
+			target = path.Base(normalized)
+		}
+		if matched, err := path.Match(pattern, target); err == nil && matched {
+			return i
+		}
+	}
+	return len(patterns)
 }
 
 // HasStyleGuide reports whether a language has any built-in styleguide.
@@ -323,6 +352,7 @@ func Context() StyleGuideMappings {
 	m := mustLoadMappings()
 	return StyleGuideMappings{
 		StyleGuides:                  cloneStyleGuideEntries(m.styleGuides.StyleGuides),
+		VersionSourcePriority:        cloneStringSliceMap(m.styleGuides.VersionSourcePriority),
 		StyleGuideOrder:              append([]string(nil), m.styleGuides.StyleGuideOrder...),
 		StyleGuideExtensionOverrides: cloneStringSliceMap(m.styleGuides.StyleGuideExtensionOverrides),
 		Detectors:                    cloneStyleGuideDetectors(m.styleGuides.Detectors),
@@ -465,6 +495,22 @@ func parseStyleGuidesYAML(data []byte) (StyleGuideMappings, error) {
 		}
 		if detector.MatchAny.empty() && detector.MatchAll.empty() {
 			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml detectors[%d] missing match rules", i)
+		}
+	}
+	for language, patterns := range mappings.VersionSourcePriority {
+		if _, ok := mappings.StyleGuides[language]; !ok {
+			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml version_source_priority references unknown style guide language %q", language)
+		}
+		if len(patterns) == 0 {
+			return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml version_source_priority %q has no source patterns", language)
+		}
+		for i, pattern := range patterns {
+			if strings.TrimSpace(pattern) == "" {
+				return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml version_source_priority %q has an empty pattern at index %d", language, i)
+			}
+			if _, err := path.Match(pattern, "probe"); err != nil {
+				return StyleGuideMappings{}, fmt.Errorf("mappings: styleguides.yaml version_source_priority %q pattern %q: %w", language, pattern, err)
+			}
 		}
 	}
 	return mappings, nil

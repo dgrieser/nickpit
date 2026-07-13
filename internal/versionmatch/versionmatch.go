@@ -84,12 +84,14 @@ func Matches(key, detected string) bool {
 	return false
 }
 
-// SelectLowest implements "lowest detected version wins". It sorts the detected
-// versions ascending (semver-aware; unparseable versions sort last), then for
-// the lowest detected version returns the first key that matches it, trying
-// keys in ascending sorted order for a deterministic result when a version
-// satisfies several overlapping keys. It returns ("", false) when no detected
-// version matches any key.
+// SelectLowest implements "lowest detected version wins". Callers pass
+// versions already filtered to the most authoritative source tier
+// (mappings.VersionSourceRank), so this acts as the within-tier tie-break. It
+// sorts the detected versions ascending (semver-aware; unparseable versions
+// sort last), then for the lowest detected version returns the first key that
+// matches it, trying keys in ascending sorted order for a deterministic result
+// when a version satisfies several overlapping keys. It returns ("", false)
+// when no detected version matches any key.
 func SelectLowest(detected []string, keys []string) (string, bool) {
 	if len(detected) == 0 || len(keys) == 0 {
 		return "", false
