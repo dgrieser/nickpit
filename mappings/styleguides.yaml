@@ -48,7 +48,10 @@ style_guides:
       "1.24": styleguides/go-1.24.md
       "1.25": styleguides/go-1.25.md
       "1.26": styleguides/go-1.26.md
-  python: styleguides/python.md
+  python:
+    default: styleguides/python.md
+    versions:
+      "2.7": styleguides/python-2.7.md
   javascript: styleguides/javascript.md
   typescript: styleguides/typescript.md
   html: styleguides/html-css.md

@@ -25,6 +25,9 @@ func TestEmbeddedMappingsLoad(t *testing.T) {
 	if loaded.styleGuides.StyleGuides["go"].Versions["1.19"] != "styleguides/go-1.19.md" {
 		t.Fatalf("go 1.19 style guide = %q", loaded.styleGuides.StyleGuides["go"].Versions["1.19"])
 	}
+	if loaded.styleGuides.StyleGuides["python"].Versions["2.7"] != "styleguides/python-2.7.md" {
+		t.Fatalf("python 2.7 style guide = %q", loaded.styleGuides.StyleGuides["python"].Versions["2.7"])
+	}
 	if len(loaded.styleGuideDetectors) == 0 {
 		t.Fatal("style guide detectors empty")
 	}
@@ -52,6 +55,27 @@ func TestEmbeddedMappingsLoad(t *testing.T) {
 			if _, err := prompts.Load(name); err != nil {
 				t.Fatalf("style guide for %s points to unreadable file %q: %v", language, name, err)
 			}
+		}
+	}
+}
+
+func TestStyleGuideFileVersionSelection(t *testing.T) {
+	tests := []struct {
+		language string
+		detected []string
+		want     string
+	}{
+		{"python", nil, "styleguides/python.md"},
+		{"python", []string{"3.11"}, "styleguides/python.md"},
+		{"python", []string{"2.7"}, "styleguides/python-2.7.md"},
+		{"python", []string{"2.7.18"}, "styleguides/python-2.7.md"},
+		{"python", []string{"2.7-slim"}, "styleguides/python-2.7.md"},
+		{"go", []string{"1.19.3"}, "styleguides/go-1.19.md"},
+	}
+	for _, tt := range tests {
+		got, ok := StyleGuideFile(tt.language, tt.detected)
+		if !ok || got != tt.want {
+			t.Errorf("StyleGuideFile(%q, %v) = (%q, %v), want %q", tt.language, tt.detected, got, ok, tt.want)
 		}
 	}
 }
