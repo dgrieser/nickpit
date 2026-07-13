@@ -15,7 +15,9 @@
 # version_source_priority:
 #   Ordered source patterns per language, most authoritative first. Patterns
 #   are matched case-insensitively against the Source of each detected
-#   toolchain version and may use path.Match globs (".github/workflows/*").
+#   toolchain version and may use path.Match globs (".github/workflows/*")
+#   with "/" as separator. A pattern without a slash matches the source's
+#   base name, so nested manifests (services/api/go.mod) rank like root ones.
 #   Only versions from the highest-priority tier that produced a usable
 #   version take part in styleguide version selection, so a stale Dockerfile
 #   cannot drag the guide below what go.mod declares. Sources not listed rank

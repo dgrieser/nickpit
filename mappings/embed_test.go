@@ -88,8 +88,10 @@ func TestVersionSourceRank(t *testing.T) {
 		{"go", ".github/workflows/ci.yml", 2},
 		{"go", ".gitlab-ci.yml", 3},
 		{"go", "Dockerfile", 4},
-		{"go", "dockerfile", 4},      // case-insensitive
-		{"go", "some-other-file", 5}, // unlisted ranks after every tier
+		{"go", "dockerfile", 4},          // case-insensitive
+		{"go", "services/api/go.mod", 0}, // slash-less pattern matches base name
+		{"go", "sub/dir/Dockerfile", 4},  // ... anywhere in the tree
+		{"go", "some-other-file", 5},     // unlisted ranks after every tier
 		{"go", "", 5},
 		{"python", "pyproject.toml", 0},
 		{"python", "Dockerfile", 9},

@@ -272,17 +272,23 @@ func StyleGuideFile(language string, detected []string) (string, bool) {
 // VersionSourceRank returns the priority tier of a toolchain version source
 // for a language: 0 is most authoritative, higher ranks less so. Matching is
 // case-insensitive on the slash-normalized source path; configured patterns
-// may use path.Match globs (".github/workflows/*"). Sources matching no
-// pattern — and every source of a language without a version_source_priority
-// entry — share the rank after the last configured tier, which preserves the
-// plain lowest-version-wins behavior among them.
+// may use path.Match globs (".github/workflows/*") and always use "/" as
+// separator. A pattern without a slash matches the source's base name, so a
+// nested manifest (services/api/go.mod) ranks like a root one. Sources
+// matching no pattern — and every source of a language without a
+// version_source_priority entry — share the rank after the last configured
+// tier, which preserves the plain lowest-version-wins behavior among them.
 func VersionSourceRank(language, source string) int {
 	m := mustLoadMappings()
 	patterns := m.styleGuides.VersionSourcePriority[language]
 	normalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(source)))
 	for i, pattern := range patterns {
-		pattern = strings.ToLower(filepath.ToSlash(pattern))
-		if matched, err := path.Match(pattern, normalized); err == nil && matched {
+		pattern = strings.ToLower(pattern)
+		target := normalized
+		if !strings.Contains(pattern, "/") {
+			target = path.Base(normalized)
+		}
+		if matched, err := path.Match(pattern, target); err == nil && matched {
 			return i
 		}
 	}
