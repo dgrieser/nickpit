@@ -8,8 +8,19 @@
 #   `default` plus version-specific `versions` overrides keyed by a version or
 #   semver range (e.g. "1.19", ">=1.22"). When a detected toolchain version
 #   (from go.mod, Dockerfile, CI, ...) matches a version key, that guide is used
-#   instead of the default; the lowest detected version wins on conflict.
+#   instead of the default. Conflicting detections are resolved by
+#   version_source_priority; within one source tier the lowest version wins.
 #   Add a new key here when adding a new styleguide file.
+#
+# version_source_priority:
+#   Ordered source patterns per language, most authoritative first. Patterns
+#   are matched case-insensitively against the Source of each detected
+#   toolchain version and may use path.Match globs (".github/workflows/*").
+#   Only versions from the highest-priority tier that produced a usable
+#   version take part in styleguide version selection, so a stale Dockerfile
+#   cannot drag the guide below what go.mod declares. Sources not listed rank
+#   together after every listed tier; languages without an entry keep the
+#   plain lowest-version-wins behavior.
 #
 # style_guide_order:
 #   Stable output order for selected guides. Every entry must exist in
@@ -62,6 +73,38 @@ style_guides:
   shell: styleguides/bash.md
   helm: styleguides/helm.md
   kubernetes: styleguides/kubernetes.md
+
+version_source_priority:
+  go:
+    - go.mod
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+    - Dockerfile
+  python:
+    - pyproject.toml
+    - Pipfile
+    - setup.cfg
+    - setup.py
+    - .python-version
+    - runtime.txt
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+    - Dockerfile
+  javascript:
+    - package.json
+    - .nvmrc
+    - .node-version
+    - .tool-versions
+    - .github/workflows/*
+    - .gitlab-ci.yml
+    - Dockerfile
+  typescript:
+    - package-lock.json
+    - yarn.lock
+    - pnpm-lock.yaml
+    - package.json
 
 style_guide_order:
   - go

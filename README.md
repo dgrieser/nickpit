@@ -76,6 +76,7 @@ The guides are even **version-aware**:
 - Bash `3.2`–`5.2`
 
 So NickPit picks the correct guide for the toolchain version it detects.  
+When sources disagree, the most authoritative one per language decides — `go.mod` for Go, manifests like `pyproject.toml` for Python, lockfiles for TypeScript — so a stale `Dockerfile` or CI config can't drag the guide below the version the code is actually built against.  
 
 Selection isn't done by the LLM, nor is it just file extensions.  
 

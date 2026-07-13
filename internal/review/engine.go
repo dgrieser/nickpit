@@ -2354,8 +2354,9 @@ func (e *Engine) styleGuidesFor(ctx *model.ReviewContext) ([]model.StyleGuide, e
 // gatedAdditionalStyleGuides selects which user-supplied guides apply to this
 // review, preserving their configured order. An ungated guide always applies;
 // a language-gated guide applies when that language changed; a version-gated
-// guide applies only for the version that wins its language (lowest detected
-// version, matching the built-in selection rule).
+// guide applies only for the version that wins its language (most
+// authoritative source, lowest version within it — matching the built-in
+// selection rule).
 func (e *Engine) gatedAdditionalStyleGuides(ctx *model.ReviewContext, changed map[string]struct{}) []model.StyleGuide {
 	if len(e.additionalStyleGuides) == 0 {
 		return nil
@@ -2397,18 +2398,33 @@ func (e *Engine) gatedAdditionalStyleGuides(ctx *model.ReviewContext, changed ma
 
 // detectedVersionsFor returns the usable toolchain versions detected for a
 // language, skipping Unavailable/Error/empty entries. A language can carry
-// several (go.mod go directive, toolchain directive, Dockerfile, CI); the
-// selection rules resolve conflicts (lowest version wins).
+// several (go.mod go directive, toolchain directive, Dockerfile, CI); only the
+// most authoritative source tier (mappings.VersionSourceRank, e.g. go.mod over
+// Dockerfile for Go) is returned, so a stale lower-priority source cannot
+// override the version the code is actually built against. Within that tier
+// the selection rules pick the lowest version. A source whose entry errored
+// (e.g. an unparseable go.mod) yields nothing, letting the next tier take
+// over.
 func detectedVersionsFor(ctx *model.ReviewContext, language string) []string {
 	if ctx == nil {
 		return nil
 	}
+	bestRank := 0
 	var out []string
 	for _, tv := range ctx.ToolchainVersions {
 		if tv.Language != language || tv.Unavailable || tv.Error != "" {
 			continue
 		}
-		if version := strings.TrimSpace(tv.Version); version != "" {
+		version := strings.TrimSpace(tv.Version)
+		if version == "" {
+			continue
+		}
+		rank := mappings.VersionSourceRank(language, tv.Source)
+		switch {
+		case len(out) == 0 || rank < bestRank:
+			bestRank = rank
+			out = append(out[:0], version)
+		case rank == bestRank:
 			out = append(out, version)
 		}
 	}

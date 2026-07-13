@@ -59,6 +59,72 @@ func TestEmbeddedMappingsLoad(t *testing.T) {
 	}
 }
 
+func TestEmbeddedVersionSourcePriorityLoad(t *testing.T) {
+	loaded, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, language := range []string{"go", "python", "javascript", "typescript"} {
+		if len(loaded.styleGuides.VersionSourcePriority[language]) == 0 {
+			t.Fatalf("version_source_priority missing for %s", language)
+		}
+	}
+	if first := loaded.styleGuides.VersionSourcePriority["go"][0]; first != "go.mod" {
+		t.Fatalf("go top-priority source = %q, want go.mod", first)
+	}
+	if first := loaded.styleGuides.VersionSourcePriority["typescript"][0]; first != "package-lock.json" {
+		t.Fatalf("typescript top-priority source = %q, want package-lock.json", first)
+	}
+}
+
+func TestVersionSourceRank(t *testing.T) {
+	tests := []struct {
+		language string
+		source   string
+		want     int
+	}{
+		{"go", "go.mod", 0},
+		{"go", ".tool-versions", 1},
+		{"go", ".github/workflows/ci.yml", 2},
+		{"go", ".gitlab-ci.yml", 3},
+		{"go", "Dockerfile", 4},
+		{"go", "dockerfile", 4},      // case-insensitive
+		{"go", "some-other-file", 5}, // unlisted ranks after every tier
+		{"go", "", 5},
+		{"python", "pyproject.toml", 0},
+		{"python", "Dockerfile", 9},
+		{"typescript", "package-lock.json", 0},
+		{"typescript", "package.json", 3},
+		{"shell", "Dockerfile", 0}, // no configured priority: everything ties at 0
+		{"shell", "go.mod", 0},
+	}
+	for _, tt := range tests {
+		if got := VersionSourceRank(tt.language, tt.source); got != tt.want {
+			t.Errorf("VersionSourceRank(%q, %q) = %d, want %d", tt.language, tt.source, got, tt.want)
+		}
+	}
+}
+
+func TestVersionSourcePriorityValidation(t *testing.T) {
+	base := "style_guides:\n  go: styleguides/go.md\nstyle_guide_order: [go]\n"
+	unknownLanguage := base + "version_source_priority:\n  rust: [Cargo.toml]\n"
+	if _, err := parseStyleGuidesYAML([]byte(unknownLanguage)); err == nil || !strings.Contains(err.Error(), "unknown style guide language") {
+		t.Fatalf("unknown language validation err = %v", err)
+	}
+	emptyList := base + "version_source_priority:\n  go: []\n"
+	if _, err := parseStyleGuidesYAML([]byte(emptyList)); err == nil || !strings.Contains(err.Error(), "no source patterns") {
+		t.Fatalf("empty list validation err = %v", err)
+	}
+	emptyPattern := base + "version_source_priority:\n  go: [\"\"]\n"
+	if _, err := parseStyleGuidesYAML([]byte(emptyPattern)); err == nil || !strings.Contains(err.Error(), "empty pattern") {
+		t.Fatalf("empty pattern validation err = %v", err)
+	}
+	badGlob := base + "version_source_priority:\n  go: [\"[\"]\n"
+	if _, err := parseStyleGuidesYAML([]byte(badGlob)); err == nil || !strings.Contains(err.Error(), "syntax error in pattern") {
+		t.Fatalf("bad glob validation err = %v", err)
+	}
+}
+
 func TestStyleGuideFileVersionSelection(t *testing.T) {
 	tests := []struct {
 		language string
