@@ -2354,10 +2354,15 @@ import os.path
 
 def safe_read_file(base_dir, user_filename):
     """Read a file within base_dir; reject path traversal attempts."""
-    # Normalize and resolve
+    # Normalize and resolve, then compare via relpath. A raw
+    # startswith(base + os.sep) check falsely rejects everything when
+    # base is a root directory ('/' + os.sep == '//'), and a raw
+    # relative.startswith('..') would falsely reject a file literally
+    # named '..foo' — compare against os.pardir exactly.
     requested = os.path.realpath(os.path.join(base_dir, user_filename))
     base = os.path.realpath(base_dir)
-    if not requested.startswith(base + os.sep) and requested != base:
+    relative = os.path.relpath(requested, base)
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
         raise ValueError('Access denied: path traversal detected')
     with io.open(requested, 'r', encoding='utf-8') as f:
         return f.read()
