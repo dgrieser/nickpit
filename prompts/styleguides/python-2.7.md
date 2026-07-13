@@ -1541,10 +1541,11 @@ except ValueError as e:
 ```python
 def read_config(path):
     """Read and parse a JSON config file."""
+    import json
     f = None
     try:
         f = open(path)
-        data = f.read()
+        config = json.load(f)   # IOError on read failure, ValueError on bad JSON
     except IOError as e:
         logger.error('Cannot open config %r: %s', path, e)
         raise
@@ -1552,9 +1553,11 @@ def read_config(path):
         logger.error('Malformed config %r: %s', path, e)
         raise
     else:
-        # only executes if no exception was raised
-        import json
-        return json.loads(data)
+        # only executes if no exception was raised. Careful: an exception
+        # raised HERE is NOT caught by the except clauses above — keep
+        # anything that can fail inside the try block.
+        logger.debug('Loaded config %r', path)
+        return config
     finally:
         # always executes, even if exception propagates
         if f is not None:
@@ -2391,14 +2394,19 @@ import os
 
 def hash_password(password):
     salt = os.urandom(16)
-    dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100000)
+    # encode only unicode — .encode('utf-8') on a non-ASCII str would
+    # implicitly ascii-DECODE it first and raise UnicodeDecodeError
+    # (see Strings: force_bytes)
+    pw_bytes = password.encode('utf-8') if isinstance(password, unicode) else password
+    dk = hashlib.pbkdf2_hmac('sha256', pw_bytes, salt, 100000)
     return salt.encode('hex') + ':' + dk.encode('hex')
 
 def verify_password(stored, provided):
     salt_hex, dk_hex = stored.split(':')
     salt = salt_hex.decode('hex')
     dk = dk_hex.decode('hex')
-    check = hashlib.pbkdf2_hmac('sha256', provided.encode('utf-8'), salt, 100000)
+    pw_bytes = provided.encode('utf-8') if isinstance(provided, unicode) else provided
+    check = hashlib.pbkdf2_hmac('sha256', pw_bytes, salt, 100000)
     return hmac.compare_digest(dk, check)
 ```
 
