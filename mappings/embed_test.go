@@ -135,9 +135,16 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 	}{
 		{"python", nil, "styleguides/python.md"},
 		{"python", []string{"3.11"}, "styleguides/python.md"},
+		{"python", []string{"3.7"}, "styleguides/python.md"},
 		{"python", []string{"2.7"}, "styleguides/python-2.7.md"},
 		{"python", []string{"2.7.18"}, "styleguides/python-2.7.md"},
 		{"python", []string{"2.7-slim"}, "styleguides/python-2.7.md"},
+		{"python", []string{"3.0"}, "styleguides/python-3.6.md"},
+		{"python", []string{"3.4.10"}, "styleguides/python-3.6.md"},
+		{"python", []string{"3.6"}, "styleguides/python-3.6.md"},
+		{"python", []string{"3.6.15"}, "styleguides/python-3.6.md"},
+		{"python", []string{"3.6-alpine"}, "styleguides/python-3.6.md"},
+		{"python", []string{"3.6", "2.7"}, "styleguides/python-2.7.md"},
 		{"go", []string{"1.19.3"}, "styleguides/go-1.19.md"},
 	}
 	for _, tt := range tests {
