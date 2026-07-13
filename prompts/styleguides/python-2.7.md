@@ -1441,21 +1441,27 @@ def slow_function(n):
 **Decorator factories (decorators with arguments):**
 
 ```python
+import logging
+import sys
+
 def retry(max_attempts=3, exceptions=(Exception,)):
     """Retry a function up to max_attempts times on specified exceptions."""
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            last_exc = None
+            exc_info = None
             for attempt in xrange(max_attempts):
                 try:
                     return func(*args, **kwargs)
                 except exceptions as e:
-                    last_exc = e
-                    import logging
+                    # keep type/value/traceback — a later "raise e" would
+                    # point the traceback here instead of at the failure
+                    exc_info = sys.exc_info()
                     logging.warning('Attempt %d/%d for %s failed: %s',
                                     attempt + 1, max_attempts, func.__name__, e)
-            raise last_exc
+            # three-argument raise re-raises with the ORIGINAL traceback
+            # (Python-2-only syntax; six.reraise(*exc_info) works on 2 and 3)
+            raise exc_info[0], exc_info[1], exc_info[2]
         return wrapper
     return decorator
 
