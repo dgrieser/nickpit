@@ -40,6 +40,8 @@ These are not optional suggestions for production code — they are essential gu
 
 **Pitfall:** `import __future__` (without `from`) does NOT activate any feature; only `from __future__ import X` syntax triggers the compiler special-case behavior.[^3]
 
+**Note on the examples in this guide:** code samples deliberately use the interpreter's *default* semantics — `print` statements, truncating `/` division — so each snippet runs as-is in a bare 2.7 session and matches what legacy code looks like. New production modules should start with the `__future__` imports above and use the `print()` function form; converting a multi-argument `print a, b` requires the import, since without it `print(a, b)` prints a tuple (see The `print` Statement).
+
 #### PEP 8 Code Style
 
 ##### Naming Conventions
@@ -1067,9 +1069,10 @@ print [next(gen) for _ in xrange(10)]  # [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
 ```
 
 ```python
-def read_lines_in_chunks(filename, chunk_size=1024):
-    """Read a file in chunks, yielding each line lazily."""
-    with open(filename) as f:
+def read_lines_lazily(filename):
+    """Read a file line by line, yielding each line lazily."""
+    import io
+    with io.open(filename, 'r', encoding='utf-8') as f:
         for line in f:
             yield line.rstrip('\n')
 ```
@@ -1626,21 +1629,22 @@ Using bare `raise` preserves the original traceback. Do NOT do `raise e` — tha
 
 ##### Exception Chaining
 
-`raise NewError(...) from original` is Python-3-only syntax. On 2.7 the
-original traceback is lost when you raise a replacement exception — keep
-the cause attached with `six.raise_from`:
+`raise NewError(...) from original` is Python-3-only syntax — Python 2.7
+has no exception chaining. To keep the root cause diagnosable, log the
+original exception with `exc_info=True` before raising the replacement:
 
 ```python
-import six
-
 try:
     parse(config_text)
-except ValueError as e:
-    six.raise_from(ConfigError('config', 'unparseable'), e)
+except ValueError:
+    logger.error('Failed to parse config', exc_info=True)
+    raise ConfigError('config', 'unparseable')
 ```
 
-When `six` is unavailable, log the original with `exc_info=True` before
-raising the replacement, so the root cause is never silently dropped.
+In code that must also run on Python 3, `six.raise_from(new, original)`
+gives proper chaining there — but on a Python 2 interpreter it is
+equivalent to a plain `raise new` and preserves nothing by itself, so
+keep the `exc_info=True` logging either way.
 
 ***
 
