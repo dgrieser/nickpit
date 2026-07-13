@@ -901,7 +901,7 @@ release automatically).
 from typing import Dict, List, Optional, Text
 
 # Variables
-name = 'John'        # type: Text
+name = u'John'       # type: Text
 age = 30             # type: int
 scores = [90, 85]    # type: List[int]
 
@@ -1347,7 +1347,7 @@ p.z = 3   # AttributeError: 'Point' object has no attribute 'z'
 
 **Pitfall:** In Python 2.7, the boolean truth value method is `__nonzero__`, not `__bool__`. Define `__nonzero__` on your objects.
 
-**Pitfall:** If you define `__eq__`, Python sets `__hash__ = None` implicitly for new-style classes that don't also define `__hash__`. This makes the class unhashable. Always define both, or explicitly set `__hash__ = None` if unhashability is intentional.
+**Pitfall:** In Python 2.7, defining `__eq__` does NOT implicitly set `__hash__ = None` (that safety net was added in Python 3). The class silently keeps the identity-based `__hash__` inherited from `object`, so objects that compare equal can hash differently — allowing duplicates in sets and dicts. Always define both, or explicitly set `__hash__ = None` if unhashability is intentional.
 
 ##### Abstract Base Classes
 
@@ -1449,22 +1449,30 @@ import sys
 
 def retry(max_attempts=3, exceptions=(Exception,)):
     """Retry a function up to max_attempts times on specified exceptions."""
+    if max_attempts < 1:
+        raise ValueError('max_attempts must be at least 1')
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             exc_info = None
-            for attempt in xrange(max_attempts):
-                try:
-                    return func(*args, **kwargs)
-                except exceptions as e:
-                    # keep type/value/traceback — a later "raise e" would
-                    # point the traceback here instead of at the failure
-                    exc_info = sys.exc_info()
-                    logging.warning('Attempt %d/%d for %s failed: %s',
-                                    attempt + 1, max_attempts, func.__name__, e)
-            # three-argument raise re-raises with the ORIGINAL traceback
-            # (Python-2-only syntax; six.reraise(*exc_info) works on 2 and 3)
-            raise exc_info[0], exc_info[1], exc_info[2]
+            try:
+                for attempt in xrange(max_attempts):
+                    try:
+                        return func(*args, **kwargs)
+                    except exceptions as e:
+                        # keep type/value/traceback — a later "raise e" would
+                        # point the traceback here instead of at the failure
+                        exc_info = sys.exc_info()
+                        logging.warning('Attempt %d/%d for %s failed: %s',
+                                        attempt + 1, max_attempts, func.__name__, e)
+                # three-argument raise re-raises with the ORIGINAL traceback
+                # (Python-2-only syntax; six.reraise(*exc_info) works on 2 and 3)
+                raise exc_info[0], exc_info[1], exc_info[2]
+            finally:
+                # a stored traceback references the frame that stores it —
+                # delete it (per the sys.exc_info docs) to break the cycle
+                # so the frame is reclaimed promptly, not at the next GC pass
+                del exc_info
         return wrapper
     return decorator
 
