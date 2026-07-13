@@ -1550,11 +1550,11 @@ except ValueError as e:
 ```python
 def read_config(path):
     """Read and parse a JSON config file."""
+    import io
     import json
-    f = None
     try:
-        f = open(path)
-        config = json.load(f)   # IOError on read failure, ValueError on bad JSON
+        with io.open(path, 'r', encoding='utf-8') as f:
+            config = json.load(f)   # IOError on read, ValueError on bad JSON
     except IOError as e:
         logger.error('Cannot open config %r: %s', path, e)
         raise
@@ -1565,12 +1565,12 @@ def read_config(path):
         # only executes if no exception was raised. Careful: an exception
         # raised HERE is NOT caught by the except clauses above — keep
         # anything that can fail inside the try block.
-        logger.debug('Loaded config %r', path)
         return config
     finally:
-        # always executes, even if exception propagates
-        if f is not None:
-            f.close()
+        # always executes, even when an exception propagates — for actions
+        # needed on success AND failure (the file itself is already closed
+        # by the with statement)
+        logger.debug('read_config finished for %r', path)
 ```
 
 The `else` clause of `try` is underused but important: it separates "the protected code succeeded" logic from "clean up regardless" logic in `finally`.
@@ -2345,6 +2345,7 @@ def validate_filename(name):
 ##### Path Traversal Prevention
 
 ```python
+import io
 import os.path
 
 def safe_read_file(base_dir, user_filename):
@@ -2354,7 +2355,8 @@ def safe_read_file(base_dir, user_filename):
     base = os.path.realpath(base_dir)
     if not requested.startswith(base + os.sep) and requested != base:
         raise ValueError('Access denied: path traversal detected')
-    return open(requested).read()
+    with io.open(requested, 'r', encoding='utf-8') as f:
+        return f.read()
 ```
 
 ##### SQL Injection Prevention
