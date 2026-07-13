@@ -419,7 +419,8 @@ lst.extend([7, 8])
 lst.insert(0, 0)
 lst.remove('two')    # removes first occurrence; raises ValueError if absent
 popped = lst.pop()   # removes and returns last; pop(i) for arbitrary index
-del lst
+del lst[0]           # removes element at index 0 (del lst on the bare name
+                     # would unbind the variable itself, not empty the list)
 
 # Search
 print 3.0 in lst          # True
@@ -1293,7 +1294,9 @@ class Config(object):
     @staticmethod
     def validate_key(key):
         """Utility function scoped to the class; receives neither cls nor self."""
-        return isinstance(key, str) and len(key) > 0
+        # basestring matches both str and unicode — isinstance(key, str)
+        # would reject unicode keys (all literals under unicode_literals)
+        return isinstance(key, basestring) and len(key) > 0
 ```
 
 ##### `__slots__`
