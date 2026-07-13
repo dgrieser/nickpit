@@ -429,11 +429,14 @@ print 3.0 in lst          # True
 print lst.index(3.0)      # position; raises ValueError if absent
 print lst.count(6)        # count occurrences
 
-# Sorting
-lst.sort()                    # in-place, stable sort
-lst.sort(key=lambda x: -x)   # custom key
-sorted_copy = sorted(lst)     # returns new list, original unchanged
-lst.reverse()                 # in-place
+# Sorting — demonstrated on a homogeneous list: a key like -x raises
+# TypeError on non-numbers, and Python 2 "sorts" mixed types by an
+# arbitrary cross-type order instead of raising like Python 3 does
+nums = [3, 1.5, 2]
+nums.sort()                    # in-place, stable sort
+nums.sort(key=lambda x: -x)    # custom key — descending
+sorted_copy = sorted(nums)     # returns new list, original unchanged
+nums.reverse()                 # in-place
 
 # Other
 print len(lst)
