@@ -149,7 +149,11 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 		{"python", []string{"3.8"}, "styleguides/python-3.8.md"},
 		{"python", []string{"3.8.18"}, "styleguides/python-3.8.md"},
 		{"python", []string{"3.8-alpine"}, "styleguides/python-3.8.md"},
-		{"python", []string{"3.9"}, "styleguides/python.md"},
+		{"python", []string{"3.9"}, "styleguides/python-3.9.md"},
+		{"python", []string{"3.9.25"}, "styleguides/python-3.9.md"},
+		{"python", []string{"3.9-slim"}, "styleguides/python-3.9.md"},
+		{"python", []string{"3.9", "3.8"}, "styleguides/python-3.8.md"},
+		{"python", []string{"3.10"}, "styleguides/python.md"},
 		{"go", []string{"1.19.3"}, "styleguides/go-1.19.md"},
 	}
 	for _, tt := range tests {
