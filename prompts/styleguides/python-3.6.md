@@ -168,6 +168,7 @@ assert abs((0.1 + 0.2) - 0.3) < EPSILON
 # BETTER — math.isclose (added in Python 3.5)
 assert math.isclose(0.1 + 0.2, 0.3)
 # rel_tol: relative tolerance (default 1e-9); abs_tol: absolute tolerance (default 0)
+a, b = 0.1000000001, 0.1000000002
 assert math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
 ```
 
@@ -1378,7 +1379,7 @@ def retry(
         return wrapper
     return decorator
 
-@retry(max_attempts=5, exceptions=(IOError, OSError))
+@retry(max_attempts=5, exceptions=(OSError,))
 def read_remote_file(url: str) -> bytes:
     pass
 ```
@@ -1986,7 +1987,7 @@ logger = logging.getLogger(__name__)
 
 def setup_logging(level: str = 'INFO') -> None:
     logging.basicConfig(
-        level=getattr(logging, level.upper()),
+        level=level.upper(),   # logging accepts level names as strings (3.2+)
         format='%(asctime)s %(name)s %(levelname)s %(message)s',
         datefmt='%Y-%m-%dT%H:%M:%S',
     )
