@@ -77,10 +77,9 @@ ingress:
   path: /webhooks/gitlab
   pathType: Prefix
   # With secretName empty the ingress controller serves its default
-  # certificate — enough when that is a wildcard covering the host (e.g.
-  # nginx-internal's *.prod.mittwald.systems). For a cert-manager per-host
-  # cert instead, set secretName and add annotation
-  # kubernetes.io/tls-acme: "true".
+  # certificate — enough when that is a wildcard covering the host
+  # For a cert-manager per-host cert instead, set secretName and add
+  # annotation kubernetes.io/tls-acme: "true".
   tls:
     enabled: true
     secretName: ""
@@ -234,12 +233,7 @@ serve:
 # no file is rendered or mounted and children run on the binary's built-in
 # profiles — serve.review.extraArgs selects one (e.g. --profile mittwald),
 # the API key arrives via the Secret env, and the group token/base URL are
-# injected per review. The built-in mittwald profile already carries model,
-# sampling params and env token refs, so a copy here would only drift.
-# Single knobs are also overridable without a config file via env vars in the
-# Secret (NICKPIT_MODEL, NICKPIT_TEMPERATURE, ...). Set a full YAML document
-# only for changes the built-ins cannot express (custom endpoint, new
-# profile) — ${VAR} refs are env-expanded, so secrets stay out of the
+# injected per review.
 # ConfigMap:
 #   nickpitYaml: |
 #     active_profile: custom

@@ -4,9 +4,6 @@ Deploys the [`nickpit gitlab serve`](../../..) webhook daemon: an HTTP service t
 receives GitLab group webhooks (merge-request, comment, emoji events) and runs an
 LLM code review for each qualifying MR as an isolated child process.
 
-Target for this repo's setup: cluster `coabkube-prod`, namespace `mw-internal`,
-GitLab `gitlab.mittwald.it`, mittwald internal LLM.
-
 ## What it deploys
 
 | Object | Purpose |
@@ -33,13 +30,9 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
   and never returns it via API). The daemon verifies each delivery's
   HMAC-SHA256 signature (headers `webhook-id` / `webhook-timestamp` /
   `webhook-signature`). A legacy plaintext secret token is still supported.
-- An LLM API key (default profile uses the mittwald internal endpoint).
+- An LLM API key.
 
 ## Install
-
-Do not put real secrets in a committed values file. Create your own
-`prod-values.yaml` for non-secret config (host) and pass secrets on the
-command line or via `existingSecret`.
 
 The group inventory lives in the Secret (key `groups.yaml`, tokens included),
 not in chart values: adding or removing a group means editing only the Secret.
@@ -65,10 +58,10 @@ kubectl -n mw-internal create secret generic nickpit-serve \
   --from-file=groups.yaml
 
 # 2. install (namespace also comes from your kube-context; shown explicitly)
-helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
+helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n internal \
   --set existingSecret=nickpit-serve \
-  --set serve.gitlabBaseURL=https://gitlab.mittwald.it \
-  --set ingress.host=nickpit.prod.mittwald.systems \
+  --set serve.gitlabBaseURL=https://gitlab.mycustomhost.com \
+  --set ingress.host=nickpit.mycustomhost.com \
   --set ingress.className=nginx-internal \
   --set serve.review.extraArgs='{--profile,mittwald}'
 ```
@@ -79,8 +72,8 @@ Or let the chart create the Secret (fine for a quick test):
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
   --set secrets.MITTWALD_LLM_API_KEY=... \
   --set-file secrets.groups\.yaml=groups.yaml \
-  --set serve.gitlabBaseURL=https://gitlab.mittwald.it \
-  --set ingress.host=nickpit.prod.mittwald.systems \
+  --set serve.gitlabBaseURL=https://gitlab.mycustomhost.com \
+  --set ingress.host=nickpit.mycustomhost.com \
   --set ingress.className=nginx-internal \
   --set serve.review.extraArgs='{--profile,mittwald}'
 ```
