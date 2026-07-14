@@ -1851,6 +1851,9 @@ __all__ = ['PublicClass', 'public_function', 'CONSTANT']
 
 CONSTANT: int = 42
 
+class PublicClass:
+    pass
+
 def public_function() -> None:
     pass
 
