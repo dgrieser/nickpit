@@ -231,8 +231,9 @@ serve:
 # no file is rendered or mounted and children run on the binary's built-in
 # profiles — serve.review.extraArgs selects one (e.g. --profile mittwald),
 # the API key arrives via the Secret env, and the group token/base URL are
-# injected per review.
-# ConfigMap:
+# injected per review. Set a full YAML document only for changes the
+# built-ins cannot express (custom endpoint, new profile); ${VAR} refs are
+# env-expanded, so secrets stay out of the ConfigMap:
 #   nickpitYaml: |
 #     active_profile: custom
 #     profiles:

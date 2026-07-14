@@ -53,7 +53,7 @@ ingress is enabled). The LLM profile for review children is selected via
 
 ```sh
 # 1. (recommended) create the secret out-of-band
-kubectl -n mw-internal create secret generic nickpit-serve \
+kubectl -n internal create secret generic nickpit-serve \
   --from-literal=MITTWALD_LLM_API_KEY=... \
   --from-file=groups.yaml
 
@@ -69,7 +69,7 @@ helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n internal \
 Or let the chart create the Secret (fine for a quick test):
 
 ```sh
-helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
+helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n internal \
   --set secrets.MITTWALD_LLM_API_KEY=... \
   --set-file secrets.groups\.yaml=groups.yaml \
   --set serve.gitlabBaseURL=https://gitlab.mycustomhost.com \
