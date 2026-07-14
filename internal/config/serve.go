@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -48,7 +49,9 @@ type ServeConfig struct {
 	// list is appended to Groups. It lets the group inventory live apart from
 	// the main serve config — e.g. in a Kubernetes Secret mounted next to a
 	// ConfigMap-rendered server.yaml — so adding a group never touches this
-	// file. Like the main file it is env-expanded before parsing.
+	// file. Like the main file it is env-expanded before parsing. A relative
+	// path is resolved against the serve config file's directory, not the
+	// process working directory.
 	GroupsFile string       `yaml:"groups_file"`
 	Groups     []ServeGroup `yaml:"groups"`
 	Review     ServeReview  `yaml:"review"`
@@ -122,7 +125,11 @@ func LoadServe(path string) (*ServeConfig, error) {
 		return nil, fmt.Errorf("serve config: parsing %s: %w", path, err)
 	}
 	if cfg.GroupsFile != "" {
-		fileGroups, err := loadGroupsFile(cfg.GroupsFile)
+		groupsPath := cfg.GroupsFile
+		if !filepath.IsAbs(groupsPath) {
+			groupsPath = filepath.Join(filepath.Dir(path), groupsPath)
+		}
+		fileGroups, err := loadGroupsFile(groupsPath)
 		if err != nil {
 			return nil, fmt.Errorf("serve config: %w", err)
 		}

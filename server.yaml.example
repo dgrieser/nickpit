@@ -34,7 +34,7 @@ ack_emoji: "white_check_mark"
 # Optional second YAML file whose top-level `groups:` list (same shape as
 # below) is appended to the inline groups — lets the group inventory live
 # apart from this file, e.g. in a mounted Kubernetes Secret. Env-expanded
-# like this file.
+# like this file. A relative path is resolved against this file's directory.
 # groups_file: "/etc/nickpit/groups.yaml"
 
 # One entry per GitLab group. Events are routed to the longest matching path

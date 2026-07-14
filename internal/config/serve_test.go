@@ -166,6 +166,32 @@ groups:
 	}
 }
 
+func TestLoadServeGroupsFileRelativePath(t *testing.T) {
+	// A relative groups_file resolves against the serve config's directory,
+	// not the process cwd (the test cwd is the package dir, so a cwd-based
+	// lookup would fail here).
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "groups.yaml"), []byte(`
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serverPath := filepath.Join(dir, "server.yaml")
+	if err := os.WriteFile(serverPath, []byte("groups_file: groups.yaml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServe(serverPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Groups) != 1 || cfg.Groups[0].Path != "platform" {
+		t.Fatalf("groups = %+v", cfg.Groups)
+	}
+}
+
 func TestLoadServeGroupsFileMergesWithInline(t *testing.T) {
 	groupsPath := filepath.Join(t.TempDir(), "groups.yaml")
 	if err := os.WriteFile(groupsPath, []byte(`
