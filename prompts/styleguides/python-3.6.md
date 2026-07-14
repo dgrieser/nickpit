@@ -1339,7 +1339,7 @@ import functools
 import time
 from typing import Callable, Tuple, Type
 
-def timer(func):
+def timer(func: Callable) -> Callable:
     @functools.wraps(func)   # preserves __name__, __doc__, etc. — MANDATORY
     def wrapper(*args, **kwargs):
         start = time.perf_counter()
@@ -1795,10 +1795,12 @@ async def read_file_async(path: str) -> str:
 ##### Asynchronous Comprehensions (PEP 530, new in 3.6)
 
 ```python
-async def get_values() -> list:
+from typing import List
+
+async def get_values() -> List:
     return [i async for i in async_generator()]
 
-async def get_filtered() -> list:
+async def get_filtered() -> List:
     return [await fetch(url) for url in urls if await is_valid(url)]
 ```
 
@@ -1959,7 +1961,8 @@ def verify_password(stored_hash: bytes, provided: str) -> bool:
     return bcrypt.checkpw(provided.encode('utf-8'), stored_hash)
 
 # Built-in fallback — hashlib.scrypt (requires OpenSSL 1.1+)
-import hashlib, os, hmac
+import hashlib
+import os
 
 def hash_password_scrypt(password: str) -> str:
     salt = os.urandom(16)
@@ -2345,7 +2348,7 @@ project/
 
 ```python
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from myapp.calculator import add, divide
 
 def test_add() -> None:
