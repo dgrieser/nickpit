@@ -479,7 +479,7 @@ print(f'{score:{width}.{prec}f}')  # '   98.7650'
 
 ```python
 # SyntaxError in 3.8
-# f'Value: {d["key"]}'  — same quote type inside and out
+# f'Value: {d['key']}'  — same quote type inside and out
 # f'Newline: {"\n"}'    — backslash in expression
 
 # Workarounds:
