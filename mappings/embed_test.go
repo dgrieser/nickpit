@@ -135,7 +135,8 @@ func TestStyleGuideFileVersionSelection(t *testing.T) {
 	}{
 		{"python", nil, "styleguides/python.md"},
 		{"python", []string{"3.11"}, "styleguides/python.md"},
-		{"python", []string{"3.7"}, "styleguides/python.md"},
+		{"python", []string{"3.7"}, "styleguides/python-3.8.md"},
+		{"python", []string{"3.7.17"}, "styleguides/python-3.8.md"},
 		{"python", []string{"2.7"}, "styleguides/python-2.7.md"},
 		{"python", []string{"2.7.18"}, "styleguides/python-2.7.md"},
 		{"python", []string{"2.7-slim"}, "styleguides/python-2.7.md"},

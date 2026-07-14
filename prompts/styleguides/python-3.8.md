@@ -4,7 +4,7 @@
 
 Python 3.8 was released on October 14, 2019.[^1] It is a dynamically typed, interpreted, general-purpose language with a clean, whitespace-significant syntax. Python 3.8 delivered several landmark PEPs — the walrus operator, positional-only parameters, a now-stable `asyncio.run()`, four major typing additions, and a long list of stdlib enhancements — making it one of the most impactful releases in the 3.x line.
 
-This guide is the reference for projects targeting Python 3.8. Features introduced in 3.8 are marked as such. Where behavior differs from 3.6 or 3.7, the difference is called out explicitly. Do not use anything newer than 3.8: no `str.removeprefix()`/`removesuffix()` or dict `|` merge operator (3.9), no `match` statement or parenthesized context managers (3.10), no `dataclasses.KW_ONLY` (3.10).
+This guide is the reference for projects on Python 3.7 or 3.8. Features introduced in 3.8 (walrus operator, positional-only parameters, f-string `=`, `functools.cached_property`, ...) are marked as such — skip them when targeting 3.7. Where behavior differs from 3.6 or 3.7, the difference is called out explicitly. Do not use anything newer than 3.8: no `str.removeprefix()`/`removesuffix()` or dict `|` merge operator (3.9), no `match` statement or parenthesized context managers (3.10), no `dataclasses.KW_ONLY` (3.10).
 
 A few global truths about Python 3.8 before diving in:
 
@@ -2740,7 +2740,7 @@ black --check myapp/ && isort --check-only myapp/ && flake8 myapp/ && mypy myapp
 
 #### Production Checklist
 
-**Python 3.8-specific items:**
+**Python 3.8-specific items** (skip items that require 3.8-only features when targeting 3.7):
 
 - [ ] `asyncio.run()` used as the single entry point — no `loop.run_until_complete()` in new code
 - [ ] `asyncio.CancelledError` always re-raised — never suppressed
