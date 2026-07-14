@@ -1,6 +1,4 @@
 # Default values for nickpit-serve.
-# Deploy target (from the current kube-context): cluster coabkube-prod,
-# namespace mw-internal. Install with `-n mw-internal`.
 
 # -- Number of daemon replicas. MUST stay 1: the daemon holds an in-memory
 # review queue and a per-(project,iid,sha) "already reviewed" LRU. Two replicas
@@ -64,17 +62,22 @@ ingress:
   # GitLab must be able to POST webhooks to the daemon, so external reachability
   # is usually required. Set `host` before installing.
   enabled: true
-  className: "nginx-internal"
+  # Ingress class serving the webhook host. REQUIRED (no default) while
+  # ingress is enabled — pass it at install time:
+  #   --set ingress.className=nginx-internal
+  className: ""
   annotations: {}
-  # Public hostname GitLab sends webhooks to.
-  host: nickpit.prod.mittwald.systems
+  # Public hostname GitLab sends webhooks to. REQUIRED (no default) while
+  # ingress is enabled — pass it at install time:
+  #   --set ingress.host=nickpit.example.com
+  host: ""
   # Only the webhook path needs to be public; /healthz stays cluster-internal.
   path: /webhooks/gitlab
   pathType: Prefix
-  # nginx-internal serves a default wildcard cert for *.prod.mittwald.systems,
-  # so a tls block naming the host with no secretName is enough (dominant
-  # pattern across the cluster). For a cert-manager per-host cert instead, set
-  # secretName and add annotation kubernetes.io/tls-acme: "true".
+  # With secretName empty the ingress controller serves its default
+  # certificate — enough when that is a wildcard covering the host
+  # For a cert-manager per-host cert instead, set secretName and add
+  # annotation kubernetes.io/tls-acme: "true".
   tls:
     enabled: true
     secretName: ""
@@ -142,27 +145,35 @@ tolerations: []
 affinity: {}
 
 # ---------------------------------------------------------------------------
-# Secrets. All secret material is injected as environment variables and pulled
-# into the two config files via ${VAR} expansion (both files are env-expanded
-# before YAML parsing). Do NOT commit real values here.
+# Secrets. Do NOT commit real values here. The Secret serves two purposes:
+#   - env vars: every key that is a valid env var name is injected via envFrom
+#     and pulled into the two config files via ${VAR} expansion (both files are
+#     env-expanded before YAML parsing) — e.g. MITTWALD_LLM_API_KEY.
+#   - group inventory: the key named by serve.groupsSecretKey (default
+#     groups.yaml) holds the full GitLab group list, tokens included, so adding
+#     a group only touches the Secret — never this file. It is mounted as a
+#     file, not injected as env (a dotted key is skipped by envFrom anyway).
 #
 # Provide values one of two ways:
 #   1. existingSecret: reference a Secret you created out-of-band (recommended
-#      for prod; e.g. from Vault / External Secrets). Its keys must match the
-#      env var names referenced below (serve.groups[].tokenEnv,
-#      .signingTokenEnv / .webhookSecretEnv and the LLM key, e.g.
-#      MITTWALD_LLM_API_KEY).
+#      for prod; e.g. from Vault / External Secrets).
 #   2. secrets: let the chart create the Secret from the map below. Populate at
-#      install time via `--set-file` or `--set`, never in a committed values file.
+#      install time via `--set-file` / `--set`, never in a committed values
+#      file, e.g.:  --set-file secrets.groups\.yaml=my-groups.yaml
 # ---------------------------------------------------------------------------
 existingSecret: ""
 secrets:
   MITTWALD_LLM_API_KEY: ""
-  # Per-group access token + signing token referenced by serve.groups below.
-  # The signing token is the whsec_... value from GitLab's "Generate signing
-  # token" (shown once at webhook creation).
-  NICKPIT_GROUP_ASYLUM_TOKEN: ""
-  NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN: ""
+  # Group inventory (see serve.groupsSecretKey). Shape per entry: path = group
+  # full path (longest-prefix matched at '/' boundaries), token = group access
+  # token, and exactly one of signing_token (whsec_... from GitLab's "Generate
+  # signing token", shown once at webhook creation; HMAC-SHA256, recommended)
+  # or webhook_secret (legacy plaintext X-Gitlab-Token).
+  # groups.yaml: |
+  #   groups:
+  #     - path: "mygroup"
+  #       token: "glpat-..."
+  #       signing_token: "whsec_..."
   # Optional; only if reviewing GitHub repos too.
   # NICKPIT_GITHUB_TOKEN: ""
 
@@ -176,7 +187,10 @@ serve:
   logDir: "/work/logs"
   reviewConcurrency: 2
   shutdownGrace: "10m"
-  gitlabBaseURL: "https://gitlab.mittwald.it"
+  # GitLab instance the webhooks come from and reviews are posted to. REQUIRED
+  # (no default) — pass it at install time:
+  #   --set serve.gitlabBaseURL=https://gitlab.example.com
+  gitlabBaseURL: ""
   topic: "nickpit"
   triggerEmoji: "nickpit"
   # "eyes" awarded at review start; "" disables. Must differ from triggerEmoji.
@@ -186,55 +200,47 @@ serve:
   ackEmoji: "eyes"
   # Reaction awarded on a /nickpit abort command note. "stop_button"; "" disables.
   abortEmoji: "stop_button"
-  # One entry per GitLab group. path = group full path (longest-prefix matched
-  # at '/' boundaries). tokenEnv names the env var (Secret key) holding the
-  # group access token. For webhook verification set exactly one of:
+  # Where the GitLab group inventory comes from. Default: the Secret key named
+  # here is mounted at /etc/nickpit/groups.yaml and referenced from server.yaml
+  # via groups_file, so groups (paths + tokens) live entirely in the Secret and
+  # adding one never touches chart values. Set to "" to disable and list groups
+  # inline below instead. At least one of the two sources must be configured.
+  groupsSecretKey: "groups.yaml"
+  # Optional inline groups, rendered into the ConfigMap with ${ENV} token
+  # references (merged with the groups file when both are set). path = group
+  # full path (longest-prefix matched at '/' boundaries). tokenEnv names the
+  # env var (Secret key) holding the group access token. For webhook
+  # verification set exactly one of:
   #   signingTokenEnv  - GitLab signing token (whsec_..., HMAC-SHA256, recommended)
   #   webhookSecretEnv - legacy plaintext secret token (X-Gitlab-Token)
-  groups:
-    - path: "asylum"
-      tokenEnv: "NICKPIT_GROUP_ASYLUM_TOKEN"
-      signingTokenEnv: "NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN"
+  # groups:
+  #   - path: "mygroup"
+  #     tokenEnv: "NICKPIT_GROUP_MYGROUP_TOKEN"
+  #     signingTokenEnv: "NICKPIT_GROUP_MYGROUP_SIGNING_TOKEN"
+  groups: []
   review:
-    # Extra args appended to every `nickpit gitlab mr --publish` child, e.g.
-    # ["--profile", "mittwald"].
-    extraArgs:
-      - "--profile"
-      - "mittwald"
+    # Extra args appended to every `nickpit gitlab mr --publish` child. This is
+    # where the LLM profile is selected; pass it at install time, e.g.:
+    #   --set serve.review.extraArgs='{--profile,mittwald}'
+    # Empty = children use the binary's default profile (openrouter; needs
+    # OPENROUTER_API_KEY in the Secret).
+    extraArgs: []
 
 # ---------------------------------------------------------------------------
-# .nickpit.yaml — main config read by each review child (LLM provider, model).
-# Provided as a raw block so you have full control. Secrets stay as ${VAR}.
-# Default = the "mittwald" internal-LLM profile.
+# Optional .nickpit.yaml override for the review children. Empty (default):
+# no file is rendered or mounted and children run on the binary's built-in
+# profiles — serve.review.extraArgs selects one (e.g. --profile mittwald),
+# the API key arrives via the Secret env, and the group token/base URL are
+# injected per review. Set a full YAML document only for changes the
+# built-ins cannot express (custom endpoint, new profile); ${VAR} refs are
+# env-expanded, so secrets stay out of the ConfigMap:
+#   nickpitYaml: |
+#     active_profile: custom
+#     profiles:
+#       custom:
+#         base_url: https://other-endpoint.example/v1
+#         api_key: ${MY_LLM_API_KEY}
+#         model: some-model
 # ---------------------------------------------------------------------------
 config:
-  nickpitYaml: |
-    active_profile: mittwald
-    profiles:
-      mittwald:
-        model: Qwen3.5-122B-A10B-FP8
-        small:
-          model: Qwen3.6-35B-A3B-FP8
-          temperature: 0.7
-          top_p: !!float 1
-          top_k: 40
-          presence_penalty: !!float 2
-          extra_body:
-            chat_template_kwargs:
-              enable_thinking: false
-          reasoning_effort: none
-        base_url: https://llm.aihosting.mittwald.de/v1
-        api_key: ${MITTWALD_LLM_API_KEY}
-        temperature: 0.6
-        top_p: 0.95
-        top_k: 20
-        presence_penalty: !!float 1
-        diff_format: git
-        max_context_tokens: 240000
-        max_reasoning_seconds: 300
-        max_rate_limit_delay_seconds: 300
-        reasoning_effort: high
-        github_token: ${NICKPIT_GITHUB_TOKEN}
-        gitlab_token: ${NICKPIT_GITLAB_TOKEN}
-        gitlab_base_url: ${NICKPIT_GITLAB_BASE_URL}
-        asset_base_url: https://dgrieser.github.io/nickpit/
+  nickpitYaml: ""

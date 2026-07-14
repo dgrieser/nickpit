@@ -4,9 +4,6 @@ Deploys the [`nickpit gitlab serve`](../../..) webhook daemon: an HTTP service t
 receives GitLab group webhooks (merge-request, comment, emoji events) and runs an
 LLM code review for each qualifying MR as an isolated child process.
 
-Target for this repo's setup: cluster `coabkube-prod`, namespace `mw-internal`,
-GitLab `gitlab.mittwald.it`, mittwald internal LLM.
-
 ## What it deploys
 
 | Object | Purpose |
@@ -14,8 +11,8 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
 | Deployment | Single-replica daemon (`Recreate` strategy). Read-only root fs; git clones and per-review logs go to an ephemeral `/work` emptyDir. |
 | Service | ClusterIP on port 8080 (`/webhooks/gitlab`, `/healthz`). |
 | Ingress | Public webhook endpoint (set `ingress.host`). |
-| ConfigMap | `server.yaml` (rendered from `serve.*`) + `nickpit.yaml` (from `config.nickpitYaml`). Secrets stay as `${VAR}`. |
-| Secret | Group access tokens, signing tokens (or legacy webhook secrets), LLM API key — unless `existingSecret` is used. |
+| ConfigMap | `server.yaml` (rendered from `serve.*`); plus `nickpit.yaml` only if `config.nickpitYaml` overrides the binary's built-in LLM profiles. Secrets stay as `${VAR}`. |
+| Secret | LLM API key + the group inventory (`groups.yaml` key: paths, access tokens, signing tokens) — unless `existingSecret` is used. |
 | ServiceAccount | No RBAC; token not mounted (daemon never calls the k8s API). |
 
 ## Prerequisites
@@ -33,50 +30,75 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
   and never returns it via API). The daemon verifies each delivery's
   HMAC-SHA256 signature (headers `webhook-id` / `webhook-timestamp` /
   `webhook-signature`). A legacy plaintext secret token is still supported.
-- An LLM API key (default profile uses the mittwald internal endpoint).
+- An LLM API key.
 
 ## Install
 
-Do not put real secrets in a committed values file. Create your own
-`prod-values.yaml` for non-secret config (host, groups) and pass secrets on the
-command line or via `existingSecret`.
+The group inventory lives in the Secret (key `groups.yaml`, tokens included),
+not in chart values: adding or removing a group means editing only the Secret.
+Write the inventory to a local `groups.yaml`:
 
-Host, ingress class, TLS and the `asylum` group are baked into `values.yaml`, so
-install only needs the secret.
+```yaml
+groups:
+  - path: "mygroup"
+    token: "glpat-..."
+    signing_token: "whsec_..."
+```
+
+Three values are mandatory and have no default — the install fails without
+them: `serve.gitlabBaseURL` (the GitLab instance) plus `ingress.host` and
+`ingress.className` (public webhook hostname and its ingress class, while
+ingress is enabled). The LLM profile for review children is selected via
+`serve.review.extraArgs`.
 
 ```sh
 # 1. (recommended) create the secret out-of-band
-kubectl -n mw-internal create secret generic nickpit-serve \
+kubectl -n internal create secret generic nickpit-serve \
   --from-literal=MITTWALD_LLM_API_KEY=... \
-  --from-literal=NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
-  --from-literal=NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN=whsec_...
+  --from-file=groups.yaml
 
 # 2. install (namespace also comes from your kube-context; shown explicitly)
-helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
-  --set existingSecret=nickpit-serve
+helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n internal \
+  --set existingSecret=nickpit-serve \
+  --set serve.gitlabBaseURL=https://gitlab.mycustomhost.com \
+  --set ingress.host=nickpit.mycustomhost.com \
+  --set ingress.className=nginx-internal \
+  --set serve.review.extraArgs='{--profile,mittwald}'
 ```
 
 Or let the chart create the Secret (fine for a quick test):
 
 ```sh
-helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
+helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n internal \
   --set secrets.MITTWALD_LLM_API_KEY=... \
-  --set secrets.NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
-  --set secrets.NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN=whsec_...
+  --set-file secrets.groups\.yaml=groups.yaml \
+  --set serve.gitlabBaseURL=https://gitlab.mycustomhost.com \
+  --set ingress.host=nickpit.mycustomhost.com \
+  --set ingress.className=nginx-internal \
+  --set serve.review.extraArgs='{--profile,mittwald}'
 ```
+
+To keep groups in chart values instead (rendered into the ConfigMap with
+`${ENV}` token references), set `serve.groupsSecretKey=""` and list
+`serve.groups` entries (`path`, `tokenEnv`, `signingTokenEnv` /
+`webhookSecretEnv`); the referenced env vars must then exist as Secret keys.
 
 ## Key values
 
 | Key | Default | Notes |
 | --- | --- | --- |
 | `image.repository` / `image.tag` | `ghcr.io/dgrieser/nickpit` / `""`→appVersion | |
-| `ingress.enabled` / `ingress.host` | `true` / `nickpit.prod.mittwald.systems` | GitLab must reach it. |
-| `serve.groups` | `asylum` | `path`, `tokenEnv`, and `signingTokenEnv` (or legacy `webhookSecretEnv`) per group. |
+| `ingress.enabled` / `ingress.host` | `true` / **required** | Public webhook hostname; GitLab must reach it. |
+| `ingress.className` | **required** | Ingress class serving the webhook host (e.g. `nginx-internal`). |
+| `serve.gitlabBaseURL` | **required** | GitLab instance the webhooks come from. |
+| `serve.groupsSecretKey` | `groups.yaml` | Secret key holding the group inventory, mounted as `/etc/nickpit/groups.yaml`. `""` disables. |
+| `serve.groups` | `[]` | Optional inline groups: `path`, `tokenEnv`, `signingTokenEnv` (or legacy `webhookSecretEnv`). |
 | `serve.reviewConcurrency` | `2` | Max parallel review child processes. |
 | `serve.shutdownGrace` | `10m` | In-flight reviews finish on SIGTERM. |
 | `terminationGracePeriodSeconds` | `660` | Must exceed `serve.shutdownGrace`. |
 | `existingSecret` | `""` | Reference a pre-made Secret instead of the chart's. |
-| `config.nickpitYaml` | mittwald profile | LLM provider/model config for review children. |
+| `serve.review.extraArgs` | `[]` | Args for every review child; selects the LLM profile (e.g. `{--profile,mittwald}`). Empty = default profile (needs `OPENROUTER_API_KEY`). |
+| `config.nickpitYaml` | `""` | Optional `.nickpit.yaml` override; empty = built-in profiles (recommended). |
 
 ## Notes / caveats
 
@@ -84,6 +106,10 @@ helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
 - **Grace vs. termination.** `terminationGracePeriodSeconds` must stay `>` the
   seconds in `serve.shutdownGrace`, else Kubernetes SIGKILLs mid-review. An
   interrupted publish heals on the next run via comment fingerprints.
+- **Group changes need a restart with `existingSecret`.** The daemon reads
+  `groups.yaml` once at startup. The chart-managed Secret is covered by a
+  checksum annotation (rollout on `helm upgrade`), but edits to an external
+  Secret require `kubectl rollout restart deployment/nickpit-serve`.
 - **No NetworkPolicy shipped.** The daemon needs egress to GitLab and the LLM
   endpoint; add a policy if the namespace is default-deny.
 - **Storage is ephemeral.** `/work` clones and per-review logs vanish on restart.

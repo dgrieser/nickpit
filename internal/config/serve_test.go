@@ -143,6 +143,109 @@ groups:
 	}
 }
 
+func TestLoadServeGroupsFile(t *testing.T) {
+	t.Setenv("NICKPIT_TEST_GF_TOKEN", "file-token")
+	groupsPath := filepath.Join(t.TempDir(), "groups.yaml")
+	if err := os.WriteFile(groupsPath, []byte(`
+groups:
+  - path: "platform"
+    token: "${NICKPIT_TEST_GF_TOKEN}"
+    webhook_secret: "sec"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServe(writeServeConfig(t, "groups_file: "+groupsPath+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Groups) != 1 || cfg.Groups[0].Path != "platform" {
+		t.Fatalf("groups = %+v", cfg.Groups)
+	}
+	if cfg.Groups[0].Token != "file-token" {
+		t.Fatalf("token = %q, want env-expanded", cfg.Groups[0].Token)
+	}
+}
+
+func TestLoadServeGroupsFileRelativePath(t *testing.T) {
+	// A relative groups_file resolves against the serve config's directory,
+	// not the process cwd (the test cwd is the package dir, so a cwd-based
+	// lookup would fail here).
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "groups.yaml"), []byte(`
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serverPath := filepath.Join(dir, "server.yaml")
+	if err := os.WriteFile(serverPath, []byte("groups_file: groups.yaml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServe(serverPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Groups) != 1 || cfg.Groups[0].Path != "platform" {
+		t.Fatalf("groups = %+v", cfg.Groups)
+	}
+}
+
+func TestLoadServeGroupsFileMergesWithInline(t *testing.T) {
+	groupsPath := filepath.Join(t.TempDir(), "groups.yaml")
+	if err := os.WriteFile(groupsPath, []byte(`
+groups:
+  - path: "extra"
+    token: "tok2"
+    webhook_secret: "sec2"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadServe(writeServeConfig(t, `
+groups_file: `+groupsPath+`
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Groups) != 2 || cfg.Groups[0].Path != "platform" || cfg.Groups[1].Path != "extra" {
+		t.Fatalf("groups = %+v", cfg.Groups)
+	}
+}
+
+func TestLoadServeGroupsFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.yaml")
+	if err := os.WriteFile(emptyPath, []byte("# no groups here\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dupPath := filepath.Join(dir, "dup.yaml")
+	if err := os.WriteFile(dupPath, []byte("groups:\n  - path: p\n    token: t2\n    webhook_secret: s2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{"missing file", "groups_file: " + filepath.Join(dir, "absent.yaml") + "\n", "groups file: reading"},
+		{"empty file", "groups_file: " + emptyPath + "\n", "no groups defined"},
+		{"duplicate across files", "groups_file: " + dupPath + "\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "duplicate path"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadServe(writeServeConfig(t, tc.content))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadServeMissingFile(t *testing.T) {
 	_, err := LoadServe(filepath.Join(t.TempDir(), "absent.yaml"))
 	if err == nil {

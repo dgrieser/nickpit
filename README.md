@@ -391,7 +391,7 @@ groups:
     webhook_secret: "${NICKPIT_GL_SECRET_PLATFORM}"
 ```
 
-Events are routed to the group with the longest matching path prefix, so nested groups can carry their own token and secret. The regular `.nickpit.yaml` (LLM profile) is still read by the review child processes; `--config` is forwarded to them, and the group token/base URL are injected via `NICKPIT_GITLAB_TOKEN`/`NICKPIT_GITLAB_BASE_URL`.
+Events are routed to the group with the longest matching path prefix, so nested groups can carry their own token and secret. The group list can also live in a separate file appended via `groups_file` (same `groups:` shape, also env-expanded) — useful when the inventory comes from a mounted Kubernetes Secret while the rest of the config is a ConfigMap. The regular `.nickpit.yaml` (LLM profile) is still read by the review child processes; `--config` is forwarded to them, and the group token/base URL are injected via `NICKPIT_GITLAB_TOKEN`/`NICKPIT_GITLAB_BASE_URL`.
 
 GitLab setup per group (group webhooks require GitLab Premium; emoji events require GitLab >= 17.5):
 

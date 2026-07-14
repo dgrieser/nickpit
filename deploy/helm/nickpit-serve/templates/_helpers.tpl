@@ -55,24 +55,43 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
-Renders server.yaml (the serve daemon config). Group credentials are emitted as
-${ENV} placeholders resolved at runtime from the injected Secret; no secret text
-ever lands in the ConfigMap. Each group uses a GitLab signing token
-(signingTokenEnv, HMAC verification, recommended) or the legacy plaintext secret
-token (webhookSecretEnv) — set exactly one per group.
+The GitLab instance is deliberately not defaulted; every install must name it
+explicitly so a chart copied to another environment cannot silently point at
+the wrong GitLab.
+*/}}
+{{- define "nickpit-serve.gitlabBaseURL" -}}
+{{- required "serve.gitlabBaseURL is required: --set serve.gitlabBaseURL=https://gitlab.example.com" .Values.serve.gitlabBaseURL -}}
+{{- end -}}
+
+{{/*
+Renders server.yaml (the serve daemon config). Groups come from the Secret key
+serve.groupsSecretKey, mounted at /etc/nickpit/groups.yaml and referenced via
+groups_file (default), and/or from inline serve.groups entries whose
+credentials are emitted as ${ENV} placeholders resolved at runtime from the
+injected Secret — either way no secret text lands in the ConfigMap. Each inline
+group uses a GitLab signing token (signingTokenEnv, HMAC verification,
+recommended) or the legacy plaintext secret token (webhookSecretEnv) — set
+exactly one per group.
 */}}
 {{- define "nickpit-serve.serverYaml" -}}
+{{- if not (or .Values.serve.groupsSecretKey .Values.serve.groups) -}}
+{{- fail "configure a group source: serve.groupsSecretKey (groups from the Secret) or serve.groups (inline)" -}}
+{{- end -}}
 listen: {{ .Values.serve.listen | quote }}
 log_dir: {{ .Values.serve.logDir | quote }}
 review_concurrency: {{ .Values.serve.reviewConcurrency }}
 shutdown_grace: {{ .Values.serve.shutdownGrace | quote }}
-gitlab_base_url: {{ .Values.serve.gitlabBaseURL | quote }}
+gitlab_base_url: {{ include "nickpit-serve.gitlabBaseURL" . | quote }}
 topic: {{ .Values.serve.topic | quote }}
 trigger_emoji: {{ .Values.serve.triggerEmoji | quote }}
 start_emoji: {{ .Values.serve.startEmoji | quote }}
 command_keyword: {{ .Values.serve.commandKeyword | quote }}
 ack_emoji: {{ .Values.serve.ackEmoji | quote }}
 abort_emoji: {{ .Values.serve.abortEmoji | quote }}
+{{- if .Values.serve.groupsSecretKey }}
+groups_file: "/etc/nickpit/groups.yaml"
+{{- end }}
+{{- if .Values.serve.groups }}
 groups:
 {{- range .Values.serve.groups }}
   - path: {{ .path | quote }}
@@ -84,6 +103,7 @@ groups:
     {{- else }}
     {{- fail (printf "serve.groups entry %q needs signingTokenEnv or webhookSecretEnv" .path) }}
     {{- end }}
+{{- end }}
 {{- end }}
 review:
   extra_args: {{ toYaml .Values.serve.review.extraArgs | nindent 4 }}
