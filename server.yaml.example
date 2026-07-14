@@ -31,6 +31,12 @@ command_keyword: "nickpit"
 # Emoji the daemon awards on a command comment to acknowledge it ("" disables).
 ack_emoji: "white_check_mark"
 
+# Optional second YAML file whose top-level `groups:` list (same shape as
+# below) is appended to the inline groups — lets the group inventory live
+# apart from this file, e.g. in a mounted Kubernetes Secret. Env-expanded
+# like this file.
+# groups_file: "/etc/nickpit/groups.yaml"
+
 # One entry per GitLab group. Events are routed to the longest matching path
 # prefix. token: group access token (role Developer, scope api); reviews are
 # posted as its bot user. webhook_secret: the group webhook's secret token.

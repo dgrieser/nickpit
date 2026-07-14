@@ -142,27 +142,35 @@ tolerations: []
 affinity: {}
 
 # ---------------------------------------------------------------------------
-# Secrets. All secret material is injected as environment variables and pulled
-# into the two config files via ${VAR} expansion (both files are env-expanded
-# before YAML parsing). Do NOT commit real values here.
+# Secrets. Do NOT commit real values here. The Secret serves two purposes:
+#   - env vars: every key that is a valid env var name is injected via envFrom
+#     and pulled into the two config files via ${VAR} expansion (both files are
+#     env-expanded before YAML parsing) — e.g. MITTWALD_LLM_API_KEY.
+#   - group inventory: the key named by serve.groupsSecretKey (default
+#     groups.yaml) holds the full GitLab group list, tokens included, so adding
+#     a group only touches the Secret — never this file. It is mounted as a
+#     file, not injected as env (a dotted key is skipped by envFrom anyway).
 #
 # Provide values one of two ways:
 #   1. existingSecret: reference a Secret you created out-of-band (recommended
-#      for prod; e.g. from Vault / External Secrets). Its keys must match the
-#      env var names referenced below (serve.groups[].tokenEnv,
-#      .signingTokenEnv / .webhookSecretEnv and the LLM key, e.g.
-#      MITTWALD_LLM_API_KEY).
+#      for prod; e.g. from Vault / External Secrets).
 #   2. secrets: let the chart create the Secret from the map below. Populate at
-#      install time via `--set-file` or `--set`, never in a committed values file.
+#      install time via `--set-file` / `--set`, never in a committed values
+#      file, e.g.:  --set-file secrets.groups\.yaml=my-groups.yaml
 # ---------------------------------------------------------------------------
 existingSecret: ""
 secrets:
   MITTWALD_LLM_API_KEY: ""
-  # Per-group access token + signing token referenced by serve.groups below.
-  # The signing token is the whsec_... value from GitLab's "Generate signing
-  # token" (shown once at webhook creation).
-  NICKPIT_GROUP_ASYLUM_TOKEN: ""
-  NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN: ""
+  # Group inventory (see serve.groupsSecretKey). Shape per entry: path = group
+  # full path (longest-prefix matched at '/' boundaries), token = group access
+  # token, and exactly one of signing_token (whsec_... from GitLab's "Generate
+  # signing token", shown once at webhook creation; HMAC-SHA256, recommended)
+  # or webhook_secret (legacy plaintext X-Gitlab-Token).
+  # groups.yaml: |
+  #   groups:
+  #     - path: "mygroup"
+  #       token: "glpat-..."
+  #       signing_token: "whsec_..."
   # Optional; only if reviewing GitHub repos too.
   # NICKPIT_GITHUB_TOKEN: ""
 
@@ -186,15 +194,24 @@ serve:
   ackEmoji: "eyes"
   # Reaction awarded on a /nickpit abort command note. "stop_button"; "" disables.
   abortEmoji: "stop_button"
-  # One entry per GitLab group. path = group full path (longest-prefix matched
-  # at '/' boundaries). tokenEnv names the env var (Secret key) holding the
-  # group access token. For webhook verification set exactly one of:
+  # Where the GitLab group inventory comes from. Default: the Secret key named
+  # here is mounted at /etc/nickpit/groups.yaml and referenced from server.yaml
+  # via groups_file, so groups (paths + tokens) live entirely in the Secret and
+  # adding one never touches chart values. Set to "" to disable and list groups
+  # inline below instead. At least one of the two sources must be configured.
+  groupsSecretKey: "groups.yaml"
+  # Optional inline groups, rendered into the ConfigMap with ${ENV} token
+  # references (merged with the groups file when both are set). path = group
+  # full path (longest-prefix matched at '/' boundaries). tokenEnv names the
+  # env var (Secret key) holding the group access token. For webhook
+  # verification set exactly one of:
   #   signingTokenEnv  - GitLab signing token (whsec_..., HMAC-SHA256, recommended)
   #   webhookSecretEnv - legacy plaintext secret token (X-Gitlab-Token)
-  groups:
-    - path: "asylum"
-      tokenEnv: "NICKPIT_GROUP_ASYLUM_TOKEN"
-      signingTokenEnv: "NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN"
+  # groups:
+  #   - path: "mygroup"
+  #     tokenEnv: "NICKPIT_GROUP_MYGROUP_TOKEN"
+  #     signingTokenEnv: "NICKPIT_GROUP_MYGROUP_SIGNING_TOKEN"
+  groups: []
   review:
     # Extra args appended to every `nickpit gitlab mr --publish` child, e.g.
     # ["--profile", "mittwald"].

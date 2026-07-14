@@ -102,7 +102,26 @@ spec:
             - name: home
               mountPath: /home/nonroot
       volumes:
+        # With groupsSecretKey the config dir is projected from the ConfigMap
+        # plus the Secret's group inventory, so server.yaml's groups_file sits
+        # next to it at /etc/nickpit/groups.yaml.
         - name: config
+          {{- if .Values.serve.groupsSecretKey }}
+          projected:
+            sources:
+              - configMap:
+                  name: {{ include "nickpit-serve.fullname" . }}
+                  items:
+                    - key: nickpit.yaml
+                      path: nickpit.yaml
+                    - key: server.yaml
+                      path: server.yaml
+              - secret:
+                  name: {{ include "nickpit-serve.secretName" . }}
+                  items:
+                    - key: {{ .Values.serve.groupsSecretKey }}
+                      path: groups.yaml
+          {{- else }}
           configMap:
             name: {{ include "nickpit-serve.fullname" . }}
             items:
@@ -110,6 +129,7 @@ spec:
                 path: nickpit.yaml
               - key: server.yaml
                 path: server.yaml
+          {{- end }}
         - name: work
           emptyDir:
             {{- with .Values.volumes.work.sizeLimit }}

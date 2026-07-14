@@ -15,7 +15,7 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
 | Service | ClusterIP on port 8080 (`/webhooks/gitlab`, `/healthz`). |
 | Ingress | Public webhook endpoint (set `ingress.host`). |
 | ConfigMap | `server.yaml` (rendered from `serve.*`) + `nickpit.yaml` (from `config.nickpitYaml`). Secrets stay as `${VAR}`. |
-| Secret | Group access tokens, signing tokens (or legacy webhook secrets), LLM API key — unless `existingSecret` is used. |
+| Secret | LLM API key + the group inventory (`groups.yaml` key: paths, access tokens, signing tokens) — unless `existingSecret` is used. |
 | ServiceAccount | No RBAC; token not mounted (daemon never calls the k8s API). |
 
 ## Prerequisites
@@ -38,18 +38,28 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
 ## Install
 
 Do not put real secrets in a committed values file. Create your own
-`prod-values.yaml` for non-secret config (host, groups) and pass secrets on the
+`prod-values.yaml` for non-secret config (host) and pass secrets on the
 command line or via `existingSecret`.
 
-Host, ingress class, TLS and the `asylum` group are baked into `values.yaml`, so
-install only needs the secret.
+The group inventory lives in the Secret (key `groups.yaml`, tokens included),
+not in chart values: adding or removing a group means editing only the Secret.
+Write the inventory to a local `groups.yaml`:
+
+```yaml
+groups:
+  - path: "mygroup"
+    token: "glpat-..."
+    signing_token: "whsec_..."
+```
+
+Host, ingress class and TLS are baked into `values.yaml`, so install only
+needs the secret.
 
 ```sh
 # 1. (recommended) create the secret out-of-band
 kubectl -n mw-internal create secret generic nickpit-serve \
   --from-literal=MITTWALD_LLM_API_KEY=... \
-  --from-literal=NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
-  --from-literal=NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN=whsec_...
+  --from-file=groups.yaml
 
 # 2. install (namespace also comes from your kube-context; shown explicitly)
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
@@ -61,9 +71,13 @@ Or let the chart create the Secret (fine for a quick test):
 ```sh
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
   --set secrets.MITTWALD_LLM_API_KEY=... \
-  --set secrets.NICKPIT_GROUP_ASYLUM_TOKEN=glpat-... \
-  --set secrets.NICKPIT_GROUP_ASYLUM_SIGNING_TOKEN=whsec_...
+  --set-file secrets.groups\.yaml=groups.yaml
 ```
+
+To keep groups in chart values instead (rendered into the ConfigMap with
+`${ENV}` token references), set `serve.groupsSecretKey=""` and list
+`serve.groups` entries (`path`, `tokenEnv`, `signingTokenEnv` /
+`webhookSecretEnv`); the referenced env vars must then exist as Secret keys.
 
 ## Key values
 
@@ -71,7 +85,8 @@ helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
 | --- | --- | --- |
 | `image.repository` / `image.tag` | `ghcr.io/dgrieser/nickpit` / `""`→appVersion | |
 | `ingress.enabled` / `ingress.host` | `true` / `nickpit.prod.mittwald.systems` | GitLab must reach it. |
-| `serve.groups` | `asylum` | `path`, `tokenEnv`, and `signingTokenEnv` (or legacy `webhookSecretEnv`) per group. |
+| `serve.groupsSecretKey` | `groups.yaml` | Secret key holding the group inventory, mounted as `/etc/nickpit/groups.yaml`. `""` disables. |
+| `serve.groups` | `[]` | Optional inline groups: `path`, `tokenEnv`, `signingTokenEnv` (or legacy `webhookSecretEnv`). |
 | `serve.reviewConcurrency` | `2` | Max parallel review child processes. |
 | `serve.shutdownGrace` | `10m` | In-flight reviews finish on SIGTERM. |
 | `terminationGracePeriodSeconds` | `660` | Must exceed `serve.shutdownGrace`. |
@@ -84,6 +99,10 @@ helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
 - **Grace vs. termination.** `terminationGracePeriodSeconds` must stay `>` the
   seconds in `serve.shutdownGrace`, else Kubernetes SIGKILLs mid-review. An
   interrupted publish heals on the next run via comment fingerprints.
+- **Group changes need a restart with `existingSecret`.** The daemon reads
+  `groups.yaml` once at startup. The chart-managed Secret is covered by a
+  checksum annotation (rollout on `helm upgrade`), but edits to an external
+  Secret require `kubectl rollout restart deployment/nickpit-serve`.
 - **No NetworkPolicy shipped.** The daemon needs egress to GitLab and the LLM
   endpoint; add a policy if the namespace is default-deny.
 - **Storage is ephemeral.** `/work` clones and per-review logs vanish on restart.

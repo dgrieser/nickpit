@@ -33,19 +33,25 @@ const (
 
 // ServeConfig configures the `nickpit gitlab serve` webhook daemon.
 type ServeConfig struct {
-	Listen            string       `yaml:"listen"`
-	LogDir            string       `yaml:"log_dir"`
-	ReviewConcurrency int          `yaml:"review_concurrency"`
-	ShutdownGrace     string       `yaml:"shutdown_grace"`
-	GitLabBaseURL     string       `yaml:"gitlab_base_url"`
-	Topic             string       `yaml:"topic"`
-	TriggerEmoji      string       `yaml:"trigger_emoji"`
-	StartEmoji        *string      `yaml:"start_emoji"`
-	CommandKeyword    string       `yaml:"command_keyword"`
-	AckEmoji          *string      `yaml:"ack_emoji"`
-	AbortEmoji        *string      `yaml:"abort_emoji"`
-	Groups            []ServeGroup `yaml:"groups"`
-	Review            ServeReview  `yaml:"review"`
+	Listen            string  `yaml:"listen"`
+	LogDir            string  `yaml:"log_dir"`
+	ReviewConcurrency int     `yaml:"review_concurrency"`
+	ShutdownGrace     string  `yaml:"shutdown_grace"`
+	GitLabBaseURL     string  `yaml:"gitlab_base_url"`
+	Topic             string  `yaml:"topic"`
+	TriggerEmoji      string  `yaml:"trigger_emoji"`
+	StartEmoji        *string `yaml:"start_emoji"`
+	CommandKeyword    string  `yaml:"command_keyword"`
+	AckEmoji          *string `yaml:"ack_emoji"`
+	AbortEmoji        *string `yaml:"abort_emoji"`
+	// GroupsFile optionally names a second YAML file whose top-level `groups:`
+	// list is appended to Groups. It lets the group inventory live apart from
+	// the main serve config — e.g. in a Kubernetes Secret mounted next to a
+	// ConfigMap-rendered server.yaml — so adding a group never touches this
+	// file. Like the main file it is env-expanded before parsing.
+	GroupsFile string       `yaml:"groups_file"`
+	Groups     []ServeGroup `yaml:"groups"`
+	Review     ServeReview  `yaml:"review"`
 }
 
 // ServeGroup maps one GitLab group (path prefix) to its access token and the
@@ -115,6 +121,13 @@ func LoadServe(path string) (*ServeConfig, error) {
 	if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 		return nil, fmt.Errorf("serve config: parsing %s: %w", path, err)
 	}
+	if cfg.GroupsFile != "" {
+		fileGroups, err := loadGroupsFile(cfg.GroupsFile)
+		if err != nil {
+			return nil, fmt.Errorf("serve config: %w", err)
+		}
+		cfg.Groups = append(cfg.Groups, fileGroups...)
+	}
 	if cfg.StartEmoji == nil {
 		startEmoji := DefaultServeStartEmoji
 		cfg.StartEmoji = &startEmoji
@@ -131,6 +144,30 @@ func LoadServe(path string) (*ServeConfig, error) {
 		return nil, fmt.Errorf("serve config: %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// loadGroupsFile reads a groups_file: a YAML document whose top-level
+// `groups:` list has the same shape as the serve config's inline groups. The
+// raw text is env-expanded first, matching the main file. A file that yields
+// no groups is an error — a configured groups_file that contributes nothing is
+// almost certainly a mis-mounted or mis-indented document, and silently
+// ignoring it would surface later as an unrelated "at least one group" error.
+func loadGroupsFile(path string) ([]ServeGroup, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("groups file: reading %s: %w", path, err)
+	}
+	expanded := os.ExpandEnv(string(data))
+	var doc struct {
+		Groups []ServeGroup `yaml:"groups"`
+	}
+	if err := yaml.Unmarshal([]byte(expanded), &doc); err != nil {
+		return nil, fmt.Errorf("groups file: parsing %s: %w", path, err)
+	}
+	if len(doc.Groups) == 0 {
+		return nil, fmt.Errorf("groups file: %s: no groups defined", path)
+	}
+	return doc.Groups, nil
 }
 
 // StartEmojiName returns the emoji awarded when a review starts; empty means
