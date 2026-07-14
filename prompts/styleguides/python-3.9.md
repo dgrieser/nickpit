@@ -582,6 +582,7 @@ f'lines: {nl.join(items)}'   # workaround for backslashes
 
 ```python
 from __future__ import annotations  # optional in 3.9; postpones evaluation
+import collections.abc
 
 # In 3.9: use built-in generics directly in annotations
 def process(
@@ -1823,8 +1824,10 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequenc
 **Finding violations in your codebase:**
 
 ```bash
-# grep for the broken import pattern
-grep -rn "from collections import" . | grep -v "collections.abc" | grep -v "deque\|Counter\|OrderedDict\|defaultdict\|ChainMap\|namedtuple\|UserDict\|UserList\|UserString"
+# grep for the broken import pattern — match the deprecated ABC names directly
+# (filtering with grep -v would miss mixed lines like
+#  "from collections import defaultdict, Mapping")
+grep -rnE "from collections import[^#]*\b(Callable|Iterable|Iterator|Generator|Hashable|Sized|Container|Collection|Reversible|Mapping|MutableMapping|Sequence|MutableSequence|Set|MutableSet|Awaitable|Coroutine|AsyncIterable|AsyncIterator|AsyncGenerator|ByteString|MappingView|KeysView|ItemsView|ValuesView)\b" .
 
 # or run with warnings-as-errors to catch all occurrences
 python -W error::DeprecationWarning -m pytest tests/
