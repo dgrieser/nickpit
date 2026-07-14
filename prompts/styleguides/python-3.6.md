@@ -380,12 +380,13 @@ print(f'ASCII: {"café"!a}')  # ASCII: 'caf\xe9'
 
 ```python
 # SyntaxError in Python 3.6
-# f'Value: {d["key"]}'  — nested same quotes conflict
+# f'Value: {d['key']}'  — nested same quotes conflict
 # f'Path: {path\n}'     — backslash in expression
 
 # Workarounds:
+print(f"Value: {d['key']}")        # use different quote types
 key = 'name'
-print(f'Value: {d[key]}')          # use a variable
+print(f'Value: {d[key]}')          # or a variable
 print(f'Newline: {chr(10)}')       # chr() for special chars
 ```
 
@@ -1753,10 +1754,13 @@ async def fetch_all(urls: List[str]) -> List[str]:
     return list(results)
 
 # return_exceptions=True — collect results AND exceptions instead of raising
-results = await asyncio.gather(*tasks, return_exceptions=True)
-for r in results:
-    if isinstance(r, Exception):
-        handle_error(r)
+async def fetch_all_safe(urls: List[str]) -> List[str]:
+    tasks = [fetch_data(url) for url in urls]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception):
+            handle_error(r)
+    return [r for r in results if not isinstance(r, Exception)]
 ```
 
 ##### Bounded Concurrency with Semaphore
