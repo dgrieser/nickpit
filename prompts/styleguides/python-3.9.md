@@ -428,6 +428,7 @@ print(math.ulp(0.0))    # 5e-324
 # Float comparison — always use math.isclose
 import math
 assert math.isclose(0.1 + 0.2, 0.3)
+a, b = 0.1 + 0.2, 0.3
 assert math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
 ```
 
@@ -569,6 +570,7 @@ f"Value: {d['key']}"    # CORRECT — switch the outer quote type
 key = 'key'
 f'Value: {d[key]}'      # also CORRECT — hoist into a variable
 nl = '\n'
+items = ['line1', 'line2']
 f'lines: {nl.join(items)}'   # workaround for backslashes
 ```
 
@@ -988,7 +990,8 @@ deep = copy.deepcopy(lst)
 # List comprehensions
 squares = [x**2 for x in range(10)]
 evens   = [x for x in range(20) if x % 2 == 0]
-flat    = [item for sublist in nested for item in sublist]
+nested  = [[1, 2], [3, 4]]
+flat    = [item for sublist in nested for item in sublist]   # [1, 2, 3, 4]
 ```
 
 **Pitfall: list multiplication shares references:**
@@ -1100,6 +1103,7 @@ d = {k: v for k, v in d.items() if not should_delete(k)}
 from collections import defaultdict, Counter, OrderedDict, deque, ChainMap
 
 # defaultdict
+text = 'hello world hello'
 word_count: defaultdict[str, int] = defaultdict(int)
 for word in text.split():
     word_count[word] += 1
@@ -1292,7 +1296,6 @@ def fibonacci() -> Generator[int, None, None]:
 list(itertools.chain([1, 2], [3, 4]))               # [1, 2, 3, 4]
 list(itertools.islice(itertools.count(), 5))         # [0, 1, 2, 3, 4]
 list(itertools.accumulate([1,2,3,4], initial=0))     # [0, 1, 3, 6, 10]
-list(itertools.pairwise([1,2,3,4]))                  # [(1,2),(2,3),(3,4)] — NOTE: 3.10+ only!
 list(itertools.combinations('ABC', 2))               # AB, AC, BC
 list(itertools.product([0,1], repeat=3))             # 8 binary triples
 
