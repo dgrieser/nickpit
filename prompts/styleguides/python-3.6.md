@@ -2259,6 +2259,7 @@ elapsed = timeit.timeit('sum(range(1000))', number=10_000)
 
 ```python
 # Local variable alias (faster attribute lookup)
+import math
 sqrt = math.sqrt
 for i in range(100_000):
     result = sqrt(i)
