@@ -1,6 +1,6 @@
-# Python 3.9: The Complete Production Developer Guide
+### Python 3.9: The Complete Production Developer Guide
 
-## Overview
+#### Overview
 
 Python 3.9 was released on October 5, 2020 — the first release on the annual release cadence (PEP 602) — and reached end-of-life on October 31, 2025 with the final release 3.9.25; plan upgrades accordingly.[^1] It introduced a focused set of high-impact language changes: dict merge/update operators, built-in generic type hints, `str.removeprefix`/`removesuffix`, the `zoneinfo` standard library module for IANA time zones, `graphlib` for dependency resolution, relaxed decorator grammar, `typing.Annotated`, and a new PEG-based parser that sets the stage for future language features. On top of that, Python 3.9 finalizes the removal of a large set of long-deprecated Python-2-era APIs (see the migration notes near the end).[^1]
 
@@ -18,9 +18,9 @@ Global truths about Python 3.9:
 
 ***
 
-## PEP 8 Code Style
+#### PEP 8 Code Style
 
-### Naming Conventions
+##### Naming Conventions
 
 ```python
 # Variables and functions: snake_case
@@ -52,7 +52,7 @@ _module_cache: dict = {}
 
 In Python 3, all classes implicitly inherit from `object`. `class Foo:` and `class Foo(object):` are identical. Never write the latter.[^4]
 
-### Import Ordering
+##### Import Ordering
 
 Three blocks separated by blank lines: standard library, third-party, local. Alphabetize within each group. `isort --profile=black` automates this.
 
@@ -75,7 +75,7 @@ from myapp.utils import format_date
 # Good: from module import specific_item
 ```
 
-### Docstrings
+##### Docstrings
 
 Write Google-style docstrings for every public module, class, and function. First line: a one-sentence imperative summary.
 
@@ -124,7 +124,7 @@ class UserService:
 
 ***
 
-## New in 3.9: Built-in Generic Type Hints (PEP 585)
+#### New in 3.9: Built-in Generic Type Hints (PEP 585)
 
 This is one of the most practically important changes in Python 3.9. You can now use built-in collection types **directly as generics in type annotations**, without importing capitalized equivalents from `typing`.[^5]
 
@@ -146,7 +146,7 @@ def find(name: str) -> Optional[int]:   # Optional still from typing — see bel
     ...
 ```
 
-### Full Mapping: Old → New in 3.9
+##### Full Mapping: Old → New in 3.9
 
 | `typing` form (3.8 and earlier) | Built-in form (3.9+) |
 |---|---|
@@ -172,7 +172,7 @@ def find(name: str) -> Optional[int]:   # Optional still from typing — see bel
 | `typing.Mapping[K, V]` | `collections.abc.Mapping[K, V]` |
 | `typing.MutableMapping[K, V]` | `collections.abc.MutableMapping[K, V]` |
 
-### What Still Requires `typing` in 3.9
+##### What Still Requires `typing` in 3.9
 
 ```python
 from typing import (
@@ -223,7 +223,7 @@ isinstance([1, 2], list)       # CORRECT — use the bare type
 
 ***
 
-## New in 3.9: Dict Merge and Update Operators (PEP 584)
+#### New in 3.9: Dict Merge and Update Operators (PEP 584)
 
 Python 3.9 adds `|` (merge, returns new dict) and `|=` (update in-place) to `dict`.[^6]
 
@@ -254,7 +254,7 @@ def connect(host: str, port: int = 5432, **kwargs) -> 'Connection':
     return make_connection(host, port, **opts)
 ```
 
-### `|` vs `{**a, **b}` — Differences
+##### `|` vs `{**a, **b}` — Differences
 
 ```python
 # | requires both operands to be dicts (or dict subclasses)
@@ -302,7 +302,7 @@ Never use `|` on `Counter` objects expecting PEP 584 merge semantics — use `{*
 
 ***
 
-## New in 3.9: `str.removeprefix()` and `str.removesuffix()` (PEP 616)
+#### New in 3.9: `str.removeprefix()` and `str.removesuffix()` (PEP 616)
 
 Two long-requested string methods that do exactly one thing, clearly.[^7]
 
@@ -323,7 +323,7 @@ print(b.removeprefix(b'  '))   # b'binary data  '
 print(b.removesuffix(b'  '))   # b'  binary data'
 ```
 
-### Critical Difference from `str.strip()`
+##### Critical Difference from `str.strip()`
 
 `strip()` removes **all characters in a set, from either end, repeatedly**. `removeprefix`/`removesuffix` remove **exactly one occurrence of the specified substring**, if it is present at the start/end.
 
@@ -350,7 +350,7 @@ tag.removeprefix('<xml>')   # 'content</xml>' — removes exactly '<xml>', once,
 
 **Rule:** Whenever you intend to remove a specific prefix or suffix string (not a set of characters), always use `removeprefix`/`removesuffix`. Never use `lstrip`/`rstrip` for that purpose.
 
-### Practical Patterns
+##### Practical Patterns
 
 ```python
 # File extension stripping (though Path.stem is cleaner)
@@ -372,9 +372,9 @@ path = path.removeprefix('/api').removesuffix('/')
 
 ***
 
-## Primitive Types and Numerics
+#### Primitive Types and Numerics
 
-### Integers
+##### Integers
 
 Python 3.9 has a single integer type: `int`. It is **arbitrary precision** — there is no separate `long`. Arithmetic never overflows; Python allocates more memory silently.[^4]
 
@@ -410,7 +410,7 @@ print(int(math.sqrt(n)))   # 4503599761588224 — WRONG, float precision error
 pow(38, -1, 137)   # 119
 ```
 
-### Floats
+##### Floats
 
 Floats are C `double` (64-bit IEEE 754). New `math` additions in 3.9:[^4]
 
@@ -434,7 +434,7 @@ assert math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
 
 **`math.nextafter` and `math.ulp` are new in 3.9.** They are indispensable for numerical algorithms that need to step through IEEE 754 floats, test for maximum precision, or implement robust interval arithmetic.
 
-### Booleans
+##### Booleans
 
 `bool` is a subtype of `int`. `True == 1` and `False == 0`.[^4]
 
@@ -448,9 +448,9 @@ print(True * 5)               # 5
 
 ***
 
-## Strings
+#### Strings
 
-### The Two Types
+##### The Two Types
 
 - **`str`**: A sequence of Unicode code points. All undecorated string literals are `str`.
 - **`bytes`**: A sequence of raw 8-bit values. Declared with `b''` prefix. **Never mixed implicitly with `str`.**
@@ -468,7 +468,7 @@ data = b'hello'   # bytes — binary
 
 Always pass `encoding='utf-8'` to `open()` — the default is the platform locale, which is `cp1252` on many Windows systems.
 
-### String Methods (Complete Reference)
+##### String Methods (Complete Reference)
 
 ```python
 s = 'Hello, World!'
@@ -535,7 +535,7 @@ s.replace('l', 'L', 2)            # 'HeLLo, World!' — max 2 replacements
 b'caf\xc3\xa9'.decode('utf-8')  # 'café'
 ```
 
-### f-strings and String Formatting
+##### f-strings and String Formatting
 
 ```python
 name, score = 'Alice', 98.765
@@ -576,9 +576,9 @@ f'lines: {nl.join(items)}'   # workaround for backslashes
 
 ***
 
-## Variable Annotations and Type Hints
+#### Variable Annotations and Type Hints
 
-### PEP 585 in Practice (3.9+)
+##### PEP 585 in Practice (3.9+)
 
 ```python
 from __future__ import annotations  # optional in 3.9; postpones evaluation
@@ -611,7 +611,7 @@ class Pipeline:
 
 **Caveat on `X | Y` with the future import:** the annotation is stored as a string, so anything that **evaluates** annotations at runtime — `typing.get_type_hints()`, dataclass introspection, pydantic, FastAPI — still raises `TypeError` on 3.9. The safe rule for 3.9 code: **keep writing `Optional[X]` / `Union[X, Y]`**; reserve the future import for forward references.
 
-### New in 3.9: `typing.Annotated` (PEP 593)
+##### New in 3.9: `typing.Annotated` (PEP 593)
 
 `Annotated` attaches arbitrary metadata to a type annotation. The first argument is the actual type; subsequent arguments are metadata.[^8]
 
@@ -691,7 +691,7 @@ def validate(obj: object) -> list[str]:
     return errors
 ```
 
-### `TypedDict`, `Literal`, `Final`, `Protocol` (from 3.8)
+##### `TypedDict`, `Literal`, `Final`, `Protocol` (from 3.8)
 
 All four remain fully available in 3.9. See the Python 3.8 guide for their complete documentation. In 3.9, `TypedDict` and `Protocol` fields can use built-in generics rather than `typing` versions:
 
@@ -712,7 +712,7 @@ class Drawable(Protocol):
 
 ***
 
-## New in 3.9: `zoneinfo` — IANA Time Zone Support (PEP 615)
+#### New in 3.9: `zoneinfo` — IANA Time Zone Support (PEP 615)
 
 Python 3.9 adds the `zoneinfo` module, which provides a concrete, DST-aware time zone implementation backed by the IANA time zone database. This replaces the long-standing dependence on the third-party `pytz` library.[^9]
 
@@ -739,7 +739,7 @@ print('America/New_York' in zones)   # True
 # NOTE: recomputed on every call by scanning the tz data — cache it, don't call in a loop
 ```
 
-### Key `zoneinfo` Rules
+##### Key `zoneinfo` Rules
 
 **Rule 1: `ZoneInfo` is a regular `tzinfo` — no pytz idioms.** Unlike `pytz`, attaching the zone directly (constructor `tzinfo=` or `.replace(tzinfo=...)`) is **correct** with `zoneinfo`; DST gaps/overlaps are handled via the `fold` attribute, not a `localize()` call. The robust production pattern is still: store and compute in UTC, convert to a zone only for display:
 
@@ -809,7 +809,7 @@ def display(dt_utc: datetime, zone: str) -> str:
     return dt_utc.astimezone(ZoneInfo(zone)).isoformat()
 ```
 
-### `zoneinfo` vs `pytz` — Key Differences
+##### `zoneinfo` vs `pytz` — Key Differences
 
 | | `pytz` | `zoneinfo` (3.9+) |
 |---|---|---|
@@ -835,7 +835,7 @@ dt = datetime(2024, 6, 15, 12, 0, tzinfo=ZoneInfo('America/New_York'))  # correc
 
 ***
 
-## New in 3.9: `graphlib` — Topological Sorting
+#### New in 3.9: `graphlib` — Topological Sorting
 
 The `graphlib` module provides `TopologicalSorter` for ordering nodes in a dependency graph. It is particularly powerful because it supports **parallel execution** via an incremental API.[^11]
 
@@ -864,7 +864,7 @@ except CycleError as e:
     print(f'Cycle detected: {e.args[1]}')   # e.g. ['A', 'C', 'B', 'A']
 ```
 
-### Incremental API for Parallel Execution
+##### Incremental API for Parallel Execution
 
 The full incremental API (`prepare()`, `is_active()`, `get_ready()`, `done()`) is designed for processing ready nodes concurrently:
 
@@ -915,7 +915,7 @@ graph = {
 
 ***
 
-## New in 3.9: Relaxed Decorator Grammar (PEP 614)
+#### New in 3.9: Relaxed Decorator Grammar (PEP 614)
 
 Decorators can now be **any valid expression**, not just a dotted name optionally followed by a call.[^1]
 
@@ -954,7 +954,7 @@ def plain():
 
 ***
 
-## Lists
+#### Lists
 
 ```python
 lst: list[int] = [1, 2, 3, 4, 5]
@@ -1019,7 +1019,7 @@ print(x)  # 10 — x in enclosing scope is unchanged
 
 ***
 
-## Tuples
+#### Tuples
 
 ```python
 t = (1, 2, 3)
@@ -1050,7 +1050,7 @@ print(p._asdict())    # {'x': 1.0, 'y': 2.0, 'label': 'origin'}
 
 ***
 
-## Dictionaries
+#### Dictionaries
 
 Dicts in Python 3.7+ are ordered by insertion order. Python 3.9 adds `|` and `|=` (covered above).
 
@@ -1098,7 +1098,7 @@ for k in list(d.keys()):
 d = {k: v for k, v in d.items() if not should_delete(k)}
 ```
 
-### `collections.defaultdict`, `Counter`, `OrderedDict`, `deque`
+##### `collections.defaultdict`, `Counter`, `OrderedDict`, `deque`
 
 ```python
 from collections import defaultdict, Counter, OrderedDict, deque, ChainMap
@@ -1134,7 +1134,7 @@ q.rotate(1)
 
 ***
 
-## Sets
+#### Sets
 
 ```python
 s: set[int] = {1, 2, 3}
@@ -1160,7 +1160,7 @@ unique = {x**2 for x in range(-5, 6)}  # set comprehension
 
 ***
 
-## Control Flow
+#### Control Flow
 
 ```python
 # if / elif / else
@@ -1183,7 +1183,7 @@ with open('data.bin', 'rb') as f:
 
 ***
 
-## Functions
+#### Functions
 
 ```python
 from typing import Optional
@@ -1203,7 +1203,7 @@ greet('Alice', 'Hi')              # 'Hi, Alice!'
 greet('Alice', punctuation='.')   # 'Hello, Alice.'
 ```
 
-### Closures and `nonlocal`
+##### Closures and `nonlocal`
 
 ```python
 from collections.abc import Callable   # typing.Callable is deprecated in 3.9
@@ -1229,7 +1229,7 @@ funcs = [lambda i=i: i for i in range(5)]
 print([f() for f in funcs])  # [0, 1, 2, 3, 4]
 ```
 
-### `functools`
+##### `functools`
 
 ```python
 import functools
@@ -1281,7 +1281,7 @@ from functools import partial
 print_error = partial(print, file=__import__('sys').stderr, flush=True)
 ```
 
-### Generators and `itertools`
+##### Generators and `itertools`
 
 ```python
 from collections.abc import Generator   # typing.Generator is deprecated in 3.9
@@ -1317,7 +1317,7 @@ def pairwise(iterable):
 
 ***
 
-## Dataclasses
+#### Dataclasses
 
 `dataclasses` is fully available. In 3.9, you can use built-in generics in field annotations without `typing` imports.
 
@@ -1377,9 +1377,9 @@ class GoodOrder:
 
 ***
 
-## Classes and OOP
+#### Classes and OOP
 
-### Class Definition
+##### Class Definition
 
 ```python
 import math
@@ -1428,7 +1428,7 @@ class Circle(Shape):
         return r > 0
 ```
 
-### Abstract Base Classes
+##### Abstract Base Classes
 
 ```python
 from abc import ABC, abstractmethod
@@ -1456,7 +1456,7 @@ class PostgresRepository(Repository):
 
 **Note on `X | Y` union syntax in annotations:** `int | None` is a runtime expression evaluated when the `def`/`class` statement executes — in 3.9 it raises `TypeError` immediately, without any framework involved. With `from __future__ import annotations` it parses (annotations become lazy strings), but anything that *evaluates* annotations — `typing.get_type_hints()`, dataclass/pydantic/FastAPI introspection — still fails with the same `TypeError` on 3.9. **Recommendation for 3.9: write `Optional[X]`/`Union[X, Y]`.** `X | Y` is only fully usable from 3.10.
 
-### Enums
+##### Enums
 
 ```python
 from enum import Enum, IntEnum, Flag, auto
@@ -1484,7 +1484,7 @@ print(Permission.EXECUTE in perms)  # False
 
 ***
 
-## Exception Handling
+#### Exception Handling
 
 ```python
 import logging
@@ -1530,7 +1530,7 @@ except Exception:
 
 ***
 
-## Context Managers
+#### Context Managers
 
 ```python
 # Multiple with resources in 3.9 — backslash continuation or contextlib.ExitStack.
@@ -1561,7 +1561,7 @@ with suppress(FileNotFoundError):
 
 ***
 
-## File I/O and `pathlib`
+#### File I/O and `pathlib`
 
 Always pass `encoding='utf-8'` explicitly to `open()`.
 
@@ -1596,7 +1596,7 @@ print(p.with_stem('summary'))          # /srv/app/data/summary.txt
 target = Path('current').readlink()    # symlink target as a Path, not a str
 ```
 
-### New in 3.9: `Path.is_relative_to()`
+##### New in 3.9: `Path.is_relative_to()`
 
 `Path.is_relative_to()` tests whether a path is relative to another path — the recommended way to do path-traversal checks in 3.9+:[^1]
 
@@ -1620,7 +1620,7 @@ def safe_read(base_dir: str, user_filename: str) -> str:
     return requested.read_text(encoding='utf-8')
 ```
 
-### Binary Files with Walrus
+##### Binary Files with Walrus
 
 ```python
 CHUNK_SIZE = 65_536   # 64 KiB
@@ -1630,7 +1630,7 @@ with open('large.bin', 'rb') as f:
         process(chunk)
 ```
 
-### Temporary Files
+##### Temporary Files
 
 ```python
 import tempfile
@@ -1650,9 +1650,9 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
 ***
 
-## `async`/`await` and `asyncio`
+#### `async`/`await` and `asyncio`
 
-### New in 3.9: `asyncio.to_thread()`
+##### New in 3.9: `asyncio.to_thread()`
 
 `asyncio.to_thread()` is a high-level convenience wrapper around `loop.run_in_executor()` for running blocking code in a thread:[^1]
 
@@ -1685,7 +1685,7 @@ async def hash_file(path: str) -> str:
 
 `loop.run_in_executor()` remains the tool when you need a custom executor (process pool, bounded pool).
 
-### Core `asyncio` Patterns (unchanged from 3.8)
+##### Core `asyncio` Patterns (unchanged from 3.8)
 
 ```python
 import asyncio
@@ -1724,7 +1724,7 @@ async def worker():
         raise  # mandatory
 ```
 
-### Removed/Deprecated asyncio APIs in 3.9
+##### Removed/Deprecated asyncio APIs in 3.9
 
 - `asyncio.Task.current_task()` and `asyncio.Task.all_tasks()` class methods are **removed in 3.9** — use the module-level `asyncio.current_task()` and `asyncio.all_tasks()` (both 3.7+).[^1]
 - Acquiring locks via `with await lock:` / `with (yield from lock):` no longer works in 3.9 — use `async with lock:`.[^1]
@@ -1733,13 +1733,13 @@ async def worker():
 
 ***
 
-## Concurrency
+#### Concurrency
 
-### GIL
+##### GIL
 
 CPython's Global Interpreter Lock means only one thread executes Python bytecode at a time. `threading` works for I/O-bound work; `multiprocessing` for CPU-bound work.
 
-### `concurrent.futures` — New in 3.9: `cancel_futures`
+##### `concurrent.futures` — New in 3.9: `cancel_futures`
 
 `Executor.shutdown()` gains a `cancel_futures=True` parameter that discards all pending (not-yet-started) futures immediately instead of waiting for them:[^12]
 
@@ -1777,7 +1777,7 @@ for future in as_completed(remaining):
 
 **Other 3.9 executor changes:** `ProcessPoolExecutor` spawns worker processes **on demand** (only when no idle worker is available) instead of eagerly starting `max_workers` processes, and both executors no longer use daemon threads — fixing hangs/races at interpreter shutdown.[^1]
 
-### `threading`
+##### `threading`
 
 ```python
 import threading
@@ -1795,7 +1795,7 @@ for t in threads: t.start()
 for t in threads: t.join()
 ```
 
-### `multiprocessing`
+##### `multiprocessing`
 
 ```python
 from multiprocessing import Pool, cpu_count
@@ -1816,7 +1816,7 @@ if __name__ == '__main__':  # REQUIRED on Windows and macOS (spawn default since
 
 ***
 
-## `collections.abc` Migration (Critical for 3.9 Compatibility)
+#### `collections.abc` Migration (Critical for 3.9 Compatibility)
 
 Python 3.9 is the last version where importing ABCs from `collections` directly (e.g., `from collections import Mapping`) works at all — it emits a `DeprecationWarning`. **In Python 3.10 the aliases are removed: `from collections import Mapping` raises `ImportError`, and `collections.Mapping` attribute access raises `AttributeError`.** Fix all occurrences now.[^3]
 
@@ -1853,7 +1853,7 @@ with warnings.catch_warnings():
 
 ***
 
-## The New PEG Parser (CPython Internals)
+#### The New PEG Parser (CPython Internals)
 
 Python 3.9 replaces the LL(1) recursive-descent parser with a PEG (Parsing Expression Grammar) parser. From an application developer's perspective:[^1]
 
@@ -1882,7 +1882,7 @@ code = ast.unparse(ast.parse('x = 1 + 2'))   # 'x = 1 + 2'
 
 ***
 
-## Logging
+#### Logging
 
 ```python
 import logging
@@ -1909,7 +1909,7 @@ except Exception:
     logger.exception('Unexpected error')  # includes traceback automatically
 ```
 
-### New in 3.9: `logging.getLogger('root')` change
+##### New in 3.9: `logging.getLogger('root')` change
 
 In Python 3.9, `logging.getLogger('root')` now returns the **root logger**, whereas in earlier versions it returned a non-root logger named `'root'`. This is a subtle breaking change for any code that explicitly names a logger `'root'`.[^1]
 
@@ -1924,9 +1924,9 @@ root_logger = logging.root    # unambiguous reference to the root logger
 
 ***
 
-## Security
+#### Security
 
-### Input Validation
+##### Input Validation
 
 ```python
 def validate_port(value: object) -> int:
@@ -1939,7 +1939,7 @@ def validate_port(value: object) -> int:
     return port
 ```
 
-### Path Traversal — `is_relative_to()` (new in 3.9)
+##### Path Traversal — `is_relative_to()` (new in 3.9)
 
 ```python
 from pathlib import Path
@@ -1954,14 +1954,14 @@ def safe_serve(base_dir: str, user_path: str) -> bytes:
 
 **Note:** `is_relative_to()` is a purely lexical check — the `resolve()` calls before it are what defeat `..` segments and symlinks. Never call `is_relative_to()` on unresolved paths.
 
-### Security Fixes in 3.9 Point Releases
+##### Security Fixes in 3.9 Point Releases
 
 - Since **3.9.2**, `urllib.parse.parse_qs()`/`parse_qsl()` no longer treat `;` as a query separator (web-cache-poisoning fix; a `separator` parameter was added).
 - Since **3.9.5**, `ipaddress` rejects leading zeros in IPv4 address strings (octal-ambiguity fix).
 
 Always run the latest 3.9.x patch release.
 
-### Secrets and Cryptography
+##### Secrets and Cryptography
 
 ```python
 import secrets
@@ -1983,7 +1983,7 @@ import random
 random.randbytes(16).hex()   # WRONG for tokens — use secrets.token_hex(16)
 ```
 
-### SQL Injection Prevention
+##### SQL Injection Prevention
 
 ```python
 import sqlite3
@@ -1996,7 +1996,7 @@ cursor = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,))
 results = cursor.fetchall()
 ```
 
-### Subprocess Safety
+##### Subprocess Safety
 
 ```python
 import subprocess
@@ -2016,7 +2016,7 @@ user_input = get_user_input()
 subprocess.call(['ls', user_input])    # SAFE
 ```
 
-### XML Security
+##### XML Security
 
 Use `defusedxml` for untrusted XML input:
 
@@ -2028,7 +2028,7 @@ tree = ET.parse('untrusted.xml')   # safe against XXE, billion-laughs attacks
 
 ***
 
-## JSON and Serialization
+#### JSON and Serialization
 
 ```python
 import json
@@ -2050,7 +2050,7 @@ class AppEncoder(json.JSONEncoder):
 json.dumps({'ts': datetime.now()}, cls=AppEncoder)
 ```
 
-### Pickle
+##### Pickle
 
 ```python
 import pickle
@@ -2068,7 +2068,7 @@ with open('data.pkl', 'rb') as f:
 
 ***
 
-## CSV
+#### CSV
 
 ```python
 import csv
@@ -2087,7 +2087,7 @@ with open('output.csv', 'w', encoding='utf-8', newline='') as f:
 
 ***
 
-## Regular Expressions
+#### Regular Expressions
 
 ```python
 import re
@@ -2109,7 +2109,7 @@ re.findall(r'<.+?>', '<b>bold</b><i>italic</i>')   # ['<b>', '</b>', '<i>', '</i
 
 ***
 
-## `random` Module (New in 3.9: `randbytes`)
+#### `random` Module (New in 3.9: `randbytes`)
 
 ```python
 import random
@@ -2132,7 +2132,7 @@ value = rng.uniform(0, 1)
 
 ***
 
-## Memory Management
+#### Memory Management
 
 ```python
 import gc
@@ -2172,7 +2172,7 @@ class Cache:
 
 ***
 
-## Performance
+#### Performance
 
 ```python
 import cProfile, pstats, io, timeit
@@ -2217,7 +2217,7 @@ total = sum(x**2 for x in range(1_000_000))   # O(1) memory
 
 ***
 
-## Testing
+#### Testing
 
 ```python
 import asyncio
@@ -2268,7 +2268,7 @@ def test_timezone_conversion():
 
 ***
 
-## Virtual Environments and Packaging
+#### Virtual Environments and Packaging
 
 ```bash
 python3.9 -m venv .venv
@@ -2284,7 +2284,7 @@ uv venv --python 3.9
 uv pip install -r requirements.txt
 ```
 
-### `pyproject.toml`
+##### `pyproject.toml`
 
 ```toml
 [build-system]
@@ -2307,7 +2307,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"   # requires the pytest-asyncio plugin
 ```
 
-### Project Layout
+##### Project Layout
 
 ```
 project/
@@ -2326,7 +2326,7 @@ project/
 
 ***
 
-## Code Quality Tools
+#### Code Quality Tools
 
 ```bash
 pip install mypy flake8 black isort bandit
@@ -2352,7 +2352,7 @@ black --check src/ && isort --check-only src/ && flake8 src/ && mypy src/ && ban
 
 ***
 
-## Removed and Changed in 3.9 — Migration Notes
+#### Removed and Changed in 3.9 — Migration Notes
 
 Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks here, not at 3.10:[^1]
 
@@ -2381,9 +2381,9 @@ Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks
 
 ***
 
-## Production Checklist
+#### Production Checklist
 
-### Python 3.9-Specific Items
+##### Python 3.9-Specific Items
 
 - [ ] All `from collections import Mapping/Sequence/Callable/...` migrated to `from collections.abc import ...` — will fail on 3.10+
 - [ ] `typing.List`, `typing.Dict`, `typing.Set`, etc. replaced with built-in `list[...]`, `dict[...]`, `set[...]` in all new code
@@ -2409,7 +2409,7 @@ Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks
 - [ ] `graphlib.TopologicalSorter.add()` never called after `prepare()` (raises `ValueError`)
 - [ ] Running the latest 3.9.x patch (`Literal` fixes in 3.9.1, `urllib` `;`-separator fix in 3.9.2, `ipaddress` leading-zeros fix in 3.9.5) — and remember 3.9 is EOL since October 2025
 
-### Code Correctness
+##### Code Correctness
 
 - [ ] `bytes` and `str` never mixed without explicit encode/decode
 - [ ] `encoding='utf-8'` passed to all `open()` calls for text files
@@ -2419,7 +2419,7 @@ Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks
 - [ ] `__hash__` defined alongside `__eq__` only on immutable classes; mutable classes keep the automatic `__hash__ = None` (unhashable)
 - [ ] No list mutation during iteration — use comprehension to rebuild
 
-### Safety and Security
+##### Safety and Security
 
 - [ ] SQL queries parameterized — never f-string interpolation
 - [ ] `pickle.load()` never called on untrusted data
@@ -2429,7 +2429,7 @@ Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks
 - [ ] `defusedxml` used for parsing untrusted XML
 - [ ] `secrets` module (not `random`) used for all security-sensitive values
 
-### Performance
+##### Performance
 
 - [ ] Profiled before optimizing — no premature optimization
 - [ ] Generator expressions in pipelines (not list comprehensions)
@@ -2438,7 +2438,7 @@ Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks
 - [ ] Logging uses `%`-style deferred formatting (not f-strings)
 - [ ] Blocking calls wrapped in `asyncio.to_thread()` in async code
 
-### Observability
+##### Observability
 
 - [ ] `logging.getLogger(__name__)` used in every module
 - [ ] No `print()` in production code paths
