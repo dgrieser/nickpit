@@ -3,10 +3,10 @@ name: nickpit-serve
 description: NickPit GitLab webhook review daemon (`nickpit gitlab serve`)
 type: application
 # Chart version. Bump on template changes.
-version: 0.3.0
-# Container image tag used when image.tag is empty. Matches the ghcr.io tag
-# published by .github/workflows/docker.yml on `v*` git tags (plus `latest`).
-appVersion: "v0.0.11"
+version: 0.4.0
+# No appVersion on purpose: image.tag is required at install time, so the
+# running version is pinned in exactly one place (the deploy repo) and the
+# chart can never silently fall back to a stale default.
 home: https://github.com/dgrieser/nickpit
 sources:
   - https://github.com/dgrieser/nickpit

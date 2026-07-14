@@ -50,7 +50,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "nickpit-serve.imageRef" -}}
-{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- $tag := required "image.tag is required: --set image.tag=v0.0.x (no default; the deploy repo pins it)" .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end -}}
 

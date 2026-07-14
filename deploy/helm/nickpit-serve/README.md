@@ -45,9 +45,10 @@ groups:
     signing_token: "whsec_..."
 ```
 
-Three values are mandatory and have no default — the install fails without
-them: `serve.gitlabBaseURL` (the GitLab instance) plus `ingress.host` and
-`ingress.className` (public webhook hostname and its ingress class, while
+Four values are mandatory and have no default — the install fails without
+them: `image.tag` (the release to run; no fallback, so the version is pinned
+deliberately), `serve.gitlabBaseURL` (the GitLab instance) plus `ingress.host`
+and `ingress.className` (public webhook hostname and its ingress class, while
 ingress is enabled). The LLM profile for review children is selected via
 `serve.review.extraArgs`.
 
@@ -60,6 +61,7 @@ kubectl -n internal create secret generic nickpit-serve \
 # 2. install (namespace also comes from your kube-context; shown explicitly)
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n internal \
   --set existingSecret=nickpit-serve \
+  --set image.tag=v0.0.12 \
   --set serve.gitlabBaseURL=https://gitlab.mycustomhost.com \
   --set ingress.host=nickpit.mycustomhost.com \
   --set ingress.className=nginx-internal \
@@ -72,6 +74,7 @@ Or let the chart create the Secret (fine for a quick test):
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n internal \
   --set secrets.MITTWALD_LLM_API_KEY=... \
   --set-file secrets.groups\.yaml=groups.yaml \
+  --set image.tag=v0.0.12 \
   --set serve.gitlabBaseURL=https://gitlab.mycustomhost.com \
   --set ingress.host=nickpit.mycustomhost.com \
   --set ingress.className=nginx-internal \
@@ -87,7 +90,7 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `image.repository` / `image.tag` | `ghcr.io/dgrieser/nickpit` / `""`→appVersion | |
+| `image.repository` / `image.tag` | `ghcr.io/dgrieser/nickpit` / **required** | No default tag — pin the release explicitly. |
 | `ingress.enabled` / `ingress.host` | `true` / **required** | Public webhook hostname; GitLab must reach it. |
 | `ingress.className` | **required** | Ingress class serving the webhook host (e.g. `nginx-internal`). |
 | `serve.gitlabBaseURL` | **required** | GitLab instance the webhooks come from. |

@@ -9,10 +9,10 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/dgrieser/nickpit
-  # Pinned for reproducible prod deploys. Bump on release. Empty -> appVersion.
+  # REQUIRED, no default — pass at install time (--set image.tag=v0.0.x or a
+  # values file) so the running version has a single, deliberate source.
   # The image is published by the repo's Docker workflow on `v*` tags.
-  # v0.0.11 adds GitLab signing-token (HMAC) webhook verification.
-  tag: "v0.0.11"
+  tag: ""
   pullPolicy: IfNotPresent
 
 # Image pull secrets, e.g. for a private ghcr.io package.
