@@ -1521,6 +1521,8 @@ except RuntimeError as e:
 ##### Custom Exceptions
 
 ```python
+from typing import Optional
+
 class AppError(Exception):
     """Base class for application-specific exceptions."""
 
@@ -1533,7 +1535,7 @@ class ConfigError(AppError):
         super().__init__(msg)
 
 class NetworkError(AppError):
-    def __init__(self, url: str, status_code: int = None) -> None:
+    def __init__(self, url: str, status_code: Optional[int] = None) -> None:
         self.url = url
         self.status_code = status_code
         msg = f'Network error for {url!r}'
