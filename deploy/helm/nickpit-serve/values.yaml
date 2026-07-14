@@ -1,6 +1,4 @@
 # Default values for nickpit-serve.
-# Deploy target (from the current kube-context): cluster coabkube-prod,
-# namespace mw-internal. Install with `-n mw-internal`.
 
 # -- Number of daemon replicas. MUST stay 1: the daemon holds an in-memory
 # review queue and a per-(project,iid,sha) "already reviewed" LRU. Two replicas
