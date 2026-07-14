@@ -1931,7 +1931,10 @@ from pathlib import Path
 
 async def read_file_async(path: str) -> str:
     loop = asyncio.get_running_loop()   # use get_running_loop() in 3.8, not get_event_loop()
-    content = await loop.run_in_executor(None, Path(path).read_text)
+    # run_in_executor passes positional args only — use a lambda (or
+    # functools.partial) to forward keyword arguments like encoding
+    content = await loop.run_in_executor(
+        None, lambda: Path(path).read_text(encoding='utf-8'))
     return content
 ```
 
