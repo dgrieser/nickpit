@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "nickpit-serve.labels" . | nindent 4 }}
 data:
+  {{- with .Values.config.nickpitYaml }}
   nickpit.yaml: |
-    {{- .Values.config.nickpitYaml | nindent 4 }}
+    {{- . | nindent 4 }}
+  {{- end }}
   server.yaml: |
     {{- include "nickpit-serve.serverYaml" . | nindent 4 }}

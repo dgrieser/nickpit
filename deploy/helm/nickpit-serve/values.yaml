@@ -220,38 +220,24 @@ serve:
       - "mittwald"
 
 # ---------------------------------------------------------------------------
-# .nickpit.yaml — main config read by each review child (LLM provider, model).
-# Provided as a raw block so you have full control. Secrets stay as ${VAR}.
-# Default = the "mittwald" internal-LLM profile.
+# Optional .nickpit.yaml override for the review children. Empty (default):
+# no file is rendered or mounted and children run on the binary's built-in
+# profiles — serve.review.extraArgs selects one (--profile mittwald above),
+# the API key arrives via the Secret env, and the group token/base URL are
+# injected per review. The built-in mittwald profile already carries model,
+# sampling params and env token refs, so a copy here would only drift.
+# Single knobs are also overridable without a config file via env vars in the
+# Secret (NICKPIT_MODEL, NICKPIT_TEMPERATURE, ...). Set a full YAML document
+# only for changes the built-ins cannot express (custom endpoint, new
+# profile) — ${VAR} refs are env-expanded, so secrets stay out of the
+# ConfigMap:
+#   nickpitYaml: |
+#     active_profile: custom
+#     profiles:
+#       custom:
+#         base_url: https://other-endpoint.example/v1
+#         api_key: ${MY_LLM_API_KEY}
+#         model: some-model
 # ---------------------------------------------------------------------------
 config:
-  nickpitYaml: |
-    active_profile: mittwald
-    profiles:
-      mittwald:
-        model: Qwen3.5-122B-A10B-FP8
-        small:
-          model: Qwen3.6-35B-A3B-FP8
-          temperature: 0.7
-          top_p: !!float 1
-          top_k: 40
-          presence_penalty: !!float 2
-          extra_body:
-            chat_template_kwargs:
-              enable_thinking: false
-          reasoning_effort: none
-        base_url: https://llm.aihosting.mittwald.de/v1
-        api_key: ${MITTWALD_LLM_API_KEY}
-        temperature: 0.6
-        top_p: 0.95
-        top_k: 20
-        presence_penalty: !!float 1
-        diff_format: git
-        max_context_tokens: 240000
-        max_reasoning_seconds: 300
-        max_rate_limit_delay_seconds: 300
-        reasoning_effort: high
-        github_token: ${NICKPIT_GITHUB_TOKEN}
-        gitlab_token: ${NICKPIT_GITLAB_TOKEN}
-        gitlab_base_url: ${NICKPIT_GITLAB_BASE_URL}
-        asset_base_url: https://dgrieser.github.io/nickpit/
+  nickpitYaml: ""

@@ -49,8 +49,10 @@ spec:
           args:
             - gitlab
             - serve
+            {{- if .Values.config.nickpitYaml }}
             - --config
             - /etc/nickpit/nickpit.yaml
+            {{- end }}
             - --serve-config
             - /etc/nickpit/server.yaml
             {{- if .Values.verbose }}
@@ -64,8 +66,9 @@ spec:
             {{- end }}
           env:
             # Injected per-group by the daemon into each review child; setting a
-            # base value here keeps ${NICKPIT_GITLAB_BASE_URL} in nickpit.yaml
-            # non-empty even before injection.
+            # base value here keeps the ${NICKPIT_GITLAB_BASE_URL} reference in
+            # the LLM profile (built-in or config.nickpitYaml) non-empty even
+            # before injection.
             - name: NICKPIT_GITLAB_BASE_URL
               value: {{ .Values.serve.gitlabBaseURL | quote }}
           envFrom:
@@ -112,8 +115,10 @@ spec:
               - configMap:
                   name: {{ include "nickpit-serve.fullname" . }}
                   items:
+                    {{- if .Values.config.nickpitYaml }}
                     - key: nickpit.yaml
                       path: nickpit.yaml
+                    {{- end }}
                     - key: server.yaml
                       path: server.yaml
               - secret:
@@ -125,8 +130,10 @@ spec:
           configMap:
             name: {{ include "nickpit-serve.fullname" . }}
             items:
+              {{- if .Values.config.nickpitYaml }}
               - key: nickpit.yaml
                 path: nickpit.yaml
+              {{- end }}
               - key: server.yaml
                 path: server.yaml
           {{- end }}

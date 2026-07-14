@@ -14,7 +14,7 @@ GitLab `gitlab.mittwald.it`, mittwald internal LLM.
 | Deployment | Single-replica daemon (`Recreate` strategy). Read-only root fs; git clones and per-review logs go to an ephemeral `/work` emptyDir. |
 | Service | ClusterIP on port 8080 (`/webhooks/gitlab`, `/healthz`). |
 | Ingress | Public webhook endpoint (set `ingress.host`). |
-| ConfigMap | `server.yaml` (rendered from `serve.*`) + `nickpit.yaml` (from `config.nickpitYaml`). Secrets stay as `${VAR}`. |
+| ConfigMap | `server.yaml` (rendered from `serve.*`); plus `nickpit.yaml` only if `config.nickpitYaml` overrides the binary's built-in LLM profiles. Secrets stay as `${VAR}`. |
 | Secret | LLM API key + the group inventory (`groups.yaml` key: paths, access tokens, signing tokens) — unless `existingSecret` is used. |
 | ServiceAccount | No RBAC; token not mounted (daemon never calls the k8s API). |
 
@@ -91,7 +91,8 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 | `serve.shutdownGrace` | `10m` | In-flight reviews finish on SIGTERM. |
 | `terminationGracePeriodSeconds` | `660` | Must exceed `serve.shutdownGrace`. |
 | `existingSecret` | `""` | Reference a pre-made Secret instead of the chart's. |
-| `config.nickpitYaml` | mittwald profile | LLM provider/model config for review children. |
+| `serve.review.extraArgs` | `--profile mittwald` | Args for every review child; selects the built-in LLM profile. |
+| `config.nickpitYaml` | `""` | Optional `.nickpit.yaml` override; empty = built-in profiles (recommended). |
 
 ## Notes / caveats
 
