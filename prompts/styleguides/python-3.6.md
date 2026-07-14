@@ -1771,13 +1771,14 @@ async def fetch_all_bounded(urls: List[str], limit: int = 50) -> List[str]:
 ##### `run_in_executor` — Blocking Calls in Async Code
 
 ```python
-from concurrent.futures import ThreadPoolExecutor
-
 async def read_file_async(path: str) -> str:
     """Read a file without blocking the event loop."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as pool:
-        content = await loop.run_in_executor(pool, Path(path).read_text)
+    # None selects the loop's default ThreadPoolExecutor, created once and
+    # reused. Do NOT build a ThreadPoolExecutor per call: thread startup is
+    # wasted work, and leaving its `with` block calls shutdown() synchronously
+    # on the event loop thread.
+    content = await loop.run_in_executor(None, Path(path).read_text)
     return content
 ```
 
