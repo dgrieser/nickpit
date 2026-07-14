@@ -64,17 +64,23 @@ ingress:
   # GitLab must be able to POST webhooks to the daemon, so external reachability
   # is usually required. Set `host` before installing.
   enabled: true
-  className: "nginx-internal"
+  # Ingress class serving the webhook host. REQUIRED (no default) while
+  # ingress is enabled — pass it at install time:
+  #   --set ingress.className=nginx-internal
+  className: ""
   annotations: {}
-  # Public hostname GitLab sends webhooks to.
-  host: nickpit.prod.mittwald.systems
+  # Public hostname GitLab sends webhooks to. REQUIRED (no default) while
+  # ingress is enabled — pass it at install time:
+  #   --set ingress.host=nickpit.example.com
+  host: ""
   # Only the webhook path needs to be public; /healthz stays cluster-internal.
   path: /webhooks/gitlab
   pathType: Prefix
-  # nginx-internal serves a default wildcard cert for *.prod.mittwald.systems,
-  # so a tls block naming the host with no secretName is enough (dominant
-  # pattern across the cluster). For a cert-manager per-host cert instead, set
-  # secretName and add annotation kubernetes.io/tls-acme: "true".
+  # With secretName empty the ingress controller serves its default
+  # certificate — enough when that is a wildcard covering the host (e.g.
+  # nginx-internal's *.prod.mittwald.systems). For a cert-manager per-host
+  # cert instead, set secretName and add annotation
+  # kubernetes.io/tls-acme: "true".
   tls:
     enabled: true
     secretName: ""
@@ -184,7 +190,10 @@ serve:
   logDir: "/work/logs"
   reviewConcurrency: 2
   shutdownGrace: "10m"
-  gitlabBaseURL: "https://gitlab.mittwald.it"
+  # GitLab instance the webhooks come from and reviews are posted to. REQUIRED
+  # (no default) — pass it at install time:
+  #   --set serve.gitlabBaseURL=https://gitlab.example.com
+  gitlabBaseURL: ""
   topic: "nickpit"
   triggerEmoji: "nickpit"
   # "eyes" awarded at review start; "" disables. Must differ from triggerEmoji.
@@ -213,16 +222,17 @@ serve:
   #     signingTokenEnv: "NICKPIT_GROUP_MYGROUP_SIGNING_TOKEN"
   groups: []
   review:
-    # Extra args appended to every `nickpit gitlab mr --publish` child, e.g.
-    # ["--profile", "mittwald"].
-    extraArgs:
-      - "--profile"
-      - "mittwald"
+    # Extra args appended to every `nickpit gitlab mr --publish` child. This is
+    # where the LLM profile is selected; pass it at install time, e.g.:
+    #   --set serve.review.extraArgs='{--profile,mittwald}'
+    # Empty = children use the binary's default profile (openrouter; needs
+    # OPENROUTER_API_KEY in the Secret).
+    extraArgs: []
 
 # ---------------------------------------------------------------------------
 # Optional .nickpit.yaml override for the review children. Empty (default):
 # no file is rendered or mounted and children run on the binary's built-in
-# profiles — serve.review.extraArgs selects one (--profile mittwald above),
+# profiles — serve.review.extraArgs selects one (e.g. --profile mittwald),
 # the API key arrives via the Secret env, and the group token/base URL are
 # injected per review. The built-in mittwald profile already carries model,
 # sampling params and env token refs, so a copy here would only drift.

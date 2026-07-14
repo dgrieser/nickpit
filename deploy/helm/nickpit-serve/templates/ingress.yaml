@@ -1,5 +1,7 @@
 {{- if .Values.ingress.enabled -}}
 {{- $fullName := include "nickpit-serve.fullname" . -}}
+{{- $host := required "ingress.host is required while ingress is enabled: --set ingress.host=nickpit.example.com" .Values.ingress.host -}}
+{{- $className := required "ingress.className is required while ingress is enabled: --set ingress.className=nginx-internal" .Values.ingress.className -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -11,19 +13,17 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- with .Values.ingress.className }}
-  ingressClassName: {{ . }}
-  {{- end }}
+  ingressClassName: {{ $className }}
   {{- if .Values.ingress.tls.enabled }}
   tls:
     - hosts:
-        - {{ .Values.ingress.host | quote }}
+        - {{ $host | quote }}
       {{- with .Values.ingress.tls.secretName }}
       secretName: {{ . }}
       {{- end }}
   {{- end }}
   rules:
-    - host: {{ .Values.ingress.host | quote }}
+    - host: {{ $host | quote }}
       http:
         paths:
           - path: {{ .Values.ingress.path | quote }}

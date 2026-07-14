@@ -70,7 +70,7 @@ spec:
             # the LLM profile (built-in or config.nickpitYaml) non-empty even
             # before injection.
             - name: NICKPIT_GITLAB_BASE_URL
-              value: {{ .Values.serve.gitlabBaseURL | quote }}
+              value: {{ include "nickpit-serve.gitlabBaseURL" . | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "nickpit-serve.secretName" . }}

@@ -55,6 +55,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
+The GitLab instance is deliberately not defaulted; every install must name it
+explicitly so a chart copied to another environment cannot silently point at
+the wrong GitLab.
+*/}}
+{{- define "nickpit-serve.gitlabBaseURL" -}}
+{{- required "serve.gitlabBaseURL is required: --set serve.gitlabBaseURL=https://gitlab.example.com" .Values.serve.gitlabBaseURL -}}
+{{- end -}}
+
+{{/*
 Renders server.yaml (the serve daemon config). Groups come from the Secret key
 serve.groupsSecretKey, mounted at /etc/nickpit/groups.yaml and referenced via
 groups_file (default), and/or from inline serve.groups entries whose
@@ -72,7 +81,7 @@ listen: {{ .Values.serve.listen | quote }}
 log_dir: {{ .Values.serve.logDir | quote }}
 review_concurrency: {{ .Values.serve.reviewConcurrency }}
 shutdown_grace: {{ .Values.serve.shutdownGrace | quote }}
-gitlab_base_url: {{ .Values.serve.gitlabBaseURL | quote }}
+gitlab_base_url: {{ include "nickpit-serve.gitlabBaseURL" . | quote }}
 topic: {{ .Values.serve.topic | quote }}
 trigger_emoji: {{ .Values.serve.triggerEmoji | quote }}
 start_emoji: {{ .Values.serve.startEmoji | quote }}

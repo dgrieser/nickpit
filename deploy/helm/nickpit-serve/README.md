@@ -52,8 +52,11 @@ groups:
     signing_token: "whsec_..."
 ```
 
-Host, ingress class and TLS are baked into `values.yaml`, so install only
-needs the secret.
+Three values are mandatory and have no default — the install fails without
+them: `serve.gitlabBaseURL` (the GitLab instance) plus `ingress.host` and
+`ingress.className` (public webhook hostname and its ingress class, while
+ingress is enabled). The LLM profile for review children is selected via
+`serve.review.extraArgs`.
 
 ```sh
 # 1. (recommended) create the secret out-of-band
@@ -63,7 +66,11 @@ kubectl -n mw-internal create secret generic nickpit-serve \
 
 # 2. install (namespace also comes from your kube-context; shown explicitly)
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
-  --set existingSecret=nickpit-serve
+  --set existingSecret=nickpit-serve \
+  --set serve.gitlabBaseURL=https://gitlab.mittwald.it \
+  --set ingress.host=nickpit.prod.mittwald.systems \
+  --set ingress.className=nginx-internal \
+  --set serve.review.extraArgs='{--profile,mittwald}'
 ```
 
 Or let the chart create the Secret (fine for a quick test):
@@ -71,7 +78,11 @@ Or let the chart create the Secret (fine for a quick test):
 ```sh
 helm upgrade --install nickpit-serve deploy/helm/nickpit-serve -n mw-internal \
   --set secrets.MITTWALD_LLM_API_KEY=... \
-  --set-file secrets.groups\.yaml=groups.yaml
+  --set-file secrets.groups\.yaml=groups.yaml \
+  --set serve.gitlabBaseURL=https://gitlab.mittwald.it \
+  --set ingress.host=nickpit.prod.mittwald.systems \
+  --set ingress.className=nginx-internal \
+  --set serve.review.extraArgs='{--profile,mittwald}'
 ```
 
 To keep groups in chart values instead (rendered into the ConfigMap with
@@ -84,14 +95,16 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 | Key | Default | Notes |
 | --- | --- | --- |
 | `image.repository` / `image.tag` | `ghcr.io/dgrieser/nickpit` / `""`→appVersion | |
-| `ingress.enabled` / `ingress.host` | `true` / `nickpit.prod.mittwald.systems` | GitLab must reach it. |
+| `ingress.enabled` / `ingress.host` | `true` / **required** | Public webhook hostname; GitLab must reach it. |
+| `ingress.className` | **required** | Ingress class serving the webhook host (e.g. `nginx-internal`). |
+| `serve.gitlabBaseURL` | **required** | GitLab instance the webhooks come from. |
 | `serve.groupsSecretKey` | `groups.yaml` | Secret key holding the group inventory, mounted as `/etc/nickpit/groups.yaml`. `""` disables. |
 | `serve.groups` | `[]` | Optional inline groups: `path`, `tokenEnv`, `signingTokenEnv` (or legacy `webhookSecretEnv`). |
 | `serve.reviewConcurrency` | `2` | Max parallel review child processes. |
 | `serve.shutdownGrace` | `10m` | In-flight reviews finish on SIGTERM. |
 | `terminationGracePeriodSeconds` | `660` | Must exceed `serve.shutdownGrace`. |
 | `existingSecret` | `""` | Reference a pre-made Secret instead of the chart's. |
-| `serve.review.extraArgs` | `--profile mittwald` | Args for every review child; selects the built-in LLM profile. |
+| `serve.review.extraArgs` | `[]` | Args for every review child; selects the LLM profile (e.g. `{--profile,mittwald}`). Empty = default profile (needs `OPENROUTER_API_KEY`). |
 | `config.nickpitYaml` | `""` | Optional `.nickpit.yaml` override; empty = built-in profiles (recommended). |
 
 ## Notes / caveats
