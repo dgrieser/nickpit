@@ -437,7 +437,7 @@ print(b[0:1])    # b'h' — bytes slice
 Python 3.6 adds syntax for annotating the types of variables — including module-level variables, class variables, and instance variables.[^1]
 
 ```python
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional
 
 # Module-level annotation with value
 count: int = 0
@@ -448,7 +448,7 @@ captain: str  # name is NOT defined; accessing it raises NameError
 
 # Class variables and instance variable annotations
 class Starship:
-    stats: Dict[str, int] = {}   # class variable
+    stats: ClassVar[Dict[str, int]] = {}   # class variable — ClassVar per PEP 526
 
     def __init__(self, name: str, crew: int) -> None:
         self.name = name           # type inferred from __init__ signature
@@ -456,7 +456,7 @@ class Starship:
 
 # Annotations are stored in __annotations__
 print(Starship.__annotations__)
-# {'stats': typing.Dict[str, int]}
+# {'stats': typing.ClassVar[typing.Dict[str, int]]}
 
 # The interpreter does NOT enforce annotations at runtime —
 # they are pure metadata for type checkers and IDEs.
@@ -1127,8 +1127,10 @@ class Dog(Animal):
 A cleaner alternative to metaclasses for customizing subclass creation:[^1]
 
 ```python
+from typing import ClassVar, List
+
 class PluginBase:
-    subclasses: list = []
+    subclasses: ClassVar[List] = []
 
     def __init_subclass__(cls, required_field: str = '', **kwargs):
         super().__init_subclass__(**kwargs)
