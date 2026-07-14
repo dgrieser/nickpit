@@ -1459,12 +1459,16 @@ except ValueError as e:
 ##### Full `try/except/else/finally`
 
 ```python
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
 def read_config(path: str) -> dict:
-    import json
     try:
         with open(path, 'r', encoding='utf-8') as f:
             config = json.load(f)
-    except FileNotFoundError as e:
+    except FileNotFoundError:
         logger.error('Config file not found: %r', path)
         raise
     except json.JSONDecodeError as e:
@@ -2250,6 +2254,7 @@ result = ''.join(str(item) for item in data)
 # O(1) membership testing
 allowed = frozenset({'admin', 'editor', 'viewer'})
 if role in allowed:
+    grant_access()
 
 # defaultdict
 from collections import defaultdict
