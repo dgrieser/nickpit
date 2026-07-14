@@ -1399,9 +1399,16 @@ class Shape:
             return NotImplemented
         return self.__dict__ == other.__dict__
 
-    def __hash__(self) -> int:
-        # Always define __hash__ when defining __eq__
-        return hash(tuple(sorted(self.__dict__.items())))
+    # Defining __eq__ automatically sets __hash__ = None — Shape instances are
+    # MUTABLE, so staying unhashable is correct: a hash that changes with the
+    # object's state corrupts sets and dict keys. Define __hash__ only on
+    # immutable classes, over the same fields __eq__ compares:
+    #
+    #   @dataclass(frozen=True)
+    #   class Point:
+    #       x: float
+    #       y: float
+    #   # frozen dataclass generates a consistent __eq__/__hash__ pair
 
 class Circle(Shape):
     def __init__(self, radius: float, **kwargs) -> None:
@@ -2409,7 +2416,7 @@ Long-deprecated Python-2-era aliases were **removed** in 3.9 — old code breaks
 - [ ] `newline=''` passed to `open()` for CSV files
 - [ ] No mutable default arguments in function signatures
 - [ ] `dataclass` mutable fields use `field(default_factory=...)`, not `= []`
-- [ ] `__hash__` defined whenever `__eq__` is defined
+- [ ] `__hash__` defined alongside `__eq__` only on immutable classes; mutable classes keep the automatic `__hash__ = None` (unhashable)
 - [ ] No list mutation during iteration — use comprehension to rebuild
 
 ### Safety and Security
