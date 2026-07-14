@@ -1640,13 +1640,13 @@ def read_config(path: str) -> dict:
 try:
     int('N/A')
 except ValueError as e:
-    raise ConfigError('Invalid integer value') from e
+    raise AppError('Invalid integer value') from e
 
 # Suppress context: raise from None
 try:
     int('N/A')
 except ValueError:
-    raise ConfigError('Bad value') from None   # hides original ValueError
+    raise AppError('Bad value') from None   # hides original ValueError
 
 # Always use bare raise to re-raise — never 'raise e' (resets traceback to current line)
 try:
