@@ -1782,7 +1782,9 @@ async def read_file_async(path: str) -> str:
     # reused. Do NOT build a ThreadPoolExecutor per call: thread startup is
     # wasted work, and leaving its `with` block calls shutdown() synchronously
     # on the event loop thread.
-    content = await loop.run_in_executor(None, Path(path).read_text)
+    # run_in_executor forwards positional args only ('utf-8' is read_text's
+    # encoding parameter); use functools.partial when you need keyword args.
+    content = await loop.run_in_executor(None, Path(path).read_text, 'utf-8')
     return content
 ```
 
