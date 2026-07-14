@@ -66,6 +66,7 @@ style_guides:
     versions:
       "2.7": styleguides/python-2.7.md
       ">=3.0 <3.7": styleguides/python-3.6.md
+      ">=3.7 <3.9": styleguides/python-3.8.md
   javascript: styleguides/javascript.md
   typescript: styleguides/typescript.md
   html: styleguides/html-css.md
