@@ -558,6 +558,10 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	if cmd.PersistentFlags().Lookup("disable-reasoning-extract") == nil {
 		t.Fatal("disable-reasoning-extract flag missing")
 	}
+	diffScope := cmd.PersistentFlags().Lookup("disable-diff-scope")
+	if diffScope == nil || diffScope.DefValue != "false" {
+		t.Fatalf("disable-diff-scope flag = %#v, want default false", diffScope)
+	}
 }
 
 func TestRootCmdHasCheckModel(t *testing.T) {

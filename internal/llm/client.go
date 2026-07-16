@@ -113,9 +113,10 @@ type ReasoningSink interface {
 
 // ResponseConstraints narrows what values are acceptable in a parsed agent response.
 type ResponseConstraints struct {
-	MinPriority        *int     // finding priority must be >= this value
-	MaxPriority        *int     // finding priority must be <= this value
-	AllowedCorrectness []string // overall_correctness must be one of these; nil means default enum
+	MinPriority                    *int     // finding priority must be >= this value
+	MaxPriority                    *int     // finding priority must be <= this value
+	AllowedCorrectness             []string // overall_correctness must be one of these; nil means default enum
+	RequireReplacementCodeLocation bool     // verify response must include nullable replacement_code_location
 }
 
 type ReviewRequest struct {
@@ -163,17 +164,18 @@ type ToolCall struct {
 }
 
 type ReviewResponse struct {
-	Findings               []model.Finding            `json:"findings"`
-	OverallCorrectness     string                     `json:"overall_correctness"`
-	OverallExplanation     string                     `json:"overall_explanation"`
-	OverallConfidenceScore float64                    `json:"overall_confidence_score"`
-	Verification           *model.FindingVerification `json:"verification,omitempty"`
-	ToolCalls              []ToolCall                 `json:"tool_calls,omitempty"`
-	RawResponse            string                     `json:"raw_response,omitempty"`
-	TokensUsed             model.TokenUsage           `json:"tokens_used"`
-	ReasoningEffort        string                     `json:"reasoning_effort,omitempty"`
-	Reasoned               bool                       `json:"-"`
-	ToolsOmitted           bool                       `json:"-"`
+	Findings                []model.Finding            `json:"findings"`
+	OverallCorrectness      string                     `json:"overall_correctness"`
+	OverallExplanation      string                     `json:"overall_explanation"`
+	OverallConfidenceScore  float64                    `json:"overall_confidence_score"`
+	Verification            *model.FindingVerification `json:"verification,omitempty"`
+	ReplacementCodeLocation *model.CodeLocation        `json:"replacement_code_location,omitempty"`
+	ToolCalls               []ToolCall                 `json:"tool_calls,omitempty"`
+	RawResponse             string                     `json:"raw_response,omitempty"`
+	TokensUsed              model.TokenUsage           `json:"tokens_used"`
+	ReasoningEffort         string                     `json:"reasoning_effort,omitempty"`
+	Reasoned                bool                       `json:"-"`
+	ToolsOmitted            bool                       `json:"-"`
 }
 
 type capture struct {
@@ -2237,7 +2239,7 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 		return &ReviewResponse{}, 0, nil
 	}
 	if kind == SchemaKindVerify {
-		resp, err := parseVerifyResponse(content)
+		resp, err := parseVerifyResponse(content, constraints)
 		return resp, 0, err
 	}
 	if kind == SchemaKindVerdict {
@@ -2402,7 +2404,11 @@ func normalizeSuggestionCodeLocations(suggestions []model.Suggestion, fallback m
 	}
 }
 
-func parseVerifyResponse(content string) (*ReviewResponse, error) {
+func parseVerifyResponse(content string, constraintOptions ...ResponseConstraints) (*ReviewResponse, error) {
+	var constraints ResponseConstraints
+	if len(constraintOptions) > 0 {
+		constraints = constraintOptions[0]
+	}
 	var verification model.FindingVerification
 	if err := LenientUnmarshalMerge(content, &verification); err != nil {
 		return nil, &InvalidResponseError{
@@ -2411,21 +2417,23 @@ func parseVerifyResponse(content string) (*ReviewResponse, error) {
 		}
 	}
 	verification.ConfidenceScore = model.NormalizeConfidence(verification.ConfidenceScore)
-	if missing := missingVerifyFields(content); len(missing) > 0 {
-		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
+	raw := mergedRawVerifyBlocks(content)
+	replacement, replacementErrors := parseReplacementCodeLocation(raw)
+	if missing := append(missingVerifyFields(raw, constraints), replacementErrors...); len(missing) > 0 {
+		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
 			MissingFields: missing,
 		}
 	}
 	if verification.Priority < 0 || verification.Priority > 3 {
-		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
+		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
 			MissingFields: []string{"priority (must be 0-3)"},
 		}
 	}
-	return &ReviewResponse{Verification: &verification}, nil
+	return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, nil
 }
 
 // mergedRawVerifyBlocks reconstructs the merged raw view of the verify
@@ -2456,8 +2464,7 @@ func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 	return top
 }
 
-func missingVerifyFields(content string) []string {
-	raw := mergedRawVerifyBlocks(content)
+func missingVerifyFields(raw map[string]json.RawMessage, constraints ResponseConstraints) []string {
 	var missing []string
 	for _, field := range []string{"id", "verdict", "priority", "confidence_score", "remarks"} {
 		if _, ok := raw[field]; !ok {
@@ -2467,7 +2474,27 @@ func missingVerifyFields(content string) []string {
 	if rawID, ok := raw["id"]; ok && !rawUUIDIsValid(rawID) {
 		missing = append(missing, "id (must be UUID)")
 	}
+	if constraints.RequireReplacementCodeLocation {
+		if _, ok := raw["replacement_code_location"]; !ok {
+			missing = append(missing, "replacement_code_location")
+		}
+	}
 	return missing
+}
+
+func parseReplacementCodeLocation(raw map[string]json.RawMessage) (*model.CodeLocation, []string) {
+	rawLocation, ok := raw["replacement_code_location"]
+	if !ok || string(bytes.TrimSpace(rawLocation)) == "null" {
+		return nil, nil
+	}
+	if missing := codeLocationFieldErrors("replacement_code_location", rawLocation); len(missing) > 0 {
+		return nil, missing
+	}
+	var location model.CodeLocation
+	if err := json.Unmarshal(rawLocation, &location); err != nil {
+		return nil, []string{"replacement_code_location (must be an object or null)"}
+	}
+	return &location, nil
 }
 
 // parseSummarizeResponse parses the summarize pass output. Unlike review/merge/

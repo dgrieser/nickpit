@@ -17,8 +17,34 @@ var verifySchemaDefinition = map[string]any{
 	"required": []string{"id", "verdict", "priority", "confidence_score", "remarks"},
 }
 
+var scopedVerifySchemaDefinition = func() map[string]any {
+	properties := map[string]any{}
+	for key, value := range verifySchemaDefinition["properties"].(map[string]any) {
+		properties[key] = value
+	}
+	properties["replacement_code_location"] = map[string]any{
+		"anyOf": []any{
+			codeLocationSchemaDefinition(),
+			map[string]any{"type": "null"},
+		},
+		"examples": []any{nil},
+	}
+	required := append([]string{}, verifySchemaDefinition["required"].([]string)...)
+	required = append(required, "replacement_code_location")
+	return map[string]any{
+		"type":       "object",
+		"properties": properties,
+		"required":   required,
+	}
+}()
+
 var VerifySchema = mustMarshalCleanSchema(verifySchemaDefinition)
+var ScopedVerifySchema = mustMarshalCleanSchema(scopedVerifySchemaDefinition)
 
 func VerifyExamplePromptSnippet() string {
 	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(verifySchemaDefinition)))
+}
+
+func ScopedVerifyExamplePromptSnippet() string {
+	return mustIndentJSON(mustMarshalJSON(exampleFromSchema(scopedVerifySchemaDefinition)))
 }

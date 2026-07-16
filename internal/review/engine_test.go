@@ -44,9 +44,47 @@ func (stubSource) ResolveContext(context.Context, model.ReviewRequest) (*model.R
 			{FilePath: "main.go", Language: "go", Content: "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+new\n"},
 		},
 		DiffHunks: []model.DiffHunk{
-			{FilePath: "main.go", Language: "go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1, Content: "-old\n+new\n"},
+			{FilePath: "main.go", Language: "go", OldStart: 1, OldLines: 1000, NewStart: 1, NewLines: 1000, Content: "-old\n+new\n"},
 		},
 	}, nil
+}
+
+type scopeTrimSource struct{}
+
+func (scopeTrimSource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{
+		Mode: model.ModeLocal,
+		ChangedFiles: []model.ChangedFile{
+			{Path: "a.go", Status: model.FileModified},
+			{Path: "b.go", Status: model.FileModified},
+		},
+		Diff: "diff --git a/a.go b/a.go\n@@ -1 +1 @@\n-old\n+new\n" +
+			"diff --git a/b.go b/b.go\n@@ -10 +10 @@\n-old\n+new\n",
+		DiffFiles: []model.DiffFile{
+			{FilePath: "a.go", Content: strings.Repeat("a", 200)},
+			{FilePath: "b.go", Content: strings.Repeat("b", 200)},
+		},
+		DiffHunks: []model.DiffHunk{
+			{FilePath: "a.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1, Content: "-old\n+new\n"},
+			{FilePath: "b.go", OldStart: 10, OldLines: 1, NewStart: 10, NewLines: 1, Content: "-old\n+new\n"},
+		},
+	}, nil
+}
+
+func TestResolveAndTrimContextPreservesPreTrimDiffScopeHunks(t *testing.T) {
+	engine := NewEngine(scopeTrimSource{}, stubLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetToolchainCapture(nil)
+	engine.trimmer = NewTrimmer(1, exactEstimator{})
+	ctx, err := engine.resolveAndTrimContext(context.Background(), model.ReviewRequest{Mode: model.ModeLocal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.DiffScopeHunks) != 2 {
+		t.Fatalf("diff scope hunks = %#v, want both pre-trim hunks", ctx.DiffScopeHunks)
+	}
+	if len(ctx.DiffHunks) >= len(ctx.DiffScopeHunks) {
+		t.Fatalf("prompt hunks = %d, scope hunks = %d; test did not trim prompt diff", len(ctx.DiffHunks), len(ctx.DiffScopeHunks))
+	}
 }
 
 type filteredOutSource struct{}
@@ -348,6 +386,7 @@ func TestMergeAndDedupePromptsAvoidDuplicateSuggestions(t *testing.T) {
 			PrioritySnippet            string
 			OutputFormatSnippet        string
 			DisableSuggestions         bool
+			DisableDiffScope           bool
 			StyleGuideToolchainSnippet string
 		}{
 			FindingInstructionsSnippet: commonSnippets.findingInstructions,

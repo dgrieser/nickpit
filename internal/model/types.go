@@ -65,6 +65,7 @@ type ReviewRequest struct {
 	// MaxFindings caps the findings each review agent may report across its
 	// initial pass and nudges; 0 = unlimited.
 	MaxFindings               int
+	DisableDiffScope          bool
 	DisableParallelToolCalls  bool
 	DisableReasoningExtract   bool
 	DisablePatchSummary       bool
@@ -150,17 +151,22 @@ const (
 )
 
 type ReviewContext struct {
-	Mode                ReviewMode         `json:"mode"`
-	CheckoutRoot        string             `json:"checkout_root,omitempty"`
-	Identifier          int                `json:"identifier,omitempty"`
-	Repository          RepositoryInfo     `json:"repository"`
-	Title               string             `json:"title"`
-	Description         string             `json:"description"`
-	Commits             []CommitSummary    `json:"commits,omitempty"`
-	ChangedFiles        []ChangedFile      `json:"changed_files"`
-	Diff                string             `json:"diff"`
-	DiffFiles           []DiffFile         `json:"diff_files,omitempty"`
-	DiffHunks           []DiffHunk         `json:"diff_hunks,omitempty"`
+	Mode         ReviewMode      `json:"mode"`
+	CheckoutRoot string          `json:"checkout_root,omitempty"`
+	Identifier   int             `json:"identifier,omitempty"`
+	Repository   RepositoryInfo  `json:"repository"`
+	Title        string          `json:"title"`
+	Description  string          `json:"description"`
+	Commits      []CommitSummary `json:"commits,omitempty"`
+	ChangedFiles []ChangedFile   `json:"changed_files"`
+	Diff         string          `json:"diff"`
+	DiffFiles    []DiffFile      `json:"diff_files,omitempty"`
+	DiffHunks    []DiffHunk      `json:"diff_hunks,omitempty"`
+	// DiffScopeHunks retains the filtered, pre-trimming diff used for
+	// deterministic finding-scope checks. It is runtime-only so prompt payloads
+	// and serialized review context keep their existing shape. A non-nil empty
+	// slice means scope checking is available but the diff has no line hunks.
+	DiffScopeHunks      []DiffHunk         `json:"-"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`
@@ -700,6 +706,9 @@ func CloneContext(src *ReviewContext) (*ReviewContext, error) {
 	var out ReviewContext
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("model: CloneContext unmarshal: %w", err)
+	}
+	if src.DiffScopeHunks != nil {
+		out.DiffScopeHunks = append([]DiffHunk{}, src.DiffScopeHunks...)
 	}
 	return &out, nil
 }

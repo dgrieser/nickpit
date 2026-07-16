@@ -115,6 +115,7 @@ type app struct {
 	showReasoning                 bool
 	showProgress                  bool
 	disableSearchToolOptimization bool
+	disableDiffScope              bool
 	disableParallelToolCalls      bool
 	disableReasoningExtract       bool
 	disablePatchSummary           bool
@@ -239,6 +240,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
+	root.PersistentFlags().BoolVar(&cli.disableDiffScope, "disable-diff-scope", false, "Allow findings whose code location does not overlap the diff")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
 	root.PersistentFlags().BoolVar(&cli.disablePatchSummary, "disable-patch-summary", false, "Omit the assumed patch-purpose summary from the final review output")
@@ -1149,6 +1151,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	}
 
 	req.DisableParallelToolCalls = a.disableParallelToolCalls
+	req.DisableDiffScope = a.disableDiffScope
 	req.DisableReasoningExtract = a.disableReasoningExtract
 	req.Concurrency = a.concurrency
 	req.VerifyDropPolicy = a.verifyDropPolicy
@@ -2356,6 +2359,9 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 	}
 	if req.DisableReasoningExtract {
 		flags = append(flags, "no reasoning extract")
+	}
+	if req.DisableDiffScope {
+		flags = append(flags, "unscoped findings")
 	}
 	if req.VerifyDropPolicy != "" && req.VerifyDropPolicy != review.DropPolicyNone {
 		flags = append(flags, fmt.Sprintf("drop %s", req.VerifyDropPolicy))

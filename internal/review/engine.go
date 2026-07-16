@@ -231,6 +231,11 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 		}
 	}
 
+	// Scope checks must use the complete filtered diff, not the prompt-budget
+	// view produced by the trimmer below. Use append with a non-nil empty base so
+	// an empty hunk list still records that a source diff was resolved.
+	diffScopeHunks := append([]model.DiffHunk{}, reviewCtx.DiffHunks...)
+
 	trimmer := e.trimmer
 	if trimmer == nil {
 		maxTokens := req.MaxContextTokens
@@ -246,6 +251,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if err != nil {
 		return nil, fmt.Errorf("review: trim context: %w", err)
 	}
+	trimmed.DiffScopeHunks = diffScopeHunks
 	e.logf(ctx, "Trimmed context: files=%d supplemental=%d omitted=%d budget=%d", len(trimmed.ChangedFiles), len(trimmed.SupplementalContext), len(trimmed.OmittedSections), req.MaxContextTokens)
 	return trimmed, nil
 }
@@ -285,6 +291,9 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 	llmReq.Tools = nil
 	llmReq.ParallelToolCalls = false
 	exampleSnippet := exampleSnippetFor(llmReq.SchemaKind, disableSuggestions)
+	if loopReq.JSONRetryExampleSnippet != "" {
+		exampleSnippet = loopReq.JSONRetryExampleSnippet
+	}
 	for attempt := 0; ; attempt++ {
 		resp, err := e.loggedReview(ctx, llmReq, sec)
 		if recordTokens != nil {
@@ -505,21 +514,25 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	opts := verifyOptionsFromReviewRequest(req)
 	opts.Limiter = limiter
 	opts.ReviewerName = reviewerName
-	verifications, usage, warnings, err := e.VerifyAll(ctx, reviewCtx, findings, opts)
+	verifyResults, usage, warnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
 	if err != nil {
 		return usage, warnings, err
 	}
-	if len(verifications) != len(refs) {
-		return usage, warnings, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifications), len(refs))
+	if len(verifyResults) != len(refs) {
+		return usage, warnings, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifyResults), len(refs))
 	}
 	type dropCounts struct {
 		refuted    int
 		unverified int
+		outOfScope int
+		relocated  int
 	}
 	keptByVector := make(map[int][]model.Finding, len(vectorResults))
 	droppedIdxByVector := make(map[int]map[int]struct{}, len(vectorResults))
 	dropsByVector := make(map[int]dropCounts, len(vectorResults))
-	for i, verification := range verifications {
+	diffScopeEnabled := !opts.DisableDiffScope && reviewCtx != nil && reviewCtx.DiffScopeHunks != nil
+	for i, verifyResult := range verifyResults {
+		verification := verifyResult.Verification
 		ref := refs[i]
 		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
 		// findings[i].ID holds the normalized ID after EnsureFindingIDs above,
@@ -529,10 +542,33 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		finding.ID = findings[i].ID
 		if verification == nil {
 			verification = fallbackUnverifiedVerification(finding)
-			verifications[i] = verification
+			verifyResults[i].Verification = verification
 		}
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
+		if diffScopeEnabled && !codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
+			replacement := verifyResult.ReplacementCodeLocation
+			if replacement == nil || !codeLocationOverlapsDiff(*replacement, reviewCtx.DiffScopeHunks) {
+				if droppedIdxByVector[ref.vectorIdx] == nil {
+					droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
+				}
+				droppedIdxByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
+				counts := dropsByVector[ref.vectorIdx]
+				counts.outOfScope++
+				dropsByVector[ref.vectorIdx] = counts
+				continue
+			}
+			corrected := *replacement
+			corrected.FilePath = normalizeToolPath(strings.TrimSpace(corrected.FilePath))
+			if corrected.LineRange.End < corrected.LineRange.Start {
+				corrected.LineRange.End = corrected.LineRange.Start
+			}
+			corrected.LineRange.Count = corrected.LineRange.EffectiveCount()
+			finding.CodeLocation = corrected
+			counts := dropsByVector[ref.vectorIdx]
+			counts.relocated++
+			dropsByVector[ref.vectorIdx] = counts
+		}
 		drop, reason := shouldDropFinding(&v, opts.DropPolicy)
 		if drop {
 			if droppedIdxByVector[ref.vectorIdx] == nil {
@@ -562,12 +598,14 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		vectorResults[vectorIdx].resp.Findings = keptByVector[vectorIdx]
 		dropped := len(droppedIdxByVector[vectorIdx])
 		counts := dropsByVector[vectorIdx]
-		if dropped > 0 {
-			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d kept=%d policy=%s",
+		if dropped > 0 || counts.relocated > 0 {
+			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d out_of_scope=%d relocated=%d kept=%d policy=%s",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.refuted,
 				counts.unverified,
+				counts.outOfScope,
+				counts.relocated,
 				len(keptByVector[vectorIdx]),
 				normalizeDropPolicy(opts.DropPolicy),
 			)
@@ -656,6 +694,7 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		MaxReasoningSeconds:       req.MaxReasoningSeconds,
 		DisableParallelToolCalls:  req.DisableParallelToolCalls,
 		DisableSuggestions:        req.DisableSuggestions,
+		DisableDiffScope:          req.DisableDiffScope,
 		RepoRoot:                  req.RepoRoot,
 		DropPolicy:                req.VerifyDropPolicy,
 		DiffFormat:                req.DiffFormat,
@@ -857,11 +896,13 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 		PrioritySnippet            string
 		OutputFormatSnippet        string
 		DisableSuggestions         bool
+		DisableDiffScope           bool
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisableSuggestions:         req.DisableSuggestions,
+		DisableDiffScope:           req.DisableDiffScope,
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering dedupe system prompt: %w", err)
@@ -1154,6 +1195,10 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 		return nil
 	}
 	clone := *resp
+	if resp.ReplacementCodeLocation != nil {
+		replacement := *resp.ReplacementCodeLocation
+		clone.ReplacementCodeLocation = &replacement
+	}
 	clone.Findings = make([]model.Finding, len(resp.Findings))
 	for i, finding := range resp.Findings {
 		clone.Findings[i] = finding
@@ -1197,12 +1242,14 @@ func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userP
 		PrioritySnippet            string
 		OutputFormatSnippet        string
 		DisableSuggestions         bool
+		DisableDiffScope           bool
 		StyleGuideToolchainSnippet string
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisableSuggestions:         req.DisableSuggestions,
+		DisableDiffScope:           req.DisableDiffScope,
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
@@ -2213,7 +2260,15 @@ func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
 	}
 }
 
-func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool) ([]llm.Message, error) {
+type noToolsPromptOptions struct {
+	DiffScopeEnabled bool
+}
+
+func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Message, snippet string, styleGuideToolchainSnippet string, disableSuggestions bool, options ...noToolsPromptOptions) ([]llm.Message, error) {
+	var promptOptions noToolsPromptOptions
+	if len(options) > 0 {
+		promptOptions = options[0]
+	}
 	commonSnippets, err := agentCommonSystemPromptSnippetsForTools(agentRole, snippet, disableSuggestions, false)
 	if err != nil {
 		return nil, err
@@ -2227,6 +2282,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		HasTools                   bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
+		DiffScopeEnabled           bool
 	}{
 		OutputSchemaSnippet:        snippet,
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
@@ -2234,6 +2290,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		HasTools:                   false,
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
+		DiffScopeEnabled:           promptOptions.DiffScopeEnabled,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)
