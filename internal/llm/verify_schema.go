@@ -1,5 +1,7 @@
 package llm
 
+import "maps"
+
 var verifySchemaDefinition = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
@@ -19,9 +21,7 @@ var verifySchemaDefinition = map[string]any{
 
 var scopedVerifySchemaDefinition = func() map[string]any {
 	properties := map[string]any{}
-	for key, value := range verifySchemaDefinition["properties"].(map[string]any) {
-		properties[key] = value
-	}
+	maps.Copy(properties, verifySchemaDefinition["properties"].(map[string]any))
 	properties["replacement_code_location"] = map[string]any{
 		"anyOf": []any{
 			codeLocationSchemaDefinition(),
