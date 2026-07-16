@@ -111,6 +111,13 @@ func TestVerifyDisableDiffScopeRestoresLegacyPromptAndSchema(t *testing.T) {
 		if !strings.Contains(system, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
 			t.Fatalf("legacy verifier prompt missing legacy example:\n%s", system)
 		}
+		assertVerifierGateNumbering(t, system, []string{
+			"1. Non-finding gate:",
+			"2. Styleguide contradiction gate:",
+			"3. Confirm gate:",
+			"4. Refute gate for actual issue claims:",
+			"5. Unverified gate:",
+		})
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(taskMessageContent(req)), &payload); err != nil {
@@ -139,12 +146,29 @@ func TestVerifyAnnotatesDeterministicDiffScopeStatus(t *testing.T) {
 		!strings.Contains(req.NoToolsMessages[0].Content, strings.TrimSpace(llm.ScopedVerifyExamplePromptSnippet())) {
 		t.Fatalf("no-tools verifier prompt missing scoped guidance: %#v", req.NoToolsMessages)
 	}
+	assertVerifierGateNumbering(t, req.Messages[0].Content, []string{
+		"1. Non-finding gate:",
+		"2. Diff-scope gate:",
+		"3. Styleguide contradiction gate:",
+		"4. Confirm gate:",
+		"5. Refute gate for actual issue claims:",
+		"6. Unverified gate:",
+	})
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(taskMessageContent(req)), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload["finding_diff_scope"] != "outside_diff" {
 		t.Fatalf("finding_diff_scope = %#v", payload["finding_diff_scope"])
+	}
+}
+
+func assertVerifierGateNumbering(t *testing.T, prompt string, headings []string) {
+	t.Helper()
+	for _, heading := range headings {
+		if !strings.Contains(prompt, heading) {
+			t.Errorf("verifier prompt missing numbered heading %q:\n%s", heading, prompt)
+		}
 	}
 }
 
