@@ -81,15 +81,6 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 			return uniqueKey
 		}
 		return fmt.Sprintf("inspect_file\x00%s", normalizeToolPath(args.Path))
-	case "find_lines":
-		var args struct {
-			Path string `json:"path"`
-			Code string `json:"code"`
-		}
-		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
-			return uniqueKey
-		}
-		return findLinesDedupKey(normalizeFindLinesPath(args.Path), retrieval.NormalizeFindLinesCode(args.Code))
 	case "list_files":
 		var args struct {
 			Path  string `json:"path"`
@@ -116,22 +107,16 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 		}
 		return callHierarchyDedupKey(toolCall.Name, normalizeToolPath(args.Path), strings.TrimSpace(args.Symbol), args.Depth)
 	case "search":
-		var args struct {
-			Path          string `json:"path"`
-			Query         string `json:"query"`
-			ContextLines  int    `json:"context_lines"`
-			MaxResults    int    `json:"max_results"`
-			CaseSensitive bool   `json:"case_sensitive"`
-		}
+		var args searchToolArgs
 		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
-		query := strings.TrimSpace(args.Query)
+		query := retrieval.NormalizeSearchQuery(args.Query)
 		if query == "" {
 			// Executes as a missing_argument error without dedup state.
 			return uniqueKey
 		}
-		normalizedPath := normalizeToolPath(strings.TrimSpace(args.Path))
+		normalizedPath := normalizeSearchPath(args.Path)
 		// Mirror executeSearch's rewrite condition so the dedup key matches how the
 		// call actually executes: a function-name search only collapses into the
 		// find_callers key when the optimization is on AND a backend supports the
@@ -142,10 +127,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 				return callHierarchyDedupKey("find_callers", normalizedPath, matches[1], defaultCallHierarchyDepth)
 			}
 		}
-		if args.ContextLines < 0 {
-			args.ContextLines = defaultSearchContextLines
-		}
-		return searchDedupKey(normalizedPath, query, args.ContextLines, args.MaxResults, args.CaseSensitive)
+		return searchDedupKey(normalizedPath, query, resolveSearchContextLines(args.ContextLines, query), args.MaxResults, args.CaseSensitive)
 	default:
 		return uniqueKey
 	}
@@ -158,8 +140,6 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	switch toolCall.Name {
 	case "inspect_file":
 		return e.executeInspectFile(ctx, repoRoot, toolCall, state)
-	case "find_lines":
-		return e.executeFindLines(ctx, repoRoot, toolCall, state)
 	case "list_files":
 		return e.executeListFiles(ctx, repoRoot, toolCall, state)
 	case "search":
@@ -171,48 +151,6 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	default:
 		return toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
 	}
-}
-
-func (e *Engine) executeFindLines(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
-	var args struct {
-		Path string `json:"path"`
-		Code string `json:"code"`
-	}
-	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
-		return toolError("", "invalid_arguments", err.Error())
-	}
-	args.Path = strings.TrimSpace(args.Path)
-	args.Code = retrieval.NormalizeFindLinesCode(args.Code)
-	// path is optional: an empty path searches the whole repository.
-	normalizedPath := normalizeFindLinesPath(args.Path)
-	if args.Code == "" {
-		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "code"))
-	}
-
-	key := findLinesDedupKey(normalizedPath, args.Code)
-	unlock := state.toolLocks.lock(key)
-	defer unlock()
-	state.mu.Lock()
-	_, ok := state.seenToolCalls[key]
-	state.mu.Unlock()
-	if ok {
-		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s", toolCall.Name, normalizedPath)
-		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
-	}
-
-	e.logf(ctx, "Executing tool call: name=%s path=%s code_lines=%d", toolCall.Name, normalizedPath, retrieval.FindLinesCount(args.Code))
-	result, err := e.retrieval.FindLines(ctx, repoRoot, normalizedPath, args.Code)
-	if err != nil {
-		return toolError(normalizedPath, "retrieval_failed", err.Error())
-	}
-	if result == nil {
-		return toolError(normalizedPath, "retrieval_failed", "find_lines result is nil")
-	}
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
-
-	return mustToolResultJSON(result)
 }
 
 func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
@@ -330,26 +268,50 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	})
 }
 
-func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
-	var args struct {
-		Path          string `json:"path"`
-		Query         string `json:"query"`
-		ContextLines  int    `json:"context_lines"`
-		MaxResults    int    `json:"max_results"`
-		CaseSensitive bool   `json:"case_sensitive"`
+// searchToolArgs are the LLM-supplied arguments of the search tool.
+// ContextLines is a pointer so an omitted value is distinguishable from an
+// explicit 0: the default depends on the query (5 for single-line, 0 for
+// multi-line blocks).
+type searchToolArgs struct {
+	Path          string `json:"path"`
+	Query         string `json:"query"`
+	ContextLines  *int   `json:"context_lines"`
+	MaxResults    int    `json:"max_results"`
+	CaseSensitive bool   `json:"case_sensitive"`
+}
+
+// resolveSearchContextLines applies the per-mode default when the model omits
+// context_lines or passes a negative value. The query must already be
+// normalized.
+func resolveSearchContextLines(contextLines *int, query string) int {
+	if contextLines == nil || *contextLines < 0 {
+		return retrieval.DefaultSearchContextLines(query)
 	}
+	return *contextLines
+}
+
+// normalizeSearchPath canonicalizes the optional search path: "." is the same
+// scope as an omitted path (the repo root), so both dedupe to one key.
+func normalizeSearchPath(path string) string {
+	normalized := normalizeToolPath(strings.TrimSpace(path))
+	if normalized == "." {
+		return ""
+	}
+	return normalized
+}
+
+func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
+	var args searchToolArgs
 	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
 		return toolError("", "invalid_arguments", err.Error())
 	}
-	args.Path = strings.TrimSpace(args.Path)
-	args.Query = strings.TrimSpace(args.Query)
+	args.Query = retrieval.NormalizeSearchQuery(args.Query)
+	normalizedPath := normalizeSearchPath(args.Path)
 	if args.Query == "" {
-		return toolError(normalizeToolPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "query"))
+		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "query"))
 	}
-	if args.ContextLines < 0 {
-		args.ContextLines = defaultSearchContextLines
-	}
-	normalizedPath := normalizeToolPath(args.Path)
+	contextLines := resolveSearchContextLines(args.ContextLines, args.Query)
+	multiLine := retrieval.FindLinesCount(args.Query) > 1
 	// Only rewrite a function-name search into a structural call-graph lookup when a
 	// backend can actually resolve the target language. Otherwise (e.g. a Rust file)
 	// run the literal/regex search the model asked for, so `redirect_allowed(` is
@@ -377,7 +339,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			}, true, state)
 		}
 	}
-	key := searchDedupKey(normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
+	key := searchDedupKey(normalizedPath, args.Query, contextLines, args.MaxResults, args.CaseSensitive)
 	unlock := state.toolLocks.lock(key)
 	defer unlock()
 	state.mu.Lock()
@@ -387,20 +349,22 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s query=%q", toolCall.Name, normalizedPath, args.Query)
 		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
-	e.logf(ctx, "Executing tool call: name=%s path=%s query=%q context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
-	results, err := e.retrieval.Search(ctx, repoRoot, normalizedPath, args.Query, args.ContextLines, args.MaxResults, args.CaseSensitive)
+	e.logf(ctx, "Executing tool call: name=%s path=%s query=%q query_lines=%d context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, retrieval.FindLinesCount(args.Query), contextLines, args.MaxResults, args.CaseSensitive)
+	results, err := e.retrieval.Search(ctx, repoRoot, normalizedPath, args.Query, contextLines, args.MaxResults, args.CaseSensitive)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
 
-	if hasRegexMetachar(args.Query) {
+	// A multi-line block is always matched exactly (lean whitespace-insensitive
+	// matching); the regex interpretation only applies to single-line queries.
+	if !multiLine && hasRegexMetachar(args.Query) {
 		regexPattern := args.Query
 		if !args.CaseSensitive {
 			regexPattern = "(?i)" + regexPattern
 		}
 		if compiled, compileErr := regexp.Compile(regexPattern); compileErr == nil {
-			e.logf(ctx, "Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), args.ContextLines, args.MaxResults)
-			regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, args.ContextLines, args.MaxResults)
+			e.logf(ctx, "Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), contextLines, args.MaxResults)
+			regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, contextLines, args.MaxResults)
 			if err != nil {
 				return toolError(normalizedPath, "retrieval_failed", err.Error())
 			}
@@ -434,7 +398,8 @@ func mergeSearchResults(literal, regex []retrieval.SearchResult, maxResults int)
 	merged := make([]retrieval.SearchResult, 0, len(literal)+len(regex))
 	seen := make(map[string]struct{}, len(literal)+len(regex))
 	key := func(r retrieval.SearchResult) string {
-		return fmt.Sprintf("%s:%d:%d", r.Path, r.StartLine, r.EndLine)
+		loc := r.CodeLocation
+		return fmt.Sprintf("%s:%d:%d", loc.FilePath, loc.LineRange.Start, loc.LineRange.End)
 	}
 	for _, r := range literal {
 		k := key(r)
@@ -570,21 +535,9 @@ func callHierarchyDedupKey(name, path, symbol string, depth int) string {
 // from the normalized arguments exactly as executeSearch runs them (trimmed
 // path/query, defaulted context lines) so identical repeated searches dedupe
 // into a single execution plus already_requested errors, consistent with
-// inspect_file/find_lines/list_files.
+// inspect_file/list_files.
 func searchDedupKey(path, query string, contextLines, maxResults int, caseSensitive bool) string {
 	return fmt.Sprintf("search\x00%s\x00%s\x00%d\x00%d\x00%t", path, query, contextLines, maxResults, caseSensitive)
-}
-
-func findLinesDedupKey(path, code string) string {
-	return fmt.Sprintf("find_lines\x00%s\x00%s", path, code)
-}
-
-func normalizeFindLinesPath(path string) string {
-	normalized := normalizeToolPath(strings.TrimSpace(path))
-	if normalized == "." {
-		return ""
-	}
-	return normalized
 }
 
 func mustToolResultJSON(value any) string {

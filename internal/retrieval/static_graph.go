@@ -198,12 +198,9 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 func (g *staticGraph) expandNode(id string, depth int, reverse bool, seen map[string]struct{}) CallNode {
 	node := g.nodes[id]
 	out := CallNode{
-		Name:      node.Name,
-		Path:      node.Path,
-		StartLine: node.StartLine,
-		EndLine:   node.EndLine,
-		Source:    node.Source,
-		Children:  []CallNode{},
+		Name:         node.Name,
+		CodeLocation: callNodeLocation(node.Path, node.StartLine, node.EndLine, node.Source),
+		Children:     []CallNode{},
 	}
 	if depth == 0 {
 		return out

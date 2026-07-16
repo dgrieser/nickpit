@@ -152,20 +152,20 @@ func (r *codeLocationRepairer) repairFromContent(ctx context.Context, field stri
 	return r.repairFromAnyContentLine(ctx, field, loc, lines)
 }
 
-func (r *codeLocationRepairer) findBestContentMatch(ctx context.Context, path, content string, hint model.LineRange) (retrieval.FindLinesLocation, contentRepairStatus) {
+func (r *codeLocationRepairer) findBestContentMatch(ctx context.Context, path, content string, hint model.LineRange) (retrieval.CodeLocation, contentRepairStatus) {
 	result, err := r.findLines(ctx, path, content)
 	if err != nil || result == nil || len(result.Matches) == 0 {
-		return retrieval.FindLinesLocation{}, contentRepairNoMatch
+		return retrieval.CodeLocation{}, contentRepairNoMatch
 	}
 	return bestFindLinesMatch(result.Matches, hint)
 }
 
-func bestFindLinesMatch(matches []retrieval.FindLinesMatch, hint model.LineRange) (retrieval.FindLinesLocation, contentRepairStatus) {
+func bestFindLinesMatch(matches []retrieval.FindLinesMatch, hint model.LineRange) (retrieval.CodeLocation, contentRepairStatus) {
 	if len(matches) == 0 {
-		return retrieval.FindLinesLocation{}, contentRepairNoMatch
+		return retrieval.CodeLocation{}, contentRepairNoMatch
 	}
 	if !hasAnyLineAnchor(hint) && len(matches) > 1 {
-		return retrieval.FindLinesLocation{}, contentRepairInconclusive
+		return retrieval.CodeLocation{}, contentRepairInconclusive
 	}
 	best := matches[0].CodeLocation
 	bestScore := lineRangeScore(best.LineRange.Start, best.LineRange.End, hint)
@@ -184,7 +184,7 @@ func bestFindLinesMatch(matches []retrieval.FindLinesMatch, hint model.LineRange
 		}
 	}
 	if tied {
-		return retrieval.FindLinesLocation{}, contentRepairInconclusive
+		return retrieval.CodeLocation{}, contentRepairInconclusive
 	}
 	return best, contentRepairRepaired
 }
@@ -361,7 +361,7 @@ func (r *codeLocationRepairer) repairFromRange(ctx context.Context, field string
 	return r.applyFileSlice(ctx, field, loc, start, end, "line_range")
 }
 
-func (r *codeLocationRepairer) applyFindLinesLocation(ctx context.Context, field string, loc *model.CodeLocation, match retrieval.FindLinesLocation, method string) {
+func (r *codeLocationRepairer) applyFindLinesLocation(ctx context.Context, field string, loc *model.CodeLocation, match retrieval.CodeLocation, method string) {
 	loc.FilePath = match.FilePath
 	loc.LineRange = model.LineRange{
 		Start: match.LineRange.Start,

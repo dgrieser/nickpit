@@ -2841,11 +2841,9 @@ func parseToolResultSummary(content string) toolResultSummary {
 			if !ok {
 				continue
 			}
-			path, _ := entry["path"].(string)
-			if path == "" {
-				continue
+			if path := nodeCodeLocationString(entry, "file_path"); path != "" {
+				distinct[path] = struct{}{}
 			}
-			distinct[path] = struct{}{}
 		}
 		summary.Files = len(distinct)
 	}
@@ -2853,35 +2851,23 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.HasResultCount = true
 		summary.ResultCount = int(resultCount)
 	}
-	if matchCount, ok := payload["match_count"].(float64); ok {
-		summary.HasResultCount = true
-		summary.ResultCount = int(matchCount)
-	}
-	if matches, ok := payload["matches"].([]any); ok {
-		distinct := make(map[string]struct{}, len(matches))
-		for _, item := range matches {
-			entry, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			loc, ok := entry["code_location"].(map[string]any)
-			if !ok {
-				continue
-			}
-			if path, _ := loc["file_path"].(string); path != "" {
-				distinct[path] = struct{}{}
-			}
-		}
-		summary.Files = len(distinct)
-	}
-	if code, ok := payload["code"].(string); ok && code != "" {
-		summary.Lines = retrieval.FindLinesCount(code)
-	}
 	if root, ok := payload["root"].(map[string]any); ok {
 		summary.Files = countCallHierarchyFiles(root)
 		summary.Lines = countCallHierarchyLines(root)
 	}
 	return summary
+}
+
+// nodeCodeLocationString reads a string field from a node's nested
+// code_location object, the location shape shared by search results and call
+// hierarchy nodes.
+func nodeCodeLocationString(node map[string]any, field string) string {
+	loc, ok := node["code_location"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, _ := loc[field].(string)
+	return value
 }
 
 func countDuplicateToolCalls(toolMessages []llm.Message) int {
@@ -2898,8 +2884,7 @@ func countDuplicateToolCalls(toolMessages []llm.Message) int {
 func countCallHierarchyFiles(root map[string]any) int {
 	distinct := make(map[string]struct{})
 	walkCallHierarchy(root, func(node map[string]any) {
-		path, _ := node["path"].(string)
-		if path != "" {
+		if path := nodeCodeLocationString(node, "file_path"); path != "" {
 			distinct[path] = struct{}{}
 		}
 	})
@@ -2909,8 +2894,7 @@ func countCallHierarchyFiles(root map[string]any) int {
 func countCallHierarchyLines(root map[string]any) int {
 	lines := 0
 	walkCallHierarchy(root, func(node map[string]any) {
-		source, _ := node["source"].(string)
-		lines += lineCount(source)
+		lines += lineCount(nodeCodeLocationString(node, "content"))
 	})
 	return lines
 }
@@ -2928,18 +2912,18 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 }
 
 // toolCallArgs is the union of arguments across the retrieval tools
-// (inspect_file, find_lines, list_files, search, find_callers, find_callees). A single
-// named type replaces the 9-field anonymous struct that was previously
-// re-declared verbatim at several call sites.
+// (inspect_file, list_files, search, find_callers, find_callees). A single
+// named type replaces the anonymous struct that was previously re-declared
+// verbatim at several call sites. ContextLines is a pointer so an omitted
+// search value renders as its query-dependent default.
 type toolCallArgs struct {
 	Path          string `json:"path"`
-	Code          string `json:"code"`
 	LineStart     int    `json:"line_start"`
 	LineEnd       int    `json:"line_end"`
 	Depth         int    `json:"depth"`
 	Symbol        string `json:"symbol"`
 	Query         string `json:"query"`
-	ContextLines  int    `json:"context_lines"`
+	ContextLines  *int   `json:"context_lines"`
 	MaxResults    int    `json:"max_results"`
 	CaseSensitive bool   `json:"case_sensitive"`
 }
@@ -2955,9 +2939,6 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		if args.LineEnd > 0 {
 			parts = append(parts, fmt.Sprintf("line_end=%d", args.LineEnd))
 		}
-	case "find_lines":
-		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
-		parts = append(parts, fmt.Sprintf("code_line_count=%d", retrieval.FindLinesCount(args.Code)))
 	case "list_files":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {
@@ -2965,12 +2946,13 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	case "search":
+		query := retrieval.NormalizeSearchQuery(args.Query)
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
-		parts = append(parts, fmt.Sprintf("query=%q", args.Query))
-		if args.ContextLines < 0 {
-			args.ContextLines = defaultSearchContextLines
+		parts = append(parts, fmt.Sprintf("query=%q", query))
+		if queryLines := retrieval.FindLinesCount(query); queryLines > 1 {
+			parts = append(parts, fmt.Sprintf("query_line_count=%d", queryLines))
 		}
-		parts = append(parts, fmt.Sprintf("context_lines=%d", args.ContextLines))
+		parts = append(parts, fmt.Sprintf("context_lines=%d", resolveSearchContextLines(args.ContextLines, query)))
 		parts = append(parts, fmt.Sprintf("max_results=%d", args.MaxResults))
 		parts = append(parts, fmt.Sprintf("case_sensitive=%t", args.CaseSensitive))
 	case "find_callers", "find_callees":
@@ -3001,7 +2983,7 @@ func syntheticToolOutcome(toolName string, result toolResultSummary) string {
 		parts = append(parts, fmt.Sprintf("result_count=%d", result.ResultCount))
 	}
 	if len(parts) == 0 {
-		if toolName == "search" || toolName == "find_lines" {
+		if toolName == "search" {
 			parts = append(parts, "result_count=0")
 			return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
 		}

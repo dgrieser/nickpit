@@ -232,26 +232,22 @@ func scanLinesAnyEnding(data []byte, atEOF bool) (int, []byte, error) {
 	return 0, nil, nil
 }
 
+// Search locates a literal query in the repo. A single-line query matches any
+// line containing it as a substring; a multi-line query matches consecutive
+// lines equal to the query lines after per-line whitespace trimming (lean
+// matching), so a code block matches regardless of its indentation. Both modes
+// are case-insensitive unless caseSensitive is set. A negative contextLines
+// selects the per-mode default (5 for single-line, 0 for multi-line).
 func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error) {
+	query = NormalizeSearchQuery(query)
 	if query == "" {
 		return nil, fmt.Errorf("retrieval: missing search query")
 	}
-
-	literalMatcher := func(rawQuery string) func(string) bool {
-		needle := rawQuery
-		if !caseSensitive {
-			needle = strings.ToLower(rawQuery)
-		}
-		return func(line string) bool {
-			haystack := line
-			if !caseSensitive {
-				haystack = strings.ToLower(line)
-			}
-			return strings.Contains(haystack, needle)
-		}
+	if contextLines < 0 {
+		contextLines = DefaultSearchContextLines(query)
 	}
 
-	results, normalizedPath, contextLines, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalMatcher(query))
+	results, normalizedPath, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalQueryMatcher(query, caseSensitive))
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +255,7 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 	effectiveQuery := query
 	unescapedQuery := unescapeSearchQuery(query)
 	if len(results) == 0 && unescapedQuery != query {
-		fallback, _, _, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalMatcher(unescapedQuery))
+		fallback, _, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalQueryMatcher(unescapedQuery, caseSensitive))
 		if err != nil {
 			return nil, err
 		}
@@ -280,11 +276,43 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 	}, nil
 }
 
+// literalQueryMatcher builds the span matcher for an already-normalized
+// literal query: substring matching per line for a single-line query, lean
+// block matching (see codeBlockMatcher) for a multi-line one.
+func literalQueryMatcher(query string, caseSensitive bool) func(rawLines []string) []lineSpan {
+	queryLines := SplitFindLines(query)
+	if len(queryLines) > 1 {
+		return codeBlockMatcher(queryLines, caseSensitive)
+	}
+	needle := foldSearchCase(query, caseSensitive)
+	return func(rawLines []string) []lineSpan {
+		var spans []lineSpan
+		for i, line := range rawLines {
+			if strings.Contains(foldSearchCase(line, caseSensitive), needle) {
+				spans = append(spans, lineSpan{start: i, end: i})
+			}
+		}
+		return spans
+	}
+}
+
 func (e *LocalEngine) SearchRegex(_ context.Context, repoRoot, path string, pattern *regexp.Regexp, contextLines, maxResults int) (*SearchResults, error) {
 	if pattern == nil {
 		return nil, fmt.Errorf("retrieval: missing search pattern")
 	}
-	results, normalizedPath, contextLines, err := runFileSearch(repoRoot, path, contextLines, maxResults, pattern.MatchString)
+	if contextLines < 0 {
+		contextLines = DefaultSearchContextLines(pattern.String())
+	}
+	matcher := func(rawLines []string) []lineSpan {
+		var spans []lineSpan
+		for i, line := range rawLines {
+			if pattern.MatchString(line) {
+				spans = append(spans, lineSpan{start: i, end: i})
+			}
+		}
+		return spans
+	}
+	results, normalizedPath, err := runFileSearch(repoRoot, path, contextLines, maxResults, matcher)
 	if err != nil {
 		return nil, err
 	}
@@ -298,29 +326,35 @@ func (e *LocalEngine) SearchRegex(_ context.Context, repoRoot, path string, patt
 	}, nil
 }
 
-func runFileSearch(repoRoot, path string, contextLines, maxResults int, match func(string) bool) ([]SearchResult, string, int, error) {
+func runFileSearch(repoRoot, path string, contextLines, maxResults int, matcher func(rawLines []string) []lineSpan) ([]SearchResult, string, error) {
 	if contextLines < 0 {
-		contextLines = 5
+		contextLines = 0
 	}
 	results := make([]SearchResult, 0)
 	appendMatches := func(relPath, content string) error {
 		lines := splitLines(content)
-		for i, line := range lines {
-			if !match(line) {
-				continue
+		language := detectLanguage(relPath)
+		for _, span := range matcher(lines) {
+			result := SearchResult{
+				CodeLocation: codeLocationForSpan(relPath, language, lines, span),
 			}
-			start := i + 1 - contextLines
-			if start <= 0 {
-				start = 1
+			if contextLines > 0 {
+				if start := max(span.start-contextLines, 0); start < span.start {
+					result.ContextBefore = &SearchContext{
+						StartLine: start + 1,
+						EndLine:   span.start,
+						Content:   strings.Join(lines[start:span.start], "\n"),
+					}
+				}
+				if end := min(span.end+contextLines, len(lines)-1); end > span.end {
+					result.ContextAfter = &SearchContext{
+						StartLine: span.end + 2,
+						EndLine:   end + 1,
+						Content:   strings.Join(lines[span.end+1:end+1], "\n"),
+					}
+				}
 			}
-			end := min(i+1+contextLines, len(lines))
-			results = append(results, SearchResult{
-				Path:      relPath,
-				StartLine: start,
-				EndLine:   end,
-				Language:  detectLanguage(relPath),
-				Content:   strings.Join(lines[start-1:end], "\n"),
-			})
+			results = append(results, result)
 			if maxResults > 0 && len(results) >= maxResults {
 				return errSearchLimitReached
 			}
@@ -330,9 +364,9 @@ func runFileSearch(repoRoot, path string, contextLines, maxResults int, match fu
 
 	normalizedPath, err := walkRepoTextFiles(repoRoot, path, appendMatches)
 	if err != nil && err != errSearchLimitReached {
-		return nil, normalizedPath, contextLines, fmt.Errorf("retrieval: searching %s: %w", searchScopeLabel(path, normalizedPath), err)
+		return nil, normalizedPath, fmt.Errorf("retrieval: searching %s: %w", searchScopeLabel(path, normalizedPath), err)
 	}
-	return results, normalizedPath, contextLines, nil
+	return results, normalizedPath, nil
 }
 
 // walkRepoTextFiles resolves path within repoRoot and invokes visit with the
