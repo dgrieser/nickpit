@@ -72,10 +72,22 @@ func MergeSchemaWithConstraintsFor(c ResponseConstraints, disableSuggestions boo
 }
 
 func limitFindingSuggestionItems(root map[string]any, maxItems int) {
-	properties := root["properties"].(map[string]any)
-	findings := properties["findings"].(map[string]any)
-	items := findings["items"].(map[string]any)
-	findingProperties := items["properties"].(map[string]any)
+	properties, ok := root["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	findings, ok := properties["findings"].(map[string]any)
+	if !ok {
+		return
+	}
+	items, ok := findings["items"].(map[string]any)
+	if !ok {
+		return
+	}
+	findingProperties, ok := items["properties"].(map[string]any)
+	if !ok {
+		return
+	}
 	suggestions, ok := findingProperties["suggestions"].(map[string]any)
 	if !ok {
 		return

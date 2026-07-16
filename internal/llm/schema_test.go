@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -198,6 +199,27 @@ func TestConstrainedMergeSchemaLimitsSuggestions(t *testing.T) {
 	suggestions := findingProperties(t, schema)["suggestions"].(map[string]any)
 	if suggestions["maxItems"] != float64(1) {
 		t.Fatalf("suggestions.maxItems = %#v, want 1", suggestions["maxItems"])
+	}
+}
+
+func TestLimitFindingSuggestionItemsIgnoresMalformedSchema(t *testing.T) {
+	tests := []map[string]any{
+		nil,
+		{},
+		{"properties": "invalid"},
+		{"properties": map[string]any{}},
+		{"properties": map[string]any{"findings": "invalid"}},
+		{"properties": map[string]any{"findings": map[string]any{}}},
+		{"properties": map[string]any{"findings": map[string]any{"items": "invalid"}}},
+		{"properties": map[string]any{"findings": map[string]any{"items": map[string]any{}}}},
+		{"properties": map[string]any{"findings": map[string]any{"items": map[string]any{"properties": "invalid"}}}},
+		{"properties": map[string]any{"findings": map[string]any{"items": map[string]any{"properties": map[string]any{}}}}},
+	}
+
+	for i, schema := range tests {
+		t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
+			limitFindingSuggestionItems(schema, 1)
+		})
 	}
 }
 
