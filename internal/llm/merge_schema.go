@@ -5,7 +5,9 @@ import "encoding/json"
 var mergeSchemaDefinition = buildMergeSchemaDefinition()
 
 func buildMergeSchemaDefinition() map[string]any {
-	return extendFindingsForMergeProvenance(extendFindingsForVerification(deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any)))
+	root := deepCopySchema(findingsWithIDSchemaDefinition).(map[string]any)
+	limitFindingSuggestionItems(root, 1)
+	return extendFindingsForMergeProvenance(extendFindingsForVerification(root))
 }
 
 var mergeWithoutSuggestionsSchemaDefinition = buildMergeWithoutSuggestionsSchemaDefinition()
@@ -63,7 +65,34 @@ func MergeSchemaWithConstraintsFor(c ResponseConstraints, disableSuggestions boo
 		max = *c.MaxPriority
 	}
 	root := buildFindingsSchemaDefinition(min, max, c.AllowedCorrectness, true, !disableSuggestions)
+	if !disableSuggestions {
+		limitFindingSuggestionItems(root, 1)
+	}
 	return mustMarshalCleanSchema(extendFindingsForMergeProvenance(extendFindingsForVerification(root)))
+}
+
+func limitFindingSuggestionItems(root map[string]any, maxItems int) {
+	properties, ok := root["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	findings, ok := properties["findings"].(map[string]any)
+	if !ok {
+		return
+	}
+	items, ok := findings["items"].(map[string]any)
+	if !ok {
+		return
+	}
+	findingProperties, ok := items["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	suggestions, ok := findingProperties["suggestions"].(map[string]any)
+	if !ok {
+		return
+	}
+	suggestions["maxItems"] = maxItems
 }
 
 func MergeExamplePromptSnippet() string {

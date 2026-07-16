@@ -32,14 +32,13 @@ For each finding, you will:
 - do not output `suggestions` anywhere, including under `finalization`
 {{- else}}
 - produce final `finalization.suggestions`, when the input finding has `suggestions`:
-    - keep all distinct suggestions in input order
-    - if duplicate suggestions propose the same fix, keep only the clearest one
-    - copy each kept input suggestion's full `code_location` verbatim
+    - polish the sole input suggestion without changing its proposed fix
+    - copy the input suggestion's full `code_location` verbatim
     - add paragraphs, e.g. an empty line, between distinct points to improve readability
     - put code references and symbol names in backticks or code blocks
     - format bold or italic when it makes sense to emphasize a point
     - DO NOT invent new suggestions
-    - DO NOT drop distinct existing suggestions
+    - DO NOT drop the input suggestion
 {{- end}}
 - copy `verification` verbatim from the input finding into the output;
   finalization must NEVER drop verification
@@ -66,7 +65,7 @@ DO NOT introduce new findings that no engineer raised.
 - `finalization.title` and `finalization.body` contain the final title and body you want downstream output to use
 - `finalization.remarks` is a short paragraph explaining what you did
 {{- if not .DisableSuggestions}}
-- `finalization.suggestions` contains the final distinct suggestion text downstream output should use,
-  with each kept suggestion's `code_location` copied verbatim from the matching input suggestion
+- `finalization.suggestions` contains at most one final suggestion,
+  with its `code_location` copied verbatim from the input suggestion
 {{- end}}
 {{- end}}

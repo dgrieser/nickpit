@@ -731,9 +731,10 @@ func mergeConstraintsForDedupe(req model.ReviewRequest) llm.ResponseConstraints 
 
 // mechanicallyDedupeFindings folds clusters of mechanically-detectable
 // duplicates (dedupe.Duplicate or stronger) into single findings, so LLM
-// dedupe/merge agents only ever judge the ambiguous remainder. Returns the
-// reduced list and how many findings were absorbed; zero absorbed returns the
-// input slice untouched.
+// dedupe/merge agents only ever judge the ambiguous remainder. Clusters with
+// multiple suggestion candidates stay unfolded so the agent can select the
+// single best suggestion. Returns the reduced list and how many findings were
+// absorbed; zero absorbed returns the input slice untouched.
 func mechanicallyDedupeFindings(findings []model.Finding) ([]model.Finding, int) {
 	clusters := dedupe.Clusters(findings, dedupe.Duplicate)
 	if len(clusters) == len(findings) {
@@ -749,9 +750,28 @@ func mechanicallyDedupeFindings(findings []model.Finding) ([]model.Finding, int)
 		for _, idx := range cluster {
 			members = append(members, findings[idx])
 		}
+		if suggestionCandidateCount(members) > 1 {
+			out = append(out, members...)
+			continue
+		}
 		out = append(out, dedupe.FoldCluster(members))
 	}
-	return out, len(findings) - len(out)
+	absorbed := len(findings) - len(out)
+	if absorbed == 0 {
+		return findings, 0
+	}
+	return out, absorbed
+}
+
+func suggestionCandidateCount(findings []model.Finding) int {
+	count := 0
+	for _, finding := range findings {
+		count += len(finding.Suggestions)
+		if count > 1 {
+			return count
+		}
+	}
+	return count
 }
 
 // runDedupeAgents runs a per-reviewer dedupe pass concurrently. It intentionally
@@ -1312,6 +1332,7 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	var unknownIDValues []string
 	duplicateIDs := 0
 	verificationMismatch := 0
+	tooManySuggestions := 0
 	seen := map[string]struct{}{}
 	for _, finding := range resp.Findings {
 		id := strings.TrimSpace(finding.ID)
@@ -1337,8 +1358,11 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 				verificationMismatch++
 			}
 		}
+		if len(finding.Suggestions) > 1 {
+			tooManySuggestions++
+		}
 	}
-	if !countTooLow && !countTooHigh && unknownIDs == 0 && duplicateIDs == 0 && verificationMismatch == 0 {
+	if !countTooLow && !countTooHigh && unknownIDs == 0 && duplicateIDs == 0 && verificationMismatch == 0 && tooManySuggestions == 0 {
 		return nil
 	}
 	var problems []string
@@ -1357,6 +1381,9 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 	if verificationMismatch > 0 {
 		problems = append(problems, fmt.Sprintf("verification_mismatch count=%d", verificationMismatch))
 	}
+	if tooManySuggestions > 0 {
+		problems = append(problems, fmt.Sprintf("too_many_suggestions count=%d", tooManySuggestions))
+	}
 	return &llm.InvalidResponseError{
 		RawContent:            resp.RawResponse,
 		Reason:                "dedupe_validation_failed: " + strings.Join(problems, "; "),
@@ -1373,6 +1400,7 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 			UnknownIDValues      []string
 			DuplicateIDs         int
 			VerificationMismatch int
+			TooManySuggestions   int
 		}{
 			CountTooLow:          countTooLow,
 			CountTooHigh:         countTooHigh,
@@ -1383,6 +1411,7 @@ func validateDedupeResponse(resp *llm.ReviewResponse, input *llm.ReviewResponse)
 			UnknownIDValues:      unknownIDValues,
 			DuplicateIDs:         duplicateIDs,
 			VerificationMismatch: verificationMismatch,
+			TooManySuggestions:   tooManySuggestions,
 		},
 	}
 }
@@ -1437,6 +1466,7 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 	unmatched := 0
 	var unknownOutputIDs []string
 	duplicateIDs := 0
+	tooManySuggestions := 0
 	covered := make(map[string]struct{})
 	seenOutputIDs := make(map[string]struct{}, len(resp.Findings))
 	for i, finding := range resp.Findings {
@@ -1460,6 +1490,9 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 			if src = strings.TrimSpace(src); src != "" {
 				covered[src] = struct{}{}
 			}
+		}
+		if len(finding.Suggestions) > 1 {
+			tooManySuggestions++
 		}
 	}
 	if len(unknownOutputIDs) > 0 {
@@ -1491,6 +1524,9 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 	if len(droppedTitles) > 0 {
 		problems = append(problems, fmt.Sprintf("dropped_findings count=%d", len(droppedTitles)))
 	}
+	if tooManySuggestions > 0 {
+		problems = append(problems, fmt.Sprintf("too_many_suggestions count=%d", tooManySuggestions))
+	}
 	if len(problems) == 0 {
 		return nil
 	}
@@ -1501,25 +1537,27 @@ func validateClusterMergeResponse(resp *llm.ReviewResponse, cluster []model.Find
 		ReasoningEffort:       resp.ReasoningEffort,
 		RetryGuidanceTemplate: "merge_validation_retry_guidance.tmpl",
 		RetryGuidanceData: struct {
-			CountMismatch bool
-			GotCount      int
-			MaxCount      int
-			Unmatched     int
-			AllowedIDs    []string
-			UnknownIDs    []string
-			Dropped       int
-			DroppedIDs    []string
-			DroppedTitles string
+			CountMismatch      bool
+			GotCount           int
+			MaxCount           int
+			Unmatched          int
+			AllowedIDs         []string
+			UnknownIDs         []string
+			Dropped            int
+			DroppedIDs         []string
+			DroppedTitles      string
+			TooManySuggestions int
 		}{
-			CountMismatch: countMismatch,
-			GotCount:      len(resp.Findings),
-			MaxCount:      len(cluster),
-			Unmatched:     unmatched,
-			AllowedIDs:    allowedIDs,
-			UnknownIDs:    unknownOutputIDs,
-			Dropped:       len(droppedTitles),
-			DroppedIDs:    droppedIDs,
-			DroppedTitles: strings.Join(droppedTitles, "; "),
+			CountMismatch:      countMismatch,
+			GotCount:           len(resp.Findings),
+			MaxCount:           len(cluster),
+			Unmatched:          unmatched,
+			AllowedIDs:         allowedIDs,
+			UnknownIDs:         unknownOutputIDs,
+			Dropped:            len(droppedTitles),
+			DroppedIDs:         droppedIDs,
+			DroppedTitles:      strings.Join(droppedTitles, "; "),
+			TooManySuggestions: tooManySuggestions,
 		},
 	}
 }

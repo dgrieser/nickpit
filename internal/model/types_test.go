@@ -122,6 +122,30 @@ func TestNormalizeConfidence(t *testing.T) {
 	}
 }
 
+func TestKeepFirstSuggestionCapsEveryRepresentation(t *testing.T) {
+	findings := []Finding{{
+		Suggestions: []Suggestion{{Body: "top first"}, {Body: "top second"}},
+		Finalization: &FindingFinalization{
+			Suggestions: []Suggestion{{Body: "final first"}, {Body: "final second"}},
+		},
+		Summarization: &FindingSummarization{
+			Suggestions: []Suggestion{{Body: "summary first"}, {Body: "summary second"}},
+		},
+	}}
+
+	KeepFirstSuggestion(findings)
+
+	if len(findings[0].Suggestions) != 1 || findings[0].Suggestions[0].Body != "top first" {
+		t.Fatalf("top-level suggestions = %+v", findings[0].Suggestions)
+	}
+	if len(findings[0].Finalization.Suggestions) != 1 || findings[0].Finalization.Suggestions[0].Body != "final first" {
+		t.Fatalf("finalization suggestions = %+v", findings[0].Finalization.Suggestions)
+	}
+	if len(findings[0].Summarization.Suggestions) != 1 || findings[0].Summarization.Suggestions[0].Body != "summary first" {
+		t.Fatalf("summarization suggestions = %+v", findings[0].Summarization.Suggestions)
+	}
+}
+
 func TestEnsureFindingIDsPreservesUniqueValidIDs(t *testing.T) {
 	findings := []Finding{
 		{ID: "11111111-1111-4111-8111-111111111111"},

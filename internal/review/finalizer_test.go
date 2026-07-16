@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestFinalizePromptIncludesInlineFinalizeSchema(t *testing.T) {
 		t.Fatalf("schema kind = %v, want finalize", req.SchemaKind)
 	}
 	systemPrompt := req.Messages[0].Content
-	for _, want := range []string{`"verification"`, `"finalization"`, `"title"`, `"body"`, `"remarks"`, "produce final `finalization.suggestions`", "duplicate suggestions propose the same fix", "DO NOT invent new suggestions", "DO NOT drop distinct existing suggestions"} {
+	for _, want := range []string{`"verification"`, `"finalization"`, `"title"`, `"body"`, `"remarks"`, "produce final `finalization.suggestions`", "polish the sole input suggestion", "DO NOT invent new suggestions", "DO NOT drop the input suggestion"} {
 		if !strings.Contains(systemPrompt, want) {
 			t.Fatalf("finalize system prompt missing %s:\n%s", want, systemPrompt)
 		}
@@ -247,7 +248,7 @@ func TestExampleSnippetForFinalizeIncludesFinalization(t *testing.T) {
 	}
 }
 
-func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
+func TestFinalizeKeepsFirstInputSuggestionWhenLLMDropsIt(t *testing.T) {
 	inputSuggestions := []model.Suggestion{
 		{Body: "use bufio.Scanner", LineRange: model.LineRange{Start: 10, End: 12}},
 		{Body: "log error before return", LineRange: model.LineRange{Start: 14, End: 14}},
@@ -299,16 +300,18 @@ func TestFinalizePreservesInputSuggestionsWhenLLMDropsThem(t *testing.T) {
 		t.Fatalf("findings = %d, want 1", len(out.Findings))
 	}
 	got := out.Findings[0].Finalization.Suggestions
-	if len(got) != len(inputSuggestions) {
-		t.Fatalf("finalization suggestions len = %d, want %d (%+v)", len(got), len(inputSuggestions), got)
+	if len(got) != 1 || got[0].Body != inputSuggestions[0].Body || !got[0].LineRange.SameAnchor(inputSuggestions[0].LineRange) {
+		t.Fatalf("finalization suggestions = %+v, want first input suggestion", got)
 	}
-	for i := range inputSuggestions {
-		if got[i] != inputSuggestions[i] {
-			t.Fatalf("finalization suggestions[%d] = %+v, want %+v", i, got[i], inputSuggestions[i])
-		}
+	if len(out.Findings[0].Suggestions) != 1 || out.Findings[0].Suggestions[0].Body != inputSuggestions[0].Body {
+		t.Fatalf("top-level suggestions = %+v, want first input suggestion", out.Findings[0].Suggestions)
 	}
-	if len(out.Findings[0].Suggestions) != len(inputSuggestions) || out.Findings[0].Suggestions[0] != inputSuggestions[0] {
-		t.Fatalf("top-level suggestions = %+v, want original input suggestions", out.Findings[0].Suggestions)
+	if len(in.Findings[0].Suggestions) != len(inputSuggestions) {
+		t.Fatalf("input suggestions = %+v, want caller input unchanged", in.Findings[0].Suggestions)
+	}
+	userPrompt := taskMessageContent(llmClient.reqs[0])
+	if strings.Contains(userPrompt, inputSuggestions[1].Body) {
+		t.Fatalf("finalize prompt contains discarded suggestion:\n%s", userPrompt)
 	}
 }
 
@@ -458,16 +461,42 @@ func TestFinalizeKeepsLLMSuggestionsWhenProvided(t *testing.T) {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
 	got := out.Findings[0].Finalization.Suggestions
-	want := []model.Suggestion{{Body: "refined fix", LineRange: inputSuggestions[0].LineRange}}
-	if len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("finalization suggestions = %+v, want %+v (LLM body wins, input line range preserved)", got, want)
+	if len(got) != 1 || got[0].Body != "refined fix" || !got[0].LineRange.SameAnchor(inputSuggestions[0].LineRange) {
+		t.Fatalf("finalization suggestions = %+v, want LLM body with input line range", got)
 	}
-	if len(out.Findings[0].Suggestions) != len(inputSuggestions) || out.Findings[0].Suggestions[0] != inputSuggestions[0] {
-		t.Fatalf("top-level suggestions = %+v, want original input suggestions", out.Findings[0].Suggestions)
+	if len(out.Findings[0].Suggestions) != 1 || out.Findings[0].Suggestions[0].Body != inputSuggestions[0].Body || !out.Findings[0].Suggestions[0].LineRange.SameAnchor(inputSuggestions[0].LineRange) {
+		t.Fatalf("top-level suggestions = %+v, want original input suggestion", out.Findings[0].Suggestions)
 	}
 }
 
-func TestFinalizeRestoresSuggestionCountWhenLLMPartiallyDropsThem(t *testing.T) {
+func TestFinalizeFailureReturnsCappedClone(t *testing.T) {
+	llmClient := &multiAgentLLM{finalizeFailErr: errors.New("finalize upstream fail")}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	in := &model.ReviewResult{Findings: []model.Finding{{
+		ID:              "11111111-1111-4111-8111-111111111111",
+		Title:           "Fix issue",
+		Body:            "body",
+		ConfidenceScore: 0.7,
+		Priority:        intPtr(1),
+		CodeLocation:    model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		Suggestions:     []model.Suggestion{{Body: "first"}, {Body: "second"}},
+		Verification:    &model.FindingVerification{ID: "11111111-1111-4111-8111-111111111111", Verdict: model.VerdictConfirmed, Priority: 1, ConfidenceScore: 0.8, Remarks: "confirmed"},
+	}}}
+
+	fallback, _, err := engine.Finalize(context.Background(), sampleReviewCtx(), in, FinalizeOptions{})
+
+	if err == nil || fallback == nil {
+		t.Fatalf("fallback/err = %+v/%v, want capped fallback with error", fallback, err)
+	}
+	if got := fallback.Findings[0].Suggestions; len(got) != 1 || got[0].Body != "first" {
+		t.Fatalf("fallback suggestions = %+v, want first only", got)
+	}
+	if len(in.Findings[0].Suggestions) != 2 {
+		t.Fatalf("input suggestions = %+v, want caller input unchanged", in.Findings[0].Suggestions)
+	}
+}
+
+func TestFinalizeCapsSuggestionsBeforeApplyingLLMOutput(t *testing.T) {
 	inputSuggestions := []model.Suggestion{
 		{Body: "first stale suggestion", LineRange: model.LineRange{Start: 10, End: 10}},
 		{Body: "second stale suggestion", LineRange: model.LineRange{Start: 12, End: 12}},
@@ -511,16 +540,12 @@ func TestFinalizeRestoresSuggestionCountWhenLLMPartiallyDropsThem(t *testing.T) 
 		t.Fatalf("Finalize returned err: %v", err)
 	}
 	got := out.Findings[0].Finalization.Suggestions
-	want := []model.Suggestion{
-		{Body: "first polished suggestion", LineRange: inputSuggestions[0].LineRange},
-		inputSuggestions[1],
-	}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("finalization suggestions = %+v, want %+v", got, want)
+	if len(got) != 1 || got[0].Body != "first polished suggestion" || !got[0].LineRange.SameAnchor(inputSuggestions[0].LineRange) {
+		t.Fatalf("finalization suggestions = %+v, want one polished first suggestion", got)
 	}
 }
 
-func TestFinalizeDropsDuplicateSuggestions(t *testing.T) {
+func TestFinalizeDropsExtraLLMSuggestions(t *testing.T) {
 	inputSuggestions := []model.Suggestion{
 		{
 			Body:      "Add the missing import statement at the top of `edit.py`:\n\nfrom datetime import date",
@@ -585,16 +610,12 @@ func TestFinalizeDropsDuplicateSuggestions(t *testing.T) {
 		t.Fatalf("Finalize returned err: %v", err)
 	}
 	gotTop := out.Findings[0].Suggestions
-	if len(gotTop) != 2 || gotTop[0] != inputSuggestions[0] || gotTop[1] != inputSuggestions[2] {
-		t.Fatalf("top-level suggestions = %+v, want duplicate import collapsed", gotTop)
+	if len(gotTop) != 1 || gotTop[0].Body != inputSuggestions[0].Body {
+		t.Fatalf("top-level suggestions = %+v, want first input suggestion", gotTop)
 	}
 	gotFinal := out.Findings[0].Finalization.Suggestions
-	wantFinal := []model.Suggestion{
-		{Body: "Add `date` import.\n\nfrom datetime import date", LineRange: inputSuggestions[0].LineRange},
-		{Body: "Keep the score timestamp update call.", LineRange: inputSuggestions[2].LineRange},
-	}
-	if len(gotFinal) != len(wantFinal) || gotFinal[0] != wantFinal[0] || gotFinal[1] != wantFinal[1] {
-		t.Fatalf("finalization suggestions = %+v, want %+v", gotFinal, wantFinal)
+	if len(gotFinal) != 1 || gotFinal[0].Body != "Add `date` import.\n\nfrom datetime import date" || !gotFinal[0].LineRange.SameAnchor(inputSuggestions[0].LineRange) {
+		t.Fatalf("finalization suggestions = %+v, want one polished first suggestion", gotFinal)
 	}
 }
 

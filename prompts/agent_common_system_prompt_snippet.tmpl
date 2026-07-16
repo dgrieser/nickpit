@@ -50,8 +50,8 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
   - full patches
   - or before/after patches
 {{- else if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}
-- copy `suggestions` from the source findings, each including `body` and the full `code_location`;
-  keep distinct fixes only, merge duplicates only when it makes sense, and DO NOT invent new suggestions
+- output at most one `suggestions` entry per finding, including `body` and the full `code_location`;
+  select the clearest, most actionable source suggestion and DO NOT invent new suggestions
 {{- end}}
 {{- end}}
 {{- if eq .Snippet "priority"}}

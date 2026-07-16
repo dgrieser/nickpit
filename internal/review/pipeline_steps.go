@@ -938,6 +938,9 @@ func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, i
 	opts := finalizeOptionsFromStep(sc, st.contextNotes)
 	finalized, run, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 	if err != nil {
+		if finalized != nil {
+			in = finalized
+		}
 		sc.Engine.logf(ctx, "Finalize failed for shard, using verified shard: error=%v", err)
 		run.Name = "finalize"
 		run.Role = "finalize"
@@ -1180,6 +1183,9 @@ func (e *Engine) finalizeStepFunc(findingsFrom []string) stepFunc {
 		st.mu.Lock()
 		defer st.mu.Unlock()
 		if err != nil {
+			if finalized != nil {
+				st.result = finalized
+			}
 			sc.Engine.logf(ctx, "Finalize failed, using verified result: error=%v", err)
 			st.warnings = append(st.warnings, fmt.Sprintf("Finalize failed: %v; using verified result", err))
 			finalizeRun.Name = "finalize"
