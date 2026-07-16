@@ -58,8 +58,10 @@ func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
 	for _, disableJSONResponseFormat := range []bool{false, true} {
 		llmClient := &scriptedVerifyLLM{}
 		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+		reviewCtx := sampleReviewCtx()
+		reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
 		_, _, err := engine.Verify(context.Background(), VerifyRequest{
-			ReviewCtx:                 sampleReviewCtx(),
+			ReviewCtx:                 reviewCtx,
 			Finding:                   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 			DisableJSONResponseFormat: disableJSONResponseFormat,
 		})
@@ -78,6 +80,35 @@ func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
 		}
 		if messages[1].Role != "user" || !strings.Contains(messages[1].Content, `"finding"`) {
 			t.Fatalf("task message = %#v", messages[1])
+		}
+	}
+}
+
+func TestVerifyWithoutDiffScopeHunksUsesLegacyPromptAndSchema(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{
+		ReviewCtx: sampleReviewCtx(),
+		Finding:   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := llmClient.requests[0]
+	if string(req.Schema) != string(llm.VerifySchema) {
+		t.Fatalf("schema = %s, want legacy verify schema", req.Schema)
+	}
+	if req.Constraints.RequireReplacementCodeLocation {
+		t.Fatal("source-less verifier unexpectedly requires replacement_code_location")
+	}
+	for _, messages := range [][]llm.Message{req.Messages, req.NoToolsMessages} {
+		system := messages[0].Content
+		if strings.Contains(system, "Diff-scope gate") || strings.Contains(system, "replacement_code_location") {
+			t.Fatalf("source-less verifier prompt contains diff-scope instructions:\n%s", system)
+		}
+		if !strings.Contains(system, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
+			t.Fatalf("source-less verifier prompt missing legacy example:\n%s", system)
 		}
 	}
 }

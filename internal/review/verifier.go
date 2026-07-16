@@ -81,7 +81,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 	if err != nil {
 		return nil, usage, err
 	}
-	diffScopeEnabled := !req.DisableDiffScope
+	diffScopeEnabled := !req.DisableDiffScope && req.ReviewCtx.DiffScopeHunks != nil
 	systemSnippet := llm.VerifyExamplePromptSnippet()
 	if diffScopeEnabled {
 		systemSnippet = llm.ScopedVerifyExamplePromptSnippet()
