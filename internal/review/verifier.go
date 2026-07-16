@@ -30,6 +30,7 @@ type VerifyRequest struct {
 	MaxReasoningSeconds       int
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
+	DisableDiffScope          bool
 	DiffFormat                model.DiffFormat
 }
 
@@ -48,12 +49,26 @@ type VerifyOptions struct {
 	MaxReasoningSeconds       int
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
+	DisableDiffScope          bool
 	RepoRoot                  string
 	DropPolicy                string
 	DiffFormat                model.DiffFormat
 }
 
+type verifyResult struct {
+	Verification            *model.FindingVerification
+	ReplacementCodeLocation *model.CodeLocation
+}
+
 func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {
+	result, usage, err := e.verifyFinding(ctx, req)
+	if result == nil {
+		return nil, usage, err
+	}
+	return result.Verification, usage, err
+}
+
+func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyResult, model.TokenUsage, error) {
 	usage := model.TokenUsage{}
 	if req.ReviewCtx == nil {
 		return nil, usage, fmt.Errorf("verify: nil review context")
@@ -66,7 +81,11 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	if err != nil {
 		return nil, usage, err
 	}
-	systemSnippet := exampleSnippetFor(llm.SchemaKindVerify, false)
+	diffScopeEnabled := !req.DisableDiffScope && req.ReviewCtx.DiffScopeHunks != nil
+	systemSnippet := llm.VerifyExamplePromptSnippet()
+	if diffScopeEnabled {
+		systemSnippet = llm.ScopedVerifyExamplePromptSnippet()
+	}
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                agentKind,
@@ -98,6 +117,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		HasTools                   bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
+		DiffScopeEnabled           bool
 	}{
 		OutputSchemaSnippet:        systemSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
@@ -106,12 +126,13 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		HasTools:                   true,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
+		DiffScopeEnabled:           diffScopeEnabled,
 	})
 	if err != nil {
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, req.DisableSuggestions, req.DiffFormat)
+	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, req.DisableSuggestions, req.DisableDiffScope, req.DiffFormat)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -119,6 +140,9 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 	var schema []byte
 	if !req.DisableJSONResponseFormat {
 		schema = llm.VerifySchema
+		if diffScopeEnabled {
+			schema = llm.ScopedVerifySchema
+		}
 	}
 
 	messages := []llm.Message{
@@ -143,6 +167,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			Tools:                             reviewerToolDefinitions(),
 			Schema:                            schema,
 			SchemaKind:                        llm.SchemaKindVerify,
+			Constraints:                       llm.ResponseConstraints{RequireReplacementCodeLocation: diffScopeEnabled},
 			Model:                             e.config.Model,
 			MaxTokens:                         e.config.MaxTokens,
 			Temperature:                       e.config.Temperature,
@@ -164,7 +189,7 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions)
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{DiffScopeEnabled: diffScopeEnabled})
 			},
 		})
 		if err != nil {
@@ -174,7 +199,10 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 		resp := loopResult.resp
 		if resp != nil && resp.Verification != nil {
 			model.EnsureVerificationID(resp.Verification, req.Finding.ID)
-			return resp.Verification, usage, nil
+			return &verifyResult{
+				Verification:            resp.Verification,
+				ReplacementCodeLocation: resp.ReplacementCodeLocation,
+			}, usage, nil
 		}
 		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
 			return nil, usage, fmt.Errorf("verify: missing verification in response")
@@ -187,13 +215,22 @@ func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingV
 }
 
 func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, []string, error) {
+	results, usage, warnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
+	verifications := make([]*model.FindingVerification, len(results))
+	for i := range results {
+		verifications[i] = results[i].Verification
+	}
+	return verifications, usage, warnings, err
+}
+
+func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]verifyResult, model.TokenUsage, []string, error) {
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 	}
-	verifications := make([]*model.FindingVerification, len(findings))
+	results := make([]verifyResult, len(findings))
 	if len(findings) == 0 {
-		return verifications, model.TokenUsage{}, nil, nil
+		return results, model.TokenUsage{}, nil, nil
 	}
 
 	// Resolve style guides once: the result depends only on reviewCtx, which is
@@ -250,9 +287,10 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxReasoningSeconds:       opts.MaxReasoningSeconds,
 				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
 				DisableSuggestions:        opts.DisableSuggestions,
+				DisableDiffScope:          opts.DisableDiffScope,
 				DiffFormat:                opts.DiffFormat,
 			}
-			verification, usage, err := e.Verify(ctx, req)
+			result, usage, err := e.verifyFinding(ctx, req)
 			mu.Lock()
 			usageSum.PromptTokens += usage.PromptTokens
 			usageSum.CompletionTokens += usage.CompletionTokens
@@ -265,17 +303,19 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				e.logf(ctx, "Verify failed: index=%d title=%q error=%v", idx, f.Title, err)
 				return
 			}
-			verifications[idx] = verification
+			if result != nil {
+				results[idx] = *result
+			}
 		}(i, finding, verifyCtx, release)
 	}
 	wg.Wait()
-	for i := range verifications {
-		if verifications[i] == nil {
-			verifications[i] = fallbackUnverifiedVerification(findings[i])
+	for i := range results {
+		if results[i].Verification == nil {
+			results[i].Verification = fallbackUnverifiedVerification(findings[i])
 		}
 	}
 	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("%sfindings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", verifyReviewerPrefix(opts.ReviewerName), len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(verifyStart))))
-	return verifications, usageSum, warnings, nil
+	return results, usageSum, warnings, nil
 }
 
 func fallbackUnverifiedVerification(f model.Finding) *model.FindingVerification {
@@ -324,7 +364,7 @@ func truncateFindingTitle(title string) string {
 	return title
 }
 
-func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {
+func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions, disableDiffScope bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	base, err := json.Marshal(payload)
 	if err != nil {
@@ -361,6 +401,13 @@ func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding m
 		return "", fmt.Errorf("verify: re-decoding finding: %w", err)
 	}
 	combined["finding"] = findingMap
+	if !disableDiffScope && reviewCtx.DiffScopeHunks != nil {
+		status := "outside_diff"
+		if codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
+			status = "overlaps_diff"
+		}
+		combined["finding_diff_scope"] = status
+	}
 
 	out, err := json.MarshalIndent(combined, "", "  ")
 	if err != nil {

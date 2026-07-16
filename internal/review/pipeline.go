@@ -465,6 +465,18 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	if res == nil {
 		res = st.materializeFromGroups(req)
 	}
+	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
+		var dropped int
+		res.Findings, dropped = filterFindingsByDiffScope(res.Findings, st.Enriched.DiffScopeHunks)
+		if dropped > 0 {
+			p.engine.logf(context.Background(), "Final diff-scope safeguard: dropped=%d kept=%d", dropped, len(res.Findings))
+			if len(res.Findings) == 0 {
+				res.OverallCorrectness = "patch is correct"
+				res.OverallExplanation = "No in-scope findings remained after diff-scope filtering."
+				res.OverallConfidenceScore = 1
+			}
+		}
+	}
 	allRuns, usage, toolCalls, reasoning := st.aggregateTelemetry()
 	res.AgentRuns = allRuns
 	res.Warnings = appendAgentRunWarnings(st.warnings, allRuns, st.contextErr)

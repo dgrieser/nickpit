@@ -29,6 +29,35 @@ func TestVerifySchemaRequiresAllFields(t *testing.T) {
 	}
 }
 
+func TestScopedVerifySchemaRequiresNullableReplacementLocation(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(ScopedVerifySchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	requiredAny, _ := schema["required"].([]any)
+	required := make([]string, 0, len(requiredAny))
+	for _, value := range requiredAny {
+		if field, ok := value.(string); ok {
+			required = append(required, field)
+		}
+	}
+	if !slices.Contains(required, "replacement_code_location") {
+		t.Fatalf("required = %v", required)
+	}
+	properties := schema["properties"].(map[string]any)
+	replacement := properties["replacement_code_location"].(map[string]any)
+	if len(replacement["anyOf"].([]any)) != 2 {
+		t.Fatalf("replacement schema = %#v", replacement)
+	}
+	var example map[string]any
+	if err := json.Unmarshal([]byte(ScopedVerifyExamplePromptSnippet()), &example); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := example["replacement_code_location"]; !ok || value != nil {
+		t.Fatalf("replacement example = %#v", value)
+	}
+}
+
 func TestVerifySchemaStripsExamples(t *testing.T) {
 	if schemaContainsKey(VerifySchema, "examples") {
 		t.Fatalf("schema unexpectedly contains examples: %s", VerifySchema)
@@ -95,6 +124,34 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 	}
 	if resp.Verification.Remarks != "not reachable" {
 		t.Fatalf("remarks = %q", resp.Verification.Remarks)
+	}
+}
+
+func TestParseScopedVerifyResponseRequiresAndParsesReplacementLocation(t *testing.T) {
+	constraints := ResponseConstraints{RequireReplacementCodeLocation: true}
+	missing := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.9,"remarks":"real"}`
+	_, err := parseReviewResponse(missing, SchemaKindVerify, constraints)
+	var invalid *InvalidResponseError
+	if !asErr(err, &invalid) || !slices.Contains(invalid.MissingFields, "replacement_code_location") {
+		t.Fatalf("err = %#v, want missing replacement_code_location", err)
+	}
+
+	content := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.9,"remarks":"real","replacement_code_location":{"file_path":"f.go","line_range":{"start":7,"end":7,"count":1},"content":"changed"}}`
+	resp, err := parseReviewResponse(content, SchemaKindVerify, constraints)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ReplacementCodeLocation == nil || resp.ReplacementCodeLocation.FilePath != "f.go" || resp.ReplacementCodeLocation.LineRange.Start != 7 {
+		t.Fatalf("replacement = %#v", resp.ReplacementCodeLocation)
+	}
+
+	nullContent := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.9,"remarks":"real","replacement_code_location":null}`
+	resp, err = parseReviewResponse(nullContent, SchemaKindVerify, constraints)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ReplacementCodeLocation != nil {
+		t.Fatalf("null replacement = %#v", resp.ReplacementCodeLocation)
 	}
 }
 

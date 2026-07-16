@@ -8,7 +8,9 @@ import (
 )
 
 func RenderPrompt(tmplText string, data any) (string, error) {
-	tmpl, err := template.New("prompt").Parse(tmplText)
+	tmpl, err := template.New("prompt").Funcs(template.FuncMap{
+		"inc": func(value int) int { return value + 1 },
+	}).Parse(tmplText)
 	if err != nil {
 		return "", err
 	}

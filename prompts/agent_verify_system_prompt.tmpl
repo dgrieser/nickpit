@@ -27,8 +27,9 @@ When evaluating the finding:
 
 ## VERDICT DECISION ORDER
 Apply these gates in order. Stop as soon as one gate applies.
+{{- $gate := 0}}
 
-1. Non-finding gate:
+{{$gate = inc $gate}}{{$gate}}. Non-finding gate:
   - Judge the finding AS A WHOLE:
     treat it as a non-finding ONLY when the finding as a whole affirms correct or intended behavior.
   - A finding that contrasts correct old behavior with broken new behavior IS a real finding;
@@ -58,7 +59,22 @@ Apply these gates in order. Stop as soon as one gate applies.
     - "failure doesn't affect"
     - "intentional design"
 
-2. Styleguide contradiction gate:
+{{- if .DiffScopeEnabled}}
+
+{{$gate = inc $gate}}{{$gate}}. Diff-scope gate:
+  - A location is in scope when any part of its line range overlaps a diff hunk on either the old or new side.
+  - Deleted-only lines, partial overlaps, and ranges spanning gaps between hunks are in scope; preserve them unchanged.
+  - `finding_diff_scope`, when present in the input, is the deterministic check of the submitted location.
+  - When the submitted location overlaps the diff, set `replacement_code_location` to `null`.
+  - When the submitted location is outside the diff but the issue is concretely caused by changed code:
+    - return the normal evidence-based verdict;
+    - set `replacement_code_location` to the exact causal location that overlaps the diff;
+    - do not choose a merely nearby line or unrelated changed line.
+  - When neither the submitted location nor any concrete causal location overlaps the diff, return `refuted`.
+    Explain that the claim is outside the patch scope and cannot be anchored to a change.
+{{- end}}
+
+{{$gate = inc $gate}}{{$gate}}. Styleguide contradiction gate:
   - Treat styleguides as verification evidence, they are rules to follow, not background context.
   - If a provided styleguide directly contradicts the finding's premise, return `refuted`.
   - The remarks must cite the specific styleguide rule and the finding claim it contradicts.
@@ -73,15 +89,24 @@ Apply these gates in order. Stop as soon as one gate applies.
   - If the styleguide clearly weakens but does not contradict the claim, continue to the next gate and reflect the weakening in `confidence_score`.
   - Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide.
 
-3. Confirm gate:
+{{$gate = inc $gate}}{{$gate}}. Confirm gate:
   - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
     a. EXISTS IN THE CHANGE:
+{{- if .DiffScopeEnabled}}
+      - the exact code or removal the finding describes appears in the EXISTING, ADDED, MODIFIED, or REMOVED lines of this patch
+{{- else}}
       - the exact code the finding describes appears in the EXISTING, ADDED or MODIFIED lines of this patch
+{{- end}}
       - re-read the diff and locate the specific changed lines
       - if you cannot point to them, you cannot confirm
     b. NOT ALREADY FIXED:
       - the problem is present on the post-change side
+{{- if .DiffScopeEnabled}}
+      - if the patch removed the cited code, confirm only when that removal itself causes the problem;
+        if the finding merely describes behavior that no longer exists, do not confirm
+{{- else}}
       - if the patch removed or fixed the cited code, the finding is describing the old code — do not confirm
+{{- end}}
     c. REACHABLE:
       - trace the actual control flow and the types involved
       - the failure must be reachable for some real input given the surrounding code, guards, and types
@@ -90,7 +115,7 @@ Apply these gates in order. Stop as soon as one gate applies.
    - Do NOT confirm because a description of correct behavior is accurate.
    - Do NOT confirm from speculation, weak possibility, or missing context.
 
-4. Refute gate for actual issue claims:
+{{$gate = inc $gate}}{{$gate}}. Refute gate for actual issue claims:
   - Return `refuted` when the finding reports a problem, but specific code, control flow, or an invariant contradicts it.
   - The remarks must cite the concrete file:line, code path, or invariant that makes the claimed issue impossible.
   - Examples:
@@ -101,7 +126,7 @@ Apply these gates in order. Stop as soon as one gate applies.
     - the bug is impossible given the types involved (e.g. an index that cannot exceed a type's range)
     - the code the finding describes is not present in the changed lines (it was removed by this patch, or never appears in the diff)
 
-5. Unverified gate:
+{{$gate = inc $gate}}{{$gate}}. Unverified gate:
   - Return `unverified` when the finding reports a possible problem, but you cannot prove it true or false from the available evidence.
   - Absence of evidence is NOT refutation.
   - Prefer `unverified` over `refuted` when uncertain: a real bug labeled `unverified` is recoverable downstream, a real bug labeled `refuted` is silently dropped.
@@ -130,4 +155,9 @@ Set `priority` to the same value as the original finding's `priority` UNLESS you
   - add paragraphs, e.g. an empty line, between distinct points to improve readability
   - put code references and symbol names in backticks or code blocks
   - format bold or italic when it makes sense to emphasize a point
+{{- if .DiffScopeEnabled}}
+- `replacement_code_location` is TOP-LEVEL and always required:
+  - set it to `null` when the submitted finding location already overlaps the diff or no valid replacement exists
+  - otherwise set it to the full `code_location` of the exact causal diff line, copied from `find_lines`
+{{- end}}
 {{- end}}

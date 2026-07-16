@@ -13,7 +13,11 @@ When findings overlap:
 - set confidence from the combined evidence quality; when independent reviewers agree,
   combine their confidence roughly as `1-(1-a)(1-b)`; never exceed 0.99
 - when merged findings span files, keep the `code_location` of the surviving finding
+{{- if .DisableDiffScope}}
 - either copy the `code_location` from one source finding or create a new, extended `code_location`
+{{- else}}
+- copy the surviving source finding's `code_location` verbatim; do not create or extend a location
+{{- end}}
 - mention any additional affected files or lines in the body rather than inventing location content
 {{- if not .DisableSuggestions}}
 - output at most one suggestion for each surviving finding
