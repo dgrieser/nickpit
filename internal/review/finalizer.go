@@ -45,30 +45,32 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if in == nil {
 		return nil, model.AgentRun{}, fmt.Errorf("finalize: nil review result")
 	}
+	prepared, err := in.Clone()
+	if err != nil {
+		return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
+	}
+	model.KeepFirstSuggestion(prepared.Findings)
+	in = prepared
 	if len(in.Findings) == 0 {
-		out, err := in.Clone()
-		if err != nil {
-			return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
-		}
-		return out, model.AgentRun{Name: "Finalize Review", Role: "finalize"}, nil
+		return in, model.AgentRun{Name: "Finalize Review", Role: "finalize"}, nil
 	}
 
 	systemTemplate, err := e.loadPrompt("agent_finalize_system_prompt.tmpl")
 	if err != nil {
-		return nil, model.AgentRun{}, err
+		return in, model.AgentRun{}, err
 	}
 	outputSchemaSnippet := exampleSnippetFor(llm.SchemaKindFinalize, opts.DisableSuggestions)
 	commonSnippets, err := agentCommonSystemPromptSnippets("finalize", outputSchemaSnippet, opts.DisableSuggestions)
 	if err != nil {
-		return nil, model.AgentRun{}, err
+		return in, model.AgentRun{}, err
 	}
 	styleGuides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
-		return nil, model.AgentRun{}, err
+		return in, model.AgentRun{}, err
 	}
 	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("finalize", styleGuides, len(reviewCtx.ToolchainVersions) > 0)
 	if err != nil {
-		return nil, model.AgentRun{}, err
+		return in, model.AgentRun{}, err
 	}
 	system, err := llm.RenderPrompt(systemTemplate, struct {
 		PrioritySnippet            string
@@ -86,12 +88,12 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
-		return nil, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
+		return in, model.AgentRun{}, fmt.Errorf("finalize: rendering system prompt: %w", err)
 	}
 
 	userPrompt, err := e.buildFinalizeUserPrompt(reviewCtx, in, opts.ContextNotes, opts.DisableSuggestions, opts.DiffFormat)
 	if err != nil {
-		return nil, model.AgentRun{}, err
+		return in, model.AgentRun{}, err
 	}
 
 	var schema []byte
@@ -127,15 +129,15 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	if err != nil {
 		// Preserve partial AgentRun (tokens, tool calls accumulated before
 		// the loop aborted) for telemetry parity with merge/context failures.
-		return nil, result.run, err
+		return in, result.run, err
 	}
 	if result.resp == nil {
-		return nil, result.run, fmt.Errorf("finalize: agent returned nil response")
+		return in, result.run, fmt.Errorf("finalize: agent returned nil response")
 	}
 
 	out, err := in.Clone()
 	if err != nil {
-		return nil, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
+		return in, model.AgentRun{}, fmt.Errorf("finalize: cloning input result: %w", err)
 	}
 	stats := applyFinalizerOutput(out.Findings, result.resp.Findings)
 	if opts.DisableSuggestions {
@@ -387,11 +389,10 @@ func synthesizedFinalization(finding model.Finding) *model.FindingFinalization {
 	}
 }
 
-// normalizeFinalizedSuggestions lets the finalizer polish suggestion text in
-// finalization.suggestions while preserving the distinct input suggestion set
-// and line ranges. Top-level suggestions stay as reviewer-provenance input. If
-// the finalizer omits or changes suggestions, input suggestions fill the gaps
-// and extras are discarded.
+// normalizeFinalizedSuggestions lets the finalizer polish the sole input
+// suggestion while preserving its line range. Top-level suggestions stay as
+// reviewer-provenance input. If the finalizer omits or adds suggestions, the
+// input suggestion fills the gap and extras are discarded.
 func normalizeFinalizedSuggestions(out, in []model.Finding) {
 	for i := range out {
 		src := findInputMatch(out[i], in)

@@ -312,6 +312,28 @@ func StripSuggestions(findings []Finding) {
 	}
 }
 
+// KeepFirstSuggestion limits every suggestion-bearing representation of each
+// finding to its first entry. Callers that must preserve their input should
+// clone the findings before calling this helper.
+func KeepFirstSuggestion(findings []Finding) {
+	for i := range findings {
+		findings[i].Suggestions = firstSuggestion(findings[i].Suggestions)
+		if findings[i].Finalization != nil {
+			findings[i].Finalization.Suggestions = firstSuggestion(findings[i].Finalization.Suggestions)
+		}
+		if findings[i].Summarization != nil {
+			findings[i].Summarization.Suggestions = firstSuggestion(findings[i].Summarization.Suggestions)
+		}
+	}
+}
+
+func firstSuggestion(suggestions []Suggestion) []Suggestion {
+	if len(suggestions) <= 1 {
+		return suggestions
+	}
+	return suggestions[:1:1]
+}
+
 // EnsureFindingIDs backfills invalid IDs and remints duplicates so every
 // finding is uniquely addressable downstream. It returns the number of
 // findings whose ID changed (invalid or duplicate). Any rewrite also re-syncs

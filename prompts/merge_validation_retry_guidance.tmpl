@@ -7,6 +7,9 @@ Every output finding must match a cluster finding by ID or code location. The pr
 {{- if .Dropped}}
 Every cluster finding must either appear in the output or be merged into another output finding and listed by `id` in the `merged_from` array of that output finding. The previous response lost {{.Dropped}} finding{{if ne .Dropped 1}}s{{end}}: {{.DroppedTitles}}. Keep or merge them; do not drop them.
 {{- end}}
+{{- if .TooManySuggestions}}
+Every output finding may contain at most one suggestion. The previous response included {{.TooManySuggestions}} finding{{if ne .TooManySuggestions 1}}s{{end}} with multiple suggestions. Select the clearest, most actionable source suggestion for each.
+{{- end}}
 {{- if .AllowedIDs}}
 Allowed cluster IDs, in order:
 {{- range .AllowedIDs}}

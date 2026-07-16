@@ -171,6 +171,10 @@ func TestMergeSchemaRequiresVerification(t *testing.T) {
 	if _, ok := findingProps["verification"].(map[string]any); !ok {
 		t.Fatalf("verification schema missing: %#v", findingProps["verification"])
 	}
+	suggestions := findingProps["suggestions"].(map[string]any)
+	if suggestions["maxItems"] != float64(1) {
+		t.Fatalf("suggestions.maxItems = %#v, want 1", suggestions["maxItems"])
+	}
 	requiredJSON := []byte(`"required":["id","title","body","confidence_score","priority","code_location","verification"]`)
 	if !bytes.Contains(MergeSchema, requiredJSON) {
 		t.Fatalf("raw merge schema missing required verification: %s", MergeSchema)
@@ -183,6 +187,17 @@ func TestMergeExamplePromptSnippetIncludesVerification(t *testing.T) {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)
 		}
+	}
+}
+
+func TestConstrainedMergeSchemaLimitsSuggestions(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(MergeSchemaWithConstraintsFor(ResponseConstraints{}, false), &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	suggestions := findingProperties(t, schema)["suggestions"].(map[string]any)
+	if suggestions["maxItems"] != float64(1) {
+		t.Fatalf("suggestions.maxItems = %#v, want 1", suggestions["maxItems"])
 	}
 }
 

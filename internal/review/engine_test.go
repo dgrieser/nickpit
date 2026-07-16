@@ -358,9 +358,9 @@ func TestMergeAndDedupePromptsAvoidDuplicateSuggestions(t *testing.T) {
 			t.Fatalf("render %s: %v", file, err)
 		}
 		for _, want := range []string{
-			"include distinct suggestions from duplicate findings",
-			"keep only the clearest one",
-			"keep distinct fixes only",
+			"output at most one suggestion for each surviving finding",
+			"select the clearest, most actionable fix",
+			"output at most one `suggestions` entry per finding",
 		} {
 			if !strings.Contains(system, want) {
 				t.Fatalf("%s missing duplicate suggestion guidance %q:\n%s", file, want, system)
@@ -493,6 +493,7 @@ type multiAgentLLM struct {
 	dedupeFailErr     error
 	mergeResponses    []*llm.ReviewResponse
 	mergeFailErr      error
+	finalizeFailErr   error
 	finalizeRequests  []*llm.ReviewRequest
 	verdictRequests   []*llm.ReviewRequest
 	summarizeRequests []*llm.ReviewRequest
@@ -614,6 +615,9 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 		cloned := *req
 		cloned.Messages = cloneTestMessages(req.Messages)
 		s.finalizeRequests = append(s.finalizeRequests, &cloned)
+		if s.finalizeFailErr != nil {
+			return nil, s.finalizeFailErr
+		}
 		findings := testPayloadFindingsFromJSON(taskMessageContent(req))
 		for i := range findings {
 			if findings[i].Verification == nil {
@@ -3338,6 +3342,70 @@ func TestMechanicallyDedupeFindingsFoldsDuplicateClusters(t *testing.T) {
 	}
 }
 
+func TestMechanicallyDedupeFindingsRoutesSuggestionChoiceToLLM(t *testing.T) {
+	a := mergeTestFindingWithID("Fix duplicated cleanup issue", 5)
+	a.Suggestions = []model.Suggestion{{Body: "first candidate"}}
+	b := mergeTestFindingWithID("Fix duplicated cleanup issue", 5)
+	b.Suggestions = []model.Suggestion{{Body: "better candidate"}}
+
+	reduced, absorbed := mechanicallyDedupeFindings([]model.Finding{a, b})
+
+	if absorbed != 0 || len(reduced) != 2 {
+		t.Fatalf("reduced = %d absorbed = %d, want unchanged 2/0 for agent selection", len(reduced), absorbed)
+	}
+}
+
+func TestRunDedupeAgentsSelectsOneSuggestionWithLLM(t *testing.T) {
+	a := mergeTestFindingWithID("Fix duplicated cleanup issue", 5)
+	a.Suggestions = []model.Suggestion{{Body: "first candidate"}}
+	b := mergeTestFindingWithID("Fix duplicated cleanup issue", 5)
+	b.Suggestions = []model.Suggestion{{Body: "better candidate"}}
+	selected := a
+	selected.Suggestions = []model.Suggestion{b.Suggestions[0]}
+	llmClient := &multiAgentLLM{dedupeResponses: []*llm.ReviewResponse{{Findings: []model.Finding{selected}}}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}},
+		run:  model.AgentRun{Name: "Testing", Role: "review"},
+	}}
+
+	runs := engine.runDedupeAgents(context.Background(), "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(llmClient.mergeRequests) != 1 || len(runs) != 1 {
+		t.Fatalf("requests/runs = %d/%d, want one dedupe agent", len(llmClient.mergeRequests), len(runs))
+	}
+	got := vectorResults[0].resp.Findings
+	if len(got) != 1 || len(got[0].Suggestions) != 1 || got[0].Suggestions[0].Body != "better candidate" {
+		t.Fatalf("dedupe findings = %+v, want LLM-selected suggestion", got)
+	}
+}
+
+func TestClusterMergeSelectsOneSuggestionWithLLM(t *testing.T) {
+	a := mergeTestFindingWithID("Fix duplicated cleanup issue", 5)
+	a.Suggestions = []model.Suggestion{{Body: "first candidate"}}
+	b := mergeTestFindingWithID("Fix duplicated cleanup issue", 5)
+	b.Suggestions = []model.Suggestion{{Body: "better candidate"}}
+	selected := a
+	selected.Suggestions = []model.Suggestion{b.Suggestions[0]}
+	selected.MergedFrom = []string{b.ID}
+	llmClient := &multiAgentLLM{mergeResponses: []*llm.ReviewResponse{{Findings: []model.Finding{selected}}}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	inputs := []pairwiseMergeInput{
+		{name: "A", response: &llm.ReviewResponse{Findings: []model.Finding{a}}},
+		{name: "B", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
+	}
+
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+
+	if len(llmClient.mergeRequests) != 1 || len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
+		t.Fatalf("requests/runs = %d/%+v, want one successful merge agent", len(llmClient.mergeRequests), runs)
+	}
+	got := result.resp.Findings
+	if len(got) != 1 || len(got[0].Suggestions) != 1 || got[0].Suggestions[0].Body != "better candidate" {
+		t.Fatalf("merge findings = %+v, want LLM-selected suggestion", got)
+	}
+}
+
 // The mechanical pre-pass folds clear duplicates before the LLM dedupe agent
 // runs; a lane reduced to one finding skips the LLM dedupe entirely.
 func TestRunDedupeAgentsMechanicalPrePassSkipsLLMWhenReduced(t *testing.T) {
@@ -3504,6 +3572,44 @@ func TestDedupeValidationRejectsDuplicateOutputIDs(t *testing.T) {
 	}
 	if !strings.Contains(invalid.Reason, "duplicate_ids") {
 		t.Fatalf("dedupe reason = %q, want duplicate_ids", invalid.Reason)
+	}
+}
+
+func TestDedupeValidationRejectsMultipleSuggestions(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	out := a
+	out.Suggestions = []model.Suggestion{{Body: "first"}, {Body: "second"}}
+
+	invalid := validateDedupeResponse(&llm.ReviewResponse{Findings: []model.Finding{out}}, &llm.ReviewResponse{Findings: []model.Finding{a}})
+
+	if invalid == nil || !strings.Contains(invalid.Reason, "too_many_suggestions") {
+		t.Fatalf("invalid = %v, want too_many_suggestions", invalid)
+	}
+	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered, "at most one suggestion") {
+		t.Fatalf("retry guidance missing suggestion limit:\n%s", rendered)
+	}
+}
+
+func TestClusterMergeValidationRejectsMultipleSuggestions(t *testing.T) {
+	a := mergeTestFindingWithID("Fix A", 1)
+	out := a
+	out.Suggestions = []model.Suggestion{{Body: "first"}, {Body: "second"}}
+
+	invalid := validateClusterMergeResponse(&llm.ReviewResponse{Findings: []model.Finding{out}}, []model.Finding{a})
+
+	if invalid == nil || !strings.Contains(invalid.Reason, "too_many_suggestions") {
+		t.Fatalf("invalid = %v, want too_many_suggestions", invalid)
+	}
+	rendered, err := renderPromptFile(invalid.RetryGuidanceTemplate, invalid.RetryGuidanceData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered, "at most one suggestion") {
+		t.Fatalf("retry guidance missing suggestion limit:\n%s", rendered)
 	}
 }
 

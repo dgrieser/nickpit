@@ -13,6 +13,9 @@ Each output finding `id` may appear at most once. The previous response repeated
 {{- if .VerificationMismatch}}
 Every output finding must include `verification` and `verification.id` must equal the output finding `id`. The previous response had {{.VerificationMismatch}} mismatch{{if ne .VerificationMismatch 1}}es{{end}}.
 {{- end}}
+{{- if .TooManySuggestions}}
+Every output finding may contain at most one suggestion. The previous response included {{.TooManySuggestions}} finding{{if ne .TooManySuggestions 1}}s{{end}} with multiple suggestions. Select the clearest, most actionable source suggestion for each.
+{{- end}}
 {{- if .AllowedIDs}}
 Allowed input IDs, in order:
 {{- range .AllowedIDs}}
