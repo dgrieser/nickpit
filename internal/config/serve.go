@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,87 @@ type ServeConfig struct {
 	GroupsFile string       `yaml:"groups_file"`
 	Groups     []ServeGroup `yaml:"groups"`
 	Review     ServeReview  `yaml:"review"`
+	// Loki, when its url is set, streams every review child's output live to a
+	// Grafana Loki instance in addition to the on-disk log, so logs survive pod
+	// restarts and are queryable in Grafana. Disabled (no streaming) when url
+	// is empty.
+	Loki LokiConfig `yaml:"loki"`
+}
+
+// Loki batching/timeout defaults, applied by the getters below when unset.
+const (
+	DefaultLokiBatchWait     = "1s"
+	DefaultLokiBatchMaxLines = 1000
+	DefaultLokiTimeout       = "10s"
+	DefaultLokiBufferLines   = 4096
+)
+
+// LokiConfig configures live streaming of review logs to Grafana Loki via its
+// HTTP push API. Credentials are typically ${VAR} references resolved from the
+// environment (the whole serve config is env-expanded before parsing), so no
+// secret text need live in the file. Streaming is enabled only when URL is set.
+type LokiConfig struct {
+	// URL is the Loki base (the "/loki/api/v1/push" path is appended).
+	URL string `yaml:"url"`
+	// TenantID sets the X-Scope-OrgID header for multi-tenant Loki.
+	TenantID string `yaml:"tenant_id"`
+	// BasicAuthUser / BasicAuthPass set HTTP basic auth; set both or neither.
+	BasicAuthUser string `yaml:"basic_auth_user"`
+	BasicAuthPass string `yaml:"basic_auth_pass"`
+	// Labels are extra static stream labels merged into every review's stream
+	// (e.g. env, cluster). Must not collide with the reserved keys the daemon
+	// sets: app, project, iid, trigger.
+	Labels map[string]string `yaml:"labels"`
+	// BatchWait / BatchMaxLines control push batching; Timeout bounds each push
+	// request; BufferLines bounds the in-memory queue per review before lines
+	// are dropped. All optional (defaults above).
+	BatchWait     string `yaml:"batch_wait"`
+	BatchMaxLines int    `yaml:"batch_max_lines"`
+	Timeout       string `yaml:"timeout"`
+	BufferLines   int    `yaml:"buffer_lines"`
+	// Gzip compresses push bodies when true.
+	Gzip bool `yaml:"gzip"`
+}
+
+// lokiReservedLabels are set by the daemon per review and must not be
+// overridden by user-supplied static labels.
+var lokiReservedLabels = map[string]bool{"app": true, "project": true, "iid": true, "trigger": true}
+
+// Enabled reports whether Loki log streaming is configured.
+func (l LokiConfig) Enabled() bool { return strings.TrimSpace(l.URL) != "" }
+
+// BatchWaitDuration returns the configured batch wait, or the default.
+func (l LokiConfig) BatchWaitDuration() time.Duration {
+	if d, err := time.ParseDuration(l.BatchWait); err == nil && l.BatchWait != "" {
+		return d
+	}
+	d, _ := time.ParseDuration(DefaultLokiBatchWait)
+	return d
+}
+
+// TimeoutDuration returns the configured per-push timeout, or the default.
+func (l LokiConfig) TimeoutDuration() time.Duration {
+	if d, err := time.ParseDuration(l.Timeout); err == nil && l.Timeout != "" {
+		return d
+	}
+	d, _ := time.ParseDuration(DefaultLokiTimeout)
+	return d
+}
+
+// BatchMaxLinesOrDefault returns the configured batch size, or the default.
+func (l LokiConfig) BatchMaxLinesOrDefault() int {
+	if l.BatchMaxLines > 0 {
+		return l.BatchMaxLines
+	}
+	return DefaultLokiBatchMaxLines
+}
+
+// BufferLinesOrDefault returns the configured buffer size, or the default.
+func (l LokiConfig) BufferLinesOrDefault() int {
+	if l.BufferLines > 0 {
+		return l.BufferLines
+	}
+	return DefaultLokiBufferLines
 }
 
 // ServeGroup maps one GitLab group (path prefix) to its access token and the
@@ -270,5 +352,47 @@ func (c *ServeConfig) Validate() error {
 	if c.StartEmojiName() != "" && c.StartEmojiName() == c.TriggerEmoji {
 		errs = append(errs, fmt.Errorf("start_emoji must differ from trigger_emoji (%q): the daemon's own award would trigger another review", c.TriggerEmoji))
 	}
+	errs = append(errs, c.Loki.validate()...)
 	return errors.Join(errs...)
+}
+
+// validate checks the Loki block only when it is enabled. A misconfigured Loki
+// should fail startup loudly rather than silently drop every batch.
+func (l LokiConfig) validate() []error {
+	if !l.Enabled() {
+		return nil
+	}
+	var errs []error
+	if u, err := url.Parse(strings.TrimSpace(l.URL)); err != nil {
+		errs = append(errs, fmt.Errorf("loki.url: %w", err))
+	} else if u.Scheme != "http" && u.Scheme != "https" {
+		errs = append(errs, fmt.Errorf("loki.url must be an http(s) URL, got %q", l.URL))
+	} else if u.Host == "" {
+		errs = append(errs, fmt.Errorf("loki.url must include a host, got %q", l.URL))
+	}
+	if l.BatchWait != "" {
+		if _, err := time.ParseDuration(l.BatchWait); err != nil {
+			errs = append(errs, fmt.Errorf("loki.batch_wait: %w", err))
+		}
+	}
+	if l.Timeout != "" {
+		if _, err := time.ParseDuration(l.Timeout); err != nil {
+			errs = append(errs, fmt.Errorf("loki.timeout: %w", err))
+		}
+	}
+	if l.BatchMaxLines < 0 {
+		errs = append(errs, fmt.Errorf("loki.batch_max_lines must be >= 0, got %d", l.BatchMaxLines))
+	}
+	if l.BufferLines < 0 {
+		errs = append(errs, fmt.Errorf("loki.buffer_lines must be >= 0, got %d", l.BufferLines))
+	}
+	if (l.BasicAuthUser == "") != (l.BasicAuthPass == "") {
+		errs = append(errs, errors.New("loki.basic_auth_user and loki.basic_auth_pass must be set together"))
+	}
+	for key := range l.Labels {
+		if lokiReservedLabels[key] {
+			errs = append(errs, fmt.Errorf("loki.labels[%q] is reserved (set by the daemon per review)", key))
+		}
+	}
+	return errs
 }

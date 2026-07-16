@@ -1,11 +1,15 @@
 package serve
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -134,6 +138,120 @@ func TestExecRunnerPrivateLogPermissions(t *testing.T) {
 	}
 	if mode := fileInfo.Mode().Perm(); mode != 0o600 {
 		t.Fatalf("log file mode = %o, want 600", mode)
+	}
+}
+
+// recordingSink captures the bytes tee'd to the log stream and how many times
+// the stream was opened and closed.
+type recordingSink struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	metas   []StreamMeta
+	opened  int
+	closed  int
+	failing bool // when true, the stream's Write errors (must not affect the review)
+}
+
+func (s *recordingSink) Open(meta StreamMeta) io.WriteCloser {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opened++
+	s.metas = append(s.metas, meta)
+	return &recordingStream{sink: s}
+}
+
+type recordingStream struct{ sink *recordingSink }
+
+func (w *recordingStream) Write(p []byte) (int, error) {
+	w.sink.mu.Lock()
+	defer w.sink.mu.Unlock()
+	if w.sink.failing {
+		return 0, errors.New("stream is down")
+	}
+	return w.sink.buf.Write(p)
+}
+
+func (w *recordingStream) Close() error {
+	w.sink.mu.Lock()
+	defer w.sink.mu.Unlock()
+	w.sink.closed++
+	return nil
+}
+
+func TestExecRunnerTeesOutputToSink(t *testing.T) {
+	sink := &recordingSink{}
+	runner := &ExecRunner{Executable: writeFakeReview(t), sink: sink, now: time.Now}
+	spec := testSpec(t)
+	spec.HeadSHA = "deadbeef"
+	spec.Trigger = "auto"
+
+	exitCode, logPath, err := runner.Run(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d", exitCode)
+	}
+
+	// The child output must reach both the on-disk file and the sink.
+	fileData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	streamData := sink.buf.String()
+	opened, closed := sink.opened, sink.closed
+	metas := sink.metas
+	sink.mu.Unlock()
+
+	if !strings.Contains(streamData, "args:gitlab mr --repo platform/api") {
+		t.Fatalf("sink did not receive child output:\n%s", streamData)
+	}
+	if !strings.Contains(string(fileData), "args:gitlab mr --repo platform/api") {
+		t.Fatalf("on-disk log missing child output:\n%s", fileData)
+	}
+	if opened != 1 || closed != 1 {
+		t.Fatalf("stream open/close = %d/%d, want 1/1", opened, closed)
+	}
+	if len(metas) != 1 || metas[0].HeadSHA != "deadbeef" || metas[0].Trigger != "auto" || metas[0].IID != 7 {
+		t.Fatalf("stream meta = %#v", metas)
+	}
+}
+
+// A failing sink writer must never affect the review's exit code or the
+// on-disk log — the durable mirror is strictly best-effort.
+func TestExecRunnerFailingSinkDoesNotAffectReview(t *testing.T) {
+	sink := &recordingSink{failing: true}
+	runner := &ExecRunner{Executable: writeFakeReview(t), sink: sink, now: time.Now}
+
+	exitCode, logPath, err := runner.Run(context.Background(), testSpec(t))
+	if err != nil {
+		t.Fatalf("failing sink must not error the review: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d", exitCode)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "args:gitlab mr --repo platform/api") {
+		t.Fatalf("on-disk log must be intact despite sink failure:\n%s", data)
+	}
+}
+
+// A runner with no sink configured behaves exactly as before (NoopSink).
+func TestExecRunnerNilSinkIsNoop(t *testing.T) {
+	runner := &ExecRunner{Executable: writeFakeReview(t), now: time.Now}
+	exitCode, logPath, err := runner.Run(context.Background(), testSpec(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d", exitCode)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("log file missing: %v", err)
 	}
 }
 

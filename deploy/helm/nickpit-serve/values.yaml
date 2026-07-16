@@ -225,6 +225,23 @@ serve:
     # Empty = children use the binary's default profile (openrouter; needs
     # OPENROUTER_API_KEY in the Secret).
     extraArgs: []
+  # Optional: stream each review's output live to Grafana Loki (in addition to
+  # the on-disk log_dir file), so logs survive pod restarts and are queryable
+  # in Grafana. Enabled only when `url` is set. The daemon needs egress to the
+  # Loki push endpoint (add a NetworkPolicy if the namespace is default-deny).
+  # tenant_id and basic auth are pulled from env (Secret keys) via the *Env
+  # fields, so no secret text lands in the ConfigMap.
+  loki:
+    url: ""                 # e.g. http://loki-gateway.monitoring:80 (push path appended)
+    tenantIdEnv: ""         # Secret key holding the X-Scope-OrgID tenant; optional
+    basicAuthUserEnv: ""    # Secret key holding the basic-auth username; optional
+    basicAuthPassEnv: ""    # Secret key holding the basic-auth password; set with the user
+    labels: {}              # extra static labels, e.g. {env: prod} (not app/project/iid/trigger)
+    batchWait: "1s"
+    batchMaxLines: 1000
+    timeout: "10s"
+    bufferLines: 4096
+    gzip: false
 
 # ---------------------------------------------------------------------------
 # Optional .nickpit.yaml override for the review children. Empty (default):

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,13 @@ import (
 	"syscall"
 	"time"
 )
+
+// logDrainGrace bounds how long Run waits for the output-copy goroutine to
+// finish after the child exits. Normally the pipe EOFs immediately; this only
+// bites when a leaked descendant holds the write end open, in which case the
+// reader is force-closed so cancellation is never held hostage to a stray
+// grandchild.
+const logDrainGrace = 2 * time.Second
 
 // ReviewSpec describes one review to execute in a child process.
 type ReviewSpec struct {
@@ -22,6 +30,10 @@ type ReviewSpec struct {
 	ConfigPath  string
 	ExtraArgs   []string
 	LogDir      string
+	// HeadSHA and Trigger label the review's log stream (see LogSink); they do
+	// not affect the child invocation.
+	HeadSHA string
+	Trigger string
 }
 
 // ReviewRunner executes one review and reports the child's exit code and the
@@ -41,18 +53,26 @@ type ExecRunner struct {
 	// server.yaml; a review child must only receive the one token injected
 	// for its group. Matching by value works regardless of variable naming.
 	scrubValues map[string]bool
+	// sink opens a per-review durable log stream (e.g. Loki) that the child's
+	// output is tee'd into alongside the on-disk log. Nil is treated as
+	// NoopSink, so a runner built without a sink behaves exactly as before.
+	sink LogSink
 	// now stamps log file names; injectable for tests.
 	now func() time.Time
 }
 
 // NewExecRunner resolves the current binary once. scrubValues lists secret
-// values that must never reach a review child's environment.
-func NewExecRunner(scrubValues []string) (*ExecRunner, error) {
+// values that must never reach a review child's environment. sink receives a
+// mirror of each review's output; pass NoopSink{} (or nil) to disable shipping.
+func NewExecRunner(scrubValues []string, sink LogSink) (*ExecRunner, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("serve: resolving own executable: %w", err)
 	}
-	runner := &ExecRunner{Executable: executable, scrubValues: make(map[string]bool, len(scrubValues)), now: time.Now}
+	if sink == nil {
+		sink = NoopSink{}
+	}
+	runner := &ExecRunner{Executable: executable, scrubValues: make(map[string]bool, len(scrubValues)), sink: sink, now: time.Now}
 	for _, value := range scrubValues {
 		if value != "" {
 			runner.scrubValues[value] = true
@@ -86,6 +106,37 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	}
 	defer func() { _ = logFile.Close() }()
 
+	// Tee the child's output into a durable log stream alongside the on-disk
+	// file. The stream is opened per review and flushed on every exit path
+	// (success, failure, SIGTERM/abort) by the deferred Close.
+	sink := r.sink
+	if sink == nil {
+		sink = NoopSink{}
+	}
+	stream := sink.Open(StreamMeta{
+		Project: spec.ProjectPath,
+		IID:     spec.IID,
+		Trigger: spec.Trigger,
+		HeadSHA: spec.HeadSHA,
+	})
+	defer func() { _ = stream.Close() }()
+
+	// The child's stdout/stderr go to a real pipe (an *os.File): os/exec dups
+	// an *os.File straight to the child and neither spawns a copy goroutine nor
+	// makes Wait block on it, so cancellation stays as prompt as writing to a
+	// plain file. We own the read end and fan it out to the on-disk log and the
+	// durable stream ourselves. bestEffortWriter guarantees a misbehaving sink
+	// can never fail the authoritative file write.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return -1, "", fmt.Errorf("serve: creating log pipe: %w", err)
+	}
+	copyDone := make(chan struct{})
+	go func() {
+		defer close(copyDone)
+		_, _ = io.Copy(io.MultiWriter(logFile, bestEffortWriter{stream}), pr)
+	}()
+
 	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID), "--publish"}
 	if spec.ConfigPath != "" {
 		args = append(args, "--config", spec.ConfigPath)
@@ -94,8 +145,8 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 
 	cmd := exec.CommandContext(ctx, r.Executable, args...)
 	cmd.Env = r.childEnv(spec)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd.Stdout = pw
+	cmd.Stderr = pw
 	// On context cancel: SIGTERM so the child's own signal handling cleans up
 	// its clones; SIGKILL after WaitDelay if it lingers.
 	cmd.Cancel = func() error {
@@ -104,6 +155,19 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	cmd.WaitDelay = 30 * time.Second
 
 	err = cmd.Run()
+	// Close the parent's write end so the reader sees EOF once the child and
+	// its descendants release their dups. A leaked grandchild (e.g. a stray
+	// clone) can hold the pipe open, so bound the drain and force the reader
+	// closed rather than block cancellation on it; the deferred logFile/stream
+	// Close must not race the copy goroutine, hence the wait for copyDone.
+	_ = pw.Close()
+	select {
+	case <-copyDone:
+	case <-time.After(logDrainGrace):
+		_ = pr.Close()
+		<-copyDone
+	}
+	_ = pr.Close()
 	if err == nil {
 		return 0, logPath, nil
 	}
@@ -112,6 +176,18 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 		return exitErr.ExitCode(), logPath, nil
 	}
 	return -1, logPath, err
+}
+
+// bestEffortWriter wraps a log-sink stream so a misbehaving sink can never
+// break a review: Write always reports full success and discards any error
+// from the wrapped writer. The Loki stream already never errors; this is
+// belt-and-braces so the runner's "logging never fails a review" guarantee
+// does not rely on the sink's good behavior.
+type bestEffortWriter struct{ w io.Writer }
+
+func (b bestEffortWriter) Write(p []byte) (int, error) {
+	_, _ = b.w.Write(p)
+	return len(p), nil
 }
 
 func createReviewLog(spec ReviewSpec, now time.Time) (string, *os.File, error) {
