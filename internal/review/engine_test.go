@@ -300,7 +300,7 @@ func TestOutputFormatSnippetSkippedWithoutExample(t *testing.T) {
 	}
 }
 
-func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
+func TestReviewSystemPromptGatesSearchLocationGuidanceOnTools(t *testing.T) {
 	engine := NewEngine(stubSource{}, &capturingLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 	template := "{{.FindingInstructionsSnippet}}"
 
@@ -308,8 +308,8 @@ func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderReviewSystemWithFocus with tools returned err: %v", err)
 	}
-	if !strings.Contains(withTools, "ALWAYS use `find_lines`") {
-		t.Fatalf("with-tools prompt missing find_lines guidance:\n%s", withTools)
+	if !strings.Contains(withTools, "ALWAYS use `search` to fill every `code_location`") {
+		t.Fatalf("with-tools prompt missing search code_location guidance:\n%s", withTools)
 	}
 	for _, want := range []string{
 		"DO NOT include the following in `body`",
@@ -328,8 +328,8 @@ func TestReviewSystemPromptGatesFindLinesOnTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderReviewSystemWithFocus without tools returned err: %v", err)
 	}
-	if strings.Contains(withoutTools, "find_lines") {
-		t.Fatalf("no-tools prompt mentions find_lines:\n%s", withoutTools)
+	if strings.Contains(withoutTools, "ALWAYS use `search`") {
+		t.Fatalf("no-tools prompt mentions the search tool guidance:\n%s", withoutTools)
 	}
 }
 
@@ -1881,9 +1881,9 @@ func (s stubRetrieval) FindLines(ctx context.Context, repoRoot, path, code strin
 			Code:       code,
 			MatchCount: 1,
 			Matches: []retrieval.FindLinesMatch{{
-				CodeLocation: retrieval.FindLinesLocation{
+				CodeLocation: retrieval.CodeLocation{
 					FilePath:  path,
-					LineRange: retrieval.FindLinesRange{Start: line, End: line, Count: 1},
+					LineRange: retrieval.LineRange{Start: line, End: line, Count: 1},
 					Language:  "go",
 					Content:   code,
 				},
@@ -1916,7 +1916,12 @@ func (stubRetrieval) Search(context.Context, string, string, string, int, int, b
 		CaseSensitive: false,
 		ResultCount:   1,
 		Results: []retrieval.SearchResult{
-			{Path: "pkg/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\nmatch\nafter"},
+			{CodeLocation: retrieval.CodeLocation{
+				FilePath:  "pkg/a.go",
+				LineRange: retrieval.LineRange{Start: 15, End: 15, Count: 1},
+				Language:  "go",
+				Content:   "match",
+			}},
 		},
 	}, nil
 }
@@ -1978,7 +1983,12 @@ func (r *countingRetrieval) Search(_ context.Context, _ string, path, query stri
 		results = customResults
 	} else {
 		results = []retrieval.SearchResult{
-			{Path: path + "/a.go", StartLine: 10, EndLine: 20, Language: "go", Content: "before\n" + query + "\nafter"},
+			{CodeLocation: retrieval.CodeLocation{
+				FilePath:  path + "/a.go",
+				LineRange: retrieval.LineRange{Start: 15, End: 15, Count: 1},
+				Language:  "go",
+				Content:   query,
+			}},
 		}
 		if query == "missing" {
 			results = nil
@@ -2035,22 +2045,27 @@ func (r *countingRetrieval) FindCallers(_ context.Context, _ string, symbol retr
 		Mode:  "callers",
 		Depth: depth,
 		Root: retrieval.CallNode{
-			Name:      symbol.Name,
-			Path:      pathOrDefault(symbol.Path, "pkg/root.go"),
-			StartLine: 10,
-			EndLine:   12,
-			Source:    "func Run() {}",
+			Name:         symbol.Name,
+			CodeLocation: testCallNodeLocation(pathOrDefault(symbol.Path, "pkg/root.go"), 10, 12, "func Run() {}"),
 			Children: []retrieval.CallNode{
 				{
-					Name:      "Start",
-					Path:      "pkg/caller.go",
-					StartLine: 20,
-					EndLine:   24,
-					Source:    "func Start() {}",
+					Name:         "Start",
+					CodeLocation: testCallNodeLocation("pkg/caller.go", 20, 24, "func Start() {}"),
 				},
 			},
 		},
 	}, nil
+}
+
+// testCallNodeLocation mirrors how the retrieval engine embeds a node's
+// location so review-level assertions exercise the same shape.
+func testCallNodeLocation(path string, startLine, endLine int, source string) retrieval.CodeLocation {
+	return retrieval.CodeLocation{
+		FilePath:  path,
+		LineRange: retrieval.LineRange{Start: startLine, End: endLine, Count: endLine - startLine + 1},
+		Language:  "go",
+		Content:   source,
+	}
 }
 
 func (r *countingRetrieval) FindCallees(_ context.Context, _ string, symbol retrieval.SymbolRef, depth int) (*retrieval.CallHierarchy, error) {
@@ -2061,18 +2076,12 @@ func (r *countingRetrieval) FindCallees(_ context.Context, _ string, symbol retr
 		Mode:  "callees",
 		Depth: depth,
 		Root: retrieval.CallNode{
-			Name:      symbol.Name,
-			Path:      pathOrDefault(symbol.Path, "pkg/root.go"),
-			StartLine: 10,
-			EndLine:   12,
-			Source:    "func Run() {}",
+			Name:         symbol.Name,
+			CodeLocation: testCallNodeLocation(pathOrDefault(symbol.Path, "pkg/root.go"), 10, 12, "func Run() {}"),
 			Children: []retrieval.CallNode{
 				{
-					Name:      "Helper",
-					Path:      "pkg/callee.go",
-					StartLine: 30,
-					EndLine:   34,
-					Source:    "func Helper() {}",
+					Name:         "Helper",
+					CodeLocation: testCallNodeLocation("pkg/callee.go", 30, 34, "func Helper() {}"),
 				},
 			},
 		},
@@ -2103,7 +2112,7 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
-	wantNames := []string{"inspect_file", "find_lines", "list_files", "search", "find_callers", "find_callees"}
+	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees"}
 	if len(definitions) != len(wantNames) {
 		t.Fatalf("tool definitions = %d", len(definitions))
 	}
@@ -2121,7 +2130,6 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 	definitions := reviewerToolDefinitions()
 	requiredByTool := map[string][]string{
 		"inspect_file": {"path"},
-		"find_lines":   {"code"},
 		"search":       {"query"},
 		"find_callers": {"symbol"},
 		"find_callees": {"symbol"},
@@ -2172,11 +2180,11 @@ func TestToolInstructionsTemplateUsesGeneratedListing(t *testing.T) {
 	if !strings.Contains(rendered, listing) {
 		t.Fatalf("tool instructions missing generated listing:\n%s", rendered)
 	}
-	if !strings.Contains(listing, "- `search` tool with a repo-relative `path` and a `query`") {
+	if !strings.Contains(listing, "- `search` tool with a `query` (search text, or an exact line or block of code)") {
 		t.Fatalf("generated listing missing search tool: %q", listing)
 	}
-	if !strings.Contains(listing, "- `find_lines` tool with an exact `code` line or block and an optional repo-relative `path` to return line numbers, counts, the matching code snippets and language") {
-		t.Fatalf("generated listing missing find_lines tool: %q", listing)
+	if strings.Contains(listing, "`find_lines`") {
+		t.Fatalf("generated listing still mentions the removed find_lines tool: %q", listing)
 	}
 }
 
@@ -2199,7 +2207,7 @@ func TestToolErrorMessagesComeFromCatalog(t *testing.T) {
 		{
 			name: "missing argument",
 			data: toolErrorData{Code: "missing_argument", Argument: "query", Schema: toolArgumentSchema("search")},
-			want: `missing required argument: query; expected {"path"?: "<repo-relative path>", "query": "<text>", "context_lines"?: int, "max_results"?: int, "case_sensitive"?: bool}`,
+			want: `missing required argument: query; expected {"path"?: "<repo-relative path>", "query": "<text, or line(s) of code>", "context_lines"?: int, "max_results"?: int, "case_sensitive"?: bool}`,
 		},
 		{
 			name: "already requested file",
@@ -4093,13 +4101,19 @@ func schemaFindingProperty(t *testing.T, schema []byte, property string) map[str
 	return out
 }
 
-func TestParseToolResultSummaryUsesNormalizedFindLinesCount(t *testing.T) {
-	result := `{"code":"\r\nfoo()\r\nbar()\r\n\r\n","match_count":1,"matches":[]}`
+func TestParseToolResultSummaryCountsSearchResultFiles(t *testing.T) {
+	result := `{"result_count":3,"results":[` +
+		`{"code_location":{"file_path":"a.go","line_range":{"start":1,"end":1,"count":1},"content":"x"}},` +
+		`{"code_location":{"file_path":"a.go","line_range":{"start":9,"end":9,"count":1},"content":"x"}},` +
+		`{"code_location":{"file_path":"b.go","line_range":{"start":2,"end":2,"count":1},"content":"x"}}]}`
 
 	summary := parseToolResultSummary(result)
 
-	if summary.Lines != 2 {
-		t.Fatalf("lines = %d, want normalized find_lines code count 2", summary.Lines)
+	if !summary.HasResultCount || summary.ResultCount != 3 {
+		t.Fatalf("result count = %d (has=%t), want 3", summary.ResultCount, summary.HasResultCount)
+	}
+	if summary.Files != 2 {
+		t.Fatalf("files = %d, want 2 distinct code_location file paths", summary.Files)
 	}
 }
 

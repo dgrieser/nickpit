@@ -28,8 +28,9 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
 - keep `code_location.line_range` as short as possible and make sure it overlaps the diff
 {{- end}}
 {{- if and (eq .AgentRole "review") .HasTools}}
-- ALWAYS use `find_lines` to fill every `code_location` under findings and suggestions
-- copy `matches[].code_location` from `find_lines` exactly:
+- ALWAYS use `search` to fill every `code_location` under findings and suggestions:
+  pass the exact line or block of code as `query`
+- copy `results[].code_location` from `search` exactly:
   - include `file_path`, `line_range.start`, `line_range.end`, `line_range.count`, and `content`
   - include `language` when present
 {{- end}}
@@ -42,7 +43,7 @@ For each finding{{if or (eq .AgentRole "merge") (eq .AgentRole "dedupe")}}, merg
 - do not output duplicate suggestions for the same fix; if two suggestions propose the same edit,
   keep only the clearer one
 {{- if .HasTools}}
-- use `find_lines` for each `suggestions[].code_location`;
+- use `search` (with the exact code as `query`) for each `suggestions[].code_location`;
   this code location should identify the exact code the suggestion replaces or edits
 {{- end}}
 - put the following in `suggestions[].body`:

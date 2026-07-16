@@ -33,7 +33,12 @@ func (multilangRetrieval) Search(context.Context, string, string, string, int, i
 		ContextLines: 2,
 		ResultCount:  1,
 		Results: []retrieval.SearchResult{
-			{Path: "web/app.ts", StartLine: 1, EndLine: 3, Language: "nodejs", Content: "export function run() {\n  return 1\n}"},
+			{CodeLocation: retrieval.CodeLocation{
+				FilePath:  "web/app.ts",
+				LineRange: retrieval.LineRange{Start: 1, End: 3, Count: 3},
+				Language:  "nodejs",
+				Content:   "export function run() {\n  return 1\n}",
+			}},
 		},
 	}, nil
 }
@@ -79,7 +84,8 @@ func TestEngineSerializesPythonAndNodeToolPayloadLanguages(t *testing.T) {
 	}
 	results := searchPayload["results"].([]any)
 	first := results[0].(map[string]any)
-	if first["language"] != "nodejs" {
+	loc, ok := first["code_location"].(map[string]any)
+	if !ok || loc["language"] != "nodejs" {
 		t.Fatalf("search payload = %#v", searchPayload)
 	}
 }

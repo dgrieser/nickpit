@@ -918,7 +918,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	searchCmd.Flags().StringVar(&path, "path", "", "Relative file or folder path; leave empty to search from the repo root")
 	searchCmd.Flags().StringVar(&query, "query", "", "Search string")
-	searchCmd.Flags().IntVar(&contextLines, "context-lines", 5, "Number of surrounding lines to include before and after each match")
+	searchCmd.Flags().IntVar(&contextLines, "context-lines", -1, "Number of surrounding lines to include before and after each match; defaults to 5 for a single-line query and 0 for a multi-line block")
 	searchCmd.Flags().IntVar(&maxResults, "max-results", 0, "Maximum number of matches to return; 0 means unlimited")
 	searchCmd.Flags().BoolVar(&caseSensitive, "case-sensitive", false, "Use case-sensitive matching")
 	_ = searchCmd.MarkFlagRequired("query")
@@ -2043,17 +2043,22 @@ func (a *app) writeInspectOutput(value any) error {
 					return err
 				}
 			}
-			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", result.Path, result.StartLine, result.EndLine, result.Language); err != nil {
+			loc := result.CodeLocation
+			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", loc.FilePath, loc.LineRange.Start, loc.LineRange.End, loc.Language); err != nil {
 				return err
 			}
-			if result.Content == "" {
-				if _, err := fmt.Fprintln(os.Stdout); err != nil {
+			if result.ContextBefore != nil {
+				if _, err := fmt.Fprintln(os.Stdout, result.ContextBefore.Content); err != nil {
 					return err
 				}
-				continue
 			}
-			if _, err := fmt.Fprintln(os.Stdout, result.Content); err != nil {
+			if _, err := fmt.Fprintln(os.Stdout, loc.Content); err != nil {
 				return err
+			}
+			if result.ContextAfter != nil {
+				if _, err := fmt.Fprintln(os.Stdout, result.ContextAfter.Content); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
