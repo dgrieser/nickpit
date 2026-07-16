@@ -94,17 +94,28 @@ func codeBlockMatcher(codeLines []string, caseSensitive bool) func(rawLines []st
 	if len(trimmedCode) == 0 || allBlank(trimmedCode) {
 		return func([]string) []lineSpan { return nil }
 	}
+	// Lines are trimmed and folded on the fly instead of materializing a
+	// processed copy of the file: the matcher runs once per file during
+	// repo-wide walks, and most lines are rejected by the first-line
+	// comparison alone. Only candidate windows (first line matched) fold
+	// their remaining lines, so re-folding is bounded by the block length.
+	first := trimmedCode[0]
 	return func(rawLines []string) []lineSpan {
-		fileLines := make([]string, len(rawLines))
-		for i, line := range rawLines {
-			fileLines[i] = foldSearchCase(strings.TrimSpace(line), caseSensitive)
-		}
 		var spans []lineSpan
-		for i := 0; i+len(trimmedCode) <= len(fileLines); i++ {
-			if !findLinesEqual(fileLines[i:i+len(trimmedCode)], trimmedCode) {
+		for i := 0; i+len(trimmedCode) <= len(rawLines); i++ {
+			if foldSearchCase(strings.TrimSpace(rawLines[i]), caseSensitive) != first {
 				continue
 			}
-			spans = append(spans, lineSpan{start: i, end: i + len(trimmedCode) - 1})
+			matched := true
+			for j := 1; j < len(trimmedCode); j++ {
+				if foldSearchCase(strings.TrimSpace(rawLines[i+j]), caseSensitive) != trimmedCode[j] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				spans = append(spans, lineSpan{start: i, end: i + len(trimmedCode) - 1})
+			}
 		}
 		return spans
 	}
@@ -210,16 +221,4 @@ func SplitFindLines(text string) []string {
 		return nil
 	}
 	return strings.Split(text, "\n")
-}
-
-func findLinesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
