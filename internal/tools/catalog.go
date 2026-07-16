@@ -53,16 +53,6 @@ var catalogDefinition = []catalogEntry{
 		},
 	},
 	{
-		Name:               "find_lines",
-		APIDescription:     "Retrieve exact line ranges for a line or block of code in a repo-relative file, folder or across the whole repo",
-		ListingDescription: "with an exact `code` line or block and an optional repo-relative `path` to return line numbers, counts, the matching code snippets and language",
-		Note:               "Use this whenever you need to return a `code_location` in findings or suggestions",
-		Parameters: []CatalogParameter{
-			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search the whole repo", Example: `"<repo-relative path>"`},
-			{Name: "code", Type: "string", Description: "Line or contiguous block of code to locate", Example: `"<line or block of code>"`, Required: true},
-		},
-	},
-	{
 		Name:               "list_files",
 		APIDescription:     "List files of repo-relative folder",
 		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively)",
@@ -73,13 +63,13 @@ var catalogDefinition = []catalogEntry{
 	},
 	{
 		Name:               "search",
-		APIDescription:     "Search recursively inside repo-relative file or folder",
-		ListingDescription: "with a repo-relative `path` and a `query` to search recursively for relevant matches",
-		Note:               "Prefer `find_callers` over `search` when locating a function by name",
+		APIDescription:     "Search recursively inside repo-relative file or folder for text or an exact line or block of code, returning each match as a `code_location` with exact line numbers",
+		ListingDescription: "with a `query` (search text, or an exact line or block of code) and an optional repo-relative `path` to search recursively; every match is returned as a `code_location` with exact line numbers, the matching code and language",
+		Note:               "Use this whenever you need to return a `code_location` in findings or suggestions: pass the exact line or block of code as `query` and copy a returned `code_location`. Prefer `find_callers` over `search` when locating a function by name",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
-			{Name: "query", Type: "string", Description: "Search string to find", Example: `"<text>"`, Required: true},
-			{Name: "context_lines", Type: "integer", Description: "Optional number of surrounding lines to include before and after each match; defaults to 5", Example: "int", Minimum: intPtr(0)},
+			{Name: "query", Type: "string", Description: "Text or code to find: a single line matches as a substring; a multi-line block of code matches exactly, ignoring indentation and surrounding whitespace", Example: `"<text, or line(s) of code>"`, Required: true},
+			{Name: "context_lines", Type: "integer", Description: "Optional number of surrounding lines to include before and after each match; defaults to 5 for a single-line query and 0 for a multi-line block", Example: "int", Minimum: intPtr(0)},
 			{Name: "max_results", Type: "integer", Description: "Optional maximum number of matches to return; omit or pass 0 for unlimited", Example: "int", Minimum: intPtr(0)},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive match mode; defaults to false", Example: "bool"},
 		},

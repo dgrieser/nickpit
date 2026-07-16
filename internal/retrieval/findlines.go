@@ -62,30 +62,12 @@ func FindLinesIn(content *FileContent, code string) *FindLinesResult {
 
 func matchFindLinesLimit(relPath, content, code string, maxMatches int) []FindLinesMatch {
 	matches := make([]FindLinesMatch, 0)
-	// Leading/trailing whitespace on each line is ignored, so a snippet matches
-	// regardless of how it is indented in the file.
-	codeLines := trimFindLines(SplitFindLines(NormalizeFindLinesCode(code)))
-	if len(codeLines) == 0 || allBlank(codeLines) {
-		return matches
-	}
+	matcher := codeBlockMatcher(SplitFindLines(NormalizeFindLinesCode(code)), true)
 	rawFileLines := SplitFindLines(normalizeFindLinesContent(content))
-	fileLines := trimFindLines(rawFileLines)
 	language := detectLanguage(relPath)
-	for i := 0; i+len(codeLines) <= len(fileLines); i++ {
-		if !findLinesEqual(fileLines[i:i+len(codeLines)], codeLines) {
-			continue
-		}
+	for _, span := range matcher(rawFileLines) {
 		matches = append(matches, FindLinesMatch{
-			CodeLocation: FindLinesLocation{
-				FilePath: relPath,
-				LineRange: FindLinesRange{
-					Start: i + 1,
-					End:   i + len(codeLines),
-					Count: len(codeLines),
-				},
-				Language: language,
-				Content:  strings.Join(rawFileLines[i:i+len(codeLines)], "\n"),
-			},
+			CodeLocation: codeLocationForSpan(relPath, language, rawFileLines, span),
 		})
 		if maxMatches > 0 && len(matches) >= maxMatches {
 			return matches
@@ -94,12 +76,72 @@ func matchFindLinesLimit(relPath, content, code string, maxMatches int) []FindLi
 	return matches
 }
 
-func trimFindLines(lines []string) []string {
-	trimmed := make([]string, len(lines))
-	for i, line := range lines {
-		trimmed[i] = strings.TrimSpace(line)
+// lineSpan is a 0-based inclusive range of matched line indexes within a file.
+type lineSpan struct {
+	start int
+	end   int
+}
+
+// codeBlockMatcher returns a matcher locating a code line or block within a
+// file's raw lines using lean matching: leading/trailing whitespace on each
+// line is ignored, so the snippet matches regardless of how it is indented in
+// the file. Matching is case-insensitive unless caseSensitive is set.
+func codeBlockMatcher(codeLines []string, caseSensitive bool) func(rawLines []string) []lineSpan {
+	trimmedCode := make([]string, len(codeLines))
+	for i, line := range codeLines {
+		trimmedCode[i] = foldSearchCase(strings.TrimSpace(line), caseSensitive)
 	}
-	return trimmed
+	if len(trimmedCode) == 0 || allBlank(trimmedCode) {
+		return func([]string) []lineSpan { return nil }
+	}
+	// Lines are trimmed and folded on the fly instead of materializing a
+	// processed copy of the file: the matcher runs once per file during
+	// repo-wide walks, and most lines are rejected by the first-line
+	// comparison alone. Only candidate windows (first line matched) fold
+	// their remaining lines, so re-folding is bounded by the block length.
+	first := trimmedCode[0]
+	return func(rawLines []string) []lineSpan {
+		var spans []lineSpan
+		for i := 0; i+len(trimmedCode) <= len(rawLines); i++ {
+			if foldSearchCase(strings.TrimSpace(rawLines[i]), caseSensitive) != first {
+				continue
+			}
+			matched := true
+			for j := 1; j < len(trimmedCode); j++ {
+				if foldSearchCase(strings.TrimSpace(rawLines[i+j]), caseSensitive) != trimmedCode[j] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				spans = append(spans, lineSpan{start: i, end: i + len(trimmedCode) - 1})
+			}
+		}
+		return spans
+	}
+}
+
+// codeLocationForSpan builds the canonical code_location for a matched span:
+// the line range covers exactly the matched lines, and the content preserves
+// the file's original indentation.
+func codeLocationForSpan(relPath, language string, rawLines []string, span lineSpan) CodeLocation {
+	return CodeLocation{
+		FilePath: relPath,
+		LineRange: LineRange{
+			Start: span.start + 1,
+			End:   span.end + 1,
+			Count: span.end - span.start + 1,
+		},
+		Language: language,
+		Content:  strings.Join(rawLines[span.start:span.end+1], "\n"),
+	}
+}
+
+func foldSearchCase(text string, caseSensitive bool) string {
+	if caseSensitive {
+		return text
+	}
+	return strings.ToLower(text)
 }
 
 func allBlank(lines []string) bool {
@@ -131,6 +173,29 @@ func normalizeFindLinesContent(content string) string {
 	return strings.TrimSuffix(content, "\n")
 }
 
+// NormalizeSearchQuery returns the canonical form of a search query: line
+// endings are normalized and surrounding blank lines removed; a single-line
+// query is additionally trimmed of surrounding whitespace (a multi-line block
+// keeps its indentation, which lean matching ignores anyway). Callers use it
+// so dedup keys and execution agree on one canonical query.
+func NormalizeSearchQuery(query string) string {
+	query = NormalizeFindLinesCode(query)
+	if FindLinesCount(query) <= 1 {
+		return strings.TrimSpace(query)
+	}
+	return query
+}
+
+// DefaultSearchContextLines returns the context_lines default applied when a
+// search caller does not specify one: 5 for a single-line query, 0 for a
+// multi-line block, whose exact match already carries its own context.
+func DefaultSearchContextLines(query string) int {
+	if FindLinesCount(query) > 1 {
+		return 0
+	}
+	return 5
+}
+
 // FindLinesCount returns the number of lines in a find_lines code argument
 // after normalization, so a raw or CRLF snippet is counted the same as its
 // canonical form.
@@ -156,16 +221,4 @@ func SplitFindLines(text string) []string {
 		return nil
 	}
 	return strings.Split(text, "\n")
-}
-
-func findLinesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -54,17 +54,33 @@ func convertHierarchy(src *goparser.Hierarchy) *CallHierarchy {
 
 func convertNode(src goparser.Node) CallNode {
 	node := CallNode{
-		Name:      src.Name,
-		Path:      src.Path,
-		StartLine: src.StartLine,
-		EndLine:   src.EndLine,
-		Source:    src.Source,
-		Children:  []CallNode{},
+		Name:         src.Name,
+		CodeLocation: callNodeLocation(src.Path, src.StartLine, src.EndLine, src.Source),
+		Children:     []CallNode{},
 	}
 	for _, child := range src.Children {
 		node.Children = append(node.Children, convertNode(child))
 	}
 	return node
+}
+
+// callNodeLocation builds the canonical code_location for a call-hierarchy
+// node from its path, line range, and source text.
+func callNodeLocation(path string, startLine, endLine int, source string) CodeLocation {
+	count := 0
+	if startLine > 0 && endLine >= startLine {
+		count = endLine - startLine + 1
+	}
+	return CodeLocation{
+		FilePath: path,
+		LineRange: LineRange{
+			Start: startLine,
+			End:   endLine,
+			Count: count,
+		},
+		Language: detectLanguage(path),
+		Content:  source,
+	}
 }
 
 func (h *CallHierarchy) RenderJSON() string {
@@ -91,15 +107,16 @@ func renderNode(b *strings.Builder, node CallNode, prefix string, last, root boo
 		connector = "└── "
 		nextPrefix = prefix + "    "
 	}
-	fmt.Fprintf(b, "%s%s%s (%s:%d-%d)\n", prefix, connector, node.Name, node.Path, node.StartLine, node.EndLine)
-	if node.Source != "" {
+	loc := node.CodeLocation
+	fmt.Fprintf(b, "%s%s%s (%s:%d-%d)\n", prefix, connector, node.Name, loc.FilePath, loc.LineRange.Start, loc.LineRange.End)
+	if loc.Content != "" {
 		sourcePrefix := nextPrefix
 		separatorPrefix := nextPrefix
 		if root {
 			sourcePrefix = ""
 			separatorPrefix = ""
 		}
-		renderSource(b, node.Source, sourcePrefix, separatorPrefix, len(node.Children) > 0 || !last)
+		renderSource(b, loc.Content, sourcePrefix, separatorPrefix, len(node.Children) > 0 || !last)
 	}
 	for i, child := range node.Children {
 		renderNode(b, child, nextPrefix, i == len(node.Children)-1, false)

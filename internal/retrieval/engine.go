@@ -51,19 +51,22 @@ type FindLinesResult struct {
 }
 
 type FindLinesMatch struct {
-	CodeLocation FindLinesLocation `json:"code_location"`
+	CodeLocation CodeLocation `json:"code_location"`
 }
 
-type FindLinesLocation struct {
-	FilePath  string         `json:"file_path"`
-	LineRange FindLinesRange `json:"line_range"`
-	Language  string         `json:"language"`
+// CodeLocation is the canonical line-grounded location shape shared by the
+// retrieval tools; it mirrors model.CodeLocation so tool results can be copied
+// verbatim into findings and suggestions.
+type CodeLocation struct {
+	FilePath  string    `json:"file_path"`
+	LineRange LineRange `json:"line_range"`
+	Language  string    `json:"language"`
 	// Content is the matched file text with its original indentation, so the
 	// caller can verify the hit and reuse the snippet verbatim.
 	Content string `json:"content"`
 }
 
-type FindLinesRange struct {
+type LineRange struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
 	Count int `json:"count"`
@@ -79,11 +82,18 @@ type SearchResults struct {
 	Results       []SearchResult `json:"results"`
 }
 
+// SearchResult locates one match: CodeLocation spans exactly the matched
+// line(s) so it can be cited as-is, while the surrounding context requested
+// via context_lines is carried separately and never widens the location.
 type SearchResult struct {
-	Path      string `json:"path"`
+	CodeLocation  CodeLocation   `json:"code_location"`
+	ContextBefore *SearchContext `json:"context_before,omitempty"`
+	ContextAfter  *SearchContext `json:"context_after,omitempty"`
+}
+
+type SearchContext struct {
 	StartLine int    `json:"start_line"`
 	EndLine   int    `json:"end_line"`
-	Language  string `json:"language"`
 	Content   string `json:"content"`
 }
 
@@ -108,10 +118,7 @@ type CallHierarchy struct {
 }
 
 type CallNode struct {
-	Name      string     `json:"name"`
-	Path      string     `json:"path"`
-	StartLine int        `json:"start_line"`
-	EndLine   int        `json:"end_line"`
-	Source    string     `json:"source"`
-	Children  []CallNode `json:"children"`
+	Name         string       `json:"name"`
+	CodeLocation CodeLocation `json:"code_location"`
+	Children     []CallNode   `json:"children"`
 }

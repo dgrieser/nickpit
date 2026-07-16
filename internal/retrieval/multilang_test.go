@@ -120,7 +120,7 @@ class Service:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "run" || callers.Root.Children[0].Path != "service.py" {
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "run" || callers.Root.Children[0].CodeLocation.FilePath != "service.py" {
 		t.Fatalf("callers = %#v", callers.Root.Children)
 	}
 }
@@ -156,7 +156,7 @@ export const start = () => {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(esm.Root.Children) != 1 || esm.Root.Children[0].Name != "helper" || esm.Root.Children[0].Path != "lib/util.js" {
+	if len(esm.Root.Children) != 1 || esm.Root.Children[0].Name != "helper" || esm.Root.Children[0].CodeLocation.FilePath != "lib/util.js" {
 		t.Fatalf("esm callees = %#v", esm.Root.Children)
 	}
 
@@ -164,7 +164,7 @@ export const start = () => {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cjs.Root.Children) != 1 || cjs.Root.Children[0].Name != "helper2" || cjs.Root.Children[0].Path != "lib/cjs.cjs" {
+	if len(cjs.Root.Children) != 1 || cjs.Root.Children[0].Name != "helper2" || cjs.Root.Children[0].CodeLocation.FilePath != "lib/cjs.cjs" {
 		t.Fatalf("cjs callees = %#v", cjs.Root.Children)
 	}
 }
@@ -275,7 +275,7 @@ export function App({ items }: { items: string[] }) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "App" || callers.Root.Children[0].Path != "src/App.tsx" {
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "App" || callers.Root.Children[0].CodeLocation.FilePath != "src/App.tsx" {
 		t.Fatalf("tsx callers = %#v", callers.Root.Children)
 	}
 
@@ -389,7 +389,7 @@ impl Greeter {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "greet" || callers.Root.Children[0].Path != "src/main.rs" {
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "greet" || callers.Root.Children[0].CodeLocation.FilePath != "src/main.rs" {
 		t.Fatalf("rust callers = %#v", callers.Root.Children)
 	}
 	symbol, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "format_name", Path: "src/lib.rs"})
@@ -415,7 +415,7 @@ func writeRetrievalFile(t *testing.T, root, rel, content string) {
 func renderNames(nodes []CallNode) string {
 	parts := make([]string, 0, len(nodes))
 	for _, node := range nodes {
-		parts = append(parts, node.Name+"@"+node.Path)
+		parts = append(parts, node.Name+"@"+node.CodeLocation.FilePath)
 	}
 	return strings.Join(parts, ",")
 }

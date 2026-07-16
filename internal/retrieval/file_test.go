@@ -122,11 +122,14 @@ func TestLocalEngineSearch(t *testing.T) {
 		ResultCount:   1,
 		Results: []SearchResult{
 			{
-				Path:      "pkg/a.go",
-				StartLine: 1,
-				EndLine:   3,
-				Language:  "go",
-				Content:   "one\nttlExtenders\nthree",
+				CodeLocation: CodeLocation{
+					FilePath:  "pkg/a.go",
+					LineRange: LineRange{Start: 2, End: 2, Count: 1},
+					Language:  "go",
+					Content:   "ttlExtenders",
+				},
+				ContextBefore: &SearchContext{StartLine: 1, EndLine: 1, Content: "one"},
+				ContextAfter:  &SearchContext{StartLine: 3, EndLine: 3, Content: "three"},
 			},
 		},
 	}
@@ -158,8 +161,8 @@ func TestLocalEngineSearchSkipsGitDir(t *testing.T) {
 	if got.ResultCount != 1 {
 		t.Fatalf("ResultCount = %d, want 1", got.ResultCount)
 	}
-	if got.Results[0].Path != "pkg/a.go" {
-		t.Fatalf("matched path = %q, want pkg/a.go", got.Results[0].Path)
+	if got.Results[0].CodeLocation.FilePath != "pkg/a.go" {
+		t.Fatalf("matched path = %q, want pkg/a.go", got.Results[0].CodeLocation.FilePath)
 	}
 }
 
@@ -189,11 +192,12 @@ func TestLocalEngineSearchSkipsBinaryFiles(t *testing.T) {
 		ResultCount:   1,
 		Results: []SearchResult{
 			{
-				Path:      "pkg/a.go",
-				StartLine: 1,
-				EndLine:   1,
-				Language:  "go",
-				Content:   "ttlExtenders",
+				CodeLocation: CodeLocation{
+					FilePath:  "pkg/a.go",
+					LineRange: LineRange{Start: 1, End: 1, Count: 1},
+					Language:  "go",
+					Content:   "ttlExtenders",
+				},
 			},
 		},
 	}
@@ -225,11 +229,12 @@ func TestLocalEngineSearchCaseSensitive(t *testing.T) {
 		ResultCount:   1,
 		Results: []SearchResult{
 			{
-				Path:      "pkg/a.go",
-				StartLine: 2,
-				EndLine:   2,
-				Language:  "go",
-				Content:   "TTLEXTENDERS",
+				CodeLocation: CodeLocation{
+					FilePath:  "pkg/a.go",
+					LineRange: LineRange{Start: 2, End: 2, Count: 1},
+					Language:  "go",
+					Content:   "TTLEXTENDERS",
+				},
 			},
 		},
 	}
@@ -262,16 +267,134 @@ func TestLocalEngineSearchFallsBackToUnescapedQuery(t *testing.T) {
 		ResultCount:   1,
 		Results: []SearchResult{
 			{
-				Path:      "pkg/a.go",
-				StartLine: 1,
-				EndLine:   1,
-				Language:  "go",
-				Content:   "func (cache *RedisSSHSessionCache) sessionPodKey() string {",
+				CodeLocation: CodeLocation{
+					FilePath:  "pkg/a.go",
+					LineRange: LineRange{Start: 1, End: 1, Count: 1},
+					Language:  "go",
+					Content:   "func (cache *RedisSSHSessionCache) sessionPodKey() string {",
+				},
 			},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("search = %#v, want %#v", got, want)
+	}
+}
+
+func TestLocalEngineSearchMultiLineBlockIgnoresIndentation(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "func Run() {\n\tif cond {\n\t\tdoThing()\n\t}\n}\n"
+	if err := os.WriteFile(filepath.Join(repoRoot, "pkg", "a.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.Search(context.Background(), repoRoot, "pkg", "if cond {\n    doThing()\n}", -1, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := &SearchResults{
+		Path:         "pkg",
+		Query:        "if cond {\n    doThing()\n}",
+		ContextLines: 0,
+		ResultCount:  1,
+		Results: []SearchResult{
+			{
+				CodeLocation: CodeLocation{
+					FilePath:  "pkg/a.go",
+					LineRange: LineRange{Start: 2, End: 4, Count: 3},
+					Language:  "go",
+					Content:   "\tif cond {\n\t\tdoThing()\n\t}",
+				},
+			},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("search = %#v, want %#v", got, want)
+	}
+}
+
+func TestLocalEngineSearchMultiLineBlockWithContext(t *testing.T) {
+	repoRoot := t.TempDir()
+	content := "one\ntwo\nalpha\nbeta\nfive\nsix\n"
+	if err := os.WriteFile(filepath.Join(repoRoot, "a.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.Search(context.Background(), repoRoot, "", "alpha\nbeta", 1, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 1 {
+		t.Fatalf("result_count = %d, want 1: %#v", got.ResultCount, got)
+	}
+	result := got.Results[0]
+	if result.CodeLocation.LineRange != (LineRange{Start: 3, End: 4, Count: 2}) || result.CodeLocation.Content != "alpha\nbeta" {
+		t.Fatalf("code_location = %#v", result.CodeLocation)
+	}
+	wantBefore := &SearchContext{StartLine: 2, EndLine: 2, Content: "two"}
+	wantAfter := &SearchContext{StartLine: 5, EndLine: 5, Content: "five"}
+	if !reflect.DeepEqual(result.ContextBefore, wantBefore) || !reflect.DeepEqual(result.ContextAfter, wantAfter) {
+		t.Fatalf("context = %#v / %#v, want %#v / %#v", result.ContextBefore, result.ContextAfter, wantBefore, wantAfter)
+	}
+}
+
+func TestLocalEngineSearchMultiLineIsCaseInsensitiveByDefault(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "a.txt"), []byte("Alpha\nBeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	got, err := engine.Search(context.Background(), repoRoot, "", "alpha\nbeta", -1, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResultCount != 1 || got.Results[0].CodeLocation.Content != "Alpha\nBeta" {
+		t.Fatalf("case-insensitive multi-line search = %#v", got)
+	}
+
+	sensitive, err := engine.Search(context.Background(), repoRoot, "", "alpha\nbeta", -1, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sensitive.ResultCount != 0 {
+		t.Fatalf("case-sensitive multi-line search matched: %#v", sensitive)
+	}
+}
+
+func TestLocalEngineSearchDefaultsContextLinesPerMode(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "a.txt"), []byte("one\ntwo\nthree\nfour\nfive\nsix\nseven\nneedle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+	single, err := engine.Search(context.Background(), repoRoot, "", "needle", -1, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if single.ContextLines != 5 {
+		t.Fatalf("single-line default context_lines = %d, want 5", single.ContextLines)
+	}
+	if single.Results[0].ContextBefore == nil || single.Results[0].ContextBefore.Content != "three\nfour\nfive\nsix\nseven" {
+		t.Fatalf("single-line default context = %#v", single.Results[0].ContextBefore)
+	}
+
+	multi, err := engine.Search(context.Background(), repoRoot, "", "seven\nneedle", -1, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if multi.ContextLines != 0 {
+		t.Fatalf("multi-line default context_lines = %d, want 0", multi.ContextLines)
+	}
+	if multi.Results[0].ContextBefore != nil || multi.Results[0].ContextAfter != nil {
+		t.Fatalf("multi-line default context = %#v", multi.Results[0])
 	}
 }
 
@@ -355,7 +478,7 @@ func TestLocalEngineSearchSkipsGitIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ResultCount != 1 || len(got.Results) != 1 || got.Results[0].Path != "pkg/a.go" {
+	if got.ResultCount != 1 || len(got.Results) != 1 || got.Results[0].CodeLocation.FilePath != "pkg/a.go" {
 		t.Fatalf("search = %#v", got)
 	}
 }
@@ -433,7 +556,7 @@ func TestFindLinesInNormalizesQueryBeforeMatching(t *testing.T) {
 		t.Fatalf("matches = %d/%d, want one: %#v", got.MatchCount, len(got.Matches), got)
 	}
 	loc := got.Matches[0].CodeLocation
-	if loc.FilePath != "pkg/a.go" || loc.LineRange != (FindLinesRange{Start: 2, End: 2, Count: 1}) || loc.Content != "\tneedle" {
+	if loc.FilePath != "pkg/a.go" || loc.LineRange != (LineRange{Start: 2, End: 2, Count: 1}) || loc.Content != "\tneedle" {
 		t.Fatalf("location = %+v, want exact line 2 match", loc)
 	}
 }
@@ -457,7 +580,7 @@ func TestLocalEngineSearchRegex(t *testing.T) {
 	if got.ResultCount != 1 {
 		t.Fatalf("result_count = %d, want 1", got.ResultCount)
 	}
-	if got.Results[0].Path != "pkg/a.go" || got.Results[0].StartLine != 3 {
+	if got.Results[0].CodeLocation.FilePath != "pkg/a.go" || got.Results[0].CodeLocation.LineRange.Start != 3 {
 		t.Fatalf("results = %#v", got.Results)
 	}
 	if got.Query != pattern.String() {
@@ -483,8 +606,8 @@ func TestLocalEngineSearchRegexCaseInsensitive(t *testing.T) {
 	if got.ResultCount != 1 {
 		t.Fatalf("result_count = %d, want 1", got.ResultCount)
 	}
-	if got.Results[0].Content != "HelloWorld" {
-		t.Fatalf("content = %q", got.Results[0].Content)
+	if got.Results[0].CodeLocation.Content != "HelloWorld" {
+		t.Fatalf("content = %q", got.Results[0].CodeLocation.Content)
 	}
 }
 
@@ -535,7 +658,7 @@ func TestLocalEngineSearchRegexSkipsBinaryAndIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ResultCount != 1 || got.Results[0].Path != "pkg/a.go" {
+	if got.ResultCount != 1 || got.Results[0].CodeLocation.FilePath != "pkg/a.go" {
 		t.Fatalf("search = %#v", got)
 	}
 }
