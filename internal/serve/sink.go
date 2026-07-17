@@ -57,7 +57,8 @@ func (s *lokiSink) Open(meta StreamMeta) io.WriteCloser {
 	// The head SHA rides in the first log line rather than a label, so it is
 	// greppable in Grafana without inflating stream cardinality.
 	if meta.HeadSHA != "" {
-		fmt.Fprintf(stream, "nickpit: review head=%s project=%s iid=%d trigger=%s\n",
+		// The stream writer is best-effort and never errors; discard explicitly.
+		_, _ = fmt.Fprintf(stream, "nickpit: review head=%s project=%s iid=%d trigger=%s\n",
 			meta.HeadSHA, meta.Project, meta.IID, meta.Trigger)
 	}
 	return stream
