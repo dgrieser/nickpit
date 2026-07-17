@@ -163,11 +163,13 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	_ = pw.Close()
 	select {
 	case <-copyDone:
+		_ = pr.Close()
 	case <-time.After(logDrainGrace):
+		// Force the reader closed so a leaked grandchild holding the write end
+		// cannot keep the copy goroutine (and thus cancellation) blocked.
 		_ = pr.Close()
 		<-copyDone
 	}
-	_ = pr.Close()
 	if err == nil {
 		return 0, logPath, nil
 	}
