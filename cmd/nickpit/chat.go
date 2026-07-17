@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
+	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
@@ -33,6 +35,7 @@ type chatOptions struct {
 	reviewID        string
 	repoRoot        string
 	replyDiscussion string
+	replyNote       int
 }
 
 func (a *app) newChatCmd() *cobra.Command {
@@ -58,6 +61,7 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.reviewID, "review-id", "", "Select a specific review when the MR carries more than one")
 	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from (defaults to the current directory for local sessions)")
 	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
+	cmd.Flags().IntVar(&opts.replyNote, "reply-note", 0, "With --reply-discussion, the triggering note id; the reply is skipped unless this note is still the latest, so racing or redelivered replies do not double-answer")
 	return cmd
 }
 
@@ -93,22 +97,28 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		sess.Profile = profileName
 	}
 
-	// Resolve the source and the review context (diff). Prefer a cached context
-	// for a quick resume; otherwise resolve it now and cache it.
+	// Build the engine first so context resolution goes through the same
+	// preparation pipeline a review uses (path/content filters, generated-file
+	// stamping, toolchain capture, context-budget trimming) rather than a raw
+	// source fetch that would leak withheld files and blow the context budget.
 	source, retrievalEngine, err := a.chatSource(profile, sess.Source)
 	if err != nil {
 		return err
 	}
+	engine := a.chatEngine(profile, source, retrievalEngine, logger)
+
 	reviewCtx := sess.Context
 	if reviewCtx == nil {
-		reviewCtx, err = source.ResolveContext(ctx, a.chatReviewRequest(profile, sess.Source))
+		reviewCtx, err = engine.PrepareContext(ctx, a.chatReviewRequest(profile, sess.Source))
 		if err != nil {
 			return fmt.Errorf("chat: resolving review context: %w", err)
 		}
 		sess.Context = reviewCtx
 	}
 
-	engine := a.chatEngine(profile, source, retrievalEngine, logger)
+	// Tools read from a real checkout only; without one, an empty root would
+	// resolve to the process working directory and expose unrelated files.
+	tools := chatToolset(sess.Source.RepoRoot)
 
 	if created {
 		if err := store.Save(sess); err != nil {
@@ -128,6 +138,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			PinnedFindingID:          sess.PinnedFindingID,
 			Messages:                 sess.Conversation(),
 			RepoRoot:                 sess.Source.RepoRoot,
+			Tools:                    tools,
 			DiffFormat:               profile.DiffFormat,
 			DisableSuggestions:       profile.DisableSuggestions,
 			DisableParallelToolCalls: a.disableParallelToolCalls,
@@ -309,15 +320,21 @@ func pickReview(reviews map[string]*model.ReviewResult, reviewID string) (*model
 }
 
 // sourceFromResult reconstructs a session source from a review result's metadata.
+// ReviewResult.BaseURL is the LLM endpoint, not the SCM API URL, so it is
+// deliberately not copied here; the SCM URL is resolved from the profile at chat
+// time. RepoRoot is only meaningful for a local session (a remote review's
+// checkout is a temporary clone that no longer exists).
 func sourceFromResult(result *model.ReviewResult, repoRoot string) session.Source {
 	mode, submode := result.Mode, ""
 	if idx := strings.Index(mode, ":"); idx >= 0 {
 		mode, submode = mode[:idx], mode[idx+1:]
 	}
-	if repoRoot == "" && mode == string(model.ModeLocal) {
+	if mode == string(model.ModeLocal) && repoRoot == "" {
 		if wd, err := os.Getwd(); err == nil {
 			repoRoot = wd
 		}
+	} else if mode != string(model.ModeLocal) {
+		repoRoot = "" // remote checkouts are temporary; do not persist a stale path
 	}
 	return session.Source{
 		Mode:       mode,
@@ -326,29 +343,37 @@ func sourceFromResult(result *model.ReviewResult, repoRoot string) session.Sourc
 		Identifier: result.Identifier,
 		BaseRef:    result.BaseRef,
 		HeadRef:    result.HeadRef,
-		BaseURL:    result.BaseURL,
 		RepoRoot:   repoRoot,
 	}
 }
 
 // chatReviewRequest builds the request used to re-resolve the review context from
-// a session source.
+// a session source. It carries the profile's path/content filters and context
+// budget so PrepareContext reproduces the review's filtered, trimmed context.
 func (a *app) chatReviewRequest(profile config.Profile, src session.Source) model.ReviewRequest {
 	return model.ReviewRequest{
-		Mode:            model.ReviewMode(src.Mode),
-		Submode:         src.Submode,
-		RepoRoot:        src.RepoRoot,
-		Repo:            src.Repo,
-		Identifier:      src.Identifier,
-		BaseRef:         src.BaseRef,
-		HeadRef:         src.HeadRef,
-		IncludeComments: a.includeComments,
-		IncludeCommits:  a.includeCommits,
-		DiffFormat:      profile.DiffFormat,
+		Mode:             model.ReviewMode(src.Mode),
+		Submode:          src.Submode,
+		RepoRoot:         src.RepoRoot,
+		Repo:             src.Repo,
+		Identifier:       src.Identifier,
+		BaseRef:          src.BaseRef,
+		HeadRef:          src.HeadRef,
+		IncludeComments:  a.includeComments,
+		IncludeCommits:   a.includeCommits,
+		IncludePaths:     profile.IncludePaths,
+		ExcludePaths:     profile.ExcludePaths,
+		IncludeContent:   profile.IncludeContent,
+		ExcludeContent:   profile.ExcludeContent,
+		MaxContextTokens: profile.MaxContextTokens,
+		DiffFormat:       profile.DiffFormat,
 	}
 }
 
 // chatSource builds the review source and retrieval engine for a session source.
+// The SCM API URL comes from the profile (or, for GitLab, an explicit URL parsed
+// from --url stored on the source) — never from ReviewResult.BaseURL, which is
+// the LLM endpoint.
 func (a *app) chatSource(profile config.Profile, src session.Source) (model.ReviewSource, retrieval.Engine, error) {
 	switch model.ReviewMode(src.Mode) {
 	case model.ModeLocal:
@@ -365,9 +390,27 @@ func (a *app) chatSource(profile config.Profile, src session.Source) (model.Revi
 		apiBaseURL := firstNonEmpty(src.BaseURL, profile.GitLabBaseURL)
 		adapter := glscm.NewAdapter(glscm.NewClient(apiBaseURL, profile.GitLabToken), profile.AssetBaseURL)
 		return adapter, retrieval.NewLocalEngine(), nil
+	case model.ModeGitHub:
+		adapter := ghscm.NewAdapter(ghscm.NewClient("", profile.GitHubToken), profile.AssetBaseURL)
+		return adapter, retrieval.NewLocalEngine(), nil
 	default:
 		return nil, nil, fmt.Errorf("chat: unsupported session mode %q", src.Mode)
 	}
+}
+
+// chatToolset returns the discussion agent's tool set for a session: all reviewer
+// tools when repoRoot is a real directory the retrieval layer can read, or an
+// explicit empty (disabled) set otherwise. An empty root would resolve to the
+// process working directory and let tools inspect unrelated files, so tools stay
+// off until a real checkout is provided (e.g. via --repo-root).
+func chatToolset(repoRoot string) []llm.ToolDefinition {
+	if repoRoot == "" {
+		return []llm.ToolDefinition{}
+	}
+	if info, err := os.Stat(repoRoot); err != nil || !info.IsDir() {
+		return []llm.ToolDefinition{}
+	}
+	return nil // nil => Discuss enables all reviewer tools
 }
 
 // chatEngine builds a review engine wired for the discussion agent.
@@ -423,20 +466,17 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if result == nil {
 		return fmt.Errorf("chat: review %q not found on MR", reviewID)
 	}
-	reviewCtx, err := adapter.ResolveContext(ctx, model.ReviewRequest{
-		Mode:            model.ModeGitLab,
-		Repo:            project,
-		Identifier:      mrID,
-		IncludeComments: true,
-		DiffFormat:      profile.DiffFormat,
-	})
-	if err != nil {
-		return fmt.Errorf("chat: resolving MR context: %w", err)
-	}
 
 	var botUserID int
 	if user, err := client.CurrentUser(ctx); err == nil {
 		botUserID = user.ID
+	}
+	// Answer only when the triggering note is still the latest reply. When two
+	// replies race (or a webhook is redelivered), the superseded child sees a
+	// newer note as the latest and bows out, so the thread gets exactly one answer
+	// covering the conversation instead of duplicates.
+	if opts.replyNote > 0 && !isLatestReply(notes, botUserID, opts.replyNote) {
+		return nil
 	}
 	history := chatThreadToMessages(notes, botUserID)
 	if len(history) == 0 {
@@ -446,11 +486,28 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
 	engine := a.chatEngine(profile, adapter, retrieval.NewLocalEngine(), logger)
+	// Prepare the context through the review pipeline (filters, trimming,
+	// toolchain) rather than a raw fetch, so the chat never sees withheld files
+	// or an over-budget patch.
+	req := a.chatReviewRequest(profile, session.Source{
+		Mode:       string(model.ModeGitLab),
+		Repo:       project,
+		Identifier: mrID,
+		RepoRoot:   opts.repoRoot,
+	})
+	req.IncludeComments = true
+	reviewCtx, err := engine.PrepareContext(ctx, req)
+	if err != nil {
+		return fmt.Errorf("chat: resolving MR context: %w", err)
+	}
+
 	res, err := engine.Discuss(ctx, review.DiscussRequest{
 		ReviewCtx:                reviewCtx,
 		Result:                   result,
 		PinnedFindingID:          findingID,
 		Messages:                 history,
+		RepoRoot:                 opts.repoRoot,
+		Tools:                    chatToolset(opts.repoRoot),
 		DiffFormat:               profile.DiffFormat,
 		DisableSuggestions:       profile.DisableSuggestions,
 		DisableParallelToolCalls: a.disableParallelToolCalls,
@@ -467,6 +524,23 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return nil
 	}
 	return client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, reviewmd.Sanitize(reply))
+}
+
+// isLatestReply reports whether noteID is the most recent non-bot, non-system
+// note in the thread — i.e. the newest question awaiting an answer. A child
+// spawned for an older note returns false and skips, so only the child for the
+// latest reply answers.
+func isLatestReply(notes []glscm.DiscussionNote, botUserID, noteID int) bool {
+	for _, note := range slices.Backward(notes) {
+		if note.System {
+			continue
+		}
+		if botUserID != 0 && note.AuthorID == botUserID {
+			continue
+		}
+		return note.ID == noteID
+	}
+	return false
 }
 
 // chatThreadToMessages maps a GitLab discussion's notes to conversation messages
@@ -512,6 +586,15 @@ func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, r
 	sess.Result = result
 	sess.Model = result.Model
 	sess.Profile = req.ProfileName
+	// RepoRoot is persisted only for a local review: a remote review's RepoRoot is
+	// a temporary clone deleted right after this call, so a resumed session must
+	// not point retrieval tools at it. BaseURL is intentionally left empty — the
+	// SCM URL is resolved from the profile at chat time (result.BaseURL is the LLM
+	// endpoint).
+	repoRoot := ""
+	if req.Mode == model.ModeLocal {
+		repoRoot = req.RepoRoot
+	}
 	sess.Source = session.Source{
 		Mode:       string(req.Mode),
 		Submode:    req.Submode,
@@ -519,8 +602,7 @@ func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, r
 		Identifier: req.Identifier,
 		BaseRef:    req.BaseRef,
 		HeadRef:    req.HeadRef,
-		BaseURL:    result.BaseURL,
-		RepoRoot:   req.RepoRoot,
+		RepoRoot:   repoRoot,
 	}
 	if err := store.Save(sess); err != nil {
 		a.logf(ctx, "chat: could not save session: %v", err)

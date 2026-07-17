@@ -38,19 +38,35 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	render := a.render.ForReview(result.ReviewID)
 
 	var errs []error
+	summaryPosted := false
 	if _, ok := prior.Markers[reviewmd.SummaryMarker]; !ok {
 		if err := a.client.Post(ctx, notesPath, map[string]string{"body": render.SummaryBody(result)}, nil); err != nil {
 			errs = append(errs, fmt.Errorf("summary: %w", err))
+		} else {
+			summaryPosted = true
 		}
 	}
+	skippedFinding := false
 	for _, finding := range result.Findings {
 		title, _, _, _ := reviewmd.FindingDisplay(finding)
 		if reviewmd.AlreadyPosted(finding, title, prior) {
+			skippedFinding = true
 			continue
 		}
 		change, hasChange := changesByPath[finding.CodeLocation.FilePath]
 		if err := a.publishFinding(ctx, render, notesPath, discussionsPath, change, hasChange, info.DiffRefs, finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
+		}
+	}
+	// When the visible summary or any finding was suppressed for idempotency, the
+	// distributed carriers no longer cover this run in full. Post one hidden
+	// carrier note so a chat can still reassemble exactly this review by id
+	// instead of discussing an older run.
+	if (!summaryPosted || skippedFinding) && len(result.Findings) > 0 {
+		if body := render.CarrierNote(result); body != "" {
+			if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
+				errs = append(errs, fmt.Errorf("carrier: %w", err))
+			}
 		}
 	}
 	return errors.Join(errs...)

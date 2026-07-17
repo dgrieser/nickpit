@@ -136,6 +136,14 @@ const ReviewMarkerPrefix = MarkerOpen + "review:"
 // Its payload is a gzipped, base64-encoded findingEnvelope.
 const FindingMarkerPrefix = MarkerOpen + "finding:"
 
+// maxCarrierDecodedBytes caps how much a single carrier payload may expand to
+// when decompressed. Carrier markers are read from arbitrary MR/PR comments, so
+// a hostile commenter could craft a small gzip payload that expands to gigabytes
+// (a zip bomb). A finding envelope is at most a few hundred KB even for a large
+// finding, so this bound is far above any legitimate payload while stopping the
+// decompression from exhausting memory.
+const maxCarrierDecodedBytes = 8 << 20 // 8 MiB
+
 // ReviewEnvelope is the summary-note carrier payload: the overall verdict plus
 // the source identity needed to recreate the diff. Findings are carried
 // separately, one per FindingEnvelope, so no single note grows unbounded.
@@ -223,8 +231,13 @@ func decodeMarker(raw string, out any) bool {
 		return false
 	}
 	defer func() { _ = zr.Close() }()
-	decoded, err := io.ReadAll(zr)
+	// Bound decompression to defend against zip-bomb payloads in untrusted
+	// comments: read one byte past the cap and reject anything that reaches it.
+	decoded, err := io.ReadAll(io.LimitReader(zr, maxCarrierDecodedBytes+1))
 	if err != nil {
+		return false
+	}
+	if len(decoded) > maxCarrierDecodedBytes {
 		return false
 	}
 	return json.Unmarshal(decoded, out) == nil
@@ -523,6 +536,28 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 	if marker := ReviewMarker(result); marker != "" {
 		b.WriteString("\n")
 		b.WriteString(marker)
+	}
+	return b.String()
+}
+
+// CarrierNote renders a hidden note body carrying this run's complete review as
+// carrier markers (the review envelope plus one finding envelope per finding).
+// It exists so a re-review — where the visible summary and duplicate findings are
+// suppressed for idempotency — still publishes the current run's full data, so a
+// later chat can reassemble exactly this review by its id instead of falling back
+// to an older run. The body is only HTML-comment markers, so it renders empty.
+// Returns "" when the result has no review id.
+func (r Renderer) CarrierNote(result *model.ReviewResult) string {
+	if result == nil || result.ReviewID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(ReviewMarker(result))
+	for _, finding := range result.Findings {
+		if marker := FindingMarker(result.ReviewID, finding); marker != "" {
+			b.WriteString("\n")
+			b.WriteString(marker)
+		}
 	}
 	return b.String()
 }

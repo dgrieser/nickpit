@@ -180,6 +180,16 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 	return result, enrichedCtx, nil
 }
 
+// PrepareContext resolves and prepares a review context exactly as a review does:
+// it applies the request's path/content filters, generated-file stamping,
+// toolchain capture, optional full-file inlining, and context-budget trimming.
+// The discussion agent uses this so a chat sees the same, filtered, trimmed
+// context the reviewers saw — never files the review deliberately withheld, and
+// never a patch larger than the model context budget.
+func (e *Engine) PrepareContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
+	return e.resolveAndTrimContext(ctx, req)
+}
+
 // resolveAndTrimContext resolves the review source, captures toolchain versions,
 // optionally inlines full files, and trims to the context budget.
 func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {

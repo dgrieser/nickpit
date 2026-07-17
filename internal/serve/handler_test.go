@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
 
@@ -367,10 +369,14 @@ func TestHandlerRejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// A plain reply inside a discussion thread spawns a chat child with the group's
+// A plain reply inside a nickpit thread spawns a chat child with the group's
 // token and the daemon's config, so the daemon answers without loading the LLM.
 func TestHandlerChatSpawnsChild(t *testing.T) {
 	env := newHandlerEnv(t)
+	// A resolved bot id is required (loop guard) and the thread must be a nickpit
+	// thread (its root note carries a review marker).
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1", Title: "Bug"}, "")
 	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"chat"`) {
 		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -385,6 +391,35 @@ func TestHandlerChatSpawnsChild(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("chat child was not spawned")
+	}
+}
+
+// A reply in a non-nickpit thread (root note has no marker) is not answered.
+func TestHandlerChatSkipsForeignThread(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = "just a normal review comment from a human"
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"chat"`) {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned for a non-nickpit thread")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// Without a resolved bot id, chat is skipped to avoid a reply loop.
+func TestHandlerChatSkipsWhenBotUnresolved(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 0
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned despite unresolved bot id")
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 
@@ -419,5 +454,28 @@ func TestServerHealthz(t *testing.T) {
 	server.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ok"`) {
 		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestNoteDedup(t *testing.T) {
+	d := newNoteDedup(2)
+	if !d.markNew(1) {
+		t.Fatal("first sighting of note 1 should be new")
+	}
+	if d.markNew(1) {
+		t.Fatal("second sighting of note 1 should be a duplicate")
+	}
+	// A zero id (unknown) is always treated as new, never dropped.
+	if !d.markNew(0) {
+		t.Fatal("zero id must always be treated as new")
+	}
+	if !d.markNew(0) {
+		t.Fatal("zero id must remain new on repeat")
+	}
+	// Capacity eviction: adding 2 and 3 evicts 1, so 1 is "new" again.
+	d.markNew(2)
+	d.markNew(3)
+	if !d.markNew(1) {
+		t.Fatal("note 1 should have been evicted and seen as new again")
 	}
 }

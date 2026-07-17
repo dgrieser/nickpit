@@ -29,6 +29,9 @@ type fakeGitLab struct {
 	// failDiscussions makes discussion-reply POSTs 404 to exercise the
 	// plain-note fallback.
 	failDiscussions bool
+	// discussionRoot, when set, is returned as the single root note of a
+	// discussion GET, so the chat thread gate can be exercised.
+	discussionRoot string
 }
 
 // recordedPost is one captured POST request.
@@ -60,6 +63,13 @@ func (f *fakeGitLab) handler() http.Handler {
 		case r.URL.Path == "/api/v4/projects/42":
 			f.topicGET++
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "topics": f.topics})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/discussions/"):
+			// Single-discussion fetch used by the chat thread gate.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"notes": []map[string]any{
+					{"body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},
+				},
+			})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]any{"state": f.state, "draft": f.draft, "sha": f.headSHA})
 		}

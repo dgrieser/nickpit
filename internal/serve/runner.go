@@ -50,11 +50,14 @@ type ChatSpec struct {
 	ProjectPath  string
 	IID          int
 	DiscussionID string
-	Token        string
-	BaseURL      string
-	ConfigPath   string
-	ExtraArgs    []string
-	LogDir       string
+	// NoteID is the triggering note; the child answers only when this note is
+	// still the latest reply, so racing/redelivered replies do not double-answer.
+	NoteID     int
+	Token      string
+	BaseURL    string
+	ConfigPath string
+	ExtraArgs  []string
+	LogDir     string
 }
 
 // ChatRunner executes one discussion-thread reply in a child process.
@@ -168,6 +171,9 @@ func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, e
 		"--repo", spec.ProjectPath,
 		"--id", strconv.Itoa(spec.IID),
 		"--reply-discussion", spec.DiscussionID,
+	}
+	if spec.NoteID > 0 {
+		args = append(args, "--reply-note", strconv.Itoa(spec.NoteID))
 	}
 	if spec.ConfigPath != "" {
 		args = append(args, "--config", spec.ConfigPath)

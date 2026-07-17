@@ -77,6 +77,7 @@ func (c *Client) DiscussionNoteBodies(ctx context.Context, project string, iid i
 	escaped := escapeProject(project)
 	var discussion struct {
 		Notes []struct {
+			ID     int    `json:"id"`
 			Body   string `json:"body"`
 			System bool   `json:"system"`
 			Author struct {
@@ -92,6 +93,7 @@ func (c *Client) DiscussionNoteBodies(ctx context.Context, project string, iid i
 	notes := make([]DiscussionNote, 0, len(discussion.Notes))
 	for _, note := range discussion.Notes {
 		notes = append(notes, DiscussionNote{
+			ID:         note.ID,
 			Body:       note.Body,
 			System:     note.System,
 			AuthorName: note.Author.Username,
@@ -103,6 +105,7 @@ func (c *Client) DiscussionNoteBodies(ctx context.Context, project string, iid i
 
 // DiscussionNote is one note within a discussion thread.
 type DiscussionNote struct {
+	ID         int
 	Body       string
 	System     bool
 	AuthorName string

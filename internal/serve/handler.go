@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	gitlab "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 // maxWebhookBody bounds webhook payloads; GitLab MR events stay far below.
@@ -19,10 +22,19 @@ const maxWebhookBody = 10 << 20 // 10 MiB
 // and answering command comments.
 const commandReplyTimeout = 30 * time.Second
 
-// chatReplyTimeout bounds a discussion-agent reply, which runs an LLM turn (and
-// possibly tool calls) in-process, so it is far longer than a plain command
-// reply.
+// chatReplyTimeout bounds a discussion-agent reply, which spawns a child running
+// an LLM turn (and possibly tool calls), so it is far longer than a plain
+// command reply.
 const chatReplyTimeout = 10 * time.Minute
+
+// defaultMaxConcurrentChats bounds how many chat children run at once when the
+// serve config does not set a limit, so a burst of discussion activity cannot
+// spawn unbounded processes, API requests, and log files.
+const defaultMaxConcurrentChats = 4
+
+// chatSeenCap bounds the recently-answered note set used to drop webhook
+// redeliveries of the same note.
+const chatSeenCap = 1024
 
 // HandlerConfig is the static trigger configuration for the webhook endpoint.
 type HandlerConfig struct {
@@ -52,6 +64,9 @@ type ChatConfig struct {
 	BaseURL    string
 	LogDir     string
 	ExtraArgs  []string
+	// MaxConcurrent caps concurrent chat children; <=0 uses
+	// defaultMaxConcurrentChats.
+	MaxConcurrent int
 }
 
 type Handler struct {
@@ -64,10 +79,87 @@ type Handler struct {
 	// candidate events are then ignored.
 	chatRunner ChatRunner
 	chatCfg    ChatConfig
+	// chatSem bounds concurrent chat work (thread gate + child) so a burst of
+	// discussion activity cannot spawn unbounded processes.
+	chatSem chan struct{}
+	// chatLocks serializes chat replies within a discussion, so two quick replies
+	// are answered in order instead of racing and both answering the newest note.
+	chatLocks keyedMutex
+	// chatSeen drops webhook redeliveries of a note already answered.
+	chatSeen *noteDedup
 }
 
 func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chatRunner ChatRunner, chatCfg ChatConfig, log *slog.Logger) *Handler {
-	return &Handler{groups: groups, dispatcher: dispatcher, cfg: cfg, chatRunner: chatRunner, chatCfg: chatCfg, log: log}
+	limit := chatCfg.MaxConcurrent
+	if limit <= 0 {
+		limit = defaultMaxConcurrentChats
+	}
+	return &Handler{
+		groups:     groups,
+		dispatcher: dispatcher,
+		cfg:        cfg,
+		chatRunner: chatRunner,
+		chatCfg:    chatCfg,
+		chatSem:    make(chan struct{}, limit),
+		chatSeen:   newNoteDedup(chatSeenCap),
+		log:        log,
+	}
+}
+
+// keyedMutex provides a mutex per string key, so callers serialize work for the
+// same key while different keys proceed concurrently.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func (k *keyedMutex) lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = make(map[string]*sync.Mutex)
+	}
+	m, ok := k.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		k.locks[key] = m
+	}
+	k.mu.Unlock()
+	m.Lock()
+	return m.Unlock
+}
+
+// noteDedup remembers recently answered note ids (bounded, FIFO eviction) so a
+// redelivered webhook for the same note is not answered twice.
+type noteDedup struct {
+	mu    sync.Mutex
+	seen  map[int]struct{}
+	order []int
+	cap   int
+}
+
+func newNoteDedup(capacity int) *noteDedup {
+	return &noteDedup{seen: make(map[int]struct{}), cap: capacity}
+}
+
+// markNew records id and reports whether it was newly seen. A zero id (unknown)
+// is always treated as new so it is never silently dropped.
+func (d *noteDedup) markNew(id int) bool {
+	if id == 0 {
+		return true
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.seen[id]; ok {
+		return false
+	}
+	d.seen[id] = struct{}{}
+	d.order = append(d.order, id)
+	if len(d.order) > d.cap {
+		oldest := d.order[0]
+		d.order = d.order[1:]
+		delete(d.seen, oldest)
+	}
+	return true
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -199,19 +291,59 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 }
 
 // handleChat answers a discussion-thread reply by spawning a `nickpit chat`
-// child, keeping the daemon free of LLM logic. The child self-gates (a thread
-// nickpit did not start is a quiet no-op) and posts its reply itself. Runs under
-// chatReplyTimeout; a lost reply on shutdown is acceptable, like command replies.
+// child, keeping the daemon free of LLM logic. It guards several hazards before
+// spawning:
+//   - a group whose bot identity is unresolved is skipped, because the daemon
+//     cannot filter its own replies and would answer them in a loop;
+//   - webhook redeliveries of an already-answered note are dropped;
+//   - concurrent chat work is bounded by a semaphore, and replies within one
+//     discussion are serialized so two quick replies do not race;
+//   - a cheap thread gate confirms the thread was started by nickpit before a
+//     child is spawned, so unrelated comments never launch a process.
+//
+// The child self-gates too and posts its reply. A lost reply on shutdown is
+// acceptable, like command replies.
 func (h *Handler) handleChat(group *Group, projectPath string, decision Decision) {
 	if h.chatRunner == nil {
 		return
 	}
+	// Without a resolved bot identity, the daemon cannot recognize (and skip) its
+	// own posted replies, so answering would recurse. Disable chat for the group.
+	if group.BotUserID == 0 {
+		h.log.Warn("skipping chat: bot user id unresolved", "group", group.Path, "iid", decision.IID)
+		return
+	}
+	if !h.chatSeen.markNew(decision.NoteID) {
+		h.log.Debug("skipping duplicate chat note", "iid", decision.IID, "note", decision.NoteID)
+		return
+	}
+	// Bound concurrent chat work; drop under load rather than pile up processes.
+	select {
+	case h.chatSem <- struct{}{}:
+	default:
+		h.log.Warn("chat busy, dropping reply", "iid", decision.IID, "discussion", decision.DiscussionID)
+		return
+	}
+	defer func() { <-h.chatSem }()
+
+	// Serialize replies within a discussion so ordering is preserved.
+	unlock := h.chatLocks.lock(fmt.Sprintf("%s!%s", projectPath, decision.DiscussionID))
+	defer unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), chatReplyTimeout)
 	defer cancel()
+
+	// Inexpensive gate: only spawn a child for a thread nickpit actually started.
+	if !h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID) {
+		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
+		return
+	}
+
 	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
 		ProjectPath:  projectPath,
 		IID:          decision.IID,
 		DiscussionID: decision.DiscussionID,
+		NoteID:       decision.NoteID,
 		Token:        group.Token,
 		BaseURL:      h.chatCfg.BaseURL,
 		ConfigPath:   h.chatCfg.ConfigPath,
@@ -226,6 +358,22 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 	default:
 		h.log.Info("chat reply handled", "iid", decision.IID, "discussion", decision.DiscussionID)
 	}
+}
+
+// isNickpitThread reports whether the discussion's root note carries a nickpit
+// review marker, i.e. the thread was started by a nickpit review. Read failures
+// are treated as "not ours" so a transient error never spawns a child.
+func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath string, iid int, discussionID string) bool {
+	notes, err := group.Client.DiscussionNoteBodies(ctx, projectPath, iid, discussionID)
+	if err != nil {
+		h.log.Debug("chat gate: reading thread failed", "iid", iid, "discussion", discussionID, "error", err)
+		return false
+	}
+	if len(notes) == 0 {
+		return false
+	}
+	_, _, ok := reviewmd.DetectThreadReview(notes[0].Body)
+	return ok
 }
 
 // ackNote awards the given acknowledgement emoji on the command note ("" skips).

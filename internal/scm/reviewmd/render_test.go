@@ -1,6 +1,9 @@
 package reviewmd
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -227,6 +230,53 @@ func TestFingerprintMarkerUsesDisplayTitle(t *testing.T) {
 	CollectPriorFindings(FingerprintMarker(f, displayTitle), &priors)
 	if len(priors) != 1 || priors[0].Title != "summarized title" {
 		t.Fatalf("fp should carry the displayed title, got %+v", priors)
+	}
+}
+
+func TestDecodeMarkerRejectsZipBomb(t *testing.T) {
+	// A small gzip payload that expands past the cap must be rejected, not read
+	// into memory unbounded.
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(make([]byte, maxCarrierDecodedBytes+1024)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	marker := FindingMarkerPrefix + base64.StdEncoding.EncodeToString(buf.Bytes()) + " -->"
+	if got := CollectFindingEnvelopes(marker); len(got) != 0 {
+		t.Fatalf("over-cap payload should be rejected, got %d envelopes", len(got))
+	}
+}
+
+func TestCarrierNoteReassembles(t *testing.T) {
+	result := &model.ReviewResult{
+		ReviewID:               "rev-c",
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     "carrier note test",
+		OverallConfidenceScore: 0.6,
+		Repo:                   "grp/proj",
+		Identifier:             9,
+		Findings: []model.Finding{
+			{ID: "f1", Title: "One", Body: "b1", CodeLocation: model.CodeLocation{FilePath: "a.go"}},
+			{ID: "f2", Title: "Two", Body: "b2", CodeLocation: model.CodeLocation{FilePath: "b.go"}},
+		},
+	}
+	note := NewRenderer("https://host/").CarrierNote(result)
+	if note == "" {
+		t.Fatal("carrier note empty")
+	}
+	byID := ReviewResultsByID([]string{note})
+	got := byID["rev-c"]
+	if got == nil {
+		t.Fatalf("carrier note did not reassemble: %v", byID)
+	}
+	if got.OverallExplanation != "carrier note test" || len(got.Findings) != 2 {
+		t.Fatalf("carrier reassembly incomplete: %+v", got)
+	}
+	if NewRenderer("").CarrierNote(&model.ReviewResult{}) != "" {
+		t.Fatalf("carrier note should be empty without a review id")
 	}
 }
 
