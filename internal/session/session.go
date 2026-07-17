@@ -52,7 +52,7 @@ type Message struct {
 	Name       string            `json:"name,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall        `json:"tool_calls,omitempty"`
-	CreatedAt  time.Time         `json:"created_at,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
 	Tokens     *model.TokenUsage `json:"tokens,omitempty"`
 }
 
