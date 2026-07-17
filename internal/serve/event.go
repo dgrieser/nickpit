@@ -12,9 +12,9 @@ type TriggerKind int
 const (
 	// TriggerNone marks events that must be ignored.
 	TriggerNone TriggerKind = iota
-	// TriggerAuto is a review caused by MR activity (open/reopen/new
-	// commits/ready transition); it requires the project opt-in topic and is
-	// deduplicated by head SHA.
+	// TriggerAuto is a review caused by MR activity (open/reopen/ready
+	// transition — deliberately not new commits); it requires the project
+	// opt-in topic and is deduplicated by head SHA.
 	TriggerAuto
 	// TriggerManual is a review explicitly requested by a user awarding the
 	// trigger emoji; it bypasses the topic check, the SHA dedup, and the
@@ -172,10 +172,13 @@ func decideMR(event *WebhookEvent) Decision {
 		if attrs.Draft {
 			return ignore("draft")
 		}
-		if attrs.OldRev == "" {
-			return ignore("metadata update")
+		if attrs.OldRev != "" {
+			// Pushes deliberately do not re-review: every commit to an active
+			// MR would re-run a full review. Re-review is on request only
+			// (trigger emoji, review command) or the ready transition.
+			return ignore("new commits (re-review on request only)")
 		}
-		return trigger("new commits")
+		return ignore("metadata update")
 	default:
 		return ignore("action " + attrs.Action)
 	}
