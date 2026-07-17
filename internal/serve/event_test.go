@@ -27,7 +27,9 @@ func TestDecide(t *testing.T) {
 	}{
 		{"mr_open.json", TriggerAuto, CommandNone, 7, "sha-open-1"},
 		{"mr_open_draft.json", TriggerNone, CommandNone, 8, ""},
-		{"mr_update_oldrev.json", TriggerAuto, CommandNone, 7, "sha-new-2"},
+		// Pushes never auto re-review; re-review is manual (emoji/command) or
+		// the ready transition.
+		{"mr_update_oldrev.json", TriggerNone, CommandNone, 7, ""},
 		{"mr_update_metadata.json", TriggerNone, CommandNone, 7, ""},
 		{"mr_update_ready.json", TriggerAuto, CommandNone, 9, "sha-ready-1"},
 		{"mr_close.json", TriggerNone, CommandNone, 7, ""},

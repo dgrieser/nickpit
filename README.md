@@ -367,7 +367,7 @@ Known limitation: the hidden fingerprint markers are read from all existing PR/M
 
 Triggers:
 
-- **Auto**: MR opened, reopened, new commits pushed, or marked ready — only for projects carrying the opt-in topic (default `nickpit`). Draft MRs are skipped.
+- **Auto**: MR opened, reopened, or marked ready — only for projects carrying the opt-in topic (default `nickpit`). Draft MRs are skipped. New commits never re-review automatically; request one with the trigger emoji or the review command.
 - **Manual**: a user awards the trigger emoji (default a custom emoji named `nickpit`) on an MR — works regardless of topic and also on drafts. Revoking the trigger emoji aborts the MR's queued or running review.
 - **Commands**: an MR comment starting with `/nickpit <command>` (keyword configurable via `command_keyword`):
   - `/nickpit review` — request a review (same semantics as the trigger emoji: any project, drafts too)
@@ -421,7 +421,7 @@ volumes:
   nickpit-logs:
 ```
 
-Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints. Queue state is in-memory only; events arriving while the daemon is down are recovered on the next push or by awarding the trigger emoji.
+Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<iid>-<timestamp>.log`; `GET /healthz` reports queue depth. On SIGTERM the daemon stops accepting events and lets running reviews finish within `shutdown_grace` (default `10m`) before terminating them — an interrupted publish heals on the next run via the comment fingerprints. Queue state is in-memory only; events arriving while the daemon is down are recovered by awarding the trigger emoji (or the review command).
 
 ## Tuning a Review
 
