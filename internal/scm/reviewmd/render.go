@@ -6,9 +6,12 @@
 package reviewmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/dedupe"
@@ -119,6 +122,210 @@ func CollectPriorFindings(body string, out *[]model.Finding) {
 			CodeLocation: model.CodeLocation{FilePath: p.F, LineRange: model.LineRange{Start: p.S, End: p.E}},
 		})
 	}
+}
+
+// ReviewMarkerPrefix opens the summary-note carrier that holds the overall
+// verdict and identifying metadata for one review run. Its payload is a gzipped,
+// base64-encoded reviewEnvelope. Grouped with the per-finding carriers by the
+// shared review id, it lets a later reader (e.g. the discussion agent)
+// reconstruct the full ReviewResult straight from the MR/PR notes.
+const ReviewMarkerPrefix = MarkerOpen + "review:"
+
+// FindingMarkerPrefix opens the per-finding carrier that holds one complete
+// model.Finding (body, suggestions, verification, finalization, summarization).
+// Its payload is a gzipped, base64-encoded findingEnvelope.
+const FindingMarkerPrefix = MarkerOpen + "finding:"
+
+// ReviewEnvelope is the summary-note carrier payload: the overall verdict plus
+// the source identity needed to recreate the diff. Findings are carried
+// separately, one per FindingEnvelope, so no single note grows unbounded.
+type ReviewEnvelope struct {
+	ReviewID               string  `json:"rid"`
+	OverallCorrectness     string  `json:"correctness,omitempty"`
+	OverallExplanation     string  `json:"explanation,omitempty"`
+	OverallConfidenceScore float64 `json:"confidence,omitempty"`
+	Repo                   string  `json:"repo,omitempty"`
+	Mode                   string  `json:"mode,omitempty"`
+	Identifier             int     `json:"identifier,omitempty"`
+	BaseRef                string  `json:"base_ref,omitempty"`
+	HeadRef                string  `json:"head_ref,omitempty"`
+	BaseURL                string  `json:"base_url,omitempty"`
+	Model                  string  `json:"model,omitempty"`
+}
+
+// FindingEnvelope is the per-finding carrier payload: the review id it belongs to
+// and one complete finding.
+type FindingEnvelope struct {
+	ReviewID string        `json:"rid"`
+	Finding  model.Finding `json:"finding"`
+}
+
+// ReviewMarker renders the hidden summary-note carrier for result. It returns ""
+// when result has no review id (nothing to group by). gzip keeps large payloads
+// inside the platform note-size limits; base64.StdEncoding keeps the payload free
+// of "-->" and the MarkerOpen token, so it can neither close the marker early nor
+// be forged from untrusted text.
+func ReviewMarker(result *model.ReviewResult) string {
+	if result == nil || result.ReviewID == "" {
+		return ""
+	}
+	return encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{
+		ReviewID:               result.ReviewID,
+		OverallCorrectness:     result.OverallCorrectness,
+		OverallExplanation:     result.OverallExplanation,
+		OverallConfidenceScore: result.OverallConfidenceScore,
+		Repo:                   result.Repo,
+		Mode:                   result.Mode,
+		Identifier:             result.Identifier,
+		BaseRef:                result.BaseRef,
+		HeadRef:                result.HeadRef,
+		BaseURL:                result.BaseURL,
+		Model:                  result.Model,
+	})
+}
+
+// FindingMarker renders the hidden per-finding carrier for finding under review
+// id reviewID. It returns "" when reviewID is empty.
+func FindingMarker(reviewID string, finding model.Finding) string {
+	if reviewID == "" {
+		return ""
+	}
+	return encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: finding})
+}
+
+// encodeMarker gzips and base64-encodes payload into a hidden marker opened by
+// prefix. A marsh/compress failure yields "" so a publish never aborts on it.
+func encodeMarker(prefix string, payload any) string {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(raw); err != nil {
+		return ""
+	}
+	if err := zw.Close(); err != nil {
+		return ""
+	}
+	return prefix + base64.StdEncoding.EncodeToString(buf.Bytes()) + " -->"
+}
+
+// decodeMarker reverses encodeMarker into out. It reports false on any decode
+// failure so one corrupt carrier can never abort a scan.
+func decodeMarker(raw string, out any) bool {
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = zr.Close() }()
+	decoded, err := io.ReadAll(zr)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(decoded, out) == nil
+}
+
+// scanMarkers walks body for every carrier opened by prefix, handing each raw
+// (undecoded) payload to fn. Payloads cannot contain "-->" (base64 has no '-'),
+// so the close scan is unambiguous.
+func scanMarkers(body, prefix string, fn func(raw string)) {
+	rest := body
+	for {
+		i := strings.Index(rest, prefix)
+		if i < 0 {
+			return
+		}
+		rest = rest[i+len(prefix):]
+		j := strings.Index(rest, "-->")
+		if j < 0 {
+			return
+		}
+		fn(strings.TrimSpace(rest[:j]))
+		rest = rest[j+3:]
+	}
+}
+
+// CollectReviewEnvelopes decodes every review carrier found in body.
+func CollectReviewEnvelopes(body string) []ReviewEnvelope {
+	var out []ReviewEnvelope
+	scanMarkers(body, ReviewMarkerPrefix, func(raw string) {
+		var env ReviewEnvelope
+		if decodeMarker(raw, &env) {
+			out = append(out, env)
+		}
+	})
+	return out
+}
+
+// CollectFindingEnvelopes decodes every finding carrier found in body.
+func CollectFindingEnvelopes(body string) []FindingEnvelope {
+	var out []FindingEnvelope
+	scanMarkers(body, FindingMarkerPrefix, func(raw string) {
+		var env FindingEnvelope
+		if decodeMarker(raw, &env) {
+			out = append(out, env)
+		}
+	})
+	return out
+}
+
+// ReviewResultsByID reassembles complete ReviewResults from the carrier markers
+// spread across the given note/comment bodies, keyed by review id. The overall
+// verdict and metadata come from each review carrier; findings are collected from
+// the per-finding carriers. Findings are de-duplicated by id within a review so a
+// finding that appears in both the notes list and the discussions list (GitLab
+// returns discussion notes in both) is not counted twice.
+func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
+	byID := make(map[string]*model.ReviewResult)
+	seen := make(map[string]map[string]struct{})
+	get := func(rid string) *model.ReviewResult {
+		r := byID[rid]
+		if r == nil {
+			r = &model.ReviewResult{ReviewID: rid}
+			byID[rid] = r
+			seen[rid] = make(map[string]struct{})
+		}
+		return r
+	}
+	for _, body := range bodies {
+		for _, env := range CollectReviewEnvelopes(body) {
+			if env.ReviewID == "" {
+				continue
+			}
+			r := get(env.ReviewID)
+			r.OverallCorrectness = env.OverallCorrectness
+			r.OverallExplanation = env.OverallExplanation
+			r.OverallConfidenceScore = env.OverallConfidenceScore
+			r.Repo = env.Repo
+			r.Mode = env.Mode
+			r.Identifier = env.Identifier
+			r.BaseRef = env.BaseRef
+			r.HeadRef = env.HeadRef
+			r.BaseURL = env.BaseURL
+			r.Model = env.Model
+		}
+	}
+	for _, body := range bodies {
+		for _, env := range CollectFindingEnvelopes(body) {
+			if env.ReviewID == "" {
+				continue
+			}
+			r := get(env.ReviewID)
+			if id := env.Finding.ID; id != "" {
+				if _, dup := seen[env.ReviewID][id]; dup {
+					continue
+				}
+				seen[env.ReviewID][id] = struct{}{}
+			}
+			r.Findings = append(r.Findings, env.Finding)
+		}
+	}
+	return byID
 }
 
 // Priors holds what a prior run left on a pull/merge request: the raw markers
@@ -234,6 +441,18 @@ func CorrectnessName(correctness string) string {
 type Renderer struct {
 	// assetBaseURL is the badge SVG host, always normalized to a trailing "/".
 	assetBaseURL string
+	// reviewID, when set (see ForReview), is embedded as a hidden per-finding
+	// carrier marker so findings can later be regrouped by review run. SummaryBody
+	// reads the id from the result directly and does not need this.
+	reviewID string
+}
+
+// ForReview returns a copy of the renderer bound to reviewID, so FindingBody
+// emits the hidden per-finding carrier marker for that run. Renderer is a value
+// type, so this never mutates the shared renderer.
+func (r Renderer) ForReview(reviewID string) Renderer {
+	r.reviewID = reviewID
+	return r
 }
 
 // NewRenderer normalizes a user-supplied badge host: empty falls back to
@@ -287,6 +506,10 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 		b.WriteString(hardBreakParagraphs(explanation))
 		b.WriteString("\n")
 	}
+	if marker := ReviewMarker(result); marker != "" {
+		b.WriteString("\n")
+		b.WriteString(marker)
+	}
 	return b.String()
 }
 
@@ -298,6 +521,10 @@ func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) stri
 	title, body, rank, confidence := FindingDisplay(finding)
 	var b strings.Builder
 	b.WriteString(FingerprintMarker(finding, title))
+	if marker := FindingMarker(r.reviewID, finding); marker != "" {
+		b.WriteString("\n")
+		b.WriteString(marker)
+	}
 	b.WriteString("\n\n")
 	// Trailing two spaces: markdown hard break stacking badge over confidence.
 	fmt.Fprintf(&b, "%s  \n%s  \n\n", r.PriorityBadge(rank), ConfidenceLine(confidence))

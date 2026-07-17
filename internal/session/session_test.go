@@ -1,0 +1,111 @@
+package session
+
+import (
+	"testing"
+
+	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/model"
+)
+
+func TestStoreSaveLoadRoundTrip(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	sess := New()
+	sess.ReviewID = "rev-1"
+	sess.PinnedFindingID = "f1"
+	sess.Source = Source{Mode: "gitlab", Repo: "grp/proj", Identifier: 42, BaseURL: "https://gl"}
+	sess.Result = &model.ReviewResult{ReviewID: "rev-1", OverallCorrectness: "patch is incorrect"}
+	sess.Append(UserMessage("why is this a bug?"))
+	sess.Append(FromLLM(llm.Message{Role: "assistant", Content: "because X", ToolCalls: []llm.ToolCall{{ID: "t1", Name: "search", Arguments: "{}"}}}))
+
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := store.Load(sess.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.ReviewID != "rev-1" || loaded.PinnedFindingID != "f1" || loaded.Source.Identifier != 42 {
+		t.Fatalf("metadata not persisted: %+v", loaded)
+	}
+	if len(loaded.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(loaded.Messages))
+	}
+	conv := loaded.Conversation()
+	if conv[0].Role != "user" || conv[0].Content != "why is this a bug?" {
+		t.Fatalf("user message not round-tripped: %+v", conv[0])
+	}
+	if len(conv[1].ToolCalls) != 1 || conv[1].ToolCalls[0].Name != "search" {
+		t.Fatalf("tool call not round-tripped: %+v", conv[1])
+	}
+	if loaded.UpdatedAt.Before(loaded.CreatedAt) {
+		t.Fatalf("UpdatedAt should be >= CreatedAt")
+	}
+}
+
+func TestStoreListLatest(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	a := New()
+	a.Source.Repo = "a/a"
+	if err := store.Save(a); err != nil {
+		t.Fatalf("save a: %v", err)
+	}
+	b := New()
+	b.Source.Repo = "b/b"
+	if err := store.Save(b); err != nil {
+		t.Fatalf("save b: %v", err)
+	}
+	// Re-save a so it becomes the most recently updated.
+	if err := store.Save(a); err != nil {
+		t.Fatalf("re-save a: %v", err)
+	}
+	infos, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(infos))
+	}
+	latest, err := store.Latest()
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if latest.ID != a.ID {
+		t.Fatalf("latest should be the re-saved session %q, got %q", a.ID, latest.ID)
+	}
+}
+
+func TestStoreListEmptyDir(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	infos, err := store.List()
+	if err != nil {
+		t.Fatalf("List on empty: %v", err)
+	}
+	if len(infos) != 0 {
+		t.Fatalf("expected no sessions, got %d", len(infos))
+	}
+	latest, err := store.Latest()
+	if err != nil || latest != nil {
+		t.Fatalf("Latest on empty should be (nil,nil), got (%v,%v)", latest, err)
+	}
+}
+
+func TestValidateID(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	for _, bad := range []string{"", "../escape", "a/b", `a\b`, ".", ".."} {
+		if _, err := store.Path(bad); err == nil {
+			t.Fatalf("expected error for id %q", bad)
+		}
+	}
+	if _, err := store.Path("valid-id_123"); err != nil {
+		t.Fatalf("valid id rejected: %v", err)
+	}
+}

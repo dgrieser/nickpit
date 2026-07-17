@@ -33,9 +33,13 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		changesByPath[change.NewPath] = change
 	}
 
+	// Bind the renderer to this run's review id so every note carries the hidden
+	// carrier markers used to regroup findings later (e.g. for a discussion).
+	render := a.render.ForReview(result.ReviewID)
+
 	var errs []error
 	if _, ok := prior.Markers[reviewmd.SummaryMarker]; !ok {
-		if err := a.client.Post(ctx, notesPath, map[string]string{"body": a.render.SummaryBody(result)}, nil); err != nil {
+		if err := a.client.Post(ctx, notesPath, map[string]string{"body": render.SummaryBody(result)}, nil); err != nil {
 			errs = append(errs, fmt.Errorf("summary: %w", err))
 		}
 	}
@@ -45,7 +49,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			continue
 		}
 		change, hasChange := changesByPath[finding.CodeLocation.FilePath]
-		if err := a.publishFinding(ctx, notesPath, discussionsPath, change, hasChange, info.DiffRefs, finding); err != nil {
+		if err := a.publishFinding(ctx, render, notesPath, discussionsPath, change, hasChange, info.DiffRefs, finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
 		}
 	}
@@ -55,10 +59,10 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 // publishFinding posts a single finding. It tries a multi-line inline comment,
 // then a single-line inline comment, then (on an unmappable line or a 422 from
 // GitLab) a general note carrying file:line.
-func (a *Adapter) publishFinding(ctx context.Context, notesPath, discussionsPath string, change MRChange, hasChange bool, refs DiffRefs, finding model.Finding) error {
+func (a *Adapter) publishFinding(ctx context.Context, render reviewmd.Renderer, notesPath, discussionsPath string, change MRChange, hasChange bool, refs DiffRefs, finding model.Finding) error {
 	if hasChange {
 		if pos, ok := multiLinePosition(change, refs, finding.CodeLocation.LineRange); ok {
-			err := a.client.Post(ctx, discussionsPath, discussionPayload(a.render.FindingBody(finding, ""), pos), nil)
+			err := a.client.Post(ctx, discussionsPath, discussionPayload(render.FindingBody(finding, ""), pos), nil)
 			if err == nil {
 				return nil
 			}
@@ -67,7 +71,7 @@ func (a *Adapter) publishFinding(ctx context.Context, notesPath, discussionsPath
 			}
 		}
 		if pos, ok := bestPosition(change, refs, finding.CodeLocation.LineRange); ok {
-			err := a.client.Post(ctx, discussionsPath, discussionPayload(a.render.FindingBody(finding, ""), pos), nil)
+			err := a.client.Post(ctx, discussionsPath, discussionPayload(render.FindingBody(finding, ""), pos), nil)
 			if err == nil {
 				return nil
 			}
@@ -77,7 +81,7 @@ func (a *Adapter) publishFinding(ctx context.Context, notesPath, discussionsPath
 		}
 	}
 	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
-	return a.client.Post(ctx, notesPath, map[string]string{"body": a.render.FindingBody(finding, prefix)}, nil)
+	return a.client.Post(ctx, notesPath, map[string]string{"body": render.FindingBody(finding, prefix)}, nil)
 }
 
 func discussionPayload(body string, pos position) map[string]any {

@@ -25,6 +25,11 @@ const (
 	// CommandUnknown is an unrecognized subcommand after the keyword; the user
 	// addressed the bot, so it gets an error reply instead of silence.
 	CommandUnknown
+	// CommandChat is a plain (non-keyword) reply inside a discussion thread. It
+	// is a candidate for the discussion agent; the handler confirms via I/O that
+	// the thread was started by nickpit (its root note carries a review marker)
+	// before answering, so unrelated MR comments are dropped.
+	CommandChat
 )
 
 func (k CommandKind) String() string {
@@ -39,6 +44,8 @@ func (k CommandKind) String() string {
 		return "help"
 	case CommandUnknown:
 		return "unknown"
+	case CommandChat:
+		return "chat"
 	default:
 		return "none"
 	}

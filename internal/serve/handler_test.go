@@ -44,7 +44,7 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 		CommandKeyword: "nickpit",
 		AckEmoji:       "white_check_mark",
 		AbortEmoji:     "stop_button",
-	}, discardLogger())
+	}, nil, discardLogger())
 	return &handlerEnv{
 		handler:    handler,
 		dispatcher: dispatcher,

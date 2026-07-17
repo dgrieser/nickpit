@@ -26,6 +26,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/versionmatch"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/dgrieser/nickpit/prompts"
+	"github.com/google/uuid"
 )
 
 type Engine struct {
@@ -257,6 +258,9 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 }
 
 func (e *Engine) applyResultMetadata(result *model.ReviewResult, req model.ReviewRequest, reviewCtx *model.ReviewContext) {
+	if result.ReviewID == "" {
+		result.ReviewID = uuid.NewString()
+	}
 	result.Mode = string(req.Mode)
 	if req.Submode != "" {
 		result.Mode = result.Mode + ":" + req.Submode

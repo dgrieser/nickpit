@@ -80,6 +80,11 @@ type ReviewRequest struct {
 }
 
 type ReviewResult struct {
+	// ReviewID uniquely identifies a single completed review run. It is stamped
+	// once the pipeline finishes and is carried in the hidden SCM note markers so
+	// all findings and the overall verdict for one run can be regrouped later
+	// (e.g. when starting a discussion about the review).
+	ReviewID               string     `json:"review_id,omitempty"`
 	Findings               []Finding  `json:"findings"`
 	OverallCorrectness     string     `json:"overall_correctness"`
 	OverallExplanation     string     `json:"overall_explanation"`

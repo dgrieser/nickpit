@@ -47,7 +47,12 @@ func TestDecide(t *testing.T) {
 		{"note_command_status.json", TriggerNone, CommandStatus, 11, ""},
 		{"note_command_help.json", TriggerNone, CommandHelp, 11, ""},
 		{"note_command_unknown.json", TriggerNone, CommandUnknown, 11, ""},
-		{"note_plain.json", TriggerNone, CommandNone, 0, ""},
+		// A plain reply inside a discussion thread is a chat candidate; the
+		// handler gates it on the thread's root marker before answering.
+		{"note_plain.json", TriggerNone, CommandChat, 11, ""},
+		// A plain reply with no discussion is a standalone comment, not a thread
+		// reply, so it is ignored (no chat).
+		{"note_plain_no_discussion.json", TriggerNone, CommandNone, 0, ""},
 		{"note_command_bot.json", TriggerNone, CommandNone, 0, ""},
 		{"note_system.json", TriggerNone, CommandNone, 0, ""},
 		{"note_on_issue.json", TriggerNone, CommandNone, 0, ""},
@@ -74,6 +79,27 @@ func TestDecideNoteCarriesReplyContext(t *testing.T) {
 	decision := Decide(loadEvent(t, "note_command_status.json"), "nickpit", "nickpit", nil)
 	if decision.NoteID != 303 || decision.DiscussionID != "disc-303" {
 		t.Fatalf("decision = %+v, want note id 303, discussion disc-303", decision)
+	}
+}
+
+// A plain thread reply carries the note text and discussion id so the handler
+// can pass the author's message to the discussion agent.
+func TestDecideNoteChatCarriesText(t *testing.T) {
+	decision := Decide(loadEvent(t, "note_plain.json"), "nickpit", "nickpit", nil)
+	if decision.Command != CommandChat {
+		t.Fatalf("expected chat command, got %v", decision.Command)
+	}
+	if decision.DiscussionID != "disc-306" || decision.NoteText != "looks good to me" {
+		t.Fatalf("decision = %+v, want discussion disc-306 and note text", decision)
+	}
+}
+
+// The daemon's own thread replies must not be treated as chat (loop guard).
+func TestDecideNoteChatBotIgnored(t *testing.T) {
+	event := loadEvent(t, "note_plain.json")
+	decision := Decide(event, "nickpit", "nickpit", map[int]bool{event.User.ID: true})
+	if decision.Command != CommandNone || decision.Kind != TriggerNone {
+		t.Fatalf("bot thread reply should be ignored, got %+v", decision)
 	}
 }
 

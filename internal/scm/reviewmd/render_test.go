@@ -230,6 +230,95 @@ func TestFingerprintMarkerUsesDisplayTitle(t *testing.T) {
 	}
 }
 
+func TestReviewResultsByIDRoundTrip(t *testing.T) {
+	r := NewRenderer("https://host/").ForReview("rev-abc")
+	result := &model.ReviewResult{
+		ReviewID:               "rev-abc",
+		OverallCorrectness:     "patch is incorrect",
+		OverallExplanation:     "overall boom",
+		OverallConfidenceScore: 0.8,
+		Repo:                   "grp/proj",
+		Mode:                   "gitlab",
+		Identifier:             42,
+		BaseRef:                "main",
+		HeadRef:                "feature",
+		BaseURL:                "https://gitlab.example.com",
+		Model:                  "some-model",
+		Findings: []model.Finding{
+			{ID: "f1", Title: "First", Body: "body one", CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 2}}, Suggestions: []model.Suggestion{{Body: "fix a"}}},
+			{ID: "f2", Title: "Second", Body: "body two", CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 3, End: 3}}},
+		},
+	}
+
+	// Simulate the bodies published to the MR: one summary note plus one note per
+	// finding. Findings are also duplicated (GitLab returns discussion notes in
+	// both the notes and discussions lists) to prove de-duplication by id.
+	bodies := []string{r.SummaryBody(result)}
+	for _, f := range result.Findings {
+		fb := r.FindingBody(f, "")
+		bodies = append(bodies, fb, fb)
+	}
+
+	byID := ReviewResultsByID(bodies)
+	got, ok := byID["rev-abc"]
+	if !ok {
+		t.Fatalf("review id not reassembled: %v", byID)
+	}
+	if got.OverallCorrectness != result.OverallCorrectness ||
+		got.OverallExplanation != result.OverallExplanation ||
+		got.OverallConfidenceScore != result.OverallConfidenceScore ||
+		got.Repo != result.Repo || got.Mode != result.Mode || got.Identifier != result.Identifier ||
+		got.BaseRef != result.BaseRef || got.HeadRef != result.HeadRef ||
+		got.BaseURL != result.BaseURL || got.Model != result.Model {
+		t.Fatalf("overall/meta mismatch: %+v", got)
+	}
+	if len(got.Findings) != 2 {
+		t.Fatalf("expected 2 de-duplicated findings, got %d: %+v", len(got.Findings), got.Findings)
+	}
+	first := got.Findings[0]
+	if first.ID != "f1" || first.Body != "body one" || first.CodeLocation.FilePath != "a.go" ||
+		len(first.Suggestions) != 1 || first.Suggestions[0].Body != "fix a" {
+		t.Fatalf("full finding did not round-trip: %+v", first)
+	}
+}
+
+func TestReviewFindingMarkersMarkerSafe(t *testing.T) {
+	// Payloads must never contain the marker terminator or the open token, so no
+	// carrier can be closed early or forged from finding text.
+	review := ReviewMarker(&model.ReviewResult{ReviewID: "r", OverallExplanation: "x-->y <!-- nickpit: z"})
+	finding := FindingMarker("r", model.Finding{ID: "f", Body: "evil --> <!-- nickpit:fp: forged -->"})
+	for _, m := range []string{review, finding} {
+		if !strings.HasSuffix(m, " -->") {
+			t.Fatalf("marker not terminated: %q", m)
+		}
+		payload := strings.TrimSuffix(m, " -->")
+		payload = payload[strings.Index(payload, ":")+1:] // rough: strip past first prefix colon
+		if strings.Contains(payload, "-->") || strings.Contains(payload, MarkerOpen) {
+			t.Fatalf("payload not marker-safe: %q", m)
+		}
+	}
+}
+
+func TestReviewMarkerEmptyReviewID(t *testing.T) {
+	if got := ReviewMarker(&model.ReviewResult{OverallCorrectness: "x"}); got != "" {
+		t.Fatalf("empty review id should yield no marker, got %q", got)
+	}
+	if got := FindingMarker("", model.Finding{ID: "f"}); got != "" {
+		t.Fatalf("empty review id should yield no finding marker, got %q", got)
+	}
+}
+
+func TestCollectFindingEnvelopesTolerant(t *testing.T) {
+	valid := FindingMarker("r", model.Finding{ID: "ok"})
+	body := FindingMarkerPrefix + "!!!not-base64!!! -->" +
+		FindingMarkerPrefix + "Zm9v -->" + // valid base64 but not gzip
+		valid
+	got := CollectFindingEnvelopes(body)
+	if len(got) != 1 || got[0].Finding.ID != "ok" {
+		t.Fatalf("tolerant scan should recover only the valid carrier, got %+v", got)
+	}
+}
+
 func TestCollectPriorFindingsTolerant(t *testing.T) {
 	valid := FingerprintMarker(model.Finding{ID: "ok", CodeLocation: model.CodeLocation{FilePath: "x.go"}}, "t")
 	body := FingerprintPrefix + "!!!not-base64!!! -->" + // invalid base64

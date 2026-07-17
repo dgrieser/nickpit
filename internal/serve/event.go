@@ -129,6 +129,9 @@ type Decision struct {
 	DiscussionID string
 	// UnknownArg is the raw subcommand for CommandUnknown replies.
 	UnknownArg string
+	// NoteText is the raw note body, carried for CommandChat so the handler can
+	// pass the author's message to the discussion agent.
+	NoteText string
 }
 
 // Decide classifies a webhook event. Pure function — no I/O — so the trigger
@@ -247,11 +250,26 @@ func decideNote(event *WebhookEvent, commandKeyword string, botIDs map[int]bool)
 		return Decision{Kind: TriggerNone, Reason: "own note"}
 	}
 	command, arg := ParseCommand(attrs.Note, commandKeyword)
-	if command == CommandNone {
-		return Decision{Kind: TriggerNone, Reason: "no command"}
-	}
 	if event.MergeRequest == nil {
 		return Decision{Kind: TriggerNone, Reason: "note event without merge_request"}
+	}
+	if command == CommandNone {
+		// A plain reply inside a discussion thread is a discussion-agent
+		// candidate. Top-level comments and notes with no discussion are ignored
+		// here; the handler further requires the thread's root note to carry a
+		// nickpit review marker before answering, so unrelated comments are
+		// dropped without a reply.
+		if attrs.DiscussionID != "" {
+			return Decision{
+				Command:      CommandChat,
+				Reason:       "chat reply",
+				IID:          event.MergeRequest.IID,
+				NoteID:       attrs.ID,
+				DiscussionID: attrs.DiscussionID,
+				NoteText:     attrs.Note,
+			}
+		}
+		return Decision{Kind: TriggerNone, Reason: "no command"}
 	}
 	decision := Decision{
 		Command:      command,

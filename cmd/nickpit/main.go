@@ -106,6 +106,8 @@ type app struct {
 	maxFindings                   int
 	maxFindingsSet                bool
 	priorityThreshold             string
+	sessionDir                    string
+	noSession                     bool
 	configPath                    string
 	githubToken                   string
 	gitlabToken                   string
@@ -254,12 +256,15 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
 	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
+	root.PersistentFlags().StringVar(&cli.sessionDir, "session-dir", "", "Directory for discussion (chat) session files (default: $NICKPIT_CACHE_DIR/sessions or <user cache>/nickpit/sessions)")
+	root.PersistentFlags().BoolVar(&cli.noSession, "no-session", false, "Do not auto-save a resumable chat session after a review")
 
 	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newGitCmd())
 	root.AddCommand(cli.newGitHubCmd())
 	root.AddCommand(cli.newGitLabCmd())
 	root.AddCommand(cli.newInspectCmd())
+	root.AddCommand(cli.newChatCmd())
 	return root
 }
 
@@ -851,12 +856,25 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				ExtraArgs:  cfg.Review.ExtraArgs,
 				LogDir:     cfg.LogDir,
 			}, log)
+			// Build the in-process discussion (chat) service from the daemon's
+			// LLM profile so threaded replies in nickpit discussions get answered.
+			// If no usable profile loads (e.g. no LLM key in the daemon env), chat
+			// is disabled and reviews continue to run via child processes.
+			var chatService *serve.ChatService
+			if _, chatProfile, err := a.loadProfileForSpec(); err != nil {
+				log.Warn("discussion chat disabled: could not load LLM profile", "error", err)
+			} else if chatProfile.APIKey == "" {
+				log.Warn("discussion chat disabled: no LLM api_key configured for the daemon")
+			} else {
+				chatService = serve.NewChatService(chatProfile, log)
+			}
+
 			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AckEmoji:       cfg.AckEmojiName(),
 				AbortEmoji:     cfg.AbortEmojiName(),
-			}, log)
+			}, chatService, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)
 		},
@@ -1311,6 +1329,9 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 			a.logProgress(ctx, logging.StagePublish, logging.StateSkip, "source does not support publishing")
 		}
 	}
+	// Save a resumable discussion session so `nickpit chat` can pick up the
+	// review. Best-effort: a failure here never affects the review outcome.
+	a.persistChatSession(ctx, req, result)
 	// Distinguish "review produced nothing because every reviewer crashed"
 	// from "review succeeded with some soft warnings" — only the former is a
 	// CI-level failure. Empty findings alone are not a failure (clean diff).

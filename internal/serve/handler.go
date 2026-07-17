@@ -19,6 +19,11 @@ const maxWebhookBody = 10 << 20 // 10 MiB
 // and answering command comments.
 const commandReplyTimeout = 30 * time.Second
 
+// chatReplyTimeout bounds a discussion-agent reply, which runs an LLM turn (and
+// possibly tool calls) in-process, so it is far longer than a plain command
+// reply.
+const chatReplyTimeout = 10 * time.Minute
+
 // HandlerConfig is the static trigger configuration for the webhook endpoint.
 type HandlerConfig struct {
 	// TriggerEmoji is the award-emoji name requesting a manual review.
@@ -44,10 +49,14 @@ type Handler struct {
 	dispatcher *Dispatcher
 	cfg        HandlerConfig
 	log        *slog.Logger
+	// chat answers discussion-thread replies with the discussion agent. Nil
+	// disables chat (e.g. when the daemon could not load an LLM profile), and
+	// chat candidate events are then ignored.
+	chat *ChatService
 }
 
-func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, log *slog.Logger) *Handler {
-	return &Handler{groups: groups, dispatcher: dispatcher, cfg: cfg, log: log}
+func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chat *ChatService, log *slog.Logger) *Handler {
+	return &Handler{groups: groups, dispatcher: dispatcher, cfg: cfg, chat: chat, log: log}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +93,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	decision := Decide(event, h.cfg.TriggerEmoji, h.cfg.CommandKeyword, h.groups.BotIDs())
 	switch {
+	case decision.Command == CommandChat:
+		if h.chat == nil {
+			h.log.Debug("ignoring chat reply (chat disabled)", "project", event.Project.PathWithNamespace, "iid", decision.IID)
+			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat disabled"})
+			return
+		}
+		go h.handleChat(group, event.Project.ID, event.Project.PathWithNamespace, decision)
+		h.log.Debug("chat reply candidate", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
+		writeJSON(w, map[string]string{"status": "chat"})
 	case decision.Command != CommandNone:
 		h.handleCommand(event, group, decision)
 		h.log.Info("command received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "command", decision.Command.String(), "reason", decision.Reason)
@@ -166,6 +184,27 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 		go h.reply(group, projectID, decision, helpText(h.cfg.CommandKeyword))
 	case CommandUnknown:
 		go h.reply(group, projectID, decision, unknownText(h.cfg.CommandKeyword, decision.UnknownArg))
+	}
+}
+
+// handleChat answers a discussion-thread reply with the discussion agent. It is
+// a no-op when chat is disabled or the thread is not one nickpit started (the
+// chat service reports errNotNickpitThread, which is logged at debug and never
+// posts). The LLM turn runs in-process under chatReplyTimeout.
+func (h *Handler) handleChat(group *Group, projectID int, projectPath string, decision Decision) {
+	if h.chat == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), chatReplyTimeout)
+	defer cancel()
+	err := h.chat.Reply(ctx, group.Client, projectID, projectPath, decision.IID, decision.DiscussionID, group.BotUserID)
+	switch {
+	case err == nil:
+		h.log.Info("chat reply posted", "iid", decision.IID, "discussion", decision.DiscussionID)
+	case errors.Is(err, errNotNickpitThread):
+		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
+	default:
+		h.log.Warn("chat reply failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
 	}
 }
 

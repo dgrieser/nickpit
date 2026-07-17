@@ -43,6 +43,10 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 
 	prior := a.existingComments(ctx, req.Repo, req.Identifier)
 
+	// Bind the renderer to this run's review id so every comment carries the
+	// hidden carrier markers used to regroup findings later.
+	render := a.render.ForReview(result.ReviewID)
+
 	// Partition not-yet-posted findings: those whose line maps to the diff become
 	// inline review comments; the rest become general comments.
 	var inline []inlineItem
@@ -52,7 +56,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		if reviewmd.AlreadyPosted(finding, title, prior) {
 			continue
 		}
-		body := a.render.FindingBody(finding, "")
+		body := render.FindingBody(finding, "")
 		if comment, ok := inlineComment(info.Hunks[finding.CodeLocation.FilePath], finding.CodeLocation.FilePath, finding.CodeLocation.LineRange, body); ok {
 			inline = append(inline, inlineItem{finding: finding, comment: comment})
 		} else {
@@ -62,15 +66,15 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 
 	summaryBody := ""
 	if _, ok := prior.Markers[reviewmd.SummaryMarker]; !ok {
-		summaryBody = a.render.SummaryBody(result)
+		summaryBody = render.SummaryBody(result)
 	}
 
 	var errs []error
-	if err := a.publishReview(ctx, reviewsPath, issueCommentsPath, info.HeadSHA, summaryBody, inline); err != nil {
+	if err := a.publishReview(ctx, render, reviewsPath, issueCommentsPath, info.HeadSHA, summaryBody, inline); err != nil {
 		errs = append(errs, err)
 	}
 	for _, finding := range overflow {
-		if err := a.postIssueComment(ctx, issueCommentsPath, finding); err != nil {
+		if err := a.postIssueComment(ctx, render, issueCommentsPath, finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
 		}
 	}
@@ -81,7 +85,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 // create-review call is atomic, so if it rejects an inline line (422) the whole
 // review fails; we then degrade gracefully — post the summary as a body-only
 // review and each inline finding as a general comment — rather than drop them.
-func (a *Adapter) publishReview(ctx context.Context, reviewsPath, issueCommentsPath, headSHA, summaryBody string, inline []inlineItem) error {
+func (a *Adapter) publishReview(ctx context.Context, render reviewmd.Renderer, reviewsPath, issueCommentsPath, headSHA, summaryBody string, inline []inlineItem) error {
 	body := summaryBody
 	if body == "" && len(inline) > 0 {
 		body = reviewFallbackBody
@@ -109,7 +113,7 @@ func (a *Adapter) publishReview(ctx context.Context, reviewsPath, issueCommentsP
 		}
 	}
 	for _, item := range inline {
-		if err := a.postIssueComment(ctx, issueCommentsPath, item.finding); err != nil {
+		if err := a.postIssueComment(ctx, render, issueCommentsPath, item.finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", item.finding.ID, err))
 		}
 	}
@@ -130,9 +134,9 @@ func (a *Adapter) postReview(ctx context.Context, path, commitID, body string, c
 	return a.client.Post(ctx, path, payload, nil)
 }
 
-func (a *Adapter) postIssueComment(ctx context.Context, path string, finding model.Finding) error {
+func (a *Adapter) postIssueComment(ctx context.Context, render reviewmd.Renderer, path string, finding model.Finding) error {
 	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
-	return a.client.Post(ctx, path, map[string]string{"body": a.render.FindingBody(finding, prefix)}, nil)
+	return a.client.Post(ctx, path, map[string]string{"body": render.FindingBody(finding, prefix)}, nil)
 }
 
 // existingComments collects the markers and finding fingerprints already present
