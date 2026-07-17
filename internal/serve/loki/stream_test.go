@@ -140,7 +140,7 @@ func TestTimestampsMonotonic(t *testing.T) {
 	client := NewClient(Config{URL: srv.URL, BatchWait: time.Minute}, discardLogger())
 	stream := client.NewStream(nil)
 
-	for i := 0; i < 200; i++ {
+	for range 200 {
 		_, _ = io.WriteString(stream, "line\n")
 	}
 	_ = stream.Close()
@@ -176,7 +176,7 @@ func TestDropsWhenBufferFull(t *testing.T) {
 	stream := client.NewStream(nil)
 
 	lw := stream.(*lineWriter)
-	for i := 0; i < 500; i++ {
+	for range 500 {
 		_, _ = io.WriteString(stream, "line\n")
 	}
 

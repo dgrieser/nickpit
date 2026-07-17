@@ -3,6 +3,7 @@ package loki
 import (
 	"bytes"
 	"io"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -22,12 +23,8 @@ const maxLineBytes = 1 << 20 // 1 MiB
 // flush the tail and stop the goroutine.
 func (c *Client) NewStream(streamLabels map[string]string) io.WriteCloser {
 	labels := make(map[string]string, len(c.base)+len(streamLabels))
-	for k, v := range c.base {
-		labels[k] = v
-	}
-	for k, v := range streamLabels {
-		labels[k] = v
-	}
+	maps.Copy(labels, c.base)
+	maps.Copy(labels, streamLabels)
 	w := &lineWriter{
 		client: c,
 		labels: labels,

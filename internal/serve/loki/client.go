@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -87,9 +88,7 @@ func NewClient(cfg Config, log *slog.Logger) *Client {
 		appLabel = defaultAppLabel
 	}
 	base := make(map[string]string, len(cfg.StaticLabels)+1)
-	for k, v := range cfg.StaticLabels {
-		base[k] = v
-	}
+	maps.Copy(base, cfg.StaticLabels)
 	base["app"] = appLabel
 
 	return &Client{

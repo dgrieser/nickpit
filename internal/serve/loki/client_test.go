@@ -287,7 +287,7 @@ func TestWriteNeverBlocksOnSlowBackend(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			_, _ = io.WriteString(stream, "spammy line that would block a naive writer\n")
 		}
 	}()
