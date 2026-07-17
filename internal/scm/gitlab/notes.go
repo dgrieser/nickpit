@@ -34,6 +34,15 @@ func (c *Client) ReplyToMRDiscussion(ctx context.Context, projectID, iid int, di
 	return c.Post(ctx, path, map[string]string{"body": body}, nil)
 }
 
+// ReplyToMRDiscussionPath adds a note to an existing discussion, addressing the
+// project by its group/name path (or numeric id) rather than a numeric id. It is
+// the path-based counterpart of ReplyToMRDiscussion, used by callers that only
+// have the project path (e.g. the chat command).
+func (c *Client) ReplyToMRDiscussionPath(ctx context.Context, project string, iid int, discussionID, body string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s/notes", escapeProject(project), iid, url.PathEscape(discussionID))
+	return c.Post(ctx, path, map[string]string{"body": body}, nil)
+}
+
 // MRNoteBodies returns the body of every note and discussion note on a merge
 // request. It reads both the notes and discussions endpoints (a note appears in
 // both on GitLab); callers de-duplicate on the decoded content. project accepts a

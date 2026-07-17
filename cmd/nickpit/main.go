@@ -856,25 +856,24 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				ExtraArgs:  cfg.Review.ExtraArgs,
 				LogDir:     cfg.LogDir,
 			}, log)
-			// Build the in-process discussion (chat) service from the daemon's
-			// LLM profile so threaded replies in nickpit discussions get answered.
-			// If no usable profile loads (e.g. no LLM key in the daemon env), chat
-			// is disabled and reviews continue to run via child processes.
-			var chatService *serve.ChatService
-			if _, chatProfile, err := a.loadProfileForSpec(); err != nil {
-				log.Warn("discussion chat disabled: could not load LLM profile", "error", err)
-			} else if chatProfile.APIKey == "" {
-				log.Warn("discussion chat disabled: no LLM api_key configured for the daemon")
-			} else {
-				chatService = serve.NewChatService(chatProfile, log)
+			// Threaded replies in nickpit discussions are answered by spawning a
+			// `nickpit chat` child (the same command runnable from the terminal),
+			// so the daemon itself stays free of LLM logic. The child reads the
+			// thread, self-gates on the root marker, and posts its reply.
+			// ExtraArgs are review-child specific (they may carry flags the chat
+			// command does not define); the chat child gets its settings from
+			// --config and the injected token env instead.
+			chatConfig := serve.ChatConfig{
+				ConfigPath: a.configPath,
+				BaseURL:    baseURL,
+				LogDir:     cfg.LogDir,
 			}
-
 			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AckEmoji:       cfg.AckEmojiName(),
 				AbortEmoji:     cfg.AbortEmojiName(),
-			}, chatService, log)
+			}, runner, chatConfig, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)
 		},

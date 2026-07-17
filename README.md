@@ -402,7 +402,7 @@ Triggers:
 
 When a review starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables). Command comments are acknowledged with a reaction emoji (default `:white_check_mark:`, `ack_emoji: ""` disables); `status`, `help`, and `abort` also get a comment reply, threaded under the command.
 
-- **Discussion (chat)**: reply in a thread NickPit started — under a finding's comment or the summary — and the daemon answers in-thread with the discussion agent, no keyword needed. It reassembles the review from the hidden markers on the MR, rebuilds the diff from the current MR, and replies threaded (a reply under a finding is focused on that finding; under the summary it is about the whole review). The whole conversation lives in the MR thread, so it survives daemon restarts. Chat is enabled when the daemon can load an LLM profile (same `--config` the review children use); it is disabled with a warning otherwise, and reviews still run.
+- **Discussion (chat)**: reply in a thread NickPit started — under a finding's comment or the summary — and the daemon answers in-thread with the discussion agent, no keyword needed. Like reviews, each reply runs as a separate `nickpit chat` child process (the daemon itself never loads the LLM), which reassembles the review from the hidden markers on the MR, rebuilds the diff from the current MR, and posts the answer threaded (a reply under a finding is focused on that finding; under the summary it is about the whole review). The whole conversation lives in the MR thread, so it survives daemon restarts. The same `nickpit chat --gitlab --url <MR> --reply-discussion <id>` is runnable from the terminal.
 
 ```bash
 nickpit gitlab serve --serve-config server.yaml

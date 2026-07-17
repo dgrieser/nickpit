@@ -44,19 +44,30 @@ type HandlerConfig struct {
 // (enqueue, abort, status) are synchronous mutex-only dispatcher calls; only
 // the GitLab acknowledgements and replies run in goroutines, which are fire
 // and forget: a reply may be lost when the daemon shuts down mid-flight.
+// ChatConfig carries the static invocation details a spawned chat child needs
+// (the daemon's config path, GitLab base URL, log dir, and any extra args). The
+// per-group token is taken from the matched group at spawn time.
+type ChatConfig struct {
+	ConfigPath string
+	BaseURL    string
+	LogDir     string
+	ExtraArgs  []string
+}
+
 type Handler struct {
 	groups     *GroupSet
 	dispatcher *Dispatcher
 	cfg        HandlerConfig
 	log        *slog.Logger
-	// chat answers discussion-thread replies with the discussion agent. Nil
-	// disables chat (e.g. when the daemon could not load an LLM profile), and
-	// chat candidate events are then ignored.
-	chat *ChatService
+	// chatRunner spawns a `nickpit chat` child to answer a discussion-thread
+	// reply, keeping the daemon free of LLM logic. Nil disables chat, and chat
+	// candidate events are then ignored.
+	chatRunner ChatRunner
+	chatCfg    ChatConfig
 }
 
-func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chat *ChatService, log *slog.Logger) *Handler {
-	return &Handler{groups: groups, dispatcher: dispatcher, cfg: cfg, chat: chat, log: log}
+func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chatRunner ChatRunner, chatCfg ChatConfig, log *slog.Logger) *Handler {
+	return &Handler{groups: groups, dispatcher: dispatcher, cfg: cfg, chatRunner: chatRunner, chatCfg: chatCfg, log: log}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -94,12 +105,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decision := Decide(event, h.cfg.TriggerEmoji, h.cfg.CommandKeyword, h.groups.BotIDs())
 	switch {
 	case decision.Command == CommandChat:
-		if h.chat == nil {
+		if h.chatRunner == nil {
 			h.log.Debug("ignoring chat reply (chat disabled)", "project", event.Project.PathWithNamespace, "iid", decision.IID)
 			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat disabled"})
 			return
 		}
-		go h.handleChat(group, event.Project.ID, event.Project.PathWithNamespace, decision)
+		go h.handleChat(group, event.Project.PathWithNamespace, decision)
 		h.log.Debug("chat reply candidate", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
 		writeJSON(w, map[string]string{"status": "chat"})
 	case decision.Command != CommandNone:
@@ -187,24 +198,33 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 	}
 }
 
-// handleChat answers a discussion-thread reply with the discussion agent. It is
-// a no-op when chat is disabled or the thread is not one nickpit started (the
-// chat service reports errNotNickpitThread, which is logged at debug and never
-// posts). The LLM turn runs in-process under chatReplyTimeout.
-func (h *Handler) handleChat(group *Group, projectID int, projectPath string, decision Decision) {
-	if h.chat == nil {
+// handleChat answers a discussion-thread reply by spawning a `nickpit chat`
+// child, keeping the daemon free of LLM logic. The child self-gates (a thread
+// nickpit did not start is a quiet no-op) and posts its reply itself. Runs under
+// chatReplyTimeout; a lost reply on shutdown is acceptable, like command replies.
+func (h *Handler) handleChat(group *Group, projectPath string, decision Decision) {
+	if h.chatRunner == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), chatReplyTimeout)
 	defer cancel()
-	err := h.chat.Reply(ctx, group.Client, projectID, projectPath, decision.IID, decision.DiscussionID, group.BotUserID)
+	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
+		ProjectPath:  projectPath,
+		IID:          decision.IID,
+		DiscussionID: decision.DiscussionID,
+		Token:        group.Token,
+		BaseURL:      h.chatCfg.BaseURL,
+		ConfigPath:   h.chatCfg.ConfigPath,
+		ExtraArgs:    h.chatCfg.ExtraArgs,
+		LogDir:       h.chatCfg.LogDir,
+	})
 	switch {
-	case err == nil:
-		h.log.Info("chat reply posted", "iid", decision.IID, "discussion", decision.DiscussionID)
-	case errors.Is(err, errNotNickpitThread):
-		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
+	case err != nil:
+		h.log.Warn("chat child failed to run", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+	case exitCode != 0:
+		h.log.Warn("chat child exited with error", "iid", decision.IID, "discussion", decision.DiscussionID, "exit_code", exitCode, "log", logPath)
 	default:
-		h.log.Warn("chat reply failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+		h.log.Info("chat reply handled", "iid", decision.IID, "discussion", decision.DiscussionID)
 	}
 }
 

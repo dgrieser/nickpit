@@ -22,6 +22,22 @@ type handlerEnv struct {
 	lookup     *countingTopicLookup
 	gitlab     *fakeGitLab
 	group      *Group
+	chat       *fakeChatRunner
+}
+
+// fakeChatRunner records the chat children the handler would spawn. Calls arrive
+// on a channel so a test can wait for the handler's fire-and-forget goroutine.
+type fakeChatRunner struct {
+	calls chan ChatSpec
+}
+
+func newFakeChatRunner() *fakeChatRunner {
+	return &fakeChatRunner{calls: make(chan ChatSpec, 4)}
+}
+
+func (r *fakeChatRunner) RunChat(_ context.Context, spec ChatSpec) (int, string, error) {
+	r.calls <- spec
+	return 0, "chat.log", nil
 }
 
 // newHandlerEnv wires a handler to a dispatcher with no started workers, so
@@ -39,18 +55,20 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 	}, server.URL, nil)
 	lookup := &countingTopicLookup{}
 	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
+	chat := newFakeChatRunner()
 	handler := NewHandler(set, dispatcher, HandlerConfig{
 		TriggerEmoji:   "nickpit",
 		CommandKeyword: "nickpit",
 		AckEmoji:       "white_check_mark",
 		AbortEmoji:     "stop_button",
-	}, nil, discardLogger())
+	}, chat, ChatConfig{ConfigPath: "cfg.yaml", BaseURL: "https://gl.example"}, discardLogger())
 	return &handlerEnv{
 		handler:    handler,
 		dispatcher: dispatcher,
 		lookup:     lookup,
 		gitlab:     fake,
 		group:      set.Match("platform/legacy/tool"),
+		chat:       chat,
 	}
 }
 
@@ -107,12 +125,12 @@ func TestHandlerQueuesTrigger(t *testing.T) {
 func TestHandlerIgnoresNonTrigger(t *testing.T) {
 	env := newHandlerEnv(t)
 	cases := map[string]string{
-		"mr_open_draft.json":     "hook-secret",
-		"mr_close.json":          "hook-secret",
-		"emoji_revoke_eyes.json": "legacy-secret", // fixture project is under platform/legacy
-		"note_plain.json":        "legacy-secret",
-		"note_system.json":       "legacy-secret",
-		"note_on_issue.json":     "legacy-secret",
+		"mr_open_draft.json":            "hook-secret",
+		"mr_close.json":                 "hook-secret",
+		"emoji_revoke_eyes.json":        "legacy-secret", // fixture project is under platform/legacy
+		"note_plain_no_discussion.json": "legacy-secret", // no thread => not a chat candidate
+		"note_system.json":              "legacy-secret",
+		"note_on_issue.json":            "legacy-secret",
 	}
 	for fixture, secret := range cases {
 		recorder := postWebhook(t, env.handler, fixture, secret)
@@ -346,6 +364,42 @@ func TestHandlerRejectsOversizedBody(t *testing.T) {
 	big := bytes.Repeat([]byte("x"), maxWebhookBody+1)
 	if recorder := postWebhookBody(t, env.handler, big, "hook-secret"); recorder.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("code=%d", recorder.Code)
+	}
+}
+
+// A plain reply inside a discussion thread spawns a chat child with the group's
+// token and the daemon's config, so the daemon answers without loading the LLM.
+func TestHandlerChatSpawnsChild(t *testing.T) {
+	env := newHandlerEnv(t)
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"chat"`) {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case spec := <-env.chat.calls:
+		if spec.IID != 11 || spec.DiscussionID != "disc-306" {
+			t.Fatalf("chat spec = %+v, want iid 11 discussion disc-306", spec)
+		}
+		if spec.ProjectPath != "platform/legacy/tool" || spec.Token != "t2" || spec.ConfigPath != "cfg.yaml" {
+			t.Fatalf("chat spec = %+v, want project/token/config wired", spec)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("chat child was not spawned")
+	}
+}
+
+// With chat disabled (nil runner), a thread reply is ignored, not spawned.
+func TestHandlerChatDisabled(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRunner = nil
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "ignored") {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned while disabled")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 

@@ -299,6 +299,24 @@ func TestReviewFindingMarkersMarkerSafe(t *testing.T) {
 	}
 }
 
+func TestDetectThreadReview(t *testing.T) {
+	render := NewRenderer("https://host/").ForReview("rev-9")
+	findingNote := render.FindingBody(model.Finding{ID: "f7", Title: "Bug"}, "")
+	summaryNote := render.SummaryBody(&model.ReviewResult{ReviewID: "rev-9", OverallCorrectness: "patch is incorrect"})
+
+	rid, fid, ok := DetectThreadReview(findingNote)
+	if !ok || rid != "rev-9" || fid != "f7" {
+		t.Fatalf("finding thread: rid=%q fid=%q ok=%v", rid, fid, ok)
+	}
+	rid, fid, ok = DetectThreadReview(summaryNote)
+	if !ok || rid != "rev-9" || fid != "" {
+		t.Fatalf("summary thread: rid=%q fid=%q ok=%v", rid, fid, ok)
+	}
+	if _, _, ok := DetectThreadReview("just a normal comment"); ok {
+		t.Fatalf("non-nickpit note should not be detected as a thread")
+	}
+}
+
 func TestReviewMarkerEmptyReviewID(t *testing.T) {
 	if got := ReviewMarker(&model.ReviewResult{OverallCorrectness: "x"}); got != "" {
 		t.Fatalf("empty review id should yield no marker, got %q", got)

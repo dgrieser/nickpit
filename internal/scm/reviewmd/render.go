@@ -274,6 +274,20 @@ func CollectFindingEnvelopes(body string) []FindingEnvelope {
 	return out
 }
 
+// DetectThreadReview inspects a discussion's root note body for a nickpit carrier
+// marker. A finding carrier pins a chat to that finding; a review carrier means a
+// whole-review chat. It reports ok=false when the note carries no nickpit marker,
+// i.e. the thread was not started by nickpit.
+func DetectThreadReview(rootBody string) (reviewID, findingID string, ok bool) {
+	if fes := CollectFindingEnvelopes(rootBody); len(fes) > 0 {
+		return fes[0].ReviewID, fes[0].Finding.ID, true
+	}
+	if res := CollectReviewEnvelopes(rootBody); len(res) > 0 {
+		return res[0].ReviewID, "", true
+	}
+	return "", "", false
+}
+
 // ReviewResultsByID reassembles complete ReviewResults from the carrier markers
 // spread across the given note/comment bodies, keyed by review id. The overall
 // verdict and metadata come from each review carrier; findings are collected from

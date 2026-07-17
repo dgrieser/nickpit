@@ -27,7 +27,7 @@ func newSigningHandler(t *testing.T) *Handler {
 		t.Fatalf("warnings = %v", warnings)
 	}
 	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
-	return NewHandler(set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, discardLogger())
+	return NewHandler(set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
 }
 
 func postSignedWebhook(t *testing.T, handler *Handler, body, key []byte) *httptest.ResponseRecorder {

@@ -42,6 +42,26 @@ type ReviewRunner interface {
 	Run(ctx context.Context, spec ReviewSpec) (exitCode int, logPath string, err error)
 }
 
+// ChatSpec describes one discussion-thread reply to execute in a child process
+// (`nickpit chat --gitlab ... --reply-discussion`). The child reads the thread,
+// gates on the thread's root marker, runs the discussion agent, and posts the
+// reply back into the thread, so the daemon itself stays free of LLM logic.
+type ChatSpec struct {
+	ProjectPath  string
+	IID          int
+	DiscussionID string
+	Token        string
+	BaseURL      string
+	ConfigPath   string
+	ExtraArgs    []string
+	LogDir       string
+}
+
+// ChatRunner executes one discussion-thread reply in a child process.
+type ChatRunner interface {
+	RunChat(ctx context.Context, spec ChatSpec) (exitCode int, logPath string, err error)
+}
+
 // ExecRunner spawns the nickpit binary itself (`gitlab mr ... --publish`) so
 // every review runs isolated in its own process; a crashing or leaking review
 // can never take the daemon down.
@@ -82,8 +102,8 @@ func NewExecRunner(scrubValues []string, sink LogSink) (*ExecRunner, error) {
 }
 
 // childEnv is the daemon environment minus every entry whose value is a
-// configured secret, plus the credentials for this review's group.
-func (r *ExecRunner) childEnv(spec ReviewSpec) []string {
+// configured secret, plus the credentials for this child's group.
+func (r *ExecRunner) childEnv(token, baseURL string) []string {
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, entry := range os.Environ() {
 		if _, value, ok := strings.Cut(entry, "="); ok && r.scrubValues[value] {
@@ -94,13 +114,13 @@ func (r *ExecRunner) childEnv(spec ReviewSpec) []string {
 	// Later entries win in the child's environment, so these override any
 	// daemon-level token while the LLM key etc. pass through untouched.
 	return append(env,
-		"NICKPIT_GITLAB_TOKEN="+spec.Token,
-		"NICKPIT_GITLAB_BASE_URL="+spec.BaseURL,
+		"NICKPIT_GITLAB_TOKEN="+token,
+		"NICKPIT_GITLAB_BASE_URL="+baseURL,
 	)
 }
 
 func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, error) {
-	logPath, logFile, err := createReviewLog(spec, r.now())
+	logPath, logFile, err := createChildLog("review", spec.ProjectPath, spec.IID, spec.LogDir, r.now())
 	if err != nil {
 		return -1, "", err
 	}
@@ -121,6 +141,50 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	})
 	defer func() { _ = stream.Close() }()
 
+	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID), "--publish"}
+	if spec.ConfigPath != "" {
+		args = append(args, "--config", spec.ConfigPath)
+	}
+	args = append(args, spec.ExtraArgs...)
+
+	cmd := exec.CommandContext(ctx, r.Executable, args...)
+	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)
+	return r.runLoggedChild(cmd, logFile, stream, logPath)
+}
+
+// RunChat spawns `nickpit chat --gitlab ... --reply-discussion` so a discussion
+// reply runs isolated in its own process; the daemon never loads the LLM engine.
+// The child self-gates (a thread nickpit did not start is a quiet no-op) and
+// posts its answer back into the thread itself.
+func (r *ExecRunner) RunChat(ctx context.Context, spec ChatSpec) (int, string, error) {
+	logPath, logFile, err := createChildLog("chat", spec.ProjectPath, spec.IID, spec.LogDir, r.now())
+	if err != nil {
+		return -1, "", err
+	}
+	defer func() { _ = logFile.Close() }()
+
+	args := []string{
+		"chat", "--gitlab",
+		"--repo", spec.ProjectPath,
+		"--id", strconv.Itoa(spec.IID),
+		"--reply-discussion", spec.DiscussionID,
+	}
+	if spec.ConfigPath != "" {
+		args = append(args, "--config", spec.ConfigPath)
+	}
+	args = append(args, spec.ExtraArgs...)
+
+	cmd := exec.CommandContext(ctx, r.Executable, args...)
+	cmd.Env = r.childEnv(spec.Token, spec.BaseURL)
+	// Chat children are not shipped to the durable stream; the on-disk log is
+	// enough for a short reply. Discard the stream side of the tee.
+	return r.runLoggedChild(cmd, logFile, noopWriteCloser{}, logPath)
+}
+
+// runLoggedChild runs cmd with its stdout/stderr fanned out to logFile and
+// stream, returning the child's exit code (0 or the process exit code) and only
+// a non-nil error for a spawn/transport failure. Shared by Run and RunChat.
+func (r *ExecRunner) runLoggedChild(cmd *exec.Cmd, logFile *os.File, stream io.WriteCloser, logPath string) (int, string, error) {
 	// The child's stdout/stderr go to a real pipe (an *os.File): os/exec dups
 	// an *os.File straight to the child and neither spawns a copy goroutine nor
 	// makes Wait block on it, so cancellation stays as prompt as writing to a
@@ -129,7 +193,7 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 	// can never fail the authoritative file write.
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		return -1, "", fmt.Errorf("serve: creating log pipe: %w", err)
+		return -1, logPath, fmt.Errorf("serve: creating log pipe: %w", err)
 	}
 	copyDone := make(chan struct{})
 	go func() {
@@ -137,14 +201,6 @@ func (r *ExecRunner) Run(ctx context.Context, spec ReviewSpec) (int, string, err
 		_, _ = io.Copy(io.MultiWriter(logFile, bestEffortWriter{stream}), pr)
 	}()
 
-	args := []string{"gitlab", "mr", "--repo", spec.ProjectPath, "--id", strconv.Itoa(spec.IID), "--publish"}
-	if spec.ConfigPath != "" {
-		args = append(args, "--config", spec.ConfigPath)
-	}
-	args = append(args, spec.ExtraArgs...)
-
-	cmd := exec.CommandContext(ctx, r.Executable, args...)
-	cmd.Env = r.childEnv(spec)
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 	// On context cancel: SIGTERM so the child's own signal handling cleans up
@@ -192,18 +248,18 @@ func (b bestEffortWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func createReviewLog(spec ReviewSpec, now time.Time) (string, *os.File, error) {
-	// Private permissions: review logs carry prompts, diffs, and model
+func createChildLog(prefix, projectPath string, iid int, logDir string, now time.Time) (string, *os.File, error) {
+	// Private permissions: child logs carry prompts, diffs, and model
 	// output. MkdirAll leaves an existing directory's mode untouched.
-	if err := os.MkdirAll(spec.LogDir, 0o700); err != nil {
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("serve: creating log dir: %w", err)
 	}
-	slug := strings.ReplaceAll(spec.ProjectPath, "/", "-")
-	name := fmt.Sprintf("review-%s-%d-%s.log", slug, spec.IID, now.UTC().Format("2006-01-02-15-04-05"))
-	logPath := filepath.Join(spec.LogDir, name)
+	slug := strings.ReplaceAll(projectPath, "/", "-")
+	name := fmt.Sprintf("%s-%s-%d-%s.log", prefix, slug, iid, now.UTC().Format("2006-01-02-15-04-05"))
+	logPath := filepath.Join(logDir, name)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return "", nil, fmt.Errorf("serve: creating review log: %w", err)
+		return "", nil, fmt.Errorf("serve: creating child log: %w", err)
 	}
 	return logPath, logFile, nil
 }

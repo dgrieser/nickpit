@@ -5,7 +5,7 @@ This document maps the production Go code. Test files live beside the code they 
 ## Commands
 
 - `cmd/nickpit/main.go`: Main CLI entry point. Defines commands, flags, profile loading, workflow execution, local review modes, SCM review modes, output selection, publishing, seed-finding handling, and post-review chat-session persistence.
-- `cmd/nickpit/chat.go`: `nickpit chat` command. Starts or resumes a discussion session (from a saved review JSON, a GitLab MR's markers, or the latest/last session), resolves the review source and context, and drives the discussion agent interactively (REPL) or one-shot.
+- `cmd/nickpit/chat.go`: `nickpit chat` command. Starts or resumes a discussion session (from a saved review JSON, a GitLab MR's markers, or the latest/last session), resolves the review source and context, and drives the discussion agent interactively (REPL) or one-shot. `--reply-discussion` is the non-interactive GitLab thread-reply mode (read a thread, gate on its root marker, run one turn, post the reply back) that the serve daemon spawns and the terminal can run directly.
 - `cmd/nickpit-config-example/main.go`: Generator binary that prints the example config from `internal/config`.
 - `cmd/nickpit-workflow-example/main.go`: Generator binary that prints the embedded example workflow.
 
@@ -105,14 +105,13 @@ This document maps the production Go code. Test files live beside the code they 
 ## GitLab Webhook Daemon (`nickpit gitlab serve`)
 
 - `internal/serve/server.go`: HTTP server wiring, /healthz, and graceful-shutdown sequencing.
-- `internal/serve/chat.go`: In-process discussion (chat) service for the daemon: gates a discussion-thread reply on the thread's root marker, reassembles the review by id from the MR notes, maps the thread to conversation messages, runs `Engine.Discuss`, and posts the answer back into the thread.
 - `internal/serve/handler.go`: Webhook endpoint: body limit, group match, constant-time secret check, event classification, fast-ack enqueue, and command routing (ack emoji and replies posted async).
-- `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs ignore).
+- `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs chat vs ignore); a plain reply in a discussion thread becomes a `CommandChat` candidate.
 - `internal/serve/command.go`: `/keyword` note-command parsing and the help/status/abort reply texts.
 - `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.
-- `internal/serve/runner.go`: `ReviewRunner` seam and `ExecRunner` spawning `nickpit gitlab mr --publish` children with log capture.
+- `internal/serve/runner.go`: `ReviewRunner`/`ChatRunner` seams and `ExecRunner` spawning `nickpit gitlab mr --publish` (review) and `nickpit chat --gitlab … --reply-discussion` (chat) children, with shared log capture. The daemon runs no LLM itself; the chat child self-gates and posts its own reply.
 - `internal/serve/topics.go`: TTL + singleflight cache for project topics.
 - `internal/config/serve.go`: `server.yaml` schema, loading (env expansion), defaults, and validation for the daemon.
 

@@ -17,20 +17,22 @@ import (
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/spf13/cobra"
 )
 
 type chatOptions struct {
-	sessionID string
-	findingID string
-	fromJSON  string
-	gitlab    bool
-	rawURL    string
-	repo      string
-	mrID      int
-	reviewID  string
-	repoRoot  string
+	sessionID       string
+	findingID       string
+	fromJSON        string
+	gitlab          bool
+	rawURL          string
+	repo            string
+	mrID            int
+	reviewID        string
+	repoRoot        string
+	replyDiscussion string
 }
 
 func (a *app) newChatCmd() *cobra.Command {
@@ -55,15 +57,22 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.mrID, "id", 0, "GitLab merge request IID (with --gitlab)")
 	cmd.Flags().StringVar(&opts.reviewID, "review-id", "", "Select a specific review when the MR carries more than one")
 	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from (defaults to the current directory for local sessions)")
+	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
 	return cmd
 }
 
 func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) error {
-	store, err := session.NewStore(a.sessionDir)
+	profileName, profile, err := a.loadProfileForSpec()
 	if err != nil {
 		return err
 	}
-	profileName, profile, err := a.loadProfileForSpec()
+	// Non-interactive GitLab thread-reply mode: read a discussion, answer it, and
+	// post the reply back into the thread. This is what the serve daemon spawns,
+	// and it is directly runnable from the terminal too.
+	if opts.replyDiscussion != "" {
+		return a.runChatGitLabReply(ctx, profile, opts)
+	}
+	store, err := session.NewStore(a.sessionDir)
 	if err != nil {
 		return err
 	}
@@ -370,6 +379,118 @@ func (a *app) chatEngine(profile config.Profile, source model.ReviewSource, retr
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
 	engine.SetDisabledStyleGuides(profile.DisableStyleGuides)
 	return engine
+}
+
+// runChatGitLabReply answers a GitLab discussion thread and posts the reply back
+// into it. It is non-interactive and self-contained: it reads the thread, gates
+// on the thread's root marker (a thread nickpit did not start is a quiet no-op),
+// reassembles the review by id from the MR notes, rebuilds the context from the
+// live MR, runs one discussion turn seeded with the thread, and posts the answer.
+func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, opts chatOptions) error {
+	project, mrID, baseURL := opts.repo, opts.mrID, ""
+	if strings.TrimSpace(opts.rawURL) != "" {
+		var err error
+		project, mrID, baseURL, err = parseGitLabMRURL(opts.rawURL)
+		if err != nil {
+			return err
+		}
+	}
+	if project == "" || mrID <= 0 {
+		return fmt.Errorf("chat --reply-discussion requires --url or both --repo and --id")
+	}
+	apiBaseURL := firstNonEmpty(baseURL, profile.GitLabBaseURL)
+	client := glscm.NewClient(apiBaseURL, profile.GitLabToken)
+	adapter := glscm.NewAdapter(client, profile.AssetBaseURL)
+
+	notes, err := client.DiscussionNoteBodies(ctx, project, mrID, opts.replyDiscussion)
+	if err != nil {
+		return fmt.Errorf("chat: reading thread: %w", err)
+	}
+	if len(notes) == 0 {
+		return nil
+	}
+	reviewID, findingID, ok := reviewmd.DetectThreadReview(notes[0].Body)
+	if !ok {
+		// Not a nickpit thread: nothing to answer. Quiet no-op so the daemon can
+		// spawn this for any thread reply without producing noise.
+		return nil
+	}
+	reviews, err := adapter.ReviewResults(ctx, project, mrID)
+	if err != nil {
+		return fmt.Errorf("chat: reading MR reviews: %w", err)
+	}
+	result := reviews[reviewID]
+	if result == nil {
+		return fmt.Errorf("chat: review %q not found on MR", reviewID)
+	}
+	reviewCtx, err := adapter.ResolveContext(ctx, model.ReviewRequest{
+		Mode:            model.ModeGitLab,
+		Repo:            project,
+		Identifier:      mrID,
+		IncludeComments: true,
+		DiffFormat:      profile.DiffFormat,
+	})
+	if err != nil {
+		return fmt.Errorf("chat: resolving MR context: %w", err)
+	}
+
+	var botUserID int
+	if user, err := client.CurrentUser(ctx); err == nil {
+		botUserID = user.ID
+	}
+	history := chatThreadToMessages(notes, botUserID)
+	if len(history) == 0 {
+		return nil
+	}
+
+	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
+	logger.SetShowReasoning(a.showReasoning)
+	engine := a.chatEngine(profile, adapter, retrieval.NewLocalEngine(), logger)
+	res, err := engine.Discuss(ctx, review.DiscussRequest{
+		ReviewCtx:                reviewCtx,
+		Result:                   result,
+		PinnedFindingID:          findingID,
+		Messages:                 history,
+		DiffFormat:               profile.DiffFormat,
+		DisableSuggestions:       profile.DisableSuggestions,
+		DisableParallelToolCalls: a.disableParallelToolCalls,
+		MaxToolCalls:             profile.MaxToolCalls,
+		MaxDuplicateToolCalls:    profile.MaxDuplicateToolCalls,
+		MaxOutputRetries:         profile.MaxOutputRetries,
+		MaxReasoningSeconds:      profile.MaxReasoningSeconds,
+	})
+	if err != nil {
+		return fmt.Errorf("chat: discussion agent: %w", err)
+	}
+	reply := strings.TrimSpace(res.Reply)
+	if reply == "" {
+		return nil
+	}
+	return client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, reviewmd.Sanitize(reply))
+}
+
+// chatThreadToMessages maps a GitLab discussion's notes to conversation messages
+// for the discussion agent. The root note (the finding or summary comment) is
+// skipped — it is the review context, represented by the agent's own opener. The
+// bot's own prior replies (author == botUserID) become assistant turns; everyone
+// else's notes become user turns. System notes are dropped.
+func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int) []llm.Message {
+	var msgs []llm.Message
+	for i, note := range notes {
+		if i == 0 || note.System {
+			continue
+		}
+		body := strings.TrimSpace(note.Body)
+		if body == "" {
+			continue
+		}
+		role := "user"
+		if botUserID != 0 && note.AuthorID == botUserID {
+			role = "assistant"
+		}
+		msgs = append(msgs, llm.Message{Role: role, Content: body})
+	}
+	return msgs
 }
 
 // persistChatSession saves a resumable chat session after a review, unless
