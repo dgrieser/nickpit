@@ -107,4 +107,25 @@ groups:
 {{- end }}
 review:
   extra_args: {{ toYaml .Values.serve.review.extraArgs | nindent 4 }}
+{{- if .Values.serve.loki.url }}
+loki:
+  url: {{ .Values.serve.loki.url | quote }}
+  {{- if .Values.serve.loki.tenantIdEnv }}
+  tenant_id: {{ printf "${%s}" .Values.serve.loki.tenantIdEnv | quote }}
+  {{- end }}
+  {{- if .Values.serve.loki.basicAuthUserEnv }}
+  basic_auth_user: {{ printf "${%s}" .Values.serve.loki.basicAuthUserEnv | quote }}
+  {{- end }}
+  {{- if .Values.serve.loki.basicAuthPassEnv }}
+  basic_auth_pass: {{ printf "${%s}" .Values.serve.loki.basicAuthPassEnv | quote }}
+  {{- end }}
+  {{- with .Values.serve.loki.labels }}
+  labels: {{ toYaml . | nindent 4 }}
+  {{- end }}
+  batch_wait: {{ .Values.serve.loki.batchWait | quote }}
+  batch_max_lines: {{ .Values.serve.loki.batchMaxLines }}
+  timeout: {{ .Values.serve.loki.timeout | quote }}
+  buffer_lines: {{ .Values.serve.loki.bufferLines }}
+  gzip: {{ .Values.serve.loki.gzip }}
+{{- end }}
 {{- end -}}

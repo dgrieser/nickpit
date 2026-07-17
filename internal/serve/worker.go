@@ -57,6 +57,8 @@ func (d *Dispatcher) process(ctx context.Context, event Event) {
 		ConfigPath:  d.cfg.ConfigPath,
 		ExtraArgs:   d.cfg.ExtraArgs,
 		LogDir:      d.cfg.LogDir,
+		HeadSHA:     status.HeadSHA,
+		Trigger:     event.Kind.String(),
 	}
 	log.Info("review starting", "sha", status.HeadSHA)
 	start := time.Now()

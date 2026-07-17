@@ -101,6 +101,7 @@ To keep groups in chart values instead (rendered into the ConfigMap with
 | `terminationGracePeriodSeconds` | `660` | Must exceed `serve.shutdownGrace`. |
 | `existingSecret` | `""` | Reference a pre-made Secret instead of the chart's. |
 | `serve.review.extraArgs` | `[]` | Args for every review child; selects the LLM profile (e.g. `{--profile,mittwald}`). Empty = default profile (needs `OPENROUTER_API_KEY`). |
+| `serve.loki.url` | `""` | Set to stream review logs live to Grafana Loki (durable, queryable). Empty = disabled. Auth/tenant come from Secret keys via `serve.loki.{tenantIdEnv,basicAuthUserEnv,basicAuthPassEnv}`. |
 | `config.nickpitYaml` | `""` | Optional `.nickpit.yaml` override; empty = built-in profiles (recommended). |
 
 ## Notes / caveats
@@ -114,5 +115,9 @@ To keep groups in chart values instead (rendered into the ConfigMap with
   checksum annotation (rollout on `helm upgrade`), but edits to an external
   Secret require `kubectl rollout restart deployment/nickpit-serve`.
 - **No NetworkPolicy shipped.** The daemon needs egress to GitLab and the LLM
-  endpoint; add a policy if the namespace is default-deny.
-- **Storage is ephemeral.** `/work` clones and per-review logs vanish on restart.
+  endpoint (and to Loki when `serve.loki.url` is set); add a policy if the
+  namespace is default-deny.
+- **Storage is ephemeral.** `/work` clones and per-review logs vanish on
+  restart. Set `serve.loki.url` to stream each review's output live to Grafana
+  Loki as well — those logs are durable (survive restarts) and queryable in
+  Grafana; the `/work/logs` file stays as a local mirror for the pod's lifetime.

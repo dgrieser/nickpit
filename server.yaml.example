@@ -53,3 +53,20 @@ groups:
 review:
   extra_args: []
   # extra_args: ["--profile", "default", "--show-progress"]
+
+# Optional: stream each review's output live to Grafana Loki (in addition to
+# the on-disk log_dir file), so logs survive pod restarts and are queryable in
+# Grafana. Streaming is enabled only when `url` is set. Credentials are
+# env-expanded like the rest of this file, so no secret text need live here.
+# loki:
+#   url: "http://loki-gateway.monitoring:80"   # base URL; /loki/api/v1/push is appended
+#   tenant_id: "${LOKI_TENANT}"                 # X-Scope-OrgID (multi-tenant Loki); optional
+#   basic_auth_user: "${LOKI_USER}"             # optional; set with basic_auth_pass
+#   basic_auth_pass: "${LOKI_PASS}"
+#   labels:                                     # extra static labels (must not use app/project/iid/trigger)
+#     env: "prod"
+#   batch_wait: "1s"                            # flush a partial batch after this long
+#   batch_max_lines: 1000                       # flush once a batch reaches this many lines
+#   timeout: "10s"                              # per-push HTTP timeout
+#   buffer_lines: 4096                          # per-review queue; lines drop (with a warning) when full
+#   gzip: false

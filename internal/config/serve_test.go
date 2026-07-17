@@ -253,6 +253,111 @@ func TestLoadServeMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadServeLokiDisabledByDefault(t *testing.T) {
+	path := writeServeConfig(t, `
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Loki.Enabled() {
+		t.Fatal("loki must be disabled when url is unset")
+	}
+}
+
+func TestLoadServeLokiConfig(t *testing.T) {
+	t.Setenv("NICKPIT_TEST_LOKI_PASS", "loki-secret")
+	path := writeServeConfig(t, `
+loki:
+  url: "http://loki:3100"
+  tenant_id: "team-a"
+  basic_auth_user: "svc"
+  basic_auth_pass: "${NICKPIT_TEST_LOKI_PASS}"
+  labels:
+    env: "prod"
+  batch_wait: "2s"
+  batch_max_lines: 250
+  gzip: true
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Loki.Enabled() {
+		t.Fatal("loki should be enabled")
+	}
+	if cfg.Loki.BasicAuthPass != "loki-secret" {
+		t.Fatalf("basic_auth_pass not env-expanded: %q", cfg.Loki.BasicAuthPass)
+	}
+	if cfg.Loki.TenantID != "team-a" || cfg.Loki.Labels["env"] != "prod" || !cfg.Loki.Gzip {
+		t.Fatalf("loki fields = %+v", cfg.Loki)
+	}
+	if cfg.Loki.BatchWaitDuration() != 2*time.Second || cfg.Loki.BatchMaxLinesOrDefault() != 250 {
+		t.Fatalf("loki batch = %v / %d", cfg.Loki.BatchWaitDuration(), cfg.Loki.BatchMaxLinesOrDefault())
+	}
+	// Unset numeric/duration fields fall back to defaults.
+	if cfg.Loki.TimeoutDuration() != 10*time.Second || cfg.Loki.BufferLinesOrDefault() != DefaultLokiBufferLines {
+		t.Fatalf("loki defaults = %v / %d", cfg.Loki.TimeoutDuration(), cfg.Loki.BufferLinesOrDefault())
+	}
+}
+
+// TestLoadServeLokiHelmRenderedShape feeds the exact server.yaml the Helm
+// chart's serverYaml helper emits for a fully-populated serve.loki block
+// (${ENV} refs for secrets, nindent-style labels, all tunables). It guards
+// against the chart and the Go schema drifting apart, since `helm template`
+// cannot run in this environment.
+func TestLoadServeLokiHelmRenderedShape(t *testing.T) {
+	t.Setenv("LOKI_TENANT", "team-a")
+	t.Setenv("LOKI_USER", "svc")
+	t.Setenv("LOKI_PASS", "p@ss")
+	// Mirrors the "loki:" section rendered by templates/_helpers.tpl (indented
+	// like the ConfigMap's nindent 4 output, minus that outer indent).
+	rendered := `listen: ":8080"
+log_dir: "/work/logs"
+review_concurrency: 2
+shutdown_grace: "10m"
+gitlab_base_url: "https://gitlab.example.com"
+topic: "nickpit"
+trigger_emoji: "nickpit"
+groups:
+  - path: "platform"
+    token: "tok"
+    signing_token: "` + "whsec_" + base64.StdEncoding.EncodeToString([]byte("key")) + `"
+review:
+  extra_args: []
+loki:
+  url: "http://loki-gateway.monitoring:80"
+  tenant_id: "${LOKI_TENANT}"
+  basic_auth_user: "${LOKI_USER}"
+  basic_auth_pass: "${LOKI_PASS}"
+  labels:
+    env: "prod"
+  batch_wait: "1s"
+  batch_max_lines: 1000
+  timeout: "10s"
+  buffer_lines: 4096
+  gzip: false
+`
+	cfg, err := LoadServe(writeServeConfig(t, rendered))
+	if err != nil {
+		t.Fatalf("helm-rendered server.yaml must parse and validate: %v", err)
+	}
+	if !cfg.Loki.Enabled() || cfg.Loki.TenantID != "team-a" || cfg.Loki.BasicAuthUser != "svc" || cfg.Loki.BasicAuthPass != "p@ss" {
+		t.Fatalf("loki = %+v", cfg.Loki)
+	}
+	if cfg.Loki.Labels["env"] != "prod" || cfg.Loki.BufferLines != 4096 {
+		t.Fatalf("loki labels/buffer = %+v", cfg.Loki)
+	}
+}
+
 func TestServeConfigValidate(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -272,6 +377,10 @@ func TestServeConfigValidate(t *testing.T) {
 		{"empty command keyword", "command_keyword: \"\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not be empty"},
 		{"slash command keyword", "command_keyword: \"/nickpit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not start with '/'"},
 		{"whitespace command keyword", "command_keyword: \"nick pit\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "command_keyword must not contain whitespace"},
+		{"loki bad scheme", "loki:\n  url: \"ftp://loki:3100\"\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "loki.url must be an http(s) URL"},
+		{"loki bad batch_wait", "loki:\n  url: \"http://loki:3100\"\n  batch_wait: nope\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "loki.batch_wait"},
+		{"loki half auth", "loki:\n  url: \"http://loki:3100\"\n  basic_auth_user: u\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "must be set together"},
+		{"loki reserved label", "loki:\n  url: \"http://loki:3100\"\n  labels:\n    project: nope\ngroups:\n  - path: p\n    token: t\n    webhook_secret: s\n", "is reserved"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

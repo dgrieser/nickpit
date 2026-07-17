@@ -31,6 +31,7 @@ import (
 	ghscm "github.com/dgrieser/nickpit/internal/scm/github"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/serve"
+	"github.com/dgrieser/nickpit/internal/serve/loki"
 	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
@@ -809,12 +810,36 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			// Group tokens, webhook secrets, and signing tokens typically sit
 			// in the daemon's environment (server.yaml ${VAR} references);
 			// review children must only receive their own group's injected
-			// token.
-			scrub := make([]string, 0, len(cfg.Groups)*3)
+			// token. The Loki password is a daemon-only secret too — the
+			// children never talk to Loki — so it is scrubbed as well.
+			scrub := make([]string, 0, len(cfg.Groups)*3+1)
 			for _, group := range cfg.Groups {
 				scrub = append(scrub, group.Token, group.WebhookSecret, group.SigningToken)
 			}
-			runner, err := serve.NewExecRunner(scrub)
+			if cfg.Loki.BasicAuthPass != "" {
+				scrub = append(scrub, cfg.Loki.BasicAuthPass)
+			}
+
+			// The daemon tees each review child's output to Loki; the child
+			// itself needs no Loki awareness. Disabled (NoopSink) unless a
+			// loki.url is configured.
+			var sink serve.LogSink = serve.NoopSink{}
+			if cfg.Loki.Enabled() {
+				sink = serve.NewLokiSink(loki.NewClient(loki.Config{
+					URL:           cfg.Loki.URL,
+					TenantID:      cfg.Loki.TenantID,
+					BasicUser:     cfg.Loki.BasicAuthUser,
+					BasicPass:     cfg.Loki.BasicAuthPass,
+					StaticLabels:  cfg.Loki.Labels,
+					BatchWait:     cfg.Loki.BatchWaitDuration(),
+					BatchMaxLines: cfg.Loki.BatchMaxLinesOrDefault(),
+					Timeout:       cfg.Loki.TimeoutDuration(),
+					BufferLines:   cfg.Loki.BufferLinesOrDefault(),
+					Gzip:          cfg.Loki.Gzip,
+				}, log))
+				log.Info("loki log streaming enabled", "url", cfg.Loki.URL, "tenant", cfg.Loki.TenantID)
+			}
+			runner, err := serve.NewExecRunner(scrub, sink)
 			if err != nil {
 				return err
 			}
