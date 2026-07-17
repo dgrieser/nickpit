@@ -365,7 +365,7 @@ Known limitation: the hidden fingerprint markers are read from all existing PR/M
 
 After a review you can talk to an agent about it. The discussion agent gets the same context a reviewer/verifier has — the diff, the toolchain, the applicable styleguides, and the same retrieval tools — plus the **complete findings JSON and the overall verdict**. It is free-form: no workflow, no output schema, no priority gates. Ask why a finding is a bug, push back on a nitpick, or propose a fix and have it evaluated.
 
-Every review automatically saves a resumable session (disable with `--no-session`). Session files live under `$NICKPIT_CACHE_DIR/sessions` (or `<user cache>/nickpit/sessions`); override with `--session-dir`.
+Every review automatically saves a resumable session — including the exact prepared context the reviewers saw — so chatting needs no re-fetch (disable with `--no-session`). Session files live under `$NICKPIT_CACHE_DIR/sessions` (or `<user cache>/nickpit/sessions`); override with `--session-dir`. The store keeps the 50 most recent sessions. Resuming a GitLab session checks the MR's live head and recreates the diff when new commits landed; pass `--repo-root <checkout>` on resume to point the retrieval tools at a local checkout (without one, code-reading tools stay off for remote sessions).
 
 ```bash
 # Chat about the most recent review (interactive REPL)

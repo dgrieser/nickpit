@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/git"
@@ -21,6 +22,7 @@ import (
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
+	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/spf13/cobra"
 )
 
@@ -93,6 +95,11 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if opts.findingID != "" {
 		sess.PinnedFindingID = opts.findingID
 	}
+	// --repo-root applies to resumed sessions too: it is the only way to point
+	// the retrieval tools at a checkout for a resumed remote session.
+	if opts.repoRoot != "" {
+		sess.Source.RepoRoot = opts.repoRoot
+	}
 	if sess.Profile == "" {
 		sess.Profile = profileName
 	}
@@ -105,24 +112,23 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if err != nil {
 		return err
 	}
-	engine := a.chatEngine(profile, source, retrievalEngine, logger)
+	engine, err := a.chatEngine(ctx, profile, source, retrievalEngine, logger)
+	if err != nil {
+		return err
+	}
 
-	reviewCtx := sess.Context
-	if reviewCtx == nil {
-		reviewCtx, err = engine.PrepareContext(ctx, a.chatReviewRequest(profile, sess.Source))
-		if err != nil {
-			return fmt.Errorf("chat: resolving review context: %w", err)
-		}
-		sess.Context = reviewCtx
+	reviewCtx, refreshed, err := a.chatContext(ctx, engine, source, profile, sess)
+	if err != nil {
+		return err
 	}
 
 	// Tools read from a real checkout only; without one, an empty root would
 	// resolve to the process working directory and expose unrelated files.
 	tools := chatToolset(sess.Source.RepoRoot)
 
-	if created {
+	if created || refreshed {
 		if err := store.Save(sess); err != nil {
-			a.logf(ctx, "chat: could not save new session: %v", err)
+			a.logf(ctx, "chat: could not save session: %v", err)
 		}
 	}
 
@@ -148,6 +154,9 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			MaxReasoningSeconds:      profile.MaxReasoningSeconds,
 		})
 		if err != nil {
+			// Drop the unanswered question so a retried turn does not leave two
+			// consecutive user messages in the transcript.
+			sess.Messages = sess.Messages[:len(sess.Messages)-1]
 			return err
 		}
 		for _, m := range res.NewMessages {
@@ -347,6 +356,44 @@ func sourceFromResult(result *model.ReviewResult, repoRoot string) session.Sourc
 	}
 }
 
+// chatContext returns the review context for a session, preferring the cached
+// snapshot and recreating the diff when it is missing or stale. For GitLab
+// sessions the MR's live head SHA is compared against the SHA the cache was
+// built at, so a resumed chat picks up new commits. Local and GitHub sessions
+// use the cache when present: a local diff may no longer be reproducible (the
+// working tree moved on), and GitHub staleness detection lands with the GitHub
+// chat front-end. refreshed reports that the session's cache was updated and
+// should be saved.
+func (a *app) chatContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, sess *session.Session) (reviewCtx *model.ReviewContext, refreshed bool, err error) {
+	refresh := sess.Context == nil
+	if adapter, ok := source.(*glscm.Adapter); ok && model.ReviewMode(sess.Source.Mode) == model.ModeGitLab &&
+		sess.Source.Repo != "" && sess.Source.Identifier > 0 {
+		status, err := adapter.Client().FetchMRStatusByPath(ctx, sess.Source.Repo, sess.Source.Identifier)
+		switch {
+		case err != nil:
+			// The status probe is a freshness optimization. Without a cache the
+			// error is fatal (resolution needs the same API anyway); with one,
+			// fall back to the cached context.
+			if sess.Context == nil {
+				return nil, false, fmt.Errorf("chat: checking MR status: %w", err)
+			}
+			a.logf(ctx, "chat: MR status check failed, using cached context: %v", err)
+		case sess.Context == nil || sess.ContextHeadSHA != status.HeadSHA:
+			refresh = true
+			sess.ContextHeadSHA = status.HeadSHA
+		}
+	}
+	if !refresh {
+		return sess.Context, false, nil
+	}
+	reviewCtx, err = engine.PrepareContext(ctx, a.chatReviewRequest(profile, sess.Source))
+	if err != nil {
+		return nil, false, fmt.Errorf("chat: resolving review context: %w", err)
+	}
+	sess.Context = reviewCtx
+	return reviewCtx, true, nil
+}
+
 // chatReviewRequest builds the request used to re-resolve the review context from
 // a session source. It carries the profile's path/content filters and context
 // budget so PrepareContext reproduces the review's filtered, trimmed context.
@@ -413,15 +460,25 @@ func chatToolset(repoRoot string) []llm.ToolDefinition {
 	return nil // nil => Discuss enables all reviewer tools
 }
 
-// chatEngine builds a review engine wired for the discussion agent.
-func (a *app) chatEngine(profile config.Profile, source model.ReviewSource, retrievalEngine retrieval.Engine, logger *logging.Logger) *review.Engine {
+// chatEngine builds a review engine wired for the discussion agent, mirroring
+// runReview's engine setup: rate-limit backoff, search-tool optimization, and —
+// crucially — the user-configured additional styleguides, resolved from the
+// current configuration so the chat's styleguide set matches what a review run
+// today would use.
+func (a *app) chatEngine(ctx context.Context, profile config.Profile, source model.ReviewSource, retrievalEngine retrieval.Engine, logger *logging.Logger) (*review.Engine, error) {
+	additionalGuides, err := styleguide.Resolve(ctx, profile.StyleGuides, profile.Workdir)
+	if err != nil {
+		return nil, err
+	}
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
+	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)
 	engine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
+	engine.SetAdditionalStyleGuides(additionalGuides)
 	engine.SetDisabledStyleGuides(profile.DisableStyleGuides)
-	return engine
+	return engine, nil
 }
 
 // runChatGitLabReply answers a GitLab discussion thread and posts the reply back
@@ -445,7 +502,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	client := glscm.NewClient(apiBaseURL, profile.GitLabToken)
 	adapter := glscm.NewAdapter(client, profile.AssetBaseURL)
 
-	notes, err := client.DiscussionNoteBodies(ctx, project, mrID, opts.replyDiscussion)
+	notes, err := client.DiscussionNotes(ctx, project, mrID, opts.replyDiscussion)
 	if err != nil {
 		return fmt.Errorf("chat: reading thread: %w", err)
 	}
@@ -485,7 +542,10 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 
 	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
-	engine := a.chatEngine(profile, adapter, retrieval.NewLocalEngine(), logger)
+	engine, err := a.chatEngine(ctx, profile, adapter, retrieval.NewLocalEngine(), logger)
+	if err != nil {
+		return err
+	}
 	// Prepare the context through the review pipeline (filters, trimming,
 	// toolchain) rather than a raw fetch, so the chat never sees withheld files
 	// or an over-budget patch.
@@ -569,7 +629,12 @@ func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int) []llm.Mes
 
 // persistChatSession saves a resumable chat session after a review, unless
 // disabled with --no-session. It is best-effort and never fails the review.
-func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, result *model.ReviewResult) {
+// reviewCtx is the prepared context the pipeline actually reviewed; caching it
+// gives an exact-context resume even when the diff is no longer reproducible
+// (e.g. a local uncommitted review whose working tree moved on). headSHA records
+// the remote head the context was built at, so a later chat can detect new
+// commits and recreate the diff.
+func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) {
 	if a.noSession || result == nil {
 		return
 	}
@@ -586,6 +651,16 @@ func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, r
 	sess.Result = result
 	sess.Model = result.Model
 	sess.Profile = req.ProfileName
+	if reviewCtx != nil {
+		ctxCopy := *reviewCtx
+		if req.Mode != model.ModeLocal {
+			// The remote checkout is a temporary clone deleted right after this
+			// call; do not leak its path into the cached context.
+			ctxCopy.CheckoutRoot = ""
+		}
+		sess.Context = &ctxCopy
+		sess.ContextHeadSHA = headSHA
+	}
 	// RepoRoot is persisted only for a local review: a remote review's RepoRoot is
 	// a temporary clone deleted right after this call, so a resumed session must
 	// not point retrieval tools at it. BaseURL is intentionally left empty — the

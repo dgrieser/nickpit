@@ -82,15 +82,15 @@ func TestDecideNoteCarriesReplyContext(t *testing.T) {
 	}
 }
 
-// A plain thread reply carries the note text and discussion id so the handler
-// can pass the author's message to the discussion agent.
-func TestDecideNoteChatCarriesText(t *testing.T) {
+// A plain thread reply carries the note and discussion ids so the handler can
+// dedupe, serialize, and hand the triggering note to the chat child.
+func TestDecideNoteChatCarriesReplyContext(t *testing.T) {
 	decision := Decide(loadEvent(t, "note_plain.json"), "nickpit", "nickpit", nil)
 	if decision.Command != CommandChat {
 		t.Fatalf("expected chat command, got %v", decision.Command)
 	}
-	if decision.DiscussionID != "disc-306" || decision.NoteText != "looks good to me" {
-		t.Fatalf("decision = %+v, want discussion disc-306 and note text", decision)
+	if decision.DiscussionID != "disc-306" || decision.NoteID != 306 {
+		t.Fatalf("decision = %+v, want discussion disc-306 and note id 306", decision)
 	}
 }
 

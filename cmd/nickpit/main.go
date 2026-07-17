@@ -1291,8 +1291,12 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 }
 
 // emitResult formats the result to stdout, optionally publishes it back to the
-// origin, and reports the "all reviewers errored" CI failure.
-func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
+// origin, saves the resumable chat session, and reports the "all reviewers
+// errored" CI failure. reviewCtx is the prepared (filtered, trimmed) context the
+// pipeline reviewed — cached on the chat session for exact-context resume — and
+// headSHA is the remote head it was built at (both may be zero for source-less
+// runs).
+func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) error {
 	if req.DisableSuggestions {
 		result.StripSuggestions()
 	}
@@ -1330,7 +1334,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 	}
 	// Save a resumable discussion session so `nickpit chat` can pick up the
 	// review. Best-effort: a failure here never affects the review outcome.
-	a.persistChatSession(ctx, req, result)
+	a.persistChatSession(ctx, req, result, reviewCtx, headSHA)
 	// Distinguish "review produced nothing because every reviewer crashed"
 	// from "review succeeded with some soft warnings" — only the former is a
 	// CI-level failure. Empty findings alone are not a failure (clean diff).
@@ -1354,8 +1358,9 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 		confidenceWarning = fmt.Sprintf("confidence threshold %.2f is configured but workflow has no verdict step; threshold will not be applied", req.ConfidenceThreshold)
 		a.logProgress(ctx, logging.StageVerdict, logging.StateWarn, confidenceWarning)
 	}
+	headSHA := ""
 	if pipeline.NeedsSource() {
-		repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
+		repoRoot, resolvedSHA, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
 		if err != nil {
 			return err
 		}
@@ -1363,11 +1368,12 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 			defer cleanup()
 		}
 		req.RepoRoot = repoRoot
+		headSHA = resolvedSHA
 	} else if cwd, err := os.Getwd(); err == nil {
 		req.RepoRoot = cwd
 	}
 
-	result, _, err := engine.RunSpecPipeline(ctx, pipeline, req)
+	result, reviewCtx, err := engine.RunSpecPipeline(ctx, pipeline, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress(ctx, logging.StageResult, logging.StateError, fmt.Sprintf("invalid_json error=%v", err))
 		return err
@@ -1386,7 +1392,7 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 		result.RuntimeSeconds = model.RuntimeSeconds(time.Since(a.reviewStart))
 	}
 	a.logProgress(ctx, logging.StageResult, logging.StateOK, reviewResultSummary(result))
-	return a.emitResult(ctx, source, req, result)
+	return a.emitResult(ctx, source, req, result, reviewCtx, headSHA)
 }
 
 func specHasStep(spec workflow.Spec, stepType string) bool {
@@ -1795,17 +1801,21 @@ func envVarName(value string) string {
 	return strings.TrimPrefix(value, "$")
 }
 
-func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
+// resolveRepoRoot resolves the checkout the review reads from. headSHA is the
+// resolved remote head commit when a remote checkout was made ("" otherwise);
+// it is recorded on the auto-saved chat session so a later chat can detect that
+// the MR/PR gained commits and recreate the diff.
+func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (repoRoot, headSHA string, cleanup func(), err error) {
 	if req.RepoRoot != "" {
 		a.logf(ctx, "Resolved repo root: source=provided path=%s", req.RepoRoot)
-		return req.RepoRoot, nil, nil
+		return req.RepoRoot, "", nil, nil
 	}
 	if req.Mode == model.ModeLocal {
 		wd, err := os.Getwd()
 		if err == nil {
 			a.logf(ctx, "Resolved repo root: source=working_dir path=%s", wd)
 		}
-		return wd, nil, err
+		return wd, "", nil, err
 	}
 	maxToolCalls := req.MaxToolCalls
 	if maxToolCalls == 0 {
@@ -1813,7 +1823,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	}
 	if !req.IncludeFullFiles && !hasContentFilters(req) && maxToolCalls < 0 {
 		a.logf(ctx, "Skipping remote checkout: include_full_files=%t content_filters=%t max_tool_calls=%d", req.IncludeFullFiles, hasContentFilters(req), maxToolCalls)
-		return "", nil, nil
+		return "", "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)
 	if !ok {
@@ -1821,23 +1831,23 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 		if err == nil {
 			a.logf(ctx, "Skipping remote checkout: reason=no_support fallback=%s", wd)
 		}
-		return wd, nil, err
+		return wd, "", nil, err
 	}
 	spec, err := remote.ResolveCheckout(ctx, req)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	a.logf(ctx, "Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
 	manager := git.NewCheckoutManager()
-	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
+	repoRoot, cleanup, err = manager.Prepare(ctx, *spec, git.CheckoutOptions{
 		Workdir: req.Workdir,
 		Token:   checkoutToken(req.Mode, profile),
 	})
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	a.logf(ctx, "Prepared repo root: path=%s", repoRoot)
-	return repoRoot, cleanup, nil
+	return repoRoot, spec.HeadSHA, cleanup, nil
 }
 
 func hasContentFilters(req model.ReviewRequest) bool {

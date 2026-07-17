@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -206,8 +207,19 @@ type MRStatus struct {
 
 // FetchMRStatus fetches an MR's current state by numeric project ID.
 func (c *Client) FetchMRStatus(ctx context.Context, projectID, iid int) (*MRStatus, error) {
+	return c.fetchMRStatus(ctx, strconv.Itoa(projectID), iid)
+}
+
+// FetchMRStatusByPath fetches an MR's current state by project path (group/name).
+// The chat command uses it to detect that an MR gained commits since a session's
+// cached context was built, so the diff can be recreated against the new head.
+func (c *Client) FetchMRStatusByPath(ctx context.Context, project string, iid int) (*MRStatus, error) {
+	return c.fetchMRStatus(ctx, escapeProject(project), iid)
+}
+
+func (c *Client) fetchMRStatus(ctx context.Context, escapedProject string, iid int) (*MRStatus, error) {
 	var mr mrResponse
-	if err := c.Get(ctx, fmt.Sprintf("/projects/%d/merge_requests/%d", projectID, iid), &mr); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d", escapedProject, iid), &mr); err != nil {
 		return nil, err
 	}
 	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA}, nil

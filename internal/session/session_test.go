@@ -1,7 +1,9 @@
 package session
 
 import (
+	"os"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -95,6 +97,51 @@ func TestStoreListEmptyDir(t *testing.T) {
 	latest, err := store.Latest()
 	if err != nil || latest != nil {
 		t.Fatalf("Latest on empty should be (nil,nil), got (%v,%v)", latest, err)
+	}
+}
+
+func TestStorePrunesOldest(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// Create one more session than the cap; backdate each file so modification
+	// times are strictly ordered and the oldest is unambiguous.
+	var first string
+	for i := 0; i <= maxStoredSessions; i++ {
+		sess := New()
+		if i == 0 {
+			first = sess.ID
+		}
+		if err := store.Save(sess); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+		path, _ := store.Path(sess.ID)
+		stamp := time.Now().Add(time.Duration(i-maxStoredSessions-1) * time.Hour)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+	}
+	// One more save triggers the prune over the backdated files.
+	if err := store.Save(New()); err != nil {
+		t.Fatalf("final save: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			count++
+		}
+	}
+	if count != maxStoredSessions {
+		t.Fatalf("stored sessions = %d, want %d", count, maxStoredSessions)
+	}
+	if _, err := store.Load(first); err == nil {
+		t.Fatalf("oldest session %s should have been pruned", first)
 	}
 }
 

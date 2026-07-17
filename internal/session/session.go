@@ -24,6 +24,12 @@ import (
 // incompatibly so old files can be detected.
 const Version = 1
 
+// maxStoredSessions bounds how many session files a store keeps. Every review
+// auto-saves a session (including reviews run by the serve daemon's children),
+// so without a cap the directory grows one file — containing a full review
+// context — per review, forever. Save prunes the oldest files past this limit.
+const maxStoredSessions = 50
+
 // Source describes where a session's review came from, with enough detail to
 // recreate the diff at resume time (from a local ref range or a remote MR/PR).
 type Source struct {
@@ -242,7 +248,40 @@ func (s *Store) Save(sess *Session) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("session: replacing %s: %w", path, err)
 	}
+	s.prune()
 	return nil
+}
+
+// prune deletes the oldest session files beyond maxStoredSessions, judged by
+// file modification time so no session needs to be decoded. Best-effort: a
+// prune failure never fails the save that triggered it.
+func (s *Store) prune() {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	type fileAge struct {
+		name string
+		mod  time.Time
+	}
+	var files []fileAge
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileAge{name: entry.Name(), mod: info.ModTime()})
+	}
+	if len(files) <= maxStoredSessions {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+	for _, file := range files[:len(files)-maxStoredSessions] {
+		_ = os.Remove(filepath.Join(s.dir, file.name))
+	}
 }
 
 // Info is a lightweight session listing entry.

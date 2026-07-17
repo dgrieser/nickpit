@@ -129,9 +129,6 @@ type Decision struct {
 	DiscussionID string
 	// UnknownArg is the raw subcommand for CommandUnknown replies.
 	UnknownArg string
-	// NoteText is the raw note body, carried for CommandChat so the handler can
-	// pass the author's message to the discussion agent.
-	NoteText string
 }
 
 // Decide classifies a webhook event. Pure function — no I/O — so the trigger
@@ -266,7 +263,6 @@ func decideNote(event *WebhookEvent, commandKeyword string, botIDs map[int]bool)
 				IID:          event.MergeRequest.IID,
 				NoteID:       attrs.ID,
 				DiscussionID: attrs.DiscussionID,
-				NoteText:     attrs.Note,
 			}
 		}
 		return Decision{Kind: TriggerNone, Reason: "no command"}

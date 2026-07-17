@@ -50,12 +50,6 @@ type HandlerConfig struct {
 	AbortEmoji string
 }
 
-// Handler is the webhook HTTP endpoint. It only parses, authenticates, and
-// classifies — every API call and the review itself happen async, keeping the
-// response inside GitLab's ~10s webhook timeout. Command state changes
-// (enqueue, abort, status) are synchronous mutex-only dispatcher calls; only
-// the GitLab acknowledgements and replies run in goroutines, which are fire
-// and forget: a reply may be lost when the daemon shuts down mid-flight.
 // ChatConfig carries the static invocation details a spawned chat child needs
 // (the daemon's config path, GitLab base URL, log dir, and any extra args). The
 // per-group token is taken from the matched group at spawn time.
@@ -69,6 +63,12 @@ type ChatConfig struct {
 	MaxConcurrent int
 }
 
+// Handler is the webhook HTTP endpoint. It only parses, authenticates, and
+// classifies — every API call and the review itself happen async, keeping the
+// response inside GitLab's ~10s webhook timeout. Command state changes
+// (enqueue, abort, status) are synchronous mutex-only dispatcher calls; only
+// the GitLab acknowledgements and replies run in goroutines, which are fire
+// and forget: a reply may be lost when the daemon shuts down mid-flight.
 type Handler struct {
 	groups     *GroupSet
 	dispatcher *Dispatcher
@@ -364,7 +364,7 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 // review marker, i.e. the thread was started by a nickpit review. Read failures
 // are treated as "not ours" so a transient error never spawns a child.
 func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath string, iid int, discussionID string) bool {
-	notes, err := group.Client.DiscussionNoteBodies(ctx, projectPath, iid, discussionID)
+	notes, err := group.Client.DiscussionNotes(ctx, projectPath, iid, discussionID)
 	if err != nil {
 		h.log.Debug("chat gate: reading thread failed", "iid", iid, "discussion", discussionID, "error", err)
 		return false

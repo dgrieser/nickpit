@@ -71,9 +71,9 @@ func (c *Client) MRNoteBodies(ctx context.Context, project string, iid int) ([]s
 	return bodies, nil
 }
 
-// DiscussionNoteBodies returns the bodies of the notes in a single discussion, in
-// order (oldest first). It powers reading back an existing chat thread.
-func (c *Client) DiscussionNoteBodies(ctx context.Context, project string, iid int, discussionID string) ([]DiscussionNote, error) {
+// DiscussionNotes returns the notes of a single discussion, in order (oldest
+// first). It powers reading back an existing chat thread.
+func (c *Client) DiscussionNotes(ctx context.Context, project string, iid int, discussionID string) ([]DiscussionNote, error) {
 	escaped := escapeProject(project)
 	var discussion struct {
 		Notes []struct {
