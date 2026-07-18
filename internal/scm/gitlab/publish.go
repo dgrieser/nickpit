@@ -58,12 +58,13 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
 		}
 	}
-	// When the visible summary or any finding was suppressed for idempotency, the
-	// distributed carriers no longer cover this run in full. Post one hidden
-	// carrier note so a chat can still reassemble exactly this review by id
-	// instead of discussing an older run. This applies to verdict-only re-reviews
-	// too: with zero findings the carrier holds just the review envelope.
-	if !summaryPosted || skippedFinding {
+	// When the visible summary or any finding was suppressed for idempotency —
+	// or any post failed — the distributed carriers no longer cover this run in
+	// full. Post one hidden carrier note so a chat can still reassemble exactly
+	// this review by id instead of discussing an older run. This applies to
+	// verdict-only re-reviews too: with zero findings the carrier holds just the
+	// review envelope.
+	if !summaryPosted || skippedFinding || len(errs) > 0 {
 		if body := render.CarrierNote(result); body != "" {
 			if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))

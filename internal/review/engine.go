@@ -271,6 +271,9 @@ func (e *Engine) applyResultMetadata(result *model.ReviewResult, req model.Revie
 	if result.ReviewID == "" {
 		result.ReviewID = uuid.NewString()
 	}
+	if result.CreatedAt.IsZero() {
+		result.CreatedAt = time.Now().UTC()
+	}
 	result.Mode = string(req.Mode)
 	if req.Submode != "" {
 		result.Mode = result.Mode + ":" + req.Submode

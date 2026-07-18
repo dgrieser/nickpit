@@ -84,6 +84,9 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	}
 	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
+	// a.logf routes through a.logger; without this assignment every save-failure
+	// warning in this command would be silently dropped.
+	a.logger = logger
 
 	sess, created, err := a.resolveChatSession(ctx, store, profile, opts)
 	if err != nil {
@@ -302,8 +305,12 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 }
 
 // pickReview selects one review from those reassembled on an MR. An explicit id
-// wins; otherwise the review with the most findings is chosen (ties broken by id
-// for determinism), which is almost always the latest full review.
+// wins; otherwise the NEWEST review by its carried creation timestamp is chosen
+// — after a re-review the latest run is what the user wants to discuss, even
+// when it has fewer findings than an older run. Reviews without a timestamp
+// (markers written before timestamps existed) lose to any timestamped review;
+// remaining ties fall back to most findings, then lexicographic id, for
+// determinism.
 func pickReview(reviews map[string]*model.ReviewResult, reviewID string) (*model.ReviewResult, error) {
 	if len(reviews) == 0 {
 		return nil, fmt.Errorf("chat: no nickpit review markers found on the merge request")
@@ -320,9 +327,13 @@ func pickReview(reviews map[string]*model.ReviewResult, reviewID string) (*model
 	}
 	sort.Strings(ids)
 	best := reviews[ids[0]]
-	for _, id := range ids {
-		if len(reviews[id].Findings) > len(best.Findings) {
-			best = reviews[id]
+	for _, id := range ids[1:] {
+		candidate := reviews[id]
+		switch {
+		case candidate.CreatedAt.After(best.CreatedAt):
+			best = candidate
+		case candidate.CreatedAt.Equal(best.CreatedAt) && len(candidate.Findings) > len(best.Findings):
+			best = candidate
 		}
 	}
 	return best, nil
@@ -386,12 +397,50 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 	if !refresh {
 		return sess.Context, false, nil
 	}
-	reviewCtx, err = engine.PrepareContext(ctx, a.chatReviewRequest(profile, sess.Source))
+	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source))
 	if err != nil {
 		return nil, false, fmt.Errorf("chat: resolving review context: %w", err)
 	}
 	sess.Context = reviewCtx
 	return reviewCtx, true, nil
+}
+
+// chatPrepareContext prepares a review context through the review pipeline. When
+// the profile configures content filters, filtering needs file contents, which
+// require a checkout; a remote session normally has none, so — exactly like
+// runWorkflow — a temporary remote checkout is prepared for the duration of the
+// preparation and cleaned up immediately after. Its path never leaks into the
+// returned context.
+func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (*model.ReviewContext, error) {
+	tempCheckout := false
+	if req.RepoRoot == "" && req.Mode != model.ModeLocal && hasContentFilters(req) {
+		if remote, ok := source.(model.RemoteCheckoutSource); ok {
+			spec, err := remote.ResolveCheckout(ctx, req)
+			if err != nil {
+				return nil, err
+			}
+			repoRoot, cleanup, err := git.NewCheckoutManager().Prepare(ctx, *spec, git.CheckoutOptions{
+				Workdir: profile.Workdir,
+				Token:   checkoutToken(req.Mode, profile),
+			})
+			if err != nil {
+				return nil, err
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+			req.RepoRoot = repoRoot
+			tempCheckout = true
+		}
+	}
+	reviewCtx, err := engine.PrepareContext(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if tempCheckout {
+		reviewCtx.CheckoutRoot = ""
+	}
+	return reviewCtx, nil
 }
 
 // chatReviewRequest builds the request used to re-resolve the review context from
@@ -502,6 +551,21 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	client := glscm.NewClient(apiBaseURL, profile.GitLabToken)
 	adapter := glscm.NewAdapter(client, profile.AssetBaseURL)
 
+	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
+	logger.SetShowReasoning(a.showReasoning)
+	// a.logf routes through a.logger; wire it so warnings are not dropped.
+	a.logger = logger
+
+	// Carrier markers are only encoded, not authenticated, so provenance is
+	// verified against the token's own user: the bot that posted the review. A
+	// failed lookup fails closed rather than risking an attacker-opened thread
+	// triggering paid chat calls.
+	user, err := client.CurrentUser(ctx)
+	if err != nil {
+		return fmt.Errorf("chat: resolving token user for thread verification: %w", err)
+	}
+	botUserID := user.ID
+
 	notes, err := client.DiscussionNotes(ctx, project, mrID, opts.replyDiscussion)
 	if err != nil {
 		return fmt.Errorf("chat: reading thread: %w", err)
@@ -509,10 +573,14 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if len(notes) == 0 {
 		return nil
 	}
+	// Quiet no-ops so the daemon can spawn this for any thread reply without
+	// producing noise: the thread must have been started by the bot itself and
+	// its root note must carry a nickpit marker.
+	if notes[0].AuthorID != botUserID {
+		return nil
+	}
 	reviewID, findingID, ok := reviewmd.DetectThreadReview(notes[0].Body)
 	if !ok {
-		// Not a nickpit thread: nothing to answer. Quiet no-op so the daemon can
-		// spawn this for any thread reply without producing noise.
 		return nil
 	}
 	reviews, err := adapter.ReviewResults(ctx, project, mrID)
@@ -524,10 +592,6 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return fmt.Errorf("chat: review %q not found on MR", reviewID)
 	}
 
-	var botUserID int
-	if user, err := client.CurrentUser(ctx); err == nil {
-		botUserID = user.ID
-	}
 	// Answer only when the triggering note is still the latest reply. When two
 	// replies race (or a webhook is redelivered), the superseded child sees a
 	// newer note as the latest and bows out, so the thread gets exactly one answer
@@ -540,8 +604,6 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return nil
 	}
 
-	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
-	logger.SetShowReasoning(a.showReasoning)
 	engine, err := a.chatEngine(ctx, profile, adapter, retrieval.NewLocalEngine(), logger)
 	if err != nil {
 		return err
@@ -556,7 +618,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		RepoRoot:   opts.repoRoot,
 	})
 	req.IncludeComments = true
-	reviewCtx, err := engine.PrepareContext(ctx, req)
+	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req)
 	if err != nil {
 		return fmt.Errorf("chat: resolving MR context: %w", err)
 	}
@@ -586,17 +648,19 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	return client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, reviewmd.Sanitize(reply))
 }
 
-// isLatestReply reports whether noteID is the most recent non-bot, non-system
-// note in the thread — i.e. the newest question awaiting an answer. A child
+// isLatestReply reports whether noteID is the newest question still awaiting an
+// answer: the thread's most recent non-system note must be that note. A child
 // spawned for an older note returns false and skips, so only the child for the
-// latest reply answers.
+// latest reply answers — and a bot reply as the newest note means the pending
+// question was already answered, so a redelivered webhook (or a repeated
+// --reply-note invocation) does not post a duplicate answer.
 func isLatestReply(notes []glscm.DiscussionNote, botUserID, noteID int) bool {
 	for _, note := range slices.Backward(notes) {
 		if note.System {
 			continue
 		}
 		if botUserID != 0 && note.AuthorID == botUserID {
-			continue
+			return false // the latest activity is the bot's own answer
 		}
 		return note.ID == noteID
 	}

@@ -61,24 +61,60 @@ func TestBuildDiscussContextIncludesReviewAndDiff(t *testing.T) {
 	}
 }
 
+func TestBuildDiscussContextDoesNotDuplicateDiff(t *testing.T) {
+	e := &Engine{}
+	// A context with a structured diff must not also carry the raw unified diff:
+	// the payload's diff_files IS the patch, and doubling it can push a
+	// near-budget context over the model window.
+	reviewCtx := &model.ReviewContext{
+		Repository: model.RepositoryInfo{FullName: "g/p"},
+		Diff:       "diff --git a/a.go b/a.go\n@@ -1 +1 @@\n-old\n+new\n",
+		DiffFiles:  []model.DiffFile{{FilePath: "a.go", Content: "@@ -1 +1 @@\n-old\n+new\n"}},
+	}
+	got, err := e.buildDiscussContext(reviewCtx, &model.ReviewResult{}, "", false, model.DiffFormat("git"))
+	if err != nil {
+		t.Fatalf("buildDiscussContext: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("context not valid JSON: %v", err)
+	}
+	if _, ok := decoded["diff"]; ok {
+		t.Fatalf("raw diff duplicated alongside diff_files")
+	}
+	if _, ok := decoded["diff_files"]; !ok {
+		t.Fatalf("structured diff missing: %v", decoded)
+	}
+}
+
 func TestBuildDiscussContextDropsSuggestionsWhenDisabled(t *testing.T) {
 	e := &Engine{}
 	reviewCtx := &model.ReviewContext{Repository: model.RepositoryInfo{FullName: "g/p"}}
 	result := &model.ReviewResult{
 		Findings: []model.Finding{
-			{ID: "f1", Title: "T", Suggestions: []model.Suggestion{{Body: "x"}}},
+			{
+				ID: "f1", Title: "T",
+				Suggestions:   []model.Suggestion{{Body: "x"}},
+				Finalization:  &model.FindingFinalization{Body: "fb", Suggestions: []model.Suggestion{{Body: "fin-sugg"}}},
+				Summarization: &model.FindingSummarization{Body: "sb", Suggestions: []model.Suggestion{{Body: "sum-sugg"}}},
+			},
 		},
 	}
 	got, err := e.buildDiscussContext(reviewCtx, result, "", true, model.DiffFormat("git"))
 	if err != nil {
 		t.Fatalf("buildDiscussContext: %v", err)
 	}
-	if strings.Contains(got, "\"suggestions\"") {
-		t.Fatalf("suggestions should be stripped: %s", got)
+	// Suggestions must be gone from every representation: top-level, finalized,
+	// and summarized (the latter two are reachable through pointers).
+	if strings.Contains(got, "\"suggestions\"") || strings.Contains(got, "fin-sugg") || strings.Contains(got, "sum-sugg") {
+		t.Fatalf("suggestions should be stripped everywhere: %s", got)
 	}
-	// The original result must not be mutated by stripping.
-	if len(result.Findings[0].Suggestions) != 1 {
-		t.Fatalf("original findings were mutated")
+	// The original result must not be mutated by stripping — including the
+	// pointer-nested finalization/summarization suggestions.
+	if len(result.Findings[0].Suggestions) != 1 ||
+		len(result.Findings[0].Finalization.Suggestions) != 1 ||
+		len(result.Findings[0].Summarization.Suggestions) != 1 {
+		t.Fatalf("original findings were mutated: %+v", result.Findings[0])
 	}
 }
 

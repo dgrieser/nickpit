@@ -384,7 +384,7 @@ nickpit chat --from-json review.json
 nickpit chat --gitlab --url https://gitlab.example.com/group/project/-/merge_requests/456
 ```
 
-Pin the chat to one finding with `--finding <id>` and the agent opens by pointing at it; omit it to discuss the whole review. On GitLab, the review NickPit publishes now embeds the full findings JSON (and the overall verdict) as hidden, gzip-compressed markers in the notes, each tagged with a review id, so a later chat can regroup them into the exact review — no local state needed. The retrieval tools read from a local checkout when one is available (`--repo-root`, or the current directory for local sessions).
+Pin the chat to one finding with `--finding <id>` and the agent opens by pointing at it; omit it to discuss the whole review. On GitLab, the review NickPit publishes now embeds the full findings JSON (and the overall verdict) as hidden, gzip-compressed markers in the notes, each tagged with a review id and timestamp, so a later chat can regroup them into the exact (newest) review — no local state needed. Because the markers are encoded but not cryptographically signed, only markers in notes authored by the chat token's own user (the bot that published the review) are trusted; markers planted by other commenters are ignored. When an MR carries several reviews, the newest is chosen (`--review-id` overrides). The retrieval tools read from a local checkout when one is available (`--repo-root`, or the current directory for local sessions).
 
 ## GitLab Webhook Daemon
 

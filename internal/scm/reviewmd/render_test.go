@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 )
@@ -250,6 +251,50 @@ func TestDecodeMarkerRejectsZipBomb(t *testing.T) {
 	}
 }
 
+func TestCollectorsBoundAggregateDecoding(t *testing.T) {
+	// Many valid envelopes that each decode fine must still be bounded in
+	// aggregate: a single body cannot force unbounded total work or output.
+	one := FindingMarker("r", model.Finding{ID: "f", Body: strings.Repeat("x", 1024)})
+	body := strings.Repeat(one+"\n", maxCarriersPerBody+50)
+	got := CollectFindingEnvelopes(body)
+	if len(got) == 0 || len(got) > maxCarriersPerBody {
+		t.Fatalf("collected %d envelopes, want >0 and <= %d", len(got), maxCarriersPerBody)
+	}
+}
+
+func TestDetectThreadReviewStopsAtFirstMarker(t *testing.T) {
+	// The gate must short-circuit on the first valid marker; trailing garbage
+	// markers must not change the result.
+	body := FindingMarker("rev-1", model.Finding{ID: "f1"}) + "\n" +
+		FindingMarkerPrefix + "!!!garbage -->" + "\n" +
+		FindingMarker("rev-2", model.Finding{ID: "f2"})
+	rid, fid, ok := DetectThreadReview(body)
+	if !ok || rid != "rev-1" || fid != "f1" {
+		t.Fatalf("DetectThreadReview = %q %q %v, want first marker rev-1/f1", rid, fid, ok)
+	}
+}
+
+func TestStripMarkers(t *testing.T) {
+	finding := model.Finding{ID: "f1", Title: "T"}
+	body := "visible intro\n" + FingerprintMarker(finding, "T") + "\n" +
+		FindingMarker("r", finding) + "\nvisible tail"
+	got := StripMarkers(body)
+	if strings.Contains(got, MarkerOpen) {
+		t.Fatalf("markers not stripped: %q", got)
+	}
+	if !strings.Contains(got, "visible intro") || !strings.Contains(got, "visible tail") {
+		t.Fatalf("visible text lost: %q", got)
+	}
+	// A carrier-only body strips to empty so the comment can be dropped.
+	if got := StripMarkers(FindingMarker("r", finding)); got != "" {
+		t.Fatalf("carrier-only body should strip to empty, got %q", got)
+	}
+	// Text without markers passes through untouched.
+	if got := StripMarkers("plain comment"); got != "plain comment" {
+		t.Fatalf("plain text mangled: %q", got)
+	}
+}
+
 func TestCarrierNoteReassembles(t *testing.T) {
 	result := &model.ReviewResult{
 		ReviewID:               "rev-c",
@@ -284,6 +329,7 @@ func TestReviewResultsByIDRoundTrip(t *testing.T) {
 	r := NewRenderer("https://host/").ForReview("rev-abc")
 	result := &model.ReviewResult{
 		ReviewID:               "rev-abc",
+		CreatedAt:              time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC),
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "overall boom",
 		OverallConfidenceScore: 0.8,
@@ -321,6 +367,9 @@ func TestReviewResultsByIDRoundTrip(t *testing.T) {
 		got.BaseRef != result.BaseRef || got.HeadRef != result.HeadRef ||
 		got.BaseURL != result.BaseURL || got.Model != result.Model {
 		t.Fatalf("overall/meta mismatch: %+v", got)
+	}
+	if !got.CreatedAt.Equal(result.CreatedAt) {
+		t.Fatalf("created_at not round-tripped: got %v want %v", got.CreatedAt, result.CreatedAt)
 	}
 	if len(got.Findings) != 2 {
 		t.Fatalf("expected 2 de-duplicated findings, got %d: %+v", len(got.Findings), got.Findings)

@@ -224,11 +224,22 @@ func (e *Engine) buildDiscussContext(reviewCtx *model.ReviewContext, result *mod
 
 	findings := result.Findings
 	if disableSuggestions {
+		// Deep-clone before stripping: Finalization/Summarization are pointers, so
+		// model.StripSuggestions on a shallow copy would mutate the caller's result
+		// (and a shallow strip would leave their suggestions reachable).
 		findings = make([]model.Finding, len(result.Findings))
 		copy(findings, result.Findings)
 		for i := range findings {
-			findings[i].Suggestions = nil
+			if f := findings[i].Finalization; f != nil {
+				clone := *f
+				findings[i].Finalization = &clone
+			}
+			if s := findings[i].Summarization; s != nil {
+				clone := *s
+				findings[i].Summarization = &clone
+			}
 		}
+		model.StripSuggestions(findings)
 	}
 	reviewForPrompt := struct {
 		ReviewID               string          `json:"review_id,omitempty"`
@@ -253,7 +264,11 @@ func (e *Engine) buildDiscussContext(reviewCtx *model.ReviewContext, result *mod
 	}
 	combined["review"] = reviewMap
 
-	if strings.TrimSpace(reviewCtx.Diff) != "" {
+	// The payload already carries the complete patch as diff_files or diff_hunks;
+	// injecting the raw unified diff on top would double the patch token cost and
+	// can push a near-budget context over the model window. Fall back to the raw
+	// diff only when the payload carries no structured diff at all.
+	if len(payload.DiffFiles) == 0 && len(payload.DiffHunks) == 0 && strings.TrimSpace(reviewCtx.Diff) != "" {
 		combined["diff"] = reviewCtx.Diff
 	}
 	if strings.TrimSpace(pinnedID) != "" {

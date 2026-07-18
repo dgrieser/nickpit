@@ -9,6 +9,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 type mrResponse struct {
@@ -90,9 +91,17 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		_ = c.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escaped, iid), &discussions)
 		for _, discussion := range discussions {
 			for _, note := range discussion.Notes {
+				// Strip hidden nickpit markers before the body enters prompt
+				// context: the carrier payloads are large opaque blobs that would
+				// waste model tokens and displace real comments during trimming.
+				// Notes that were only carriers are dropped entirely.
+				body := reviewmd.StripMarkers(note.Body)
+				if body == "" {
+					continue
+				}
 				comment := model.Comment{
 					Author:    note.Author.Username,
-					Body:      note.Body,
+					Body:      body,
 					CreatedAt: note.CreatedAt,
 					ThreadID:  discussion.ID,
 				}

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/dedupe"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -144,21 +145,48 @@ const FindingMarkerPrefix = MarkerOpen + "finding:"
 // decompression from exhausting memory.
 const maxCarrierDecodedBytes = 8 << 20 // 8 MiB
 
+// maxCarrierTotalDecodedBytes bounds the AGGREGATE decompressed bytes one
+// comment body may cause across all its carrier markers, and
+// maxCarriersPerBody bounds their count. Without these a commenter could pack
+// many small envelopes that each expand just below the per-marker cap and
+// exhaust memory in one scan.
+const (
+	maxCarrierTotalDecodedBytes = 16 << 20 // 16 MiB
+	maxCarriersPerBody          = 256
+)
+
+// carrierBudget tracks the aggregate decompression work spent on one comment
+// body so hostile marker floods stop scanning instead of exhausting memory.
+type carrierBudget struct {
+	bytes   int
+	markers int
+}
+
+func (b *carrierBudget) allow() bool {
+	return b.bytes < maxCarrierTotalDecodedBytes && b.markers < maxCarriersPerBody
+}
+
+func (b *carrierBudget) spend(decodedBytes int) {
+	b.bytes += decodedBytes
+	b.markers++
+}
+
 // ReviewEnvelope is the summary-note carrier payload: the overall verdict plus
 // the source identity needed to recreate the diff. Findings are carried
 // separately, one per FindingEnvelope, so no single note grows unbounded.
 type ReviewEnvelope struct {
-	ReviewID               string  `json:"rid"`
-	OverallCorrectness     string  `json:"correctness,omitempty"`
-	OverallExplanation     string  `json:"explanation,omitempty"`
-	OverallConfidenceScore float64 `json:"confidence,omitempty"`
-	Repo                   string  `json:"repo,omitempty"`
-	Mode                   string  `json:"mode,omitempty"`
-	Identifier             int     `json:"identifier,omitempty"`
-	BaseRef                string  `json:"base_ref,omitempty"`
-	HeadRef                string  `json:"head_ref,omitempty"`
-	BaseURL                string  `json:"base_url,omitempty"`
-	Model                  string  `json:"model,omitempty"`
+	ReviewID               string    `json:"rid"`
+	CreatedAt              time.Time `json:"at,omitzero"`
+	OverallCorrectness     string    `json:"correctness,omitempty"`
+	OverallExplanation     string    `json:"explanation,omitempty"`
+	OverallConfidenceScore float64   `json:"confidence,omitempty"`
+	Repo                   string    `json:"repo,omitempty"`
+	Mode                   string    `json:"mode,omitempty"`
+	Identifier             int       `json:"identifier,omitempty"`
+	BaseRef                string    `json:"base_ref,omitempty"`
+	HeadRef                string    `json:"head_ref,omitempty"`
+	BaseURL                string    `json:"base_url,omitempty"`
+	Model                  string    `json:"model,omitempty"`
 }
 
 // FindingEnvelope is the per-finding carrier payload: the review id it belongs to
@@ -179,6 +207,7 @@ func ReviewMarker(result *model.ReviewResult) string {
 	}
 	return encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{
 		ReviewID:               result.ReviewID,
+		CreatedAt:              result.CreatedAt,
 		OverallCorrectness:     result.OverallCorrectness,
 		OverallExplanation:     result.OverallExplanation,
 		OverallConfidenceScore: result.OverallConfidenceScore,
@@ -219,34 +248,37 @@ func encodeMarker(prefix string, payload any) string {
 	return prefix + base64.StdEncoding.EncodeToString(buf.Bytes()) + " -->"
 }
 
-// decodeMarker reverses encodeMarker into out. It reports false on any decode
-// failure so one corrupt carrier can never abort a scan.
-func decodeMarker(raw string, out any) bool {
+// decodeMarker reverses encodeMarker into out. decodedBytes reports the bytes
+// actually decompressed (spent even when the payload turns out not to be valid
+// JSON), so callers can budget aggregate decompression work across a body. It
+// reports ok=false on any decode failure so one corrupt carrier can never abort
+// a scan.
+func decodeMarker(raw string, out any) (decodedBytes int, ok bool) {
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
 	if err != nil {
-		return false
+		return 0, false
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
-		return false
+		return 0, false
 	}
 	defer func() { _ = zr.Close() }()
 	// Bound decompression to defend against zip-bomb payloads in untrusted
 	// comments: read one byte past the cap and reject anything that reaches it.
 	decoded, err := io.ReadAll(io.LimitReader(zr, maxCarrierDecodedBytes+1))
 	if err != nil {
-		return false
+		return len(decoded), false
 	}
 	if len(decoded) > maxCarrierDecodedBytes {
-		return false
+		return len(decoded), false
 	}
-	return json.Unmarshal(decoded, out) == nil
+	return len(decoded), json.Unmarshal(decoded, out) == nil
 }
 
 // scanMarkers walks body for every carrier opened by prefix, handing each raw
-// (undecoded) payload to fn. Payloads cannot contain "-->" (base64 has no '-'),
-// so the close scan is unambiguous.
-func scanMarkers(body, prefix string, fn func(raw string)) {
+// (undecoded) payload to fn until fn returns false. Payloads cannot contain
+// "-->" (base64 has no '-'), so the close scan is unambiguous.
+func scanMarkers(body, prefix string, fn func(raw string) bool) {
 	rest := body
 	for {
 		i := strings.Index(rest, prefix)
@@ -258,31 +290,49 @@ func scanMarkers(body, prefix string, fn func(raw string)) {
 		if j < 0 {
 			return
 		}
-		fn(strings.TrimSpace(rest[:j]))
+		if !fn(strings.TrimSpace(rest[:j])) {
+			return
+		}
 		rest = rest[j+3:]
 	}
 }
 
-// CollectReviewEnvelopes decodes every review carrier found in body.
+// CollectReviewEnvelopes decodes the review carriers found in body, bounded by
+// the per-body carrier budget.
 func CollectReviewEnvelopes(body string) []ReviewEnvelope {
 	var out []ReviewEnvelope
-	scanMarkers(body, ReviewMarkerPrefix, func(raw string) {
+	budget := &carrierBudget{}
+	scanMarkers(body, ReviewMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
 		var env ReviewEnvelope
-		if decodeMarker(raw, &env) {
+		n, ok := decodeMarker(raw, &env)
+		budget.spend(n)
+		if ok {
 			out = append(out, env)
 		}
+		return true
 	})
 	return out
 }
 
-// CollectFindingEnvelopes decodes every finding carrier found in body.
+// CollectFindingEnvelopes decodes the finding carriers found in body, bounded by
+// the per-body carrier budget.
 func CollectFindingEnvelopes(body string) []FindingEnvelope {
 	var out []FindingEnvelope
-	scanMarkers(body, FindingMarkerPrefix, func(raw string) {
+	budget := &carrierBudget{}
+	scanMarkers(body, FindingMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
 		var env FindingEnvelope
-		if decodeMarker(raw, &env) {
+		n, ok := decodeMarker(raw, &env)
+		budget.spend(n)
+		if ok {
 			out = append(out, env)
 		}
+		return true
 	})
 	return out
 }
@@ -290,15 +340,69 @@ func CollectFindingEnvelopes(body string) []FindingEnvelope {
 // DetectThreadReview inspects a discussion's root note body for a nickpit carrier
 // marker. A finding carrier pins a chat to that finding; a review carrier means a
 // whole-review chat. It reports ok=false when the note carries no nickpit marker,
-// i.e. the thread was not started by nickpit.
+// i.e. the thread was not started by nickpit. Scanning stops at the first valid
+// envelope and shares the per-body decompression budget, so a hostile body cannot
+// force unbounded work.
 func DetectThreadReview(rootBody string) (reviewID, findingID string, ok bool) {
-	if fes := CollectFindingEnvelopes(rootBody); len(fes) > 0 {
-		return fes[0].ReviewID, fes[0].Finding.ID, true
+	budget := &carrierBudget{}
+	scanMarkers(rootBody, FindingMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env FindingEnvelope
+		n, good := decodeMarker(raw, &env)
+		budget.spend(n)
+		if good && env.ReviewID != "" {
+			reviewID, findingID, ok = env.ReviewID, env.Finding.ID, true
+			return false
+		}
+		return true
+	})
+	if ok {
+		return reviewID, findingID, true
 	}
-	if res := CollectReviewEnvelopes(rootBody); len(res) > 0 {
-		return res[0].ReviewID, "", true
+	scanMarkers(rootBody, ReviewMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env ReviewEnvelope
+		n, good := decodeMarker(raw, &env)
+		budget.spend(n)
+		if good && env.ReviewID != "" {
+			reviewID, ok = env.ReviewID, true
+			return false
+		}
+		return true
+	})
+	return reviewID, findingID, ok
+}
+
+// StripMarkers removes every nickpit hidden marker (`<!-- nickpit:... -->`) from
+// s. SCM adapters apply it when normalizing existing comments into prompt
+// context, so the (potentially large) carrier payloads are never re-sent to the
+// model as opaque comment text; the raw bodies remain available separately for
+// carrier reassembly.
+func StripMarkers(s string) string {
+	if !strings.Contains(s, MarkerOpen) {
+		return s
 	}
-	return "", "", false
+	var b strings.Builder
+	rest := s
+	for {
+		i := strings.Index(rest, MarkerOpen)
+		if i < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:i])
+		j := strings.Index(rest[i:], "-->")
+		if j < 0 {
+			// Unterminated marker: drop the tail rather than re-sending it.
+			break
+		}
+		rest = rest[i+j+3:]
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // ReviewResultsByID reassembles complete ReviewResults from the carrier markers
@@ -325,6 +429,7 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 				continue
 			}
 			r := get(env.ReviewID)
+			r.CreatedAt = env.CreatedAt
 			r.OverallCorrectness = env.OverallCorrectness
 			r.OverallExplanation = env.OverallExplanation
 			r.OverallConfidenceScore = env.OverallConfidenceScore

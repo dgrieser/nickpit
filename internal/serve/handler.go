@@ -361,8 +361,12 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 }
 
 // isNickpitThread reports whether the discussion's root note carries a nickpit
-// review marker, i.e. the thread was started by a nickpit review. Read failures
-// are treated as "not ours" so a transient error never spawns a child.
+// review marker AND was authored by this group's bot user, i.e. the thread was
+// started by a nickpit review this daemon posted. The author check matters
+// because markers are only encoded, not authenticated: without it any commenter
+// could open a marker-bearing thread and route paid chat calls through the
+// daemon. Read failures are treated as "not ours" so a transient error never
+// spawns a child.
 func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath string, iid int, discussionID string) bool {
 	notes, err := group.Client.DiscussionNotes(ctx, projectPath, iid, discussionID)
 	if err != nil {
@@ -370,6 +374,9 @@ func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath
 		return false
 	}
 	if len(notes) == 0 {
+		return false
+	}
+	if notes[0].AuthorID != group.BotUserID {
 		return false
 	}
 	_, _, ok := reviewmd.DetectThreadReview(notes[0].Body)

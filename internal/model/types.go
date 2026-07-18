@@ -84,7 +84,10 @@ type ReviewResult struct {
 	// once the pipeline finishes and is carried in the hidden SCM note markers so
 	// all findings and the overall verdict for one run can be regrouped later
 	// (e.g. when starting a discussion about the review).
-	ReviewID               string     `json:"review_id,omitempty"`
+	ReviewID string `json:"review_id,omitempty"`
+	// CreatedAt records when the review completed. Carried in the hidden SCM
+	// note markers so the newest of several reviews on one MR/PR can be selected.
+	CreatedAt              time.Time  `json:"created_at,omitzero"`
 	Findings               []Finding  `json:"findings"`
 	OverallCorrectness     string     `json:"overall_correctness"`
 	OverallExplanation     string     `json:"overall_explanation"`

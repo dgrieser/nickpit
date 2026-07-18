@@ -43,32 +43,45 @@ func (c *Client) ReplyToMRDiscussionPath(ctx context.Context, project string, ii
 	return c.Post(ctx, path, map[string]string{"body": body}, nil)
 }
 
-// MRNoteBodies returns the body of every note and discussion note on a merge
-// request. It reads both the notes and discussions endpoints (a note appears in
-// both on GitLab); callers de-duplicate on the decoded content. project accepts a
-// numeric id or a group/name path.
-func (c *Client) MRNoteBodies(ctx context.Context, project string, iid int) ([]string, error) {
+// MRNote is one merge-request note body plus its author, so callers can verify
+// carrier provenance before trusting embedded markers.
+type MRNote struct {
+	Body     string
+	AuthorID int
+}
+
+// MRNotes returns every note and discussion note on a merge request with its
+// author. It reads both the notes and discussions endpoints (a note appears in
+// both on GitLab); callers de-duplicate on the decoded content. project accepts
+// a numeric id or a group/name path.
+func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote, error) {
 	escaped := escapeProject(project)
-	var bodies []string
-	var notes []struct {
-		Body string `json:"body"`
+	type noteJSON struct {
+		Body   string `json:"body"`
+		Author struct {
+			ID int `json:"id"`
+		} `json:"author"`
 	}
+	var out []MRNote
+	var notes []noteJSON
 	if err := c.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escaped, iid), &notes); err != nil {
 		return nil, fmt.Errorf("gitlab: listing MR notes: %w", err)
 	}
 	for _, note := range notes {
-		bodies = append(bodies, note.Body)
+		out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
 	}
-	var discussions discussionsResponse
+	var discussions []struct {
+		Notes []noteJSON `json:"notes"`
+	}
 	if err := c.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escaped, iid), &discussions); err != nil {
 		return nil, fmt.Errorf("gitlab: listing MR discussions: %w", err)
 	}
 	for _, discussion := range discussions {
 		for _, note := range discussion.Notes {
-			bodies = append(bodies, note.Body)
+			out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
 		}
 	}
-	return bodies, nil
+	return out, nil
 }
 
 // DiscussionNotes returns the notes of a single discussion, in order (oldest

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -261,11 +260,13 @@ func createChildLog(prefix, projectPath string, iid int, logDir string, now time
 		return "", nil, fmt.Errorf("serve: creating log dir: %w", err)
 	}
 	slug := strings.ReplaceAll(projectPath, "/", "-")
-	name := fmt.Sprintf("%s-%s-%d-%s.log", prefix, slug, iid, now.UTC().Format("2006-01-02-15-04-05"))
-	logPath := filepath.Join(logDir, name)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// CreateTemp's random suffix guarantees a unique file (0600) even when two
+	// children for the same MR start within the same second — concurrent chats in
+	// different discussions would otherwise interleave into one O_APPEND file.
+	pattern := fmt.Sprintf("%s-%s-%d-%s-*.log", prefix, slug, iid, now.UTC().Format("2006-01-02-15-04-05"))
+	logFile, err := os.CreateTemp(logDir, pattern)
 	if err != nil {
 		return "", nil, fmt.Errorf("serve: creating child log: %w", err)
 	}
-	return logPath, logFile, nil
+	return logFile.Name(), logFile, nil
 }
