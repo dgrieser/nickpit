@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -115,6 +116,54 @@ func TestBuildDiscussContextDropsSuggestionsWhenDisabled(t *testing.T) {
 		len(result.Findings[0].Finalization.Suggestions) != 1 ||
 		len(result.Findings[0].Summarization.Suggestions) != 1 {
 		t.Fatalf("original findings were mutated: %+v", result.Findings[0])
+	}
+}
+
+func TestBoundDiscussTranscript(t *testing.T) {
+	estimator := model.SimpleEstimator{}
+	turn := func(q, a string) []llm.Message {
+		return []llm.Message{{Role: "user", Content: q}, {Role: "assistant", Content: a}}
+	}
+	long := strings.Repeat("word ", 400) // ~500 tokens per message under SimpleEstimator
+
+	var msgs []llm.Message
+	for range 5 {
+		msgs = append(msgs, turn(long, long)...)
+	}
+	msgs = append(msgs, llm.Message{Role: "user", Content: "final question"})
+
+	// A generous budget keeps everything, untouched.
+	if got := boundDiscussTranscript(msgs, 1<<20, estimator); len(got) != len(msgs) {
+		t.Fatalf("generous budget trimmed transcript: %d != %d", len(got), len(msgs))
+	}
+	// A tight budget drops the oldest turns, keeps whole turns starting at a
+	// user message, and marks the omission.
+	total := 0
+	for _, m := range msgs {
+		total += estimator.Estimate(m.Content)
+	}
+	got := boundDiscussTranscript(msgs, total/3, estimator)
+	if len(got) == 0 || len(got) >= len(msgs) {
+		t.Fatalf("tight budget kept %d of %d messages", len(got), len(msgs))
+	}
+	if got[0].Role != "user" {
+		t.Fatalf("bounded transcript must start at a user message, got %q", got[0].Role)
+	}
+	if !strings.Contains(got[0].Content, discussOmittedTurnsNote) {
+		t.Fatalf("omission note missing: %q", got[0].Content[:80])
+	}
+	if got[len(got)-1].Content != "final question" {
+		t.Fatalf("newest question lost: %q", got[len(got)-1].Content)
+	}
+	// The input must not be mutated (the caller persists the full transcript).
+	if strings.Contains(msgs[0].Content, discussOmittedTurnsNote) {
+		t.Fatal("input transcript was mutated")
+	}
+	// Even a budget smaller than the final question keeps that question (with
+	// the omission note prepended, since everything older was dropped).
+	got = boundDiscussTranscript(msgs, 1, estimator)
+	if len(got) != 1 || !strings.HasSuffix(got[0].Content, "final question") {
+		t.Fatalf("minimal budget must keep the newest question, got %+v", got)
 	}
 }
 

@@ -333,6 +333,28 @@ func TestCarrierNotesReassemble(t *testing.T) {
 	}
 }
 
+func TestCarrierNotesChunkOnDecodedBudget(t *testing.T) {
+	// Highly compressible findings stay tiny encoded but expand hugely decoded;
+	// packing them into one note under the encoded bound alone would blow the
+	// reader's per-body decompression budget, silently dropping the tail. The
+	// chunker must split on decoded size so everything reassembles.
+	result := &model.ReviewResult{ReviewID: "rev-zip", OverallCorrectness: "patch is incorrect"}
+	for i := range 10 {
+		result.Findings = append(result.Findings, model.Finding{
+			ID:   fmt.Sprintf("z-%02d", i),
+			Body: strings.Repeat("compressible ", 150_000), // ~2MB decoded, ~KBs encoded
+		})
+	}
+	notes := NewRenderer("https://host/").CarrierNotes(result, result.Findings)
+	if len(notes) < 2 {
+		t.Fatalf("expected decoded-budget chunking, got %d note(s)", len(notes))
+	}
+	got := ReviewResultsByID(notes)["rev-zip"]
+	if got == nil || len(got.Findings) != len(result.Findings) {
+		t.Fatalf("decoded-budget reassembly incomplete: got %d findings, want %d", len(got.Findings), len(result.Findings))
+	}
+}
+
 func TestCarrierNotesChunkLargeReviews(t *testing.T) {
 	// Many sizable findings must split into multiple bounded chunks — one giant
 	// note would exceed SCM comment limits and the reader's per-body budget —
@@ -404,8 +426,13 @@ func TestReviewResultsByIDRoundTrip(t *testing.T) {
 		got.OverallConfidenceScore != result.OverallConfidenceScore ||
 		got.Repo != result.Repo || got.Mode != result.Mode || got.Identifier != result.Identifier ||
 		got.BaseRef != result.BaseRef || got.HeadRef != result.HeadRef ||
-		got.BaseURL != result.BaseURL || got.Model != result.Model {
+		got.Model != result.Model {
 		t.Fatalf("overall/meta mismatch: %+v", got)
+	}
+	// The LLM endpoint must never ride in a published carrier: it can name a
+	// private host or carry credentials, readable by anyone viewing the MR.
+	if got.BaseURL != "" {
+		t.Fatalf("LLM endpoint leaked into carrier: %q", got.BaseURL)
 	}
 	if !got.CreatedAt.Equal(result.CreatedAt) {
 		t.Fatalf("created_at not round-tripped: got %v want %v", got.CreatedAt, result.CreatedAt)

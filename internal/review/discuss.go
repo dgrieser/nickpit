@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/config"
@@ -117,9 +118,16 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if err != nil {
 		return out, err
 	}
-	// Re-trim the context reserving room for the findings JSON, styleguides, and
-	// the transcript, so the assembled prompt stays inside the context budget.
-	reviewCtx, err := e.trimForDiscuss(req.ReviewCtx, req.Result, req.Messages, styleGuideToolchainSnippet, req.DisableSuggestions, format)
+	// Bound the transcript first — a long session would otherwise exceed the
+	// model window no matter how hard the context is trimmed — then re-trim the
+	// context reserving room for the findings JSON, styleguides, and the (now
+	// bounded) transcript, so the assembled prompt stays inside the budget.
+	maxTokens := e.config.MaxContextTokens
+	if maxTokens <= 0 {
+		maxTokens = config.DefaultMaxContextToken
+	}
+	messages := boundDiscussTranscript(req.Messages, maxTokens/2, model.SimpleEstimator{})
+	reviewCtx, err := e.trimForDiscuss(req.ReviewCtx, req.Result, messages, styleGuideToolchainSnippet, req.DisableSuggestions, format)
 	if err != nil {
 		return out, fmt.Errorf("discuss: trimming context: %w", err)
 	}
@@ -151,7 +159,7 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 			prefix = append(prefix, llm.Message{Role: "assistant", Content: opener})
 		}
 	}
-	all := append(append([]llm.Message(nil), prefix...), req.Messages...)
+	all := append(append([]llm.Message(nil), prefix...), messages...)
 	prefixLen := len(all)
 
 	progress := req.Progress
@@ -302,6 +310,62 @@ func discussReviewForPrompt(result *model.ReviewResult, disableSuggestions bool)
 // prompt that are not the review payload or the transcript: the system template
 // text, tool instructions, and the opener.
 const discussPromptHeadroomTokens = 2000
+
+// discussOmittedTurnsNote is prepended to the oldest kept user message when
+// earlier turns were dropped to fit the context window, so the model knows the
+// transcript is partial rather than inventing continuity.
+const discussOmittedTurnsNote = "[Earlier conversation turns were omitted to fit the context window.]"
+
+// boundDiscussTranscript caps the conversation sent to the model at budget
+// tokens by dropping the OLDEST turns. Without this a long resumable session
+// eventually exceeds the model window no matter how hard the context is
+// trimmed, because every historical message is appended to the request. The cut
+// only happens at a user message so an assistant tool-call message is never
+// stranded from its tool results (strict providers reject that), and the newest
+// user message is always kept even when it alone exceeds the budget. When turns
+// were dropped, a short note is prepended to the oldest kept user message. The
+// input slice is never mutated.
+func boundDiscussTranscript(messages []llm.Message, budget int, estimator model.TokenEstimator) []llm.Message {
+	if budget <= 0 || len(messages) == 0 {
+		return messages
+	}
+	total := 0
+	for _, msg := range messages {
+		total += estimator.Estimate(msg.Content)
+	}
+	if total <= budget {
+		return messages
+	}
+	// Walk backwards accumulating whole turns: `start` is only ever moved to an
+	// index holding a user message. The newest user turn is kept unconditionally.
+	start := len(messages)
+	used := 0
+	tail := 0 // tokens in messages after the last examined user message
+	for i, msg := range slices.Backward(messages) {
+		tail += estimator.Estimate(msg.Content)
+		if msg.Role != "user" {
+			continue
+		}
+		if start != len(messages) && used+tail > budget {
+			break
+		}
+		start = i
+		used += tail
+		tail = 0
+	}
+	if start == len(messages) {
+		// No user message found at all (should not happen: callers end the
+		// transcript with the author's question); send everything rather than
+		// nothing.
+		return messages
+	}
+	if start == 0 {
+		return messages
+	}
+	bounded := append([]llm.Message(nil), messages[start:]...)
+	bounded[0].Content = discussOmittedTurnsNote + "\n\n" + bounded[0].Content
+	return bounded
+}
 
 // trimForDiscuss re-trims a prepared review context for the discussion prompt.
 // The context was trimmed against the budget of a REVIEW prompt; a discussion

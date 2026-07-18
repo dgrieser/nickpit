@@ -174,6 +174,10 @@ func (b *carrierBudget) spend(decodedBytes int) {
 // ReviewEnvelope is the summary-note carrier payload: the overall verdict plus
 // the source identity needed to recreate the diff. Findings are carried
 // separately, one per FindingEnvelope, so no single note grows unbounded.
+// ReviewResult.BaseURL is deliberately NOT carried: it is the LLM endpoint —
+// potentially a private hostname or a URL with credentials — which anyone able
+// to view the MR/PR could read out of the hidden comment, and reassembly never
+// needs it (the SCM URL comes from the profile at chat time).
 type ReviewEnvelope struct {
 	ReviewID               string    `json:"rid"`
 	CreatedAt              time.Time `json:"at,omitzero"`
@@ -185,7 +189,6 @@ type ReviewEnvelope struct {
 	Identifier             int       `json:"identifier,omitempty"`
 	BaseRef                string    `json:"base_ref,omitempty"`
 	HeadRef                string    `json:"head_ref,omitempty"`
-	BaseURL                string    `json:"base_url,omitempty"`
 	Model                  string    `json:"model,omitempty"`
 }
 
@@ -202,8 +205,15 @@ type FindingEnvelope struct {
 // of "-->" and the MarkerOpen token, so it can neither close the marker early nor
 // be forged from untrusted text.
 func ReviewMarker(result *model.ReviewResult) string {
+	marker, _ := reviewMarkerWithSize(result)
+	return marker
+}
+
+// reviewMarkerWithSize is ReviewMarker plus the payload's decoded (raw JSON)
+// size, for the carrier chunking budget.
+func reviewMarkerWithSize(result *model.ReviewResult) (string, int) {
 	if result == nil || result.ReviewID == "" {
-		return ""
+		return "", 0
 	}
 	return encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{
 		ReviewID:               result.ReviewID,
@@ -216,7 +226,6 @@ func ReviewMarker(result *model.ReviewResult) string {
 		Identifier:             result.Identifier,
 		BaseRef:                result.BaseRef,
 		HeadRef:                result.HeadRef,
-		BaseURL:                result.BaseURL,
 		Model:                  result.Model,
 	})
 }
@@ -224,28 +233,37 @@ func ReviewMarker(result *model.ReviewResult) string {
 // FindingMarker renders the hidden per-finding carrier for finding under review
 // id reviewID. It returns "" when reviewID is empty.
 func FindingMarker(reviewID string, finding model.Finding) string {
+	marker, _ := findingMarkerWithSize(reviewID, finding)
+	return marker
+}
+
+// findingMarkerWithSize is FindingMarker plus the payload's decoded (raw JSON)
+// size, which chunked carrier publishing needs to stay inside the reader's
+// per-body decompression budget.
+func findingMarkerWithSize(reviewID string, finding model.Finding) (string, int) {
 	if reviewID == "" {
-		return ""
+		return "", 0
 	}
 	return encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: finding})
 }
 
 // encodeMarker gzips and base64-encodes payload into a hidden marker opened by
-// prefix. A marsh/compress failure yields "" so a publish never aborts on it.
-func encodeMarker(prefix string, payload any) string {
+// prefix, also returning the payload's decoded (pre-compression) size. A
+// marshal/compress failure yields "" so a publish never aborts on it.
+func encodeMarker(prefix string, payload any) (string, int) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
-		return ""
+		return "", 0
 	}
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	if _, err := zw.Write(raw); err != nil {
-		return ""
+		return "", 0
 	}
 	if err := zw.Close(); err != nil {
-		return ""
+		return "", 0
 	}
-	return prefix + base64.StdEncoding.EncodeToString(buf.Bytes()) + " -->"
+	return prefix + base64.StdEncoding.EncodeToString(buf.Bytes()) + " -->", len(raw)
 }
 
 // decodeMarker reverses encodeMarker into out. decodedBytes reports the bytes
@@ -438,7 +456,7 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 			r.Identifier = env.Identifier
 			r.BaseRef = env.BaseRef
 			r.HeadRef = env.HeadRef
-			r.BaseURL = env.BaseURL
+
 			r.Model = env.Model
 		}
 	}
@@ -652,6 +670,13 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 // rather than silently dropping the finding.
 const carrierNoteMaxBytes = 60_000
 
+// carrierNoteMaxDecodedBytes bounds the DECODED (pre-compression) payload total
+// of one carrier note. Highly compressible envelopes can pack far more than the
+// reader's per-body decompression budget under the encoded byte bound alone;
+// the reader would then stop mid-body and silently drop the rest. Half the
+// reader budget leaves comfortable margin.
+const carrierNoteMaxDecodedBytes = maxCarrierTotalDecodedBytes / 2
+
 // CarrierNotes renders hidden note bodies carrying the review envelope plus one
 // finding envelope per given finding, split into chunks bounded by size and by
 // the reader's per-body marker budget. It exists so a run whose visible posts
@@ -667,24 +692,31 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 	}
 	var notes []string
 	var b strings.Builder
-	markers := 0
+	markers, decoded := 0, 0
 	flush := func() {
 		if b.Len() > 0 {
 			notes = append(notes, b.String())
 			b.Reset()
-			markers = 0
+			markers, decoded = 0, 0
 		}
 	}
-	if marker := ReviewMarker(result); marker != "" {
+	if marker, size := reviewMarkerWithSize(result); marker != "" {
 		b.WriteString(marker)
 		markers++
+		decoded += size
 	}
 	for _, finding := range findings {
-		marker := FindingMarker(result.ReviewID, finding)
+		marker, size := findingMarkerWithSize(result.ReviewID, finding)
 		if marker == "" {
 			continue
 		}
-		if b.Len() > 0 && (b.Len()+1+len(marker) > carrierNoteMaxBytes || markers >= maxCarriersPerBody) {
+		// Flush on any bound: encoded note size (SCM comment limits), marker
+		// count, or decoded payload total (the reader's per-body decompression
+		// budget — highly compressible envelopes can blow it while staying small
+		// encoded, and the reader would silently drop the tail).
+		if b.Len() > 0 && (b.Len()+1+len(marker) > carrierNoteMaxBytes ||
+			markers >= maxCarriersPerBody ||
+			decoded+size > carrierNoteMaxDecodedBytes) {
 			flush()
 		}
 		if b.Len() > 0 {
@@ -692,6 +724,7 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 		}
 		b.WriteString(marker)
 		markers++
+		decoded += size
 	}
 	flush()
 	return notes

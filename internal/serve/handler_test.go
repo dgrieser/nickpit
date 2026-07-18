@@ -457,6 +457,37 @@ func TestServerHealthz(t *testing.T) {
 	}
 }
 
+func TestKeyedMutexReleasesIdleEntries(t *testing.T) {
+	var k keyedMutex
+	unlock := k.lock("proj!disc-1")
+	if len(k.locks) != 1 {
+		t.Fatalf("locks = %d, want 1 while held", len(k.locks))
+	}
+	unlock()
+	if len(k.locks) != 0 {
+		t.Fatalf("locks = %d, want 0 after release — idle entries must not accumulate", len(k.locks))
+	}
+	// Contended: a waiter keeps the entry alive; the last release removes it.
+	unlock1 := k.lock("proj!disc-2")
+	done := make(chan func(), 1)
+	go func() { done <- k.lock("proj!disc-2") }()
+	waitFor(t, 2*time.Second, func() bool {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		l, ok := k.locks["proj!disc-2"]
+		return ok && l.refs == 2
+	})
+	unlock1()
+	unlock2 := <-done
+	unlock2()
+	k.mu.Lock()
+	remaining := len(k.locks)
+	k.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("locks = %d, want 0 after all holders released", remaining)
+	}
+}
+
 func TestNoteDedup(t *testing.T) {
 	d := newNoteDedup(2)
 	if !d.markNew(1) {

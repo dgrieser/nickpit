@@ -107,25 +107,43 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 }
 
 // keyedMutex provides a mutex per string key, so callers serialize work for the
-// same key while different keys proceed concurrently.
+// same key while different keys proceed concurrently. Entries are
+// reference-counted and removed once idle, so a long-running daemon's memory
+// does not grow with the lifetime count of distinct discussions.
 type keyedMutex struct {
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*keyedLock
+}
+
+type keyedLock struct {
+	mu sync.Mutex
+	// refs counts holders and waiters; the map entry is deleted when it drops
+	// to zero, guarded by keyedMutex.mu.
+	refs int
 }
 
 func (k *keyedMutex) lock(key string) func() {
 	k.mu.Lock()
 	if k.locks == nil {
-		k.locks = make(map[string]*sync.Mutex)
+		k.locks = make(map[string]*keyedLock)
 	}
-	m, ok := k.locks[key]
+	l, ok := k.locks[key]
 	if !ok {
-		m = &sync.Mutex{}
-		k.locks[key] = m
+		l = &keyedLock{}
+		k.locks[key] = l
 	}
+	l.refs++
 	k.mu.Unlock()
-	m.Lock()
-	return m.Unlock
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
 }
 
 // noteDedup remembers recently answered note ids (bounded, FIFO eviction) so a

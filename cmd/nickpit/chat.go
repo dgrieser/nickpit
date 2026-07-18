@@ -480,6 +480,7 @@ func (a *app) chatReviewRequest(profile config.Profile, src session.Source) mode
 		HeadRef:          src.HeadRef,
 		IncludeComments:  a.includeComments,
 		IncludeCommits:   a.includeCommits,
+		IncludeFullFiles: a.includeFullFiles,
 		IncludePaths:     profile.IncludePaths,
 		ExcludePaths:     profile.ExcludePaths,
 		IncludeContent:   profile.IncludeContent,
@@ -640,13 +641,15 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// Prepare the context through the review pipeline (filters, trimming,
 	// toolchain) rather than a raw fetch, so the chat never sees withheld files
 	// or an over-budget patch.
+	// chatReviewRequest carries the configured --include-comments policy; the
+	// triggering thread itself is already supplied through the conversation
+	// history, so no unconditional comment inclusion is needed here.
 	req := a.chatReviewRequest(profile, session.Source{
 		Mode:       string(model.ModeGitLab),
 		Repo:       project,
 		Identifier: mrID,
 		RepoRoot:   opts.repoRoot,
 	})
-	req.IncludeComments = true
 	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req)
 	if err != nil {
 		return fmt.Errorf("chat: resolving MR context: %w", err)
