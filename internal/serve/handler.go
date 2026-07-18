@@ -180,6 +180,19 @@ func (d *noteDedup) markNew(id int) bool {
 	return true
 }
 
+// forget removes id so a redelivery can retry. Called when an attempt fails
+// before a reply could have been posted — keeping the mark would discard the
+// redelivered webhook and leave the question permanently unanswered. The stale
+// entry in the eviction order is harmless (its later eviction is a no-op).
+func (d *noteDedup) forget(id int) {
+	if id == 0 {
+		return
+	}
+	d.mu.Lock()
+	delete(d.seen, id)
+	d.mu.Unlock()
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -336,9 +349,11 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		return
 	}
 	// Bound concurrent chat work; drop under load rather than pile up processes.
+	// The dropped note is forgotten so a webhook redelivery can retry it.
 	select {
 	case h.chatSem <- struct{}{}:
 	default:
+		h.chatSeen.forget(decision.NoteID)
 		h.log.Warn("chat busy, dropping reply", "iid", decision.IID, "discussion", decision.DiscussionID)
 		return
 	}
@@ -352,7 +367,15 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 	defer cancel()
 
 	// Inexpensive gate: only spawn a child for a thread nickpit actually started.
-	if !h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID) {
+	// A genuinely foreign thread keeps its dedup mark (redeliveries would re-gate
+	// identically); a transient read failure forgets it so a redelivery retries.
+	ours, err := h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID)
+	if err != nil {
+		h.chatSeen.forget(decision.NoteID)
+		h.log.Warn("chat gate: reading thread failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+		return
+	}
+	if !ours {
 		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
 		return
 	}
@@ -369,9 +392,14 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		LogDir:       h.chatCfg.LogDir,
 	})
 	switch {
+	// A failed attempt posted no reply: forget the note so a redelivered webhook
+	// is not discarded as a duplicate, which would leave the question unanswered
+	// until eviction or daemon restart.
 	case err != nil:
+		h.chatSeen.forget(decision.NoteID)
 		h.log.Warn("chat child failed to run", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
 	case exitCode != 0:
+		h.chatSeen.forget(decision.NoteID)
 		h.log.Warn("chat child exited with error", "iid", decision.IID, "discussion", decision.DiscussionID, "exit_code", exitCode, "log", logPath)
 	default:
 		h.log.Info("chat reply handled", "iid", decision.IID, "discussion", decision.DiscussionID)
@@ -383,22 +411,21 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 // started by a nickpit review this daemon posted. The author check matters
 // because markers are only encoded, not authenticated: without it any commenter
 // could open a marker-bearing thread and route paid chat calls through the
-// daemon. Read failures are treated as "not ours" so a transient error never
-// spawns a child.
-func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath string, iid int, discussionID string) bool {
+// daemon. A read failure is returned as an error so the caller can distinguish
+// "not ours" from "could not check".
+func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath string, iid int, discussionID string) (bool, error) {
 	notes, err := group.Client.DiscussionNotes(ctx, projectPath, iid, discussionID)
 	if err != nil {
-		h.log.Debug("chat gate: reading thread failed", "iid", iid, "discussion", discussionID, "error", err)
-		return false
+		return false, err
 	}
 	if len(notes) == 0 {
-		return false
+		return false, nil
 	}
 	if notes[0].AuthorID != group.BotUserID {
-		return false
+		return false, nil
 	}
 	_, _, ok := reviewmd.DetectThreadReview(notes[0].Body)
-	return ok
+	return ok, nil
 }
 
 // ackNote awards the given acknowledgement emoji on the command note ("" skips).

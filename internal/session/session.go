@@ -43,6 +43,21 @@ type Source struct {
 	RepoRoot   string `json:"repo_root,omitempty"`
 }
 
+// ContextOptions records the context-shaping options the review ran with, so a
+// session refresh recreates the SAME filtered context — not whatever the
+// current invocation's flags and profile happen to say.
+type ContextOptions struct {
+	IncludeComments  bool     `json:"include_comments"`
+	IncludeCommits   bool     `json:"include_commits"`
+	IncludeFullFiles bool     `json:"include_full_files,omitempty"`
+	IncludePaths     []string `json:"include_paths,omitempty"`
+	ExcludePaths     []string `json:"exclude_paths,omitempty"`
+	IncludeContent   []string `json:"include_content,omitempty"`
+	ExcludeContent   []string `json:"exclude_content,omitempty"`
+	MaxContextTokens int      `json:"max_context_tokens,omitempty"`
+	DiffFormat       string   `json:"diff_format,omitempty"`
+}
+
 // ToolCall mirrors llm.ToolCall for persistence.
 type ToolCall struct {
 	ID        string `json:"id"`
@@ -76,10 +91,15 @@ type Session struct {
 
 	// Context and Result are the cached review context and findings, so a resume
 	// can build the agent prompt without re-fetching. Context may be rebuilt from
-	// Source when stale (e.g. the MR gained commits).
+	// Source when stale: ContextHeadSHA/ContextBaseSHA record the MR head and
+	// diff-base commits the cache was built at, so both new commits AND a
+	// retargeted MR (base moved, head unchanged) invalidate it.
 	Context        *model.ReviewContext `json:"context,omitempty"`
 	ContextHeadSHA string               `json:"context_head_sha,omitempty"`
+	ContextBaseSHA string               `json:"context_base_sha,omitempty"`
 	Result         *model.ReviewResult  `json:"result,omitempty"`
+	// ContextOptions preserves the review's context-shaping flags for refreshes.
+	ContextOptions *ContextOptions `json:"context_options,omitempty"`
 
 	// Messages is the full conversation transcript (user, assistant, and tool
 	// messages), in order.
@@ -253,8 +273,10 @@ func (s *Store) Save(sess *Session) error {
 }
 
 // prune deletes the oldest session files beyond maxStoredSessions, judged by
-// file modification time so no session needs to be decoded. Best-effort: a
-// prune failure never fails the save that triggered it.
+// file modification time so no session needs to be decoded. Only files whose
+// name is a session id (a UUID, as New always mints) participate: --session-dir
+// may point at a directory holding unrelated JSON, which must never be deleted.
+// Best-effort: a prune failure never fails the save that triggered it.
 func (s *Store) prune() {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -266,7 +288,7 @@ func (s *Store) prune() {
 	}
 	var files []fileAge
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		if entry.IsDir() || !isSessionFileName(entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()
@@ -282,6 +304,17 @@ func (s *Store) prune() {
 	for _, file := range files[:len(files)-maxStoredSessions] {
 		_ = os.Remove(filepath.Join(s.dir, file.name))
 	}
+}
+
+// isSessionFileName reports whether name looks like a store-created session
+// file: "<uuid>.json". Anything else in the directory is not ours to touch.
+func isSessionFileName(name string) bool {
+	stem, ok := strings.CutSuffix(name, ".json")
+	if !ok {
+		return false
+	}
+	_, err := uuid.Parse(stem)
+	return err == nil
 }
 
 // Info is a lightweight session listing entry.

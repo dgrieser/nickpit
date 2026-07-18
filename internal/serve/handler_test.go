@@ -509,4 +509,10 @@ func TestNoteDedup(t *testing.T) {
 	if !d.markNew(1) {
 		t.Fatal("note 1 should have been evicted and seen as new again")
 	}
+	// forget clears a mark so a redelivery after a failed attempt can retry.
+	d.forget(3)
+	if !d.markNew(3) {
+		t.Fatal("forgotten note 3 should be seen as new again")
+	}
+	d.forget(0) // zero id is a no-op, never a panic
 }

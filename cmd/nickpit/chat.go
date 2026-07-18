@@ -107,6 +107,13 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			profileName, profile = storedName, stored
 		}
 	}
+	// The session records the model the review actually ran with (including any
+	// --model override at review time, or a profile model that has since
+	// changed). Reproduce it unless the user explicitly overrides --model for
+	// this chat.
+	if a.model == "" && sess.Model != "" {
+		profile.Model = sess.Model
+	}
 	if opts.findingID != "" {
 		sess.PinnedFindingID = opts.findingID
 	}
@@ -381,12 +388,13 @@ func sourceFromResult(result *model.ReviewResult, repoRoot string) session.Sourc
 
 // chatContext returns the review context for a session, preferring the cached
 // snapshot and recreating the diff when it is missing or stale. For GitLab
-// sessions the MR's live head SHA is compared against the SHA the cache was
-// built at, so a resumed chat picks up new commits. Local and GitHub sessions
-// use the cache when present: a local diff may no longer be reproducible (the
-// working tree moved on), and GitHub staleness detection lands with the GitHub
-// chat front-end. refreshed reports that the session's cache was updated and
-// should be saved.
+// sessions the MR's live head AND diff-base SHAs are compared against the SHAs
+// the cache was built at, so a resumed chat picks up new commits and also an MR
+// retargeting (base moved, head unchanged — the diff still changes). Local and
+// GitHub sessions use the cache when present: a local diff may no longer be
+// reproducible (the working tree moved on), and GitHub staleness detection
+// lands with the GitHub chat front-end. refreshed reports that the session's
+// cache was updated and should be saved.
 func (a *app) chatContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, sess *session.Session) (reviewCtx *model.ReviewContext, refreshed bool, err error) {
 	refresh := sess.Context == nil
 	if adapter, ok := source.(*glscm.Adapter); ok && model.ReviewMode(sess.Source.Mode) == model.ModeGitLab &&
@@ -401,15 +409,16 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 				return nil, false, fmt.Errorf("chat: checking MR status: %w", err)
 			}
 			a.logf(ctx, "chat: MR status check failed, using cached context: %v", err)
-		case sess.Context == nil || sess.ContextHeadSHA != status.HeadSHA:
+		case sess.Context == nil || sess.ContextHeadSHA != status.HeadSHA || sess.ContextBaseSHA != status.BaseSHA:
 			refresh = true
 			sess.ContextHeadSHA = status.HeadSHA
+			sess.ContextBaseSHA = status.BaseSHA
 		}
 	}
 	if !refresh {
 		return sess.Context, false, nil
 	}
-	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source))
+	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions))
 	if err != nil {
 		return nil, false, fmt.Errorf("chat: resolving review context: %w", err)
 	}
@@ -466,29 +475,49 @@ func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, sou
 	return reviewCtx, nil
 }
 
-// chatReviewRequest builds the request used to re-resolve the review context from
-// a session source. It carries the profile's path/content filters and context
-// budget so PrepareContext reproduces the review's filtered, trimmed context.
-func (a *app) chatReviewRequest(profile config.Profile, src session.Source) model.ReviewRequest {
-	return model.ReviewRequest{
-		Mode:             model.ReviewMode(src.Mode),
-		Submode:          src.Submode,
-		RepoRoot:         src.RepoRoot,
-		Repo:             src.Repo,
-		Identifier:       src.Identifier,
-		BaseRef:          src.BaseRef,
-		HeadRef:          src.HeadRef,
-		IncludeComments:  a.includeComments,
-		IncludeCommits:   a.includeCommits,
-		IncludeFullFiles: a.includeFullFiles,
-		IncludePaths:     profile.IncludePaths,
-		ExcludePaths:     profile.ExcludePaths,
-		IncludeContent:   profile.IncludeContent,
-		ExcludeContent:   profile.ExcludeContent,
-		MaxContextTokens: profile.MaxContextTokens,
-		MaxToolCalls:     profile.MaxToolCalls,
-		DiffFormat:       profile.DiffFormat,
+// chatReviewRequest builds the request used to re-resolve the review context
+// from a session source. When the session recorded the review's context options
+// they win over the current invocation's flags and profile, so a refresh
+// recreates the SAME filtered context the review used (e.g. a review run with
+// --include-comments=false must not refresh with comments added back). opts is
+// nil for sessions with no recorded options (built from JSON or MR markers),
+// which fall back to the current configuration — the best available.
+func (a *app) chatReviewRequest(profile config.Profile, src session.Source, opts *session.ContextOptions) model.ReviewRequest {
+	req := model.ReviewRequest{
+		Mode:         model.ReviewMode(src.Mode),
+		Submode:      src.Submode,
+		RepoRoot:     src.RepoRoot,
+		Repo:         src.Repo,
+		Identifier:   src.Identifier,
+		BaseRef:      src.BaseRef,
+		HeadRef:      src.HeadRef,
+		MaxToolCalls: profile.MaxToolCalls,
 	}
+	if opts != nil {
+		req.IncludeComments = opts.IncludeComments
+		req.IncludeCommits = opts.IncludeCommits
+		req.IncludeFullFiles = opts.IncludeFullFiles
+		req.IncludePaths = opts.IncludePaths
+		req.ExcludePaths = opts.ExcludePaths
+		req.IncludeContent = opts.IncludeContent
+		req.ExcludeContent = opts.ExcludeContent
+		req.MaxContextTokens = opts.MaxContextTokens
+		req.DiffFormat = model.DiffFormat(opts.DiffFormat)
+	} else {
+		req.IncludeComments = a.includeComments
+		req.IncludeCommits = a.includeCommits
+		req.IncludeFullFiles = a.includeFullFiles
+		req.IncludePaths = profile.IncludePaths
+		req.ExcludePaths = profile.ExcludePaths
+		req.IncludeContent = profile.IncludeContent
+		req.ExcludeContent = profile.ExcludeContent
+		req.MaxContextTokens = profile.MaxContextTokens
+		req.DiffFormat = profile.DiffFormat
+	}
+	if req.DiffFormat == "" {
+		req.DiffFormat = profile.DiffFormat
+	}
+	return req
 }
 
 // chatSource builds the review source and retrieval engine for a session source.
@@ -649,7 +678,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		Repo:       project,
 		Identifier: mrID,
 		RepoRoot:   opts.repoRoot,
-	})
+	}, nil)
 	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req)
 	if err != nil {
 		return fmt.Errorf("chat: resolving MR context: %w", err)
@@ -768,6 +797,19 @@ func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, r
 		}
 		sess.Context = &ctxCopy
 		sess.ContextHeadSHA = headSHA
+	}
+	// Record the review's context-shaping options so a later refresh recreates
+	// the same filtered context instead of whatever the then-current flags say.
+	sess.ContextOptions = &session.ContextOptions{
+		IncludeComments:  req.IncludeComments,
+		IncludeCommits:   req.IncludeCommits,
+		IncludeFullFiles: req.IncludeFullFiles,
+		IncludePaths:     req.IncludePaths,
+		ExcludePaths:     req.ExcludePaths,
+		IncludeContent:   req.IncludeContent,
+		ExcludeContent:   req.ExcludeContent,
+		MaxContextTokens: req.MaxContextTokens,
+		DiffFormat:       string(req.DiffFormat),
 	}
 	// RepoRoot is persisted only for a local review: a remote review's RepoRoot is
 	// a temporary clone deleted right after this call, so a resumed session must

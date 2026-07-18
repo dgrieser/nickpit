@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -142,6 +143,32 @@ func TestStorePrunesOldest(t *testing.T) {
 	}
 	if _, err := store.Load(first); err == nil {
 		t.Fatalf("oldest session %s should have been pruned", first)
+	}
+}
+
+func TestPruneIgnoresForeignJSONFiles(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// Unrelated JSON files in the directory (e.g. --session-dir pointed at a
+	// config directory) must never be deleted by pruning.
+	foreign := filepath.Join(dir, "important-config.json")
+	if err := os.WriteFile(foreign, []byte(`{"keep":"me"}`), 0o600); err != nil {
+		t.Fatalf("write foreign: %v", err)
+	}
+	stamp := time.Now().Add(-100 * time.Hour) // oldest file in the dir by far
+	if err := os.Chtimes(foreign, stamp, stamp); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	for i := 0; i <= maxStoredSessions; i++ {
+		if err := store.Save(New()); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("foreign JSON file was deleted by pruning: %v", err)
 	}
 }
 

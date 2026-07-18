@@ -207,11 +207,14 @@ func (c *Client) projectCloneURL(ctx context.Context, projectID int, fallbackPro
 
 // MRStatus is the minimal live state of an MR, fetched by the serve daemon
 // right before starting a review so closed/merged/draft MRs are skipped on
-// authoritative data rather than a possibly stale webhook payload.
+// authoritative data rather than a possibly stale webhook payload. BaseSHA is
+// the diff base from diff_refs: together with HeadSHA it identifies the MR's
+// current diff, so a retargeted MR (base moved, head unchanged) is detectable.
 type MRStatus struct {
 	State   string
 	Draft   bool
 	HeadSHA string
+	BaseSHA string
 }
 
 // FetchMRStatus fetches an MR's current state by numeric project ID.
@@ -231,7 +234,7 @@ func (c *Client) fetchMRStatus(ctx context.Context, escapedProject string, iid i
 	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d", escapedProject, iid), &mr); err != nil {
 		return nil, err
 	}
-	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA}, nil
+	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA, BaseSHA: mr.DiffRefs.BaseSHA}, nil
 }
 
 // DiffRefs holds the three commit SHAs GitLab requires in a diff-note position.
