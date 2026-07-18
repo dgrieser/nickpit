@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -116,7 +117,13 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if err != nil {
 		return out, err
 	}
-	contextJSON, err := e.buildDiscussContext(req.ReviewCtx, req.Result, req.PinnedFindingID, req.DisableSuggestions, format)
+	// Re-trim the context reserving room for the findings JSON, styleguides, and
+	// the transcript, so the assembled prompt stays inside the context budget.
+	reviewCtx, err := e.trimForDiscuss(req.ReviewCtx, req.Result, req.Messages, styleGuideToolchainSnippet, req.DisableSuggestions, format)
+	if err != nil {
+		return out, fmt.Errorf("discuss: trimming context: %w", err)
+	}
+	contextJSON, err := e.buildDiscussContext(reviewCtx, req.Result, req.PinnedFindingID, req.DisableSuggestions, format)
 	if err != nil {
 		return out, err
 	}
@@ -222,39 +229,7 @@ func (e *Engine) buildDiscussContext(reviewCtx *model.ReviewContext, result *mod
 		return "", fmt.Errorf("discuss: re-decoding review payload: %w", err)
 	}
 
-	findings := result.Findings
-	if disableSuggestions {
-		// Deep-clone before stripping: Finalization/Summarization are pointers, so
-		// model.StripSuggestions on a shallow copy would mutate the caller's result
-		// (and a shallow strip would leave their suggestions reachable).
-		findings = make([]model.Finding, len(result.Findings))
-		copy(findings, result.Findings)
-		for i := range findings {
-			if f := findings[i].Finalization; f != nil {
-				clone := *f
-				findings[i].Finalization = &clone
-			}
-			if s := findings[i].Summarization; s != nil {
-				clone := *s
-				findings[i].Summarization = &clone
-			}
-		}
-		model.StripSuggestions(findings)
-	}
-	reviewForPrompt := struct {
-		ReviewID               string          `json:"review_id,omitempty"`
-		OverallCorrectness     string          `json:"overall_correctness"`
-		OverallExplanation     string          `json:"overall_explanation"`
-		OverallConfidenceScore float64         `json:"overall_confidence_score"`
-		Findings               []model.Finding `json:"findings"`
-	}{
-		ReviewID:               result.ReviewID,
-		OverallCorrectness:     result.OverallCorrectness,
-		OverallExplanation:     result.OverallExplanation,
-		OverallConfidenceScore: result.OverallConfidenceScore,
-		Findings:               findings,
-	}
-	enc, err := json.Marshal(reviewForPrompt)
+	enc, err := json.Marshal(discussReviewForPrompt(result, disableSuggestions))
 	if err != nil {
 		return "", fmt.Errorf("discuss: marshalling review: %w", err)
 	}
@@ -280,6 +255,80 @@ func (e *Engine) buildDiscussContext(reviewCtx *model.ReviewContext, result *mod
 		return "", fmt.Errorf("discuss: encoding combined payload: %w", err)
 	}
 	return string(out), nil
+}
+
+// discussReviewPrompt is the review shape embedded in the discussion system
+// prompt: the overall verdict plus the complete findings.
+type discussReviewPrompt struct {
+	ReviewID               string          `json:"review_id,omitempty"`
+	OverallCorrectness     string          `json:"overall_correctness"`
+	OverallExplanation     string          `json:"overall_explanation"`
+	OverallConfidenceScore float64         `json:"overall_confidence_score"`
+	Findings               []model.Finding `json:"findings"`
+}
+
+// discussReviewForPrompt builds the review object embedded in the discussion
+// prompt. With suggestions disabled the findings are deep-cloned before
+// stripping: Finalization/Summarization are pointers, so model.StripSuggestions
+// on a shallow copy would mutate the caller's result (and a shallow strip would
+// leave their suggestions reachable).
+func discussReviewForPrompt(result *model.ReviewResult, disableSuggestions bool) discussReviewPrompt {
+	findings := result.Findings
+	if disableSuggestions {
+		findings = make([]model.Finding, len(result.Findings))
+		copy(findings, result.Findings)
+		for i := range findings {
+			if f := findings[i].Finalization; f != nil {
+				clone := *f
+				findings[i].Finalization = &clone
+			}
+			if s := findings[i].Summarization; s != nil {
+				clone := *s
+				findings[i].Summarization = &clone
+			}
+		}
+		model.StripSuggestions(findings)
+	}
+	return discussReviewPrompt{
+		ReviewID:               result.ReviewID,
+		OverallCorrectness:     result.OverallCorrectness,
+		OverallExplanation:     result.OverallExplanation,
+		OverallConfidenceScore: result.OverallConfidenceScore,
+		Findings:               findings,
+	}
+}
+
+// discussPromptHeadroomTokens approximates the fixed parts of the discussion
+// prompt that are not the review payload or the transcript: the system template
+// text, tool instructions, and the opener.
+const discussPromptHeadroomTokens = 2000
+
+// trimForDiscuss re-trims a prepared review context for the discussion prompt.
+// The context was trimmed against the budget of a REVIEW prompt; a discussion
+// adds the complete findings JSON, the styleguides, and the running transcript
+// on top, so a near-budget context would push the first (or a later) chat turn
+// over the model window. Reserving that extra content as trimmer headroom keeps
+// the assembled prompt inside max_context_tokens; the trimmer clones, so the
+// caller's (possibly session-cached) context is never mutated. When the extras
+// alone exceed the budget the context is trimmed to its minimum rather than
+// failing — the findings and the question are the discussion's substance.
+func (e *Engine) trimForDiscuss(reviewCtx *model.ReviewContext, result *model.ReviewResult, messages []llm.Message, styleGuideSnippet string, disableSuggestions bool, format model.DiffFormat) (*model.ReviewContext, error) {
+	maxTokens := e.config.MaxContextTokens
+	if maxTokens <= 0 {
+		maxTokens = config.DefaultMaxContextToken
+	}
+	estimator := model.SimpleEstimator{}
+	overhead := discussPromptHeadroomTokens
+	overhead += estimator.Estimate(styleGuideSnippet)
+	if reviewJSON, err := json.Marshal(discussReviewForPrompt(result, disableSuggestions)); err == nil {
+		overhead += estimator.EstimateLen(len(reviewJSON))
+	}
+	for _, msg := range messages {
+		overhead += estimator.Estimate(msg.Content)
+	}
+	overhead += promptOverheadTokens(estimator, reviewCtx, format, maxTokens)
+	trimmer := NewTrimmer(maxTokens, estimator, WithHeadroomTokens(overhead))
+	return trimmer.Trim(reviewCtx)
 }
 
 // DiscussOpener renders the assistant's first message for a finding-pinned chat,

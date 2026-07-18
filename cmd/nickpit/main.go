@@ -860,13 +860,15 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			// `nickpit chat` child (the same command runnable from the terminal),
 			// so the daemon itself stays free of LLM logic. The child reads the
 			// thread, self-gates on the root marker, and posts its reply.
-			// ExtraArgs are review-child specific (they may carry flags the chat
-			// command does not define); the chat child gets its settings from
-			// --config and the injected token env instead.
+			// Review extra_args are root-level persistent flags (e.g. --profile,
+			// --reasoning-effort — see server.yaml.example), so they apply to chat
+			// children too. Forwarding them keeps a thread reply on the same
+			// model/profile as the review it discusses.
 			chatConfig := serve.ChatConfig{
 				ConfigPath: a.configPath,
 				BaseURL:    baseURL,
 				LogDir:     cfg.LogDir,
+				ExtraArgs:  cfg.Review.ExtraArgs,
 			}
 			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,

@@ -49,7 +49,10 @@ groups:
   #   token: "${NICKPIT_GL_TOKEN_LEGACY}"
   #   webhook_secret: "${NICKPIT_GL_SECRET_LEGACY}"
 
-# Extra CLI arguments appended verbatim to every review child process.
+# Extra CLI arguments appended verbatim to every review AND discussion (chat)
+# child process, so thread replies run under the same profile/model as the
+# review they discuss. Use global (root-level) flags only; subcommand-specific
+# flags like --publish would break the chat children.
 review:
   extra_args: []
   # extra_args: ["--profile", "default", "--show-progress"]

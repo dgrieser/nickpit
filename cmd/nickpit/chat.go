@@ -95,6 +95,18 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if sess.Result == nil {
 		return fmt.Errorf("chat: session has no review to discuss")
 	}
+	// A session records the profile its review ran with; resume under that
+	// profile (model, key, tokens, filters, styleguides) so the chat matches the
+	// review being discussed — unless the user explicitly passed --profile. A
+	// stored profile that no longer exists falls back to the active one with a
+	// warning rather than stranding the session.
+	if !created && !a.profileSet && sess.Profile != "" && sess.Profile != profileName {
+		if storedName, stored, err := a.loadProfileNamed(sess.Profile); err != nil {
+			a.logf(ctx, "chat: stored profile %q unavailable, using %q: %v", sess.Profile, profileName, err)
+		} else {
+			profileName, profile = storedName, stored
+		}
+	}
 	if opts.findingID != "" {
 		sess.PinnedFindingID = opts.findingID
 	}
@@ -405,15 +417,26 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 	return reviewCtx, true, nil
 }
 
-// chatPrepareContext prepares a review context through the review pipeline. When
-// the profile configures content filters, filtering needs file contents, which
-// require a checkout; a remote session normally has none, so — exactly like
-// runWorkflow — a temporary remote checkout is prepared for the duration of the
-// preparation and cleaned up immediately after. Its path never leaks into the
-// returned context.
+// chatPrepareContext prepares a review context through the review pipeline. A
+// remote session normally has no checkout, but the review being discussed had
+// one under the same conditions resolveRepoRoot uses — and preparation depends
+// on it: content filters need file contents, and toolchain capture (which
+// selects version-gated styleguides) needs manifests. So the review's checkout
+// condition is mirrored here: a temporary remote checkout is prepared for the
+// duration of the preparation and cleaned up immediately after, keeping the
+// rebuilt context (toolchain versions, styleguide gating, filtering) aligned
+// with the review being discussed. Its path never leaks into the returned
+// context.
 func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (*model.ReviewContext, error) {
+	maxToolCalls := req.MaxToolCalls
+	if maxToolCalls == 0 {
+		maxToolCalls = profile.MaxToolCalls
+	}
+	// Inverse of resolveRepoRoot's skip condition: the review skipped its
+	// checkout only when nothing needed one.
+	needsCheckout := req.IncludeFullFiles || hasContentFilters(req) || maxToolCalls >= 0
 	tempCheckout := false
-	if req.RepoRoot == "" && req.Mode != model.ModeLocal && hasContentFilters(req) {
+	if req.RepoRoot == "" && req.Mode != model.ModeLocal && needsCheckout {
 		if remote, ok := source.(model.RemoteCheckoutSource); ok {
 			spec, err := remote.ResolveCheckout(ctx, req)
 			if err != nil {
@@ -462,6 +485,7 @@ func (a *app) chatReviewRequest(profile config.Profile, src session.Source) mode
 		IncludeContent:   profile.IncludeContent,
 		ExcludeContent:   profile.ExcludeContent,
 		MaxContextTokens: profile.MaxContextTokens,
+		MaxToolCalls:     profile.MaxToolCalls,
 		DiffFormat:       profile.DiffFormat,
 	}
 }
@@ -592,11 +616,16 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return fmt.Errorf("chat: review %q not found on MR", reviewID)
 	}
 
-	// Answer only when the triggering note is still the latest reply. When two
-	// replies race (or a webhook is redelivered), the superseded child sees a
-	// newer note as the latest and bows out, so the thread gets exactly one answer
-	// covering the conversation instead of duplicates.
-	if opts.replyNote > 0 && !isLatestReply(notes, botUserID, opts.replyNote) {
+	// Answer only when a user question is pending and (when a triggering note id
+	// was given) that note is still the latest. When two replies race, or a
+	// webhook is redelivered, or --reply-discussion is re-run manually after the
+	// bot already answered, the superseded invocation bows out so the thread gets
+	// exactly one answer covering the conversation instead of duplicates.
+	pending, pendingOK := latestPendingNote(notes, botUserID)
+	if !pendingOK {
+		return nil
+	}
+	if opts.replyNote > 0 && pending != opts.replyNote {
 		return nil
 	}
 	history := chatThreadToMessages(notes, botUserID)
@@ -645,26 +674,38 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if reply == "" {
 		return nil
 	}
+	// Revalidate immediately before posting: if a newer user note arrived while
+	// the LLM turn was running, posting now would answer out of order AND make
+	// the newer note's child see a bot reply as the latest activity and skip —
+	// permanently dropping that question. Abort instead; the newer note's child
+	// answers with the full history, including the question this turn covered.
+	// (A tiny window between this check and the POST remains; the SCM offers no
+	// atomic check-and-post.)
+	fresh, err := client.DiscussionNotes(ctx, project, mrID, opts.replyDiscussion)
+	if err != nil {
+		return fmt.Errorf("chat: rechecking thread before reply: %w", err)
+	}
+	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
+		return nil
+	}
 	return client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, reviewmd.Sanitize(reply))
 }
 
-// isLatestReply reports whether noteID is the newest question still awaiting an
-// answer: the thread's most recent non-system note must be that note. A child
-// spawned for an older note returns false and skips, so only the child for the
-// latest reply answers — and a bot reply as the newest note means the pending
-// question was already answered, so a redelivered webhook (or a repeated
-// --reply-note invocation) does not post a duplicate answer.
-func isLatestReply(notes []glscm.DiscussionNote, botUserID, noteID int) bool {
+// latestPendingNote returns the id of the thread's newest non-system note when
+// that note is a user's — i.e. a question is pending an answer. ok=false when
+// the newest activity is the bot's own reply (the pending question was already
+// answered; answering again would duplicate) or the thread has no user notes.
+func latestPendingNote(notes []glscm.DiscussionNote, botUserID int) (noteID int, ok bool) {
 	for _, note := range slices.Backward(notes) {
 		if note.System {
 			continue
 		}
 		if botUserID != 0 && note.AuthorID == botUserID {
-			return false // the latest activity is the bot's own answer
+			return 0, false
 		}
-		return note.ID == noteID
+		return note.ID, true
 	}
-	return false
+	return 0, false
 }
 
 // chatThreadToMessages maps a GitLab discussion's notes to conversation messages

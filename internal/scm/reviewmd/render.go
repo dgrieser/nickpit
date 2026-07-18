@@ -645,26 +645,56 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 	return b.String()
 }
 
-// CarrierNote renders a hidden note body carrying this run's complete review as
-// carrier markers (the review envelope plus one finding envelope per finding).
-// It exists so a re-review — where the visible summary and duplicate findings are
-// suppressed for idempotency — still publishes the current run's full data, so a
-// later chat can reassemble exactly this review by its id instead of falling back
-// to an older run. The body is only HTML-comment markers, so it renders empty.
-// Returns "" when the result has no review id.
-func (r Renderer) CarrierNote(result *model.ReviewResult) string {
+// carrierNoteMaxBytes bounds one carrier note body. GitHub caps comments at
+// 65,536 characters (GitLab at ~1M); staying under the stricter limit keeps
+// carrier chunks postable on both platforms. A single oversized marker still
+// gets its own chunk — the post may fail, which surfaces as a publish warning
+// rather than silently dropping the finding.
+const carrierNoteMaxBytes = 60_000
+
+// CarrierNotes renders hidden note bodies carrying the review envelope plus one
+// finding envelope per given finding, split into chunks bounded by size and by
+// the reader's per-body marker budget. It exists so a run whose visible posts
+// are incomplete — a re-review with the summary and duplicate findings
+// suppressed for idempotency, or a publish where some posts failed — still
+// leaves the full data on the MR/PR for a later chat to reassemble by review
+// id. Callers pass only the findings that lack their own per-finding carrier.
+// The bodies are only HTML-comment markers, so they render empty. Returns nil
+// when the result has no review id.
+func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Finding) []string {
 	if result == nil || result.ReviewID == "" {
-		return ""
+		return nil
 	}
+	var notes []string
 	var b strings.Builder
-	b.WriteString(ReviewMarker(result))
-	for _, finding := range result.Findings {
-		if marker := FindingMarker(result.ReviewID, finding); marker != "" {
-			b.WriteString("\n")
-			b.WriteString(marker)
+	markers := 0
+	flush := func() {
+		if b.Len() > 0 {
+			notes = append(notes, b.String())
+			b.Reset()
+			markers = 0
 		}
 	}
-	return b.String()
+	if marker := ReviewMarker(result); marker != "" {
+		b.WriteString(marker)
+		markers++
+	}
+	for _, finding := range findings {
+		marker := FindingMarker(result.ReviewID, finding)
+		if marker == "" {
+			continue
+		}
+		if b.Len() > 0 && (b.Len()+1+len(marker) > carrierNoteMaxBytes || markers >= maxCarriersPerBody) {
+			flush()
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(marker)
+		markers++
+	}
+	flush()
+	return notes
 }
 
 // FindingBody renders a finding as markdown, tagged with its FingerprintMarker. When

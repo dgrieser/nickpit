@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/base64"
+	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -295,7 +297,7 @@ func TestStripMarkers(t *testing.T) {
 	}
 }
 
-func TestCarrierNoteReassembles(t *testing.T) {
+func TestCarrierNotesReassemble(t *testing.T) {
 	result := &model.ReviewResult{
 		ReviewID:               "rev-c",
 		OverallCorrectness:     "patch is incorrect",
@@ -308,20 +310,57 @@ func TestCarrierNoteReassembles(t *testing.T) {
 			{ID: "f2", Title: "Two", Body: "b2", CodeLocation: model.CodeLocation{FilePath: "b.go"}},
 		},
 	}
-	note := NewRenderer("https://host/").CarrierNote(result)
-	if note == "" {
-		t.Fatal("carrier note empty")
+	notes := NewRenderer("https://host/").CarrierNotes(result, result.Findings)
+	if len(notes) == 0 {
+		t.Fatal("carrier notes empty")
 	}
-	byID := ReviewResultsByID([]string{note})
+	byID := ReviewResultsByID(notes)
 	got := byID["rev-c"]
 	if got == nil {
-		t.Fatalf("carrier note did not reassemble: %v", byID)
+		t.Fatalf("carrier notes did not reassemble: %v", byID)
 	}
 	if got.OverallExplanation != "carrier note test" || len(got.Findings) != 2 {
 		t.Fatalf("carrier reassembly incomplete: %+v", got)
 	}
-	if NewRenderer("").CarrierNote(&model.ReviewResult{}) != "" {
-		t.Fatalf("carrier note should be empty without a review id")
+	// Only the passed findings ride in the carrier — the review envelope alone
+	// when none are missing.
+	envelopeOnly := NewRenderer("https://host/").CarrierNotes(result, nil)
+	if len(envelopeOnly) != 1 || len(CollectFindingEnvelopes(envelopeOnly[0])) != 0 {
+		t.Fatalf("envelope-only carrier wrong: %v", envelopeOnly)
+	}
+	if NewRenderer("").CarrierNotes(&model.ReviewResult{}, nil) != nil {
+		t.Fatalf("carrier notes should be nil without a review id")
+	}
+}
+
+func TestCarrierNotesChunkLargeReviews(t *testing.T) {
+	// Many sizable findings must split into multiple bounded chunks — one giant
+	// note would exceed SCM comment limits and the reader's per-body budget —
+	// while still reassembling completely.
+	result := &model.ReviewResult{ReviewID: "rev-big", OverallCorrectness: "patch is incorrect"}
+	// Incompressible bodies (seeded PRNG) so gzip cannot collapse them and the
+	// per-note byte bound actually forces chunking.
+	rng := rand.New(rand.NewSource(42))
+	for i := range 40 {
+		raw := make([]byte, 8*1024)
+		rng.Read(raw)
+		result.Findings = append(result.Findings, model.Finding{
+			ID:   fmt.Sprintf("f-%03d", i),
+			Body: base64.StdEncoding.EncodeToString(raw),
+		})
+	}
+	notes := NewRenderer("https://host/").CarrierNotes(result, result.Findings)
+	if len(notes) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(notes))
+	}
+	for i, note := range notes {
+		if len(note) > carrierNoteMaxBytes+maxCarrierDecodedBytes/8 { // generous sanity bound
+			t.Fatalf("chunk %d oversized: %d bytes", i, len(note))
+		}
+	}
+	got := ReviewResultsByID(notes)["rev-big"]
+	if got == nil || len(got.Findings) != len(result.Findings) {
+		t.Fatalf("chunked reassembly incomplete: got %d findings, want %d", len(got.Findings), len(result.Findings))
 	}
 }
 

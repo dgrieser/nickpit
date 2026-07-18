@@ -31,7 +31,7 @@ func TestChatThreadToMessages(t *testing.T) {
 	}
 }
 
-func TestIsLatestReply(t *testing.T) {
+func TestLatestPendingNote(t *testing.T) {
 	notes := []glscm.DiscussionNote{
 		{ID: 1, Body: "root", AuthorID: 5},
 		{ID: 2, Body: "q1", AuthorID: 10},
@@ -39,20 +39,20 @@ func TestIsLatestReply(t *testing.T) {
 		{ID: 4, Body: "q2", AuthorID: 10},  // latest user note
 		{ID: 5, Body: "sys", System: true}, // ignored
 	}
-	if !isLatestReply(notes, 5, 4) {
-		t.Fatal("note 4 should be the latest reply")
+	pending, ok := latestPendingNote(notes, 5)
+	if !ok || pending != 4 {
+		t.Fatalf("pending = %d, %v; want note 4 pending", pending, ok)
 	}
-	if isLatestReply(notes, 5, 2) {
-		t.Fatal("note 2 is superseded by note 4")
-	}
-	if isLatestReply(notes, 5, 999) {
-		t.Fatal("unknown note is not the latest")
-	}
-	// Once the bot has answered, the pending question is closed: a redelivered
-	// webhook for the already-answered note must not produce a duplicate reply.
+	// Once the bot has answered, no question is pending: a redelivered webhook
+	// or a repeated manual --reply-discussion must not produce a duplicate.
 	answered := append(notes, glscm.DiscussionNote{ID: 6, Body: "a2", AuthorID: 5})
-	if isLatestReply(answered, 5, 4) {
-		t.Fatal("note 4 was already answered by the bot's note 6")
+	if _, ok := latestPendingNote(answered, 5); ok {
+		t.Fatal("bot answer as newest note means nothing is pending")
+	}
+	// A thread with only the root note (bot's finding comment) has nothing
+	// pending either.
+	if _, ok := latestPendingNote(notes[:1], 5); ok {
+		t.Fatal("root-only thread has no pending question")
 	}
 }
 
