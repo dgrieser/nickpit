@@ -105,7 +105,7 @@ Apply these gates in order. Stop as soon as one gate applies.
     - Python runtime errors such as `NameError`, `AttributeError`, `ImportError`
     - JavaScript runtime `ReferenceError`/`TypeError` not caught by static tooling
     - reflection, serialization, regex-pattern, or text/template errors that fail only when executed
-  - If the finding bundles a compile error with a distinct runtime or logic problem, this gate covers only the compile-error portion; evaluate the remaining claim with the next gates.
+  - If the finding bundles a compile error with a distinct runtime or logic problem, do not refute the finding under this gate; instead, bypass this gate and evaluate the remaining runtime or logic claim using the subsequent gates.
 
 {{$gate = inc $gate}}{{$gate}}. Confirm gate:
   - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
