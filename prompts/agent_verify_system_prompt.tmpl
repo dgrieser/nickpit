@@ -89,6 +89,23 @@ Apply these gates in order. Stop as soon as one gate applies.
   - If the styleguide clearly weakens but does not contradict the claim, continue to the next gate and reflect the weakening in `confidence_score`.
   - Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide.
 
+{{$gate = inc $gate}}{{$gate}}. Compile-error gate:
+  - Return `refuted` when the finding's core claim is a compile-time error that the language's standard compile or type-check tooling would already catch, e.g.
+    - `go build`/`go vet`
+    - `rustc`/`cargo check`
+    - `tsc`
+    - JavaScript parsing
+    - `python -m py_compile`
+  - Such errors cannot survive a build: the toolchain blocks them long before review matters, so refute regardless of whether the claimed error is technically real.
+  - Do NOT apply this gate to errors that only surface at runtime — continue to the next gate for:
+    - SQL syntax errors inside string literals or migration files
+    - Helm template errors, Kubernetes manifest or CRD schema violations
+    - Python runtime errors such as `NameError`, `AttributeError`, `ImportError`
+    - JavaScript runtime `ReferenceError`/`TypeError` not caught by static tooling
+    - reflection, serialization, regex-pattern, or text/template errors that fail only when executed
+  - If the finding bundles a compile error with a distinct runtime or logic problem, do not refute the finding under this gate;
+    instead, bypass this gate and evaluate the remaining runtime or logic claim using the subsequent gates.
+
 {{$gate = inc $gate}}{{$gate}}. Confirm gate:
   - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
     a. EXISTS IN THE CHANGE:
