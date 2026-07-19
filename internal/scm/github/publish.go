@@ -91,8 +91,13 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		}
 	}
 	for _, finding := range overflow {
-		if err := a.postIssueComment(ctx, render, issueCommentsPath, finding); err != nil {
+		carried, err := a.postIssueComment(ctx, render, issueCommentsPath, finding)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
+		}
+		// The partition loop already recorded size-omitted carriers; this covers
+		// post failures (reassembly de-duplicates any overlap by finding id).
+		if err != nil || !carried {
 			missing = append(missing, finding)
 		}
 	}
@@ -143,7 +148,9 @@ func (a *Adapter) publishReview(ctx context.Context, render reviewmd.Renderer, r
 		}
 	}
 	for _, item := range inline {
-		if err := a.postIssueComment(ctx, render, issueCommentsPath, item.finding); err != nil {
+		// carried is prefix-independent (see FindingBodyCarried), so the caller's
+		// partition-time record already covers a size-omitted carrier here.
+		if _, err := a.postIssueComment(ctx, render, issueCommentsPath, item.finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", item.finding.ID, err))
 		}
 	}
@@ -164,9 +171,16 @@ func (a *Adapter) postReview(ctx context.Context, path, commitID, body string, c
 	return a.client.Post(ctx, path, payload, nil)
 }
 
-func (a *Adapter) postIssueComment(ctx context.Context, render reviewmd.Renderer, path string, finding model.Finding) error {
+// postIssueComment posts a finding as a general PR comment. carried reports
+// whether the body embedded the full-finding carrier (false when omitted for
+// size), so callers can route the finding into the fallback carrier notes.
+func (a *Adapter) postIssueComment(ctx context.Context, render reviewmd.Renderer, path string, finding model.Finding) (carried bool, err error) {
 	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
-	return a.client.Post(ctx, path, map[string]string{"body": render.FindingBody(finding, prefix)}, nil)
+	body, bodyCarried := render.FindingBodyCarried(finding, prefix)
+	if err := a.client.Post(ctx, path, map[string]string{"body": body}, nil); err != nil {
+		return false, err
+	}
+	return bodyCarried, nil
 }
 
 // existingComments collects the markers and finding fingerprints already present

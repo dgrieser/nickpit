@@ -775,7 +775,20 @@ func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix strin
 	}
 	visible := b.String()
 	carrier := FindingMarker(r.reviewID, finding)
-	carried := carrier != "" && len(fingerprint)+1+len(carrier)+len(visible) <= carrierNoteMaxBytes
+	// The carried decision must be independent of the locationPrefix variant:
+	// the same finding is rendered with and without a "`file:line`" prefix
+	// across inline posts and their general-comment fallbacks, and a
+	// near-boundary finding must not carry in one render while silently dropping
+	// the carrier in the other (publishers record the decision once). The prefix
+	// block is therefore excluded from the measurement, and a slack larger than
+	// any OS-length path keeps the real, prefixed body under the platform limit.
+	const carrierNoteSizeSlack = 8192
+	prefixBlockLen := 0
+	if locationPrefix != "" {
+		prefixBlockLen = len(locationPrefix) + len("  \n\n")
+	}
+	decisionLen := len(fingerprint) + 1 + len(carrier) + len(visible) - prefixBlockLen
+	carried := carrier != "" && decisionLen+carrierNoteSizeSlack <= carrierNoteMaxBytes
 	if carried {
 		return fingerprint + "\n" + carrier + visible, true
 	}

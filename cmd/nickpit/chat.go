@@ -720,7 +720,12 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 	reply := strings.TrimSpace(res.Reply)
 	if reply == "" {
-		return nil
+		// An empty completion means the model failed to answer, not that nothing
+		// should be posted. Exiting successfully would let the daemon keep the
+		// note's dedup mark and suppress redeliveries, leaving the question
+		// permanently unanswered; a non-zero exit makes the handler forget the
+		// note so a redelivery retries.
+		return fmt.Errorf("chat: discussion agent returned an empty reply")
 	}
 	// Revalidate immediately before posting: if a newer user note arrived while
 	// the LLM turn was running, posting now would answer out of order AND make

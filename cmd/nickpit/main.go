@@ -848,12 +848,23 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Session flags given to the daemon apply to its children: reviews
+			// save (or skip) their resumable chat sessions where the operator
+			// asked, not silently in the default directory. Both flags are root
+			// persistent flags, so review and chat children parse them alike.
+			childArgs := append([]string(nil), cfg.Review.ExtraArgs...)
+			if a.noSession {
+				childArgs = append(childArgs, "--no-session")
+			}
+			if a.sessionDir != "" {
+				childArgs = append(childArgs, "--session-dir", a.sessionDir)
+			}
 			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, serve.WorkerConfig{
 				Topic:      cfg.Topic,
 				StartEmoji: cfg.StartEmojiName(),
 				BaseURL:    baseURL,
 				ConfigPath: a.configPath,
-				ExtraArgs:  cfg.Review.ExtraArgs,
+				ExtraArgs:  childArgs,
 				LogDir:     cfg.LogDir,
 			}, log)
 			// Threaded replies in nickpit discussions are answered by spawning a
@@ -868,7 +879,7 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				ConfigPath: a.configPath,
 				BaseURL:    baseURL,
 				LogDir:     cfg.LogDir,
-				ExtraArgs:  cfg.Review.ExtraArgs,
+				ExtraArgs:  childArgs,
 			}
 			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,
