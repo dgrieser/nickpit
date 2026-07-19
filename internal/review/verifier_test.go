@@ -145,9 +145,10 @@ func TestVerifyDisableDiffScopeRestoresLegacyPromptAndSchema(t *testing.T) {
 		assertVerifierGateNumbering(t, system, []string{
 			"1. Non-finding gate:",
 			"2. Styleguide contradiction gate:",
-			"3. Confirm gate:",
-			"4. Refute gate for actual issue claims:",
-			"5. Unverified gate:",
+			"3. Compile-error gate:",
+			"4. Confirm gate:",
+			"5. Refute gate for actual issue claims:",
+			"6. Unverified gate:",
 		})
 	}
 	var payload map[string]any
@@ -181,9 +182,10 @@ func TestVerifyAnnotatesDeterministicDiffScopeStatus(t *testing.T) {
 		"1. Non-finding gate:",
 		"2. Diff-scope gate:",
 		"3. Styleguide contradiction gate:",
-		"4. Confirm gate:",
-		"5. Refute gate for actual issue claims:",
-		"6. Unverified gate:",
+		"4. Compile-error gate:",
+		"5. Confirm gate:",
+		"6. Refute gate for actual issue claims:",
+		"7. Unverified gate:",
 	})
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(taskMessageContent(req)), &payload); err != nil {
