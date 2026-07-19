@@ -1298,7 +1298,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 // pipeline reviewed — cached on the chat session for exact-context resume — and
 // headSHA is the remote head it was built at (both may be zero for source-less
 // runs).
-func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) error {
+func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) error {
 	if req.DisableSuggestions {
 		result.StripSuggestions()
 	}
@@ -1336,7 +1336,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 	}
 	// Save a resumable discussion session so `nickpit chat` can pick up the
 	// review. Best-effort: a failure here never affects the review outcome.
-	a.persistChatSession(ctx, req, result, reviewCtx, headSHA)
+	a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA)
 	// Distinguish "review produced nothing because every reviewer crashed"
 	// from "review succeeded with some soft warnings" — only the former is a
 	// CI-level failure. Empty findings alone are not a failure (clean diff).
@@ -1394,7 +1394,7 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 		result.RuntimeSeconds = model.RuntimeSeconds(time.Since(a.reviewStart))
 	}
 	a.logProgress(ctx, logging.StageResult, logging.StateOK, reviewResultSummary(result))
-	return a.emitResult(ctx, source, req, result, reviewCtx, headSHA)
+	return a.emitResult(ctx, source, profile, req, result, reviewCtx, headSHA)
 }
 
 func specHasStep(spec workflow.Spec, stepType string) bool {

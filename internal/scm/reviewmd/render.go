@@ -735,13 +735,20 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 // cannot be anchored inline) it is shown after the badge/confidence block so the
 // location is still visible without an inline anchor.
 func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) string {
+	body, _ := r.FindingBodyCarried(finding, locationPrefix)
+	return body
+}
+
+// FindingBodyCarried is FindingBody plus whether the full-finding carrier
+// marker actually rode along. The carrier is omitted when it would push the
+// comment past the platform size limit — an unusually long (e.g. imported)
+// finding must still publish its visible text; carrier metadata is never worth
+// losing the comment over. Publishers use carried=false to route the finding
+// into the chunked fallback carrier notes instead.
+func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix string) (string, bool) {
 	title, body, rank, confidence := FindingDisplay(finding)
+	fingerprint := FingerprintMarker(finding, title)
 	var b strings.Builder
-	b.WriteString(FingerprintMarker(finding, title))
-	if marker := FindingMarker(r.reviewID, finding); marker != "" {
-		b.WriteString("\n")
-		b.WriteString(marker)
-	}
 	b.WriteString("\n\n")
 	// Trailing two spaces: markdown hard break stacking badge over confidence.
 	fmt.Fprintf(&b, "%s  \n%s  \n\n", r.PriorityBadge(rank), ConfidenceLine(confidence))
@@ -766,7 +773,13 @@ func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) stri
 			fmt.Fprintf(&b, "\n- %s", formatted)
 		}
 	}
-	return b.String()
+	visible := b.String()
+	carrier := FindingMarker(r.reviewID, finding)
+	carried := carrier != "" && len(fingerprint)+1+len(carrier)+len(visible) <= carrierNoteMaxBytes
+	if carried {
+		return fingerprint + "\n" + carrier + visible, true
+	}
+	return fingerprint + visible, false
 }
 
 // FindingDisplay prefers the finalized title/body/priority/confidence when a

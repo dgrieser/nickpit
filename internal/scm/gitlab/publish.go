@@ -48,7 +48,8 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	}
 	// missing collects findings without an own successfully-posted carrier:
 	// skipped as already-posted duplicates (their old note carries no carrier for
-	// THIS run's review id) or failed to post.
+	// THIS run's review id), failed to post, or posted with the carrier omitted
+	// because it would have pushed the comment past the platform size limit.
 	var missing []model.Finding
 	for _, finding := range result.Findings {
 		title, _, _, _ := reviewmd.FindingDisplay(finding)
@@ -57,8 +58,11 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			continue
 		}
 		change, hasChange := changesByPath[finding.CodeLocation.FilePath]
-		if err := a.publishFinding(ctx, render, notesPath, discussionsPath, change, hasChange, info.DiffRefs, finding); err != nil {
+		carried, err := a.publishFinding(ctx, render, notesPath, discussionsPath, change, hasChange, info.DiffRefs, finding)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
+		}
+		if err != nil || !carried {
 			missing = append(missing, finding)
 		}
 	}
@@ -80,30 +84,37 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 
 // publishFinding posts a single finding. It tries a multi-line inline comment,
 // then a single-line inline comment, then (on an unmappable line or a 422 from
-// GitLab) a general note carrying file:line.
-func (a *Adapter) publishFinding(ctx context.Context, render reviewmd.Renderer, notesPath, discussionsPath string, change MRChange, hasChange bool, refs DiffRefs, finding model.Finding) error {
+// GitLab) a general note carrying file:line. carried reports whether the posted
+// body embedded the full-finding carrier marker (false when it was omitted for
+// size, so the caller can route the finding into the fallback carrier notes).
+func (a *Adapter) publishFinding(ctx context.Context, render reviewmd.Renderer, notesPath, discussionsPath string, change MRChange, hasChange bool, refs DiffRefs, finding model.Finding) (carried bool, err error) {
 	if hasChange {
+		body, bodyCarried := render.FindingBodyCarried(finding, "")
 		if pos, ok := multiLinePosition(change, refs, finding.CodeLocation.LineRange); ok {
-			err := a.client.Post(ctx, discussionsPath, discussionPayload(render.FindingBody(finding, ""), pos), nil)
+			err := a.client.Post(ctx, discussionsPath, discussionPayload(body, pos), nil)
 			if err == nil {
-				return nil
+				return bodyCarried, nil
 			}
 			if !isUnprocessable(err) {
-				return err
+				return false, err
 			}
 		}
 		if pos, ok := bestPosition(change, refs, finding.CodeLocation.LineRange); ok {
-			err := a.client.Post(ctx, discussionsPath, discussionPayload(render.FindingBody(finding, ""), pos), nil)
+			err := a.client.Post(ctx, discussionsPath, discussionPayload(body, pos), nil)
 			if err == nil {
-				return nil
+				return bodyCarried, nil
 			}
 			if !isUnprocessable(err) {
-				return err
+				return false, err
 			}
 		}
 	}
 	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
-	return a.client.Post(ctx, notesPath, map[string]string{"body": render.FindingBody(finding, prefix)}, nil)
+	body, bodyCarried := render.FindingBodyCarried(finding, prefix)
+	if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
+		return false, err
+	}
+	return bodyCarried, nil
 }
 
 func discussionPayload(body string, pos position) map[string]any {

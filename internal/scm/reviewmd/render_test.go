@@ -333,6 +333,35 @@ func TestCarrierNotesReassemble(t *testing.T) {
 	}
 }
 
+func TestFindingBodyOmitsCarrierWhenOversized(t *testing.T) {
+	render := NewRenderer("https://host/").ForReview("rev-big")
+	// Incompressible body so the carrier marker alone would exceed the platform
+	// comment limit.
+	rng := rand.New(rand.NewSource(7))
+	raw := make([]byte, 80*1024)
+	rng.Read(raw)
+	huge := model.Finding{ID: "f-huge", Title: "Huge", Body: base64.StdEncoding.EncodeToString(raw)}
+
+	body, carried := render.FindingBodyCarried(huge, "")
+	if carried {
+		t.Fatal("oversized finding must not carry the full marker inline")
+	}
+	// The visible publication must survive: fingerprint, title, and body intact,
+	// with no full-finding carrier attached.
+	if !strings.HasPrefix(body, FingerprintPrefix) || !strings.Contains(body, "### Huge") {
+		t.Fatalf("visible body degraded: %.120q", body)
+	}
+	if len(CollectFindingEnvelopes(body)) != 0 {
+		t.Fatal("carrier should have been omitted from the visible comment")
+	}
+	// A small finding still carries inline.
+	small := model.Finding{ID: "f-small", Title: "Small", Body: "tiny"}
+	sbody, scarried := render.FindingBodyCarried(small, "")
+	if !scarried || len(CollectFindingEnvelopes(sbody)) != 1 {
+		t.Fatalf("small finding should carry inline (carried=%v)", scarried)
+	}
+}
+
 func TestCarrierNotesChunkOnDecodedBudget(t *testing.T) {
 	// Highly compressible findings stay tiny encoded but expand hugely decoded;
 	// packing them into one note under the encoded bound alone would blow the

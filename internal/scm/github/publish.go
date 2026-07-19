@@ -50,7 +50,8 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	// Partition not-yet-posted findings: those whose line maps to the diff become
 	// inline review comments; the rest become general comments. missing collects
 	// findings without an own successfully-posted carrier: skipped as
-	// already-posted duplicates or failed to post.
+	// already-posted duplicates, failed to post, or posted with the carrier
+	// omitted because it would have pushed the comment past GitHub's size limit.
 	var inline []inlineItem
 	var overflow []model.Finding
 	var missing []model.Finding
@@ -60,7 +61,10 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			missing = append(missing, finding)
 			continue
 		}
-		body := render.FindingBody(finding, "")
+		body, carried := render.FindingBodyCarried(finding, "")
+		if !carried {
+			missing = append(missing, finding)
+		}
 		if comment, ok := inlineComment(info.Hunks[finding.CodeLocation.FilePath], finding.CodeLocation.FilePath, finding.CodeLocation.LineRange, body); ok {
 			inline = append(inline, inlineItem{finding: finding, comment: comment})
 		} else {

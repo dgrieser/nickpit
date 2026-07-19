@@ -318,8 +318,11 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 		Mode:       string(model.ModeGitLab),
 		Repo:       project,
 		Identifier: mrID,
-		BaseURL:    baseURL,
-		RepoRoot:   opts.repoRoot,
+		// The effective host, not just the --url-parsed one, so resuming in a
+		// fresh process (where a one-off --gitlab-base-url is gone) still talks
+		// to the same server.
+		BaseURL:  apiBaseURL,
+		RepoRoot: opts.repoRoot,
 	}
 	return sess, nil
 }
@@ -784,7 +787,7 @@ func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int) []llm.Mes
 // (e.g. a local uncommitted review whose working tree moved on). headSHA records
 // the remote head the context was built at, so a later chat can detect new
 // commits and recreate the diff.
-func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) {
+func (a *app) persistChatSession(ctx context.Context, profile config.Profile, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) {
 	if a.noSession || result == nil {
 		return
 	}
@@ -831,12 +834,18 @@ func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, r
 	}
 	// RepoRoot is persisted only for a local review: a remote review's RepoRoot is
 	// a temporary clone deleted right after this call, so a resumed session must
-	// not point retrieval tools at it. BaseURL is intentionally left empty — the
-	// SCM URL is resolved from the profile at chat time (result.BaseURL is the LLM
-	// endpoint).
+	// not point retrieval tools at it. Source.BaseURL is the EFFECTIVE SCM API
+	// host the review talked to (profile.GitLabBaseURL already carries any --url
+	// or --gitlab-base-url override) — persisting it keeps a resumed chat in a
+	// fresh process from falling back to the config host and sending the GitLab
+	// token to the wrong server. It is never result.BaseURL, the LLM endpoint.
 	repoRoot := ""
 	if req.Mode == model.ModeLocal {
 		repoRoot = req.RepoRoot
+	}
+	scmBaseURL := ""
+	if req.Mode == model.ModeGitLab {
+		scmBaseURL = profile.GitLabBaseURL
 	}
 	sess.Source = session.Source{
 		Mode:       string(req.Mode),
@@ -845,6 +854,7 @@ func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, r
 		Identifier: req.Identifier,
 		BaseRef:    req.BaseRef,
 		HeadRef:    req.HeadRef,
+		BaseURL:    scmBaseURL,
 		RepoRoot:   repoRoot,
 	}
 	if err := store.Save(sess); err != nil {
