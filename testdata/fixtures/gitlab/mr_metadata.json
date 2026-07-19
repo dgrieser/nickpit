@@ -6,5 +6,10 @@
   "source_branch": "feature",
   "target_branch": "main",
   "source_project_id": 99,
-  "target_project_id": 42
+  "target_project_id": 42,
+  "diff_refs": {
+    "base_sha": "base456",
+    "head_sha": "abc123",
+    "start_sha": "start789"
+  }
 }

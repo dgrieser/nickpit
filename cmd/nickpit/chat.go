@@ -84,6 +84,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	}
 	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
+	logger.SetShowProgress(a.showProgress)
 	// a.logf routes through a.logger; without this assignment every save-failure
 	// warning in this command would be silently dropped.
 	a.logger = logger
@@ -411,8 +412,6 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 			a.logf(ctx, "chat: MR status check failed, using cached context: %v", err)
 		case sess.Context == nil || sess.ContextHeadSHA != status.HeadSHA || sess.ContextBaseSHA != status.BaseSHA:
 			refresh = true
-			sess.ContextHeadSHA = status.HeadSHA
-			sess.ContextBaseSHA = status.BaseSHA
 		}
 	}
 	if !refresh {
@@ -420,9 +419,22 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 	}
 	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions))
 	if err != nil {
+		// A refresh failure must not block the chat when a cached context exists:
+		// stale-but-real context beats no conversation. Without a cache the error
+		// is fatal.
+		if sess.Context != nil {
+			a.logf(ctx, "chat: context refresh failed, using cached context: %v", err)
+			return sess.Context, false, nil
+		}
 		return nil, false, fmt.Errorf("chat: resolving review context: %w", err)
 	}
 	sess.Context = reviewCtx
+	// Record the refreshed diff identity from the resolved context itself (more
+	// accurate than the earlier status probe if the MR moved in between).
+	if reviewCtx.DiffHeadSHA != "" || reviewCtx.DiffBaseSHA != "" {
+		sess.ContextHeadSHA = reviewCtx.DiffHeadSHA
+		sess.ContextBaseSHA = reviewCtx.DiffBaseSHA
+	}
 	return reviewCtx, true, nil
 }
 
@@ -607,6 +619,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 
 	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
+	logger.SetShowProgress(a.showProgress)
 	// a.logf routes through a.logger; wire it so warnings are not dropped.
 	a.logger = logger
 
@@ -796,7 +809,12 @@ func (a *app) persistChatSession(ctx context.Context, req model.ReviewRequest, r
 			ctxCopy.CheckoutRoot = ""
 		}
 		sess.Context = &ctxCopy
-		sess.ContextHeadSHA = headSHA
+		// Record the exact diff identity the cache was built at — the context's
+		// own SHAs when the source provided them (GitLab), else the checkout
+		// head. Persisting BOTH keeps the first resume from treating a perfectly
+		// fresh cache as stale (chatContext compares head and base).
+		sess.ContextHeadSHA = firstNonEmpty(reviewCtx.DiffHeadSHA, headSHA)
+		sess.ContextBaseSHA = reviewCtx.DiffBaseSHA
 	}
 	// Record the review's context-shaping options so a later refresh recreates
 	// the same filtered context instead of whatever the then-current flags say.

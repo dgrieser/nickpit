@@ -174,7 +174,14 @@ type ReviewContext struct {
 	// deterministic finding-scope checks. It is runtime-only so prompt payloads
 	// and serialized review context keep their existing shape. A non-nil empty
 	// slice means scope checking is available but the diff has no line hunks.
-	DiffScopeHunks      []DiffHunk         `json:"-"`
+	DiffScopeHunks []DiffHunk `json:"-"`
+	// DiffBaseSHA and DiffHeadSHA identify the exact commits this context's diff
+	// was built between, when the source knows them (GitLab MRs). They are
+	// deliberately NOT copied into prompt payloads; chat sessions persist them so
+	// a cached context's freshness can be checked against the live MR without a
+	// spurious first-resume refresh.
+	DiffBaseSHA         string             `json:"diff_base_sha,omitempty"`
+	DiffHeadSHA         string             `json:"diff_head_sha,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`

@@ -11,6 +11,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 // DiscussRequest drives a single turn of the discussion agent: a free-form,
@@ -409,7 +410,11 @@ func discussOpener(result *model.ReviewResult, findingID string) string {
 		if f.ID != findingID {
 			continue
 		}
-		title := strings.TrimSpace(f.Title)
+		// Use the same summarization/finalization precedence as the published
+		// comment (reviewmd.FindingDisplay), so the opener names the title and
+		// priority the user actually selected, not the pre-finalize originals.
+		title, _, rank, _ := reviewmd.FindingDisplay(f)
+		title = strings.TrimSpace(title)
 		if title == "" {
 			title = "this finding"
 		}
@@ -422,7 +427,7 @@ func discussOpener(result *model.ReviewResult, findingID string) string {
 				fmt.Fprintf(&b, " (`%s`)", loc)
 			}
 		}
-		fmt.Fprintf(&b, ", priority P%d.", model.PriorityRank(f.Priority))
+		fmt.Fprintf(&b, ", priority P%d.", rank)
 		b.WriteString(" Ask me anything about it, or push back if you think it's wrong.")
 		return b.String()
 	}

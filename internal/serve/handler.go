@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -182,14 +183,17 @@ func (d *noteDedup) markNew(id int) bool {
 
 // forget removes id so a redelivery can retry. Called when an attempt fails
 // before a reply could have been posted — keeping the mark would discard the
-// redelivered webhook and leave the question permanently unanswered. The stale
-// entry in the eviction order is harmless (its later eviction is a no-op).
+// redelivered webhook and leave the question permanently unanswered. The id is
+// removed from the eviction order too: a stale queued entry would otherwise
+// delete the mark of a later RE-ADDED same id when it reaches the front,
+// re-opening the duplicate-reply window.
 func (d *noteDedup) forget(id int) {
 	if id == 0 {
 		return
 	}
 	d.mu.Lock()
 	delete(d.seen, id)
+	d.order = slices.DeleteFunc(d.order, func(queued int) bool { return queued == id })
 	d.mu.Unlock()
 }
 

@@ -516,3 +516,18 @@ func TestNoteDedup(t *testing.T) {
 	}
 	d.forget(0) // zero id is a no-op, never a panic
 }
+
+// A forget followed by a re-add must not leave a stale FIFO entry whose later
+// eviction deletes the live mark and re-opens the duplicate-reply window.
+func TestNoteDedupForgetRemovesQueuedEntry(t *testing.T) {
+	d := newNoteDedup(2)
+	d.markNew(7) // order [7]
+	d.forget(7)  // must remove from order too
+	d.markNew(7) // re-added after a retry succeeded; order [7]
+	// Fill past capacity: evictions must never clear 7's live mark via a stale
+	// queued occurrence.
+	d.markNew(8)
+	if d.markNew(7) {
+		t.Fatal("live mark for note 7 was lost — stale FIFO entry evicted it")
+	}
+}

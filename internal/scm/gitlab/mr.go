@@ -165,6 +165,10 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		DiffHunks:       hunks,
 		Comments:        comments,
 		OmittedSections: omitted,
+		// The exact diff identity, so a chat session can persist and later verify
+		// the freshness of this context without an extra probe.
+		DiffBaseSHA: mr.DiffRefs.BaseSHA,
+		DiffHeadSHA: mr.SHA,
 	}, nil
 }
 
