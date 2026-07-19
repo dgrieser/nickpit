@@ -90,22 +90,21 @@ Apply these gates in order. Stop as soon as one gate applies.
   - Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide.
 
 {{$gate = inc $gate}}{{$gate}}. Compile-error gate:
-  - Return `refuted` when the finding's core claim is a compile-time error that the language's standard compile or type-check tooling would already catch — `go build`/`go vet`, `rustc`/`cargo check`, `tsc`, JavaScript parsing, or Python byte-compilation (`python -m py_compile`).
+  - Return `refuted` when the finding's core claim is a compile-time error that the language's standard compile or type-check tooling would already catch, e.g.
+    - `go build`/`go vet`
+    - `rustc`/`cargo check`
+    - `tsc`
+    - JavaScript parsing
+    - `python -m py_compile`
   - Such errors cannot survive a build: the toolchain blocks them long before review matters, so refute regardless of whether the claimed error is technically real.
-  - The remarks must name the error and the standard tooling that detects it (e.g. "`go build` rejects this: `err` is undefined at this return").
-  - Refute examples:
-    - a Go `return` references a variable scoped to a preceding `if err := ...;` statement (undefined identifier — `go build` fails)
-    - Go unused variables or imports, type mismatches, missing return values, unresolved symbols
-    - Rust type, borrow-checker, lifetime, or unresolved-name errors caught by `cargo check`
-    - TypeScript type errors or references to undeclared identifiers caught by `tsc`
-    - JavaScript or Python syntax errors caught by parsing or byte-compilation
   - Do NOT apply this gate to errors that only surface at runtime — continue to the next gate for:
     - SQL syntax errors inside string literals or migration files
     - Helm template errors, Kubernetes manifest or CRD schema violations
     - Python runtime errors such as `NameError`, `AttributeError`, `ImportError`
     - JavaScript runtime `ReferenceError`/`TypeError` not caught by static tooling
     - reflection, serialization, regex-pattern, or text/template errors that fail only when executed
-  - If the finding bundles a compile error with a distinct runtime or logic problem, do not refute the finding under this gate; instead, bypass this gate and evaluate the remaining runtime or logic claim using the subsequent gates.
+  - If the finding bundles a compile error with a distinct runtime or logic problem, do not refute the finding under this gate;
+    instead, bypass this gate and evaluate the remaining runtime or logic claim using the subsequent gates.
 
 {{$gate = inc $gate}}{{$gate}}. Confirm gate:
   - Return `confirmed` ONLY when the finding reports an actual problem AND you can point to the concrete changed code path that causes it.
