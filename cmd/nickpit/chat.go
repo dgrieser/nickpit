@@ -176,6 +176,12 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			MaxOutputRetries:         profile.MaxOutputRetries,
 			MaxReasoningSeconds:      profile.MaxReasoningSeconds,
 		})
+		if err == nil && strings.TrimSpace(res.Reply) == "" {
+			// A successful-but-blank completion is a model failure, not an answer:
+			// persisting it would save the unanswered question, print nothing, and
+			// leave the next attempt with consecutive user turns.
+			err = fmt.Errorf("chat: discussion agent returned an empty reply")
+		}
 		if err != nil {
 			// Drop the unanswered question so a retried turn does not leave two
 			// consecutive user messages in the transcript.

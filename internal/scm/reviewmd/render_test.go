@@ -347,18 +347,74 @@ func TestFindingBodyOmitsCarrierWhenOversized(t *testing.T) {
 		t.Fatal("oversized finding must not carry the full marker inline")
 	}
 	// The visible publication must survive: fingerprint, title, and body intact,
-	// with no full-finding carrier attached.
+	// with the full payload replaced by a tiny routing-only reference.
 	if !strings.HasPrefix(body, FingerprintPrefix) || !strings.Contains(body, "### Huge") {
 		t.Fatalf("visible body degraded: %.120q", body)
 	}
-	if len(CollectFindingEnvelopes(body)) != 0 {
-		t.Fatal("carrier should have been omitted from the visible comment")
+	envs := CollectFindingEnvelopes(body)
+	if len(envs) != 1 || !envs[0].Ref || envs[0].ReviewID != "rev-big" || envs[0].Finding.ID != "f-huge" {
+		t.Fatalf("expected one routing ref envelope, got %+v", envs)
 	}
-	// A small finding still carries inline.
+	if envs[0].Finding.Body != "" {
+		t.Fatal("routing ref must not carry the finding payload")
+	}
+	// Replies beneath the visible comment must still route to the discussion
+	// agent via the ref, even though the full payload is externalized.
+	rid, fid, ok := DetectThreadReview(body)
+	if !ok || rid != "rev-big" || fid != "f-huge" {
+		t.Fatalf("thread routing lost: rid=%q fid=%q ok=%v", rid, fid, ok)
+	}
+	// Reassembly must not be shadowed by the stub: the full finding from the
+	// carrier note wins regardless of body order.
+	carrierNotes := render.CarrierNotes(&model.ReviewResult{ReviewID: "rev-big", Findings: []model.Finding{huge}}, []model.Finding{huge})
+	got := ReviewResultsByID(append([]string{body}, carrierNotes...))["rev-big"]
+	if got == nil || len(got.Findings) != 1 || got.Findings[0].Body != huge.Body {
+		t.Fatalf("stub shadowed the full finding: %+v", got)
+	}
+	// A small finding still carries inline (a full, non-ref envelope).
 	small := model.Finding{ID: "f-small", Title: "Small", Body: "tiny"}
 	sbody, scarried := render.FindingBodyCarried(small, "")
-	if !scarried || len(CollectFindingEnvelopes(sbody)) != 1 {
-		t.Fatalf("small finding should carry inline (carried=%v)", scarried)
+	senvs := CollectFindingEnvelopes(sbody)
+	if !scarried || len(senvs) != 1 || senvs[0].Ref {
+		t.Fatalf("small finding should carry the full envelope inline (carried=%v, envs=%+v)", scarried, senvs)
+	}
+}
+
+func TestSummaryBodyOmitsCarrierWhenOversized(t *testing.T) {
+	// A near-limit overall explanation must still publish visibly; the review
+	// envelope is externalized instead of pushing the comment past the platform
+	// cap.
+	rng := rand.New(rand.NewSource(11))
+	raw := make([]byte, 44*1024)
+	rng.Read(raw)
+	result := &model.ReviewResult{
+		ReviewID:           "rev-sum",
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: base64.StdEncoding.EncodeToString(raw), // ~59KB visible, incompressible
+	}
+	body, carried := NewRenderer("https://host/").SummaryBodyCarried(result)
+	if carried {
+		t.Fatal("oversized summary must not embed the review envelope")
+	}
+	if !strings.HasPrefix(body, SummaryMarker) || len(CollectReviewEnvelopes(body)) != 0 {
+		t.Fatalf("visible summary degraded or still carries the envelope")
+	}
+	if len(body) > carrierNoteMaxBytes+1024 {
+		t.Fatalf("summary body unexpectedly large: %d bytes", len(body))
+	}
+	// A short summary carries the envelope inline.
+	small := &model.ReviewResult{ReviewID: "rev-sum", OverallCorrectness: "patch is correct", OverallExplanation: "fine"}
+	sbody, scarried := NewRenderer("https://host/").SummaryBodyCarried(small)
+	if !scarried || len(CollectReviewEnvelopes(sbody)) != 1 {
+		t.Fatalf("short summary should carry the envelope inline (carried=%v)", scarried)
+	}
+}
+
+func TestUniqueFindingsByID(t *testing.T) {
+	in := []model.Finding{{ID: "a"}, {ID: "b"}, {ID: "a"}, {ID: ""}, {ID: ""}}
+	got := UniqueFindingsByID(in)
+	if len(got) != 4 || got[0].ID != "a" || got[1].ID != "b" || got[2].ID != "" || got[3].ID != "" {
+		t.Fatalf("dedupe wrong: %+v", got)
 	}
 }
 

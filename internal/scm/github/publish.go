@@ -73,9 +73,10 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	}
 
 	summaryBody := ""
+	summaryCarried := false
 	_, summarySuppressed := prior.Markers[reviewmd.SummaryMarker]
 	if !summarySuppressed {
-		summaryBody = render.SummaryBody(result)
+		summaryBody, summaryCarried = render.SummaryBodyCarried(result)
 	}
 
 	var errs []error
@@ -91,23 +92,22 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		}
 	}
 	for _, finding := range overflow {
-		carried, err := a.postIssueComment(ctx, render, issueCommentsPath, finding)
-		if err != nil {
+		// carried is prefix-independent, so the partition loop already recorded
+		// size-omitted carriers for overflow findings; appending here again would
+		// serialize the same envelope twice. Only post failures add.
+		if _, err := a.postIssueComment(ctx, render, issueCommentsPath, finding); err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
-		}
-		// The partition loop already recorded size-omitted carriers; this covers
-		// post failures (reassembly de-duplicates any overlap by finding id).
-		if err != nil || !carried {
 			missing = append(missing, finding)
 		}
 	}
-	// When the visible summary was suppressed or failed, or any finding lacks its
-	// own carrier, the distributed carriers no longer cover this run in full.
-	// Post hidden, size-bounded carrier chunks holding the review envelope and
-	// exactly the missing findings, so a chat can still reassemble this review by
-	// id. Verdict-only re-reviews post just the envelope.
-	if summarySuppressed || reviewPostFailed || len(missing) > 0 {
-		for _, body := range render.CarrierNotes(result, missing) {
+	// When the visible summary was suppressed, failed, or shipped without its
+	// envelope (size-omitted), or any finding lacks its own carrier, the
+	// distributed carriers no longer cover this run in full. Post hidden,
+	// size-bounded carrier chunks holding the review envelope and exactly the
+	// missing findings, so a chat can still reassemble this review by id.
+	// Verdict-only re-reviews post just the envelope.
+	if summarySuppressed || reviewPostFailed || !summaryCarried || len(missing) > 0 {
+		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
 			if err := a.client.Post(ctx, issueCommentsPath, map[string]string{"body": body}, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
 			}

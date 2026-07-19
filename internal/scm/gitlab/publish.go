@@ -39,11 +39,14 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 
 	var errs []error
 	summaryPosted := false
+	summaryCarried := false
 	if _, ok := prior.Markers[reviewmd.SummaryMarker]; !ok {
-		if err := a.client.Post(ctx, notesPath, map[string]string{"body": render.SummaryBody(result)}, nil); err != nil {
+		body, carried := render.SummaryBodyCarried(result)
+		if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
 			errs = append(errs, fmt.Errorf("summary: %w", err))
 		} else {
 			summaryPosted = true
+			summaryCarried = carried
 		}
 	}
 	// missing collects findings without an own successfully-posted carrier:
@@ -66,14 +69,14 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 			missing = append(missing, finding)
 		}
 	}
-	// When the visible summary was suppressed or any finding lacks its own
-	// carrier, the distributed carriers no longer cover this run in full. Post
-	// hidden, size-bounded carrier chunks holding the review envelope and exactly
-	// the missing findings, so a chat can still reassemble this review by id
-	// instead of discussing an older run. Verdict-only re-reviews post just the
-	// envelope.
-	if !summaryPosted || len(missing) > 0 {
-		for _, body := range render.CarrierNotes(result, missing) {
+	// When the visible summary was suppressed, failed, or shipped without its
+	// envelope (size-omitted), or any finding lacks its own carrier, the
+	// distributed carriers no longer cover this run in full. Post hidden,
+	// size-bounded carrier chunks holding the review envelope and exactly the
+	// missing findings, so a chat can still reassemble this review by id instead
+	// of discussing an older run. Verdict-only re-reviews post just the envelope.
+	if !summaryPosted || !summaryCarried || len(missing) > 0 {
+		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
 			if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
 			}

@@ -193,10 +193,15 @@ type ReviewEnvelope struct {
 }
 
 // FindingEnvelope is the per-finding carrier payload: the review id it belongs to
-// and one complete finding.
+// and one complete finding. Ref marks a routing-only reference: when a finding's
+// full payload is too large to ride in its visible comment, the comment carries a
+// tiny ref envelope (review id + finding id) so replies beneath it still route to
+// the discussion agent, while the full payload lives in a separate carrier note.
+// Reassembly skips refs so the stub can never shadow the full finding.
 type FindingEnvelope struct {
 	ReviewID string        `json:"rid"`
 	Finding  model.Finding `json:"finding"`
+	Ref      bool          `json:"ref,omitempty"`
 }
 
 // ReviewMarker renders the hidden summary-note carrier for result. It returns ""
@@ -245,6 +250,17 @@ func findingMarkerWithSize(reviewID string, finding model.Finding) (string, int)
 		return "", 0
 	}
 	return encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: finding})
+}
+
+// findingRefMarker renders the tiny routing-only reference envelope (see
+// FindingEnvelope.Ref) embedded in a visible finding comment whose full carrier
+// was externalized for size.
+func findingRefMarker(reviewID, findingID string) string {
+	if reviewID == "" {
+		return ""
+	}
+	marker, _ := encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: model.Finding{ID: findingID}, Ref: true})
+	return marker
 }
 
 // encodeMarker gzips and base64-encodes payload into a hidden marker opened by
@@ -395,6 +411,28 @@ func DetectThreadReview(rootBody string) (reviewID, findingID string, ok bool) {
 	return reviewID, findingID, ok
 }
 
+// UniqueFindingsByID drops findings whose id already appeared earlier in the
+// slice (first occurrence wins; findings without an id are kept). Publishers use
+// it so overlapping missing-carrier bookkeeping never serializes the same
+// finding envelope into the fallback carrier notes twice.
+func UniqueFindingsByID(findings []model.Finding) []model.Finding {
+	if len(findings) < 2 {
+		return findings
+	}
+	seen := make(map[string]struct{}, len(findings))
+	out := findings[:0:0]
+	for _, finding := range findings {
+		if finding.ID != "" {
+			if _, dup := seen[finding.ID]; dup {
+				continue
+			}
+			seen[finding.ID] = struct{}{}
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
 // StripMarkers removes every nickpit hidden marker (`<!-- nickpit:... -->`) from
 // s. SCM adapters apply it when normalizing existing comments into prompt
 // context, so the (potentially large) carrier payloads are never re-sent to the
@@ -463,6 +501,12 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 	for _, body := range bodies {
 		for _, env := range CollectFindingEnvelopes(body) {
 			if env.ReviewID == "" {
+				continue
+			}
+			// Routing-only references carry no payload; skipping them here means a
+			// stub can never shadow the full finding from the carrier note,
+			// regardless of note order.
+			if env.Ref {
 				continue
 			}
 			r := get(env.ReviewID)
@@ -639,6 +683,16 @@ func (r Renderer) PriorityBadge(rank int) string {
 
 // SummaryBody renders the overall verdict comment, tagged with SummaryMarker.
 func (r Renderer) SummaryBody(result *model.ReviewResult) string {
+	body, _ := r.SummaryBodyCarried(result)
+	return body
+}
+
+// SummaryBodyCarried is SummaryBody plus whether the review envelope actually
+// rode along. Like finding carriers, the envelope is omitted when it would push
+// the visible summary past the platform size limit — a long overall explanation
+// must still publish; publishers use carried=false to externalize the envelope
+// into the fallback carrier notes instead.
+func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) {
 	var b strings.Builder
 	b.WriteString(SummaryMarker)
 	b.WriteString("\n")
@@ -656,11 +710,13 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 		b.WriteString(hardBreakParagraphs(explanation))
 		b.WriteString("\n")
 	}
-	if marker := ReviewMarker(result); marker != "" {
+	marker := ReviewMarker(result)
+	if marker != "" && b.Len()+1+len(marker) <= carrierNoteMaxBytes {
 		b.WriteString("\n")
 		b.WriteString(marker)
+		return b.String(), true
 	}
-	return b.String()
+	return b.String(), false
 }
 
 // carrierNoteMaxBytes bounds one carrier note body. GitHub caps comments at
@@ -791,6 +847,13 @@ func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix strin
 	carried := carrier != "" && decisionLen+carrierNoteSizeSlack <= carrierNoteMaxBytes
 	if carried {
 		return fingerprint + "\n" + carrier + visible, true
+	}
+	// The full payload is externalized to a separate carrier note, but the
+	// visible comment keeps a tiny routing reference: without it, a reply in
+	// this finding's thread would fail the daemon's root-marker gate and be
+	// silently ignored.
+	if ref := findingRefMarker(r.reviewID, finding.ID); ref != "" {
+		return fingerprint + "\n" + ref + visible, false
 	}
 	return fingerprint + visible, false
 }
