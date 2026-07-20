@@ -8,9 +8,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/mappings"
 )
 
 type VerifyRequest struct {
@@ -109,6 +111,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 	if err != nil {
 		return nil, usage, err
 	}
+	refuteUnusedIdentifiers := mappings.UnusedIdentifierCompileError(filetype.DetectLanguage(req.Finding.CodeLocation.FilePath))
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet        string
 		OutputFormatSnippet        string
@@ -118,6 +121,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
 		DiffScopeEnabled           bool
+		RefuteUnusedIdentifiers    bool
 	}{
 		OutputSchemaSnippet:        systemSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
@@ -127,6 +131,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 		DiffScopeEnabled:           diffScopeEnabled,
+		RefuteUnusedIdentifiers:    refuteUnusedIdentifiers,
 	})
 	if err != nil {
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
@@ -189,7 +194,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{DiffScopeEnabled: diffScopeEnabled})
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{DiffScopeEnabled: diffScopeEnabled, RefuteUnusedIdentifiers: refuteUnusedIdentifiers})
 			},
 		})
 		if err != nil {

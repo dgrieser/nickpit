@@ -186,6 +186,15 @@ path_rules:
       basenames:
         - notes.txt
 
+# Languages where unused imports or variables are strict compile-time errors
+# (the compiler rejects the build outright). Drives the verify agent's
+# compile-error gate: unused-identifier findings are refuted only for these
+# languages; everywhere else they stay ordinary lint/cleanup findings.
+# Note: rustc treats unused imports/variables as warn-by-default lints, so
+# rust does NOT belong here.
+unused_identifier_errors:
+  - go
+
 # Shebang detection for extensionless scripts; version suffixes such as
 # python3.12 are handled inside the patterns.
 content_rules:

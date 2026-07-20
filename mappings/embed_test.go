@@ -199,6 +199,43 @@ func TestMappingValidationRejectsRulesWithoutMatchers(t *testing.T) {
 	}
 }
 
+func TestUnusedIdentifierCompileError(t *testing.T) {
+	loaded, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded.unusedIdentifierErrors["go"]; !ok {
+		t.Fatal("unused_identifier_errors missing go")
+	}
+	if !UnusedIdentifierCompileError("go") {
+		t.Fatal("UnusedIdentifierCompileError(go) = false")
+	}
+	// rustc only warns on unused imports/variables; python/nodejs never reject.
+	for _, language := range []string{"rust", "python", "nodejs", "typescript", "text", ""} {
+		if UnusedIdentifierCompileError(language) {
+			t.Fatalf("UnusedIdentifierCompileError(%q) = true", language)
+		}
+	}
+}
+
+func TestUnusedIdentifierErrorsValidation(t *testing.T) {
+	base := "default: text\nextensions:\n  go: [.go]\n"
+	languages, err := parseLanguagesYAML([]byte(base + "unused_identifier_errors: [zig]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildUnusedIdentifierErrors(languages); err == nil || !strings.Contains(err.Error(), "unknown language \"zig\"") {
+		t.Fatalf("unknown language validation err = %v", err)
+	}
+	languages, err = parseLanguagesYAML([]byte(base + "unused_identifier_errors: [\"\"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildUnusedIdentifierErrors(languages); err == nil || !strings.Contains(err.Error(), "unused_identifier_errors[0] is empty") {
+		t.Fatalf("empty entry validation err = %v", err)
+	}
+}
+
 func TestIsGenerated(t *testing.T) {
 	generated := []struct {
 		path    string

@@ -638,34 +638,54 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 
 // TestVerifySystemPromptRefutesGoUnusedImportFindings pins the compile-error
 // guidance even when a reviewer frames the compiler diagnostic as cleanup or
-// lint work.
+// lint work. The unused-identifier bullet renders only for findings in
+// languages where the compiler rejects unused imports/variables (per
+// unused_identifier_errors in languages.yaml); elsewhere those are ordinary
+// lint findings and the bullet is omitted.
 func TestVerifySystemPromptRefutesGoUnusedImportFindings(t *testing.T) {
-	llmClient := &scriptedVerifyLLM{}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{
-		ReviewCtx: sampleReviewCtx(),
-		Finding: model.Finding{
-			Title:        "Remove unused fmt import",
-			Body:         "Remove the unused import to maintain code cleanliness and avoid lint errors.",
-			Priority:     intPtr(3),
-			CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Verify returned err: %v", err)
+	tests := []struct {
+		name       string
+		filePath   string
+		wantBullet bool
+	}{
+		{name: "go finding renders bullet", filePath: "main.go", wantBullet: true},
+		{name: "python finding omits bullet", filePath: "script.py", wantBullet: false},
+		{name: "typescript finding omits bullet", filePath: "app.ts", wantBullet: false},
 	}
-	for _, messages := range [][]llm.Message{llmClient.requests[0].Messages, llmClient.requests[0].NoToolsMessages} {
-		sysPrompt := messages[0].Content
-		for _, want := range []string{
-			"unused imports or variables, in languages where these are strict compile-time errors",
-			"even when described as lint, cleanup, or code cleanliness issues",
-			"in languages where they are only lint warnings (e.g. Python, JavaScript, TypeScript, Rust by default) this gate does NOT apply",
-			"calling a compiler-enforced error a lint error or maintainability issue does not bypass this gate",
-		} {
-			if !strings.Contains(sysPrompt, want) {
-				t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			llmClient := &scriptedVerifyLLM{}
+			engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+			_, _, err := engine.Verify(context.Background(), VerifyRequest{
+				ReviewCtx: sampleReviewCtx(),
+				Finding: model.Finding{
+					Title:        "Remove unused import",
+					Body:         "Remove the unused import to maintain code cleanliness and avoid lint errors.",
+					Priority:     intPtr(3),
+					CodeLocation: model.CodeLocation{FilePath: tc.filePath, LineRange: model.LineRange{Start: 1, End: 1}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Verify returned err: %v", err)
 			}
-		}
+			for _, messages := range [][]llm.Message{llmClient.requests[0].Messages, llmClient.requests[0].NoToolsMessages} {
+				sysPrompt := messages[0].Content
+				if got := strings.Contains(sysPrompt, "unused imports or variables"); got != tc.wantBullet {
+					t.Fatalf("unused-identifier bullet present=%v, want %v:\n%s", got, tc.wantBullet, sysPrompt)
+				}
+				if !tc.wantBullet {
+					continue
+				}
+				for _, want := range []string{
+					"even when described as lint, cleanup, or code cleanliness issues",
+					"calling a compiler-enforced error a lint error or maintainability issue does not bypass this gate",
+				} {
+					if !strings.Contains(sysPrompt, want) {
+						t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
+					}
+				}
+			}
+		})
 	}
 }
 

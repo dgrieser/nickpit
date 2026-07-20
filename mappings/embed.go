@@ -26,6 +26,10 @@ type LanguageMappings struct {
 	Basename     map[string][]string `yaml:"basenames"`
 	PathRules    []LanguagePathRule  `yaml:"path_rules"`
 	ContentRules []LanguagePathRule  `yaml:"content_rules"`
+	// UnusedIdentifierErrors lists languages where unused imports or
+	// variables are strict compile-time errors (e.g. go). Every entry must be
+	// a language known to the detection rules above.
+	UnusedIdentifierErrors []string `yaml:"unused_identifier_errors"`
 }
 
 type LanguagePathRule struct {
@@ -107,18 +111,19 @@ var (
 )
 
 type loadedMappings struct {
-	languages            LanguageMappings
-	files                FileMappings
-	styleGuides          StyleGuideMappings
-	extLang              map[string]string
-	baseLang             map[string]string
-	ctxExt               map[string]string
-	languagePathRules    []compiledLanguagePathRule
-	languageContentRules []compiledLanguagePathRule
-	generatedSuffixes    []string
-	generatedRules       []compiledGeneratedRule
-	evictionPriorities   []compiledEvictionPriority
-	styleGuideDetectors  []compiledStyleGuideDetector
+	languages              LanguageMappings
+	files                  FileMappings
+	styleGuides            StyleGuideMappings
+	extLang                map[string]string
+	baseLang               map[string]string
+	ctxExt                 map[string]string
+	languagePathRules      []compiledLanguagePathRule
+	languageContentRules   []compiledLanguagePathRule
+	unusedIdentifierErrors map[string]struct{}
+	generatedSuffixes      []string
+	generatedRules         []compiledGeneratedRule
+	evictionPriorities     []compiledEvictionPriority
+	styleGuideDetectors    []compiledStyleGuideDetector
 }
 
 type compiledLanguagePathRule struct {
@@ -190,6 +195,15 @@ func DetectLanguageContent(path, content string) string {
 		}
 	}
 	return m.languages.Default
+}
+
+// UnusedIdentifierCompileError reports whether unused imports or variables
+// are strict compile-time errors for a language, per the
+// unused_identifier_errors list in languages.yaml.
+func UnusedIdentifierCompileError(language string) bool {
+	m := mustLoadMappings()
+	_, ok := m.unusedIdentifierErrors[language]
+	return ok
 }
 
 // IsGenerated reports whether a path is generated or lockfile-like noise.
@@ -539,6 +553,10 @@ func buildLoadedMappings(languages LanguageMappings, files FileMappings, styleGu
 			return loadedMappings{}, fmt.Errorf("mappings: styleguides.yaml detector[%d] references unknown style guide language %q", i, detector.Language)
 		}
 	}
+	unusedIdentifierErrors, err := buildUnusedIdentifierErrors(languages)
+	if err != nil {
+		return loadedMappings{}, err
+	}
 	languageRules, err := compileLanguagePathRules("path_rules", languages.PathRules)
 	if err != nil {
 		return loadedMappings{}, err
@@ -560,19 +578,50 @@ func buildLoadedMappings(languages LanguageMappings, files FileMappings, styleGu
 		return loadedMappings{}, err
 	}
 	return loadedMappings{
-		languages:            languages,
-		files:                files,
-		styleGuides:          styleGuides,
-		extLang:              extLang,
-		baseLang:             baseLang,
-		ctxExt:               ctxExt,
-		languagePathRules:    languageRules,
-		languageContentRules: contentRules,
-		generatedSuffixes:    lowerStrings(files.GeneratedSuffixes),
-		generatedRules:       generatedRules,
-		evictionPriorities:   evictionPriorities,
-		styleGuideDetectors:  styleDetectors,
+		languages:              languages,
+		files:                  files,
+		styleGuides:            styleGuides,
+		extLang:                extLang,
+		baseLang:               baseLang,
+		ctxExt:                 ctxExt,
+		languagePathRules:      languageRules,
+		languageContentRules:   contentRules,
+		unusedIdentifierErrors: unusedIdentifierErrors,
+		generatedSuffixes:      lowerStrings(files.GeneratedSuffixes),
+		generatedRules:         generatedRules,
+		evictionPriorities:     evictionPriorities,
+		styleGuideDetectors:    styleDetectors,
 	}, nil
+}
+
+// buildUnusedIdentifierErrors indexes unused_identifier_errors, rejecting
+// entries that no detection rule can ever produce.
+func buildUnusedIdentifierErrors(languages LanguageMappings) (map[string]struct{}, error) {
+	known := make(map[string]struct{})
+	known[languages.Default] = struct{}{}
+	for language := range languages.Extension {
+		known[language] = struct{}{}
+	}
+	for language := range languages.Basename {
+		known[language] = struct{}{}
+	}
+	for _, rule := range languages.PathRules {
+		known[rule.Language] = struct{}{}
+	}
+	for _, rule := range languages.ContentRules {
+		known[rule.Language] = struct{}{}
+	}
+	out := make(map[string]struct{}, len(languages.UnusedIdentifierErrors))
+	for i, language := range languages.UnusedIdentifierErrors {
+		if strings.TrimSpace(language) == "" {
+			return nil, fmt.Errorf("mappings: languages.yaml unused_identifier_errors[%d] is empty", i)
+		}
+		if _, ok := known[language]; !ok {
+			return nil, fmt.Errorf("mappings: languages.yaml unused_identifier_errors references unknown language %q", language)
+		}
+		out[language] = struct{}{}
+	}
+	return out, nil
 }
 
 func compileLanguagePathRules(section string, rules []LanguagePathRule) ([]compiledLanguagePathRule, error) {
