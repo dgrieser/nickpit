@@ -26,6 +26,11 @@ type LanguageMappings struct {
 	Basename     map[string][]string `yaml:"basenames"`
 	PathRules    []LanguagePathRule  `yaml:"path_rules"`
 	ContentRules []LanguagePathRule  `yaml:"content_rules"`
+	// UnusedIdentifierDiagnostics maps a language to the unused-identifier
+	// kinds ("imports", "variables") its standard compiler reports by default,
+	// as errors or on-by-default warnings. Every key must be a language known
+	// to the detection rules above.
+	UnusedIdentifierDiagnostics map[string][]string `yaml:"unused_identifier_diagnostics"`
 }
 
 type LanguagePathRule struct {
@@ -107,18 +112,19 @@ var (
 )
 
 type loadedMappings struct {
-	languages            LanguageMappings
-	files                FileMappings
-	styleGuides          StyleGuideMappings
-	extLang              map[string]string
-	baseLang             map[string]string
-	ctxExt               map[string]string
-	languagePathRules    []compiledLanguagePathRule
-	languageContentRules []compiledLanguagePathRule
-	generatedSuffixes    []string
-	generatedRules       []compiledGeneratedRule
-	evictionPriorities   []compiledEvictionPriority
-	styleGuideDetectors  []compiledStyleGuideDetector
+	languages                   LanguageMappings
+	files                       FileMappings
+	styleGuides                 StyleGuideMappings
+	extLang                     map[string]string
+	baseLang                    map[string]string
+	ctxExt                      map[string]string
+	languagePathRules           []compiledLanguagePathRule
+	languageContentRules        []compiledLanguagePathRule
+	unusedIdentifierDiagnostics map[string][]string
+	generatedSuffixes           []string
+	generatedRules              []compiledGeneratedRule
+	evictionPriorities          []compiledEvictionPriority
+	styleGuideDetectors         []compiledStyleGuideDetector
 }
 
 type compiledLanguagePathRule struct {
@@ -190,6 +196,16 @@ func DetectLanguageContent(path, content string) string {
 		}
 	}
 	return m.languages.Default
+}
+
+// UnusedIdentifierDiagnostics returns the unused-identifier kinds
+// ("imports", "variables") a language's standard compiler reports by
+// default, per unused_identifier_diagnostics in languages.yaml. Kinds are
+// returned in canonical order (imports before variables); the result is nil
+// for languages whose default toolchain reports neither.
+func UnusedIdentifierDiagnostics(language string) []string {
+	m := mustLoadMappings()
+	return append([]string(nil), m.unusedIdentifierDiagnostics[language]...)
 }
 
 // IsGenerated reports whether a path is generated or lockfile-like noise.
@@ -539,6 +555,10 @@ func buildLoadedMappings(languages LanguageMappings, files FileMappings, styleGu
 			return loadedMappings{}, fmt.Errorf("mappings: styleguides.yaml detector[%d] references unknown style guide language %q", i, detector.Language)
 		}
 	}
+	unusedIdentifierDiagnostics, err := buildUnusedIdentifierDiagnostics(languages)
+	if err != nil {
+		return loadedMappings{}, err
+	}
 	languageRules, err := compileLanguagePathRules("path_rules", languages.PathRules)
 	if err != nil {
 		return loadedMappings{}, err
@@ -560,19 +580,71 @@ func buildLoadedMappings(languages LanguageMappings, files FileMappings, styleGu
 		return loadedMappings{}, err
 	}
 	return loadedMappings{
-		languages:            languages,
-		files:                files,
-		styleGuides:          styleGuides,
-		extLang:              extLang,
-		baseLang:             baseLang,
-		ctxExt:               ctxExt,
-		languagePathRules:    languageRules,
-		languageContentRules: contentRules,
-		generatedSuffixes:    lowerStrings(files.GeneratedSuffixes),
-		generatedRules:       generatedRules,
-		evictionPriorities:   evictionPriorities,
-		styleGuideDetectors:  styleDetectors,
+		languages:                   languages,
+		files:                       files,
+		styleGuides:                 styleGuides,
+		extLang:                     extLang,
+		baseLang:                    baseLang,
+		ctxExt:                      ctxExt,
+		languagePathRules:           languageRules,
+		languageContentRules:        contentRules,
+		unusedIdentifierDiagnostics: unusedIdentifierDiagnostics,
+		generatedSuffixes:           lowerStrings(files.GeneratedSuffixes),
+		generatedRules:              generatedRules,
+		evictionPriorities:          evictionPriorities,
+		styleGuideDetectors:         styleDetectors,
 	}, nil
+}
+
+// unusedIdentifierKinds are the allowed unused_identifier_diagnostics values,
+// in the canonical order lookups return them.
+var unusedIdentifierKinds = []string{"imports", "variables"}
+
+// buildUnusedIdentifierDiagnostics indexes unused_identifier_diagnostics,
+// rejecting languages no detection rule can ever produce, unknown kinds, and
+// duplicate or empty kind lists. Kinds are normalized to canonical order.
+func buildUnusedIdentifierDiagnostics(languages LanguageMappings) (map[string][]string, error) {
+	known := make(map[string]struct{})
+	known[languages.Default] = struct{}{}
+	for language := range languages.Extension {
+		known[language] = struct{}{}
+	}
+	for language := range languages.Basename {
+		known[language] = struct{}{}
+	}
+	for _, rule := range languages.PathRules {
+		known[rule.Language] = struct{}{}
+	}
+	for _, rule := range languages.ContentRules {
+		known[rule.Language] = struct{}{}
+	}
+	out := make(map[string][]string, len(languages.UnusedIdentifierDiagnostics))
+	for language, kinds := range languages.UnusedIdentifierDiagnostics {
+		if _, ok := known[language]; !ok {
+			return nil, fmt.Errorf("mappings: languages.yaml unused_identifier_diagnostics references unknown language %q", language)
+		}
+		if len(kinds) == 0 {
+			return nil, fmt.Errorf("mappings: languages.yaml unused_identifier_diagnostics %q has no kinds", language)
+		}
+		seen := make(map[string]struct{}, len(kinds))
+		for _, kind := range kinds {
+			if !slices.Contains(unusedIdentifierKinds, kind) {
+				return nil, fmt.Errorf("mappings: languages.yaml unused_identifier_diagnostics %q has unknown kind %q", language, kind)
+			}
+			if _, dup := seen[kind]; dup {
+				return nil, fmt.Errorf("mappings: languages.yaml unused_identifier_diagnostics %q repeats kind %q", language, kind)
+			}
+			seen[kind] = struct{}{}
+		}
+		ordered := make([]string, 0, len(seen))
+		for _, kind := range unusedIdentifierKinds {
+			if _, ok := seen[kind]; ok {
+				ordered = append(ordered, kind)
+			}
+		}
+		out[language] = ordered
+	}
+	return out, nil
 }
 
 func compileLanguagePathRules(section string, rules []LanguagePathRule) ([]compiledLanguagePathRule, error) {
