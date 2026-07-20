@@ -42,6 +42,13 @@ const chatSeenCap = 1024
 // with HTTP 200 before the work ran — GitLab will not redeliver it on its own.
 const chatMaxAttempts = 3
 
+// chatQueueCap bounds ADMITTED chat events (queued + running). The semaphore
+// bounds child processes, but without an admission bound a sustained burst of
+// distinct discussion notes would pile up one long-lived goroutine per webhook;
+// past this cap new chat events are dropped at the door (unmarked, so a manual
+// redelivery or a re-ask can retry).
+const chatQueueCap = 64
+
 // defaultChatRetryDelay spaces chat retry attempts; a Handler field so tests
 // can shorten it.
 const defaultChatRetryDelay = 15 * time.Second
@@ -77,8 +84,9 @@ type ChatConfig struct {
 // classifies — every API call and the review itself happen async, keeping the
 // response inside GitLab's ~10s webhook timeout. Command state changes
 // (enqueue, abort, status) are synchronous mutex-only dispatcher calls; only
-// the GitLab acknowledgements and replies run in goroutines, which are fire
-// and forget: a reply may be lost when the daemon shuts down mid-flight.
+// the GitLab acknowledgements and replies run in goroutines. Command replies
+// are fire and forget (a reply may be lost when the daemon shuts down
+// mid-flight); chat work is tracked and drained by ShutdownChats.
 type Handler struct {
 	groups     *GroupSet
 	dispatcher *Dispatcher
@@ -92,6 +100,18 @@ type Handler struct {
 	// chatSem bounds concurrent chat work (thread gate + child) so a burst of
 	// discussion activity cannot spawn unbounded processes.
 	chatSem chan struct{}
+	// chatAdmit bounds ADMITTED chat events: a slot is reserved before the
+	// per-event goroutine is spawned and released when it finishes, so a
+	// sustained burst of distinct discussion notes cannot pile up unbounded
+	// long-lived goroutines behind the semaphore.
+	chatAdmit chan struct{}
+	// chatWG tracks in-flight chat goroutines so shutdown can drain them.
+	chatWG sync.WaitGroup
+	// chatCtx roots all chat work in the daemon lifecycle; chatCancel tears it
+	// down on shutdown so in-flight children are terminated instead of
+	// outliving the daemon.
+	chatCtx    context.Context
+	chatCancel context.CancelFunc
 	// chatLocks serializes chat replies within a discussion, so two quick replies
 	// are answered in order instead of racing and both answering the newest note.
 	chatLocks keyedMutex
@@ -106,6 +126,7 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 	if limit <= 0 {
 		limit = defaultMaxConcurrentChats
 	}
+	chatCtx, chatCancel := context.WithCancel(context.Background())
 	return &Handler{
 		groups:         groups,
 		dispatcher:     dispatcher,
@@ -113,10 +134,36 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 		chatRunner:     chatRunner,
 		chatCfg:        chatCfg,
 		chatSem:        make(chan struct{}, limit),
+		chatAdmit:      make(chan struct{}, chatQueueCap),
+		chatCtx:        chatCtx,
+		chatCancel:     chatCancel,
 		chatSeen:       newNoteDedup(chatSeenCap),
 		chatRetryDelay: defaultChatRetryDelay,
 		log:            log,
 	}
+}
+
+// ShutdownChats drains in-flight chat work during daemon shutdown: it waits up
+// to grace for chats to finish on their own, then cancels the chat lifecycle
+// context — terminating running children — and waits for the goroutines to
+// exit. The HTTP listener must already be stopped so no new chat events are
+// admitted concurrently.
+func (h *Handler) ShutdownChats(grace time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		h.chatWG.Wait()
+		close(done)
+	}()
+	if grace > 0 {
+		select {
+		case <-done:
+			h.chatCancel()
+			return
+		case <-time.After(grace):
+		}
+	}
+	h.chatCancel()
+	<-done
 }
 
 // keyedMutex provides a mutex per string key, so callers serialize work for the
@@ -249,7 +296,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat disabled"})
 			return
 		}
-		go h.handleChat(group, event.Project.PathWithNamespace, decision)
+		if !h.admitChat() {
+			// Dropped before the dedup mark, so a manual redelivery (or the user
+			// re-asking) can retry once the backlog clears.
+			h.log.Warn("chat backlog full, dropping chat event", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
+			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat backlog full"})
+			return
+		}
+		go func() {
+			defer h.chatWG.Done()
+			defer func() { <-h.chatAdmit }()
+			h.handleChat(group, event.Project.PathWithNamespace, decision)
+		}()
 		h.log.Debug("chat reply candidate", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
 		writeJSON(w, map[string]string{"status": "chat"})
 	case decision.Command != CommandNone:
@@ -337,6 +395,19 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 	}
 }
 
+// admitChat reserves a chat admission slot and registers the event with the
+// shutdown drain group. It reports false when the backlog is full; on success
+// the caller must release with `<-h.chatAdmit` and h.chatWG.Done() when done.
+func (h *Handler) admitChat() bool {
+	select {
+	case h.chatAdmit <- struct{}{}:
+		h.chatWG.Add(1)
+		return true
+	default:
+		return false
+	}
+}
+
 // handleChat answers a discussion-thread reply by spawning a `nickpit chat`
 // child, keeping the daemon free of LLM logic. It guards several hazards before
 // spawning:
@@ -348,8 +419,10 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 //   - a cheap thread gate confirms the thread was started by nickpit before a
 //     child is spawned, so unrelated comments never launch a process.
 //
-// The child self-gates too and posts its reply. A lost reply on shutdown is
-// acceptable, like command replies.
+// The child self-gates too and posts its reply. On daemon shutdown, in-flight
+// chats get the shutdown grace to finish (see ShutdownChats) and are then
+// terminated; an abandoned note's dedup mark is cleared so a redelivery after
+// restart can retry.
 //
 // Retries live HERE, not in webhook redelivery: the HTTP 200 was already sent
 // when this goroutine started, so GitLab considers the webhook delivered and
@@ -376,6 +449,13 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		if !retryable {
 			return
 		}
+		if h.chatCtx.Err() != nil {
+			// Daemon shutting down: abandon retries, but clear the mark so a manual
+			// redelivery after restart is not discarded as a duplicate.
+			h.chatSeen.forget(decision.NoteID)
+			h.log.Info("chat abandoned: daemon shutting down", "iid", decision.IID, "discussion", decision.DiscussionID)
+			return
+		}
 		if attempt >= chatMaxAttempts {
 			// Give up, but clear the mark so a manual webhook redelivery (or the
 			// user re-asking) is not discarded as a duplicate.
@@ -384,7 +464,13 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 			return
 		}
 		h.log.Warn("chat attempt failed, retrying", "iid", decision.IID, "discussion", decision.DiscussionID, "attempt", attempt)
-		time.Sleep(h.chatRetryDelay)
+		select {
+		case <-h.chatCtx.Done():
+			h.chatSeen.forget(decision.NoteID)
+			h.log.Info("chat abandoned: daemon shutting down", "iid", decision.IID, "discussion", decision.DiscussionID)
+			return
+		case <-time.After(h.chatRetryDelay):
+		}
 	}
 }
 
@@ -392,17 +478,24 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 // retrying. Successful replies, foreign threads, and superseded notes are final;
 // gate read failures, spawn failures, and non-zero child exits are retryable.
 func (h *Handler) chatAttempt(group *Group, projectPath string, decision Decision) (retryable bool) {
-	// Bound concurrent chat work. Blocking (rather than dropping) is safe: the
-	// goroutine count is bounded by in-flight webhook events, while the semaphore
-	// still bounds actual child processes.
-	h.chatSem <- struct{}{}
-	defer func() { <-h.chatSem }()
-
-	// Serialize replies within a discussion so ordering is preserved.
+	// Serialize replies within a discussion BEFORE competing for a global slot.
+	// The reverse order would let queued replies to one busy discussion each sit
+	// on a global slot while blocked on that discussion's lock, starving chats
+	// in unrelated discussions.
 	unlock := h.chatLocks.lock(fmt.Sprintf("%s!%s", projectPath, decision.DiscussionID))
 	defer unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), chatReplyTimeout)
+	// Bound concurrent chat work. Blocking (rather than dropping) is safe: the
+	// goroutine count is bounded by the admission cap, while the semaphore still
+	// bounds actual child processes. Shutdown aborts the wait.
+	select {
+	case h.chatSem <- struct{}{}:
+	case <-h.chatCtx.Done():
+		return true // handleChat sees the shutdown and stops retrying
+	}
+	defer func() { <-h.chatSem }()
+
+	ctx, cancel := context.WithTimeout(h.chatCtx, chatReplyTimeout)
 	defer cancel()
 
 	// Inexpensive gate: only spawn a child for a thread nickpit actually started.

@@ -23,6 +23,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/styleguide"
+	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/spf13/cobra"
 )
 
@@ -202,7 +203,9 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		if err := store.Save(sess); err != nil {
 			a.logf(ctx, "chat: could not save session: %v", err)
 		}
-		fmt.Fprintln(os.Stdout, res.Reply) //nolint:errcheck // stdout write; nothing actionable on failure
+		// LLM output is untrusted for terminal purposes: strip control characters
+		// so a reply cannot smuggle escape sequences into the user's terminal.
+		fmt.Fprintln(os.Stdout, textsan.StripControl(res.Reply)) //nolint:errcheck // stdout write; nothing actionable on failure
 		return nil
 	}
 
@@ -217,11 +220,13 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 }
 
 // chatREPL runs the interactive loop, printing session context and the pinned
-// opener once before reading questions until EOF or an exit command.
+// opener once before reading questions until EOF or an exit command. Every
+// value echoed here can originate outside this process (markers, saved JSON,
+// model output), so it is control-stripped before touching the terminal.
 func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(string) error) error {
-	fmt.Fprintf(os.Stderr, "Discussing review %s", sess.ReviewID)
+	fmt.Fprintf(os.Stderr, "Discussing review %s", textsan.StripControl(sess.ReviewID))
 	if sess.Source.Repo != "" {
-		fmt.Fprintf(os.Stderr, " on %s", sess.Source.Repo)
+		fmt.Fprintf(os.Stderr, " on %s", textsan.StripControl(sess.Source.Repo))
 		if sess.Source.Identifier > 0 {
 			fmt.Fprintf(os.Stderr, "!%d", sess.Source.Identifier)
 		}
@@ -229,7 +234,7 @@ func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(st
 	fmt.Fprintf(os.Stderr, " (session %s). Type your question, or /exit to quit.\n", sess.ID)
 	if sess.PinnedFindingID != "" {
 		if opener := review.DiscussOpener(sess.Result, sess.PinnedFindingID); opener != "" {
-			fmt.Fprintf(os.Stderr, "\n%s\n", opener)
+			fmt.Fprintf(os.Stderr, "\n%s\n", textsan.StripControl(opener))
 		}
 	}
 	scanner := bufio.NewScanner(os.Stdin)
@@ -247,7 +252,8 @@ func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(st
 			return nil
 		}
 		if err := turn(line); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			// Errors can embed upstream response text; strip control characters too.
+			fmt.Fprintf(os.Stderr, "error: %v\n", textsan.StripControl(err.Error()))
 		}
 	}
 	return scanner.Err()

@@ -473,6 +473,72 @@ func TestHandlerChatDisabled(t *testing.T) {
 	}
 }
 
+// chatRunnerFunc adapts a function to the ChatRunner interface for tests.
+type chatRunnerFunc func(ctx context.Context, spec ChatSpec) (int, string, error)
+
+func (f chatRunnerFunc) RunChat(ctx context.Context, spec ChatSpec) (int, string, error) {
+	return f(ctx, spec)
+}
+
+// A full admission backlog drops the chat event at the door — before the dedup
+// mark — so a sustained burst cannot pile up one goroutine per webhook, and a
+// manual redelivery can still retry once the backlog clears.
+func TestHandlerChatBacklogFullDrops(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	for range chatQueueCap {
+		env.handler.chatAdmit <- struct{}{}
+	}
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "chat backlog full") {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned despite full backlog")
+	case <-time.After(200 * time.Millisecond):
+	}
+	// The note must not be marked seen: a redelivery after the backlog clears
+	// must still be answered.
+	if !env.handler.chatSeen.markNew(306) {
+		t.Fatal("dropped chat note was marked as seen")
+	}
+}
+
+// ShutdownChats cancels in-flight chat work (its context is rooted in the
+// daemon lifecycle), waits for the goroutines to exit, and leaves the abandoned
+// note unmarked so a redelivery after restart can retry it.
+func TestHandlerShutdownChatsCancelsInFlight(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	started := make(chan struct{})
+	env.handler.chatRunner = chatRunnerFunc(func(ctx context.Context, spec ChatSpec) (int, string, error) {
+		close(started)
+		<-ctx.Done() // a long-running child, terminated by shutdown
+		return 1, "chat.log", ctx.Err()
+	})
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("chat child never started")
+	}
+	done := make(chan struct{})
+	go func() {
+		env.handler.ShutdownChats(0)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ShutdownChats did not cancel and drain the in-flight chat")
+	}
+	if !env.handler.chatSeen.markNew(306) {
+		t.Fatal("abandoned chat note stayed marked as seen")
+	}
+}
+
 func TestHandlerRejectsGet(t *testing.T) {
 	env := newHandlerEnv(t)
 	recorder := httptest.NewRecorder()

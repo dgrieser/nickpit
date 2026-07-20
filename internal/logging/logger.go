@@ -171,11 +171,14 @@ func (l *Logger) PrintError(err error) {
 	if l == nil || err == nil {
 		return
 	}
+	// Errors can embed upstream/LLM response text; strip control characters so
+	// they cannot smuggle escape sequences into the terminal.
+	msg := textsan.StripControl(err.Error())
 	if l.useANSI {
-		l.writeRaw(progressStyle(progressColorErrorRed, "ERROR") + progressGrey(":") + " " + progressLight(err.Error()) + "\n")
+		l.writeRaw(progressStyle(progressColorErrorRed, "ERROR") + progressGrey(":") + " " + progressLight(msg) + "\n")
 		return
 	}
-	l.writeRaw(fmt.Sprintf("ERROR: %s\n", err))
+	l.writeRaw(fmt.Sprintf("ERROR: %s\n", msg))
 }
 
 func (l *Logger) writeRaw(text string) {
