@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,17 +30,29 @@ type handlerEnv struct {
 
 // fakeChatRunner records the chat children the handler would spawn. Calls arrive
 // on a channel so a test can wait for the handler's fire-and-forget goroutine.
+// exitCodes, when non-empty, is consumed one per call (last value repeats).
 type fakeChatRunner struct {
-	calls chan ChatSpec
+	calls     chan ChatSpec
+	mu        sync.Mutex
+	exitCodes []int
 }
 
 func newFakeChatRunner() *fakeChatRunner {
-	return &fakeChatRunner{calls: make(chan ChatSpec, 4)}
+	return &fakeChatRunner{calls: make(chan ChatSpec, 8)}
 }
 
 func (r *fakeChatRunner) RunChat(_ context.Context, spec ChatSpec) (int, string, error) {
+	r.mu.Lock()
+	exit := 0
+	if len(r.exitCodes) > 0 {
+		exit = r.exitCodes[0]
+		if len(r.exitCodes) > 1 {
+			r.exitCodes = r.exitCodes[1:]
+		}
+	}
+	r.mu.Unlock()
 	r.calls <- spec
-	return 0, "chat.log", nil
+	return exit, "chat.log", nil
 }
 
 // newHandlerEnv wires a handler to a dispatcher with no started workers, so
@@ -421,6 +434,28 @@ func TestHandlerChatSkipsWhenBotUnresolved(t *testing.T) {
 		t.Fatal("chat child spawned despite unresolved bot id")
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+// A failed chat child is retried in-process: the webhook was already
+// acknowledged with HTTP 200, so GitLab will not redeliver it — the daemon owns
+// the retry.
+func TestHandlerChatRetriesFailedChild(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.chat.exitCodes = []int{1, 0} // first attempt fails, retry succeeds
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	for i := range 2 {
+		select {
+		case <-env.chat.calls:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("chat attempt %d never ran", i+1)
+		}
+	}
+	// The successful retry keeps the dedup mark: the same note is a duplicate.
+	waitFor(t, 2*time.Second, func() bool { return !env.handler.chatSeen.markNew(306) })
 }
 
 // With chat disabled (nil runner), a thread reply is ignored, not spawned.

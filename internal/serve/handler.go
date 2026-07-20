@@ -37,6 +37,15 @@ const defaultMaxConcurrentChats = 4
 // redeliveries of the same note.
 const chatSeenCap = 1024
 
+// chatMaxAttempts bounds in-process retries of a failed chat reply. Retries
+// must happen inside the daemon because the webhook was already acknowledged
+// with HTTP 200 before the work ran — GitLab will not redeliver it on its own.
+const chatMaxAttempts = 3
+
+// defaultChatRetryDelay spaces chat retry attempts; a Handler field so tests
+// can shorten it.
+const defaultChatRetryDelay = 15 * time.Second
+
 // HandlerConfig is the static trigger configuration for the webhook endpoint.
 type HandlerConfig struct {
 	// TriggerEmoji is the award-emoji name requesting a manual review.
@@ -88,6 +97,8 @@ type Handler struct {
 	chatLocks keyedMutex
 	// chatSeen drops webhook redeliveries of a note already answered.
 	chatSeen *noteDedup
+	// chatRetryDelay spaces in-process retry attempts of a failed chat reply.
+	chatRetryDelay time.Duration
 }
 
 func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chatRunner ChatRunner, chatCfg ChatConfig, log *slog.Logger) *Handler {
@@ -96,14 +107,15 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 		limit = defaultMaxConcurrentChats
 	}
 	return &Handler{
-		groups:     groups,
-		dispatcher: dispatcher,
-		cfg:        cfg,
-		chatRunner: chatRunner,
-		chatCfg:    chatCfg,
-		chatSem:    make(chan struct{}, limit),
-		chatSeen:   newNoteDedup(chatSeenCap),
-		log:        log,
+		groups:         groups,
+		dispatcher:     dispatcher,
+		cfg:            cfg,
+		chatRunner:     chatRunner,
+		chatCfg:        chatCfg,
+		chatSem:        make(chan struct{}, limit),
+		chatSeen:       newNoteDedup(chatSeenCap),
+		chatRetryDelay: defaultChatRetryDelay,
+		log:            log,
 	}
 }
 
@@ -338,6 +350,13 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 //
 // The child self-gates too and posts its reply. A lost reply on shutdown is
 // acceptable, like command replies.
+//
+// Retries live HERE, not in webhook redelivery: the HTTP 200 was already sent
+// when this goroutine started, so GitLab considers the webhook delivered and
+// will not redeliver on its own. Transient failures (gate read errors, spawn
+// failures, non-zero child exits) are therefore retried in-process with
+// backoff; only after the attempts are exhausted is the note forgotten, which
+// at least lets a MANUAL redelivery try again.
 func (h *Handler) handleChat(group *Group, projectPath string, decision Decision) {
 	if h.chatRunner == nil {
 		return
@@ -352,15 +371,31 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		h.log.Debug("skipping duplicate chat note", "iid", decision.IID, "note", decision.NoteID)
 		return
 	}
-	// Bound concurrent chat work; drop under load rather than pile up processes.
-	// The dropped note is forgotten so a webhook redelivery can retry it.
-	select {
-	case h.chatSem <- struct{}{}:
-	default:
-		h.chatSeen.forget(decision.NoteID)
-		h.log.Warn("chat busy, dropping reply", "iid", decision.IID, "discussion", decision.DiscussionID)
-		return
+	for attempt := 1; ; attempt++ {
+		retryable := h.chatAttempt(group, projectPath, decision)
+		if !retryable {
+			return
+		}
+		if attempt >= chatMaxAttempts {
+			// Give up, but clear the mark so a manual webhook redelivery (or the
+			// user re-asking) is not discarded as a duplicate.
+			h.chatSeen.forget(decision.NoteID)
+			h.log.Error("chat reply failed after retries", "iid", decision.IID, "discussion", decision.DiscussionID, "attempts", attempt)
+			return
+		}
+		h.log.Warn("chat attempt failed, retrying", "iid", decision.IID, "discussion", decision.DiscussionID, "attempt", attempt)
+		time.Sleep(h.chatRetryDelay)
 	}
+}
+
+// chatAttempt runs one chat attempt end to end and reports whether it is worth
+// retrying. Successful replies, foreign threads, and superseded notes are final;
+// gate read failures, spawn failures, and non-zero child exits are retryable.
+func (h *Handler) chatAttempt(group *Group, projectPath string, decision Decision) (retryable bool) {
+	// Bound concurrent chat work. Blocking (rather than dropping) is safe: the
+	// goroutine count is bounded by in-flight webhook events, while the semaphore
+	// still bounds actual child processes.
+	h.chatSem <- struct{}{}
 	defer func() { <-h.chatSem }()
 
 	// Serialize replies within a discussion so ordering is preserved.
@@ -371,17 +406,16 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 	defer cancel()
 
 	// Inexpensive gate: only spawn a child for a thread nickpit actually started.
-	// A genuinely foreign thread keeps its dedup mark (redeliveries would re-gate
-	// identically); a transient read failure forgets it so a redelivery retries.
+	// A genuinely foreign thread is final (a retry would re-gate identically); a
+	// read failure is transient and retried.
 	ours, err := h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID)
 	if err != nil {
-		h.chatSeen.forget(decision.NoteID)
 		h.log.Warn("chat gate: reading thread failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
-		return
+		return true
 	}
 	if !ours {
 		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
-		return
+		return false
 	}
 
 	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
@@ -396,17 +430,18 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		LogDir:       h.chatCfg.LogDir,
 	})
 	switch {
-	// A failed attempt posted no reply: forget the note so a redelivered webhook
-	// is not discarded as a duplicate, which would leave the question unanswered
-	// until eviction or daemon restart.
 	case err != nil:
-		h.chatSeen.forget(decision.NoteID)
 		h.log.Warn("chat child failed to run", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+		return true
 	case exitCode != 0:
-		h.chatSeen.forget(decision.NoteID)
+		// Includes empty-completion failures: the child exits non-zero without
+		// posting, and a superseded note exits zero, so retrying here never
+		// double-answers (the child re-checks the latest pending note each run).
 		h.log.Warn("chat child exited with error", "iid", decision.IID, "discussion", decision.DiscussionID, "exit_code", exitCode, "log", logPath)
+		return true
 	default:
 		h.log.Info("chat reply handled", "iid", decision.IID, "discussion", decision.DiscussionID)
+		return false
 	}
 }
 

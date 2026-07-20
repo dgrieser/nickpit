@@ -146,6 +146,37 @@ func TestStorePrunesOldest(t *testing.T) {
 	}
 }
 
+func TestListIgnoresForeignJSONFiles(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// A bare "{}" (valid JSON, no session shape) in a user-chosen --session-dir
+	// must not list as a session — previously it produced an empty-id entry and
+	// Latest failed with `session: empty id` instead of "no saved sessions".
+	if err := os.WriteFile(filepath.Join(dir, "notes.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write foreign: %v", err)
+	}
+	infos, err := store.List()
+	if err != nil || len(infos) != 0 {
+		t.Fatalf("List = %v, %v; want empty", infos, err)
+	}
+	latest, err := store.Latest()
+	if err != nil || latest != nil {
+		t.Fatalf("Latest = %v, %v; want (nil,nil)", latest, err)
+	}
+	// Real sessions still list alongside the foreign file.
+	sess := New()
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	infos, err = store.List()
+	if err != nil || len(infos) != 1 || infos[0].ID != sess.ID {
+		t.Fatalf("List after save = %v, %v", infos, err)
+	}
+}
+
 func TestPruneIgnoresForeignJSONFiles(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewStore(dir)

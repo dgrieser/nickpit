@@ -338,13 +338,16 @@ func (s *Store) List() ([]Info, error) {
 	}
 	var infos []Info
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		// Same filter as prune: only "<uuid>.json" files are ours. Without it, an
+		// unrelated JSON file in a user-chosen --session-dir (e.g. a bare "{}")
+		// would list as a session with an empty id and break Latest → Load("").
+		if entry.IsDir() || !isSessionFileName(entry.Name()) {
 			continue
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		sess, err := s.Load(id)
-		if err != nil {
-			continue // skip unreadable/corrupt files
+		if err != nil || sess.ID == "" {
+			continue // skip unreadable/corrupt/foreign files
 		}
 		infos = append(infos, Info{
 			ID:              sess.ID,
