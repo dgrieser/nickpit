@@ -1130,11 +1130,18 @@ func validateStepType(t string) error {
 	return fmt.Errorf("unknown step type %q", t)
 }
 
-// StepNeedsSource reports whether a step type requires a review source. Only
-// context collection and the reviewers read the source; the post-reviewer steps
-// operate on in-memory or injected findings.
+// StepNeedsSource reports whether a step type requires a review source.
+// Context collection and the reviewers read the source directly. Verify steps
+// (bare and per-vector) do too: the confirm gate and diff-scope judgement are
+// defined against the changed files, so a standalone verify (--step verify on
+// injected findings) must still resolve the source — otherwise the verifier
+// prompt carries no patch context. The remaining post-reviewer steps operate
+// purely on in-memory or injected findings.
 func StepNeedsSource(stepType string) bool {
-	if stepType == StepCollectContext {
+	if stepType == StepCollectContext || stepType == StepVerify {
+		return true
+	}
+	if _, ok := vectorOf(stepType, StepVerifyPrefix); ok {
 		return true
 	}
 	_, ok := vectorOf(stepType, StepReviewPrefix)

@@ -978,3 +978,24 @@ func TestAgentOverrideResolveSmallModelAlias(t *testing.T) {
 		t.Fatalf("max_output_retries = profile %d req %d, want 2/2", gotProfile.MaxOutputRetries, gotReq.MaxOutputRetries)
 	}
 }
+
+// Verify judges findings against the changed files (confirm gate, diff scope),
+// so even a standalone --step verify on injected findings must resolve the
+// source; without it the verifier prompt carries no patch context.
+func TestStepNeedsSource(t *testing.T) {
+	needs := []string{StepCollectContext, StepVerify, StepReviewPrefix + "codequality", StepVerifyPrefix + "codequality"}
+	for _, stepType := range needs {
+		if !StepNeedsSource(stepType) {
+			t.Errorf("StepNeedsSource(%q) = false, want true", stepType)
+		}
+	}
+	sourceless := []string{StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize}
+	for _, stepType := range sourceless {
+		if StepNeedsSource(stepType) {
+			t.Errorf("StepNeedsSource(%q) = true, want false", stepType)
+		}
+	}
+	if !SingleStepSpec(StepVerify, []string{"findings.json"}).NeedsSource() {
+		t.Error("SingleStepSpec(verify).NeedsSource() = false, want true")
+	}
+}
