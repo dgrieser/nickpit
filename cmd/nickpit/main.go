@@ -1346,8 +1346,13 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 		}
 	}
 	// Save a resumable discussion session so `nickpit chat` can pick up the
-	// review. Best-effort: a failure here never affects the review outcome.
-	a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA)
+	// review. Best-effort: a failure here never affects the review outcome. A
+	// collapsed run (every reviewer errored) is not persisted: the pipeline
+	// still emits a fallback overall explanation, so saving would displace the
+	// previous VALID review as the latest session with a no-finding shell.
+	if !reviewProducedNothing(result) {
+		a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA)
+	}
 	// Distinguish "review produced nothing because every reviewer crashed"
 	// from "review succeeded with some soft warnings" — only the former is a
 	// CI-level failure. Empty findings alone are not a failure (clean diff).

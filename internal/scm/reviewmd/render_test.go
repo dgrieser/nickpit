@@ -396,11 +396,29 @@ func TestSummaryBodyOmitsCarrierWhenOversized(t *testing.T) {
 	if carried {
 		t.Fatal("oversized summary must not embed the review envelope")
 	}
-	if !strings.HasPrefix(body, SummaryMarker) || len(CollectReviewEnvelopes(body)) != 0 {
-		t.Fatalf("visible summary degraded or still carries the envelope")
+	// The full envelope is externalized, but a tiny routing-only ref must remain
+	// so replies under the summary still pass the daemon's thread gate.
+	envs := CollectReviewEnvelopes(body)
+	if !strings.HasPrefix(body, SummaryMarker) || len(envs) != 1 || !envs[0].Ref || envs[0].OverallExplanation != "" {
+		t.Fatalf("visible summary should carry exactly one routing ref: %+v", envs)
+	}
+	if rid, findingID, ok := DetectThreadReview(body); !ok || rid != "rev-sum" || findingID != "" {
+		t.Fatalf("oversized summary must still route its thread: rid=%q finding=%q ok=%v", rid, findingID, ok)
 	}
 	if len(body) > carrierNoteMaxBytes+1024 {
 		t.Fatalf("summary body unexpectedly large: %d bytes", len(body))
+	}
+	// Reassembly over the visible summary plus the externalized carrier notes
+	// yields the full envelope — the ref never blanks it, in either order.
+	carrier := NewRenderer("https://host/").CarrierNotes(result, nil)
+	if len(carrier) == 0 {
+		t.Fatal("expected externalized carrier notes")
+	}
+	for i, bodies := range [][]string{append([]string{body}, carrier...), append(append([]string{}, carrier...), body)} {
+		got := ReviewResultsByID(bodies)["rev-sum"]
+		if got == nil || got.OverallExplanation != result.OverallExplanation {
+			t.Fatalf("ref blanked the full envelope (order %d)", i)
+		}
 	}
 	// A short summary carries the envelope inline.
 	small := &model.ReviewResult{ReviewID: "rev-sum", OverallCorrectness: "patch is correct", OverallExplanation: "fine"}

@@ -62,6 +62,40 @@ func TestBuildDiscussContextIncludesReviewAndDiff(t *testing.T) {
 	}
 }
 
+// The trimmer never evicts the last diff file, so when the discussion's fixed
+// extras clamp the effective budget below that single file, the assembled
+// prompt would exceed max_context_tokens. enforceDiscussBudget must cut the
+// final item down (all diff representations together) until the context fits.
+func TestEnforceDiscussBudgetTruncatesLastDiffItem(t *testing.T) {
+	estimator := model.SimpleEstimator{}
+	big := strings.Repeat("x", 40_000)
+	ctx := &model.ReviewContext{
+		DiffFiles: []model.DiffFile{{FilePath: "a.go", Content: big}},
+		DiffHunks: []model.DiffHunk{{FilePath: "a.go", Content: big}},
+		Diff:      big,
+	}
+	budget := 100 // far below the single remaining file
+	enforceDiscussBudget(ctx, budget, estimator)
+	if got := estimator.Estimate(renderContextText(ctx)); got > budget {
+		t.Fatalf("context still over budget after enforcement: %d > %d", got, budget)
+	}
+	if len(ctx.DiffFiles) != 1 || len(ctx.DiffFiles[0].Content) >= len(big) {
+		t.Fatalf("last diff file should be truncated in place: %d bytes", len(ctx.DiffFiles[0].Content))
+	}
+	if len(ctx.DiffHunks[0].Content) >= len(big) {
+		t.Fatal("diff hunks must shrink together with diff files")
+	}
+	if len(ctx.OmittedSections) == 0 || !strings.Contains(ctx.OmittedSections[0], "truncated") {
+		t.Fatalf("truncation must be recorded: %v", ctx.OmittedSections)
+	}
+	// A context already inside the budget is left untouched.
+	small := &model.ReviewContext{Diff: "tiny"}
+	enforceDiscussBudget(small, 1000, estimator)
+	if small.Diff != "tiny" || len(small.OmittedSections) != 0 {
+		t.Fatalf("in-budget context modified: %+v", small)
+	}
+}
+
 func TestBuildDiscussContextDoesNotDuplicateDiff(t *testing.T) {
 	e := &Engine{}
 	// A context with a structured diff must not also carry the raw unified diff:

@@ -393,7 +393,63 @@ func (e *Engine) trimForDiscuss(reviewCtx *model.ReviewContext, result *model.Re
 	}
 	overhead += promptOverheadTokens(estimator, reviewCtx, format, maxTokens)
 	trimmer := NewTrimmer(maxTokens, estimator, WithHeadroomTokens(overhead))
-	return trimmer.Trim(reviewCtx)
+	trimmed, err := trimmer.Trim(reviewCtx)
+	if err != nil {
+		return nil, err
+	}
+	// The trimmer deliberately never evicts the final diff file or hunk, so when
+	// the extras leave less room than that last item the trimmed context can
+	// still exceed the budget and the provider would reject the request. Verify
+	// the final size and truncate the remaining diff as a last resort.
+	enforceDiscussBudget(trimmed, max(maxTokens-overhead, 1), estimator)
+	return trimmed, nil
+}
+
+// enforceDiscussBudget hard-caps a trimmed context at budget tokens by halving
+// the remaining diff content until it fits (possibly to nothing). Unlike the
+// trimmer's eviction loops it is allowed to gut the LAST diff file or hunk:
+// losing diff detail is recoverable — the model still has the findings JSON,
+// the conversation, and the retrieval tools — while an over-budget request is
+// rejected outright. All diff representations shrink together because
+// renderContextText counts ctx.Diff when set while the prompt payload renders
+// DiffFiles/DiffHunks.
+func enforceDiscussBudget(ctx *model.ReviewContext, budget int, estimator model.TokenEstimator) {
+	if ctx == nil {
+		return
+	}
+	over := func() bool { return estimator.Estimate(renderContextText(ctx)) > budget }
+	if !over() {
+		return
+	}
+	truncated := false
+	for over() {
+		reduced := false
+		for i := range ctx.DiffFiles {
+			if cut := len(ctx.DiffFiles[i].Content) / 2; cut > 0 {
+				ctx.DiffFiles[i].Content = ctx.DiffFiles[i].Content[:len(ctx.DiffFiles[i].Content)-cut]
+				reduced, truncated = true, true
+			}
+		}
+		for i := range ctx.DiffHunks {
+			if cut := len(ctx.DiffHunks[i].Content) / 2; cut > 0 {
+				ctx.DiffHunks[i].Content = ctx.DiffHunks[i].Content[:len(ctx.DiffHunks[i].Content)-cut]
+				reduced, truncated = true, true
+			}
+		}
+		if cut := len(ctx.Diff) / 2; cut > 0 {
+			ctx.Diff = ctx.Diff[:len(ctx.Diff)-cut]
+			reduced, truncated = true, true
+		}
+		if !reduced {
+			// Nothing left to cut: the residue is title/paths/etc., and the
+			// remaining overage (if any) is the findings and transcript — the
+			// discussion's substance, kept by design.
+			break
+		}
+	}
+	if truncated {
+		ctx.OmittedSections = append(ctx.OmittedSections, "diff truncated to fit the discussion context budget")
+	}
 }
 
 // DiscussOpener renders the assistant's first message for a finding-pinned chat,

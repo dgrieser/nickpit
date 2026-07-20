@@ -190,6 +190,12 @@ type ReviewEnvelope struct {
 	BaseRef                string    `json:"base_ref,omitempty"`
 	HeadRef                string    `json:"head_ref,omitempty"`
 	Model                  string    `json:"model,omitempty"`
+	// Ref marks a routing-only reference: when the full envelope is too large to
+	// ride in the visible summary, the summary carries a tiny ref (review id
+	// only) so replies beneath it still route to the discussion agent, while the
+	// full envelope lives in a separate carrier note. Reassembly skips refs so
+	// the stub can never blank the full envelope's fields.
+	Ref bool `json:"ref,omitempty"`
 }
 
 // FindingEnvelope is the per-finding carrier payload: the review id it belongs to
@@ -250,6 +256,17 @@ func findingMarkerWithSize(reviewID string, finding model.Finding) (string, int)
 		return "", 0
 	}
 	return encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: finding})
+}
+
+// reviewRefMarker renders the tiny routing-only reference envelope (see
+// ReviewEnvelope.Ref) embedded in a visible summary whose full carrier was
+// externalized for size.
+func reviewRefMarker(reviewID string) string {
+	if reviewID == "" {
+		return ""
+	}
+	marker, _ := encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{ReviewID: reviewID, Ref: true})
+	return marker
 }
 
 // findingRefMarker renders the tiny routing-only reference envelope (see
@@ -484,6 +501,12 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 			if env.ReviewID == "" {
 				continue
 			}
+			// Routing-only references carry no payload; skipping them here means
+			// a stub can never blank the full envelope's fields from the carrier
+			// note, regardless of note order.
+			if env.Ref {
+				continue
+			}
 			r := get(env.ReviewID)
 			r.CreatedAt = env.CreatedAt
 			r.OverallCorrectness = env.OverallCorrectness
@@ -715,6 +738,15 @@ func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) 
 		b.WriteString("\n")
 		b.WriteString(marker)
 		return b.String(), true
+	}
+	// The full envelope is externalized into a carrier note; keep a tiny
+	// routing-only reference in the visible summary so DetectThreadReview still
+	// recognizes replies under it and routes them to the discussion agent. The
+	// carrier note cannot do that — it is never a thread root. SummaryMarker
+	// alone would not either: it carries no review id.
+	if ref := reviewRefMarker(result.ReviewID); ref != "" {
+		b.WriteString("\n")
+		b.WriteString(ref)
 	}
 	return b.String(), false
 }
