@@ -492,6 +492,11 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 	defer cancel()
 	// abandon clears the dedup mark so a manual redelivery (after the daemon
 	// restarts, or once the backlog clears) is not discarded as a duplicate.
+	// gatePassed records whether isNickpitThread ever CONFIRMED the thread is
+	// nickpit's own. The failure note below must never be posted into a thread
+	// the daemon could not verify — e.g. when the gate's read fails persistently
+	// (a read-scoped 429) while posts would succeed, the thread may be anyone's.
+	gatePassed := false
 	abandon := func() {
 		h.chatSeen.forget(decision.NoteID)
 		if h.chatCtx.Err() != nil {
@@ -501,10 +506,13 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 			return
 		}
 		h.log.Error("chat abandoned: event deadline exceeded", "iid", decision.IID, "discussion", decision.DiscussionID)
-		h.reply(group, projectID, decision, chatFailureText)
+		if gatePassed {
+			h.reply(group, projectID, decision, chatFailureText)
+		}
 	}
 	for attempt := 1; ; attempt++ {
-		retryable := h.chatAttempt(ctx, group, projectPath, decision)
+		retryable, gateConfirmed := h.chatAttempt(ctx, group, projectPath, decision)
+		gatePassed = gatePassed || gateConfirmed
 		if !retryable {
 			return
 		}
@@ -515,12 +523,15 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 		if attempt >= chatMaxAttempts {
 			// Give up, but clear the mark so a manual webhook redelivery (or the
 			// user re-asking) is not discarded as a duplicate — and tell the
-			// author instead of going permanently silent. The failure note marks
-			// the thread answered, so re-asking (as the note says) is the
-			// recovery, never a surprise double-answer.
+			// author instead of going permanently silent, when the thread is
+			// confirmed ours. The failure note marks the thread answered, so
+			// re-asking (as the note says) is the recovery, never a surprise
+			// double-answer.
 			h.chatSeen.forget(decision.NoteID)
 			h.log.Error("chat reply failed after retries", "iid", decision.IID, "discussion", decision.DiscussionID, "attempts", attempt)
-			h.reply(group, projectID, decision, chatFailureText)
+			if gatePassed {
+				h.reply(group, projectID, decision, chatFailureText)
+			}
 			return
 		}
 		h.log.Warn("chat attempt failed, retrying", "iid", decision.IID, "discussion", decision.DiscussionID, "attempt", attempt)
@@ -534,11 +545,13 @@ func (h *Handler) handleChat(group *Group, projectPath string, projectID int, de
 }
 
 // chatAttempt runs one chat attempt end to end and reports whether it is worth
-// retrying. Successful replies, foreign threads, and superseded notes are final;
-// gate read failures, spawn failures, and non-zero child exits are retryable.
-// ctx is the admitted event's shared deadline (see handleChat) — every blocking
-// step here runs under it.
-func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, decision Decision) (retryable bool) {
+// retrying, plus whether the thread gate CONFIRMED the thread as nickpit's own
+// during this attempt (handleChat posts the failure note only into confirmed
+// threads). Successful replies, foreign threads, and superseded notes are
+// final; gate read failures, spawn failures, and non-zero child exits are
+// retryable. ctx is the admitted event's shared deadline (see handleChat) —
+// every blocking step here runs under it.
+func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, decision Decision) (retryable, gateConfirmed bool) {
 	// Serialize replies within a discussion BEFORE competing for a global slot.
 	// The reverse order would let queued replies to one busy discussion each sit
 	// on a global slot while blocked on that discussion's lock, starving chats
@@ -553,7 +566,7 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	select {
 	case h.chatSem <- struct{}{}:
 	case <-ctx.Done():
-		return true // handleChat sees the deadline/shutdown and stops retrying
+		return true, false // handleChat sees the deadline/shutdown and stops retrying
 	}
 	defer func() { <-h.chatSem }()
 
@@ -563,11 +576,11 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	ours, err := h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID)
 	if err != nil {
 		h.log.Warn("chat gate: reading thread failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
-		return true
+		return true, false
 	}
 	if !ours {
 		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
-		return false
+		return false, false
 	}
 
 	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
@@ -584,16 +597,16 @@ func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath str
 	switch {
 	case err != nil:
 		h.log.Warn("chat child failed to run", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
-		return true
+		return true, true
 	case exitCode != 0:
 		// Includes empty-completion failures: the child exits non-zero without
 		// posting, and a superseded note exits zero, so retrying here never
 		// double-answers (the child re-checks the latest pending note each run).
 		h.log.Warn("chat child exited with error", "iid", decision.IID, "discussion", decision.DiscussionID, "exit_code", exitCode, "log", logPath)
-		return true
+		return true, true
 	default:
 		h.log.Info("chat reply handled", "iid", decision.IID, "discussion", decision.DiscussionID)
-		return false
+		return false, true
 	}
 }
 

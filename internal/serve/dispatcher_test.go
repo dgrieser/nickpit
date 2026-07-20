@@ -32,6 +32,17 @@ type fakeGitLab struct {
 	// discussionRoot, when set, is returned as the single root note of a
 	// discussion GET, so the chat thread gate can be exercised.
 	discussionRoot string
+	// failDiscussionGET makes the chat thread gate's discussion GET fail with a
+	// 429, exercising the unconfirmed-gate paths. discussionGETs counts the
+	// gate's read attempts.
+	failDiscussionGET bool
+	discussionGETs    int
+}
+
+func (f *fakeGitLab) gateReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.discussionGETs
 }
 
 // recordedPost is one captured POST request.
@@ -65,6 +76,11 @@ func (f *fakeGitLab) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "topics": f.topics})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/discussions/"):
 			// Single-discussion fetch used by the chat thread gate.
+			f.discussionGETs++
+			if f.failDiscussionGET {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"notes": []map[string]any{
 					{"body": f.discussionRoot, "system": false, "author": map[string]any{"id": 5, "username": "someone"}},

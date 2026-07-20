@@ -477,6 +477,54 @@ func TestHandlerChatRetriesFailedChild(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool { return !env.handler.chatSeen.markNew(306) })
 }
 
+// When every attempt fails AFTER the gate confirmed the thread as nickpit's
+// own, the author gets a failure note instead of permanent silence.
+func TestHandlerChatPostsFailureNoteAfterExhaustedRetries(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.chat.exitCodes = []int{1} // every attempt fails (last value repeats)
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	waitFor(t, 2*time.Second, func() bool {
+		for _, post := range env.gitlab.posted() {
+			if strings.Contains(post.Body["body"], "could not answer") {
+				return true
+			}
+		}
+		return false
+	})
+	// The mark is cleared, so a manual redelivery could still retry.
+	waitFor(t, 2*time.Second, func() bool { return env.handler.chatSeen.markNew(306) })
+}
+
+// When the gate NEVER confirmed the thread (its read fails persistently, e.g.
+// a read-scoped 429), the failure note must not be posted: the thread may be
+// anyone's, and injecting bot text there would leak past the ownership gate.
+func TestHandlerChatNoFailureNoteWithoutGateConfirmation(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.failDiscussionGET = true
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	// All attempts run their (failing) gate read, then the mark is cleared —
+	// waiting on the read count first keeps the markNew poll from racing the
+	// initial mark.
+	waitFor(t, 2*time.Second, func() bool { return env.gitlab.gateReads() >= chatMaxAttempts })
+	waitFor(t, 2*time.Second, func() bool { return env.handler.chatSeen.markNew(306) })
+	// Nothing was ever posted, and no child was spawned.
+	if posts := env.gitlab.posted(); len(posts) != 0 {
+		t.Fatalf("no post may reach an unconfirmed thread, got %+v", posts)
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned despite failing gate")
+	default:
+	}
+}
+
 // With chat disabled (nil runner), a thread reply is ignored, not spawned.
 func TestHandlerChatDisabled(t *testing.T) {
 	env := newHandlerEnv(t)
