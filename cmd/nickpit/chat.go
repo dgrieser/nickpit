@@ -160,7 +160,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 
 	if created || refreshed {
 		if err := store.Save(sess); err != nil {
-			a.logf(ctx, "chat: could not save session: %v", err)
+			a.warnf("chat: could not save session (conversation may be lost on resume): %v", err)
 		}
 	}
 
@@ -201,7 +201,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			sess.Append(session.FromLLM(m))
 		}
 		if err := store.Save(sess); err != nil {
-			a.logf(ctx, "chat: could not save session: %v", err)
+			a.warnf("chat: could not save session (conversation may be lost on resume): %v", err)
 		}
 		// LLM output is untrusted for terminal purposes: strip control characters
 		// so a reply cannot smuggle escape sequences into the user's terminal.
@@ -681,6 +681,13 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if result == nil {
 		return fmt.Errorf("chat: review %q not found on MR", reviewID)
 	}
+	// The carrier records the model the review actually ran with (including any
+	// --model override at review time, or a profile model that has since
+	// changed). Answer the thread with that model — mirroring the interactive
+	// resume path — unless --model was explicitly passed for this invocation.
+	if a.model == "" && result.Model != "" {
+		profile.Model = result.Model
+	}
 
 	// Answer only when a user question is pending and (when a triggering note id
 	// was given) that note is still the latest. When two replies race, or a
@@ -834,7 +841,7 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 	}
 	store, err := session.NewStore(a.sessionDir)
 	if err != nil {
-		a.logf(ctx, "chat: session store unavailable: %v", err)
+		a.warnf("chat: session store unavailable (review will not be resumable with `nickpit chat`): %v", err)
 		return
 	}
 	sess := session.New()
@@ -896,7 +903,7 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 		RepoRoot:   repoRoot,
 	}
 	if err := store.Save(sess); err != nil {
-		a.logf(ctx, "chat: could not save session: %v", err)
+		a.warnf("chat: could not save session (review will not be resumable with `nickpit chat`): %v", err)
 		return
 	}
 	a.logf(ctx, "chat: session saved: id=%s (resume with `nickpit chat --session %s`)", sess.ID, sess.ID)

@@ -2228,6 +2228,13 @@ func (a *app) logf(ctx context.Context, format string, args ...any) {
 	a.logger.Verbosef(ctx, format, args...)
 }
 
+// warnf surfaces a non-fatal problem on stderr regardless of --verbose. Use it
+// instead of logf when silence would hide real damage (e.g. a failed session
+// save losing conversation history) from a default invocation.
+func (a *app) warnf(format string, args ...any) {
+	a.logger.PrintWarning(fmt.Sprintf(format, args...))
+}
+
 func (a *app) logProgress(ctx context.Context, stage logging.Stage, state logging.State, msg string) {
 	if a.logger == nil {
 		return

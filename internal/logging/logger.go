@@ -181,6 +181,21 @@ func (l *Logger) PrintError(err error) {
 	l.writeRaw(fmt.Sprintf("ERROR: %s\n", msg))
 }
 
+// PrintWarning surfaces a non-fatal problem regardless of verbosity — unlike
+// Verbosef, which a default (non --verbose) run drops. Like PrintError, the
+// message may embed upstream text, so control characters are stripped.
+func (l *Logger) PrintWarning(msg string) {
+	if l == nil || msg == "" {
+		return
+	}
+	msg = textsan.StripControl(msg)
+	if l.useANSI {
+		l.writeRaw(progressStyle(progressColorWarnYellow, "WARNING") + progressGrey(":") + " " + progressLight(msg) + "\n")
+		return
+	}
+	l.writeRaw(fmt.Sprintf("WARNING: %s\n", msg))
+}
+
 func (l *Logger) writeRaw(text string) {
 	if l == nil {
 		return

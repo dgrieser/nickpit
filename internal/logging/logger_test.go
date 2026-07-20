@@ -32,6 +32,33 @@ func TestPrintErrorANSI(t *testing.T) {
 	}
 }
 
+// PrintWarning must reach the terminal even on a NON-verbose logger — it exists
+// so save failures and similar non-fatal damage are visible in default runs —
+// and strips control characters like PrintError.
+func TestPrintWarningPlainNotVerboseGated(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	var buf bytes.Buffer
+	logger := New(&buf, false, false) // verbose disabled
+
+	logger.PrintWarning("disk full\x1b[2Jnow")
+
+	if got := buf.String(); got != "WARNING: disk full[2Jnow\n" {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
+func TestPrintWarningANSI(t *testing.T) {
+	var buf bytes.Buffer
+	logger := &Logger{w: &buf, useANSI: true}
+
+	logger.PrintWarning("boom")
+
+	want := "\x1b[38;5;221mWARNING\x1b[0m\x1b[38;5;244m:\x1b[0m \x1b[38;5;252mboom\x1b[0m\n"
+	if got := buf.String(); got != want {
+		t.Fatalf("unexpected output: %q", got)
+	}
+}
+
 func TestVerboseJSONRendersEmbeddedJSONStringStructurally(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer
