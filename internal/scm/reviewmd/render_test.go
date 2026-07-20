@@ -507,13 +507,34 @@ func TestPublishedProseEscapesQuickActions(t *testing.T) {
 	}
 }
 
+// The review envelope carries the review's context-shaping options so an
+// MR-reassembled chat rebuilds the FILTERED context, not the current config's.
+func TestReviewEnvelopeCarriesContextOptions(t *testing.T) {
+	opts := &model.ContextOptions{IncludeComments: true, ExcludePaths: []string{"secrets/**"}, MaxContextTokens: 1234, DiffFormat: "git"}
+	result := &model.ReviewResult{ReviewID: "rev-opt", OverallCorrectness: "patch is correct"}
+	body := NewRenderer("https://host/").ForReview("rev-opt").WithContextOptions(opts).SummaryBody(result)
+	got := ReviewResultsByID([]string{body})["rev-opt"]
+	if got == nil || got.ContextOptions == nil {
+		t.Fatalf("context options not carried: %+v", got)
+	}
+	if !got.ContextOptions.IncludeComments || got.ContextOptions.MaxContextTokens != 1234 ||
+		len(got.ContextOptions.ExcludePaths) != 1 || got.ContextOptions.ExcludePaths[0] != "secrets/**" {
+		t.Fatalf("context options mismatch: %+v", got.ContextOptions)
+	}
+	// Without WithContextOptions the envelope stays lean and reassembly nil.
+	plain := NewRenderer("https://host/").ForReview("rev-opt").SummaryBody(result)
+	if got := ReviewResultsByID([]string{plain})["rev-opt"]; got == nil || got.ContextOptions != nil {
+		t.Fatalf("unexpected options on plain envelope: %+v", got)
+	}
+}
+
 // IsStaleCarrierBody drives re-publish pruning: only PURE carrier bodies whose
 // envelopes all belong to other reviews qualify.
 func TestIsStaleCarrierBody(t *testing.T) {
 	render := NewRenderer("https://host/")
 	old := render.CarrierNotes(&model.ReviewResult{ReviewID: "rev-old", OverallCorrectness: "patch is correct", Findings: []model.Finding{{ID: "f1"}}}, []model.Finding{{ID: "f1"}})[0]
 	current := render.CarrierNotes(&model.ReviewResult{ReviewID: "rev-new", OverallCorrectness: "patch is correct"}, nil)[0]
-	if !IsStaleCarrierBody(old, "rev-new") {
+	if !IsStaleCarrierBody(old, "rev-new", nil) {
 		t.Fatal("foreign pure carrier should be stale")
 	}
 	cases := map[string]string{
@@ -524,9 +545,22 @@ func TestIsStaleCarrierBody(t *testing.T) {
 		"empty":                  "",
 	}
 	for name, body := range cases {
-		if IsStaleCarrierBody(body, "rev-new") {
+		if IsStaleCarrierBody(body, "rev-new", nil) {
 			t.Fatalf("%s must not be considered stale", name)
 		}
+	}
+	// A review still referenced by a VISIBLE ref stub keeps its carriers: the
+	// stub routes replies but its payload lives only in the carrier note.
+	stub, carried := NewRenderer("https://host/").ForReview("rev-old").FindingBodyCarried(model.Finding{ID: "f-big", Title: "Big", Body: strings.Repeat("x", carrierNoteMaxBytes)}, "")
+	if carried {
+		t.Fatal("oversized finding should externalize its carrier")
+	}
+	protected := RefReviewIDs([]string{stub, old /* pure carriers protect nothing */})
+	if _, ok := protected["rev-old"]; !ok || len(protected) != 1 {
+		t.Fatalf("visible stub must protect rev-old: %v", protected)
+	}
+	if IsStaleCarrierBody(old, "rev-new", protected) {
+		t.Fatal("carrier backing a visible ref stub must not be pruned")
 	}
 }
 

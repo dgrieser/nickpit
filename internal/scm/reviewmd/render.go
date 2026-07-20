@@ -203,6 +203,10 @@ type ReviewEnvelope struct {
 	// not be answered from a partial finding set. Zero (envelopes written before
 	// the field existed, or a findings-free review) declares nothing.
 	FindingsTotal int `json:"nf,omitempty"`
+	// Context carries the review's context-shaping options (path/content
+	// filters, budgets), so a chat rebuilt from MR/PR markers recreates the
+	// SAME filtered context — never files the review deliberately withheld.
+	Context *model.ContextOptions `json:"ctx,omitempty"`
 	// Ref marks a routing-only reference: when the full envelope is too large to
 	// ride in the visible summary, the summary carries a tiny ref (review id
 	// only) so replies beneath it still route to the discussion agent, while the
@@ -229,13 +233,15 @@ type FindingEnvelope struct {
 // of "-->" and the MarkerOpen token, so it can neither close the marker early nor
 // be forged from untrusted text.
 func ReviewMarker(result *model.ReviewResult) string {
-	marker, _ := reviewMarkerWithSize(result)
+	marker, _ := reviewMarkerWithSize(result, nil)
 	return marker
 }
 
 // reviewMarkerWithSize is ReviewMarker plus the payload's decoded (raw JSON)
-// size, for the carrier chunking budget.
-func reviewMarkerWithSize(result *model.ReviewResult) (string, int) {
+// size, for the carrier chunking budget. contextOpts, when non-nil, rides in
+// the envelope so MR/PR-reassembled chats rebuild the review's filtered
+// context.
+func reviewMarkerWithSize(result *model.ReviewResult, contextOpts *model.ContextOptions) (string, int) {
 	if result == nil || result.ReviewID == "" {
 		return "", 0
 	}
@@ -262,6 +268,7 @@ func reviewMarkerWithSize(result *model.ReviewResult) (string, int) {
 		HeadRef:                result.HeadRef,
 		Model:                  result.Model,
 		FindingsTotal:          carriable,
+		Context:                contextOpts,
 	})
 }
 
@@ -556,34 +563,71 @@ func StripMarkers(s string) string {
 
 // IsStaleCarrierBody reports whether body is a pure carrier note — nothing
 // visible after markers are stripped — belonging entirely to reviews OTHER
-// than currentReviewID. Such notes are the hidden fallback chunks of a
-// previous run, superseded by the current run's carriers; publishers delete
-// them so a daemon-watched MR does not accumulate one blank bot-note timeline
-// per push. Deliberately conservative: any visible text, any envelope of the
-// current review, any chat-reply marker, or no decodable carrier at all means
-// "not stale" — visible comments (which double as thread roots) and fallback
-// chat answers are never deleted.
-func IsStaleCarrierBody(body, currentReviewID string) bool {
+// than currentReviewID and not protected. Such notes are the hidden fallback
+// chunks of a previous run, superseded by the current run's carriers;
+// publishers delete them so a daemon-watched MR does not accumulate one blank
+// bot-note timeline per push. protected lists review ids that VISIBLE comments
+// still reference via routing-only ref markers (see RefReviewIDs): an
+// oversized summary or finding left only a stub behind, and its full payload
+// lives exclusively in a carrier note — deleting that note would leave a
+// routable thread root whose review can never be reassembled. Deliberately
+// conservative: any visible text, any envelope of the current or a protected
+// review, any chat-reply marker, or no decodable carrier at all means "not
+// stale".
+func IsStaleCarrierBody(body, currentReviewID string, protected map[string]struct{}) bool {
 	if currentReviewID == "" || StripMarkers(body) != "" {
 		return false
 	}
 	if len(CollectChatReplyEnvelopes(body)) > 0 {
 		return false
 	}
+	keep := func(rid string) bool {
+		if rid == "" || rid == currentReviewID {
+			return true
+		}
+		_, ok := protected[rid]
+		return ok
+	}
 	carriers := 0
 	for _, env := range CollectReviewEnvelopes(body) {
-		if env.ReviewID == "" || env.ReviewID == currentReviewID {
+		if keep(env.ReviewID) {
 			return false
 		}
 		carriers++
 	}
 	for _, env := range CollectFindingEnvelopes(body) {
-		if env.ReviewID == "" || env.ReviewID == currentReviewID {
+		if keep(env.ReviewID) {
 			return false
 		}
 		carriers++
 	}
 	return carriers > 0
+}
+
+// RefReviewIDs returns the review ids that VISIBLE comments still reference
+// via routing-only ref markers — the stubs left behind when an oversized
+// summary or finding externalized its full envelope into a carrier note. The
+// carrier notes of these reviews must survive pruning: the stub routes replies
+// to the review but carries no payload of its own. Pure carrier bodies protect
+// nothing (they are the candidates being pruned).
+func RefReviewIDs(bodies []string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, body := range bodies {
+		if StripMarkers(body) == "" {
+			continue
+		}
+		for _, env := range CollectReviewEnvelopes(body) {
+			if env.Ref && env.ReviewID != "" {
+				out[env.ReviewID] = struct{}{}
+			}
+		}
+		for _, env := range CollectFindingEnvelopes(body) {
+			if env.Ref && env.ReviewID != "" {
+				out[env.ReviewID] = struct{}{}
+			}
+		}
+	}
+	return out
 }
 
 // ReviewResultsByID reassembles complete ReviewResults from the carrier markers
@@ -632,6 +676,9 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 			r.HeadRef = env.HeadRef
 
 			r.Model = env.Model
+			if env.Context != nil {
+				r.ContextOptions = env.Context
+			}
 			if env.FindingsTotal > expected[env.ReviewID] {
 				expected[env.ReviewID] = env.FindingsTotal
 			}
@@ -847,6 +894,10 @@ type Renderer struct {
 	// carrier marker so findings can later be regrouped by review run. SummaryBody
 	// reads the id from the result directly and does not need this.
 	reviewID string
+	// contextOpts, when set (see WithContextOptions), rides in the review
+	// envelope so MR/PR-reassembled chats rebuild the review's FILTERED context
+	// instead of the then-current configuration's.
+	contextOpts *model.ContextOptions
 }
 
 // ForReview returns a copy of the renderer bound to reviewID, so FindingBody
@@ -854,6 +905,13 @@ type Renderer struct {
 // type, so this never mutates the shared renderer.
 func (r Renderer) ForReview(reviewID string) Renderer {
 	r.reviewID = reviewID
+	return r
+}
+
+// WithContextOptions returns a copy of the renderer that embeds the review's
+// context-shaping options in every review envelope it emits.
+func (r Renderer) WithContextOptions(opts *model.ContextOptions) Renderer {
+	r.contextOpts = opts
 	return r
 }
 
@@ -918,7 +976,7 @@ func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) 
 		b.WriteString(hardBreakParagraphs(explanation))
 		b.WriteString("\n")
 	}
-	marker := ReviewMarker(result)
+	marker, _ := reviewMarkerWithSize(result, r.contextOpts)
 	if marker != "" && b.Len()+1+len(marker) <= carrierNoteMaxBytes {
 		b.WriteString("\n")
 		b.WriteString(marker)
@@ -973,7 +1031,7 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 			markers, decoded = 0, 0
 		}
 	}
-	if marker, size := reviewMarkerWithSize(result); marker != "" {
+	if marker, size := reviewMarkerWithSize(result, r.contextOpts); marker != "" {
 		b.WriteString(marker)
 		markers++
 		decoded += size

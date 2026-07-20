@@ -461,6 +461,9 @@ func (a *app) chatSessionFromJSON(opts chatOptions) (*session.Session, error) {
 	sess.ReviewID = result.ReviewID
 	sess.Model = result.Model
 	sess.PinnedFindingID = opts.findingID
+	// Present when the JSON came from an MR/PR-reassembled result; pipeline
+	// output leaves it nil and the current configuration applies.
+	sess.ContextOptions = result.ContextOptions
 	sess.Source = sourceFromResult(&result, opts.repoRoot)
 	return sess, nil
 }
@@ -494,6 +497,12 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 	sess.ReviewID = result.ReviewID
 	sess.Model = result.Model
 	sess.PinnedFindingID = opts.findingID
+	// The carrier envelope records the review's context-shaping options; using
+	// them (instead of the current configuration) keeps a context rebuild from
+	// reintroducing files the review deliberately withheld. Nil for envelopes
+	// written before the field existed — the current config is then the best
+	// available fallback.
+	sess.ContextOptions = result.ContextOptions
 	sess.Source = session.Source{
 		Mode:       string(model.ModeGitLab),
 		Repo:       project,
@@ -671,12 +680,13 @@ func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, sou
 }
 
 // chatReviewRequest builds the request used to re-resolve the review context
-// from a session source. When the session recorded the review's context options
+// from a session source. When the review's context options were recorded (in
+// the session file, or in the SCM review envelope for MR-reassembled chats)
 // they win over the current invocation's flags and profile, so a refresh
 // recreates the SAME filtered context the review used (e.g. a review run with
 // --include-comments=false must not refresh with comments added back). opts is
-// nil for sessions with no recorded options (built from JSON or MR markers),
-// which fall back to the current configuration — the best available.
+// nil only for legacy sources without recorded options (old envelopes, old
+// JSON), which fall back to the current configuration — the best available.
 func (a *app) chatReviewRequest(profile config.Profile, src session.Source, opts *session.ContextOptions) model.ReviewRequest {
 	req := model.ReviewRequest{
 		Mode:         model.ReviewMode(src.Mode),
@@ -912,16 +922,17 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 	// Prepare the context through the review pipeline (filters, trimming,
 	// toolchain) rather than a raw fetch, so the chat never sees withheld files
-	// or an over-budget patch.
-	// chatReviewRequest carries the configured --include-comments policy; the
-	// triggering thread itself is already supplied through the conversation
-	// history, so no unconditional comment inclusion is needed here.
+	// or an over-budget patch. The review's OWN context options — carried in
+	// its envelope — take precedence over the current configuration: this
+	// daemon child (or a differently configured terminal profile) must not
+	// rebuild a context that reintroduces files the review deliberately
+	// withheld. Nil (a legacy envelope) falls back to the current config.
 	req := a.chatReviewRequest(profile, session.Source{
 		Mode:       string(model.ModeGitLab),
 		Repo:       project,
 		Identifier: mrID,
 		RepoRoot:   opts.repoRoot,
-	}, nil)
+	}, result.ContextOptions)
 	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req)
 	if err != nil {
 		return fmt.Errorf("chat: resolving MR context: %w", err)
@@ -1154,17 +1165,7 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 	}
 	// Record the review's context-shaping options so a later refresh recreates
 	// the same filtered context instead of whatever the then-current flags say.
-	sess.ContextOptions = &session.ContextOptions{
-		IncludeComments:  req.IncludeComments,
-		IncludeCommits:   req.IncludeCommits,
-		IncludeFullFiles: req.IncludeFullFiles,
-		IncludePaths:     req.IncludePaths,
-		ExcludePaths:     req.ExcludePaths,
-		IncludeContent:   req.IncludeContent,
-		ExcludeContent:   req.ExcludeContent,
-		MaxContextTokens: req.MaxContextTokens,
-		DiffFormat:       string(req.DiffFormat),
-	}
+	sess.ContextOptions = model.ContextOptionsFromRequest(req)
 	// RepoRoot is persisted only for a local review: a remote review's RepoRoot is
 	// a temporary clone deleted right after this call, so a resumed session must
 	// not point retrieval tools at it. Source.BaseURL is the EFFECTIVE SCM API

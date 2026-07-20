@@ -273,6 +273,33 @@ func TestPublishReviewDedupeCrossRun(t *testing.T) {
 	}
 }
 
+// The publish request's context filters ride in the review envelope, so a chat
+// reassembled from the MR rebuilds the review's FILTERED context — never one
+// that reintroduces deliberately withheld files.
+func TestPublishCarriesContextOptions(t *testing.T) {
+	ps := newPublishServer(t)
+	r := req()
+	r.IncludeComments = true
+	r.ExcludePaths = []string{"secrets/**"}
+	if err := ps.adapter().PublishReview(context.Background(), r, sampleResult()); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	var bodies []string
+	for _, post := range ps.notePosts {
+		bodies = append(bodies, post.body)
+	}
+	for _, post := range ps.discPosts {
+		bodies = append(bodies, post.body)
+	}
+	got := reviewmd.ReviewResultsByID(bodies)["rev-pub"]
+	if got == nil || got.ContextOptions == nil {
+		t.Fatalf("published review must carry its context options: %+v", got)
+	}
+	if !got.ContextOptions.IncludeComments || len(got.ContextOptions.ExcludePaths) != 1 || got.ContextOptions.ExcludePaths[0] != "secrets/**" {
+		t.Fatalf("context options mismatch: %+v", got.ContextOptions)
+	}
+}
+
 // A re-publish deletes the bot's own carrier-only notes from previous runs
 // (superseded garbage), while human comments and current-run carriers stay.
 func TestPublishPrunesStaleCarriers(t *testing.T) {

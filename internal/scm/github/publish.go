@@ -44,8 +44,10 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	prior := a.existingComments(ctx, req.Repo, req.Identifier)
 
 	// Bind the renderer to this run's review id so every comment carries the
-	// hidden carrier markers used to regroup findings later.
-	render := a.render.ForReview(result.ReviewID)
+	// hidden carrier markers used to regroup findings later, and embed the
+	// request's context options so a PR-reassembled chat rebuilds the review's
+	// FILTERED context, never the then-current configuration's.
+	render := a.render.ForReview(result.ReviewID).WithContextOptions(model.ContextOptionsFromRequest(req))
 
 	// Partition not-yet-posted findings: those whose line maps to the diff become
 	// inline review comments; the rest become general comments. missing collects
@@ -152,8 +154,29 @@ func (a *Adapter) pruneStaleCarriers(ctx context.Context, repo string, number in
 	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, number), &comments); err != nil {
 		return
 	}
+	// Reviews still referenced by a VISIBLE ref stub keep their carriers (see
+	// the GitLab twin). Stubs can live in review bodies and inline review
+	// comments too, so all three comment surfaces feed the protected set. (A
+	// forged ref can at worst RETAIN old carriers, never delete.)
+	var bodies []string
 	for _, comment := range comments {
-		if !reviewmd.IsStaleCarrierBody(comment.Body, currentReviewID) {
+		bodies = append(bodies, comment.Body)
+	}
+	var reviews []reviewResponse
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/reviews", escaped, number), &reviews); err == nil {
+		for _, review := range reviews {
+			bodies = append(bodies, review.Body)
+		}
+	}
+	var lineComments []commentResponse
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/comments", escaped, number), &lineComments); err == nil {
+		for _, comment := range lineComments {
+			bodies = append(bodies, comment.Body)
+		}
+	}
+	protected := reviewmd.RefReviewIDs(bodies)
+	for _, comment := range comments {
+		if !reviewmd.IsStaleCarrierBody(comment.Body, currentReviewID, protected) {
 			continue
 		}
 		_ = a.client.Delete(ctx, fmt.Sprintf("/repos/%s/issues/comments/%d", escaped, comment.ID))

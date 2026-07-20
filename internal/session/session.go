@@ -45,18 +45,10 @@ type Source struct {
 
 // ContextOptions records the context-shaping options the review ran with, so a
 // session refresh recreates the SAME filtered context — not whatever the
-// current invocation's flags and profile happen to say.
-type ContextOptions struct {
-	IncludeComments  bool     `json:"include_comments"`
-	IncludeCommits   bool     `json:"include_commits"`
-	IncludeFullFiles bool     `json:"include_full_files,omitempty"`
-	IncludePaths     []string `json:"include_paths,omitempty"`
-	ExcludePaths     []string `json:"exclude_paths,omitempty"`
-	IncludeContent   []string `json:"include_content,omitempty"`
-	ExcludeContent   []string `json:"exclude_content,omitempty"`
-	MaxContextTokens int      `json:"max_context_tokens,omitempty"`
-	DiffFormat       string   `json:"diff_format,omitempty"`
-}
+// current invocation's flags and profile happen to say. It is an alias of the
+// shared model type (same JSON shape on disk), which also travels in the
+// hidden SCM review envelope for MR/PR-reassembled chats.
+type ContextOptions = model.ContextOptions
 
 // ToolCall mirrors llm.ToolCall for persistence.
 type ToolCall struct {

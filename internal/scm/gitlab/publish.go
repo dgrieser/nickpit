@@ -34,8 +34,10 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	}
 
 	// Bind the renderer to this run's review id so every note carries the hidden
-	// carrier markers used to regroup findings later (e.g. for a discussion).
-	render := a.render.ForReview(result.ReviewID)
+	// carrier markers used to regroup findings later (e.g. for a discussion),
+	// and embed the request's context options so an MR-reassembled chat rebuilds
+	// the review's FILTERED context, never the then-current configuration's.
+	render := a.render.ForReview(result.ReviewID).WithContextOptions(model.ContextOptionsFromRequest(req))
 
 	var errs []error
 	summaryPosted := false
@@ -129,8 +131,18 @@ func (a *Adapter) pruneStaleCarriers(ctx context.Context, project string, iid in
 	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escaped, iid), &notes); err != nil {
 		return
 	}
+	// Reviews still referenced by a VISIBLE ref stub (an oversized summary or
+	// finding whose payload lives only in a carrier note) keep their carriers:
+	// the stub routes replies to that review but carries no data of its own.
+	// GitLab's /notes listing includes discussion notes, so inline stubs are
+	// covered too. (A forged ref can at worst RETAIN old carriers, never delete.)
+	bodies := make([]string, 0, len(notes))
 	for _, note := range notes {
-		if note.Author.ID != user.ID || !reviewmd.IsStaleCarrierBody(note.Body, currentReviewID) {
+		bodies = append(bodies, note.Body)
+	}
+	protected := reviewmd.RefReviewIDs(bodies)
+	for _, note := range notes {
+		if note.Author.ID != user.ID || !reviewmd.IsStaleCarrierBody(note.Body, currentReviewID, protected) {
 			continue
 		}
 		_ = a.client.Delete(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes/%d", escaped, iid, note.ID))
