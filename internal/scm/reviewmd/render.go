@@ -190,6 +190,13 @@ type ReviewEnvelope struct {
 	BaseRef                string    `json:"base_ref,omitempty"`
 	HeadRef                string    `json:"head_ref,omitempty"`
 	Model                  string    `json:"model,omitempty"`
+	// FindingsTotal declares how many findings this review published across its
+	// carriers. Reassembly uses it to reject a review whose finding envelopes
+	// have not all landed yet — the summary (which carries this envelope) is
+	// posted before the per-finding notes, so a reply arriving mid-publish must
+	// not be answered from a partial finding set. Zero (envelopes written before
+	// the field existed, or a findings-free review) declares nothing.
+	FindingsTotal int `json:"nf,omitempty"`
 	// Ref marks a routing-only reference: when the full envelope is too large to
 	// ride in the visible summary, the summary carries a tiny ref (review id
 	// only) so replies beneath it still route to the discussion agent, while the
@@ -238,6 +245,7 @@ func reviewMarkerWithSize(result *model.ReviewResult) (string, int) {
 		BaseRef:                result.BaseRef,
 		HeadRef:                result.HeadRef,
 		Model:                  result.Model,
+		FindingsTotal:          len(result.Findings),
 	})
 }
 
@@ -483,10 +491,13 @@ func StripMarkers(s string) string {
 // verdict and metadata come from each review carrier; findings are collected from
 // the per-finding carriers. Findings are de-duplicated by id within a review so a
 // finding that appears in both the notes list and the discussions list (GitLab
-// returns discussion notes in both) is not counted twice.
+// returns discussion notes in both) is not counted twice. Reviews whose envelope
+// declares a finding count (FindingsTotal) that the collected carriers do not
+// reach are omitted entirely — see the completeness gate below.
 func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 	byID := make(map[string]*model.ReviewResult)
 	seen := make(map[string]map[string]struct{})
+	expected := make(map[string]int)
 	get := func(rid string) *model.ReviewResult {
 		r := byID[rid]
 		if r == nil {
@@ -519,6 +530,9 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 			r.HeadRef = env.HeadRef
 
 			r.Model = env.Model
+			if env.FindingsTotal > expected[env.ReviewID] {
+				expected[env.ReviewID] = env.FindingsTotal
+			}
 		}
 	}
 	for _, body := range bodies {
@@ -540,6 +554,18 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 				seen[env.ReviewID][id] = struct{}{}
 			}
 			r.Findings = append(r.Findings, env.Finding)
+		}
+	}
+	// A review whose envelope declares more findings than could be collected is
+	// incomplete: its publish is still in flight (the summary carrying the
+	// envelope posts before the per-finding notes), or some carrier posts failed
+	// permanently. Expose only complete reviews — answering from a partial set
+	// would break the discussion's guarantee that the agent sees the COMPLETE
+	// review. Envelopes without a declared count (written before the field
+	// existed) are never dropped.
+	for rid, want := range expected {
+		if r := byID[rid]; r != nil && len(r.Findings) < want {
+			delete(byID, rid)
 		}
 	}
 	return byID

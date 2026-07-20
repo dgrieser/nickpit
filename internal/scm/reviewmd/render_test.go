@@ -428,6 +428,44 @@ func TestSummaryBodyOmitsCarrierWhenOversized(t *testing.T) {
 	}
 }
 
+// A reply can arrive while a publish is still posting finding carriers (the
+// routable summary lands first). Reassembly must reject the review until every
+// declared finding has been collected, so the discussion agent never answers
+// from a partial finding set. Envelopes without a declared count (written
+// before FindingsTotal existed) are never rejected.
+func TestReviewResultsByIDRejectsPartialPublish(t *testing.T) {
+	result := &model.ReviewResult{
+		ReviewID:           "rev-partial",
+		OverallCorrectness: "patch is incorrect",
+		OverallExplanation: "two problems",
+		Findings: []model.Finding{
+			{ID: "f1", Title: "One", Body: "first"},
+			{ID: "f2", Title: "Two", Body: "second"},
+		},
+	}
+	render := NewRenderer("https://host/").ForReview(result.ReviewID)
+	summary := render.SummaryBody(result)
+	first, _ := render.FindingBodyCarried(result.Findings[0], "")
+	second, _ := render.FindingBodyCarried(result.Findings[1], "")
+
+	// Mid-publish snapshots: summary only, then summary plus one finding.
+	for i, bodies := range [][]string{{summary}, {summary, first}} {
+		if got := ReviewResultsByID(bodies); got["rev-partial"] != nil {
+			t.Fatalf("partial publish %d must not reassemble: %+v", i, got["rev-partial"])
+		}
+	}
+	// Fully published: reassembles with the complete finding set.
+	got := ReviewResultsByID([]string{summary, first, second})["rev-partial"]
+	if got == nil || len(got.Findings) != 2 || got.OverallExplanation != "two problems" {
+		t.Fatalf("complete publish should reassemble: %+v", got)
+	}
+	// A legacy envelope with findings but no declared count is kept as-is.
+	legacy, _ := encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{ReviewID: "rev-legacy", OverallExplanation: "old"})
+	if got := ReviewResultsByID([]string{legacy, FindingMarker("rev-legacy", model.Finding{ID: "f9"})})["rev-legacy"]; got == nil || len(got.Findings) != 1 {
+		t.Fatalf("legacy review without a count must not be rejected: %+v", got)
+	}
+}
+
 func TestUniqueFindingsByID(t *testing.T) {
 	in := []model.Finding{{ID: "a"}, {ID: "b"}, {ID: "a"}, {ID: ""}, {ID: ""}}
 	got := UniqueFindingsByID(in)

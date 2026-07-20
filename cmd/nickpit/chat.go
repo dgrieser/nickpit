@@ -356,13 +356,13 @@ func (a *app) chatSessionFromGitLab(ctx context.Context, profile config.Profile,
 // determinism.
 func pickReview(reviews map[string]*model.ReviewResult, reviewID string) (*model.ReviewResult, error) {
 	if len(reviews) == 0 {
-		return nil, fmt.Errorf("chat: no nickpit review markers found on the merge request")
+		return nil, fmt.Errorf("chat: no complete nickpit review found on the merge request (no markers, or a publish is still in progress)")
 	}
 	if reviewID != "" {
 		if r, ok := reviews[reviewID]; ok {
 			return r, nil
 		}
-		return nil, fmt.Errorf("chat: review id %q not found on the merge request", reviewID)
+		return nil, fmt.Errorf("chat: review id %q not found on the merge request (or its carrier data is incomplete)", reviewID)
 	}
 	ids := make([]string, 0, len(reviews))
 	for id := range reviews {
@@ -679,7 +679,20 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 	result := reviews[reviewID]
 	if result == nil {
-		return fmt.Errorf("chat: review %q not found on MR", reviewID)
+		// Also hit while a publish is still in flight: reassembly rejects a
+		// review whose declared finding count has not landed yet. The non-zero
+		// exit makes the daemon retry, by which time the carriers are usually
+		// all posted.
+		return fmt.Errorf("chat: review %q not found on MR (its carrier data may be incomplete or still publishing)", reviewID)
+	}
+	// The thread may pin a finding whose full payload is not on the MR: an
+	// oversized finding comment carries only a routing ref, and its fallback
+	// carrier note may still be publishing or may have failed to post (legacy
+	// envelopes without a finding count are not caught by reassembly's
+	// completeness gate). Spending an LLM turn on a pinned id the prompt cannot
+	// resolve would answer without the finding — fail retryably instead.
+	if findingID != "" && !findingExists(result, findingID) {
+		return fmt.Errorf("chat: pinned finding %q not available in review %s (its carrier may be incomplete or still publishing)", findingID, reviewID)
 	}
 	// The carrier records the model the review actually ran with (including any
 	// --model override at review time, or a profile model that has since
