@@ -13,4 +13,7 @@ If you have enough context for the code review, stop calling tools and return th
 {{else if eq .AgentRole "verify"}}
 Only make additional tool calls, if the provided context is really insufficient.
 If you have enough context for the verification, stop calling tools and return the requested JSON format.
+{{else if eq .AgentRole "discuss"}}
+Continue calling tools only if you still need more code context.
+Once you have enough context, stop calling tools and answer the author's question directly in plain markdown.
 {{end}}

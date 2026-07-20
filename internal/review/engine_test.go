@@ -2329,6 +2329,17 @@ func TestSyntheticToolFollowupRendersBranches(t *testing.T) {
 	if !strings.Contains(verifyRendered, "return the requested JSON format") || !strings.Contains(verifyRendered, "verification") {
 		t.Fatalf("verify follow-up = %q", verifyRendered)
 	}
+
+	// The discussion agent needs its own continuation guidance: without it the
+	// synthetic turn only lists prior tool calls and a tool-assisted chat can
+	// answer with a tool recap instead of an answer.
+	discussRendered, err := engine.renderSyntheticToolFollowup(baseHistory, "discuss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(discussRendered, "answer the author's question directly in plain markdown") {
+		t.Fatalf("discuss follow-up = %q", discussRendered)
+	}
 }
 
 func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {

@@ -118,6 +118,14 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if opts.findingID != "" {
 		sess.PinnedFindingID = opts.findingID
 	}
+	// A pinned id that does not exist in the review (a typo, or an id from
+	// another review) would start a paid model turn with a contradictory
+	// focus_finding_id and no opener; fail clearly before the first turn. This
+	// also catches a stale pin persisted in a resumed session.
+	if sess.PinnedFindingID != "" && !findingExists(sess.Result, sess.PinnedFindingID) {
+		return fmt.Errorf("chat: finding %q not found in review %s (%d finding(s) available; list ids with the review JSON or omit --finding to discuss the whole review)",
+			sess.PinnedFindingID, sess.ReviewID, len(sess.Result.Findings))
+	}
 	// --repo-root applies to resumed sessions too: it is the only way to point
 	// the retrieval tools at a checkout for a resumed remote session.
 	if opts.repoRoot != "" {
@@ -765,6 +773,19 @@ func latestPendingNote(notes []glscm.DiscussionNote, botUserID int) (noteID int,
 		return note.ID, true
 	}
 	return 0, false
+}
+
+// findingExists reports whether the review contains a finding with the given id.
+func findingExists(result *model.ReviewResult, findingID string) bool {
+	if result == nil {
+		return false
+	}
+	for _, f := range result.Findings {
+		if f.ID == findingID {
+			return true
+		}
+	}
+	return false
 }
 
 // chatThreadToMessages maps a GitLab discussion's notes to conversation messages
