@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -72,6 +73,18 @@ func (a *app) newChatCmd() *cobra.Command {
 func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) error {
 	if err := validateChatSourceFlags(opts); err != nil {
 		return err
+	}
+	// A relative --repo-root is resolved against THIS invocation's working
+	// directory before it is used or persisted. A session resumed from another
+	// directory would otherwise re-resolve the stored relative path there —
+	// chatToolset only checks that the directory exists, so the retrieval
+	// tools could end up inspecting an unrelated checkout or local files.
+	if opts.repoRoot != "" {
+		abs, err := filepath.Abs(opts.repoRoot)
+		if err != nil {
+			return fmt.Errorf("chat: resolving --repo-root: %w", err)
+		}
+		opts.repoRoot = abs
 	}
 	profileName, profile, err := a.loadProfileForSpec()
 	if err != nil {
