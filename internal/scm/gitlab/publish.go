@@ -75,6 +75,7 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	// size-bounded carrier chunks holding the review envelope and exactly the
 	// missing findings, so a chat can still reassemble this review by id instead
 	// of discussing an older run. Verdict-only re-reviews post just the envelope.
+	carrierFailed := false
 	if !summaryPosted || !summaryCarried || len(missing) > 0 {
 		for _, finding := range reviewmd.UniqueFindingsByID(missing) {
 			// A finding past the reader's decoded budget is never emitted (the
@@ -87,12 +88,17 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
 			if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
+				carrierFailed = true
 			}
 		}
 	}
-	// The current run's carriers are all posted; the hidden fallback chunks of
-	// previous runs are now superseded garbage. Best-effort cleanup.
-	a.pruneStaleCarriers(ctx, req.Repo, req.Identifier, result.ReviewID)
+	// Prune only once every required carrier of the CURRENT run is confirmed
+	// posted: a failed carrier chunk leaves this run incomplete, and deleting
+	// the previous run's fallback carriers then could destroy the last complete
+	// review on the MR — reassembly would find neither run. Best-effort cleanup.
+	if !carrierFailed {
+		a.pruneStaleCarriers(ctx, req.Repo, req.Identifier, result.ReviewID)
+	}
 	return errors.Join(errs...)
 }
 

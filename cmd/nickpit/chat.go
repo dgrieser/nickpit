@@ -83,9 +83,18 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if opts.replyDiscussion != "" {
 		return a.runChatGitLabReply(ctx, profile, opts)
 	}
-	store, err := session.NewStore(a.sessionDir)
-	if err != nil {
-		return err
+	// The store is opened only when this invocation loads from it or will
+	// persist turns. An explicitly ephemeral chat from an external source
+	// (--no-session with --from-json or --gitlab) needs neither — and must not
+	// fail in minimal environments (no HOME/XDG_CACHE_HOME) where no cache
+	// directory resolves.
+	var store *session.Store
+	if chatNeedsStore(opts, a.noSession) {
+		var err error
+		store, err = session.NewStore(a.sessionDir)
+		if err != nil {
+			return err
+		}
 	}
 	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
 	logger.SetShowReasoning(a.showReasoning)
@@ -182,9 +191,9 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 
 	// --no-session is honored here too, not only for post-review auto-saves:
 	// the user asked for nothing to be persisted, so turns run in memory only
-	// and nothing new is written to the store.
+	// and nothing new is written to the store (which may not even be open).
 	saveSession := func() {
-		if a.noSession {
+		if a.noSession || store == nil {
 			return
 		}
 		if err := store.Save(sess); err != nil {
@@ -269,17 +278,33 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 			fmt.Fprintf(os.Stderr, "\n%s\n", textsan.StripControl(opener))
 		}
 	}
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	// Stdin is read in a goroutine so the idle prompt can select on ctx too:
+	// the root context comes from signal.NotifyContext, and Ctrl+C at the
+	// prompt cancels ctx WITHOUT interrupting a blocking stdin read — waiting
+	// on Scan directly would leave the process stuck until another line or
+	// EOF. The reader goroutine may stay blocked on stdin when ctx ends the
+	// loop; the command returns and process exit reaps it.
+	lines := make(chan string)
+	scanDone := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		scanDone <- scanner.Err()
+	}()
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		fmt.Fprint(os.Stderr, "\n> ")
-		if !scanner.Scan() {
-			break
+		var line string
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-scanDone:
+			return err // EOF or read error
+		case line = <-lines:
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(line)
 		switch line {
 		case "":
 			continue
@@ -297,7 +322,6 @@ func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(str
 			fmt.Fprintf(os.Stderr, "error: %v\n", textsan.StripControl(err.Error()))
 		}
 	}
-	return scanner.Err()
 }
 
 // validateChatSourceFlags rejects flag combinations that would silently target
@@ -371,8 +395,19 @@ func validateChatSourceFlags(opts chatOptions) error {
 	return nil
 }
 
+// chatNeedsStore reports whether this invocation must open the session store:
+// it loads from it (--session, or the default latest-session source), or it
+// will persist turns (persistence enabled). An ephemeral chat from an external
+// source (--no-session with --from-json or --gitlab) needs no store.
+func chatNeedsStore(opts chatOptions, noSession bool) bool {
+	loadsFromStore := opts.sessionID != "" || (opts.fromJSON == "" && !opts.gitlab)
+	return loadsFromStore || !noSession
+}
+
 // resolveChatSession loads or creates the session for this invocation. The bool
-// reports whether a new session was created (so the caller persists it).
+// reports whether a new session was created (so the caller persists it). store
+// may be nil only when the selected source does not read from it (guaranteed by
+// chatNeedsStore).
 func (a *app) resolveChatSession(ctx context.Context, store *session.Store, profile config.Profile, opts chatOptions) (*session.Session, bool, error) {
 	switch {
 	case opts.sessionID != "":

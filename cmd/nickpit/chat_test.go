@@ -42,6 +42,30 @@ func TestChatSourceRejectsMismatchedGitLabHost(t *testing.T) {
 	}
 }
 
+// An explicitly ephemeral chat from an external source must not require a
+// session store — minimal environments (no HOME/XDG_CACHE_HOME) cannot even
+// resolve its directory.
+func TestChatNeedsStore(t *testing.T) {
+	cases := []struct {
+		name      string
+		opts      chatOptions
+		noSession bool
+		want      bool
+	}{
+		{"default latest source", chatOptions{}, false, true},
+		{"default latest source, no-session still loads", chatOptions{}, true, true},
+		{"explicit session id, no-session still loads", chatOptions{sessionID: "s1"}, true, true},
+		{"from-json persists by default", chatOptions{fromJSON: "r.json"}, false, true},
+		{"ephemeral from-json", chatOptions{fromJSON: "r.json"}, true, false},
+		{"ephemeral gitlab", chatOptions{gitlab: true, repo: "g/p", mrID: 1}, true, false},
+	}
+	for _, tc := range cases {
+		if got := chatNeedsStore(tc.opts, tc.noSession); got != tc.want {
+			t.Errorf("%s: chatNeedsStore = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSameLLMEndpoint(t *testing.T) {
 	if !sameLLMEndpoint("", "") {
 		t.Fatal("two defaults must match")

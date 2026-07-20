@@ -38,6 +38,9 @@ type publishServer struct {
 	discPosts   []postRecord
 	deletes     []string
 	discStatus  int // status for POST /discussions (0 -> 201)
+	// failCarrierPosts makes POSTs of pure hidden-carrier note bodies fail with
+	// a 500, exercising the "incomplete current run" pruning guard.
+	failCarrierPosts bool
 }
 
 func newPublishServer(t *testing.T) *publishServer {
@@ -66,7 +69,22 @@ func (ps *publishServer) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == mrBase+"/discussions":
 		_, _ = w.Write([]byte(emptyArrayJSON))
 	case r.Method == http.MethodPost && path == mrBase+"/notes":
-		ps.record(r, &ps.notePosts)
+		raw, _ := io.ReadAll(r.Body)
+		var parsed struct {
+			Body string `json:"body"`
+		}
+		_ = json.Unmarshal(raw, &parsed)
+		ps.mu.Lock()
+		failCarrier := ps.failCarrierPosts && reviewmd.StripMarkers(parsed.Body) == ""
+		if !failCarrier {
+			ps.notePosts = append(ps.notePosts, postRecord{body: parsed.Body})
+		}
+		ps.mu.Unlock()
+		if failCarrier {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"boom"}`))
+			return
+		}
 		_, _ = w.Write([]byte(createdNoteJSON))
 	case r.Method == http.MethodGet && path == "/api/v4/user":
 		// Carrier pruning resolves the token's own user before deleting.
@@ -273,6 +291,27 @@ func TestPublishPrunesStaleCarriers(t *testing.T) {
 	}
 	if len(ps.deletes) != 1 || !strings.HasSuffix(ps.deletes[0], "/notes/777") {
 		t.Fatalf("exactly the bot's stale carrier should be pruned, got %v", ps.deletes)
+	}
+}
+
+// When a required carrier POST of the CURRENT run fails, the previous run's
+// fallback carriers must survive: pruning them would destroy the last complete
+// review on the MR while the current one is incomplete.
+func TestPublishKeepsOldCarriersWhenCurrentCarrierFails(t *testing.T) {
+	ps := newPublishServer(t)
+	ps.failCarrierPosts = true
+	oldCarriers := reviewmd.NewRenderer("https://host/").CarrierNotes(&model.ReviewResult{ReviewID: "rev-old", OverallCorrectness: "patch is correct"}, nil)
+	// A suppressed summary forces the current run onto the fallback carriers.
+	ps.noteBody = []byte(`[` +
+		`{"body":"` + reviewmd.SummaryMarker + `"},` +
+		`{"id": 777, "body": ` + strconv.Quote(oldCarriers[0]) + `, "author": {"id": 99}}` +
+		`]`)
+	err := ps.adapter().PublishReview(context.Background(), req(), sampleResult())
+	if err == nil || !strings.Contains(err.Error(), "carrier") {
+		t.Fatalf("carrier failure must be reported, got %v", err)
+	}
+	if len(ps.deletes) != 0 {
+		t.Fatalf("old carriers must not be pruned while the current run is incomplete, got %v", ps.deletes)
 	}
 }
 
