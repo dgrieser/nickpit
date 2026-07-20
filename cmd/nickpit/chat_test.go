@@ -5,10 +5,54 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/model"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
+	"github.com/dgrieser/nickpit/internal/session"
 )
+
+// A resumed session's stored GitLab host must not receive the active profile's
+// token when it differs from the profile's host — that would disclose the
+// token to another server. A host chosen in this invocation (--url) or an
+// explicit --gitlab-base-url override is an informed choice.
+func TestChatSourceRejectsMismatchedGitLabHost(t *testing.T) {
+	a := &app{}
+	profile := config.Profile{GitLabBaseURL: "https://gitlab-b.example", GitLabToken: "tok"}
+	src := session.Source{Mode: string(model.ModeGitLab), BaseURL: "https://gitlab-a.example"}
+	if _, _, err := a.chatSource(profile, src, false); err == nil || !strings.Contains(err.Error(), "gitlab-a.example") {
+		t.Fatalf("resumed mismatched host must be rejected, got: %v", err)
+	}
+	// The same host chosen in THIS invocation (session created from --url) is
+	// trusted.
+	if _, _, err := a.chatSource(profile, src, true); err != nil {
+		t.Fatalf("just-created session host rejected: %v", err)
+	}
+	// An explicit --gitlab-base-url override on resume wins.
+	a.gitlabBaseURL = "https://gitlab-c.example"
+	profile.GitLabBaseURL = "https://gitlab-c.example"
+	if _, _, err := a.chatSource(profile, src, false); err != nil {
+		t.Fatalf("explicit override rejected: %v", err)
+	}
+	// Matching hosts in different spellings resume fine.
+	a.gitlabBaseURL = ""
+	profile.GitLabBaseURL = "gitlab-a.example"
+	if _, _, err := a.chatSource(profile, src, false); err != nil {
+		t.Fatalf("matching host rejected: %v", err)
+	}
+}
+
+func TestSameLLMEndpoint(t *testing.T) {
+	if !sameLLMEndpoint("", "") {
+		t.Fatal("two defaults must match")
+	}
+	if !sameLLMEndpoint("https://x.example/v1/", " https://x.example/v1") {
+		t.Fatal("trailing slash / whitespace must not matter")
+	}
+	if sameLLMEndpoint("https://a.example/v1", "https://b.example/v1") {
+		t.Fatal("different endpoints must not match")
+	}
+}
 
 // A fallback answer posted as a top-level note (GitLab rejected the threaded
 // reply) must be merged back into the thread view: the answered question is no

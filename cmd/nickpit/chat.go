@@ -120,15 +120,20 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if a.model == "" && sess.Model != "" {
 		profile.Model = sess.Model
 	}
-	// Same for the LLM endpoint: the result records the endpoint the review ran
-	// against (a one-off --base-url, or a profile endpoint that has since
-	// changed). Restoring the model without it would send a provider-specific
-	// model to the wrong endpoint — failing outright, or silently routing the
-	// review's code context to a different provider. --base-url explicitly
-	// overrides. (GitLab-reassembled sessions have no saved endpoint: it is
-	// deliberately never carried in MR markers.)
-	if a.baseURL == "" && sess.Result.BaseURL != "" {
-		profile.BaseURL = sess.Result.BaseURL
+	// The result also records the LLM endpoint the review ran against (a
+	// one-off --base-url, or a profile endpoint that has since changed). API
+	// keys are never persisted, so a diverging endpoint cannot be restored
+	// safely: pairing the ACTIVE profile's key with the SAVED endpoint would
+	// disclose the key to another provider, while silently keeping the active
+	// endpoint would route the review's code context (and a possibly
+	// provider-specific model) elsewhere. Fail with the choice spelled out
+	// instead of silently picking either side; an explicit --base-url is an
+	// informed override and wins, paired with the active profile's key.
+	// (GitLab-reassembled sessions have no saved endpoint: it is deliberately
+	// never carried in MR markers.)
+	if a.baseURL == "" && sess.Result.BaseURL != "" && !sameLLMEndpoint(sess.Result.BaseURL, profile.BaseURL) {
+		return fmt.Errorf("chat: session %s was reviewed against LLM endpoint %q, but the active profile targets %q with its own API key; select the review's profile, or pass --base-url (with matching credentials in the environment) to choose the endpoint explicitly",
+			sess.ID, sess.Result.BaseURL, profile.BaseURL)
 	}
 	if opts.findingID != "" {
 		sess.PinnedFindingID = opts.findingID
@@ -154,7 +159,10 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	// preparation pipeline a review uses (path/content filters, generated-file
 	// stamping, toolchain capture, context-budget trimming) rather than a raw
 	// source fetch that would leak withheld files and blow the context budget.
-	source, retrievalEngine, err := a.chatSource(profile, sess.Source)
+	// A session created in THIS invocation carries a host the user just chose
+	// (e.g. parsed from --url); a resumed session's stored host is checked
+	// against the active profile before the profile's token is sent to it.
+	source, retrievalEngine, err := a.chatSource(profile, sess.Source, created)
 	if err != nil {
 		return err
 	}
@@ -627,10 +635,11 @@ func (a *app) chatReviewRequest(profile config.Profile, src session.Source, opts
 }
 
 // chatSource builds the review source and retrieval engine for a session source.
-// The SCM API URL comes from the profile (or, for GitLab, an explicit URL parsed
-// from --url stored on the source) — never from ReviewResult.BaseURL, which is
-// the LLM endpoint.
-func (a *app) chatSource(profile config.Profile, src session.Source) (model.ReviewSource, retrieval.Engine, error) {
+// The SCM API URL is never ReviewResult.BaseURL (the LLM endpoint). trustedHost
+// marks src.BaseURL as chosen explicitly in THIS invocation (a session just
+// created from --url); a host merely restored from a stored session is not
+// trusted with the active profile's token — see the mismatch check below.
+func (a *app) chatSource(profile config.Profile, src session.Source, trustedHost bool) (model.ReviewSource, retrieval.Engine, error) {
 	switch model.ReviewMode(src.Mode) {
 	case model.ModeLocal:
 		root := src.RepoRoot
@@ -643,7 +652,25 @@ func (a *app) chatSource(profile config.Profile, src session.Source) (model.Revi
 		}
 		return git.NewLocalSource(root), retrieval.NewLocalEngine(), nil
 	case model.ModeGitLab:
+		// The token always comes from the active profile and belongs to the
+		// profile's host. Sending it to a DIFFERENT host restored from a stored
+		// session would disclose it to another server, so a mismatch fails with
+		// the choice spelled out rather than silently picking either host. An
+		// explicit --gitlab-base-url is an informed override and wins
+		// (profile.GitLabBaseURL already carries it).
 		apiBaseURL := firstNonEmpty(src.BaseURL, profile.GitLabBaseURL)
+		if !trustedHost && a.gitlabBaseURL == "" && src.BaseURL != "" &&
+			glscm.NormalizeBaseURL(src.BaseURL) != glscm.NormalizeBaseURL(profile.GitLabBaseURL) {
+			return nil, nil, fmt.Errorf("chat: session was created against GitLab host %s, but the active profile targets %s and its token belongs there; select the session's profile, or pass --gitlab-base-url (with a matching token) to choose the host explicitly",
+				glscm.NormalizeBaseURL(src.BaseURL), glscm.NormalizeBaseURL(profile.GitLabBaseURL))
+		}
+		// On resume an explicit --gitlab-base-url wins over the stored host. A
+		// just-created session's host already incorporates the override
+		// (chatSessionFromGitLab falls back to the profile host, which carries
+		// it), so it is left as chosen.
+		if a.gitlabBaseURL != "" && !trustedHost {
+			apiBaseURL = profile.GitLabBaseURL
+		}
 		adapter := glscm.NewAdapter(glscm.NewClient(apiBaseURL, profile.GitLabToken), profile.AssetBaseURL)
 		return adapter, retrieval.NewLocalEngine(), nil
 	case model.ModeGitHub:
@@ -652,6 +679,14 @@ func (a *app) chatSource(profile config.Profile, src session.Source) (model.Revi
 	default:
 		return nil, nil, fmt.Errorf("chat: unsupported session mode %q", src.Mode)
 	}
+}
+
+// sameLLMEndpoint compares two LLM endpoint URLs ignoring insignificant
+// differences (surrounding whitespace, trailing slash). Two empty values both
+// mean the client default and match.
+func sameLLMEndpoint(a, b string) bool {
+	norm := func(s string) string { return strings.TrimRight(strings.TrimSpace(s), "/") }
+	return norm(a) == norm(b)
 }
 
 // chatToolset returns the discussion agent's tool set for a session: all reviewer
