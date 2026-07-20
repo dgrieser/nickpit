@@ -91,11 +91,13 @@ Apply these gates in order. Stop as soon as one gate applies.
 
 {{$gate = inc $gate}}{{$gate}}. Compile-error gate:
   - Return `refuted` when the finding's core claim is a compile-time error that the language's standard compile or type-check tooling would already catch, e.g.
+    - unused imports or variables, even when described as lint, cleanup, or code cleanliness issues
     - `go build`/`go vet`
     - `rustc`/`cargo check`
     - `tsc`
     - JavaScript parsing
     - `python -m py_compile`
+  - Judge the underlying claim, not its framing: calling a compiler-enforced error a lint error or maintainability issue does not bypass this gate.
   - Such errors cannot survive a build: the toolchain blocks them long before review matters, so refute regardless of whether the claimed error is technically real.
   - Do NOT apply this gate to errors that only surface at runtime — continue to the next gate for:
     - SQL syntax errors inside string literals or migration files

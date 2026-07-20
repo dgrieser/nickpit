@@ -636,6 +636,38 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 	}
 }
 
+// TestVerifySystemPromptRefutesGoUnusedImportFindings pins the compile-error
+// guidance even when a reviewer frames the compiler diagnostic as cleanup or
+// lint work.
+func TestVerifySystemPromptRefutesGoUnusedImportFindings(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	_, _, err := engine.Verify(context.Background(), VerifyRequest{
+		ReviewCtx: sampleReviewCtx(),
+		Finding: model.Finding{
+			Title:        "Remove unused fmt import",
+			Body:         "Remove the unused import to maintain code cleanliness and avoid lint errors.",
+			Priority:     intPtr(3),
+			CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Verify returned err: %v", err)
+	}
+	for _, messages := range [][]llm.Message{llmClient.requests[0].Messages, llmClient.requests[0].NoToolsMessages} {
+		sysPrompt := messages[0].Content
+		for _, want := range []string{
+			"unused imports or variables",
+			"even when described as lint, cleanup, or code cleanliness issues",
+			"calling a compiler-enforced error a lint error or maintainability issue does not bypass this gate",
+		} {
+			if !strings.Contains(sysPrompt, want) {
+				t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
+			}
+		}
+	}
+}
+
 func TestVerifyRetriesMissingVerification(t *testing.T) {
 	llmClient := &scriptedVerifyLLM{
 		responses: []*llm.ReviewResponse{
