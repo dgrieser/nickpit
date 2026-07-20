@@ -469,6 +469,29 @@ func TestReviewResultsByIDRejectsPartialPublish(t *testing.T) {
 	}
 }
 
+// Model-generated replies posted through the Notes API run under the bot's
+// identity, so a line GitLab would parse as a quick action (/merge, /close,
+// /approve, ...) must be defanged before posting.
+func TestEscapeQuickActions(t *testing.T) {
+	cases := map[string]string{
+		"/merge":                     `\/merge`,
+		"  /close this":              `  \/close this`,
+		"sure!\n/approve\ndone":      "sure!\n\\/approve\ndone",
+		"\t/assign @user":            "\t\\/assign @user",
+		"see /etc/passwd inline":     "see /etc/passwd inline",   // not at line start
+		"    /indented code block":   "    /indented code block", // 4+ spaces: rendered as code
+		"a // comment\n//still fine": "a // comment\n//still fine",
+		"no slashes at all":          "no slashes at all",
+		"/123 not a command":         "/123 not a command", // no letter after slash
+		`already escaped \/merge`:    `already escaped \/merge`,
+	}
+	for in, want := range cases {
+		if got := EscapeQuickActions(in); got != want {
+			t.Errorf("EscapeQuickActions(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestChatReplyMarkerRoundTrip(t *testing.T) {
 	marker := ChatReplyMarker("disc-1", 306)
 	if marker == "" {

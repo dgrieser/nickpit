@@ -852,7 +852,13 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
 		return nil
 	}
-	err = client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, reviewmd.Sanitize(reply))
+	// Sanitize defuses marker lookalikes and control characters;
+	// EscapeQuickActions defuses GitLab quick actions (/merge, /close, ...) —
+	// the reply is model-generated, and a commenter could prompt the model into
+	// emitting one, which the Notes API would execute under the BOT's identity
+	// and privileges.
+	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(reply))
+	err = client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, posted)
 	if err == nil {
 		return nil
 	}
@@ -872,7 +878,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		return err
 	}
 	a.logf(ctx, "chat: threaded reply rejected (%v), posting as a plain MR note", err)
-	body := reviewmd.Sanitize(reply)
+	body := posted
 	if marker := reviewmd.ChatReplyMarker(opts.replyDiscussion, pending); marker != "" {
 		body += "\n\n" + marker
 	}

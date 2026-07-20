@@ -201,6 +201,28 @@ func TestBoundDiscussTranscript(t *testing.T) {
 	}
 }
 
+// The transcript budget must come out of the space REMAINING after the
+// mandatory prompt parts (findings JSON, styleguides, template text): a review
+// whose findings eat most of the window cannot also grant the transcript half
+// of it, or the assembled request stays oversized no matter how hard the
+// context is trimmed.
+func TestDiscussTranscriptBudget(t *testing.T) {
+	// Plenty of room: capped at half the window.
+	if got := discussTranscriptBudget(100_000, 2_000); got != 50_000 {
+		t.Fatalf("budget = %d, want 50000", got)
+	}
+	// Large findings: only the remainder is available.
+	if got := discussTranscriptBudget(100_000, 70_000); got != 30_000 {
+		t.Fatalf("budget = %d, want 30000", got)
+	}
+	// Extras exceed the window: floor of one token, so bounding still happens
+	// (a budget of 0 would disable boundDiscussTranscript entirely) while the
+	// newest user message is kept unconditionally.
+	if got := discussTranscriptBudget(100_000, 120_000); got != 1 {
+		t.Fatalf("budget = %d, want 1", got)
+	}
+}
+
 func TestDiscussOpener(t *testing.T) {
 	p := 2
 	result := &model.ReviewResult{

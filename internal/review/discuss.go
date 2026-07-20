@@ -122,12 +122,19 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	// Bound the transcript first — a long session would otherwise exceed the
 	// model window no matter how hard the context is trimmed — then re-trim the
 	// context reserving room for the findings JSON, styleguides, and the (now
-	// bounded) transcript, so the assembled prompt stays inside the budget.
+	// bounded) transcript, so the assembled prompt stays inside the budget. The
+	// transcript's budget is derived from the space REMAINING after the
+	// mandatory prompt parts: a review whose findings JSON alone eats most of
+	// the window must squeeze the transcript accordingly, or the assembled
+	// request stays oversized no matter how hard trimForDiscuss trims (it can
+	// only remove review context).
 	maxTokens := e.config.MaxContextTokens
 	if maxTokens <= 0 {
 		maxTokens = config.DefaultMaxContextToken
 	}
-	messages := boundDiscussTranscript(req.Messages, maxTokens/2, model.SimpleEstimator{})
+	estimator := model.SimpleEstimator{}
+	fixedOverhead := discussFixedOverheadTokens(req.Result, req.DisableSuggestions, styleGuideToolchainSnippet, estimator)
+	messages := boundDiscussTranscript(req.Messages, discussTranscriptBudget(maxTokens, fixedOverhead), estimator)
 	reviewCtx, err := e.trimForDiscuss(req.ReviewCtx, req.Result, messages, styleGuideToolchainSnippet, req.DisableSuggestions, format)
 	if err != nil {
 		return out, fmt.Errorf("discuss: trimming context: %w", err)
@@ -312,6 +319,29 @@ func discussReviewForPrompt(result *model.ReviewResult, disableSuggestions bool)
 // text, tool instructions, and the opener.
 const discussPromptHeadroomTokens = 2000
 
+// discussFixedOverheadTokens estimates the mandatory, untrimmable parts of the
+// discussion prompt: the fixed template/tool text, the styleguide snippet, and
+// the complete review JSON (the discussion's substance, injected verbatim). The
+// transcript and the review context must share whatever the window has left.
+func discussFixedOverheadTokens(result *model.ReviewResult, disableSuggestions bool, styleGuideSnippet string, estimator model.TokenEstimator) int {
+	overhead := discussPromptHeadroomTokens
+	overhead += estimator.Estimate(styleGuideSnippet)
+	if reviewJSON, err := json.Marshal(discussReviewForPrompt(result, disableSuggestions)); err == nil {
+		overhead += estimator.Estimate(string(reviewJSON))
+	}
+	return overhead
+}
+
+// discussTranscriptBudget returns the token budget for the running transcript:
+// the space left after the mandatory prompt parts, capped at half the window so
+// the review context always keeps room, and floored at one token — with the
+// extras already filling the window, the transcript must shrink to its own
+// minimum (boundDiscussTranscript keeps the newest user message
+// unconditionally, so the latest question still goes out).
+func discussTranscriptBudget(maxTokens, fixedOverhead int) int {
+	return max(min(maxTokens/2, maxTokens-fixedOverhead), 1)
+}
+
 // discussOmittedTurnsNote is prepended to the oldest kept user message when
 // earlier turns were dropped to fit the context window, so the model knows the
 // transcript is partial rather than inventing continuity.
@@ -383,11 +413,7 @@ func (e *Engine) trimForDiscuss(reviewCtx *model.ReviewContext, result *model.Re
 		maxTokens = config.DefaultMaxContextToken
 	}
 	estimator := model.SimpleEstimator{}
-	overhead := discussPromptHeadroomTokens
-	overhead += estimator.Estimate(styleGuideSnippet)
-	if reviewJSON, err := json.Marshal(discussReviewForPrompt(result, disableSuggestions)); err == nil {
-		overhead += estimator.EstimateLen(len(reviewJSON))
-	}
+	overhead := discussFixedOverheadTokens(result, disableSuggestions, styleGuideSnippet, estimator)
 	for _, msg := range messages {
 		overhead += estimator.Estimate(msg.Content)
 	}

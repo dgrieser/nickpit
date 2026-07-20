@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -683,6 +684,36 @@ func AlreadyPosted(finding model.Finding, displayTitle string, p Priors) bool {
 func Sanitize(s string) string {
 	s = textsan.StripControl(s)
 	return strings.ReplaceAll(s, MarkerOpen, "&lt;"+strings.TrimPrefix(MarkerOpen, "<"))
+}
+
+// quickActionLine matches a line GitLab would parse as a quick action: a "/"
+// followed by a letter at the start of the line. Up to three leading spaces or
+// tabs are included defensively; four or more spaces form an indented code
+// block, which GitLab renders as code instead of executing.
+var quickActionLine = regexp.MustCompile(`^[ \t]{0,3}/[a-zA-Z]`)
+
+// EscapeQuickActions defuses GitLab quick-action syntax in untrusted text
+// posted to the Notes API. A note line starting with "/command" executes under
+// the POSTER's identity and privileges (/merge, /close, /approve, ...), and
+// chat replies are model-generated — a commenter could prompt the model into
+// emitting one. The leading slash is backslash-escaped: "/" is ASCII
+// punctuation, so CommonMark renders "\/" as a plain "/", while GitLab's
+// quick-action parser no longer recognizes the line. Escaping is applied to
+// every line, including fenced code blocks, where the backslash stays visible —
+// a small cosmetic cost that avoids depending on our fence detection matching
+// GitLab's parser exactly.
+func EscapeQuickActions(s string) string {
+	if !strings.Contains(s, "/") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if quickActionLine.MatchString(line) {
+			idx := strings.IndexByte(line, '/')
+			lines[i] = line[:idx] + `\` + line[idx:]
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // hardBreakParagraphs appends a markdown hard break to each rendered prose line
