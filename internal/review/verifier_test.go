@@ -657,8 +657,9 @@ func TestVerifySystemPromptRefutesGoUnusedImportFindings(t *testing.T) {
 	for _, messages := range [][]llm.Message{llmClient.requests[0].Messages, llmClient.requests[0].NoToolsMessages} {
 		sysPrompt := messages[0].Content
 		for _, want := range []string{
-			"unused imports or variables",
+			"unused imports or variables, in languages where these are strict compile-time errors",
 			"even when described as lint, cleanup, or code cleanliness issues",
+			"in languages where they are only lint warnings (e.g. Python, JavaScript, TypeScript, Rust by default) this gate does NOT apply",
 			"calling a compiler-enforced error a lint error or maintainability issue does not bypass this gate",
 		} {
 			if !strings.Contains(sysPrompt, want) {

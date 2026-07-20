@@ -91,7 +91,8 @@ Apply these gates in order. Stop as soon as one gate applies.
 
 {{$gate = inc $gate}}{{$gate}}. Compile-error gate:
   - Return `refuted` when the finding's core claim is a compile-time error that the language's standard compile or type-check tooling would already catch, e.g.
-    - unused imports or variables, even when described as lint, cleanup, or code cleanliness issues
+    - unused imports or variables, in languages where these are strict compile-time errors (e.g. Go), even when described as lint, cleanup, or code cleanliness issues;
+      in languages where they are only lint warnings (e.g. Python, JavaScript, TypeScript, Rust by default) this gate does NOT apply
     - `go build`/`go vet`
     - `rustc`/`cargo check`
     - `tsc`
