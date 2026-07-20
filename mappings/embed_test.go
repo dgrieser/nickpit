@@ -1,6 +1,7 @@
 package mappings
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -199,40 +200,66 @@ func TestMappingValidationRejectsRulesWithoutMatchers(t *testing.T) {
 	}
 }
 
-func TestUnusedIdentifierCompileError(t *testing.T) {
-	loaded, err := load()
-	if err != nil {
-		t.Fatal(err)
+func TestUnusedIdentifierDiagnostics(t *testing.T) {
+	tests := []struct {
+		language string
+		want     []string
+	}{
+		// go rejects both; rustc warns on both by default.
+		{"go", []string{"imports", "variables"}},
+		{"rust", []string{"imports", "variables"}},
+		// zig errors on unused locals only; swiftc/kotlinc/csc warn on unused
+		// variables but ignore unused imports.
+		{"zig", []string{"variables"}},
+		{"swift", []string{"variables"}},
+		{"kotlin", []string{"variables"}},
+		{"csharp", []string{"variables"}},
+		// nothing in the default toolchain reports these.
+		{"python", nil},
+		{"nodejs", nil},
+		{"typescript", nil},
+		{"text", nil},
+		{"", nil},
 	}
-	if _, ok := loaded.unusedIdentifierErrors["go"]; !ok {
-		t.Fatal("unused_identifier_errors missing go")
-	}
-	if !UnusedIdentifierCompileError("go") {
-		t.Fatal("UnusedIdentifierCompileError(go) = false")
-	}
-	// rustc only warns on unused imports/variables; python/nodejs never reject.
-	for _, language := range []string{"rust", "python", "nodejs", "typescript", "text", ""} {
-		if UnusedIdentifierCompileError(language) {
-			t.Fatalf("UnusedIdentifierCompileError(%q) = true", language)
+	for _, tc := range tests {
+		if got := UnusedIdentifierDiagnostics(tc.language); !slices.Equal(got, tc.want) {
+			t.Fatalf("UnusedIdentifierDiagnostics(%q) = %v, want %v", tc.language, got, tc.want)
 		}
 	}
 }
 
-func TestUnusedIdentifierErrorsValidation(t *testing.T) {
+func TestUnusedIdentifierDiagnosticsValidation(t *testing.T) {
 	base := "default: text\nextensions:\n  go: [.go]\n"
-	languages, err := parseLanguagesYAML([]byte(base + "unused_identifier_errors: [zig]\n"))
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{"unknown language", "unused_identifier_diagnostics:\n  fortran: [imports]\n", `unknown language "fortran"`},
+		{"empty kinds", "unused_identifier_diagnostics:\n  go: []\n", `"go" has no kinds`},
+		{"unknown kind", "unused_identifier_diagnostics:\n  go: [functions]\n", `unknown kind "functions"`},
+		{"duplicate kind", "unused_identifier_diagnostics:\n  go: [imports, imports]\n", `repeats kind "imports"`},
+	}
+	for _, tc := range tests {
+		languages, err := parseLanguagesYAML([]byte(base + tc.yaml))
+		if err != nil {
+			t.Fatalf("%s: parse err = %v", tc.name, err)
+		}
+		if _, err := buildUnusedIdentifierDiagnostics(languages); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("%s: validation err = %v, want %q", tc.name, err, tc.wantErr)
+		}
+	}
+	// Kinds normalize to canonical order regardless of YAML order.
+	languages, err := parseLanguagesYAML([]byte(base + "unused_identifier_diagnostics:\n  go: [variables, imports]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildUnusedIdentifierErrors(languages); err == nil || !strings.Contains(err.Error(), "unknown language \"zig\"") {
-		t.Fatalf("unknown language validation err = %v", err)
-	}
-	languages, err = parseLanguagesYAML([]byte(base + "unused_identifier_errors: [\"\"]\n"))
+	built, err := buildUnusedIdentifierDiagnostics(languages)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildUnusedIdentifierErrors(languages); err == nil || !strings.Contains(err.Error(), "unused_identifier_errors[0] is empty") {
-		t.Fatalf("empty entry validation err = %v", err)
+	if !slices.Equal(built["go"], []string{"imports", "variables"}) {
+		t.Fatalf("canonical order = %v", built["go"])
 	}
 }
 

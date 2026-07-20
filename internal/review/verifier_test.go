@@ -636,21 +636,23 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 	}
 }
 
-// TestVerifySystemPromptRefutesGoUnusedImportFindings pins the compile-error
+// TestVerifySystemPromptRefutesUnusedIdentifierFindings pins the compile-error
 // guidance even when a reviewer frames the compiler diagnostic as cleanup or
-// lint work. The unused-identifier bullet renders only for findings in
-// languages where the compiler rejects unused imports/variables (per
-// unused_identifier_errors in languages.yaml); elsewhere those are ordinary
-// lint findings and the bullet is omitted.
-func TestVerifySystemPromptRefutesGoUnusedImportFindings(t *testing.T) {
+// lint work. The unused-identifier bullet renders only the kinds the finding
+// language's default toolchain reports (per unused_identifier_diagnostics in
+// languages.yaml); elsewhere those are ordinary lint findings and the bullet
+// is omitted.
+func TestVerifySystemPromptRefutesUnusedIdentifierFindings(t *testing.T) {
 	tests := []struct {
 		name       string
 		filePath   string
-		wantBullet bool
+		wantBullet string
 	}{
-		{name: "go finding renders bullet", filePath: "main.go", wantBullet: true},
-		{name: "python finding omits bullet", filePath: "script.py", wantBullet: false},
-		{name: "typescript finding omits bullet", filePath: "app.ts", wantBullet: false},
+		{name: "go renders imports and variables", filePath: "main.go", wantBullet: "- unused imports or variables, even when described as lint"},
+		{name: "rust renders imports and variables", filePath: "lib.rs", wantBullet: "- unused imports or variables, even when described as lint"},
+		{name: "csharp renders variables only", filePath: "Program.cs", wantBullet: "- unused variables, even when described as lint"},
+		{name: "python omits bullet", filePath: "script.py"},
+		{name: "typescript omits bullet", filePath: "app.ts"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -670,15 +672,15 @@ func TestVerifySystemPromptRefutesGoUnusedImportFindings(t *testing.T) {
 			}
 			for _, messages := range [][]llm.Message{llmClient.requests[0].Messages, llmClient.requests[0].NoToolsMessages} {
 				sysPrompt := messages[0].Content
-				if got := strings.Contains(sysPrompt, "unused imports or variables"); got != tc.wantBullet {
-					t.Fatalf("unused-identifier bullet present=%v, want %v:\n%s", got, tc.wantBullet, sysPrompt)
-				}
-				if !tc.wantBullet {
+				if tc.wantBullet == "" {
+					if strings.Contains(sysPrompt, "- unused imports") || strings.Contains(sysPrompt, "- unused variables") {
+						t.Fatalf("unused-identifier bullet unexpectedly present:\n%s", sysPrompt)
+					}
 					continue
 				}
 				for _, want := range []string{
-					"even when described as lint, cleanup, or code cleanliness issues",
-					"calling a compiler-enforced error a lint error or maintainability issue does not bypass this gate",
+					tc.wantBullet,
+					"calling a compiler-reported problem a lint error or maintainability issue does not bypass this gate",
 				} {
 					if !strings.Contains(sysPrompt, want) {
 						t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)

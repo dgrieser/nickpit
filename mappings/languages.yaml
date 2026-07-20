@@ -186,14 +186,25 @@ path_rules:
       basenames:
         - notes.txt
 
-# Languages where unused imports or variables are strict compile-time errors
-# (the compiler rejects the build outright). Drives the verify agent's
-# compile-error gate: unused-identifier findings are refuted only for these
-# languages; everywhere else they stay ordinary lint/cleanup findings.
-# Note: rustc treats unused imports/variables as warn-by-default lints, so
-# rust does NOT belong here.
-unused_identifier_errors:
-  - go
+# Languages where the standard compiler reports unused imports or variables
+# by default — as errors or on-by-default warnings. Drives the verify agent's
+# compile-error gate: findings about the listed kinds are refuted for these
+# languages because the toolchain surfaces them on every build; everywhere
+# else they stay ordinary lint/cleanup findings.
+#
+# Kinds: `imports`, `variables`. Only list what the default toolchain really
+# reports: swift/kotlin/csharp warn on unused variables but ignore unused
+# imports; zig errors on unused locals but lazily skips unused top-level
+# imports; c/cpp only warn under -Wall (not default) and tsc only under
+# noUnusedLocals (opt-in), so none of those gain an `imports` entry or any
+# entry at all.
+unused_identifier_diagnostics:
+  go: [imports, variables]
+  rust: [imports, variables]
+  zig: [variables]
+  swift: [variables]
+  kotlin: [variables]
+  csharp: [variables]
 
 # Shebang detection for extensionless scripts; version suffixes such as
 # python3.12 are handled inside the patterns.

@@ -90,17 +90,17 @@ Apply these gates in order. Stop as soon as one gate applies.
   - Do NOT confirm a plausible-sounding finding when it conflicts with a styleguide.
 
 {{$gate = inc $gate}}{{$gate}}. Compile-error gate:
-  - Return `refuted` when the finding's core claim is a compile-time error that the language's standard compile or type-check tooling would already catch, e.g.
-{{- if .RefuteUnusedIdentifiers}}
-    - unused imports or variables, even when described as lint, cleanup, or code cleanliness issues
+  - Return `refuted` when the finding's core claim is a compile-time error or an on-by-default compiler warning that the language's standard compile or type-check tooling would already report, e.g.
+{{- if .UnusedIdentifierKinds}}
+    - unused {{.UnusedIdentifierKinds}}, even when described as lint, cleanup, or code cleanliness issues
 {{- end}}
     - `go build`/`go vet`
     - `rustc`/`cargo check`
     - `tsc`
     - JavaScript parsing
     - `python -m py_compile`
-  - Judge the underlying claim, not its framing: calling a compiler-enforced error a lint error or maintainability issue does not bypass this gate.
-  - Such errors cannot survive a build: the toolchain blocks them long before review matters, so refute regardless of whether the claimed error is technically real.
+  - Judge the underlying claim, not its framing: calling a compiler-reported problem a lint error or maintainability issue does not bypass this gate.
+  - Such issues cannot go unnoticed: the toolchain blocks or reports them on every build, long before review matters, so refute regardless of whether the claim is technically real.
   - Do NOT apply this gate to errors that only surface at runtime — continue to the next gate for:
     - SQL syntax errors inside string literals or migration files
     - Helm template errors, Kubernetes manifest or CRD schema violations

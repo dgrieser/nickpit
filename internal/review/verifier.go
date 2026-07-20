@@ -111,7 +111,9 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 	if err != nil {
 		return nil, usage, err
 	}
-	refuteUnusedIdentifiers := mappings.UnusedIdentifierCompileError(filetype.DetectLanguage(req.Finding.CodeLocation.FilePath))
+	// "imports or variables", "imports", "variables", or "" (bullet omitted):
+	// only the kinds the finding language's default toolchain reports.
+	unusedIdentifierKinds := strings.Join(mappings.UnusedIdentifierDiagnostics(filetype.DetectLanguage(req.Finding.CodeLocation.FilePath)), " or ")
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet        string
 		OutputFormatSnippet        string
@@ -121,7 +123,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
 		DiffScopeEnabled           bool
-		RefuteUnusedIdentifiers    bool
+		UnusedIdentifierKinds      string
 	}{
 		OutputSchemaSnippet:        systemSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
@@ -131,7 +133,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 		DiffScopeEnabled:           diffScopeEnabled,
-		RefuteUnusedIdentifiers:    refuteUnusedIdentifiers,
+		UnusedIdentifierKinds:      unusedIdentifierKinds,
 	})
 	if err != nil {
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
@@ -194,7 +196,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{DiffScopeEnabled: diffScopeEnabled, RefuteUnusedIdentifiers: refuteUnusedIdentifiers})
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{DiffScopeEnabled: diffScopeEnabled, UnusedIdentifierKinds: unusedIdentifierKinds})
 			},
 		})
 		if err != nil {
