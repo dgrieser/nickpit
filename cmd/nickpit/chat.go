@@ -287,6 +287,18 @@ func validateChatSourceFlags(opts chatOptions) error {
 	if len(modes) > 1 {
 		return fmt.Errorf("chat: %s select different session sources; pass exactly one", strings.Join(modes, " and "))
 	}
+	// --url fully determines the project, IID, and host; combined with --repo or
+	// --id it would silently overwrite the explicit values, so a stale URL could
+	// read or post on the wrong MR and send the token to the wrong host. Same
+	// policy as `gitlab mr`.
+	if strings.TrimSpace(opts.rawURL) != "" {
+		if opts.repo != "" {
+			return fmt.Errorf("chat: --url can not be combined with --repo")
+		}
+		if opts.mrID != 0 {
+			return fmt.Errorf("chat: --url can not be combined with --id")
+		}
+	}
 	if !gitlabMode {
 		var stray []string
 		if strings.TrimSpace(opts.rawURL) != "" {

@@ -24,6 +24,11 @@ func TestValidateChatSourceFlags(t *testing.T) {
 		{"session and from-json", chatOptions{sessionID: "s1", fromJSON: "r.json"}, "exactly one"},
 		{"session and gitlab", chatOptions{sessionID: "s1", gitlab: true}, "exactly one"},
 		{"from-json and reply-discussion", chatOptions{fromJSON: "r.json", replyDiscussion: "d1"}, "exactly one"},
+		// --url fully determines project/IID/host; explicit --repo/--id would be
+		// silently overwritten (same policy as `gitlab mr`).
+		{"url and repo", chatOptions{gitlab: true, rawURL: "https://gl/x/y/-/merge_requests/1", repo: "g/p"}, "combined with --repo"},
+		{"url and id", chatOptions{gitlab: true, rawURL: "https://gl/x/y/-/merge_requests/1", mrID: 3}, "combined with --id"},
+		{"url and id via reply-discussion", chatOptions{replyDiscussion: "d1", rawURL: "https://gl/x/y/-/merge_requests/1", mrID: 3}, "combined with --id"},
 	}
 	for _, tc := range reject {
 		err := validateChatSourceFlags(tc.opts)
