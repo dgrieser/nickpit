@@ -469,6 +469,25 @@ func TestReviewResultsByIDRejectsPartialPublish(t *testing.T) {
 	}
 }
 
+func TestChatReplyMarkerRoundTrip(t *testing.T) {
+	marker := ChatReplyMarker("disc-1", 306)
+	if marker == "" {
+		t.Fatal("expected a marker")
+	}
+	body := "the answer\n\n" + marker
+	envs := CollectChatReplyEnvelopes(body)
+	if len(envs) != 1 || envs[0].DiscussionID != "disc-1" || envs[0].AnsweredNoteID != 306 {
+		t.Fatalf("round trip failed: %+v", envs)
+	}
+	// The marker is hidden from humans and stripped from echoed text.
+	if got := StripMarkers(body); got != "the answer" {
+		t.Fatalf("StripMarkers = %q", got)
+	}
+	if ChatReplyMarker("", 306) != "" {
+		t.Fatal("empty discussion id must yield no marker")
+	}
+}
+
 func TestUniqueFindingsByID(t *testing.T) {
 	in := []model.Finding{{ID: "a"}, {ID: "b"}, {ID: "a"}, {ID: ""}, {ID: ""}}
 	got := UniqueFindingsByID(in)

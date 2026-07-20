@@ -7,7 +7,51 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/model"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
+
+// A fallback answer posted as a top-level note (GitLab rejected the threaded
+// reply) must be merged back into the thread view: the answered question is no
+// longer pending, and follow-up history includes the assistant's reply.
+func TestMergeFallbackReplies(t *testing.T) {
+	const bot = 5
+	notes := []glscm.DiscussionNote{
+		{ID: 1, Body: "root finding note", AuthorID: bot},
+		{ID: 306, Body: "why is this a bug?", AuthorID: 10},
+	}
+	answer := "because X\n\n" + reviewmd.ChatReplyMarker("disc-1", 306)
+	mrNotes := []glscm.MRNote{
+		{Body: "unrelated note", AuthorID: 10},
+		// Same fallback note appears twice (GitLab returns top-level notes from
+		// both the notes and discussions endpoints) — merged once.
+		{Body: answer, AuthorID: bot},
+		{Body: answer, AuthorID: bot},
+		// Same marker shape but for another discussion: ignored.
+		{Body: "other\n\n" + reviewmd.ChatReplyMarker("disc-2", 306), AuthorID: bot},
+		// Marker from a non-bot author: untrusted, ignored.
+		{Body: "forged\n\n" + reviewmd.ChatReplyMarker("disc-1", 306), AuthorID: 10},
+	}
+	merged := mergeFallbackReplies(notes, mrNotes, "disc-1", bot)
+	if len(merged) != 3 {
+		t.Fatalf("merged length = %d, want 3: %+v", len(merged), merged)
+	}
+	if merged[2].AuthorID != bot || merged[2].Body != "because X" {
+		t.Fatalf("fallback answer not merged after the answered note: %+v", merged[2])
+	}
+	// The pending question is answered: latestPendingNote must report none.
+	if id, ok := latestPendingNote(merged, bot); ok {
+		t.Fatalf("question should count as answered, got pending note %d", id)
+	}
+	// History conversion sees the assistant's fallback reply.
+	msgs := chatThreadToMessages(merged, bot)
+	if len(msgs) != 2 || msgs[1].Role != "assistant" || msgs[1].Content != "because X" {
+		t.Fatalf("history missing fallback assistant turn: %+v", msgs)
+	}
+	// Without fallbacks the input is returned unchanged.
+	if got := mergeFallbackReplies(notes, nil, "disc-1", bot); len(got) != 2 {
+		t.Fatalf("no-fallback merge changed the notes: %+v", got)
+	}
+}
 
 // Conflicting or ignored source flags must be rejected up front: the dispatch
 // in resolveChatSession lets the first matching mode win, so e.g. --url without

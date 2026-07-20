@@ -120,6 +120,16 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if a.model == "" && sess.Model != "" {
 		profile.Model = sess.Model
 	}
+	// Same for the LLM endpoint: the result records the endpoint the review ran
+	// against (a one-off --base-url, or a profile endpoint that has since
+	// changed). Restoring the model without it would send a provider-specific
+	// model to the wrong endpoint — failing outright, or silently routing the
+	// review's code context to a different provider. --base-url explicitly
+	// overrides. (GitLab-reassembled sessions have no saved endpoint: it is
+	// deliberately never carried in MR markers.)
+	if a.baseURL == "" && sess.Result.BaseURL != "" {
+		profile.BaseURL = sess.Result.BaseURL
+	}
 	if opts.findingID != "" {
 		sess.PinnedFindingID = opts.findingID
 	}
@@ -717,7 +727,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	}
 	botUserID := user.ID
 
-	notes, err := client.DiscussionNotes(ctx, project, mrID, opts.replyDiscussion)
+	notes, err := discussionWithFallbacks(ctx, client, project, mrID, opts.replyDiscussion, botUserID)
 	if err != nil {
 		return fmt.Errorf("chat: reading thread: %w", err)
 	}
@@ -835,7 +845,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// answers with the full history, including the question this turn covered.
 	// (A tiny window between this check and the POST remains; the SCM offers no
 	// atomic check-and-post.)
-	fresh, err := client.DiscussionNotes(ctx, project, mrID, opts.replyDiscussion)
+	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, opts.replyDiscussion, botUserID)
 	if err != nil {
 		return fmt.Errorf("chat: rechecking thread before reply: %w", err)
 	}
@@ -852,13 +862,79 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	// Handler.reply: fall back to a plain MR note so the answer is delivered
 	// (unthreaded) instead of the daemon retrying the same failing request three
 	// times and never answering. 5xx and transport errors stay fatal, which makes
-	// the daemon retry.
+	// the daemon retry. The note carries a hidden ChatReplyEnvelope binding it to
+	// the discussion and the answered note, so the threaded conversation state
+	// survives: discussionWithFallbacks merges it back on the next read, the
+	// answered question is not re-answered on redelivery, and follow-up turns see
+	// this reply in their history.
 	var apiErr *glscm.APIError
 	if !errors.As(err, &apiErr) || apiErr.Status >= 500 {
 		return err
 	}
 	a.logf(ctx, "chat: threaded reply rejected (%v), posting as a plain MR note", err)
-	return client.CreateMRNotePath(ctx, project, mrID, reviewmd.Sanitize(reply))
+	body := reviewmd.Sanitize(reply)
+	if marker := reviewmd.ChatReplyMarker(opts.replyDiscussion, pending); marker != "" {
+		body += "\n\n" + marker
+	}
+	return client.CreateMRNotePath(ctx, project, mrID, body)
+}
+
+// discussionWithFallbacks reads a discussion's notes and merges in the bot's
+// fallback top-level answers — posted when GitLab rejected a threaded reply,
+// each carrying a ChatReplyEnvelope bound to this discussion. Every fallback
+// answer is inserted right after the note it answered, as a synthetic bot note,
+// so pending-question detection and history conversion see the thread as if
+// the reply had landed threaded.
+func discussionWithFallbacks(ctx context.Context, client *glscm.Client, project string, mrID int, discussionID string, botUserID int) ([]glscm.DiscussionNote, error) {
+	notes, err := client.DiscussionNotes(ctx, project, mrID, discussionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(notes) == 0 {
+		return notes, nil
+	}
+	mrNotes, err := client.MRNotes(ctx, project, mrID)
+	if err != nil {
+		return nil, fmt.Errorf("reading MR notes for fallback replies: %w", err)
+	}
+	return mergeFallbackReplies(notes, mrNotes, discussionID, botUserID), nil
+}
+
+// mergeFallbackReplies is the pure merge behind discussionWithFallbacks. Only
+// notes authored by the bot itself are trusted as fallback answers (markers are
+// encoded, not authenticated), and MRNotes returning the same note from both
+// the notes and discussions endpoints is de-duplicated on content.
+func mergeFallbackReplies(notes []glscm.DiscussionNote, mrNotes []glscm.MRNote, discussionID string, botUserID int) []glscm.DiscussionNote {
+	replies := make(map[int][]string)
+	dup := make(map[string]bool)
+	for _, note := range mrNotes {
+		if botUserID == 0 || note.AuthorID != botUserID {
+			continue
+		}
+		for _, env := range reviewmd.CollectChatReplyEnvelopes(note.Body) {
+			if env.DiscussionID != discussionID {
+				continue
+			}
+			body := reviewmd.StripMarkers(note.Body)
+			key := fmt.Sprintf("%d\x00%s", env.AnsweredNoteID, body)
+			if body == "" || dup[key] {
+				continue
+			}
+			dup[key] = true
+			replies[env.AnsweredNoteID] = append(replies[env.AnsweredNoteID], body)
+		}
+	}
+	if len(replies) == 0 {
+		return notes
+	}
+	merged := make([]glscm.DiscussionNote, 0, len(notes)+len(replies))
+	for _, note := range notes {
+		merged = append(merged, note)
+		for _, body := range replies[note.ID] {
+			merged = append(merged, glscm.DiscussionNote{Body: body, AuthorID: botUserID})
+		}
+	}
+	return merged
 }
 
 // latestPendingNote returns the id of the thread's newest non-system note when

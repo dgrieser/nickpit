@@ -23,10 +23,15 @@ const maxWebhookBody = 10 << 20 // 10 MiB
 // and answering command comments.
 const commandReplyTimeout = 30 * time.Second
 
-// chatReplyTimeout bounds a discussion-agent reply, which spawns a child running
-// an LLM turn (and possibly tool calls), so it is far longer than a plain
-// command reply.
-const chatReplyTimeout = 10 * time.Minute
+// chatEventTimeout bounds one ADMITTED chat event end to end: the wait for a
+// semaphore slot, the per-discussion lock, the thread gate, the child process,
+// and any in-process retries (including their delays) all share this single
+// deadline. Chat children run LLM turns with tool calls, so it is generous —
+// but it is ONE budget, not per attempt: without a shared deadline a hung
+// event could pin its admission-queue slot for a per-attempt timeout times the
+// retry count plus unbounded semaphore waits, eventually dropping later
+// questions as backlog-full.
+const chatEventTimeout = 15 * time.Minute
 
 // defaultMaxConcurrentChats bounds how many chat children run at once when the
 // serve config does not set a limit, so a burst of discussion activity cannot
@@ -444,16 +449,28 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		h.log.Debug("skipping duplicate chat note", "iid", decision.IID, "note", decision.NoteID)
 		return
 	}
+	// ONE deadline covers the whole admitted event — semaphore waits, the gate,
+	// the child, and every retry — so a hung event can never pin its admission
+	// slot beyond chatEventTimeout.
+	ctx, cancel := context.WithTimeout(h.chatCtx, chatEventTimeout)
+	defer cancel()
+	// abandon clears the dedup mark so a manual redelivery (after the daemon
+	// restarts, or once the backlog clears) is not discarded as a duplicate.
+	abandon := func() {
+		h.chatSeen.forget(decision.NoteID)
+		if h.chatCtx.Err() != nil {
+			h.log.Info("chat abandoned: daemon shutting down", "iid", decision.IID, "discussion", decision.DiscussionID)
+			return
+		}
+		h.log.Error("chat abandoned: event deadline exceeded", "iid", decision.IID, "discussion", decision.DiscussionID)
+	}
 	for attempt := 1; ; attempt++ {
-		retryable := h.chatAttempt(group, projectPath, decision)
+		retryable := h.chatAttempt(ctx, group, projectPath, decision)
 		if !retryable {
 			return
 		}
-		if h.chatCtx.Err() != nil {
-			// Daemon shutting down: abandon retries, but clear the mark so a manual
-			// redelivery after restart is not discarded as a duplicate.
-			h.chatSeen.forget(decision.NoteID)
-			h.log.Info("chat abandoned: daemon shutting down", "iid", decision.IID, "discussion", decision.DiscussionID)
+		if ctx.Err() != nil {
+			abandon()
 			return
 		}
 		if attempt >= chatMaxAttempts {
@@ -465,9 +482,8 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		}
 		h.log.Warn("chat attempt failed, retrying", "iid", decision.IID, "discussion", decision.DiscussionID, "attempt", attempt)
 		select {
-		case <-h.chatCtx.Done():
-			h.chatSeen.forget(decision.NoteID)
-			h.log.Info("chat abandoned: daemon shutting down", "iid", decision.IID, "discussion", decision.DiscussionID)
+		case <-ctx.Done():
+			abandon()
 			return
 		case <-time.After(h.chatRetryDelay):
 		}
@@ -477,7 +493,9 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 // chatAttempt runs one chat attempt end to end and reports whether it is worth
 // retrying. Successful replies, foreign threads, and superseded notes are final;
 // gate read failures, spawn failures, and non-zero child exits are retryable.
-func (h *Handler) chatAttempt(group *Group, projectPath string, decision Decision) (retryable bool) {
+// ctx is the admitted event's shared deadline (see handleChat) — every blocking
+// step here runs under it.
+func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, decision Decision) (retryable bool) {
 	// Serialize replies within a discussion BEFORE competing for a global slot.
 	// The reverse order would let queued replies to one busy discussion each sit
 	// on a global slot while blocked on that discussion's lock, starving chats
@@ -487,16 +505,14 @@ func (h *Handler) chatAttempt(group *Group, projectPath string, decision Decisio
 
 	// Bound concurrent chat work. Blocking (rather than dropping) is safe: the
 	// goroutine count is bounded by the admission cap, while the semaphore still
-	// bounds actual child processes. Shutdown aborts the wait.
+	// bounds actual child processes. The event deadline (and daemon shutdown,
+	// its parent) aborts the wait.
 	select {
 	case h.chatSem <- struct{}{}:
-	case <-h.chatCtx.Done():
-		return true // handleChat sees the shutdown and stops retrying
+	case <-ctx.Done():
+		return true // handleChat sees the deadline/shutdown and stops retrying
 	}
 	defer func() { <-h.chatSem }()
-
-	ctx, cancel := context.WithTimeout(h.chatCtx, chatReplyTimeout)
-	defer cancel()
 
 	// Inexpensive gate: only spawn a child for a thread nickpit actually started.
 	// A genuinely foreign thread is final (a retry would re-gate identically); a

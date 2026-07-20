@@ -132,6 +132,11 @@ func CollectPriorFindings(body string, out *[]model.Finding) {
 // reconstruct the full ReviewResult straight from the MR/PR notes.
 const ReviewMarkerPrefix = MarkerOpen + "review:"
 
+// ChatReplyMarkerPrefix opens the fallback chat-reply carrier: a hidden marker
+// on a TOP-LEVEL note that answers a discussion whose GitLab version rejects
+// threaded replies (see ChatReplyEnvelope).
+const ChatReplyMarkerPrefix = MarkerOpen + "chatreply:"
+
 // FindingMarkerPrefix opens the per-finding carrier that holds one complete
 // model.Finding (body, suggestions, verification, finalization, summarization).
 // Its payload is a gzipped, base64-encoded findingEnvelope.
@@ -286,6 +291,49 @@ func findingRefMarker(reviewID, findingID string) string {
 	}
 	marker, _ := encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: model.Finding{ID: findingID}, Ref: true})
 	return marker
+}
+
+// ChatReplyEnvelope binds a fallback top-level chat answer to the discussion
+// and note it answered. Some GitLab versions reject replies to individual-note
+// discussions with a 4xx; the discussion agent then posts its answer as a plain
+// MR note carrying this envelope so the threaded conversation state survives:
+// a later read merges the answer back into the thread (the answered question
+// is not re-answered on redelivery, and follow-up turns see the assistant's
+// prior reply). Only envelopes on notes authored by the bot itself are trusted
+// — markers are encoded, not authenticated.
+type ChatReplyEnvelope struct {
+	DiscussionID   string `json:"did"`
+	AnsweredNoteID int    `json:"note"`
+}
+
+// ChatReplyMarker renders the hidden fallback chat-reply marker. It returns ""
+// when discussionID is empty (nothing to bind to).
+func ChatReplyMarker(discussionID string, answeredNoteID int) string {
+	if discussionID == "" {
+		return ""
+	}
+	marker, _ := encodeMarker(ChatReplyMarkerPrefix, ChatReplyEnvelope{DiscussionID: discussionID, AnsweredNoteID: answeredNoteID})
+	return marker
+}
+
+// CollectChatReplyEnvelopes decodes the fallback chat-reply carriers found in
+// body, bounded by the per-body carrier budget.
+func CollectChatReplyEnvelopes(body string) []ChatReplyEnvelope {
+	var out []ChatReplyEnvelope
+	budget := &carrierBudget{}
+	scanMarkers(body, ChatReplyMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env ChatReplyEnvelope
+		n, ok := decodeMarker(raw, &env)
+		budget.spend(n)
+		if ok {
+			out = append(out, env)
+		}
+		return true
+	})
+	return out
 }
 
 // encodeMarker gzips and base64-encodes payload into a hidden marker opened by
