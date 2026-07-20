@@ -112,19 +112,19 @@ var (
 )
 
 type loadedMappings struct {
-	languages              LanguageMappings
-	files                  FileMappings
-	styleGuides            StyleGuideMappings
-	extLang                map[string]string
-	baseLang               map[string]string
-	ctxExt                 map[string]string
+	languages                   LanguageMappings
+	files                       FileMappings
+	styleGuides                 StyleGuideMappings
+	extLang                     map[string]string
+	baseLang                    map[string]string
+	ctxExt                      map[string]string
 	languagePathRules           []compiledLanguagePathRule
 	languageContentRules        []compiledLanguagePathRule
 	unusedIdentifierDiagnostics map[string][]string
-	generatedSuffixes      []string
-	generatedRules         []compiledGeneratedRule
-	evictionPriorities     []compiledEvictionPriority
-	styleGuideDetectors    []compiledStyleGuideDetector
+	generatedSuffixes           []string
+	generatedRules              []compiledGeneratedRule
+	evictionPriorities          []compiledEvictionPriority
+	styleGuideDetectors         []compiledStyleGuideDetector
 }
 
 type compiledLanguagePathRule struct {
