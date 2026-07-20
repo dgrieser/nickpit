@@ -187,13 +187,21 @@ func (e *Engine) RunSpecPipeline(ctx context.Context, p *Pipeline, req model.Rev
 // context the reviewers saw — never files the review deliberately withheld, and
 // never a patch larger than the model context budget.
 func (e *Engine) PrepareContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
-	return e.resolveAndTrimContext(ctx, req)
+	// Labeled as chat: this path is only used by the discussion agent, and
+	// "Starting review" progress from a chat command would mislead.
+	return e.resolveAndTrimContextAs(ctx, req, "chat", logging.StageChat)
 }
 
 // resolveAndTrimContext resolves the review source, captures toolchain versions,
 // optionally inlines full files, and trims to the context budget.
 func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
-	e.logf(ctx, "Starting review: mode=%s repo=%s id=%d submode=%s repo_root=%s", req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
+	return e.resolveAndTrimContextAs(ctx, req, "review", logging.StageReview)
+}
+
+// resolveAndTrimContextAs is resolveAndTrimContext with the operation label and
+// progress stage of the caller (review pipeline vs discussion agent).
+func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRequest, operation string, stage logging.Stage) (*model.ReviewContext, error) {
+	e.logf(ctx, "Starting %s: mode=%s repo=%s id=%d submode=%s repo_root=%s", operation, req.Mode, req.Repo, req.Identifier, req.Submode, req.RepoRoot)
 	contextFilter, err := newReviewContextFilter(req)
 	if err != nil {
 		return nil, err
@@ -202,7 +210,7 @@ func (e *Engine) resolveAndTrimContext(ctx context.Context, req model.ReviewRequ
 	if err != nil {
 		return nil, err
 	}
-	e.logProgress(logging.StageReview, logging.StateStart, reviewContextSummary(reviewCtx, req))
+	e.logProgress(stage, logging.StateStart, reviewContextSummary(reviewCtx, req))
 	e.logf(ctx, "Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
 		return nil, ErrEmptyDiff

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
@@ -200,11 +201,13 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 		State:                 newAgentLoopState(),
 		Section:               req.Section,
 		NoToolsSystem:         systemPrompt,
-		// The system prompt is already rendered into the transcript, so the
-		// no-tools fallback keeps the messages verbatim rather than re-rendering a
-		// template (which would choke on style-guide braces).
+		// The no-tools fallback must not receive tool-role messages or dangling
+		// tool_calls — a request without a tools field carrying them is rejected
+		// by strict OpenAI-compatible backends. noToolsMessagesFromRendered
+		// rewrites them into plain turns; it takes the already-rendered system
+		// prompt, so style-guide braces never hit a template.
 		NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-			return append([]llm.Message(nil), messages...), nil
+			return noToolsMessagesFromRendered(systemPrompt, messages)
 		},
 	})
 	if err != nil {
@@ -326,7 +329,10 @@ const discussPromptHeadroomTokens = 2000
 func discussFixedOverheadTokens(result *model.ReviewResult, disableSuggestions bool, styleGuideSnippet string, estimator model.TokenEstimator) int {
 	overhead := discussPromptHeadroomTokens
 	overhead += estimator.Estimate(styleGuideSnippet)
-	if reviewJSON, err := json.Marshal(discussReviewForPrompt(result, disableSuggestions)); err == nil {
+	// Indented, matching how buildDiscussContext actually embeds the review
+	// (MarshalIndent) — the compact form underestimates by 15-30%, enough to
+	// push a findings-heavy review past max_context_tokens despite trimming.
+	if reviewJSON, err := json.MarshalIndent(discussReviewForPrompt(result, disableSuggestions), "", "  "); err == nil {
 		overhead += estimator.Estimate(string(reviewJSON))
 	}
 	return overhead
@@ -451,19 +457,19 @@ func enforceDiscussBudget(ctx *model.ReviewContext, budget int, estimator model.
 	for over() {
 		reduced := false
 		for i := range ctx.DiffFiles {
-			if cut := len(ctx.DiffFiles[i].Content) / 2; cut > 0 {
-				ctx.DiffFiles[i].Content = ctx.DiffFiles[i].Content[:len(ctx.DiffFiles[i].Content)-cut]
+			if next, ok := halveAtRuneBoundary(ctx.DiffFiles[i].Content); ok {
+				ctx.DiffFiles[i].Content = next
 				reduced, truncated = true, true
 			}
 		}
 		for i := range ctx.DiffHunks {
-			if cut := len(ctx.DiffHunks[i].Content) / 2; cut > 0 {
-				ctx.DiffHunks[i].Content = ctx.DiffHunks[i].Content[:len(ctx.DiffHunks[i].Content)-cut]
+			if next, ok := halveAtRuneBoundary(ctx.DiffHunks[i].Content); ok {
+				ctx.DiffHunks[i].Content = next
 				reduced, truncated = true, true
 			}
 		}
-		if cut := len(ctx.Diff) / 2; cut > 0 {
-			ctx.Diff = ctx.Diff[:len(ctx.Diff)-cut]
+		if next, ok := halveAtRuneBoundary(ctx.Diff); ok {
+			ctx.Diff = next
 			reduced, truncated = true, true
 		}
 		if !reduced {
@@ -476,6 +482,22 @@ func enforceDiscussBudget(ctx *model.ReviewContext, budget int, estimator model.
 	if truncated {
 		ctx.OmittedSections = append(ctx.OmittedSections, "diff truncated to fit the discussion context budget")
 	}
+}
+
+// halveAtRuneBoundary returns s cut to (at most) half its byte length, moved
+// back to a UTF-8 rune boundary so the truncation never leaves a split rune
+// (which would render as U+FFFD in the prompt). ok is false when nothing can
+// be removed.
+func halveAtRuneBoundary(s string) (string, bool) {
+	cut := len(s) / 2
+	if cut == 0 {
+		return s, false
+	}
+	end := len(s) - cut
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end], true
 }
 
 // DiscussOpener renders the assistant's first message for a finding-pinned chat,

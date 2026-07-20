@@ -107,13 +107,51 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	// missing findings, so a chat can still reassemble this review by id.
 	// Verdict-only re-reviews post just the envelope.
 	if summarySuppressed || reviewPostFailed || !summaryCarried || len(missing) > 0 {
+		for _, finding := range reviewmd.UniqueFindingsByID(missing) {
+			// A finding past the reader's decoded budget is never emitted (the
+			// writer refuses the poisoned marker) — surface the gap instead of
+			// silently leaving the finding unavailable to chat.
+			if result.ReviewID != "" && reviewmd.FindingMarker(result.ReviewID, finding) == "" {
+				errs = append(errs, fmt.Errorf("finding %s: payload exceeds the carrier budget; it will not be available for discussion", finding.ID))
+			}
+		}
 		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
 			if err := a.client.Post(ctx, issueCommentsPath, map[string]string{"body": body}, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
 			}
 		}
 	}
+	// The current run's carriers are all posted; the hidden fallback chunks of
+	// previous runs are now superseded garbage. Best-effort cleanup.
+	a.pruneStaleCarriers(ctx, req.Repo, req.Identifier, result.ReviewID)
 	return errors.Join(errs...)
+}
+
+// pruneStaleCarriers deletes carrier-only issue comments left by previous runs
+// (see the GitLab twin and reviewmd.IsStaleCarrierBody). GitHub's API exposes
+// no cheap "current user" probe on this client, so the author check is
+// omitted: a pure foreign-carrier body is with overwhelming probability our
+// own previous chunk, deleting a forged one only removes the forger's own
+// comment, and a permission error on someone else's is tolerated. Best-effort
+// throughout.
+func (a *Adapter) pruneStaleCarriers(ctx context.Context, repo string, number int, currentReviewID string) {
+	if currentReviewID == "" {
+		return
+	}
+	escaped := escapeRepo(repo)
+	var comments []struct {
+		ID   int    `json:"id"`
+		Body string `json:"body"`
+	}
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, number), &comments); err != nil {
+		return
+	}
+	for _, comment := range comments {
+		if !reviewmd.IsStaleCarrierBody(comment.Body, currentReviewID) {
+			continue
+		}
+		_ = a.client.Delete(ctx, fmt.Sprintf("/repos/%s/issues/comments/%d", escaped, comment.ID))
+	}
 }
 
 // publishReview posts the summary + inline findings as one review. GitHub's

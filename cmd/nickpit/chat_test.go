@@ -117,6 +117,9 @@ func TestValidateChatSourceFlags(t *testing.T) {
 		{"url and repo", chatOptions{gitlab: true, rawURL: "https://gl/x/y/-/merge_requests/1", repo: "g/p"}, "combined with --repo"},
 		{"url and id", chatOptions{gitlab: true, rawURL: "https://gl/x/y/-/merge_requests/1", mrID: 3}, "combined with --id"},
 		{"url and id via reply-discussion", chatOptions{replyDiscussion: "d1", rawURL: "https://gl/x/y/-/merge_requests/1", mrID: 3}, "combined with --id"},
+		{"reply-note without reply-discussion", chatOptions{gitlab: true, repo: "g/p", mrID: 3, replyNote: 5}, "--reply-note requires"},
+		{"finding with reply-discussion", chatOptions{replyDiscussion: "d1", repo: "g/p", mrID: 3, findingID: "f1"}, "--finding"},
+		{"review-id with reply-discussion", chatOptions{replyDiscussion: "d1", repo: "g/p", mrID: 3, reviewID: "r1"}, "--review-id"},
 	}
 	for _, tc := range reject {
 		err := validateChatSourceFlags(tc.opts)

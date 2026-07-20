@@ -104,6 +104,12 @@ type Session struct {
 	// Messages is the full conversation transcript (user, assistant, and tool
 	// messages), in order.
 	Messages []Message `json:"messages"`
+
+	// loadedUpdatedAt is the UpdatedAt read from disk by Load, used by Save for
+	// optimistic concurrency: two processes resuming the same session (e.g. two
+	// bare `nickpit chat` terminals both picking the "latest") would otherwise
+	// silently drop each other's turns, last writer wins. Never persisted.
+	loadedUpdatedAt time.Time
 }
 
 // New creates an empty session with a fresh id and timestamps.
@@ -219,10 +225,53 @@ func (s *Store) Load(id string) (*Session, error) {
 	if err := json.Unmarshal(data, &sess); err != nil {
 		return nil, fmt.Errorf("session: parsing %s: %w", path, err)
 	}
+	// A file written by a NEWER schema must not be loaded (and, worse, saved
+	// back minus the fields this version does not know about).
+	if sess.Version > Version {
+		return nil, fmt.Errorf("session: %s uses schema version %d, newer than this nickpit's %d; upgrade nickpit to resume it", id, sess.Version, Version)
+	}
+	sess.loadedUpdatedAt = sess.UpdatedAt
 	return &sess, nil
 }
 
-// Save writes the session atomically, refreshing UpdatedAt.
+// header is the lightweight prefix of a session file: enough for listing and
+// for Save's concurrency check without decoding the (potentially MB-scale)
+// cached context and transcript.
+type header struct {
+	Version  int    `json:"version"`
+	ID       string `json:"id"`
+	ReviewID string `json:"review_id"`
+	Source   struct {
+		Repo string `json:"repo"`
+	} `json:"source"`
+	PinnedFindingID string    `json:"pinned_finding_id"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// loadHeader decodes just the header fields of a session file.
+func (s *Store) loadHeader(id string) (*header, error) {
+	path, err := s.Path(id)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var h header
+	if err := json.Unmarshal(data, &h); err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+// Save writes the session atomically, refreshing UpdatedAt. Sessions that came
+// from Load are saved with an optimistic concurrency check: when the on-disk
+// UpdatedAt no longer matches what was loaded, another process has saved in
+// between and this save fails instead of silently discarding its turns. (The
+// check-then-rename window is not fully atomic without file locking, but it
+// converts the common two-terminals case from silent data loss into a loud
+// error.)
 func (s *Store) Save(sess *Session) error {
 	if sess == nil {
 		return fmt.Errorf("session: nil session")
@@ -235,6 +284,11 @@ func (s *Store) Save(sess *Session) error {
 	}
 	if sess.CreatedAt.IsZero() {
 		sess.CreatedAt = time.Now().UTC()
+	}
+	if !sess.loadedUpdatedAt.IsZero() {
+		if h, err := s.loadHeader(sess.ID); err == nil && !h.UpdatedAt.Equal(sess.loadedUpdatedAt) {
+			return fmt.Errorf("session: %s was modified by another process (resume it again to continue there, or use --session with a fresh session)", sess.ID)
+		}
 	}
 	sess.UpdatedAt = time.Now().UTC()
 
@@ -260,6 +314,13 @@ func (s *Store) Save(sess *Session) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("session: writing temp file: %w", err)
 	}
+	// One fsync per save: the transcript is the user's conversation, worth
+	// surviving a crash between rename and writeback.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("session: syncing temp file: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("session: closing temp file: %w", err)
@@ -268,6 +329,8 @@ func (s *Store) Save(sess *Session) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("session: replacing %s: %w", path, err)
 	}
+	// The successful save is the new baseline for this process's next save.
+	sess.loadedUpdatedAt = sess.UpdatedAt
 	s.prune()
 	return nil
 }
@@ -288,7 +351,19 @@ func (s *Store) prune() {
 	}
 	var files []fileAge
 	for _, entry := range entries {
-		if entry.IsDir() || !isSessionFileName(entry.Name()) {
+		if entry.IsDir() {
+			continue
+		}
+		// Orphaned temp files (a crash between CreateTemp and rename) are not
+		// session files and would otherwise accumulate forever; delete them once
+		// they are old enough that no live save can still own them.
+		if strings.HasPrefix(entry.Name(), ".session-") && strings.HasSuffix(entry.Name(), ".tmp") {
+			if info, err := entry.Info(); err == nil && time.Since(info.ModTime()) > time.Hour {
+				_ = os.Remove(filepath.Join(s.dir, entry.Name()))
+			}
+			continue
+		}
+		if !isSessionFileName(entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()
@@ -302,7 +377,15 @@ func (s *Store) prune() {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
 	for _, file := range files[:len(files)-maxStoredSessions] {
-		_ = os.Remove(filepath.Join(s.dir, file.name))
+		// Re-stat before removing: a concurrent process may have just renamed a
+		// fresh save into place under this name, and deleting it would discard
+		// that session's newest turns. Unchanged mtime means the listing is
+		// still accurate for this victim.
+		path := filepath.Join(s.dir, file.name)
+		if info, err := os.Stat(path); err != nil || !info.ModTime().Equal(file.mod) {
+			continue
+		}
+		_ = os.Remove(path)
 	}
 }
 
@@ -345,16 +428,19 @@ func (s *Store) List() ([]Info, error) {
 			continue
 		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
-		sess, err := s.Load(id)
-		if err != nil || sess.ID == "" {
+		// Header-only decode: listing must not pay for every session's cached
+		// context and transcript. Files written by a newer schema still list
+		// (the header is stable); resuming them is what Load rejects.
+		h, err := s.loadHeader(id)
+		if err != nil || h.ID == "" {
 			continue // skip unreadable/corrupt/foreign files
 		}
 		infos = append(infos, Info{
-			ID:              sess.ID,
-			ReviewID:        sess.ReviewID,
-			Repo:            sess.Source.Repo,
-			PinnedFindingID: sess.PinnedFindingID,
-			UpdatedAt:       sess.UpdatedAt,
+			ID:              h.ID,
+			ReviewID:        h.ReviewID,
+			Repo:            h.Source.Repo,
+			PinnedFindingID: h.PinnedFindingID,
+			UpdatedAt:       h.UpdatedAt,
 		})
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].UpdatedAt.After(infos[j].UpdatedAt) })

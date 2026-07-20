@@ -76,13 +76,59 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 	// missing findings, so a chat can still reassemble this review by id instead
 	// of discussing an older run. Verdict-only re-reviews post just the envelope.
 	if !summaryPosted || !summaryCarried || len(missing) > 0 {
+		for _, finding := range reviewmd.UniqueFindingsByID(missing) {
+			// A finding past the reader's decoded budget is never emitted (the
+			// writer refuses the poisoned marker) — surface the gap instead of
+			// silently leaving the finding unavailable to chat.
+			if result.ReviewID != "" && reviewmd.FindingMarker(result.ReviewID, finding) == "" {
+				errs = append(errs, fmt.Errorf("finding %s: payload exceeds the carrier budget; it will not be available for discussion", finding.ID))
+			}
+		}
 		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
 			if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
 				errs = append(errs, fmt.Errorf("carrier: %w", err))
 			}
 		}
 	}
+	// The current run's carriers are all posted; the hidden fallback chunks of
+	// previous runs are now superseded garbage. Best-effort cleanup.
+	a.pruneStaleCarriers(ctx, req.Repo, req.Identifier, result.ReviewID)
 	return errors.Join(errs...)
+}
+
+// pruneStaleCarriers deletes the bot's own carrier-only notes left by previous
+// runs. Every re-review posts a fresh carrier set under a new review id;
+// without pruning, a daemon-watched MR accumulates one blank bot-note timeline
+// per push and every chat turn gunzips all of them. Only notes authored by the
+// token's own user whose body is nothing but foreign-review carriers are
+// deleted (see reviewmd.IsStaleCarrierBody) — visible comments, thread roots,
+// and fallback chat answers are never touched. Best-effort: any failure leaves
+// old notes in place (stale carriers are garbage, not corruption).
+func (a *Adapter) pruneStaleCarriers(ctx context.Context, project string, iid int, currentReviewID string) {
+	if currentReviewID == "" {
+		return
+	}
+	user, err := a.client.CurrentUser(ctx)
+	if err != nil {
+		return
+	}
+	escaped := escapeProject(project)
+	var notes []struct {
+		ID     int    `json:"id"`
+		Body   string `json:"body"`
+		Author struct {
+			ID int `json:"id"`
+		} `json:"author"`
+	}
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escaped, iid), &notes); err != nil {
+		return
+	}
+	for _, note := range notes {
+		if note.Author.ID != user.ID || !reviewmd.IsStaleCarrierBody(note.Body, currentReviewID) {
+			continue
+		}
+		_ = a.client.Delete(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes/%d", escaped, iid, note.ID))
+	}
 }
 
 // publishFinding posts a single finding. It tries a multi-line inline comment,

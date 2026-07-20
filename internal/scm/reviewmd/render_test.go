@@ -492,6 +492,44 @@ func TestEscapeQuickActions(t *testing.T) {
 	}
 }
 
+// Quick-action escaping must reach the PUBLISH path too: a prompt injection
+// can steer the reviewer model into emitting "/merge" inside a finding body or
+// the overall explanation, which GitLab would execute under the bot.
+func TestPublishedProseEscapesQuickActions(t *testing.T) {
+	r := NewRenderer("https://host/")
+	body := r.FindingBody(model.Finding{ID: "f", Title: "T", Body: "do this:\n/merge now"}, "")
+	if !strings.Contains(body, `\/merge`) || strings.Contains(body, "\n/merge") {
+		t.Fatalf("finding body quick action not escaped: %q", body)
+	}
+	sum := r.SummaryBody(&model.ReviewResult{OverallCorrectness: "patch is correct", OverallExplanation: "/approve\nlooks fine"})
+	if !strings.Contains(sum, `\/approve`) {
+		t.Fatalf("summary quick action not escaped: %q", sum)
+	}
+}
+
+// IsStaleCarrierBody drives re-publish pruning: only PURE carrier bodies whose
+// envelopes all belong to other reviews qualify.
+func TestIsStaleCarrierBody(t *testing.T) {
+	render := NewRenderer("https://host/")
+	old := render.CarrierNotes(&model.ReviewResult{ReviewID: "rev-old", OverallCorrectness: "patch is correct", Findings: []model.Finding{{ID: "f1"}}}, []model.Finding{{ID: "f1"}})[0]
+	current := render.CarrierNotes(&model.ReviewResult{ReviewID: "rev-new", OverallCorrectness: "patch is correct"}, nil)[0]
+	if !IsStaleCarrierBody(old, "rev-new") {
+		t.Fatal("foreign pure carrier should be stale")
+	}
+	cases := map[string]string{
+		"current review carrier": current,
+		"visible text present":   "some visible text\n" + old,
+		"chat fallback answer":   "answer\n" + ChatReplyMarker("d1", 5),
+		"bare summary marker":    SummaryMarker,
+		"empty":                  "",
+	}
+	for name, body := range cases {
+		if IsStaleCarrierBody(body, "rev-new") {
+			t.Fatalf("%s must not be considered stale", name)
+		}
+	}
+}
+
 func TestChatReplyMarkerRoundTrip(t *testing.T) {
 	marker := ChatReplyMarker("disc-1", 306)
 	if marker == "" {

@@ -68,6 +68,26 @@ func (c *Client) Post(ctx context.Context, path string, body any, out any) error
 	return json.Unmarshal(respBody, out)
 }
 
+// withPerPage maximizes the page size of the first paginated request (100,
+// GitHub's cap; the default 30 multiplies request counts on busy PRs). The
+// rel="next" links of later pages carry the parameter forward on their own.
+func withPerPage(path string) string {
+	if strings.Contains(path, "per_page=") {
+		return path
+	}
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + "per_page=100"
+}
+
+// Delete issues a DELETE request (GitHub answers 204 on success).
+func (c *Client) Delete(ctx context.Context, path string) error {
+	_, _, err := c.doRequest(ctx, http.MethodDelete, path, nil, "")
+	return err
+}
+
 // maxPaginatedPages bounds how many pages GetPaginated will fetch; a real PR
 // never comes close, so hitting it indicates a broken or malicious endpoint.
 const maxPaginatedPages = 1000
@@ -83,6 +103,7 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	// forever.
 	visited := make(map[string]struct{})
 	nextPath := path
+	first := true
 	for nextPath != "" {
 		if _, seen := visited[nextPath]; seen {
 			break
@@ -91,7 +112,15 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 			return fmt.Errorf("github: pagination for %s exceeded %d pages", path, maxPaginatedPages)
 		}
 		visited[nextPath] = struct{}{}
-		body, resp, err := c.do(ctx, nextPath)
+		// Only the first request is augmented with per_page; the rel="next"
+		// links GitHub returns for later pages already carry it. Cycle
+		// detection keys on the link-provided path, unaugmented.
+		requestPath := nextPath
+		if first {
+			requestPath = withPerPage(nextPath)
+			first = false
+		}
+		body, resp, err := c.do(ctx, requestPath)
 		if err != nil {
 			return err
 		}

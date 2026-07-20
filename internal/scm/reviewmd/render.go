@@ -239,6 +239,16 @@ func reviewMarkerWithSize(result *model.ReviewResult) (string, int) {
 	if result == nil || result.ReviewID == "" {
 		return "", 0
 	}
+	// FindingsTotal declares only findings whose carrier the reader will accept
+	// (encodeMarker refuses payloads past the decoded budget). Declaring an
+	// un-carriable finding would make the completeness gate reject the review
+	// forever, breaking every chat on the MR.
+	carriable := 0
+	for _, finding := range result.Findings {
+		if marker, _ := findingMarkerWithSize(result.ReviewID, finding); marker != "" {
+			carriable++
+		}
+	}
 	return encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{
 		ReviewID:               result.ReviewID,
 		CreatedAt:              result.CreatedAt,
@@ -251,7 +261,7 @@ func reviewMarkerWithSize(result *model.ReviewResult) (string, int) {
 		BaseRef:                result.BaseRef,
 		HeadRef:                result.HeadRef,
 		Model:                  result.Model,
-		FindingsTotal:          len(result.Findings),
+		FindingsTotal:          carriable,
 	})
 }
 
@@ -339,10 +349,17 @@ func CollectChatReplyEnvelopes(body string) []ChatReplyEnvelope {
 
 // encodeMarker gzips and base64-encodes payload into a hidden marker opened by
 // prefix, also returning the payload's decoded (pre-compression) size. A
-// marshal/compress failure yields "" so a publish never aborts on it.
+// marshal/compress failure yields "" so a publish never aborts on it. A payload
+// past the reader's per-marker decompression budget is refused here on the
+// WRITER side too: decodeMarker would reject it forever, so publishing it would
+// poison the MR — e.g. the completeness gate would fail every chat on it with a
+// retryable-looking error.
 func encodeMarker(prefix string, payload any) (string, int) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
+		return "", 0
+	}
+	if len(raw) > maxCarrierDecodedBytes {
 		return "", 0
 	}
 	var buf bytes.Buffer
@@ -514,7 +531,9 @@ func UniqueFindingsByID(findings []model.Finding) []model.Finding {
 // carrier reassembly.
 func StripMarkers(s string) string {
 	if !strings.Contains(s, MarkerOpen) {
-		return s
+		// Trim like the marker path below does, so "was this body only
+		// markers/whitespace?" checks behave identically on both paths.
+		return strings.TrimSpace(s)
 	}
 	var b strings.Builder
 	rest := s
@@ -533,6 +552,38 @@ func StripMarkers(s string) string {
 		rest = rest[i+j+3:]
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// IsStaleCarrierBody reports whether body is a pure carrier note — nothing
+// visible after markers are stripped — belonging entirely to reviews OTHER
+// than currentReviewID. Such notes are the hidden fallback chunks of a
+// previous run, superseded by the current run's carriers; publishers delete
+// them so a daemon-watched MR does not accumulate one blank bot-note timeline
+// per push. Deliberately conservative: any visible text, any envelope of the
+// current review, any chat-reply marker, or no decodable carrier at all means
+// "not stale" — visible comments (which double as thread roots) and fallback
+// chat answers are never deleted.
+func IsStaleCarrierBody(body, currentReviewID string) bool {
+	if currentReviewID == "" || StripMarkers(body) != "" {
+		return false
+	}
+	if len(CollectChatReplyEnvelopes(body)) > 0 {
+		return false
+	}
+	carriers := 0
+	for _, env := range CollectReviewEnvelopes(body) {
+		if env.ReviewID == "" || env.ReviewID == currentReviewID {
+			return false
+		}
+		carriers++
+	}
+	for _, env := range CollectFindingEnvelopes(body) {
+		if env.ReviewID == "" || env.ReviewID == currentReviewID {
+			return false
+		}
+		carriers++
+	}
+	return carriers > 0
 }
 
 // ReviewResultsByID reassembles complete ReviewResults from the carrier markers
@@ -608,11 +659,22 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 			if r == nil {
 				continue
 			}
-			if id := env.Finding.ID; id != "" {
-				if _, dup := seen[env.ReviewID][id]; dup {
+			// Dedup key: the finding id, or (for the id-less case the pipeline
+			// never produces but the format permits) the full serialized finding.
+			// GitLab lists every note through both the notes and discussions
+			// endpoints, so without a key an id-less finding would double-count
+			// and could inflate past the FindingsTotal completeness gate.
+			key := env.Finding.ID
+			if key == "" {
+				if raw, err := json.Marshal(env.Finding); err == nil {
+					key = "content:" + string(raw)
+				}
+			}
+			if key != "" {
+				if _, dup := seen[env.ReviewID][key]; dup {
 					continue
 				}
-				seen[env.ReviewID][id] = struct{}{}
+				seen[env.ReviewID][key] = struct{}{}
 			}
 			r.Findings = append(r.Findings, env.Finding)
 		}
@@ -746,8 +808,14 @@ func isFenceLine(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
 }
 
+// sanitizeWithHardBreaks prepares model-generated prose for posting: control
+// characters and marker lookalikes are defused (Sanitize), GitLab quick-action
+// lines are escaped — a prompt injection in the diff or MR comments could
+// steer the reviewer model into emitting "/merge" on its own line, which the
+// Notes API would execute under the bot's identity — and markdown hard breaks
+// are applied.
 func sanitizeWithHardBreaks(s string) string {
-	return hardBreakParagraphs(Sanitize(s))
+	return hardBreakParagraphs(EscapeQuickActions(Sanitize(s)))
 }
 
 // ConfidencePercent renders a 0..1 confidence score as "(NN% confidence)".
@@ -845,7 +913,7 @@ func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) 
 	} else {
 		fmt.Fprintf(&b, "%s  \n%s  \n", r.CorrectnessBadge(correctness), ConfidenceLine(result.OverallConfidenceScore))
 	}
-	if explanation := Sanitize(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
+	if explanation := EscapeQuickActions(Sanitize(strings.TrimSpace(result.OverallExplanation))); explanation != "" {
 		b.WriteString("\n")
 		b.WriteString(hardBreakParagraphs(explanation))
 		b.WriteString("\n")

@@ -58,6 +58,13 @@ const chatQueueCap = 64
 // can shorten it.
 const defaultChatRetryDelay = 15 * time.Second
 
+// chatFailureText is posted into the thread when every attempt to answer a
+// question failed or timed out, so the author is not left with permanent
+// silence (e.g. while a rate-limited publish hogs the API). It deliberately
+// contains no command keyword and is authored by the bot, so it can never
+// re-trigger anything.
+const chatFailureText = "⚠️ I could not answer this question — the attempts failed or timed out. Please ask again in a new reply."
+
 // HandlerConfig is the static trigger configuration for the webhook endpoint.
 type HandlerConfig struct {
 	// TriggerEmoji is the award-emoji name requesting a manual review.
@@ -111,7 +118,13 @@ type Handler struct {
 	// long-lived goroutines behind the semaphore.
 	chatAdmit chan struct{}
 	// chatWG tracks in-flight chat goroutines so shutdown can drain them.
-	chatWG sync.WaitGroup
+	// chatAdmitMu guards chatClosed, which admitChat checks before chatWG.Add:
+	// httpServer.Shutdown's 5s budget is shorter than the 30s read timeouts, so
+	// a slow client can deliver a webhook after ShutdownChats started waiting —
+	// Add racing Wait is documented WaitGroup misuse; the flag refuses instead.
+	chatWG      sync.WaitGroup
+	chatAdmitMu sync.Mutex
+	chatClosed  bool
 	// chatCtx roots all chat work in the daemon lifecycle; chatCancel tears it
 	// down on shutdown so in-flight children are terminated instead of
 	// outliving the daemon.
@@ -154,6 +167,12 @@ func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, cha
 // exit. The HTTP listener must already be stopped so no new chat events are
 // admitted concurrently.
 func (h *Handler) ShutdownChats(grace time.Duration) {
+	// Refuse new admissions from here on, so chatWG.Add can never race the
+	// Wait below (a slow client can still be delivering a webhook past
+	// httpServer.Shutdown's budget).
+	h.chatAdmitMu.Lock()
+	h.chatClosed = true
+	h.chatAdmitMu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		h.chatWG.Wait()
@@ -311,7 +330,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer h.chatWG.Done()
 			defer func() { <-h.chatAdmit }()
-			h.handleChat(group, event.Project.PathWithNamespace, decision)
+			h.handleChat(group, event.Project.PathWithNamespace, event.Project.ID, decision)
 		}()
 		h.log.Debug("chat reply candidate", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
 		writeJSON(w, map[string]string{"status": "chat"})
@@ -401,9 +420,15 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 }
 
 // admitChat reserves a chat admission slot and registers the event with the
-// shutdown drain group. It reports false when the backlog is full; on success
-// the caller must release with `<-h.chatAdmit` and h.chatWG.Done() when done.
+// shutdown drain group. It reports false when the backlog is full or the
+// handler is shutting down; on success the caller must release with
+// `<-h.chatAdmit` and h.chatWG.Done() when done.
 func (h *Handler) admitChat() bool {
+	h.chatAdmitMu.Lock()
+	defer h.chatAdmitMu.Unlock()
+	if h.chatClosed {
+		return false
+	}
 	select {
 	case h.chatAdmit <- struct{}{}:
 		h.chatWG.Add(1)
@@ -429,13 +454,24 @@ func (h *Handler) admitChat() bool {
 // terminated; an abandoned note's dedup mark is cleared so a redelivery after
 // restart can retry.
 //
+// Trust decision, explicit: anyone who can comment in a nickpit review thread
+// drives an agent whose read-only tools can inspect the WHOLE checkout of the
+// reviewed revision, and the reply is posted to the MR. That means a commenter
+// whose GitLab role would not grant full repository read (or a repo whose
+// history holds secrets) could ask the agent to print file contents. This is
+// accepted because commenting on an MR of a configured group already implies
+// project membership in the intended deployments, the tools are read-only and
+// repo-scoped with symlink-escape protection, and replies are sanitized.
+// Operators who do not accept it can disable chat (chat.enabled: false) or run
+// chat children without a checkout (tools are then disabled entirely).
+//
 // Retries live HERE, not in webhook redelivery: the HTTP 200 was already sent
 // when this goroutine started, so GitLab considers the webhook delivered and
 // will not redeliver on its own. Transient failures (gate read errors, spawn
 // failures, non-zero child exits) are therefore retried in-process with
 // backoff; only after the attempts are exhausted is the note forgotten, which
 // at least lets a MANUAL redelivery try again.
-func (h *Handler) handleChat(group *Group, projectPath string, decision Decision) {
+func (h *Handler) handleChat(group *Group, projectPath string, projectID int, decision Decision) {
 	if h.chatRunner == nil {
 		return
 	}
@@ -459,10 +495,13 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 	abandon := func() {
 		h.chatSeen.forget(decision.NoteID)
 		if h.chatCtx.Err() != nil {
+			// Shutting down: no reliable way to post, and the redelivery after
+			// restart will answer.
 			h.log.Info("chat abandoned: daemon shutting down", "iid", decision.IID, "discussion", decision.DiscussionID)
 			return
 		}
 		h.log.Error("chat abandoned: event deadline exceeded", "iid", decision.IID, "discussion", decision.DiscussionID)
+		h.reply(group, projectID, decision, chatFailureText)
 	}
 	for attempt := 1; ; attempt++ {
 		retryable := h.chatAttempt(ctx, group, projectPath, decision)
@@ -475,9 +514,13 @@ func (h *Handler) handleChat(group *Group, projectPath string, decision Decision
 		}
 		if attempt >= chatMaxAttempts {
 			// Give up, but clear the mark so a manual webhook redelivery (or the
-			// user re-asking) is not discarded as a duplicate.
+			// user re-asking) is not discarded as a duplicate — and tell the
+			// author instead of going permanently silent. The failure note marks
+			// the thread answered, so re-asking (as the note says) is the
+			// recovery, never a surprise double-answer.
 			h.chatSeen.forget(decision.NoteID)
 			h.log.Error("chat reply failed after retries", "iid", decision.IID, "discussion", decision.DiscussionID, "attempts", attempt)
+			h.reply(group, projectID, decision, chatFailureText)
 			return
 		}
 		h.log.Warn("chat attempt failed, retrying", "iid", decision.IID, "discussion", decision.DiscussionID, "attempt", attempt)

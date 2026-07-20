@@ -143,7 +143,7 @@ func TestHandlerIgnoresNonTrigger(t *testing.T) {
 		"mr_open_draft.json":            "hook-secret",
 		"mr_close.json":                 "hook-secret",
 		"emoji_revoke_eyes.json":        "legacy-secret", // fixture project is under platform/legacy
-		"note_plain_no_discussion.json": "legacy-secret", // no thread => not a chat candidate
+		"note_plain_no_discussion.json": "legacy-secret", // top-level comment (type null) => not a chat candidate
 		"note_system.json":              "legacy-secret",
 		"note_on_issue.json":            "legacy-secret",
 	}
@@ -419,6 +419,25 @@ func TestHandlerChatSkipsForeignThread(t *testing.T) {
 	select {
 	case <-env.chat.calls:
 		t.Fatal("chat child spawned for a non-nickpit thread")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// A marker is encoded, not authenticated: a commenter can copy one into their
+// own thread root. The gate must therefore require the root note to be
+// AUTHORED by the bot — a marker-bearing root from someone else (author id 5,
+// bot id 7 here) must never spawn a paid chat child.
+func TestHandlerChatRejectsSpoofedMarkerRoot(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 7 // fake GitLab serves the root note with author id 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1", Title: "Bug"}, "")
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned for a spoofed (non-bot-authored) marker root")
 	case <-time.After(300 * time.Millisecond):
 	}
 }

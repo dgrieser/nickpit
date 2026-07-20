@@ -74,10 +74,14 @@ type eventAttributes struct {
 	AwardableType string `json:"awardable_type"`
 	AwardableID   int    `json:"awardable_id"`
 	// Note-event fields. ID is the note's id (present on other kinds too,
-	// unused there).
+	// unused there). Type distinguishes threaded notes ("DiscussionNote",
+	// "DiffNote") from top-level comments (null) — GitLab sends discussion_id
+	// on EVERY note (a top-level comment opens its own individual-note
+	// discussion), so discussion_id alone cannot tell a thread reply apart.
 	ID           int    `json:"id"`
 	Note         string `json:"note"`
 	NoteableType string `json:"noteable_type"`
+	NoteType     string `json:"type"`
 	System       bool   `json:"system"`
 	DiscussionID string `json:"discussion_id"`
 }
@@ -252,11 +256,16 @@ func decideNote(event *WebhookEvent, commandKeyword string, botIDs map[int]bool)
 	}
 	if command == CommandNone {
 		// A plain reply inside a discussion thread is a discussion-agent
-		// candidate. Top-level comments and notes with no discussion are ignored
-		// here; the handler further requires the thread's root note to carry a
-		// nickpit review marker before answering, so unrelated comments are
-		// dropped without a reply.
-		if attrs.DiscussionID != "" {
+		// candidate. Thread membership is decided by the note TYPE
+		// (DiscussionNote for threaded replies, DiffNote for diff-anchored
+		// threads) — NOT by discussion_id, which GitLab sends on every note
+		// including top-level comments. Without the type check every human MR
+		// comment would consume a chat admission slot, an authenticated thread
+		// read, and a permanent dedup entry. The handler further requires the
+		// thread's root note to carry a bot-authored nickpit review marker
+		// before answering, so unrelated thread replies are dropped without a
+		// reply.
+		if attrs.DiscussionID != "" && (attrs.NoteType == "DiscussionNote" || attrs.NoteType == "DiffNote") {
 			return Decision{
 				Command:      CommandChat,
 				Reason:       "chat reply",

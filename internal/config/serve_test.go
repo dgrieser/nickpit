@@ -43,6 +43,49 @@ groups:
 	}
 }
 
+// Chat defaults to enabled with no config (preserving behavior), but an
+// explicit chat.enabled: false is the operator's off-switch, and chat
+// extra_args replace (never merge with) review extra_args when present.
+func TestLoadServeChatSection(t *testing.T) {
+	path := writeServeConfig(t, `
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+`)
+	cfg, err := LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ChatEnabled() || cfg.Chat.MaxConcurrent != 0 || cfg.Chat.ExtraArgs != nil {
+		t.Fatalf("chat defaults = %+v", cfg.Chat)
+	}
+	path = writeServeConfig(t, `
+groups:
+  - path: "platform"
+    token: "tok"
+    webhook_secret: "sec"
+chat:
+  enabled: false
+  max_concurrent: 2
+  extra_args: []
+`)
+	cfg, err = LoadServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ChatEnabled() {
+		t.Fatal("chat.enabled: false must disable chat")
+	}
+	if cfg.Chat.MaxConcurrent != 2 {
+		t.Fatalf("max_concurrent = %d", cfg.Chat.MaxConcurrent)
+	}
+	// An explicit empty list is non-nil: it REPLACES review.extra_args.
+	if cfg.Chat.ExtraArgs == nil || len(cfg.Chat.ExtraArgs) != 0 {
+		t.Fatalf("explicit empty extra_args = %#v, want non-nil empty", cfg.Chat.ExtraArgs)
+	}
+}
+
 func TestLoadServeEnvExpansion(t *testing.T) {
 	t.Setenv("NICKPIT_TEST_GL_TOKEN", "secret-token")
 	t.Setenv("NICKPIT_TEST_GL_SECRET", "hook-secret")

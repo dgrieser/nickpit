@@ -180,10 +180,19 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	// resolve to the process working directory and expose unrelated files.
 	tools := chatToolset(sess.Source.RepoRoot)
 
-	if created || refreshed {
+	// --no-session is honored here too, not only for post-review auto-saves:
+	// the user asked for nothing to be persisted, so turns run in memory only
+	// and nothing new is written to the store.
+	saveSession := func() {
+		if a.noSession {
+			return
+		}
 		if err := store.Save(sess); err != nil {
 			a.warnf("chat: could not save session (conversation may be lost on resume): %v", err)
 		}
+	}
+	if created || refreshed {
+		saveSession()
 	}
 
 	turn := func(question string) error {
@@ -222,9 +231,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		for _, m := range res.NewMessages {
 			sess.Append(session.FromLLM(m))
 		}
-		if err := store.Save(sess); err != nil {
-			a.warnf("chat: could not save session (conversation may be lost on resume): %v", err)
-		}
+		saveSession()
 		// LLM output is untrusted for terminal purposes: strip control characters
 		// so a reply cannot smuggle escape sequences into the user's terminal.
 		fmt.Fprintln(os.Stdout, textsan.StripControl(res.Reply)) //nolint:errcheck // stdout write; nothing actionable on failure
@@ -238,14 +245,17 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	if !isTerminal(os.Stdin) {
 		return fmt.Errorf("chat: no question given and stdin is not a terminal; pass a question argument for one-shot use")
 	}
-	return a.chatREPL(sess, store, turn)
+	return a.chatREPL(ctx, sess, turn)
 }
 
 // chatREPL runs the interactive loop, printing session context and the pinned
-// opener once before reading questions until EOF or an exit command. Every
+// opener once before reading questions until EOF, an exit command, or ctx
+// cancellation. Ctx must be observed here: a Ctrl+C mid-turn cancels the
+// command context permanently, so without these checks every later turn would
+// fail with "context canceled" and the session would zombie until /exit. Every
 // value echoed here can originate outside this process (markers, saved JSON,
 // model output), so it is control-stripped before touching the terminal.
-func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(string) error) error {
+func (a *app) chatREPL(ctx context.Context, sess *session.Session, turn func(string) error) error {
 	fmt.Fprintf(os.Stderr, "Discussing review %s", textsan.StripControl(sess.ReviewID))
 	if sess.Source.Repo != "" {
 		fmt.Fprintf(os.Stderr, " on %s", textsan.StripControl(sess.Source.Repo))
@@ -253,7 +263,7 @@ func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(st
 			fmt.Fprintf(os.Stderr, "!%d", sess.Source.Identifier)
 		}
 	}
-	fmt.Fprintf(os.Stderr, " (session %s). Type your question, or /exit to quit.\n", sess.ID)
+	fmt.Fprintf(os.Stderr, " (session %s). Type your question, or /exit to quit.\n", textsan.StripControl(sess.ID))
 	if sess.PinnedFindingID != "" {
 		if opener := review.DiscussOpener(sess.Result, sess.PinnedFindingID); opener != "" {
 			fmt.Fprintf(os.Stderr, "\n%s\n", textsan.StripControl(opener))
@@ -262,6 +272,9 @@ func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(st
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		fmt.Fprint(os.Stderr, "\n> ")
 		if !scanner.Scan() {
 			break
@@ -274,7 +287,13 @@ func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(st
 			return nil
 		}
 		if err := turn(line); err != nil {
-			// Errors can embed upstream response text; strip control characters too.
+			// A canceled context ends the REPL (the cancellation is permanent —
+			// printing it once per turn would loop uselessly)...
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			// ...while ordinary turn errors are shown and the loop continues.
+			// Errors can embed upstream response text; strip control characters.
 			fmt.Fprintf(os.Stderr, "error: %v\n", textsan.StripControl(err.Error()))
 		}
 	}
@@ -333,6 +352,20 @@ func validateChatSourceFlags(opts chatOptions) error {
 		}
 		if len(stray) > 0 {
 			return fmt.Errorf("chat: %s only apply to a GitLab session; add --gitlab (or --reply-discussion)", strings.Join(stray, ", "))
+		}
+	}
+	// --reply-note is meaningful only with --reply-discussion, and the reply
+	// path derives its pin and review from the thread's own marker, so
+	// --finding/--review-id there would be silently ignored — reject instead.
+	if opts.replyNote != 0 && opts.replyDiscussion == "" {
+		return fmt.Errorf("chat: --reply-note requires --reply-discussion")
+	}
+	if opts.replyDiscussion != "" {
+		if opts.findingID != "" {
+			return fmt.Errorf("chat: --finding can not be combined with --reply-discussion (the pin comes from the thread's marker)")
+		}
+		if opts.reviewID != "" {
+			return fmt.Errorf("chat: --review-id can not be combined with --reply-discussion (the review comes from the thread's marker)")
 		}
 	}
 	return nil

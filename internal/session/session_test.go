@@ -3,11 +3,13 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/google/uuid"
 )
 
 func TestStoreSaveLoadRoundTrip(t *testing.T) {
@@ -200,6 +202,73 @@ func TestPruneIgnoresForeignJSONFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(foreign); err != nil {
 		t.Fatalf("foreign JSON file was deleted by pruning: %v", err)
+	}
+}
+
+// Two processes resuming the same session must not silently overwrite each
+// other: the second save from a stale in-memory copy fails loudly instead.
+func TestStoreSaveConflictDetected(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	orig := New()
+	orig.Append(UserMessage("first"))
+	if err := store.Save(orig); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	a, _ := store.Load(orig.ID)
+	b, _ := store.Load(orig.ID)
+	a.Append(UserMessage("from A"))
+	if err := store.Save(a); err != nil {
+		t.Fatalf("save A: %v", err)
+	}
+	b.Append(UserMessage("from B"))
+	if err := store.Save(b); err == nil {
+		t.Fatal("stale save B should conflict, not silently drop A's turn")
+	}
+	// A's second save (its baseline advanced with its own save) still works.
+	a.Append(UserMessage("A again"))
+	if err := store.Save(a); err != nil {
+		t.Fatalf("A's follow-up save: %v", err)
+	}
+}
+
+// A file written by a newer nickpit must not be loaded (a save would strip the
+// fields this version does not know).
+func TestLoadRejectsNewerSchema(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	sess := New()
+	if err := store.Save(sess); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	path, _ := store.Path(sess.ID)
+	data, _ := os.ReadFile(path)
+	data = []byte(strings.Replace(string(data), `"version": 1`, `"version": 999`, 1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	if _, err := store.Load(sess.ID); err == nil || !strings.Contains(err.Error(), "newer") {
+		t.Fatalf("newer schema must be rejected, got %v", err)
+	}
+}
+
+// A corrupt file with a valid UUID name must not break listing.
+func TestListSkipsCorruptSessionFile(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	good := New()
+	if err := store.Save(good); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	corrupt := filepath.Join(dir, uuid.NewString()+".json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("write corrupt: %v", err)
+	}
+	infos, err := store.List()
+	if err != nil || len(infos) != 1 || infos[0].ID != good.ID {
+		t.Fatalf("List = %v, %v; want only the good session", infos, err)
 	}
 }
 

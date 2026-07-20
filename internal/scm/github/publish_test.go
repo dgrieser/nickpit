@@ -142,6 +142,9 @@ func fpMarker(id, file, title string) string {
 
 func sampleResult() *model.ReviewResult {
 	return &model.ReviewResult{
+		// A review id activates the carrier machinery (hidden review/finding
+		// envelopes) in every publish test, as real pipeline results do.
+		ReviewID:               "rev-pub",
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "Two issues found.",
 		OverallConfidenceScore: 0.9,
@@ -217,9 +220,16 @@ func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	if len(ps.reviewPosts) != 0 {
 		t.Fatalf("review posts = %d, want 0 (all inline deduped)", len(ps.reviewPosts))
 	}
-	if len(ps.issuePosts) != 1 || !strings.Contains(ps.issuePosts[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
-		t.Fatalf("expected only finding-b issue comment, got %v", ps.issuePosts)
+	// One visible comment (finding-b) plus hidden carrier chunk(s) covering the
+	// suppressed summary/finding so a chat can still reassemble this run.
+	visible, carriers := splitCarrierPosts(ps.issuePosts)
+	if len(visible) != 1 || !strings.Contains(visible[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
+		t.Fatalf("expected only finding-b visible comment, got %v", visible)
 	}
+	if got := reviewmd.ReviewResultsByID(ps.issuePosts)["rev-pub"]; got == nil || len(got.Findings) != 2 {
+		t.Fatalf("carriers must cover the deduped run: %+v", got)
+	}
+	_ = carriers
 }
 
 // TestPublishReviewDedupeCrossRun proves the file+title fingerprint skips a
@@ -234,9 +244,23 @@ func TestPublishReviewDedupeCrossRun(t *testing.T) {
 	if len(ps.reviewPosts) != 0 {
 		t.Fatalf("review posts = %d, want 0 (finding-a matched across runs)", len(ps.reviewPosts))
 	}
-	if len(ps.issuePosts) != 1 || !strings.Contains(ps.issuePosts[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
-		t.Fatalf("expected only finding-b issue comment, got %v", ps.issuePosts)
+	visible, _ := splitCarrierPosts(ps.issuePosts)
+	if len(visible) != 1 || !strings.Contains(visible[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
+		t.Fatalf("expected only finding-b visible comment, got %v", visible)
 	}
+}
+
+// splitCarrierPosts partitions posted bodies into visible comments and pure
+// hidden-carrier chunks (bodies that strip to nothing).
+func splitCarrierPosts(posts []string) (visible, carriers []string) {
+	for _, post := range posts {
+		if reviewmd.StripMarkers(post) == "" {
+			carriers = append(carriers, post)
+			continue
+		}
+		visible = append(visible, post)
+	}
+	return visible, carriers
 }
 
 func TestPublishReviewNewInlineAfterSummaryUsesFallbackBody(t *testing.T) {

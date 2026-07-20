@@ -1,20 +1,30 @@
 {
   "object_kind": "note",
   "event_type": "note",
-  "user": {"id": 10, "username": "alice"},
-  "project": {"id": 43, "path_with_namespace": "platform/legacy/tool", "default_branch": "main"},
+  "user": {
+    "id": 10,
+    "username": "alice"
+  },
+  "project": {
+    "id": 43,
+    "path_with_namespace": "platform/legacy/tool",
+    "default_branch": "main"
+  },
   "object_attributes": {
     "id": 307,
     "note": "just a standalone comment",
     "noteable_type": "MergeRequest",
     "system": false,
-    "discussion_id": "",
-    "action": "create"
+    "discussion_id": "disc-307",
+    "action": "create",
+    "type": null
   },
   "merge_request": {
     "iid": 11,
     "draft": false,
     "state": "opened",
-    "last_commit": {"id": "sha-note-1"}
+    "last_commit": {
+      "id": "sha-note-1"
+    }
   }
 }

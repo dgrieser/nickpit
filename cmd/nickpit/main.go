@@ -33,6 +33,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/serve/loki"
 	"github.com/dgrieser/nickpit/internal/styleguide"
+	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
@@ -852,13 +853,14 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			// save (or skip) their resumable chat sessions where the operator
 			// asked, not silently in the default directory. Both flags are root
 			// persistent flags, so review and chat children parse them alike.
-			childArgs := append([]string(nil), cfg.Review.ExtraArgs...)
+			var sessionArgs []string
 			if a.noSession {
-				childArgs = append(childArgs, "--no-session")
+				sessionArgs = append(sessionArgs, "--no-session")
 			}
 			if a.sessionDir != "" {
-				childArgs = append(childArgs, "--session-dir", a.sessionDir)
+				sessionArgs = append(sessionArgs, "--session-dir", a.sessionDir)
 			}
+			childArgs := append(append([]string(nil), cfg.Review.ExtraArgs...), sessionArgs...)
 			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, serve.WorkerConfig{
 				Topic:      cfg.Topic,
 				StartEmoji: cfg.StartEmojiName(),
@@ -871,22 +873,34 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			// `nickpit chat` child (the same command runnable from the terminal),
 			// so the daemon itself stays free of LLM logic. The child reads the
 			// thread, self-gates on the root marker, and posts its reply.
-			// Review extra_args are root-level persistent flags (e.g. --profile,
-			// --reasoning-effort — see server.yaml.example), so they apply to chat
-			// children too. Forwarding them keeps a thread reply on the same
-			// model/profile as the review it discusses.
+			// Chat children inherit review.extra_args (root persistent flags
+			// like --profile keep a thread reply on the review's model) unless
+			// chat.extra_args explicitly replaces them — a review-subcommand-only
+			// flag would otherwise kill every chat child at flag parsing. A nil
+			// runner disables chat entirely (chat.enabled: false).
+			chatExtra := cfg.Review.ExtraArgs
+			if cfg.Chat.ExtraArgs != nil {
+				chatExtra = cfg.Chat.ExtraArgs
+			}
 			chatConfig := serve.ChatConfig{
-				ConfigPath: a.configPath,
-				BaseURL:    baseURL,
-				LogDir:     cfg.LogDir,
-				ExtraArgs:  childArgs,
+				ConfigPath:    a.configPath,
+				BaseURL:       baseURL,
+				LogDir:        cfg.LogDir,
+				ExtraArgs:     append(append([]string(nil), chatExtra...), sessionArgs...),
+				MaxConcurrent: cfg.Chat.MaxConcurrent,
+			}
+			var chatRunner serve.ChatRunner
+			if cfg.ChatEnabled() {
+				chatRunner = runner
+			} else {
+				log.Info("chat replies disabled by config (chat.enabled: false)")
 			}
 			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AckEmoji:       cfg.AckEmojiName(),
 				AbortEmoji:     cfg.AbortEmojiName(),
-			}, runner, chatConfig, log)
+			}, chatRunner, chatConfig, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)
 		},
@@ -2237,6 +2251,12 @@ func (a *app) logf(ctx context.Context, format string, args ...any) {
 // instead of logf when silence would hide real damage (e.g. a failed session
 // save losing conversation history) from a default invocation.
 func (a *app) warnf(format string, args ...any) {
+	if a.logger == nil {
+		// Same nil tolerance as logf/logProgress, but a warning must still reach
+		// the user; PrintWarning strips control characters, mirror that here.
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", textsan.StripControl(fmt.Sprintf(format, args...)))
+		return
+	}
 	a.logger.PrintWarning(fmt.Sprintf(format, args...))
 }
 
