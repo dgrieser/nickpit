@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -69,6 +70,9 @@ func (a *app) newChatCmd() *cobra.Command {
 }
 
 func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) error {
+	if err := validateChatSourceFlags(opts); err != nil {
+		return err
+	}
 	profileName, profile, err := a.loadProfileForSpec()
 	if err != nil {
 		return err
@@ -257,6 +261,51 @@ func (a *app) chatREPL(sess *session.Session, store *session.Store, turn func(st
 		}
 	}
 	return scanner.Err()
+}
+
+// validateChatSourceFlags rejects flag combinations that would silently target
+// the wrong session: more than one source selector at once (the dispatch in
+// resolveChatSession would let the first one win), or GitLab selectors without
+// GitLab mode (they would be ignored and the latest saved session — possibly an
+// unrelated review — would be discussed instead).
+func validateChatSourceFlags(opts chatOptions) error {
+	gitlabMode := opts.gitlab || opts.replyDiscussion != ""
+	var modes []string
+	if opts.sessionID != "" {
+		modes = append(modes, "--session")
+	}
+	if opts.fromJSON != "" {
+		modes = append(modes, "--from-json")
+	}
+	if gitlabMode {
+		if opts.gitlab {
+			modes = append(modes, "--gitlab")
+		} else {
+			modes = append(modes, "--reply-discussion")
+		}
+	}
+	if len(modes) > 1 {
+		return fmt.Errorf("chat: %s select different session sources; pass exactly one", strings.Join(modes, " and "))
+	}
+	if !gitlabMode {
+		var stray []string
+		if strings.TrimSpace(opts.rawURL) != "" {
+			stray = append(stray, "--url")
+		}
+		if opts.repo != "" {
+			stray = append(stray, "--repo")
+		}
+		if opts.mrID != 0 {
+			stray = append(stray, "--id")
+		}
+		if opts.reviewID != "" {
+			stray = append(stray, "--review-id")
+		}
+		if len(stray) > 0 {
+			return fmt.Errorf("chat: %s only apply to a GitLab session; add --gitlab (or --reply-discussion)", strings.Join(stray, ", "))
+		}
+	}
+	return nil
 }
 
 // resolveChatSession loads or creates the session for this invocation. The bool
@@ -781,7 +830,23 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
 		return nil
 	}
-	return client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, reviewmd.Sanitize(reply))
+	err = client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, reviewmd.Sanitize(reply))
+	if err == nil {
+		return nil
+	}
+	// Some GitLab versions reject replies to individual-note discussions with a
+	// 4xx — exactly the roots chat threads can have (summary and general-finding
+	// comments are created through the notes endpoint). Mirror the daemon's
+	// Handler.reply: fall back to a plain MR note so the answer is delivered
+	// (unthreaded) instead of the daemon retrying the same failing request three
+	// times and never answering. 5xx and transport errors stay fatal, which makes
+	// the daemon retry.
+	var apiErr *glscm.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status >= 500 {
+		return err
+	}
+	a.logf(ctx, "chat: threaded reply rejected (%v), posting as a plain MR note", err)
+	return client.CreateMRNotePath(ctx, project, mrID, reviewmd.Sanitize(reply))
 }
 
 // latestPendingNote returns the id of the thread's newest non-system note when

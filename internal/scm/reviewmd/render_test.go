@@ -448,8 +448,11 @@ func TestReviewResultsByIDRejectsPartialPublish(t *testing.T) {
 	first, _ := render.FindingBodyCarried(result.Findings[0], "")
 	second, _ := render.FindingBodyCarried(result.Findings[1], "")
 
-	// Mid-publish snapshots: summary only, then summary plus one finding.
-	for i, bodies := range [][]string{{summary}, {summary, first}} {
+	// Mid-publish snapshots: a finding whose review envelope has not landed yet
+	// (orphaned carriers attach to nothing — a finding-only result would expose
+	// blank verdict metadata the completeness gate cannot vet), the summary
+	// alone, then the summary plus one of two findings.
+	for i, bodies := range [][]string{{first}, {first, second}, {summary}, {summary, first}} {
 		if got := ReviewResultsByID(bodies); got["rev-partial"] != nil {
 			t.Fatalf("partial publish %d must not reassemble: %+v", i, got["rev-partial"])
 		}

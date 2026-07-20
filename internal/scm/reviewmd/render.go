@@ -491,9 +491,11 @@ func StripMarkers(s string) string {
 // verdict and metadata come from each review carrier; findings are collected from
 // the per-finding carriers. Findings are de-duplicated by id within a review so a
 // finding that appears in both the notes list and the discussions list (GitLab
-// returns discussion notes in both) is not counted twice. Reviews whose envelope
-// declares a finding count (FindingsTotal) that the collected carriers do not
-// reach are omitted entirely — see the completeness gate below.
+// returns discussion notes in both) is not counted twice. Only review ids
+// observed in a full (non-reference) review envelope are exposed: orphaned
+// finding carriers attach to nothing, and reviews whose envelope declares a
+// finding count (FindingsTotal) that the collected carriers do not reach are
+// omitted entirely — see the completeness gate below.
 func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 	byID := make(map[string]*model.ReviewResult)
 	seen := make(map[string]map[string]struct{})
@@ -546,7 +548,17 @@ func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
 			if env.Ref {
 				continue
 			}
-			r := get(env.ReviewID)
+			// Findings attach only to reviews whose full envelope was collected
+			// (the loop above ran over every body already). A finding carrier can
+			// exist without its envelope — posted first while the summary post is
+			// still in flight, or the summary/carrier post failed — and a
+			// finding-only result would expose blank verdict metadata and a
+			// partial set that the count-based completeness gate below cannot
+			// vet, because expected is populated from envelopes alone.
+			r := byID[env.ReviewID]
+			if r == nil {
+				continue
+			}
 			if id := env.Finding.ID; id != "" {
 				if _, dup := seen[env.ReviewID][id]; dup {
 					continue

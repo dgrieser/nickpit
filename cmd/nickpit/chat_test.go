@@ -1,12 +1,51 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 )
+
+// Conflicting or ignored source flags must be rejected up front: the dispatch
+// in resolveChatSession lets the first matching mode win, so e.g. --url without
+// --gitlab used to silently discuss the latest saved session instead.
+func TestValidateChatSourceFlags(t *testing.T) {
+	reject := []struct {
+		name string
+		opts chatOptions
+		want string
+	}{
+		{"url without gitlab", chatOptions{rawURL: "https://gl/x/y/-/merge_requests/1"}, "--url"},
+		{"repo+id without gitlab", chatOptions{repo: "g/p", mrID: 3}, "--repo, --id"},
+		{"review-id without gitlab", chatOptions{reviewID: "rev-1"}, "--review-id"},
+		{"session and from-json", chatOptions{sessionID: "s1", fromJSON: "r.json"}, "exactly one"},
+		{"session and gitlab", chatOptions{sessionID: "s1", gitlab: true}, "exactly one"},
+		{"from-json and reply-discussion", chatOptions{fromJSON: "r.json", replyDiscussion: "d1"}, "exactly one"},
+	}
+	for _, tc := range reject {
+		err := validateChatSourceFlags(tc.opts)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: err = %v, want mention of %q", tc.name, err, tc.want)
+		}
+	}
+	accept := []chatOptions{
+		{}, // latest session
+		{sessionID: "s1"},
+		{fromJSON: "r.json"},
+		{gitlab: true, rawURL: "https://gl/x/y/-/merge_requests/1", reviewID: "rev-1"},
+		{gitlab: true, repo: "g/p", mrID: 3},
+		{replyDiscussion: "d1", repo: "g/p", mrID: 3}, // implies gitlab
+		{gitlab: true, replyDiscussion: "d1", repo: "g/p", mrID: 3},
+	}
+	for i, opts := range accept {
+		if err := validateChatSourceFlags(opts); err != nil {
+			t.Fatalf("accept %d: unexpected error: %v", i, err)
+		}
+	}
+}
 
 func TestChatThreadToMessages(t *testing.T) {
 	notes := []glscm.DiscussionNote{
