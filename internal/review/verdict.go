@@ -409,7 +409,7 @@ func overallConfidenceFor(correctness string, findings []model.Finding, threshol
 	// finding real", not "is the patch incorrect", so a confidently verified
 	// nitpick must not drag the top-line score. No tempering findings => max is
 	// 0 => 1.0.
-	return roundConfidenceScore(1 - 0.5*maxFindingConfidence(findingsAtOrBelowFloor(findings, 1, thresholdRank)))
+	return roundConfidenceScore(1 - 0.5*maxFindingConfidenceAtOrBelowFloor(findings, 1, thresholdRank))
 }
 
 func findingsAtFloor(findings []model.Finding, floor, thresholdRank int) []model.Finding {
@@ -422,14 +422,19 @@ func findingsAtFloor(findings []model.Finding, floor, thresholdRank int) []model
 	return out
 }
 
-func findingsAtOrBelowFloor(findings []model.Finding, floor, thresholdRank int) []model.Finding {
-	var out []model.Finding
+// maxFindingConfidenceAtOrBelowFloor computes the maximum confidence over the
+// findings whose priority floor is at or below (more critical than) the given
+// floor, without materializing the filtered subset.
+func maxFindingConfidenceAtOrBelowFloor(findings []model.Finding, floor, thresholdRank int) float64 {
+	max := 0.0
 	for _, f := range findings {
 		if priorityFloor(f, thresholdRank) <= floor {
-			out = append(out, f)
+			if c := findingConfidence(f); c > max {
+				max = c
+			}
 		}
 	}
-	return out
+	return max
 }
 
 func maxFindingConfidence(findings []model.Finding) float64 {
