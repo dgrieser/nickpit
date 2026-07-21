@@ -391,9 +391,39 @@ const (
 	VerdictUnverified = "unverified"
 )
 
+// Verify decision-order gates. The verifier must name the gate that decided
+// its verdict; the gate dictates the verdict (see VerdictForGate).
+const (
+	GateNonFinding              = "non-finding"
+	GateDiffScope               = "diff-scope"
+	GateStyleguideContradiction = "styleguide-contradiction"
+	GateCompileError            = "compile-error"
+	GateConfirm                 = "confirm"
+	GateRefute                  = "refute"
+	GateUnverified              = "unverified"
+)
+
+// VerdictForGate returns the verdict a decision-order gate dictates and
+// whether the gate is known. Every gate except confirm and unverified refutes.
+func VerdictForGate(gate string) (string, bool) {
+	switch gate {
+	case GateConfirm:
+		return VerdictConfirmed, true
+	case GateUnverified:
+		return VerdictUnverified, true
+	case GateNonFinding, GateDiffScope, GateStyleguideContradiction, GateCompileError, GateRefute:
+		return VerdictRefuted, true
+	}
+	return "", false
+}
+
 type FindingVerification struct {
-	ID              string  `json:"id"`
-	Verdict         string  `json:"verdict"`
+	ID      string `json:"id"`
+	Verdict string `json:"verdict"`
+	// Gate is the decision-order gate that produced the verdict. Optional in
+	// serialized artifacts (predates the field; fallback verifications carry
+	// no gate), required from the verify agent.
+	Gate            string  `json:"gate,omitempty"`
 	Priority        int     `json:"priority"`
 	ConfidenceScore float64 `json:"confidence_score"`
 	Remarks         string  `json:"remarks"`
@@ -415,6 +445,10 @@ func (v *FindingVerification) MergeFrom(other any, presentKeys map[string]bool) 
 	}
 	if presentKeys["verdict"] {
 		v.Verdict = src.Verdict
+		claimed = true
+	}
+	if presentKeys["gate"] {
+		v.Gate = src.Gate
 		claimed = true
 	}
 	if presentKeys["priority"] {

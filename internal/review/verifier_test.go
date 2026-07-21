@@ -143,12 +143,12 @@ func TestVerifyDisableDiffScopeRestoresLegacyPromptAndSchema(t *testing.T) {
 			t.Fatalf("legacy verifier prompt missing legacy example:\n%s", system)
 		}
 		assertVerifierGateNumbering(t, system, []string{
-			"1. Non-finding gate:",
-			"2. Styleguide contradiction gate:",
-			"3. Compile-error gate:",
-			"4. Confirm gate:",
-			"5. Refute gate for actual issue claims:",
-			"6. Unverified gate:",
+			"1. Non-finding gate (`non-finding`):",
+			"2. Styleguide contradiction gate (`styleguide-contradiction`):",
+			"3. Compile-error gate (`compile-error`):",
+			"4. Confirm gate (`confirm`):",
+			"5. Refute gate for actual issue claims (`refute`):",
+			"6. Unverified gate (`unverified`):",
 		})
 	}
 	var payload map[string]any
@@ -179,13 +179,13 @@ func TestVerifyAnnotatesDeterministicDiffScopeStatus(t *testing.T) {
 		t.Fatalf("no-tools verifier prompt missing scoped guidance: %#v", req.NoToolsMessages)
 	}
 	assertVerifierGateNumbering(t, req.Messages[0].Content, []string{
-		"1. Non-finding gate:",
-		"2. Diff-scope gate:",
-		"3. Styleguide contradiction gate:",
-		"4. Compile-error gate:",
-		"5. Confirm gate:",
-		"6. Refute gate for actual issue claims:",
-		"7. Unverified gate:",
+		"1. Non-finding gate (`non-finding`):",
+		"2. Diff-scope gate (`diff-scope`):",
+		"3. Styleguide contradiction gate (`styleguide-contradiction`):",
+		"4. Compile-error gate (`compile-error`):",
+		"5. Confirm gate (`confirm`):",
+		"6. Refute gate for actual issue claims (`refute`):",
+		"7. Unverified gate (`unverified`):",
 	})
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(taskMessageContent(req)), &payload); err != nil {

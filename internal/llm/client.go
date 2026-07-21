@@ -2433,6 +2433,23 @@ func parseVerifyResponse(content string, constraintOptions ...ResponseConstraint
 			MissingFields: []string{"priority (must be 0-3)"},
 		}
 	}
+	// The named gate dictates the verdict; a mismatch means the model judged
+	// the claim instead of walking the decision order, so force a retry.
+	dictated, known := model.VerdictForGate(verification.Gate)
+	if !known {
+		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: []string{"gate (must be a VERDICT DECISION ORDER gate name)"},
+		}
+	}
+	if verification.Verdict != dictated {
+		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: []string{fmt.Sprintf("verdict (gate %q dictates %q)", verification.Gate, dictated)},
+		}
+	}
 	return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, nil
 }
 
@@ -2466,7 +2483,7 @@ func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 
 func missingVerifyFields(raw map[string]json.RawMessage, constraints ResponseConstraints) []string {
 	var missing []string
-	for _, field := range []string{"id", "verdict", "priority", "confidence_score", "remarks"} {
+	for _, field := range []string{"id", "verdict", "gate", "priority", "confidence_score", "remarks"} {
 		if _, ok := raw[field]; !ok {
 			missing = append(missing, field)
 		}
