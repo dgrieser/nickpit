@@ -625,10 +625,10 @@ func TestWorkflowFusedPostMergeVerdictFailureCoercesNonBlocking(t *testing.T) {
 	if result.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall correctness = %q, want constraint-coerced \"patch is correct\"", result.OverallCorrectness)
 	}
-	// Code-computed confidence for a non-blocking verdict: 1 - 0.5*max(non-blocking
-	// finalization confidence 0.82) = 0.59.
-	if result.OverallConfidenceScore != 0.59 {
-		t.Fatalf("overall confidence = %.2f, want code-computed 0.59", result.OverallConfidenceScore)
+	// Code-computed confidence for a non-blocking verdict: the only finding is a
+	// floor-2, which never tempers a "patch is correct" verdict => 1.0.
+	if result.OverallConfidenceScore != 1.0 {
+		t.Fatalf("overall confidence = %.2f, want code-computed 1.0", result.OverallConfidenceScore)
 	}
 	// Coercing the verdict to "patch is correct" must drop the merge-derived
 	// explanation, which would otherwise read as a "patch is incorrect" rationale.
