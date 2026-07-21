@@ -1073,7 +1073,11 @@ func (a *app) newCheckCmd() *cobra.Command {
 				out := struct {
 					Check modelcheck.CheckSummary  `json:"check"`
 					Small *modelcheck.CheckSummary `json:"small,omitempty"`
-				}{Check: result.Summary()}
+					// PromptSchemaFallback mirrors the run-wide degrade: the
+					// json_schema response format is disabled and agents embed
+					// the schema in the prompt instead.
+					PromptSchemaFallback bool `json:"prompt_schema_fallback"`
+				}{Check: result.Summary(), PromptSchemaFallback: result.DisableJSONResponseFormat}
 				if smallChecked {
 					summary := smallResult.Summary()
 					out.Small = &summary
@@ -1473,7 +1477,7 @@ func (a *app) resolveModelCapabilities(ctx context.Context, client llm.Client, p
 			a.logf(ctx, "Model capability cache unavailable: %v", err)
 		} else {
 			capability, ok, err := modelcheck.ReadCachedCapability(cachePath, profile.BaseURL, model, settings)
-			if err == nil && ok {
+			if err == nil && ok && !modelcheck.CapabilityNeedsReprobe(capability) {
 				result := modelcheck.ResultFromCapability(capability, profile.DisableJSONResponseFormat)
 				a.logProgress(ctx, logging.StageModelCheck, logging.StateOK, "source=cache")
 				return result, nil
@@ -1882,10 +1886,28 @@ func (a *app) writeModelCheckOutput(modelName string, result modelcheck.Result) 
 	fmt.Fprintf(&sb, "%s %s\n", mark(s.Compatible), label("Model is compatible"))
 	fmt.Fprintf(&sb, "\n")
 	fmt.Fprintf(&sb, "%s Response\n", mark(s.Response))
+	// A failed combined probe is a degrade (the run falls back to the
+	// prompt-embedded schema), not an incompatibility — mark it with a soft
+	// "!" instead of the failure cross.
+	softMark := func(v bool) string {
+		if v {
+			return mark(true)
+		}
+		if useANSI {
+			return "\x1b[33m!\x1b[0m"
+		}
+		return "!"
+	}
 	fmt.Fprintf(&sb, "%s Tool Use\n", mark(s.Tools))
 	fmt.Fprintf(&sb, "%s Structured Output\n", optionalMark(s.JSONResponse))
 	if s.JSONSchema != nil {
-		fmt.Fprintf(&sb, "%s JSON Schema\n", optionalMark(s.JSONSchema))
+		fmt.Fprintf(&sb, "%s Schema Enforcement\n", optionalMark(s.JSONSchema))
+	}
+	if s.ToolsJSONSchema != nil {
+		fmt.Fprintf(&sb, "%s Tool Use With Schema Enforcement\n", softMark(*s.ToolsJSONSchema))
+	}
+	if result.DisableJSONResponseFormat {
+		fmt.Fprintf(&sb, "%s Fallback to prompt-embedded schema\n", mark(true))
 	}
 	fmt.Fprintf(&sb, "%s Reasoning Traces\n", mark(s.Reasoning.Traces))
 	fmt.Fprintf(&sb, "\n")
@@ -1924,11 +1946,19 @@ func validatePreReviewModelCheck(result modelcheck.Result) error {
 // and `check model` so the two paths cannot drift apart on the degrade rule.
 func (a *app) jsonSchemaFallbackRequired(ctx context.Context, result modelcheck.Result, label string) bool {
 	probe := result.ConfiguredJSONSchema()
-	if probe.Status == modelcheck.StatusOK {
-		return false
+	if probe.Status != modelcheck.StatusOK {
+		a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("%s lacks json_schema response format (%s); falling back to prompt-embedded schema", label, probe.Status))
+		return true
 	}
-	a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("%s lacks json_schema response format (%s); falling back to prompt-embedded schema", label, probe.Status))
-	return true
+	// json_schema alone passing is not enough: a runtime can support tools and
+	// json_schema separately but suppress tool calls when both are combined
+	// (guided decoding). A skipped combined probe (prerequisite failed, or a
+	// profile-declared capability) carries no signal and must not degrade.
+	if combined := result.ConfiguredToolsJSONSchema(); !combined.Skipped && combined.Status != modelcheck.StatusOK {
+		a.logProgress(ctx, logging.StageModelCheck, logging.StateWarn, fmt.Sprintf("%s suppresses tool calls when the json_schema response format is active (%s); falling back to prompt-embedded schema", label, combined.Status))
+		return true
+	}
+	return false
 }
 
 // cacheableModelResult reports whether a freshly probed result is worth

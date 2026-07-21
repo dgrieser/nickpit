@@ -819,7 +819,7 @@ func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 		"✓ Model is compatible",
 		"✓ Tool Use",
 		"✓ Structured Output",
-		"✓ JSON Schema",
+		"✓ Schema Enforcement",
 		"✓ Reasoning Traces",
 		"Supported Efforts",
 		"  ✓ high",
@@ -831,6 +831,34 @@ func TestWriteModelCheckOutputUsesTerminalSummary(t *testing.T) {
 	}
 	if strings.Contains(out, "check:") || strings.Contains(out, "json_response:") {
 		t.Fatalf("output should not use YAML style\n%s", out)
+	}
+	if strings.Contains(out, "Tool Use With Schema Enforcement") || strings.Contains(out, "Fallback to prompt-embedded schema") {
+		t.Fatalf("output must omit combined-probe row and fallback line when neither applies\n%s", out)
+	}
+}
+
+func TestWriteModelCheckOutputShowsCombinedProbeAndFallback(t *testing.T) {
+	out := captureStdout(t, func() {
+		err := (&app{}).writeModelCheckOutput("test-model", modelcheck.Result{
+			DisableJSONResponseFormat: true,
+			Probes: []modelcheck.ProbeResult{
+				{Name: "configured_no_tools", ReasoningEffort: "high", Reasoned: true, Status: modelcheck.StatusOK},
+				{Name: "configured_tools", ReasoningEffort: "high", Tools: true, Status: modelcheck.StatusOK},
+				{Name: "configured_json_output", ReasoningEffort: "high", Status: modelcheck.StatusOK},
+				{Name: "configured_json_schema", ReasoningEffort: "high", Status: modelcheck.StatusOK},
+				{Name: "configured_tools_json_schema", ReasoningEffort: "high", Tools: true, Status: modelcheck.StatusFailed, Error: "model made no tool calls while the json_schema response format was active"},
+			},
+			PassedEfforts: []string{"high"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "! Tool Use With Schema Enforcement\n✓ Fallback to prompt-embedded schema\n") {
+		t.Fatalf("fallback line must follow the combined-probe row\n%s", out)
+	}
+	if strings.Contains(out, "✗ Tool Use With Schema Enforcement") {
+		t.Fatalf("combined-probe degrade must use the soft mark, not the failure cross\n%s", out)
 	}
 }
 
@@ -1531,13 +1559,15 @@ func TestRequestSettingsFingerprint(t *testing.T) {
 func compatibleCapability(modelName string) config.ModelCapabilities {
 	jsonResponse := true
 	jsonSchema := true
+	toolsJSONSchema := true
 	return config.ModelCapabilities{
-		Model:        modelName,
-		Compatible:   true,
-		Response:     true,
-		Tools:        true,
-		JSONResponse: &jsonResponse,
-		JSONSchema:   &jsonSchema,
+		Model:           modelName,
+		Compatible:      true,
+		Response:        true,
+		Tools:           true,
+		JSONResponse:    &jsonResponse,
+		JSONSchema:      &jsonSchema,
+		ToolsJSONSchema: &toolsJSONSchema,
 		Reasoning: config.ReasoningCapabilities{
 			Traces:  true,
 			Efforts: []string{"high"},

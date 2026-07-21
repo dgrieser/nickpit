@@ -150,3 +150,56 @@ func TestFindProfileCapabilityUsesModelOnly(t *testing.T) {
 		t.Fatalf("model = %q", got.Model)
 	}
 }
+
+func TestCapabilityRoundTripsToolsJSONSchema(t *testing.T) {
+	suppressed := false
+	capability := config.ModelCapabilities{
+		Model:           "m",
+		Response:        true,
+		Tools:           true,
+		JSONSchema:      ptrBool(true),
+		JSONResponse:    ptrBool(true),
+		ToolsJSONSchema: &suppressed,
+		Reasoning:       config.ReasoningCapabilities{Efforts: []string{"high"}},
+	}
+	result := ResultFromCapability(capability, false)
+	combined := result.ConfiguredToolsJSONSchema()
+	if combined.Skipped || combined.Status != StatusFailed {
+		t.Fatalf("combined probe = %+v, want failed from cached capability", combined)
+	}
+	back := CapabilityFromResult(result)
+	if back.ToolsJSONSchema == nil || *back.ToolsJSONSchema {
+		t.Fatalf("round-tripped ToolsJSONSchema = %v, want false", back.ToolsJSONSchema)
+	}
+
+	capability.ToolsJSONSchema = nil
+	result = ResultFromCapability(capability, false)
+	if combined := result.ConfiguredToolsJSONSchema(); !combined.Skipped {
+		t.Fatalf("combined probe = %+v, want skipped for legacy capability", combined)
+	}
+	if back := CapabilityFromResult(result); back.ToolsJSONSchema != nil {
+		t.Fatalf("round-tripped legacy ToolsJSONSchema = %v, want nil", back.ToolsJSONSchema)
+	}
+}
+
+func TestCapabilityNeedsReprobe(t *testing.T) {
+	legacy := config.ModelCapabilities{Tools: true, JSONSchema: ptrBool(true)}
+	if !CapabilityNeedsReprobe(legacy) {
+		t.Fatal("legacy tools+json_schema capability must re-probe")
+	}
+	probed := legacy
+	probed.ToolsJSONSchema = ptrBool(true)
+	if CapabilityNeedsReprobe(probed) {
+		t.Fatal("probed capability must not re-probe")
+	}
+	noSchema := config.ModelCapabilities{Tools: true}
+	if CapabilityNeedsReprobe(noSchema) {
+		t.Fatal("capability without json_schema must not re-probe")
+	}
+	noTools := config.ModelCapabilities{JSONSchema: ptrBool(true)}
+	if CapabilityNeedsReprobe(noTools) {
+		t.Fatal("capability without tools must not re-probe")
+	}
+}
+
+func ptrBool(v bool) *bool { return &v }

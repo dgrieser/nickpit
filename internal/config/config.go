@@ -112,6 +112,9 @@ type ModelCapabilities struct {
 	Tools        bool                  `json:"tools" yaml:"tools"`
 	JSONSchema   *bool                 `json:"json_schema,omitempty" yaml:"json_schema,omitempty"`
 	JSONResponse *bool                 `json:"json_response,omitempty" yaml:"json_response,omitempty"`
+	// ToolsJSONSchema reports whether tool calling works with the json_schema
+	// response format active in the same request; nil = never probed.
+	ToolsJSONSchema *bool `json:"tools_json_schema,omitempty" yaml:"tools_json_schema,omitempty"`
 }
 
 type ReasoningCapabilities struct {

@@ -116,6 +116,11 @@ type CheckSummary struct {
 	Tools        bool             `json:"tools"`
 	JSONSchema   *bool            `json:"json_schema,omitempty"`
 	JSONResponse *bool            `json:"json_response,omitempty"`
+	// ToolsJSONSchema reports whether tool calling still works with the
+	// json_schema response format active in the same request. Nil when the
+	// combined probe did not run (either prerequisite capability failed, or
+	// the result predates the probe).
+	ToolsJSONSchema *bool `json:"tools_json_schema,omitempty"`
 }
 
 func (r Result) Summary() CheckSummary {
@@ -137,6 +142,10 @@ func (r Result) Summary() CheckSummary {
 	if p := r.ConfiguredJSONSchema(); !p.Skipped {
 		ok := p.Status == StatusOK
 		s.JSONSchema = &ok
+	}
+	if p := r.ConfiguredToolsJSONSchema(); !p.Skipped {
+		ok := p.Status == StatusOK
+		s.ToolsJSONSchema = &ok
 	}
 	s.Compatible = s.Response && s.Tools && s.JSONResponse != nil && *s.JSONResponse
 	return s
@@ -196,11 +205,12 @@ func (c *Checker) openSection(name, effort string) *logging.ReasoningSection {
 // probeDisplayNames maps internal probe identifiers (stable keys in the
 // capability cache and JSON output) to the names shown in logs.
 var probeDisplayNames = map[string]string{
-	"configured_no_tools":    "Probe Response",
-	"fallback_no_tools":      "Probe Reasoning Efforts",
-	"configured_tools":       "Probe Tool Calling",
-	"configured_json_output": "Probe Plain JSON Response",
-	"configured_json_schema": "Probe Structured JSON Output",
+	"configured_no_tools":          "Probe Response",
+	"fallback_no_tools":            "Probe Reasoning Efforts",
+	"configured_tools":             "Probe Tool Calling",
+	"configured_json_output":       "Probe Plain JSON Response",
+	"configured_json_schema":       "Probe Structured JSON Output",
+	"configured_tools_json_schema": "Probe Tool Calling With Structured Output",
 }
 
 func probeDisplayName(name string) string {
@@ -335,6 +345,15 @@ func (c *Checker) Run(ctx context.Context) Result {
 		func() ProbeResult { return c.jsonSchemaProbe(ctx, simpleEffort) },
 	}
 	result.Probes = append(result.Probes, c.runProbes(simpleProbes)...)
+
+	// The combined probe only means something when tool calling and the
+	// json_schema response format each work on their own: it detects runtimes
+	// that pass both individually but suppress tool calls when the two are
+	// combined (e.g. vLLM guided decoding). Skipping it otherwise saves a
+	// probe round against an endpoint that already failed the cheaper checks.
+	if result.ConfiguredTools().Status == StatusOK && result.ConfiguredJSONSchema().Status == StatusOK {
+		result.Probes = append(result.Probes, c.toolsJSONSchemaProbe(ctx, simpleEffort))
+	}
 	return result
 }
 
@@ -373,6 +392,10 @@ func (r Result) ConfiguredJSONOutput() ProbeResult {
 
 func (r Result) ConfiguredJSONSchema() ProbeResult {
 	return r.probeByName("configured_json_schema")
+}
+
+func (r Result) ConfiguredToolsJSONSchema() ProbeResult {
+	return r.probeByName("configured_tools_json_schema")
 }
 
 func (r Result) probeByName(name string) ProbeResult {
@@ -480,6 +503,83 @@ func (c *Checker) toolsProbe(ctx context.Context, effort string) ProbeResult {
 			}
 			probe.Status = StatusFailed
 			probe.Error = "model stopped before required tool sequence completed"
+			return probe
+		}
+		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
+		for _, call := range resp.ToolCalls {
+			content, err := executeToolCall(ctx, engine, call, allowedTools, &listed)
+			if err != nil {
+				c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateError, fmt.Sprintf("%s error=%q", call.Name, err.Error()))
+				probe.Status = StatusFailed
+				probe.Error = err.Error()
+				return probe
+			}
+			c.logProgressFor(c.probeInfo(probe.Name, probe.ReasoningEffort), logging.StageTool, logging.StateOK, call.Name)
+			messages = append(messages, llm.Message{Role: "tool", ToolCallID: call.ID, Name: call.Name, Content: content})
+		}
+	}
+	probe.Status = StatusFailed
+	probe.Error = "tool probe exceeded maximum rounds"
+	return probe
+}
+
+// toolsJSONSchemaProbe exercises tool calling and the API-enforced json_schema
+// response format in a single request — the shape every real agent call uses.
+// Some runtimes pass the separate tools and json_schema probes but suppress
+// tool calls once both are combined (guided decoding constrains generation to
+// the schema, making tool-call tokens unreachable); this probe catches that so
+// the json_schema fallback can disable the response format for the run.
+func (c *Checker) toolsJSONSchemaProbe(ctx context.Context, effort string) ProbeResult {
+	probe := ProbeResult{Name: "configured_tools_json_schema", ReasoningEffort: effort, Tools: true}
+	c.logProbeStart(probe)
+	defer func() { c.logProbeResult(probe) }()
+	sec := c.openSection("configured_tools_json_schema", effort)
+	defer sec.End()
+	rs := checkReasoningSnippet()
+	engine := newMemoryEngine(map[string]string{
+		"README.md":       "# Fixture\nNickPit model check fixture.\n",
+		"internal/app.go": "package internal\n\nfunc Check() string { return \"ok\" }\n",
+	})
+	messages := []llm.Message{
+		{Role: "system", Content: mustRenderCheckPrompt("check_tools_system.tmpl", struct{ ReasoningSnippet string }{rs})},
+		{Role: "user", Content: mustRenderCheckPrompt("check_tools_json_schema_user.tmpl", struct{ OutputSchemaSnippet string }{jsonProbeExample})},
+	}
+	listed := false
+	tools, err := toolcatalog.Definitions("list_files")
+	if err != nil {
+		probe.Status = StatusFailed
+		probe.Error = err.Error()
+		return probe
+	}
+	allowedTools := toolSet(tools)
+	for range 8 {
+		req := c.baseRequest(effort, messages, tools, probeRetryAnyError)
+		req.Schema = jsonProbeSchema
+		req.SchemaKind = llm.SchemaKindJSON
+		if sec != nil {
+			req.ReasoningSink = sec
+		}
+		resp, err := c.reviewProbeWithMode(ctx, req, sec, probe, probeRetryAnyError)
+		if err != nil {
+			probe = classifyProbeError(probe, err)
+			return probe
+		}
+		probe.Reasoned = probe.Reasoned || resp.Reasoned
+		if resp.ReasoningEffort != "" {
+			probe.ReasoningEffort = resp.ReasoningEffort
+		}
+		if len(resp.ToolCalls) == 0 {
+			if !listed {
+				probe.Status = StatusFailed
+				probe.Error = "model made no tool calls while the json_schema response format was active"
+				return probe
+			}
+			if err := validateJSONProbeResponse(resp.RawResponse); err != nil {
+				probe.Status = StatusFailed
+				probe.Error = err.Error()
+				return probe
+			}
+			probe.Status = StatusOK
 			return probe
 		}
 		messages = append(messages, llm.Message{Role: "assistant", ToolCalls: resp.ToolCalls})
