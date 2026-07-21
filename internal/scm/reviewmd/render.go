@@ -6,10 +6,15 @@
 package reviewmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/dedupe"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -121,6 +126,621 @@ func CollectPriorFindings(body string, out *[]model.Finding) {
 	}
 }
 
+// ReviewMarkerPrefix opens the summary-note carrier that holds the overall
+// verdict and identifying metadata for one review run. Its payload is a gzipped,
+// base64-encoded reviewEnvelope. Grouped with the per-finding carriers by the
+// shared review id, it lets a later reader (e.g. the discussion agent)
+// reconstruct the full ReviewResult straight from the MR/PR notes.
+const ReviewMarkerPrefix = MarkerOpen + "review:"
+
+// ChatReplyMarkerPrefix opens the fallback chat-reply carrier: a hidden marker
+// on a TOP-LEVEL note that answers a discussion whose GitLab version rejects
+// threaded replies (see ChatReplyEnvelope).
+const ChatReplyMarkerPrefix = MarkerOpen + "chatreply:"
+
+// FindingMarkerPrefix opens the per-finding carrier that holds one complete
+// model.Finding (body, suggestions, verification, finalization, summarization).
+// Its payload is a gzipped, base64-encoded findingEnvelope.
+const FindingMarkerPrefix = MarkerOpen + "finding:"
+
+// maxCarrierDecodedBytes caps how much a single carrier payload may expand to
+// when decompressed. Carrier markers are read from arbitrary MR/PR comments, so
+// a hostile commenter could craft a small gzip payload that expands to gigabytes
+// (a zip bomb). A finding envelope is at most a few hundred KB even for a large
+// finding, so this bound is far above any legitimate payload while stopping the
+// decompression from exhausting memory.
+const maxCarrierDecodedBytes = 8 << 20 // 8 MiB
+
+// maxCarrierTotalDecodedBytes bounds the AGGREGATE decompressed bytes one
+// comment body may cause across all its carrier markers, and
+// maxCarriersPerBody bounds their count. Without these a commenter could pack
+// many small envelopes that each expand just below the per-marker cap and
+// exhaust memory in one scan.
+const (
+	maxCarrierTotalDecodedBytes = 16 << 20 // 16 MiB
+	maxCarriersPerBody          = 256
+)
+
+// carrierBudget tracks the aggregate decompression work spent on one comment
+// body so hostile marker floods stop scanning instead of exhausting memory.
+type carrierBudget struct {
+	bytes   int
+	markers int
+}
+
+func (b *carrierBudget) allow() bool {
+	return b.bytes < maxCarrierTotalDecodedBytes && b.markers < maxCarriersPerBody
+}
+
+func (b *carrierBudget) spend(decodedBytes int) {
+	b.bytes += decodedBytes
+	b.markers++
+}
+
+// ReviewEnvelope is the summary-note carrier payload: the overall verdict plus
+// the source identity needed to recreate the diff. Findings are carried
+// separately, one per FindingEnvelope, so no single note grows unbounded.
+// ReviewResult.BaseURL is deliberately NOT carried: it is the LLM endpoint —
+// potentially a private hostname or a URL with credentials — which anyone able
+// to view the MR/PR could read out of the hidden comment, and reassembly never
+// needs it (the SCM URL comes from the profile at chat time).
+type ReviewEnvelope struct {
+	ReviewID               string    `json:"rid"`
+	CreatedAt              time.Time `json:"at,omitzero"`
+	OverallCorrectness     string    `json:"correctness,omitempty"`
+	OverallExplanation     string    `json:"explanation,omitempty"`
+	OverallConfidenceScore float64   `json:"confidence,omitempty"`
+	Repo                   string    `json:"repo,omitempty"`
+	Mode                   string    `json:"mode,omitempty"`
+	Identifier             int       `json:"identifier,omitempty"`
+	BaseRef                string    `json:"base_ref,omitempty"`
+	HeadRef                string    `json:"head_ref,omitempty"`
+	Model                  string    `json:"model,omitempty"`
+	// FindingsTotal declares how many findings this review published across its
+	// carriers. Reassembly uses it to reject a review whose finding envelopes
+	// have not all landed yet — the summary (which carries this envelope) is
+	// posted before the per-finding notes, so a reply arriving mid-publish must
+	// not be answered from a partial finding set. Zero (envelopes written before
+	// the field existed, or a findings-free review) declares nothing.
+	FindingsTotal int `json:"nf,omitempty"`
+	// Context carries the review's context-shaping options (path/content
+	// filters, budgets), so a chat rebuilt from MR/PR markers recreates the
+	// SAME filtered context — never files the review deliberately withheld.
+	Context *model.ContextOptions `json:"ctx,omitempty"`
+	// Ref marks a routing-only reference: when the full envelope is too large to
+	// ride in the visible summary, the summary carries a tiny ref (review id
+	// only) so replies beneath it still route to the discussion agent, while the
+	// full envelope lives in a separate carrier note. Reassembly skips refs so
+	// the stub can never blank the full envelope's fields.
+	Ref bool `json:"ref,omitempty"`
+}
+
+// FindingEnvelope is the per-finding carrier payload: the review id it belongs to
+// and one complete finding. Ref marks a routing-only reference: when a finding's
+// full payload is too large to ride in its visible comment, the comment carries a
+// tiny ref envelope (review id + finding id) so replies beneath it still route to
+// the discussion agent, while the full payload lives in a separate carrier note.
+// Reassembly skips refs so the stub can never shadow the full finding.
+type FindingEnvelope struct {
+	ReviewID string        `json:"rid"`
+	Finding  model.Finding `json:"finding"`
+	Ref      bool          `json:"ref,omitempty"`
+}
+
+// ReviewMarker renders the hidden summary-note carrier for result. It returns ""
+// when result has no review id (nothing to group by). gzip keeps large payloads
+// inside the platform note-size limits; base64.StdEncoding keeps the payload free
+// of "-->" and the MarkerOpen token, so it can neither close the marker early nor
+// be forged from untrusted text.
+func ReviewMarker(result *model.ReviewResult) string {
+	marker, _ := reviewMarkerWithSize(result, nil)
+	return marker
+}
+
+// reviewMarkerWithSize is ReviewMarker plus the payload's decoded (raw JSON)
+// size, for the carrier chunking budget. contextOpts, when non-nil, rides in
+// the envelope so MR/PR-reassembled chats rebuild the review's filtered
+// context.
+func reviewMarkerWithSize(result *model.ReviewResult, contextOpts *model.ContextOptions) (string, int) {
+	if result == nil || result.ReviewID == "" {
+		return "", 0
+	}
+	// FindingsTotal declares only findings whose carrier the reader will accept
+	// (encodeMarker refuses payloads past the decoded budget). Declaring an
+	// un-carriable finding would make the completeness gate reject the review
+	// forever, breaking every chat on the MR.
+	carriable := 0
+	for _, finding := range result.Findings {
+		if marker, _ := findingMarkerWithSize(result.ReviewID, finding); marker != "" {
+			carriable++
+		}
+	}
+	return encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{
+		ReviewID:               result.ReviewID,
+		CreatedAt:              result.CreatedAt,
+		OverallCorrectness:     result.OverallCorrectness,
+		OverallExplanation:     result.OverallExplanation,
+		OverallConfidenceScore: result.OverallConfidenceScore,
+		Repo:                   result.Repo,
+		Mode:                   result.Mode,
+		Identifier:             result.Identifier,
+		BaseRef:                result.BaseRef,
+		HeadRef:                result.HeadRef,
+		Model:                  result.Model,
+		FindingsTotal:          carriable,
+		Context:                contextOpts,
+	})
+}
+
+// FindingMarker renders the hidden per-finding carrier for finding under review
+// id reviewID. It returns "" when reviewID is empty.
+func FindingMarker(reviewID string, finding model.Finding) string {
+	marker, _ := findingMarkerWithSize(reviewID, finding)
+	return marker
+}
+
+// findingMarkerWithSize is FindingMarker plus the payload's decoded (raw JSON)
+// size, which chunked carrier publishing needs to stay inside the reader's
+// per-body decompression budget.
+func findingMarkerWithSize(reviewID string, finding model.Finding) (string, int) {
+	if reviewID == "" {
+		return "", 0
+	}
+	return encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: finding})
+}
+
+// reviewRefMarker renders the tiny routing-only reference envelope (see
+// ReviewEnvelope.Ref) embedded in a visible summary whose full carrier was
+// externalized for size.
+func reviewRefMarker(reviewID string) string {
+	if reviewID == "" {
+		return ""
+	}
+	marker, _ := encodeMarker(ReviewMarkerPrefix, ReviewEnvelope{ReviewID: reviewID, Ref: true})
+	return marker
+}
+
+// findingRefMarker renders the tiny routing-only reference envelope (see
+// FindingEnvelope.Ref) embedded in a visible finding comment whose full carrier
+// was externalized for size.
+func findingRefMarker(reviewID, findingID string) string {
+	if reviewID == "" {
+		return ""
+	}
+	marker, _ := encodeMarker(FindingMarkerPrefix, FindingEnvelope{ReviewID: reviewID, Finding: model.Finding{ID: findingID}, Ref: true})
+	return marker
+}
+
+// ChatReplyEnvelope binds a fallback top-level chat answer to the discussion
+// and note it answered. Some GitLab versions reject replies to individual-note
+// discussions with a 4xx; the discussion agent then posts its answer as a plain
+// MR note carrying this envelope so the threaded conversation state survives:
+// a later read merges the answer back into the thread (the answered question
+// is not re-answered on redelivery, and follow-up turns see the assistant's
+// prior reply). Only envelopes on notes authored by the bot itself are trusted
+// — markers are encoded, not authenticated.
+type ChatReplyEnvelope struct {
+	DiscussionID   string `json:"did"`
+	AnsweredNoteID int    `json:"note"`
+}
+
+// ChatReplyMarker renders the hidden fallback chat-reply marker. It returns ""
+// when discussionID is empty (nothing to bind to).
+func ChatReplyMarker(discussionID string, answeredNoteID int) string {
+	if discussionID == "" {
+		return ""
+	}
+	marker, _ := encodeMarker(ChatReplyMarkerPrefix, ChatReplyEnvelope{DiscussionID: discussionID, AnsweredNoteID: answeredNoteID})
+	return marker
+}
+
+// CollectChatReplyEnvelopes decodes the fallback chat-reply carriers found in
+// body, bounded by the per-body carrier budget.
+func CollectChatReplyEnvelopes(body string) []ChatReplyEnvelope {
+	var out []ChatReplyEnvelope
+	budget := &carrierBudget{}
+	scanMarkers(body, ChatReplyMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env ChatReplyEnvelope
+		n, ok := decodeMarker(raw, &env)
+		budget.spend(n)
+		if ok {
+			out = append(out, env)
+		}
+		return true
+	})
+	return out
+}
+
+// encodeMarker gzips and base64-encodes payload into a hidden marker opened by
+// prefix, also returning the payload's decoded (pre-compression) size. A
+// marshal/compress failure yields "" so a publish never aborts on it. A payload
+// past the reader's per-marker decompression budget is refused here on the
+// WRITER side too: decodeMarker would reject it forever, so publishing it would
+// poison the MR — e.g. the completeness gate would fail every chat on it with a
+// retryable-looking error.
+func encodeMarker(prefix string, payload any) (string, int) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", 0
+	}
+	if len(raw) > maxCarrierDecodedBytes {
+		return "", 0
+	}
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(raw); err != nil {
+		return "", 0
+	}
+	if err := zw.Close(); err != nil {
+		return "", 0
+	}
+	return prefix + base64.StdEncoding.EncodeToString(buf.Bytes()) + " -->", len(raw)
+}
+
+// decodeMarker reverses encodeMarker into out. decodedBytes reports the bytes
+// actually decompressed (spent even when the payload turns out not to be valid
+// JSON), so callers can budget aggregate decompression work across a body. It
+// reports ok=false on any decode failure so one corrupt carrier can never abort
+// a scan.
+func decodeMarker(raw string, out any) (decodedBytes int, ok bool) {
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, false
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = zr.Close() }()
+	// Bound decompression to defend against zip-bomb payloads in untrusted
+	// comments: read one byte past the cap and reject anything that reaches it.
+	decoded, err := io.ReadAll(io.LimitReader(zr, maxCarrierDecodedBytes+1))
+	if err != nil {
+		return len(decoded), false
+	}
+	if len(decoded) > maxCarrierDecodedBytes {
+		return len(decoded), false
+	}
+	return len(decoded), json.Unmarshal(decoded, out) == nil
+}
+
+// scanMarkers walks body for every carrier opened by prefix, handing each raw
+// (undecoded) payload to fn until fn returns false. Payloads cannot contain
+// "-->" (base64 has no '-'), so the close scan is unambiguous.
+func scanMarkers(body, prefix string, fn func(raw string) bool) {
+	rest := body
+	for {
+		i := strings.Index(rest, prefix)
+		if i < 0 {
+			return
+		}
+		rest = rest[i+len(prefix):]
+		j := strings.Index(rest, "-->")
+		if j < 0 {
+			return
+		}
+		if !fn(strings.TrimSpace(rest[:j])) {
+			return
+		}
+		rest = rest[j+3:]
+	}
+}
+
+// CollectReviewEnvelopes decodes the review carriers found in body, bounded by
+// the per-body carrier budget.
+func CollectReviewEnvelopes(body string) []ReviewEnvelope {
+	var out []ReviewEnvelope
+	budget := &carrierBudget{}
+	scanMarkers(body, ReviewMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env ReviewEnvelope
+		n, ok := decodeMarker(raw, &env)
+		budget.spend(n)
+		if ok {
+			out = append(out, env)
+		}
+		return true
+	})
+	return out
+}
+
+// CollectFindingEnvelopes decodes the finding carriers found in body, bounded by
+// the per-body carrier budget.
+func CollectFindingEnvelopes(body string) []FindingEnvelope {
+	var out []FindingEnvelope
+	budget := &carrierBudget{}
+	scanMarkers(body, FindingMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env FindingEnvelope
+		n, ok := decodeMarker(raw, &env)
+		budget.spend(n)
+		if ok {
+			out = append(out, env)
+		}
+		return true
+	})
+	return out
+}
+
+// DetectThreadReview inspects a discussion's root note body for a nickpit carrier
+// marker. A finding carrier pins a chat to that finding; a review carrier means a
+// whole-review chat. It reports ok=false when the note carries no nickpit marker,
+// i.e. the thread was not started by nickpit. Scanning stops at the first valid
+// envelope and shares the per-body decompression budget, so a hostile body cannot
+// force unbounded work.
+func DetectThreadReview(rootBody string) (reviewID, findingID string, ok bool) {
+	budget := &carrierBudget{}
+	scanMarkers(rootBody, FindingMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env FindingEnvelope
+		n, good := decodeMarker(raw, &env)
+		budget.spend(n)
+		if good && env.ReviewID != "" {
+			reviewID, findingID, ok = env.ReviewID, env.Finding.ID, true
+			return false
+		}
+		return true
+	})
+	if ok {
+		return reviewID, findingID, true
+	}
+	scanMarkers(rootBody, ReviewMarkerPrefix, func(raw string) bool {
+		if !budget.allow() {
+			return false
+		}
+		var env ReviewEnvelope
+		n, good := decodeMarker(raw, &env)
+		budget.spend(n)
+		if good && env.ReviewID != "" {
+			reviewID, ok = env.ReviewID, true
+			return false
+		}
+		return true
+	})
+	return reviewID, findingID, ok
+}
+
+// UniqueFindingsByID drops findings whose id already appeared earlier in the
+// slice (first occurrence wins; findings without an id are kept). Publishers use
+// it so overlapping missing-carrier bookkeeping never serializes the same
+// finding envelope into the fallback carrier notes twice.
+func UniqueFindingsByID(findings []model.Finding) []model.Finding {
+	if len(findings) < 2 {
+		return findings
+	}
+	seen := make(map[string]struct{}, len(findings))
+	out := findings[:0:0]
+	for _, finding := range findings {
+		if finding.ID != "" {
+			if _, dup := seen[finding.ID]; dup {
+				continue
+			}
+			seen[finding.ID] = struct{}{}
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
+// StripMarkers removes every nickpit hidden marker (`<!-- nickpit:... -->`) from
+// s. SCM adapters apply it when normalizing existing comments into prompt
+// context, so the (potentially large) carrier payloads are never re-sent to the
+// model as opaque comment text; the raw bodies remain available separately for
+// carrier reassembly.
+func StripMarkers(s string) string {
+	if !strings.Contains(s, MarkerOpen) {
+		// Trim like the marker path below does, so "was this body only
+		// markers/whitespace?" checks behave identically on both paths.
+		return strings.TrimSpace(s)
+	}
+	var b strings.Builder
+	rest := s
+	for {
+		i := strings.Index(rest, MarkerOpen)
+		if i < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:i])
+		j := strings.Index(rest[i:], "-->")
+		if j < 0 {
+			// Unterminated marker: drop the tail rather than re-sending it.
+			break
+		}
+		rest = rest[i+j+3:]
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// IsStaleCarrierBody reports whether body is a pure carrier note — nothing
+// visible after markers are stripped — belonging entirely to reviews OTHER
+// than currentReviewID and not protected. Such notes are the hidden fallback
+// chunks of a previous run, superseded by the current run's carriers;
+// publishers delete them so a daemon-watched MR does not accumulate one blank
+// bot-note timeline per push. protected lists review ids that VISIBLE comments
+// still reference via routing-only ref markers (see RefReviewIDs): an
+// oversized summary or finding left only a stub behind, and its full payload
+// lives exclusively in a carrier note — deleting that note would leave a
+// routable thread root whose review can never be reassembled. Deliberately
+// conservative: any visible text, any envelope of the current or a protected
+// review, any chat-reply marker, or no decodable carrier at all means "not
+// stale".
+func IsStaleCarrierBody(body, currentReviewID string, protected map[string]struct{}) bool {
+	if currentReviewID == "" || StripMarkers(body) != "" {
+		return false
+	}
+	if len(CollectChatReplyEnvelopes(body)) > 0 {
+		return false
+	}
+	keep := func(rid string) bool {
+		if rid == "" || rid == currentReviewID {
+			return true
+		}
+		_, ok := protected[rid]
+		return ok
+	}
+	carriers := 0
+	for _, env := range CollectReviewEnvelopes(body) {
+		if keep(env.ReviewID) {
+			return false
+		}
+		carriers++
+	}
+	for _, env := range CollectFindingEnvelopes(body) {
+		if keep(env.ReviewID) {
+			return false
+		}
+		carriers++
+	}
+	return carriers > 0
+}
+
+// RefReviewIDs returns the review ids that VISIBLE comments still reference
+// via routing-only ref markers — the stubs left behind when an oversized
+// summary or finding externalized its full envelope into a carrier note. The
+// carrier notes of these reviews must survive pruning: the stub routes replies
+// to the review but carries no payload of its own. Pure carrier bodies protect
+// nothing (they are the candidates being pruned).
+func RefReviewIDs(bodies []string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, body := range bodies {
+		if StripMarkers(body) == "" {
+			continue
+		}
+		for _, env := range CollectReviewEnvelopes(body) {
+			if env.Ref && env.ReviewID != "" {
+				out[env.ReviewID] = struct{}{}
+			}
+		}
+		for _, env := range CollectFindingEnvelopes(body) {
+			if env.Ref && env.ReviewID != "" {
+				out[env.ReviewID] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+// ReviewResultsByID reassembles complete ReviewResults from the carrier markers
+// spread across the given note/comment bodies, keyed by review id. The overall
+// verdict and metadata come from each review carrier; findings are collected from
+// the per-finding carriers. Findings are de-duplicated by id within a review so a
+// finding that appears in both the notes list and the discussions list (GitLab
+// returns discussion notes in both) is not counted twice. Only review ids
+// observed in a full (non-reference) review envelope are exposed: orphaned
+// finding carriers attach to nothing, and reviews whose envelope declares a
+// finding count (FindingsTotal) that the collected carriers do not reach are
+// omitted entirely — see the completeness gate below.
+func ReviewResultsByID(bodies []string) map[string]*model.ReviewResult {
+	byID := make(map[string]*model.ReviewResult)
+	seen := make(map[string]map[string]struct{})
+	expected := make(map[string]int)
+	get := func(rid string) *model.ReviewResult {
+		r := byID[rid]
+		if r == nil {
+			r = &model.ReviewResult{ReviewID: rid}
+			byID[rid] = r
+			seen[rid] = make(map[string]struct{})
+		}
+		return r
+	}
+	for _, body := range bodies {
+		for _, env := range CollectReviewEnvelopes(body) {
+			if env.ReviewID == "" {
+				continue
+			}
+			// Routing-only references carry no payload; skipping them here means
+			// a stub can never blank the full envelope's fields from the carrier
+			// note, regardless of note order.
+			if env.Ref {
+				continue
+			}
+			r := get(env.ReviewID)
+			r.CreatedAt = env.CreatedAt
+			r.OverallCorrectness = env.OverallCorrectness
+			r.OverallExplanation = env.OverallExplanation
+			r.OverallConfidenceScore = env.OverallConfidenceScore
+			r.Repo = env.Repo
+			r.Mode = env.Mode
+			r.Identifier = env.Identifier
+			r.BaseRef = env.BaseRef
+			r.HeadRef = env.HeadRef
+
+			r.Model = env.Model
+			if env.Context != nil {
+				r.ContextOptions = env.Context
+			}
+			if env.FindingsTotal > expected[env.ReviewID] {
+				expected[env.ReviewID] = env.FindingsTotal
+			}
+		}
+	}
+	for _, body := range bodies {
+		for _, env := range CollectFindingEnvelopes(body) {
+			if env.ReviewID == "" {
+				continue
+			}
+			// Routing-only references carry no payload; skipping them here means a
+			// stub can never shadow the full finding from the carrier note,
+			// regardless of note order.
+			if env.Ref {
+				continue
+			}
+			// Findings attach only to reviews whose full envelope was collected
+			// (the loop above ran over every body already). A finding carrier can
+			// exist without its envelope — posted first while the summary post is
+			// still in flight, or the summary/carrier post failed — and a
+			// finding-only result would expose blank verdict metadata and a
+			// partial set that the count-based completeness gate below cannot
+			// vet, because expected is populated from envelopes alone.
+			r := byID[env.ReviewID]
+			if r == nil {
+				continue
+			}
+			// Dedup key: the finding id, or (for the id-less case the pipeline
+			// never produces but the format permits) the full serialized finding.
+			// GitLab lists every note through both the notes and discussions
+			// endpoints, so without a key an id-less finding would double-count
+			// and could inflate past the FindingsTotal completeness gate.
+			key := env.Finding.ID
+			if key == "" {
+				if raw, err := json.Marshal(env.Finding); err == nil {
+					key = "content:" + string(raw)
+				}
+			}
+			if key != "" {
+				if _, dup := seen[env.ReviewID][key]; dup {
+					continue
+				}
+				seen[env.ReviewID][key] = struct{}{}
+			}
+			r.Findings = append(r.Findings, env.Finding)
+		}
+	}
+	// A review whose envelope declares more findings than could be collected is
+	// incomplete: its publish is still in flight (the summary carrying the
+	// envelope posts before the per-finding notes), or some carrier posts failed
+	// permanently. Expose only complete reviews — answering from a partial set
+	// would break the discussion's guarantee that the agent sees the COMPLETE
+	// review. Envelopes without a declared count (written before the field
+	// existed) are never dropped.
+	for rid, want := range expected {
+		if r := byID[rid]; r != nil && len(r.Findings) < want {
+			delete(byID, rid)
+		}
+	}
+	return byID
+}
+
 // Priors holds what a prior run left on a pull/merge request: the raw markers
 // (for the exact summary-marker check) and the reconstructed finding shells (for
 // per-finding dedup). Both SCM publishers build it from the existing comments.
@@ -175,6 +795,36 @@ func Sanitize(s string) string {
 	return strings.ReplaceAll(s, MarkerOpen, "&lt;"+strings.TrimPrefix(MarkerOpen, "<"))
 }
 
+// quickActionLine matches a line GitLab would parse as a quick action: a "/"
+// followed by a letter at the start of the line. Up to three leading spaces or
+// tabs are included defensively; four or more spaces form an indented code
+// block, which GitLab renders as code instead of executing.
+var quickActionLine = regexp.MustCompile(`^[ \t]{0,3}/[a-zA-Z]`)
+
+// EscapeQuickActions defuses GitLab quick-action syntax in untrusted text
+// posted to the Notes API. A note line starting with "/command" executes under
+// the POSTER's identity and privileges (/merge, /close, /approve, ...), and
+// chat replies are model-generated — a commenter could prompt the model into
+// emitting one. The leading slash is backslash-escaped: "/" is ASCII
+// punctuation, so CommonMark renders "\/" as a plain "/", while GitLab's
+// quick-action parser no longer recognizes the line. Escaping is applied to
+// every line, including fenced code blocks, where the backslash stays visible —
+// a small cosmetic cost that avoids depending on our fence detection matching
+// GitLab's parser exactly.
+func EscapeQuickActions(s string) string {
+	if !strings.Contains(s, "/") {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if quickActionLine.MatchString(line) {
+			idx := strings.IndexByte(line, '/')
+			lines[i] = line[:idx] + `\` + line[idx:]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // hardBreakParagraphs appends a markdown hard break to each rendered prose line
 // outside fenced code blocks, so GitHub/GitLab preserve the intended spacing.
 func hardBreakParagraphs(s string) string {
@@ -205,8 +855,14 @@ func isFenceLine(trimmed string) bool {
 	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
 }
 
+// sanitizeWithHardBreaks prepares model-generated prose for posting: control
+// characters and marker lookalikes are defused (Sanitize), GitLab quick-action
+// lines are escaped — a prompt injection in the diff or MR comments could
+// steer the reviewer model into emitting "/merge" on its own line, which the
+// Notes API would execute under the bot's identity — and markdown hard breaks
+// are applied.
 func sanitizeWithHardBreaks(s string) string {
-	return hardBreakParagraphs(Sanitize(s))
+	return hardBreakParagraphs(EscapeQuickActions(Sanitize(s)))
 }
 
 // ConfidencePercent renders a 0..1 confidence score as "(NN% confidence)".
@@ -234,6 +890,29 @@ func CorrectnessName(correctness string) string {
 type Renderer struct {
 	// assetBaseURL is the badge SVG host, always normalized to a trailing "/".
 	assetBaseURL string
+	// reviewID, when set (see ForReview), is embedded as a hidden per-finding
+	// carrier marker so findings can later be regrouped by review run. SummaryBody
+	// reads the id from the result directly and does not need this.
+	reviewID string
+	// contextOpts, when set (see WithContextOptions), rides in the review
+	// envelope so MR/PR-reassembled chats rebuild the review's FILTERED context
+	// instead of the then-current configuration's.
+	contextOpts *model.ContextOptions
+}
+
+// ForReview returns a copy of the renderer bound to reviewID, so FindingBody
+// emits the hidden per-finding carrier marker for that run. Renderer is a value
+// type, so this never mutates the shared renderer.
+func (r Renderer) ForReview(reviewID string) Renderer {
+	r.reviewID = reviewID
+	return r
+}
+
+// WithContextOptions returns a copy of the renderer that embeds the review's
+// context-shaping options in every review envelope it emits.
+func (r Renderer) WithContextOptions(opts *model.ContextOptions) Renderer {
+	r.contextOpts = opts
+	return r
 }
 
 // NewRenderer normalizes a user-supplied badge host: empty falls back to
@@ -270,6 +949,16 @@ func (r Renderer) PriorityBadge(rank int) string {
 
 // SummaryBody renders the overall verdict comment, tagged with SummaryMarker.
 func (r Renderer) SummaryBody(result *model.ReviewResult) string {
+	body, _ := r.SummaryBodyCarried(result)
+	return body
+}
+
+// SummaryBodyCarried is SummaryBody plus whether the review envelope actually
+// rode along. Like finding carriers, the envelope is omitted when it would push
+// the visible summary past the platform size limit — a long overall explanation
+// must still publish; publishers use carried=false to externalize the envelope
+// into the fallback carrier notes instead.
+func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) {
 	var b strings.Builder
 	b.WriteString(SummaryMarker)
 	b.WriteString("\n")
@@ -282,12 +971,94 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 	} else {
 		fmt.Fprintf(&b, "%s  \n%s  \n", r.CorrectnessBadge(correctness), ConfidenceLine(result.OverallConfidenceScore))
 	}
-	if explanation := Sanitize(strings.TrimSpace(result.OverallExplanation)); explanation != "" {
+	if explanation := EscapeQuickActions(Sanitize(strings.TrimSpace(result.OverallExplanation))); explanation != "" {
 		b.WriteString("\n")
 		b.WriteString(hardBreakParagraphs(explanation))
 		b.WriteString("\n")
 	}
-	return b.String()
+	marker, _ := reviewMarkerWithSize(result, r.contextOpts)
+	if marker != "" && b.Len()+1+len(marker) <= carrierNoteMaxBytes {
+		b.WriteString("\n")
+		b.WriteString(marker)
+		return b.String(), true
+	}
+	// The full envelope is externalized into a carrier note; keep a tiny
+	// routing-only reference in the visible summary so DetectThreadReview still
+	// recognizes replies under it and routes them to the discussion agent. The
+	// carrier note cannot do that — it is never a thread root. SummaryMarker
+	// alone would not either: it carries no review id.
+	if ref := reviewRefMarker(result.ReviewID); ref != "" {
+		b.WriteString("\n")
+		b.WriteString(ref)
+	}
+	return b.String(), false
+}
+
+// carrierNoteMaxBytes bounds one carrier note body. GitHub caps comments at
+// 65,536 characters (GitLab at ~1M); staying under the stricter limit keeps
+// carrier chunks postable on both platforms. A single oversized marker still
+// gets its own chunk — the post may fail, which surfaces as a publish warning
+// rather than silently dropping the finding.
+const carrierNoteMaxBytes = 60_000
+
+// carrierNoteMaxDecodedBytes bounds the DECODED (pre-compression) payload total
+// of one carrier note. Highly compressible envelopes can pack far more than the
+// reader's per-body decompression budget under the encoded byte bound alone;
+// the reader would then stop mid-body and silently drop the rest. Half the
+// reader budget leaves comfortable margin.
+const carrierNoteMaxDecodedBytes = maxCarrierTotalDecodedBytes / 2
+
+// CarrierNotes renders hidden note bodies carrying the review envelope plus one
+// finding envelope per given finding, split into chunks bounded by size and by
+// the reader's per-body marker budget. It exists so a run whose visible posts
+// are incomplete — a re-review with the summary and duplicate findings
+// suppressed for idempotency, or a publish where some posts failed — still
+// leaves the full data on the MR/PR for a later chat to reassemble by review
+// id. Callers pass only the findings that lack their own per-finding carrier.
+// The bodies are only HTML-comment markers, so they render empty. Returns nil
+// when the result has no review id.
+func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Finding) []string {
+	if result == nil || result.ReviewID == "" {
+		return nil
+	}
+	var notes []string
+	var b strings.Builder
+	markers, decoded := 0, 0
+	flush := func() {
+		if b.Len() > 0 {
+			notes = append(notes, b.String())
+			b.Reset()
+			markers, decoded = 0, 0
+		}
+	}
+	if marker, size := reviewMarkerWithSize(result, r.contextOpts); marker != "" {
+		b.WriteString(marker)
+		markers++
+		decoded += size
+	}
+	for _, finding := range findings {
+		marker, size := findingMarkerWithSize(result.ReviewID, finding)
+		if marker == "" {
+			continue
+		}
+		// Flush on any bound: encoded note size (SCM comment limits), marker
+		// count, or decoded payload total (the reader's per-body decompression
+		// budget — highly compressible envelopes can blow it while staying small
+		// encoded, and the reader would silently drop the tail).
+		if b.Len() > 0 && (b.Len()+1+len(marker) > carrierNoteMaxBytes ||
+			markers >= maxCarriersPerBody ||
+			decoded+size > carrierNoteMaxDecodedBytes) {
+			flush()
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(marker)
+		markers++
+		decoded += size
+	}
+	flush()
+	return notes
 }
 
 // FindingBody renders a finding as markdown, tagged with its FingerprintMarker. When
@@ -295,9 +1066,20 @@ func (r Renderer) SummaryBody(result *model.ReviewResult) string {
 // cannot be anchored inline) it is shown after the badge/confidence block so the
 // location is still visible without an inline anchor.
 func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) string {
+	body, _ := r.FindingBodyCarried(finding, locationPrefix)
+	return body
+}
+
+// FindingBodyCarried is FindingBody plus whether the full-finding carrier
+// marker actually rode along. The carrier is omitted when it would push the
+// comment past the platform size limit — an unusually long (e.g. imported)
+// finding must still publish its visible text; carrier metadata is never worth
+// losing the comment over. Publishers use carried=false to route the finding
+// into the chunked fallback carrier notes instead.
+func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix string) (string, bool) {
 	title, body, rank, confidence := FindingDisplay(finding)
+	fingerprint := FingerprintMarker(finding, title)
 	var b strings.Builder
-	b.WriteString(FingerprintMarker(finding, title))
 	b.WriteString("\n\n")
 	// Trailing two spaces: markdown hard break stacking badge over confidence.
 	fmt.Fprintf(&b, "%s  \n%s  \n\n", r.PriorityBadge(rank), ConfidenceLine(confidence))
@@ -322,7 +1104,33 @@ func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) stri
 			fmt.Fprintf(&b, "\n- %s", formatted)
 		}
 	}
-	return b.String()
+	visible := b.String()
+	carrier := FindingMarker(r.reviewID, finding)
+	// The carried decision must be independent of the locationPrefix variant:
+	// the same finding is rendered with and without a "`file:line`" prefix
+	// across inline posts and their general-comment fallbacks, and a
+	// near-boundary finding must not carry in one render while silently dropping
+	// the carrier in the other (publishers record the decision once). The prefix
+	// block is therefore excluded from the measurement, and a slack larger than
+	// any OS-length path keeps the real, prefixed body under the platform limit.
+	const carrierNoteSizeSlack = 8192
+	prefixBlockLen := 0
+	if locationPrefix != "" {
+		prefixBlockLen = len(locationPrefix) + len("  \n\n")
+	}
+	decisionLen := len(fingerprint) + 1 + len(carrier) + len(visible) - prefixBlockLen
+	carried := carrier != "" && decisionLen+carrierNoteSizeSlack <= carrierNoteMaxBytes
+	if carried {
+		return fingerprint + "\n" + carrier + visible, true
+	}
+	// The full payload is externalized to a separate carrier note, but the
+	// visible comment keeps a tiny routing reference: without it, a reply in
+	// this finding's thread would fail the daemon's root-marker gate and be
+	// silently ignored.
+	if ref := findingRefMarker(r.reviewID, finding.ID); ref != "" {
+		return fingerprint + "\n" + ref + visible, false
+	}
+	return fingerprint + visible, false
 }
 
 // FindingDisplay prefers the finalized title/body/priority/confidence when a

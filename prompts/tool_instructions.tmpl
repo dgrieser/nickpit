@@ -3,6 +3,8 @@
 In some cases you might still need more code context; if necessary, use the following tools:
 {{else if eq .AgentRole "verify"}}Multiple senior engineers already collected the code context needed.
 In the rare case that you still need more code context for your verification, use the following tools:
+{{else if eq .AgentRole "discuss"}}You already have the review context, the diff, and the findings.
+When you need to read more of the code to answer accurately, use the following tools:
 {{end}}
 {{.ToolListing}}
 
@@ -13,6 +15,9 @@ Important:
 {{- else if or (eq .AgentRole "review") (eq .AgentRole "verify")}}
 - Check the provided context first.
 - Only make additional tool calls, if the provided context is really insufficient.
+{{- else if eq .AgentRole "discuss"}}
+- Check the provided context and findings first.
+- Only make tool calls when the provided context is not enough to answer accurately.
 {{- end}}
 {{- if .ParallelToolCallGuidance}}
 - If possible, call multiple tools in parallel, e.g. in one turn.

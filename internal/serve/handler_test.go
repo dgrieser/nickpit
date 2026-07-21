@@ -9,10 +9,13 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
 
@@ -22,6 +25,34 @@ type handlerEnv struct {
 	lookup     *countingTopicLookup
 	gitlab     *fakeGitLab
 	group      *Group
+	chat       *fakeChatRunner
+}
+
+// fakeChatRunner records the chat children the handler would spawn. Calls arrive
+// on a channel so a test can wait for the handler's fire-and-forget goroutine.
+// exitCodes, when non-empty, is consumed one per call (last value repeats).
+type fakeChatRunner struct {
+	calls     chan ChatSpec
+	mu        sync.Mutex
+	exitCodes []int
+}
+
+func newFakeChatRunner() *fakeChatRunner {
+	return &fakeChatRunner{calls: make(chan ChatSpec, 8)}
+}
+
+func (r *fakeChatRunner) RunChat(_ context.Context, spec ChatSpec) (int, string, error) {
+	r.mu.Lock()
+	exit := 0
+	if len(r.exitCodes) > 0 {
+		exit = r.exitCodes[0]
+		if len(r.exitCodes) > 1 {
+			r.exitCodes = r.exitCodes[1:]
+		}
+	}
+	r.mu.Unlock()
+	r.calls <- spec
+	return exit, "chat.log", nil
 }
 
 // newHandlerEnv wires a handler to a dispatcher with no started workers, so
@@ -39,18 +70,20 @@ func newHandlerEnv(t *testing.T) *handlerEnv {
 	}, server.URL, nil)
 	lookup := &countingTopicLookup{}
 	dispatcher := NewDispatcher(&fakeRunner{}, lookup.fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
+	chat := newFakeChatRunner()
 	handler := NewHandler(set, dispatcher, HandlerConfig{
 		TriggerEmoji:   "nickpit",
 		CommandKeyword: "nickpit",
 		AckEmoji:       "white_check_mark",
 		AbortEmoji:     "stop_button",
-	}, discardLogger())
+	}, chat, ChatConfig{ConfigPath: "cfg.yaml", BaseURL: "https://gl.example"}, discardLogger())
 	return &handlerEnv{
 		handler:    handler,
 		dispatcher: dispatcher,
 		lookup:     lookup,
 		gitlab:     fake,
 		group:      set.Match("platform/legacy/tool"),
+		chat:       chat,
 	}
 }
 
@@ -107,12 +140,12 @@ func TestHandlerQueuesTrigger(t *testing.T) {
 func TestHandlerIgnoresNonTrigger(t *testing.T) {
 	env := newHandlerEnv(t)
 	cases := map[string]string{
-		"mr_open_draft.json":     "hook-secret",
-		"mr_close.json":          "hook-secret",
-		"emoji_revoke_eyes.json": "legacy-secret", // fixture project is under platform/legacy
-		"note_plain.json":        "legacy-secret",
-		"note_system.json":       "legacy-secret",
-		"note_on_issue.json":     "legacy-secret",
+		"mr_open_draft.json":            "hook-secret",
+		"mr_close.json":                 "hook-secret",
+		"emoji_revoke_eyes.json":        "legacy-secret", // fixture project is under platform/legacy
+		"note_plain_no_discussion.json": "legacy-secret", // top-level comment (type null) => not a chat candidate
+		"note_system.json":              "legacy-secret",
+		"note_on_issue.json":            "legacy-secret",
 	}
 	for fixture, secret := range cases {
 		recorder := postWebhook(t, env.handler, fixture, secret)
@@ -349,6 +382,230 @@ func TestHandlerRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+// A plain reply inside a nickpit thread spawns a chat child with the group's
+// token and the daemon's config, so the daemon answers without loading the LLM.
+func TestHandlerChatSpawnsChild(t *testing.T) {
+	env := newHandlerEnv(t)
+	// A resolved bot id is required (loop guard) and the thread must be a nickpit
+	// thread (its root note carries a review marker).
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1", Title: "Bug"}, "")
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"chat"`) {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case spec := <-env.chat.calls:
+		if spec.IID != 11 || spec.DiscussionID != "disc-306" {
+			t.Fatalf("chat spec = %+v, want iid 11 discussion disc-306", spec)
+		}
+		if spec.ProjectPath != "platform/legacy/tool" || spec.Token != "t2" || spec.ConfigPath != "cfg.yaml" {
+			t.Fatalf("chat spec = %+v, want project/token/config wired", spec)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("chat child was not spawned")
+	}
+}
+
+// A reply in a non-nickpit thread (root note has no marker) is not answered.
+func TestHandlerChatSkipsForeignThread(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = "just a normal review comment from a human"
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"chat"`) {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned for a non-nickpit thread")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// A marker is encoded, not authenticated: a commenter can copy one into their
+// own thread root. The gate must therefore require the root note to be
+// AUTHORED by the bot — a marker-bearing root from someone else (author id 5,
+// bot id 7 here) must never spawn a paid chat child.
+func TestHandlerChatRejectsSpoofedMarkerRoot(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 7 // fake GitLab serves the root note with author id 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1", Title: "Bug"}, "")
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned for a spoofed (non-bot-authored) marker root")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// Without a resolved bot id, chat is skipped to avoid a reply loop.
+func TestHandlerChatSkipsWhenBotUnresolved(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 0
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned despite unresolved bot id")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// A failed chat child is retried in-process: the webhook was already
+// acknowledged with HTTP 200, so GitLab will not redeliver it — the daemon owns
+// the retry.
+func TestHandlerChatRetriesFailedChild(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.chat.exitCodes = []int{1, 0} // first attempt fails, retry succeeds
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	for i := range 2 {
+		select {
+		case <-env.chat.calls:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("chat attempt %d never ran", i+1)
+		}
+	}
+	// The successful retry keeps the dedup mark: the same note is a duplicate.
+	waitFor(t, 2*time.Second, func() bool { return !env.handler.chatSeen.markNew(306) })
+}
+
+// When every attempt fails AFTER the gate confirmed the thread as nickpit's
+// own, the author gets a failure note instead of permanent silence.
+func TestHandlerChatPostsFailureNoteAfterExhaustedRetries(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.chat.exitCodes = []int{1} // every attempt fails (last value repeats)
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	waitFor(t, 2*time.Second, func() bool {
+		for _, post := range env.gitlab.posted() {
+			if strings.Contains(post.Body["body"], "could not answer") {
+				return true
+			}
+		}
+		return false
+	})
+	// The mark is cleared, so a manual redelivery could still retry.
+	waitFor(t, 2*time.Second, func() bool { return env.handler.chatSeen.markNew(306) })
+}
+
+// When the gate NEVER confirmed the thread (its read fails persistently, e.g.
+// a read-scoped 429), the failure note must not be posted: the thread may be
+// anyone's, and injecting bot text there would leak past the ownership gate.
+func TestHandlerChatNoFailureNoteWithoutGateConfirmation(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRetryDelay = time.Millisecond
+	env.group.BotUserID = 5
+	env.gitlab.failDiscussionGET = true
+
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	// All attempts run their (failing) gate read, then the mark is cleared —
+	// waiting on the read count first keeps the markNew poll from racing the
+	// initial mark.
+	waitFor(t, 2*time.Second, func() bool { return env.gitlab.gateReads() >= chatMaxAttempts })
+	waitFor(t, 2*time.Second, func() bool { return env.handler.chatSeen.markNew(306) })
+	// Nothing was ever posted, and no child was spawned.
+	if posts := env.gitlab.posted(); len(posts) != 0 {
+		t.Fatalf("no post may reach an unconfirmed thread, got %+v", posts)
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned despite failing gate")
+	default:
+	}
+}
+
+// With chat disabled (nil runner), a thread reply is ignored, not spawned.
+func TestHandlerChatDisabled(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.handler.chatRunner = nil
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "ignored") {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned while disabled")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// chatRunnerFunc adapts a function to the ChatRunner interface for tests.
+type chatRunnerFunc func(ctx context.Context, spec ChatSpec) (int, string, error)
+
+func (f chatRunnerFunc) RunChat(ctx context.Context, spec ChatSpec) (int, string, error) {
+	return f(ctx, spec)
+}
+
+// A full admission backlog drops the chat event at the door — before the dedup
+// mark — so a sustained burst cannot pile up one goroutine per webhook, and a
+// manual redelivery can still retry once the backlog clears.
+func TestHandlerChatBacklogFullDrops(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	for range chatQueueCap {
+		env.handler.chatAdmit <- struct{}{}
+	}
+	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "chat backlog full") {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	select {
+	case <-env.chat.calls:
+		t.Fatal("chat child spawned despite full backlog")
+	case <-time.After(200 * time.Millisecond):
+	}
+	// The note must not be marked seen: a redelivery after the backlog clears
+	// must still be answered.
+	if !env.handler.chatSeen.markNew(306) {
+		t.Fatal("dropped chat note was marked as seen")
+	}
+}
+
+// ShutdownChats cancels in-flight chat work (its context is rooted in the
+// daemon lifecycle), waits for the goroutines to exit, and leaves the abandoned
+// note unmarked so a redelivery after restart can retry it.
+func TestHandlerShutdownChatsCancelsInFlight(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.group.BotUserID = 5
+	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	started := make(chan struct{})
+	env.handler.chatRunner = chatRunnerFunc(func(ctx context.Context, spec ChatSpec) (int, string, error) {
+		close(started)
+		<-ctx.Done() // a long-running child, terminated by shutdown
+		return 1, "chat.log", ctx.Err()
+	})
+	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("chat child never started")
+	}
+	done := make(chan struct{})
+	go func() {
+		env.handler.ShutdownChats(0)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ShutdownChats did not cancel and drain the in-flight chat")
+	}
+	if !env.handler.chatSeen.markNew(306) {
+		t.Fatal("abandoned chat note stayed marked as seen")
+	}
+}
+
 func TestHandlerRejectsGet(t *testing.T) {
 	env := newHandlerEnv(t)
 	recorder := httptest.NewRecorder()
@@ -365,5 +622,80 @@ func TestServerHealthz(t *testing.T) {
 	server.httpServer.Handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"ok"`) {
 		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestKeyedMutexReleasesIdleEntries(t *testing.T) {
+	var k keyedMutex
+	unlock := k.lock("proj!disc-1")
+	if len(k.locks) != 1 {
+		t.Fatalf("locks = %d, want 1 while held", len(k.locks))
+	}
+	unlock()
+	if len(k.locks) != 0 {
+		t.Fatalf("locks = %d, want 0 after release — idle entries must not accumulate", len(k.locks))
+	}
+	// Contended: a waiter keeps the entry alive; the last release removes it.
+	unlock1 := k.lock("proj!disc-2")
+	done := make(chan func(), 1)
+	go func() { done <- k.lock("proj!disc-2") }()
+	waitFor(t, 2*time.Second, func() bool {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		l, ok := k.locks["proj!disc-2"]
+		return ok && l.refs == 2
+	})
+	unlock1()
+	unlock2 := <-done
+	unlock2()
+	k.mu.Lock()
+	remaining := len(k.locks)
+	k.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("locks = %d, want 0 after all holders released", remaining)
+	}
+}
+
+func TestNoteDedup(t *testing.T) {
+	d := newNoteDedup(2)
+	if !d.markNew(1) {
+		t.Fatal("first sighting of note 1 should be new")
+	}
+	if d.markNew(1) {
+		t.Fatal("second sighting of note 1 should be a duplicate")
+	}
+	// A zero id (unknown) is always treated as new, never dropped.
+	if !d.markNew(0) {
+		t.Fatal("zero id must always be treated as new")
+	}
+	if !d.markNew(0) {
+		t.Fatal("zero id must remain new on repeat")
+	}
+	// Capacity eviction: adding 2 and 3 evicts 1, so 1 is "new" again.
+	d.markNew(2)
+	d.markNew(3)
+	if !d.markNew(1) {
+		t.Fatal("note 1 should have been evicted and seen as new again")
+	}
+	// forget clears a mark so a redelivery after a failed attempt can retry.
+	d.forget(3)
+	if !d.markNew(3) {
+		t.Fatal("forgotten note 3 should be seen as new again")
+	}
+	d.forget(0) // zero id is a no-op, never a panic
+}
+
+// A forget followed by a re-add must not leave a stale FIFO entry whose later
+// eviction deletes the live mark and re-opens the duplicate-reply window.
+func TestNoteDedupForgetRemovesQueuedEntry(t *testing.T) {
+	d := newNoteDedup(2)
+	d.markNew(7) // order [7]
+	d.forget(7)  // must remove from order too
+	d.markNew(7) // re-added after a retry succeeded; order [7]
+	// Fill past capacity: evictions must never clear 7's live mark via a stale
+	// queued occurrence.
+	d.markNew(8)
+	if d.markNew(7) {
+		t.Fatal("live mark for note 7 was lost — stale FIFO entry evicted it")
 	}
 }

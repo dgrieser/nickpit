@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
+	"sync"
 	"time"
 
 	gitlab "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 // maxWebhookBody bounds webhook payloads; GitLab MR events stay far below.
@@ -18,6 +22,48 @@ const maxWebhookBody = 10 << 20 // 10 MiB
 // commandReplyTimeout bounds the fire-and-forget GitLab calls acknowledging
 // and answering command comments.
 const commandReplyTimeout = 30 * time.Second
+
+// chatEventTimeout bounds one ADMITTED chat event end to end: the wait for a
+// semaphore slot, the per-discussion lock, the thread gate, the child process,
+// and any in-process retries (including their delays) all share this single
+// deadline. Chat children run LLM turns with tool calls, so it is generous —
+// but it is ONE budget, not per attempt: without a shared deadline a hung
+// event could pin its admission-queue slot for a per-attempt timeout times the
+// retry count plus unbounded semaphore waits, eventually dropping later
+// questions as backlog-full.
+const chatEventTimeout = 15 * time.Minute
+
+// defaultMaxConcurrentChats bounds how many chat children run at once when the
+// serve config does not set a limit, so a burst of discussion activity cannot
+// spawn unbounded processes, API requests, and log files.
+const defaultMaxConcurrentChats = 4
+
+// chatSeenCap bounds the recently-answered note set used to drop webhook
+// redeliveries of the same note.
+const chatSeenCap = 1024
+
+// chatMaxAttempts bounds in-process retries of a failed chat reply. Retries
+// must happen inside the daemon because the webhook was already acknowledged
+// with HTTP 200 before the work ran — GitLab will not redeliver it on its own.
+const chatMaxAttempts = 3
+
+// chatQueueCap bounds ADMITTED chat events (queued + running). The semaphore
+// bounds child processes, but without an admission bound a sustained burst of
+// distinct discussion notes would pile up one long-lived goroutine per webhook;
+// past this cap new chat events are dropped at the door (unmarked, so a manual
+// redelivery or a re-ask can retry).
+const chatQueueCap = 64
+
+// defaultChatRetryDelay spaces chat retry attempts; a Handler field so tests
+// can shorten it.
+const defaultChatRetryDelay = 15 * time.Second
+
+// chatFailureText is posted into the thread when every attempt to answer a
+// question failed or timed out, so the author is not left with permanent
+// silence (e.g. while a rate-limited publish hogs the API). It deliberately
+// contains no command keyword and is authored by the bot, so it can never
+// re-trigger anything.
+const chatFailureText = "⚠️ I could not answer this question — the attempts failed or timed out. Please ask again in a new reply."
 
 // HandlerConfig is the static trigger configuration for the webhook endpoint.
 type HandlerConfig struct {
@@ -33,21 +79,205 @@ type HandlerConfig struct {
 	AbortEmoji string
 }
 
+// ChatConfig carries the static invocation details a spawned chat child needs
+// (the daemon's config path, GitLab base URL, log dir, and any extra args). The
+// per-group token is taken from the matched group at spawn time.
+type ChatConfig struct {
+	ConfigPath string
+	BaseURL    string
+	LogDir     string
+	ExtraArgs  []string
+	// MaxConcurrent caps concurrent chat children; <=0 uses
+	// defaultMaxConcurrentChats.
+	MaxConcurrent int
+}
+
 // Handler is the webhook HTTP endpoint. It only parses, authenticates, and
 // classifies — every API call and the review itself happen async, keeping the
 // response inside GitLab's ~10s webhook timeout. Command state changes
 // (enqueue, abort, status) are synchronous mutex-only dispatcher calls; only
-// the GitLab acknowledgements and replies run in goroutines, which are fire
-// and forget: a reply may be lost when the daemon shuts down mid-flight.
+// the GitLab acknowledgements and replies run in goroutines. Command replies
+// are fire and forget (a reply may be lost when the daemon shuts down
+// mid-flight); chat work is tracked and drained by ShutdownChats.
 type Handler struct {
 	groups     *GroupSet
 	dispatcher *Dispatcher
 	cfg        HandlerConfig
 	log        *slog.Logger
+	// chatRunner spawns a `nickpit chat` child to answer a discussion-thread
+	// reply, keeping the daemon free of LLM logic. Nil disables chat, and chat
+	// candidate events are then ignored.
+	chatRunner ChatRunner
+	chatCfg    ChatConfig
+	// chatSem bounds concurrent chat work (thread gate + child) so a burst of
+	// discussion activity cannot spawn unbounded processes.
+	chatSem chan struct{}
+	// chatAdmit bounds ADMITTED chat events: a slot is reserved before the
+	// per-event goroutine is spawned and released when it finishes, so a
+	// sustained burst of distinct discussion notes cannot pile up unbounded
+	// long-lived goroutines behind the semaphore.
+	chatAdmit chan struct{}
+	// chatWG tracks in-flight chat goroutines so shutdown can drain them.
+	// chatAdmitMu guards chatClosed, which admitChat checks before chatWG.Add:
+	// httpServer.Shutdown's 5s budget is shorter than the 30s read timeouts, so
+	// a slow client can deliver a webhook after ShutdownChats started waiting —
+	// Add racing Wait is documented WaitGroup misuse; the flag refuses instead.
+	chatWG      sync.WaitGroup
+	chatAdmitMu sync.Mutex
+	chatClosed  bool
+	// chatCtx roots all chat work in the daemon lifecycle; chatCancel tears it
+	// down on shutdown so in-flight children are terminated instead of
+	// outliving the daemon.
+	chatCtx    context.Context
+	chatCancel context.CancelFunc
+	// chatLocks serializes chat replies within a discussion, so two quick replies
+	// are answered in order instead of racing and both answering the newest note.
+	chatLocks keyedMutex
+	// chatSeen drops webhook redeliveries of a note already answered.
+	chatSeen *noteDedup
+	// chatRetryDelay spaces in-process retry attempts of a failed chat reply.
+	chatRetryDelay time.Duration
 }
 
-func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, log *slog.Logger) *Handler {
-	return &Handler{groups: groups, dispatcher: dispatcher, cfg: cfg, log: log}
+func NewHandler(groups *GroupSet, dispatcher *Dispatcher, cfg HandlerConfig, chatRunner ChatRunner, chatCfg ChatConfig, log *slog.Logger) *Handler {
+	limit := chatCfg.MaxConcurrent
+	if limit <= 0 {
+		limit = defaultMaxConcurrentChats
+	}
+	chatCtx, chatCancel := context.WithCancel(context.Background())
+	return &Handler{
+		groups:         groups,
+		dispatcher:     dispatcher,
+		cfg:            cfg,
+		chatRunner:     chatRunner,
+		chatCfg:        chatCfg,
+		chatSem:        make(chan struct{}, limit),
+		chatAdmit:      make(chan struct{}, chatQueueCap),
+		chatCtx:        chatCtx,
+		chatCancel:     chatCancel,
+		chatSeen:       newNoteDedup(chatSeenCap),
+		chatRetryDelay: defaultChatRetryDelay,
+		log:            log,
+	}
+}
+
+// ShutdownChats drains in-flight chat work during daemon shutdown: it waits up
+// to grace for chats to finish on their own, then cancels the chat lifecycle
+// context — terminating running children — and waits for the goroutines to
+// exit. The HTTP listener must already be stopped so no new chat events are
+// admitted concurrently.
+func (h *Handler) ShutdownChats(grace time.Duration) {
+	// Refuse new admissions from here on, so chatWG.Add can never race the
+	// Wait below (a slow client can still be delivering a webhook past
+	// httpServer.Shutdown's budget).
+	h.chatAdmitMu.Lock()
+	h.chatClosed = true
+	h.chatAdmitMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		h.chatWG.Wait()
+		close(done)
+	}()
+	if grace > 0 {
+		select {
+		case <-done:
+			h.chatCancel()
+			return
+		case <-time.After(grace):
+		}
+	}
+	h.chatCancel()
+	<-done
+}
+
+// keyedMutex provides a mutex per string key, so callers serialize work for the
+// same key while different keys proceed concurrently. Entries are
+// reference-counted and removed once idle, so a long-running daemon's memory
+// does not grow with the lifetime count of distinct discussions.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*keyedLock
+}
+
+type keyedLock struct {
+	mu sync.Mutex
+	// refs counts holders and waiters; the map entry is deleted when it drops
+	// to zero, guarded by keyedMutex.mu.
+	refs int
+}
+
+func (k *keyedMutex) lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = make(map[string]*keyedLock)
+	}
+	l, ok := k.locks[key]
+	if !ok {
+		l = &keyedLock{}
+		k.locks[key] = l
+	}
+	l.refs++
+	k.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		k.mu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(k.locks, key)
+		}
+		k.mu.Unlock()
+	}
+}
+
+// noteDedup remembers recently answered note ids (bounded, FIFO eviction) so a
+// redelivered webhook for the same note is not answered twice.
+type noteDedup struct {
+	mu    sync.Mutex
+	seen  map[int]struct{}
+	order []int
+	cap   int
+}
+
+func newNoteDedup(capacity int) *noteDedup {
+	return &noteDedup{seen: make(map[int]struct{}), cap: capacity}
+}
+
+// markNew records id and reports whether it was newly seen. A zero id (unknown)
+// is always treated as new so it is never silently dropped.
+func (d *noteDedup) markNew(id int) bool {
+	if id == 0 {
+		return true
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.seen[id]; ok {
+		return false
+	}
+	d.seen[id] = struct{}{}
+	d.order = append(d.order, id)
+	if len(d.order) > d.cap {
+		oldest := d.order[0]
+		d.order = d.order[1:]
+		delete(d.seen, oldest)
+	}
+	return true
+}
+
+// forget removes id so a redelivery can retry. Called when an attempt fails
+// before a reply could have been posted — keeping the mark would discard the
+// redelivered webhook and leave the question permanently unanswered. The id is
+// removed from the eviction order too: a stale queued entry would otherwise
+// delete the mark of a later RE-ADDED same id when it reaches the front,
+// re-opening the duplicate-reply window.
+func (d *noteDedup) forget(id int) {
+	if id == 0 {
+		return
+	}
+	d.mu.Lock()
+	delete(d.seen, id)
+	d.order = slices.DeleteFunc(d.order, func(queued int) bool { return queued == id })
+	d.mu.Unlock()
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +314,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	decision := Decide(event, h.cfg.TriggerEmoji, h.cfg.CommandKeyword, h.groups.BotIDs())
 	switch {
+	case decision.Command == CommandChat:
+		if h.chatRunner == nil {
+			h.log.Debug("ignoring chat reply (chat disabled)", "project", event.Project.PathWithNamespace, "iid", decision.IID)
+			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat disabled"})
+			return
+		}
+		if !h.admitChat() {
+			// Dropped before the dedup mark, so a manual redelivery (or the user
+			// re-asking) can retry once the backlog clears.
+			h.log.Warn("chat backlog full, dropping chat event", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
+			writeJSON(w, map[string]string{"status": "ignored", "reason": "chat backlog full"})
+			return
+		}
+		go func() {
+			defer h.chatWG.Done()
+			defer func() { <-h.chatAdmit }()
+			h.handleChat(group, event.Project.PathWithNamespace, event.Project.ID, decision)
+		}()
+		h.log.Debug("chat reply candidate", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
+		writeJSON(w, map[string]string{"status": "chat"})
 	case decision.Command != CommandNone:
 		h.handleCommand(event, group, decision)
 		h.log.Info("command received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "command", decision.Command.String(), "reason", decision.Reason)
@@ -167,6 +417,219 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 	case CommandUnknown:
 		go h.reply(group, projectID, decision, unknownText(h.cfg.CommandKeyword, decision.UnknownArg))
 	}
+}
+
+// admitChat reserves a chat admission slot and registers the event with the
+// shutdown drain group. It reports false when the backlog is full or the
+// handler is shutting down; on success the caller must release with
+// `<-h.chatAdmit` and h.chatWG.Done() when done.
+func (h *Handler) admitChat() bool {
+	h.chatAdmitMu.Lock()
+	defer h.chatAdmitMu.Unlock()
+	if h.chatClosed {
+		return false
+	}
+	select {
+	case h.chatAdmit <- struct{}{}:
+		h.chatWG.Add(1)
+		return true
+	default:
+		return false
+	}
+}
+
+// handleChat answers a discussion-thread reply by spawning a `nickpit chat`
+// child, keeping the daemon free of LLM logic. It guards several hazards before
+// spawning:
+//   - a group whose bot identity is unresolved is skipped, because the daemon
+//     cannot filter its own replies and would answer them in a loop;
+//   - webhook redeliveries of an already-answered note are dropped;
+//   - concurrent chat work is bounded by a semaphore, and replies within one
+//     discussion are serialized so two quick replies do not race;
+//   - a cheap thread gate confirms the thread was started by nickpit before a
+//     child is spawned, so unrelated comments never launch a process.
+//
+// The child self-gates too and posts its reply. On daemon shutdown, in-flight
+// chats get the shutdown grace to finish (see ShutdownChats) and are then
+// terminated; an abandoned note's dedup mark is cleared so a redelivery after
+// restart can retry.
+//
+// Trust decision, explicit: anyone who can comment in a nickpit review thread
+// drives an agent whose read-only tools can inspect the WHOLE checkout of the
+// reviewed revision, and the reply is posted to the MR. That means a commenter
+// whose GitLab role would not grant full repository read (or a repo whose
+// history holds secrets) could ask the agent to print file contents. This is
+// accepted because commenting on an MR of a configured group already implies
+// project membership in the intended deployments, the tools are read-only and
+// repo-scoped with symlink-escape protection, and replies are sanitized.
+// Operators who do not accept it can disable chat (chat.enabled: false) or run
+// chat children without a checkout (tools are then disabled entirely).
+//
+// Retries live HERE, not in webhook redelivery: the HTTP 200 was already sent
+// when this goroutine started, so GitLab considers the webhook delivered and
+// will not redeliver on its own. Transient failures (gate read errors, spawn
+// failures, non-zero child exits) are therefore retried in-process with
+// backoff; only after the attempts are exhausted is the note forgotten, which
+// at least lets a MANUAL redelivery try again.
+func (h *Handler) handleChat(group *Group, projectPath string, projectID int, decision Decision) {
+	if h.chatRunner == nil {
+		return
+	}
+	// Without a resolved bot identity, the daemon cannot recognize (and skip) its
+	// own posted replies, so answering would recurse. Disable chat for the group.
+	if group.BotUserID == 0 {
+		h.log.Warn("skipping chat: bot user id unresolved", "group", group.Path, "iid", decision.IID)
+		return
+	}
+	if !h.chatSeen.markNew(decision.NoteID) {
+		h.log.Debug("skipping duplicate chat note", "iid", decision.IID, "note", decision.NoteID)
+		return
+	}
+	// ONE deadline covers the whole admitted event — semaphore waits, the gate,
+	// the child, and every retry — so a hung event can never pin its admission
+	// slot beyond chatEventTimeout.
+	ctx, cancel := context.WithTimeout(h.chatCtx, chatEventTimeout)
+	defer cancel()
+	// abandon clears the dedup mark so a manual redelivery (after the daemon
+	// restarts, or once the backlog clears) is not discarded as a duplicate.
+	// gatePassed records whether isNickpitThread ever CONFIRMED the thread is
+	// nickpit's own. The failure note below must never be posted into a thread
+	// the daemon could not verify — e.g. when the gate's read fails persistently
+	// (a read-scoped 429) while posts would succeed, the thread may be anyone's.
+	gatePassed := false
+	abandon := func() {
+		h.chatSeen.forget(decision.NoteID)
+		if h.chatCtx.Err() != nil {
+			// Shutting down: no reliable way to post, and the redelivery after
+			// restart will answer.
+			h.log.Info("chat abandoned: daemon shutting down", "iid", decision.IID, "discussion", decision.DiscussionID)
+			return
+		}
+		h.log.Error("chat abandoned: event deadline exceeded", "iid", decision.IID, "discussion", decision.DiscussionID)
+		if gatePassed {
+			h.reply(group, projectID, decision, chatFailureText)
+		}
+	}
+	for attempt := 1; ; attempt++ {
+		retryable, gateConfirmed := h.chatAttempt(ctx, group, projectPath, decision)
+		gatePassed = gatePassed || gateConfirmed
+		if !retryable {
+			return
+		}
+		if ctx.Err() != nil {
+			abandon()
+			return
+		}
+		if attempt >= chatMaxAttempts {
+			// Give up, but clear the mark so a manual webhook redelivery (or the
+			// user re-asking) is not discarded as a duplicate — and tell the
+			// author instead of going permanently silent, when the thread is
+			// confirmed ours. The failure note marks the thread answered, so
+			// re-asking (as the note says) is the recovery, never a surprise
+			// double-answer.
+			h.chatSeen.forget(decision.NoteID)
+			h.log.Error("chat reply failed after retries", "iid", decision.IID, "discussion", decision.DiscussionID, "attempts", attempt)
+			if gatePassed {
+				h.reply(group, projectID, decision, chatFailureText)
+			}
+			return
+		}
+		h.log.Warn("chat attempt failed, retrying", "iid", decision.IID, "discussion", decision.DiscussionID, "attempt", attempt)
+		select {
+		case <-ctx.Done():
+			abandon()
+			return
+		case <-time.After(h.chatRetryDelay):
+		}
+	}
+}
+
+// chatAttempt runs one chat attempt end to end and reports whether it is worth
+// retrying, plus whether the thread gate CONFIRMED the thread as nickpit's own
+// during this attempt (handleChat posts the failure note only into confirmed
+// threads). Successful replies, foreign threads, and superseded notes are
+// final; gate read failures, spawn failures, and non-zero child exits are
+// retryable. ctx is the admitted event's shared deadline (see handleChat) —
+// every blocking step here runs under it.
+func (h *Handler) chatAttempt(ctx context.Context, group *Group, projectPath string, decision Decision) (retryable, gateConfirmed bool) {
+	// Serialize replies within a discussion BEFORE competing for a global slot.
+	// The reverse order would let queued replies to one busy discussion each sit
+	// on a global slot while blocked on that discussion's lock, starving chats
+	// in unrelated discussions.
+	unlock := h.chatLocks.lock(fmt.Sprintf("%s!%s", projectPath, decision.DiscussionID))
+	defer unlock()
+
+	// Bound concurrent chat work. Blocking (rather than dropping) is safe: the
+	// goroutine count is bounded by the admission cap, while the semaphore still
+	// bounds actual child processes. The event deadline (and daemon shutdown,
+	// its parent) aborts the wait.
+	select {
+	case h.chatSem <- struct{}{}:
+	case <-ctx.Done():
+		return true, false // handleChat sees the deadline/shutdown and stops retrying
+	}
+	defer func() { <-h.chatSem }()
+
+	// Inexpensive gate: only spawn a child for a thread nickpit actually started.
+	// A genuinely foreign thread is final (a retry would re-gate identically); a
+	// read failure is transient and retried.
+	ours, err := h.isNickpitThread(ctx, group, projectPath, decision.IID, decision.DiscussionID)
+	if err != nil {
+		h.log.Warn("chat gate: reading thread failed", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+		return true, false
+	}
+	if !ours {
+		h.log.Debug("ignoring non-nickpit thread reply", "iid", decision.IID, "discussion", decision.DiscussionID)
+		return false, false
+	}
+
+	exitCode, logPath, err := h.chatRunner.RunChat(ctx, ChatSpec{
+		ProjectPath:  projectPath,
+		IID:          decision.IID,
+		DiscussionID: decision.DiscussionID,
+		NoteID:       decision.NoteID,
+		Token:        group.Token,
+		BaseURL:      h.chatCfg.BaseURL,
+		ConfigPath:   h.chatCfg.ConfigPath,
+		ExtraArgs:    h.chatCfg.ExtraArgs,
+		LogDir:       h.chatCfg.LogDir,
+	})
+	switch {
+	case err != nil:
+		h.log.Warn("chat child failed to run", "iid", decision.IID, "discussion", decision.DiscussionID, "error", err)
+		return true, true
+	case exitCode != 0:
+		// Includes empty-completion failures: the child exits non-zero without
+		// posting, and a superseded note exits zero, so retrying here never
+		// double-answers (the child re-checks the latest pending note each run).
+		h.log.Warn("chat child exited with error", "iid", decision.IID, "discussion", decision.DiscussionID, "exit_code", exitCode, "log", logPath)
+		return true, true
+	default:
+		h.log.Info("chat reply handled", "iid", decision.IID, "discussion", decision.DiscussionID)
+		return false, true
+	}
+}
+
+// isNickpitThread reports whether the discussion's root note carries a nickpit
+// review marker AND was authored by this group's bot user, i.e. the thread was
+// started by a nickpit review this daemon posted. The author check matters
+// because markers are only encoded, not authenticated: without it any commenter
+// could open a marker-bearing thread and route paid chat calls through the
+// daemon. A read failure is returned as an error so the caller can distinguish
+// "not ours" from "could not check".
+func (h *Handler) isNickpitThread(ctx context.Context, group *Group, projectPath string, iid int, discussionID string) (bool, error) {
+	notes, err := group.Client.DiscussionNotes(ctx, projectPath, iid, discussionID)
+	if err != nil {
+		return false, err
+	}
+	if len(notes) == 0 {
+		return false, nil
+	}
+	if notes[0].AuthorID != group.BotUserID {
+		return false, nil
+	}
+	_, _, ok := reviewmd.DetectThreadReview(notes[0].Body)
+	return ok, nil
 }
 
 // ackNote awards the given acknowledgement emoji on the command note ("" skips).

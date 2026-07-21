@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,7 +36,11 @@ type publishServer struct {
 	changesJSON []byte // GET /changes payload (default mrChangesJSON)
 	notePosts   []postRecord
 	discPosts   []postRecord
+	deletes     []string
 	discStatus  int // status for POST /discussions (0 -> 201)
+	// failCarrierPosts makes POSTs of pure hidden-carrier note bodies fail with
+	// a 500, exercising the "incomplete current run" pruning guard.
+	failCarrierPosts bool
 }
 
 func newPublishServer(t *testing.T) *publishServer {
@@ -64,8 +69,31 @@ func (ps *publishServer) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == mrBase+"/discussions":
 		_, _ = w.Write([]byte(emptyArrayJSON))
 	case r.Method == http.MethodPost && path == mrBase+"/notes":
-		ps.record(r, &ps.notePosts)
+		raw, _ := io.ReadAll(r.Body)
+		var parsed struct {
+			Body string `json:"body"`
+		}
+		_ = json.Unmarshal(raw, &parsed)
+		ps.mu.Lock()
+		failCarrier := ps.failCarrierPosts && reviewmd.StripMarkers(parsed.Body) == ""
+		if !failCarrier {
+			ps.notePosts = append(ps.notePosts, postRecord{body: parsed.Body})
+		}
+		ps.mu.Unlock()
+		if failCarrier {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"boom"}`))
+			return
+		}
 		_, _ = w.Write([]byte(createdNoteJSON))
+	case r.Method == http.MethodGet && path == "/api/v4/user":
+		// Carrier pruning resolves the token's own user before deleting.
+		_, _ = w.Write([]byte(`{"id": 99, "username": "nickpit-bot"}`))
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, mrBase+"/notes/"):
+		ps.mu.Lock()
+		ps.deletes = append(ps.deletes, path)
+		ps.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && path == mrBase+"/discussions":
 		ps.mu.Lock()
 		status := ps.discStatus
@@ -109,6 +137,9 @@ func fpMarker(id, file, title string) string {
 
 func sampleResult() *model.ReviewResult {
 	return &model.ReviewResult{
+		// A review id activates the carrier machinery (hidden review/finding
+		// envelopes) in every publish test, as real pipeline results do.
+		ReviewID:               "rev-pub",
 		OverallCorrectness:     "patch is incorrect",
 		OverallExplanation:     "Two issues found.",
 		OverallConfidenceScore: 0.9,
@@ -201,12 +232,28 @@ func TestPublishReviewDedupeSkipsExisting(t *testing.T) {
 	if len(ps.discPosts) != 0 {
 		t.Fatalf("finding-a was deduped; no discussion expected, got %d", len(ps.discPosts))
 	}
-	if len(ps.notePosts) != 1 {
-		t.Fatalf("note posts = %d, want 1 (only finding-b)", len(ps.notePosts))
+	// One visible note (finding-b) plus hidden carrier chunk(s) covering the
+	// suppressed summary/finding so a chat can still reassemble this run.
+	visible, bodies := splitCarrierNotes(ps.notePosts)
+	if len(visible) != 1 || !strings.Contains(visible[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
+		t.Fatalf("expected only finding-b visible note, got %v", visible)
 	}
-	if !strings.Contains(ps.notePosts[0].body, fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
-		t.Fatalf("expected only finding-b note, got %q", ps.notePosts[0].body)
+	if got := reviewmd.ReviewResultsByID(bodies)["rev-pub"]; got == nil || len(got.Findings) != 2 {
+		t.Fatalf("carriers must cover the deduped run: %+v", got)
 	}
+}
+
+// splitCarrierNotes partitions posted note bodies into visible notes and pure
+// hidden-carrier chunks, also returning every body for reassembly checks.
+func splitCarrierNotes(posts []postRecord) (visible, bodies []string) {
+	for _, post := range posts {
+		bodies = append(bodies, post.body)
+		if reviewmd.StripMarkers(post.body) == "" {
+			continue
+		}
+		visible = append(visible, post.body)
+	}
+	return visible, bodies
 }
 
 // TestPublishReviewDedupeCrossRun proves the file+title fingerprint skips a
@@ -220,8 +267,78 @@ func TestPublishReviewDedupeCrossRun(t *testing.T) {
 	if len(ps.discPosts) != 0 {
 		t.Fatalf("finding-a should match across runs by file+title; got %d discussions", len(ps.discPosts))
 	}
-	if len(ps.notePosts) != 1 || !strings.Contains(ps.notePosts[0].body, fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
-		t.Fatalf("expected only finding-b note, got %v", ps.notePosts)
+	visible, _ := splitCarrierNotes(ps.notePosts)
+	if len(visible) != 1 || !strings.Contains(visible[0], fpMarker("finding-b", "other.go", "Out-of-diff issue")) {
+		t.Fatalf("expected only finding-b visible note, got %v", visible)
+	}
+}
+
+// The publish request's context filters ride in the review envelope, so a chat
+// reassembled from the MR rebuilds the review's FILTERED context — never one
+// that reintroduces deliberately withheld files.
+func TestPublishCarriesContextOptions(t *testing.T) {
+	ps := newPublishServer(t)
+	r := req()
+	r.IncludeComments = true
+	r.ExcludePaths = []string{"secrets/**"}
+	if err := ps.adapter().PublishReview(context.Background(), r, sampleResult()); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	var bodies []string
+	for _, post := range ps.notePosts {
+		bodies = append(bodies, post.body)
+	}
+	for _, post := range ps.discPosts {
+		bodies = append(bodies, post.body)
+	}
+	got := reviewmd.ReviewResultsByID(bodies)["rev-pub"]
+	if got == nil || got.ContextOptions == nil {
+		t.Fatalf("published review must carry its context options: %+v", got)
+	}
+	if !got.ContextOptions.IncludeComments || len(got.ContextOptions.ExcludePaths) != 1 || got.ContextOptions.ExcludePaths[0] != "secrets/**" {
+		t.Fatalf("context options mismatch: %+v", got.ContextOptions)
+	}
+}
+
+// A re-publish deletes the bot's own carrier-only notes from previous runs
+// (superseded garbage), while human comments and current-run carriers stay.
+func TestPublishPrunesStaleCarriers(t *testing.T) {
+	ps := newPublishServer(t)
+	oldCarriers := reviewmd.NewRenderer("https://host/").CarrierNotes(&model.ReviewResult{ReviewID: "rev-old", OverallCorrectness: "patch is correct"}, nil)
+	if len(oldCarriers) == 0 {
+		t.Fatal("expected an old carrier note")
+	}
+	ps.noteBody = []byte(`[` +
+		`{"id": 777, "body": ` + strconv.Quote(oldCarriers[0]) + `, "author": {"id": 99}},` + // bot's stale carrier
+		`{"id": 778, "body": "human comment", "author": {"id": 10}},` + // human note
+		`{"id": 779, "body": ` + strconv.Quote(oldCarriers[0]) + `, "author": {"id": 10}}` + // forged carrier, wrong author
+		`]`)
+	if err := ps.adapter().PublishReview(context.Background(), req(), sampleResult()); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(ps.deletes) != 1 || !strings.HasSuffix(ps.deletes[0], "/notes/777") {
+		t.Fatalf("exactly the bot's stale carrier should be pruned, got %v", ps.deletes)
+	}
+}
+
+// When a required carrier POST of the CURRENT run fails, the previous run's
+// fallback carriers must survive: pruning them would destroy the last complete
+// review on the MR while the current one is incomplete.
+func TestPublishKeepsOldCarriersWhenCurrentCarrierFails(t *testing.T) {
+	ps := newPublishServer(t)
+	ps.failCarrierPosts = true
+	oldCarriers := reviewmd.NewRenderer("https://host/").CarrierNotes(&model.ReviewResult{ReviewID: "rev-old", OverallCorrectness: "patch is correct"}, nil)
+	// A suppressed summary forces the current run onto the fallback carriers.
+	ps.noteBody = []byte(`[` +
+		`{"body":"` + reviewmd.SummaryMarker + `"},` +
+		`{"id": 777, "body": ` + strconv.Quote(oldCarriers[0]) + `, "author": {"id": 99}}` +
+		`]`)
+	err := ps.adapter().PublishReview(context.Background(), req(), sampleResult())
+	if err == nil || !strings.Contains(err.Error(), "carrier") {
+		t.Fatalf("carrier failure must be reported, got %v", err)
+	}
+	if len(ps.deletes) != 0 {
+		t.Fatalf("old carriers must not be pruned while the current run is incomplete, got %v", ps.deletes)
 	}
 }
 
@@ -240,9 +357,11 @@ func TestPublishFindingNon422Propagates(t *testing.T) {
 	if len(ps.discPosts) != 0 {
 		t.Fatalf("500 discussion should not be recorded, got %d", len(ps.discPosts))
 	}
-	// finding-a errored without falling back; only summary + finding-b post.
-	if len(ps.notePosts) != 2 {
-		t.Fatalf("note posts = %d, want 2 (summary + finding-b)", len(ps.notePosts))
+	// finding-a errored without falling back; summary + finding-b post visibly
+	// (plus hidden carrier chunks covering the failed finding).
+	visible, _ := splitCarrierNotes(ps.notePosts)
+	if len(visible) != 2 {
+		t.Fatalf("visible note posts = %d, want 2 (summary + finding-b)", len(visible))
 	}
 	for _, n := range ps.notePosts {
 		if strings.Contains(n.body, fpMarker("finding-a", "main.go", "Inline issue")) {

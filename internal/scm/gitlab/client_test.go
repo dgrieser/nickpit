@@ -51,6 +51,11 @@ func TestFetchMR(t *testing.T) {
 	if len(ctx.Comments) != 1 {
 		t.Fatalf("comments = %d", len(ctx.Comments))
 	}
+	// The diff identity rides on the context so chat sessions can persist it and
+	// verify cache freshness without a spurious first-resume refresh.
+	if ctx.DiffHeadSHA != "abc123" || ctx.DiffBaseSHA != "base456" {
+		t.Fatalf("diff identity = head %q base %q, want abc123/base456", ctx.DiffHeadSHA, ctx.DiffBaseSHA)
+	}
 }
 
 func TestFetchMRSurfacesDiffOverflow(t *testing.T) {

@@ -149,6 +149,13 @@ Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, ide
 
 Hidden fingerprint markers make re-runs **idempotent** — already-posted findings are skipped, and an interrupted publish heals itself on the next run.
 
+### 💬 Chat about a Review
+
+After a review you can talk to an agent about it.
+- ask why a finding is a bug
+- push back on a nitpick
+- propose a fix and have it evaluated
+
 ### 🛡️ Structured output, enforced by the API
 
 Findings are structured JSON with `p0`–`p3` priorities, confidence scores, optional fix suggestions, and an overall verdict. NickPit uses API-enforced `response_format` json_schema by default and **automatically falls back** to a prompt-embedded schema when the model doesn't support it (a pre-review model check figures this out for you — also runnable standalone via `nickpit check`).
@@ -361,6 +368,31 @@ With `--publish`, findings whose lines are part of the diff are posted inline an
 
 Known limitation: the hidden fingerprint markers are read from all existing PR/MR comments regardless of who wrote them. Anyone who can comment on the PR/MR can therefore forge a marker and suppress a matching finding from being posted on the next run.
 
+## Discuss a Review (Chat) 💬
+
+After a review you can talk to an agent about it. The discussion agent gets the same context a reviewer/verifier has — the diff, the toolchain, the applicable styleguides, and the same retrieval tools — plus the **complete findings JSON and the overall verdict**. It is free-form: no workflow, no output schema, no priority gates. Ask why a finding is a bug, push back on a nitpick, or propose a fix and have it evaluated.
+
+Every review automatically saves a resumable session — including the exact prepared context the reviewers saw — so chatting needs no re-fetch (disable with `--no-session`). Session files live under `$NICKPIT_CACHE_DIR/sessions` (or `<user cache>/nickpit/sessions`); override with `--session-dir`. The store keeps the 50 most recent sessions. Resuming a GitLab session checks the MR's live head and recreates the diff when new commits landed. For remote sessions the retrieval tools read from a temporary checkout of the live head, cloned automatically for the duration of the chat (the same mechanism reviews use) and removed when it ends; pass `--repo-root <checkout>` to use a local checkout instead (full history, local edits). Code-reading tools stay off only when tools are disabled (`max_tool_calls: -1`) or the checkout cannot be prepared.
+
+```bash
+# Chat about the most recent review (interactive REPL)
+nickpit chat
+
+# One-shot question about a specific finding, then exit
+nickpit chat --finding <finding-id> "why is this actually a bug?"
+
+# Resume a specific session
+nickpit chat --session <session-id>
+
+# Start a chat from a saved review JSON (e.g. a CI artifact from `--json`)
+nickpit chat --from-json review.json
+
+# Start a chat from a GitLab MR — findings are reassembled from the review NickPit posted
+nickpit chat --gitlab --url https://gitlab.example.com/group/project/-/merge_requests/456
+```
+
+Pin the chat to one finding with `--finding <id>` and the agent opens by pointing at it; omit it to discuss the whole review. On GitLab, the review NickPit publishes now embeds the full findings JSON (and the overall verdict) as hidden, gzip-compressed markers in the notes, each tagged with a review id and timestamp, so a later chat can regroup them into the exact (newest) review — no local state needed. Because the markers are encoded but not cryptographically signed, only markers in notes authored by the chat token's own user (the bot that published the review) are trusted; markers planted by other commenters are ignored. When an MR carries several reviews, the newest is chosen (`--review-id` overrides). The retrieval tools read from an automatic temporary checkout of the MR head (or a local checkout: `--repo-root`, or the current directory for local sessions) — this includes the daemon's in-thread replies, which answer with code-reading tools enabled.
+
 ## GitLab Webhook Daemon
 
 `nickpit gitlab serve` runs an HTTP daemon that reviews MRs automatically from GitLab **group webhooks** — no CI pipeline integration needed. Each review runs as a separate `nickpit gitlab mr --publish` child process; comment fingerprints keep re-reviews idempotent.
@@ -376,6 +408,8 @@ Triggers:
   - `/nickpit help` — reply with the command list
 
 When a review starts, the daemon awards a start emoji on the MR (default `:eyes:`, `start_emoji: ""` disables). Command comments are acknowledged with a reaction emoji (default `:white_check_mark:`, `ack_emoji: ""` disables); `status`, `help`, and `abort` also get a comment reply, threaded under the command.
+
+- **Discussion (chat)**: reply in a thread NickPit started — under a finding's comment or the summary — and the daemon answers in-thread with the discussion agent, no keyword needed. Like reviews, each reply runs as a separate `nickpit chat` child process (the daemon itself never loads the LLM), which reassembles the review from the hidden markers on the MR, rebuilds the diff from the current MR, and posts the answer threaded (a reply under a finding is focused on that finding; under the summary it is about the whole review). The whole conversation lives in the MR thread, so it survives daemon restarts. The same `nickpit chat --gitlab --url <MR> --reply-discussion <id>` is runnable from the terminal.
 
 ```bash
 nickpit gitlab serve --serve-config server.yaml

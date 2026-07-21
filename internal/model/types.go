@@ -79,18 +79,65 @@ type ReviewRequest struct {
 	ProfileName               string
 }
 
+// ContextOptions is a snapshot of a review request's context-shaping options
+// (filters, budgets, diff format). It travels with a review — persisted in chat
+// sessions and carried in the hidden SCM review envelope — so a later context
+// rebuild applies the review's ORIGINAL filters, not whatever the then-current
+// configuration says (which could reintroduce deliberately withheld files).
+type ContextOptions struct {
+	IncludeComments  bool     `json:"include_comments"`
+	IncludeCommits   bool     `json:"include_commits"`
+	IncludeFullFiles bool     `json:"include_full_files,omitempty"`
+	IncludePaths     []string `json:"include_paths,omitempty"`
+	ExcludePaths     []string `json:"exclude_paths,omitempty"`
+	IncludeContent   []string `json:"include_content,omitempty"`
+	ExcludeContent   []string `json:"exclude_content,omitempty"`
+	MaxContextTokens int      `json:"max_context_tokens,omitempty"`
+	DiffFormat       string   `json:"diff_format,omitempty"`
+}
+
+// ContextOptionsFromRequest snapshots the context-shaping options of a review
+// request into a ContextOptions.
+func ContextOptionsFromRequest(req ReviewRequest) *ContextOptions {
+	return &ContextOptions{
+		IncludeComments:  req.IncludeComments,
+		IncludeCommits:   req.IncludeCommits,
+		IncludeFullFiles: req.IncludeFullFiles,
+		IncludePaths:     req.IncludePaths,
+		ExcludePaths:     req.ExcludePaths,
+		IncludeContent:   req.IncludeContent,
+		ExcludeContent:   req.ExcludeContent,
+		MaxContextTokens: req.MaxContextTokens,
+		DiffFormat:       string(req.DiffFormat),
+	}
+}
+
 type ReviewResult struct {
-	Findings               []Finding  `json:"findings"`
-	OverallCorrectness     string     `json:"overall_correctness"`
-	OverallExplanation     string     `json:"overall_explanation"`
-	OverallConfidenceScore float64    `json:"overall_confidence_score"`
-	AgentRuns              []AgentRun `json:"agent_runs,omitempty"`
-	Warnings               []string   `json:"warnings,omitempty"`
-	TokensUsed             TokenUsage `json:"tokens_used"`
-	VerifyTokensUsed       TokenUsage `json:"verify_tokens_used"`
-	FinalizeTokensUsed     TokenUsage `json:"finalize_tokens_used"`
-	VerdictTokensUsed      TokenUsage `json:"verdict_tokens_used"`
-	SummarizeTokensUsed    TokenUsage `json:"summarize_tokens_used"`
+	// ReviewID uniquely identifies a single completed review run. It is stamped
+	// once the pipeline finishes and is carried in the hidden SCM note markers so
+	// all findings and the overall verdict for one run can be regrouped later
+	// (e.g. when starting a discussion about the review).
+	ReviewID string `json:"review_id,omitempty"`
+	// CreatedAt records when the review completed. Carried in the hidden SCM
+	// note markers so the newest of several reviews on one MR/PR can be selected.
+	CreatedAt time.Time `json:"created_at,omitzero"`
+	// ContextOptions records the context-shaping options the review ran with.
+	// Publishers embed it in the hidden SCM review envelope and reassembly
+	// restores it, so a chat rebuilt from MR/PR markers recreates the SAME
+	// filtered context the review saw — never files the review deliberately
+	// withheld. Pipeline results emitted to stdout leave it nil.
+	ContextOptions         *ContextOptions `json:"context_options,omitempty"`
+	Findings               []Finding       `json:"findings"`
+	OverallCorrectness     string          `json:"overall_correctness"`
+	OverallExplanation     string          `json:"overall_explanation"`
+	OverallConfidenceScore float64         `json:"overall_confidence_score"`
+	AgentRuns              []AgentRun      `json:"agent_runs,omitempty"`
+	Warnings               []string        `json:"warnings,omitempty"`
+	TokensUsed             TokenUsage      `json:"tokens_used"`
+	VerifyTokensUsed       TokenUsage      `json:"verify_tokens_used"`
+	FinalizeTokensUsed     TokenUsage      `json:"finalize_tokens_used"`
+	VerdictTokensUsed      TokenUsage      `json:"verdict_tokens_used"`
+	SummarizeTokensUsed    TokenUsage      `json:"summarize_tokens_used"`
 	// RuntimeSeconds is the whole review command span in seconds (model check,
 	// checkout, pipeline through summarize).
 	RuntimeSeconds float64 `json:"runtime_seconds,omitempty"`
@@ -166,7 +213,14 @@ type ReviewContext struct {
 	// deterministic finding-scope checks. It is runtime-only so prompt payloads
 	// and serialized review context keep their existing shape. A non-nil empty
 	// slice means scope checking is available but the diff has no line hunks.
-	DiffScopeHunks      []DiffHunk         `json:"-"`
+	DiffScopeHunks []DiffHunk `json:"-"`
+	// DiffBaseSHA and DiffHeadSHA identify the exact commits this context's diff
+	// was built between, when the source knows them (GitLab MRs). They are
+	// deliberately NOT copied into prompt payloads; chat sessions persist them so
+	// a cached context's freshness can be checked against the live MR without a
+	// spurious first-resume refresh.
+	DiffBaseSHA         string             `json:"diff_base_sha,omitempty"`
+	DiffHeadSHA         string             `json:"diff_head_sha,omitempty"`
 	Comments            []Comment          `json:"comments,omitempty"`
 	SupplementalContext []SupplementalFile `json:"supplemental_context,omitempty"`
 	ToolchainVersions   []ToolchainVersion `json:"toolchain_versions,omitempty"`

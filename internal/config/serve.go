@@ -56,6 +56,7 @@ type ServeConfig struct {
 	GroupsFile string       `yaml:"groups_file"`
 	Groups     []ServeGroup `yaml:"groups"`
 	Review     ServeReview  `yaml:"review"`
+	Chat       ServeChat    `yaml:"chat"`
 	// Loki, when its url is set, streams every review child's output live to a
 	// Grafana Loki instance in addition to the on-disk log, so logs survive pod
 	// restarts and are queryable in Grafana. Disabled (no streaming) when url
@@ -179,6 +180,32 @@ func ParseSigningKey(token string) ([]byte, error) {
 // ServeReview holds settings forwarded to spawned review child processes.
 type ServeReview struct {
 	ExtraArgs []string `yaml:"extra_args"`
+}
+
+// ServeChat configures the daemon's discussion-agent replies (chat children
+// spawned for replies in nickpit review threads).
+type ServeChat struct {
+	// Enabled turns chat replies off entirely when explicitly false: chat
+	// events are then acknowledged and dropped, and no LLM turn ever runs.
+	// Unset defaults to enabled, preserving pre-existing behavior — but unlike
+	// reviews (opt-in per project topic), any commenter in a nickpit thread can
+	// trigger a paid chat turn, so operators get an explicit opt-out.
+	Enabled *bool `yaml:"enabled"`
+	// MaxConcurrent caps concurrent chat child processes; <=0 uses the built-in
+	// default (4).
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// ExtraArgs are forwarded to chat children INSTEAD of review.extra_args.
+	// Absent, chat children inherit review.extra_args (root persistent flags
+	// like --profile apply to both commands); an explicit list — even an empty
+	// `extra_args: []` — replaces them, so a review-subcommand-only flag never
+	// kills every chat child at flag parsing.
+	ExtraArgs []string `yaml:"extra_args"`
+}
+
+// ChatEnabled reports whether discussion-agent replies are enabled (default
+// true when unset).
+func (c *ServeConfig) ChatEnabled() bool {
+	return c.Chat.Enabled == nil || *c.Chat.Enabled
 }
 
 // LoadServe reads and validates a serve config file. Like the main config,
@@ -325,6 +352,9 @@ func (c *ServeConfig) Validate() error {
 	}
 	if c.ReviewConcurrency < 1 {
 		errs = append(errs, fmt.Errorf("review_concurrency must be >= 1, got %d", c.ReviewConcurrency))
+	}
+	if c.Chat.MaxConcurrent < 0 {
+		errs = append(errs, fmt.Errorf("chat.max_concurrent must be >= 0, got %d", c.Chat.MaxConcurrent))
 	}
 	if _, err := time.ParseDuration(c.ShutdownGrace); err != nil {
 		errs = append(errs, fmt.Errorf("shutdown_grace: %w", err))

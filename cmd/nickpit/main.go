@@ -33,6 +33,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve"
 	"github.com/dgrieser/nickpit/internal/serve/loki"
 	"github.com/dgrieser/nickpit/internal/styleguide"
+	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
@@ -106,6 +107,8 @@ type app struct {
 	maxFindings                   int
 	maxFindingsSet                bool
 	priorityThreshold             string
+	sessionDir                    string
+	noSession                     bool
 	configPath                    string
 	githubToken                   string
 	gitlabToken                   string
@@ -131,6 +134,9 @@ type app struct {
 	stepName                      string
 	findingsFiles                 []string
 	logger                        *logging.Logger
+	// prepareCheckout prepares chat's shared temporary checkout; nil means
+	// git.NewCheckoutManager().Prepare. A seam so tests can fake the clone.
+	prepareCheckout func(ctx context.Context, spec model.CheckoutSpec, opts git.CheckoutOptions) (string, func(), error)
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time
@@ -254,12 +260,15 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
 	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
+	root.PersistentFlags().StringVar(&cli.sessionDir, "session-dir", "", "Directory for discussion (chat) session files (default: $NICKPIT_CACHE_DIR/sessions or <user cache>/nickpit/sessions)")
+	root.PersistentFlags().BoolVar(&cli.noSession, "no-session", false, "Do not auto-save a resumable chat session after a review")
 
 	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newGitCmd())
 	root.AddCommand(cli.newGitHubCmd())
 	root.AddCommand(cli.newGitLabCmd())
 	root.AddCommand(cli.newInspectCmd())
+	root.AddCommand(cli.newChatCmd())
 	return root
 }
 
@@ -843,20 +852,58 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Session flags given to the daemon apply to its children: reviews
+			// save (or skip) their resumable chat sessions where the operator
+			// asked, not silently in the default directory. Both flags are root
+			// persistent flags, so review and chat children parse them alike.
+			var sessionArgs []string
+			if a.noSession {
+				sessionArgs = append(sessionArgs, "--no-session")
+			}
+			if a.sessionDir != "" {
+				sessionArgs = append(sessionArgs, "--session-dir", a.sessionDir)
+			}
+			childArgs := append(append([]string(nil), cfg.Review.ExtraArgs...), sessionArgs...)
 			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, serve.WorkerConfig{
 				Topic:      cfg.Topic,
 				StartEmoji: cfg.StartEmojiName(),
 				BaseURL:    baseURL,
 				ConfigPath: a.configPath,
-				ExtraArgs:  cfg.Review.ExtraArgs,
+				ExtraArgs:  childArgs,
 				LogDir:     cfg.LogDir,
 			}, log)
+			// Threaded replies in nickpit discussions are answered by spawning a
+			// `nickpit chat` child (the same command runnable from the terminal),
+			// so the daemon itself stays free of LLM logic. The child reads the
+			// thread, self-gates on the root marker, and posts its reply.
+			// Chat children inherit review.extra_args (root persistent flags
+			// like --profile keep a thread reply on the review's model) unless
+			// chat.extra_args explicitly replaces them — a review-subcommand-only
+			// flag would otherwise kill every chat child at flag parsing. A nil
+			// runner disables chat entirely (chat.enabled: false).
+			chatExtra := cfg.Review.ExtraArgs
+			if cfg.Chat.ExtraArgs != nil {
+				chatExtra = cfg.Chat.ExtraArgs
+			}
+			chatConfig := serve.ChatConfig{
+				ConfigPath:    a.configPath,
+				BaseURL:       baseURL,
+				LogDir:        cfg.LogDir,
+				ExtraArgs:     append(append([]string(nil), chatExtra...), sessionArgs...),
+				MaxConcurrent: cfg.Chat.MaxConcurrent,
+			}
+			var chatRunner serve.ChatRunner
+			if cfg.ChatEnabled() {
+				chatRunner = runner
+			} else {
+				log.Info("chat replies disabled by config (chat.enabled: false)")
+			}
 			handler := serve.NewHandler(groups, dispatcher, serve.HandlerConfig{
 				TriggerEmoji:   cfg.TriggerEmoji,
 				CommandKeyword: cfg.CommandKeyword,
 				AckEmoji:       cfg.AckEmojiName(),
 				AbortEmoji:     cfg.AbortEmojiName(),
-			}, log)
+			}, chatRunner, chatConfig, log)
 			server := serve.NewServer(cfg.Listen, handler, dispatcher, cfg.ShutdownGraceDuration(), log)
 			return server.Run(cmd.Context(), cfg.ReviewConcurrency)
 		},
@@ -1274,8 +1321,12 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 }
 
 // emitResult formats the result to stdout, optionally publishes it back to the
-// origin, and reports the "all reviewers errored" CI failure.
-func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req model.ReviewRequest, result *model.ReviewResult) error {
+// origin, saves the resumable chat session, and reports the "all reviewers
+// errored" CI failure. reviewCtx is the prepared (filtered, trimmed) context the
+// pipeline reviewed — cached on the chat session for exact-context resume — and
+// headSHA is the remote head it was built at (both may be zero for source-less
+// runs).
+func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) error {
 	if req.DisableSuggestions {
 		result.StripSuggestions()
 	}
@@ -1311,6 +1362,14 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, req mod
 			a.logProgress(ctx, logging.StagePublish, logging.StateSkip, "source does not support publishing")
 		}
 	}
+	// Save a resumable discussion session so `nickpit chat` can pick up the
+	// review. Best-effort: a failure here never affects the review outcome. A
+	// collapsed run (every reviewer errored) is not persisted: the pipeline
+	// still emits a fallback overall explanation, so saving would displace the
+	// previous VALID review as the latest session with a no-finding shell.
+	if !reviewProducedNothing(result) {
+		a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA)
+	}
 	// Distinguish "review produced nothing because every reviewer crashed"
 	// from "review succeeded with some soft warnings" — only the former is a
 	// CI-level failure. Empty findings alone are not a failure (clean diff).
@@ -1334,8 +1393,9 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 		confidenceWarning = fmt.Sprintf("confidence threshold %.2f is configured but workflow has no verdict step; threshold will not be applied", req.ConfidenceThreshold)
 		a.logProgress(ctx, logging.StageVerdict, logging.StateWarn, confidenceWarning)
 	}
+	headSHA := ""
 	if pipeline.NeedsSource() {
-		repoRoot, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
+		repoRoot, resolvedSHA, cleanup, err := a.resolveRepoRoot(ctx, source, profile, req)
 		if err != nil {
 			return err
 		}
@@ -1343,11 +1403,12 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 			defer cleanup()
 		}
 		req.RepoRoot = repoRoot
+		headSHA = resolvedSHA
 	} else if cwd, err := os.Getwd(); err == nil {
 		req.RepoRoot = cwd
 	}
 
-	result, _, err := engine.RunSpecPipeline(ctx, pipeline, req)
+	result, reviewCtx, err := engine.RunSpecPipeline(ctx, pipeline, req)
 	if errors.Is(err, llm.ErrInvalidJSON) {
 		a.logProgress(ctx, logging.StageResult, logging.StateError, fmt.Sprintf("invalid_json error=%v", err))
 		return err
@@ -1366,7 +1427,7 @@ func (a *app) runWorkflow(ctx context.Context, engine *review.Engine, source mod
 		result.RuntimeSeconds = model.RuntimeSeconds(time.Since(a.reviewStart))
 	}
 	a.logProgress(ctx, logging.StageResult, logging.StateOK, reviewResultSummary(result))
-	return a.emitResult(ctx, source, req, result)
+	return a.emitResult(ctx, source, profile, req, result, reviewCtx, headSHA)
 }
 
 func specHasStep(spec workflow.Spec, stepType string) bool {
@@ -1775,17 +1836,21 @@ func envVarName(value string) string {
 	return strings.TrimPrefix(value, "$")
 }
 
-func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (string, func(), error) {
+// resolveRepoRoot resolves the checkout the review reads from. headSHA is the
+// resolved remote head commit when a remote checkout was made ("" otherwise);
+// it is recorded on the auto-saved chat session so a later chat can detect that
+// the MR/PR gained commits and recreate the diff.
+func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (repoRoot, headSHA string, cleanup func(), err error) {
 	if req.RepoRoot != "" {
 		a.logf(ctx, "Resolved repo root: source=provided path=%s", req.RepoRoot)
-		return req.RepoRoot, nil, nil
+		return req.RepoRoot, "", nil, nil
 	}
 	if req.Mode == model.ModeLocal {
 		wd, err := os.Getwd()
 		if err == nil {
 			a.logf(ctx, "Resolved repo root: source=working_dir path=%s", wd)
 		}
-		return wd, nil, err
+		return wd, "", nil, err
 	}
 	maxToolCalls := req.MaxToolCalls
 	if maxToolCalls == 0 {
@@ -1793,7 +1858,7 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 	}
 	if !req.IncludeFullFiles && !hasContentFilters(req) && maxToolCalls < 0 {
 		a.logf(ctx, "Skipping remote checkout: include_full_files=%t content_filters=%t max_tool_calls=%d", req.IncludeFullFiles, hasContentFilters(req), maxToolCalls)
-		return "", nil, nil
+		return "", "", nil, nil
 	}
 	remote, ok := source.(model.RemoteCheckoutSource)
 	if !ok {
@@ -1801,23 +1866,23 @@ func (a *app) resolveRepoRoot(ctx context.Context, source model.ReviewSource, pr
 		if err == nil {
 			a.logf(ctx, "Skipping remote checkout: reason=no_support fallback=%s", wd)
 		}
-		return wd, nil, err
+		return wd, "", nil, err
 	}
 	spec, err := remote.ResolveCheckout(ctx, req)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	a.logf(ctx, "Preparing remote checkout: provider=%s repo=%s head_ref=%s head_sha=%s", spec.Provider, spec.Repo, spec.HeadRef, spec.HeadSHA)
 	manager := git.NewCheckoutManager()
-	repoRoot, cleanup, err := manager.Prepare(ctx, *spec, git.CheckoutOptions{
+	repoRoot, cleanup, err = manager.Prepare(ctx, *spec, git.CheckoutOptions{
 		Workdir: req.Workdir,
 		Token:   checkoutToken(req.Mode, profile),
 	})
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	a.logf(ctx, "Prepared repo root: path=%s", repoRoot)
-	return repoRoot, cleanup, nil
+	return repoRoot, spec.HeadSHA, cleanup, nil
 }
 
 func hasContentFilters(req model.ReviewRequest) bool {
@@ -2183,6 +2248,19 @@ func (a *app) logf(ctx context.Context, format string, args ...any) {
 		return
 	}
 	a.logger.Verbosef(ctx, format, args...)
+}
+
+// warnf surfaces a non-fatal problem on stderr regardless of --verbose. Use it
+// instead of logf when silence would hide real damage (e.g. a failed session
+// save losing conversation history) from a default invocation.
+func (a *app) warnf(format string, args ...any) {
+	if a.logger == nil {
+		// Same nil tolerance as logf/logProgress, but a warning must still reach
+		// the user; PrintWarning strips control characters, mirror that here.
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", textsan.StripControl(fmt.Sprintf(format, args...)))
+		return
+	}
+	a.logger.PrintWarning(fmt.Sprintf(format, args...))
 }
 
 func (a *app) logProgress(ctx context.Context, stage logging.Stage, state logging.State, msg string) {

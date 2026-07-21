@@ -8,6 +8,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 type prResponse struct {
@@ -101,15 +102,20 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 
 	var comments []model.Comment
 	if includeComments {
+		// Hidden nickpit markers are stripped before a body enters prompt
+		// context: the carrier payloads are large opaque blobs that would waste
+		// model tokens and displace real comments during trimming. Comments that
+		// were only carriers are dropped entirely.
 		var reviews []reviewResponse
 		_ = c.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/reviews", escaped, number), &reviews)
 		for _, item := range reviews {
-			if strings.TrimSpace(item.Body) == "" {
+			body := reviewmd.StripMarkers(item.Body)
+			if body == "" {
 				continue
 			}
 			comments = append(comments, model.Comment{
 				Author:    item.User.Login,
-				Body:      item.Body,
+				Body:      body,
 				CreatedAt: item.Submitted,
 				IsReview:  true,
 			})
@@ -118,6 +124,10 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		var lineComments []commentResponse
 		_ = c.GetPaginated(ctx, fmt.Sprintf("/repos/%s/pulls/%d/comments", escaped, number), &lineComments)
 		for _, item := range lineComments {
+			body := reviewmd.StripMarkers(item.Body)
+			if body == "" {
+				continue
+			}
 			line := item.Line
 			if line == 0 {
 				// Outdated comments carry a null line; fall back to the line
@@ -126,7 +136,7 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 			}
 			comments = append(comments, model.Comment{
 				Author:    item.User.Login,
-				Body:      item.Body,
+				Body:      body,
 				Path:      item.Path,
 				Line:      line,
 				Side:      item.Side,
@@ -138,9 +148,13 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 		var issueComments []issueCommentResponse
 		_ = c.GetPaginated(ctx, fmt.Sprintf("/repos/%s/issues/%d/comments", escaped, number), &issueComments)
 		for _, item := range issueComments {
+			body := reviewmd.StripMarkers(item.Body)
+			if body == "" {
+				continue
+			}
 			comments = append(comments, model.Comment{
 				Author:    item.User.Login,
-				Body:      item.Body,
+				Body:      body,
 				CreatedAt: item.CreatedAt,
 			})
 		}

@@ -3,11 +3,13 @@ package gitlab
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 )
 
 type mrResponse struct {
@@ -89,9 +91,17 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		_ = c.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escaped, iid), &discussions)
 		for _, discussion := range discussions {
 			for _, note := range discussion.Notes {
+				// Strip hidden nickpit markers before the body enters prompt
+				// context: the carrier payloads are large opaque blobs that would
+				// waste model tokens and displace real comments during trimming.
+				// Notes that were only carriers are dropped entirely.
+				body := reviewmd.StripMarkers(note.Body)
+				if body == "" {
+					continue
+				}
 				comment := model.Comment{
 					Author:    note.Author.Username,
-					Body:      note.Body,
+					Body:      body,
 					CreatedAt: note.CreatedAt,
 					ThreadID:  discussion.ID,
 				}
@@ -155,6 +165,10 @@ func (c *Client) FetchMR(ctx context.Context, project string, iid int, includeCo
 		DiffHunks:       hunks,
 		Comments:        comments,
 		OmittedSections: omitted,
+		// The exact diff identity, so a chat session can persist and later verify
+		// the freshness of this context without an extra probe.
+		DiffBaseSHA: mr.DiffRefs.BaseSHA,
+		DiffHeadSHA: mr.SHA,
 	}, nil
 }
 
@@ -197,20 +211,34 @@ func (c *Client) projectCloneURL(ctx context.Context, projectID int, fallbackPro
 
 // MRStatus is the minimal live state of an MR, fetched by the serve daemon
 // right before starting a review so closed/merged/draft MRs are skipped on
-// authoritative data rather than a possibly stale webhook payload.
+// authoritative data rather than a possibly stale webhook payload. BaseSHA is
+// the diff base from diff_refs: together with HeadSHA it identifies the MR's
+// current diff, so a retargeted MR (base moved, head unchanged) is detectable.
 type MRStatus struct {
 	State   string
 	Draft   bool
 	HeadSHA string
+	BaseSHA string
 }
 
 // FetchMRStatus fetches an MR's current state by numeric project ID.
 func (c *Client) FetchMRStatus(ctx context.Context, projectID, iid int) (*MRStatus, error) {
+	return c.fetchMRStatus(ctx, strconv.Itoa(projectID), iid)
+}
+
+// FetchMRStatusByPath fetches an MR's current state by project path (group/name).
+// The chat command uses it to detect that an MR gained commits since a session's
+// cached context was built, so the diff can be recreated against the new head.
+func (c *Client) FetchMRStatusByPath(ctx context.Context, project string, iid int) (*MRStatus, error) {
+	return c.fetchMRStatus(ctx, escapeProject(project), iid)
+}
+
+func (c *Client) fetchMRStatus(ctx context.Context, escapedProject string, iid int) (*MRStatus, error) {
 	var mr mrResponse
-	if err := c.Get(ctx, fmt.Sprintf("/projects/%d/merge_requests/%d", projectID, iid), &mr); err != nil {
+	if err := c.Get(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d", escapedProject, iid), &mr); err != nil {
 		return nil, err
 	}
-	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA}, nil
+	return &MRStatus{State: mr.State, Draft: mr.Draft, HeadSHA: mr.SHA, BaseSHA: mr.DiffRefs.BaseSHA}, nil
 }
 
 // DiffRefs holds the three commit SHAs GitLab requires in a diff-note position.

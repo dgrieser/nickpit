@@ -12,6 +12,7 @@ import (
 // owns the shutdown sequence.
 type Server struct {
 	httpServer *http.Server
+	handler    *Handler
 	dispatcher *Dispatcher
 	grace      time.Duration
 	log        *slog.Logger
@@ -32,6 +33,7 @@ func NewServer(listen string, handler *Handler, dispatcher *Dispatcher, grace ti
 			ReadTimeout:       30 * time.Second,
 			WriteTimeout:      30 * time.Second,
 		},
+		handler:    handler,
 		dispatcher: dispatcher,
 		grace:      grace,
 		log:        log,
@@ -55,9 +57,11 @@ func (s *Server) Run(ctx context.Context, workers int) error {
 
 	select {
 	case err := <-errCh:
-		// Listen failed outright; still stop workers before returning.
+		// Listen failed outright; still stop workers and chat work before
+		// returning.
 		stopWorkers()
 		s.dispatcher.Shutdown(0)
+		s.handler.ShutdownChats(0)
 		return err
 	case <-ctx.Done():
 	}
@@ -68,7 +72,15 @@ func (s *Server) Run(ctx context.Context, workers int) error {
 	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 		s.log.Warn("http shutdown", "error", err)
 	}
+	// Reviews and chats drain concurrently, sharing the grace period rather
+	// than paying it twice.
+	chatsDrained := make(chan struct{})
+	go func() {
+		s.handler.ShutdownChats(s.grace)
+		close(chatsDrained)
+	}()
 	s.dispatcher.Shutdown(s.grace)
+	<-chatsDrained
 	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

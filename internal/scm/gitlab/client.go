@@ -88,6 +88,12 @@ func (c *Client) Post(ctx context.Context, path string, body any, out any) error
 	return json.Unmarshal(respBody, out)
 }
 
+// Delete issues a DELETE request (GitLab answers 204 on success).
+func (c *Client) Delete(ctx context.Context, path string) error {
+	_, _, err := c.doRequest(ctx, http.MethodDelete, path, nil, "")
+	return err
+}
+
 func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	target := reflect.ValueOf(out)
 	if target.Kind() != reflect.Pointer || target.Elem().Kind() != reflect.Slice {
@@ -211,13 +217,16 @@ func newAPIError(method, requestURL string, status int, body []byte) *APIError {
 	return &APIError{Method: method, URL: requestURL, Status: status, Body: string(body)}
 }
 
+// withPage appends pagination parameters. per_page is always maximized (100,
+// GitLab's cap): the default of 20 turns a busy MR's note/discussion listing
+// into 5x the requests.
 func withPage(path string, page int) string {
-	if page <= 1 {
-		return path
-	}
 	separator := "?"
 	if strings.Contains(path, "?") {
 		separator = "&"
 	}
-	return fmt.Sprintf("%s%spage=%d", path, separator, page)
+	if page <= 1 {
+		return fmt.Sprintf("%s%sper_page=100", path, separator)
+	}
+	return fmt.Sprintf("%s%sper_page=100&page=%d", path, separator, page)
 }

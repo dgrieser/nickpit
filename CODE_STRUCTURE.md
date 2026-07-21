@@ -4,7 +4,8 @@ This document maps the production Go code. Test files live beside the code they 
 
 ## Commands
 
-- `cmd/nickpit/main.go`: Main CLI entry point. Defines commands, flags, profile loading, workflow execution, local review modes, SCM review modes, output selection, publishing, and seed-finding handling.
+- `cmd/nickpit/main.go`: Main CLI entry point. Defines commands, flags, profile loading, workflow execution, local review modes, SCM review modes, output selection, publishing, seed-finding handling, and post-review chat-session persistence.
+- `cmd/nickpit/chat.go`: `nickpit chat` command. Starts or resumes a discussion session (from a saved review JSON, a GitLab MR's markers, or the latest/last session), prefers the session's cached prepared context and recreates the diff through the review pipeline when the MR gained commits, and drives the discussion agent interactively (REPL) or one-shot. `--reply-discussion` is the non-interactive GitLab thread-reply mode (read a thread, gate on its root marker, answer only the latest note, post the reply back) that the serve daemon spawns and the terminal can run directly.
 - `cmd/nickpit-config-example/main.go`: Generator binary that prints the example config from `internal/config`.
 - `cmd/nickpit-workflow-example/main.go`: Generator binary that prints the embedded example workflow.
 
@@ -23,6 +24,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/pipeline_steps.go`: Step implementations for context collection, review lanes, merge, finalize, verdict, summarize, and fused post-merge execution.
 - `internal/review/reviewer_session.go`: Reviewer session state, main review execution, nudge handling, and reasoning-mining/update subagents.
 - `internal/review/verifier.go`: Per-finding verification agents, verifier options, fallback unverified results, and verifier telemetry.
+- `internal/review/discuss.go`: Discussion (chat) agent. Free-form, schema-less, tool-enabled `Engine.Discuss` turn: builds the system prompt from the full findings JSON, diff, and styleguides, optionally opens on a pinned finding, and runs one conversation turn returning the reply plus the messages to persist.
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.
 - `internal/review/summarizer.go`: Finding and overall-summary agents, summary payloads, and summarized-body application.
@@ -98,18 +100,18 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/scm/gitlab/notes.go`: Note-level operations used by the serve daemon: note award-emoji, plain MR notes, and threaded discussion replies.
 - `internal/scm/gitlab/position.go`: GitLab inline-comment position mapping.
 - `internal/scm/gitlab/publish.go`: GitLab review/comment publishing.
-- `internal/scm/reviewmd/render.go`: Markdown review report rendering.
+- `internal/scm/reviewmd/render.go`: Markdown review report rendering; hidden idempotency markers and the base64+gzip carrier markers (`nickpit:review:` / `nickpit:finding:`) that embed the full review and each finding in note bodies, grouped by review id, plus `ReviewResultsByID` to reassemble a `ReviewResult` from an MR/PR's notes.
 
 ## GitLab Webhook Daemon (`nickpit gitlab serve`)
 
 - `internal/serve/server.go`: HTTP server wiring, /healthz, and graceful-shutdown sequencing.
 - `internal/serve/handler.go`: Webhook endpoint: body limit, group match, constant-time secret check, event classification, fast-ack enqueue, and command routing (ack emoji and replies posted async).
-- `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs ignore).
+- `internal/serve/event.go`: Webhook payload envelope and the pure `Decide()` trigger policy (auto vs manual vs command vs chat vs ignore); a plain reply in a discussion thread becomes a `CommandChat` candidate.
 - `internal/serve/command.go`: `/keyword` note-command parsing and the help/status/abort reply texts.
 - `internal/serve/groups.go`: Per-group tokens/secrets/clients with longest-prefix project matching and bot-user IDs.
 - `internal/serve/dispatcher.go`: Coalescing per-MR job queue, worker pool, reviewed-SHA LRU, per-job abort (`Abort`/`JobInfo`), and shutdown grace handling.
 - `internal/serve/worker.go`: Per-job pipeline: topic opt-in check, authoritative MR recheck, start-emoji award, child-process review run.
-- `internal/serve/runner.go`: `ReviewRunner` seam and `ExecRunner` spawning `nickpit gitlab mr --publish` children with log capture.
+- `internal/serve/runner.go`: `ReviewRunner`/`ChatRunner` seams and `ExecRunner` spawning `nickpit gitlab mr --publish` (review) and `nickpit chat --gitlab … --reply-discussion` (chat) children, with shared log capture. The daemon runs no LLM itself; the chat child self-gates and posts its own reply.
 - `internal/serve/topics.go`: TTL + singleflight cache for project topics.
 - `internal/config/serve.go`: `server.yaml` schema, loading (env expansion), defaults, and validation for the daemon.
 
@@ -125,6 +127,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/logging/verbose.go`: Verbose log blocks, JSON pretty-printing, and context-aware formatting.
 - `internal/filetype/language.go`: Unified file classification API (language detection, generated-file flags, trim eviction classes) backed by the mappings data.
 - `internal/styleguide/styleguide.go`: Resolves user-supplied additional styleguides (local files or HTTP(S) URLs) into prompt-ready guides.
+- `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, and the full message transcript; load/save/list/latest helpers and oldest-first pruning past a fixed cap.
 - `internal/toolchain/toolchain.go`: Toolchain version capture and normalization.
 - `internal/tools/catalog.go`: Tool catalog exposed to agents.
 - `internal/textsan/textsan.go`: Text sanitization utilities.

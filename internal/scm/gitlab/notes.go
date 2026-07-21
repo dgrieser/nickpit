@@ -27,9 +27,109 @@ func (c *Client) CreateMRNote(ctx context.Context, projectID, iid int, body stri
 	return c.Post(ctx, path, map[string]string{"body": body}, nil)
 }
 
+// CreateMRNotePath posts a top-level comment on a merge request, addressing the
+// project by its group/name path (or numeric id) rather than a numeric id. It is
+// the path-based counterpart of CreateMRNote, used by callers that only have the
+// project path (e.g. the chat command).
+func (c *Client) CreateMRNotePath(ctx context.Context, project string, iid int, body string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escapeProject(project), iid)
+	return c.Post(ctx, path, map[string]string{"body": body}, nil)
+}
+
 // ReplyToMRDiscussion adds a note to an existing merge request discussion so
 // command replies land threaded under the comment that issued them.
 func (c *Client) ReplyToMRDiscussion(ctx context.Context, projectID, iid int, discussionID, body string) error {
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d/discussions/%s/notes", projectID, iid, url.PathEscape(discussionID))
 	return c.Post(ctx, path, map[string]string{"body": body}, nil)
+}
+
+// ReplyToMRDiscussionPath adds a note to an existing discussion, addressing the
+// project by its group/name path (or numeric id) rather than a numeric id. It is
+// the path-based counterpart of ReplyToMRDiscussion, used by callers that only
+// have the project path (e.g. the chat command).
+func (c *Client) ReplyToMRDiscussionPath(ctx context.Context, project string, iid int, discussionID, body string) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s/notes", escapeProject(project), iid, url.PathEscape(discussionID))
+	return c.Post(ctx, path, map[string]string{"body": body}, nil)
+}
+
+// MRNote is one merge-request note body plus its author, so callers can verify
+// carrier provenance before trusting embedded markers.
+type MRNote struct {
+	Body     string
+	AuthorID int
+}
+
+// MRNotes returns every note and discussion note on a merge request with its
+// author. It reads both the notes and discussions endpoints (a note appears in
+// both on GitLab); callers de-duplicate on the decoded content. project accepts
+// a numeric id or a group/name path.
+func (c *Client) MRNotes(ctx context.Context, project string, iid int) ([]MRNote, error) {
+	escaped := escapeProject(project)
+	type noteJSON struct {
+		Body   string `json:"body"`
+		Author struct {
+			ID int `json:"id"`
+		} `json:"author"`
+	}
+	var out []MRNote
+	var notes []noteJSON
+	if err := c.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escaped, iid), &notes); err != nil {
+		return nil, fmt.Errorf("gitlab: listing MR notes: %w", err)
+	}
+	for _, note := range notes {
+		out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
+	}
+	var discussions []struct {
+		Notes []noteJSON `json:"notes"`
+	}
+	if err := c.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/discussions", escaped, iid), &discussions); err != nil {
+		return nil, fmt.Errorf("gitlab: listing MR discussions: %w", err)
+	}
+	for _, discussion := range discussions {
+		for _, note := range discussion.Notes {
+			out = append(out, MRNote{Body: note.Body, AuthorID: note.Author.ID})
+		}
+	}
+	return out, nil
+}
+
+// DiscussionNotes returns the notes of a single discussion, in order (oldest
+// first). It powers reading back an existing chat thread.
+func (c *Client) DiscussionNotes(ctx context.Context, project string, iid int, discussionID string) ([]DiscussionNote, error) {
+	escaped := escapeProject(project)
+	var discussion struct {
+		Notes []struct {
+			ID     int    `json:"id"`
+			Body   string `json:"body"`
+			System bool   `json:"system"`
+			Author struct {
+				Username string `json:"username"`
+				ID       int    `json:"id"`
+			} `json:"author"`
+		} `json:"notes"`
+	}
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s", escaped, iid, url.PathEscape(discussionID))
+	if err := c.Get(ctx, path, &discussion); err != nil {
+		return nil, fmt.Errorf("gitlab: reading discussion: %w", err)
+	}
+	notes := make([]DiscussionNote, 0, len(discussion.Notes))
+	for _, note := range discussion.Notes {
+		notes = append(notes, DiscussionNote{
+			ID:         note.ID,
+			Body:       note.Body,
+			System:     note.System,
+			AuthorName: note.Author.Username,
+			AuthorID:   note.Author.ID,
+		})
+	}
+	return notes, nil
+}
+
+// DiscussionNote is one note within a discussion thread.
+type DiscussionNote struct {
+	ID         int
+	Body       string
+	System     bool
+	AuthorName string
+	AuthorID   int
 }

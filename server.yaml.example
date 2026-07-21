@@ -49,10 +49,26 @@ groups:
   #   token: "${NICKPIT_GL_TOKEN_LEGACY}"
   #   webhook_secret: "${NICKPIT_GL_SECRET_LEGACY}"
 
-# Extra CLI arguments appended verbatim to every review child process.
+# Extra CLI arguments appended verbatim to every review child process. Chat
+# children inherit these too (thread replies then run under the same
+# profile/model as the review they discuss) unless chat.extra_args below
+# replaces them. Use global (root-level) flags only; a review-subcommand-only
+# flag would break every child at flag parsing.
 review:
   extra_args: []
   # extra_args: ["--profile", "default", "--show-progress"]
+
+# Discussion-agent (chat) replies: a reply inside a nickpit review thread
+# spawns a `nickpit chat` child that answers it. Unlike reviews (opt-in per
+# project topic), any commenter in such a thread triggers a paid LLM turn, so
+# chat can be switched off entirely and its concurrency capped.
+chat:
+  enabled: true       # false acknowledges and drops chat replies; no LLM turn runs
+  max_concurrent: 4   # concurrent chat child processes (<=0 uses the default 4)
+  # extra_args replaces review.extra_args for chat children when present.
+  # Absent (commented out) chat children inherit review.extra_args; an
+  # explicit empty list [] forwards nothing.
+  # extra_args: ["--profile", "default"]
 
 # Optional: stream each review's output live to Grafana Loki (in addition to
 # the on-disk log_dir file), so logs survive pod restarts and are queryable in

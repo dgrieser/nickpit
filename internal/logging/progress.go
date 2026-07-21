@@ -99,6 +99,7 @@ const (
 	StageModel      Stage = "Model"
 	StageAgent      Stage = "Agent"
 	StageReview     Stage = "Review"
+	StageChat       Stage = "Chat"
 	StageModelCheck Stage = "ModelCheck"
 	StageRequest    Stage = "Request"
 	StageResponse   Stage = "Response"
@@ -183,6 +184,7 @@ var progressStageStyles = map[Stage]string{
 	StageAgent:      "1;38;5;111",
 	StageModelCheck: "1;38;5;114",
 	StageReview:     "1;38;5;219",
+	StageChat:       "1;38;5;117",
 	StageRequest:    "1;38;5;214",
 	StageReasoning:  "1;38;5;183",
 	StageResponse:   "1;38;5;150",

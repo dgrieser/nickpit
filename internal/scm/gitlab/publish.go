@@ -33,51 +33,155 @@ func (a *Adapter) PublishReview(ctx context.Context, req model.ReviewRequest, re
 		changesByPath[change.NewPath] = change
 	}
 
+	// Bind the renderer to this run's review id so every note carries the hidden
+	// carrier markers used to regroup findings later (e.g. for a discussion),
+	// and embed the request's context options so an MR-reassembled chat rebuilds
+	// the review's FILTERED context, never the then-current configuration's.
+	render := a.render.ForReview(result.ReviewID).WithContextOptions(model.ContextOptionsFromRequest(req))
+
 	var errs []error
+	summaryPosted := false
+	summaryCarried := false
 	if _, ok := prior.Markers[reviewmd.SummaryMarker]; !ok {
-		if err := a.client.Post(ctx, notesPath, map[string]string{"body": a.render.SummaryBody(result)}, nil); err != nil {
+		body, carried := render.SummaryBodyCarried(result)
+		if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
 			errs = append(errs, fmt.Errorf("summary: %w", err))
+		} else {
+			summaryPosted = true
+			summaryCarried = carried
 		}
 	}
+	// missing collects findings without an own successfully-posted carrier:
+	// skipped as already-posted duplicates (their old note carries no carrier for
+	// THIS run's review id), failed to post, or posted with the carrier omitted
+	// because it would have pushed the comment past the platform size limit.
+	var missing []model.Finding
 	for _, finding := range result.Findings {
 		title, _, _, _ := reviewmd.FindingDisplay(finding)
 		if reviewmd.AlreadyPosted(finding, title, prior) {
+			missing = append(missing, finding)
 			continue
 		}
 		change, hasChange := changesByPath[finding.CodeLocation.FilePath]
-		if err := a.publishFinding(ctx, notesPath, discussionsPath, change, hasChange, info.DiffRefs, finding); err != nil {
+		carried, err := a.publishFinding(ctx, render, notesPath, discussionsPath, change, hasChange, info.DiffRefs, finding)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("finding %s: %w", finding.ID, err))
 		}
+		if err != nil || !carried {
+			missing = append(missing, finding)
+		}
+	}
+	// When the visible summary was suppressed, failed, or shipped without its
+	// envelope (size-omitted), or any finding lacks its own carrier, the
+	// distributed carriers no longer cover this run in full. Post hidden,
+	// size-bounded carrier chunks holding the review envelope and exactly the
+	// missing findings, so a chat can still reassemble this review by id instead
+	// of discussing an older run. Verdict-only re-reviews post just the envelope.
+	carrierFailed := false
+	if !summaryPosted || !summaryCarried || len(missing) > 0 {
+		for _, finding := range reviewmd.UniqueFindingsByID(missing) {
+			// A finding past the reader's decoded budget is never emitted (the
+			// writer refuses the poisoned marker) — surface the gap instead of
+			// silently leaving the finding unavailable to chat.
+			if result.ReviewID != "" && reviewmd.FindingMarker(result.ReviewID, finding) == "" {
+				errs = append(errs, fmt.Errorf("finding %s: payload exceeds the carrier budget; it will not be available for discussion", finding.ID))
+			}
+		}
+		for _, body := range render.CarrierNotes(result, reviewmd.UniqueFindingsByID(missing)) {
+			if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
+				errs = append(errs, fmt.Errorf("carrier: %w", err))
+				carrierFailed = true
+			}
+		}
+	}
+	// Prune only once every required carrier of the CURRENT run is confirmed
+	// posted: a failed carrier chunk leaves this run incomplete, and deleting
+	// the previous run's fallback carriers then could destroy the last complete
+	// review on the MR — reassembly would find neither run. Best-effort cleanup.
+	if !carrierFailed {
+		a.pruneStaleCarriers(ctx, req.Repo, req.Identifier, result.ReviewID)
 	}
 	return errors.Join(errs...)
 }
 
+// pruneStaleCarriers deletes the bot's own carrier-only notes left by previous
+// runs. Every re-review posts a fresh carrier set under a new review id;
+// without pruning, a daemon-watched MR accumulates one blank bot-note timeline
+// per push and every chat turn gunzips all of them. Only notes authored by the
+// token's own user whose body is nothing but foreign-review carriers are
+// deleted (see reviewmd.IsStaleCarrierBody) — visible comments, thread roots,
+// and fallback chat answers are never touched. Best-effort: any failure leaves
+// old notes in place (stale carriers are garbage, not corruption).
+func (a *Adapter) pruneStaleCarriers(ctx context.Context, project string, iid int, currentReviewID string) {
+	if currentReviewID == "" {
+		return
+	}
+	user, err := a.client.CurrentUser(ctx)
+	if err != nil {
+		return
+	}
+	escaped := escapeProject(project)
+	var notes []struct {
+		ID     int    `json:"id"`
+		Body   string `json:"body"`
+		Author struct {
+			ID int `json:"id"`
+		} `json:"author"`
+	}
+	if err := a.client.GetPaginated(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes", escaped, iid), &notes); err != nil {
+		return
+	}
+	// Reviews still referenced by a VISIBLE ref stub (an oversized summary or
+	// finding whose payload lives only in a carrier note) keep their carriers:
+	// the stub routes replies to that review but carries no data of its own.
+	// GitLab's /notes listing includes discussion notes, so inline stubs are
+	// covered too. (A forged ref can at worst RETAIN old carriers, never delete.)
+	bodies := make([]string, 0, len(notes))
+	for _, note := range notes {
+		bodies = append(bodies, note.Body)
+	}
+	protected := reviewmd.RefReviewIDs(bodies)
+	for _, note := range notes {
+		if note.Author.ID != user.ID || !reviewmd.IsStaleCarrierBody(note.Body, currentReviewID, protected) {
+			continue
+		}
+		_ = a.client.Delete(ctx, fmt.Sprintf("/projects/%s/merge_requests/%d/notes/%d", escaped, iid, note.ID))
+	}
+}
+
 // publishFinding posts a single finding. It tries a multi-line inline comment,
 // then a single-line inline comment, then (on an unmappable line or a 422 from
-// GitLab) a general note carrying file:line.
-func (a *Adapter) publishFinding(ctx context.Context, notesPath, discussionsPath string, change MRChange, hasChange bool, refs DiffRefs, finding model.Finding) error {
+// GitLab) a general note carrying file:line. carried reports whether the posted
+// body embedded the full-finding carrier marker (false when it was omitted for
+// size, so the caller can route the finding into the fallback carrier notes).
+func (a *Adapter) publishFinding(ctx context.Context, render reviewmd.Renderer, notesPath, discussionsPath string, change MRChange, hasChange bool, refs DiffRefs, finding model.Finding) (carried bool, err error) {
 	if hasChange {
+		body, bodyCarried := render.FindingBodyCarried(finding, "")
 		if pos, ok := multiLinePosition(change, refs, finding.CodeLocation.LineRange); ok {
-			err := a.client.Post(ctx, discussionsPath, discussionPayload(a.render.FindingBody(finding, ""), pos), nil)
+			err := a.client.Post(ctx, discussionsPath, discussionPayload(body, pos), nil)
 			if err == nil {
-				return nil
+				return bodyCarried, nil
 			}
 			if !isUnprocessable(err) {
-				return err
+				return false, err
 			}
 		}
 		if pos, ok := bestPosition(change, refs, finding.CodeLocation.LineRange); ok {
-			err := a.client.Post(ctx, discussionsPath, discussionPayload(a.render.FindingBody(finding, ""), pos), nil)
+			err := a.client.Post(ctx, discussionsPath, discussionPayload(body, pos), nil)
 			if err == nil {
-				return nil
+				return bodyCarried, nil
 			}
 			if !isUnprocessable(err) {
-				return err
+				return false, err
 			}
 		}
 	}
 	prefix := fmt.Sprintf("`%s:%d`", reviewmd.Sanitize(finding.CodeLocation.FilePath), finding.CodeLocation.LineRange.Start)
-	return a.client.Post(ctx, notesPath, map[string]string{"body": a.render.FindingBody(finding, prefix)}, nil)
+	body, bodyCarried := render.FindingBodyCarried(finding, prefix)
+	if err := a.client.Post(ctx, notesPath, map[string]string{"body": body}, nil); err != nil {
+		return false, err
+	}
+	return bodyCarried, nil
 }
 
 func discussionPayload(body string, pos position) map[string]any {
