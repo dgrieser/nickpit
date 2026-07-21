@@ -387,8 +387,8 @@ func applyVerdictFallback(result *model.ReviewResult, thresholdRank int) {
 //
 //   - "patch is incorrect": max confidence over the deciding findings — those at
 //     floor 0, or (if none) floor 1. Defensive fallback to all findings.
-//   - "patch is correct":   1 - 0.5*max(confidence over all findings); no findings
-//     => 1.0.
+//   - "patch is correct":   1 - 0.5*max(confidence over findings at floor <= 1);
+//     no such findings => 1.0.
 func overallConfidenceFor(correctness string, findings []model.Finding, thresholdRank int) float64 {
 	if correctness == "patch is incorrect" {
 		deciding := findingsAtFloor(findings, 0, thresholdRank)
@@ -401,11 +401,15 @@ func overallConfidenceFor(correctness string, findings []model.Finding, threshol
 		return roundConfidenceScore(maxFindingConfidence(deciding))
 	}
 	// "patch is correct": temper by the strongest finding the verdict chose NOT to
-	// treat as blocking. A floor-0 finding cannot occur here (the constraint forces
-	// "incorrect"), but a floor-1 (P1) can — the prompt allows a justified "correct"
-	// verdict over a P1 — so it must temper too, not be filtered out. No findings
-	// => max is 0 => 1.0.
-	return roundConfidenceScore(1 - 0.5*maxFindingConfidence(findings))
+	// treat as blocking — one at floor <= 1. A floor-0 finding cannot occur here
+	// (the constraint forces "incorrect"), but a floor-1 (P1) can: the prompt
+	// allows a justified "correct" verdict over a P1. Floor-2/3 findings never
+	// temper — they cannot block by construction (verdictConstraintsFor forces
+	// "correct" when only P2/P3 exist), and their confidence measures "is the
+	// finding real", not "is the patch incorrect", so a confidently verified
+	// nitpick must not drag the top-line score. No tempering findings => max is
+	// 0 => 1.0.
+	return roundConfidenceScore(1 - 0.5*maxFindingConfidenceAtOrBelowFloor(findings, 1, thresholdRank))
 }
 
 func findingsAtFloor(findings []model.Finding, floor, thresholdRank int) []model.Finding {
@@ -416,6 +420,21 @@ func findingsAtFloor(findings []model.Finding, floor, thresholdRank int) []model
 		}
 	}
 	return out
+}
+
+// maxFindingConfidenceAtOrBelowFloor computes the maximum confidence over the
+// findings whose priority floor is at or below (more critical than) the given
+// floor, without materializing the filtered subset.
+func maxFindingConfidenceAtOrBelowFloor(findings []model.Finding, floor, thresholdRank int) float64 {
+	max := 0.0
+	for _, f := range findings {
+		if priorityFloor(f, thresholdRank) <= floor {
+			if c := findingConfidence(f); c > max {
+				max = c
+			}
+		}
+	}
+	return max
 }
 
 func maxFindingConfidence(findings []model.Finding) float64 {

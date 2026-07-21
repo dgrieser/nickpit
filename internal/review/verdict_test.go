@@ -290,16 +290,22 @@ func TestOverallConfidenceFor(t *testing.T) {
 			want:        0.7,
 		},
 		{
-			name:        "correct: tempered by strongest non-blocking finding",
+			name:        "correct: floor-2/3 findings never temper",
 			correctness: "patch is correct",
 			findings:    []model.Finding{finalized(2, 0.8), finalized(3, 0.5)},
-			want:        0.6,
+			want:        1.0,
 		},
 		{
 			name:        "correct: a justified P1 override tempers (not ignored)",
 			correctness: "patch is correct",
 			findings:    []model.Finding{finalized(1, 0.9), finalized(2, 0.3)},
 			want:        0.55,
+		},
+		{
+			name:        "correct: only the P1 tempers, not a stronger P2",
+			correctness: "patch is correct",
+			findings:    []model.Finding{finalized(1, 0.4), finalized(2, 0.9)},
+			want:        0.8,
 		},
 		{
 			name:        "correct: no findings is 1.0",
