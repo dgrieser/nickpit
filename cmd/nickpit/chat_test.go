@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/review"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
@@ -241,5 +246,198 @@ func TestPickReviewPrefersNewest(t *testing.T) {
 	got, err = pickReview(reviews, "")
 	if err != nil || got.ReviewID != "zzz" {
 		t.Fatalf("legacy pick = %v, %v; want zzz", got, err)
+	}
+}
+
+// fakeRemoteSource is a model.RemoteCheckoutSource for chat checkout tests.
+type fakeRemoteSource struct {
+	spec          *model.CheckoutSpec
+	resolveErr    error
+	checkoutCalls int
+}
+
+func (s *fakeRemoteSource) ResolveContext(_ context.Context, req model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{
+		Mode:         req.Mode,
+		Title:        "t",
+		ChangedFiles: []model.ChangedFile{{Path: "a.go"}},
+		Diff:         "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n",
+	}, nil
+}
+
+func (s *fakeRemoteSource) ResolveCheckout(context.Context, model.ReviewRequest) (*model.CheckoutSpec, error) {
+	s.checkoutCalls++
+	if s.resolveErr != nil {
+		return nil, s.resolveErr
+	}
+	return s.spec, nil
+}
+
+// fakeContextOnlySource implements only model.ReviewSource (no checkout support).
+type fakeContextOnlySource struct{}
+
+func (fakeContextOnlySource) ResolveContext(context.Context, model.ReviewRequest) (*model.ReviewContext, error) {
+	return &model.ReviewContext{}, nil
+}
+
+func TestChatCheckoutRelease(t *testing.T) {
+	var zero chatCheckout
+	zero.release() // zero value must not panic
+
+	calls := 0
+	co := chatCheckout{root: "/tmp/x", cleanup: func() { calls++ }}
+	co.release()
+	co.release()
+	if calls != 1 {
+		t.Fatalf("cleanup ran %d times, want exactly once", calls)
+	}
+	if co.root != "" || co.cleanup != nil {
+		t.Fatalf("release must clear the holder, got root=%q cleanup set=%t", co.root, co.cleanup != nil)
+	}
+}
+
+func TestChatEnsureCheckout(t *testing.T) {
+	ctx := context.Background()
+	profile := config.Profile{Workdir: "/work", GitLabToken: "tok"}
+	req := model.ReviewRequest{Mode: model.ModeGitLab}
+	spec := &model.CheckoutSpec{Provider: model.ModeGitLab, Repo: "g/p", CloneURL: "https://x/y.git", HeadSHA: "abc"}
+
+	t.Run("source without checkout support is a no-op", func(t *testing.T) {
+		a := &app{prepareCheckout: func(context.Context, model.CheckoutSpec, git.CheckoutOptions) (string, func(), error) {
+			t.Fatal("prepare must not be called for a non-remote source")
+			return "", nil, nil
+		}}
+		var co chatCheckout
+		if err := a.chatEnsureCheckout(ctx, fakeContextOnlySource{}, profile, req, &co); err != nil {
+			t.Fatalf("chatEnsureCheckout: %v", err)
+		}
+		if co.root != "" {
+			t.Fatalf("co.root = %q, want empty", co.root)
+		}
+	})
+
+	t.Run("prepares once with profile workdir and token, then reuses", func(t *testing.T) {
+		src := &fakeRemoteSource{spec: spec}
+		prepares := 0
+		a := &app{prepareCheckout: func(_ context.Context, gotSpec model.CheckoutSpec, opts git.CheckoutOptions) (string, func(), error) {
+			prepares++
+			if gotSpec.CloneURL != spec.CloneURL {
+				t.Fatalf("spec.CloneURL = %q, want %q", gotSpec.CloneURL, spec.CloneURL)
+			}
+			if opts.Workdir != "/work" || opts.Token != "tok" {
+				t.Fatalf("opts = %+v, want profile workdir and GitLab token", opts)
+			}
+			return "/tmp/clone", func() {}, nil
+		}}
+		var co chatCheckout
+		if err := a.chatEnsureCheckout(ctx, src, profile, req, &co); err != nil {
+			t.Fatalf("chatEnsureCheckout: %v", err)
+		}
+		if co.root != "/tmp/clone" {
+			t.Fatalf("co.root = %q, want /tmp/clone", co.root)
+		}
+		// A held checkout is reused: no second resolve or prepare.
+		if err := a.chatEnsureCheckout(ctx, src, profile, req, &co); err != nil {
+			t.Fatalf("chatEnsureCheckout (again): %v", err)
+		}
+		if prepares != 1 || src.checkoutCalls != 1 {
+			t.Fatalf("prepare/resolve ran %d/%d times, want 1/1", prepares, src.checkoutCalls)
+		}
+	})
+
+	t.Run("resolve and prepare errors propagate, holder stays empty", func(t *testing.T) {
+		src := &fakeRemoteSource{resolveErr: errors.New("boom")}
+		a := &app{}
+		var co chatCheckout
+		if err := a.chatEnsureCheckout(ctx, src, profile, req, &co); err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("resolve error not propagated, got: %v", err)
+		}
+		if co.root != "" {
+			t.Fatalf("co.root = %q after resolve failure, want empty", co.root)
+		}
+		a.prepareCheckout = func(context.Context, model.CheckoutSpec, git.CheckoutOptions) (string, func(), error) {
+			return "", nil, errors.New("clone failed")
+		}
+		if err := a.chatEnsureCheckout(ctx, &fakeRemoteSource{spec: spec}, profile, req, &co); err == nil || !strings.Contains(err.Error(), "clone failed") {
+			t.Fatalf("prepare error not propagated, got: %v", err)
+		}
+		if co.root != "" {
+			t.Fatalf("co.root = %q after prepare failure, want empty", co.root)
+		}
+	})
+}
+
+// chatPrepareContext must retain the checkout in the holder for the retrieval
+// tools (single shared clone per invocation) while scrubbing its path from the
+// returned context, which may be persisted in the session store.
+func TestChatPrepareContextSharedCheckout(t *testing.T) {
+	ctx := context.Background()
+	spec := &model.CheckoutSpec{Provider: model.ModeGitLab, Repo: "g/p", CloneURL: "https://x/y.git", HeadSHA: "abc"}
+	src := &fakeRemoteSource{spec: spec}
+	root := t.TempDir()
+	prepares, cleanups := 0, 0
+	a := &app{prepareCheckout: func(context.Context, model.CheckoutSpec, git.CheckoutOptions) (string, func(), error) {
+		prepares++
+		return root, func() { cleanups++ }, nil
+	}}
+	engine := review.NewEngine(src, nil, retrieval.NewLocalEngine(), config.Profile{})
+	engine.SetToolchainCapture(func(context.Context, string, *model.ReviewContext) []model.ToolchainVersion { return nil })
+
+	profile := config.Profile{} // MaxToolCalls 0 = unlimited: tools enabled
+	req := model.ReviewRequest{Mode: model.ModeGitLab, Repo: "g/p", Identifier: 1}
+	var co chatCheckout
+	reviewCtx, err := a.chatPrepareContext(ctx, engine, src, profile, req, &co)
+	if err != nil {
+		t.Fatalf("chatPrepareContext: %v", err)
+	}
+	if co.root != root {
+		t.Fatalf("co.root = %q, want the prepared checkout %q", co.root, root)
+	}
+	if cleanups != 0 {
+		t.Fatal("checkout must be retained for the caller, not cleaned up")
+	}
+	if reviewCtx.CheckoutRoot != "" {
+		t.Fatalf("CheckoutRoot = %q leaked into the (persistable) context", reviewCtx.CheckoutRoot)
+	}
+	// The tools path reuses the same clone instead of preparing a second one.
+	if err := a.chatEnsureCheckout(ctx, src, profile, req, &co); err != nil {
+		t.Fatalf("chatEnsureCheckout: %v", err)
+	}
+	if prepares != 1 {
+		t.Fatalf("prepare ran %d times, want a single shared checkout", prepares)
+	}
+	co.release()
+	if cleanups != 1 {
+		t.Fatalf("cleanup ran %d times after release, want 1", cleanups)
+	}
+}
+
+// With tools disabled and nothing else needing files, chatPrepareContext must
+// not prepare a checkout — the tools-off escape hatch (max_tool_calls < 0)
+// also skips the clone.
+func TestChatPrepareContextSkipsCheckoutWhenNothingNeedsOne(t *testing.T) {
+	src := &fakeRemoteSource{spec: &model.CheckoutSpec{CloneURL: "https://x/y.git", HeadSHA: "abc"}}
+	a := &app{prepareCheckout: func(context.Context, model.CheckoutSpec, git.CheckoutOptions) (string, func(), error) {
+		t.Fatal("prepare must not be called when nothing needs a checkout")
+		return "", nil, nil
+	}}
+	engine := review.NewEngine(src, nil, retrieval.NewLocalEngine(), config.Profile{})
+	engine.SetToolchainCapture(func(context.Context, string, *model.ReviewContext) []model.ToolchainVersion { return nil })
+
+	profile := config.Profile{MaxToolCalls: -1}
+	req := model.ReviewRequest{Mode: model.ModeGitLab, Repo: "g/p", Identifier: 1}
+	var co chatCheckout
+	reviewCtx, err := a.chatPrepareContext(context.Background(), engine, src, profile, req, &co)
+	if err != nil {
+		t.Fatalf("chatPrepareContext: %v", err)
+	}
+	if co.root != "" {
+		t.Fatalf("co.root = %q, want no checkout", co.root)
+	}
+	if src.checkoutCalls != 0 {
+		t.Fatalf("ResolveCheckout ran %d times, want 0", src.checkoutCalls)
+	}
+	if reviewCtx == nil {
+		t.Fatal("context must still be prepared without a checkout")
 	}
 }

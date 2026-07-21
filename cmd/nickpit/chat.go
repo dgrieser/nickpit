@@ -64,7 +64,7 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.repo, "repo", "", "GitLab project group/name (with --gitlab)")
 	cmd.Flags().IntVar(&opts.mrID, "id", 0, "GitLab merge request IID (with --gitlab)")
 	cmd.Flags().StringVar(&opts.reviewID, "review-id", "", "Select a specific review when the MR carries more than one")
-	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from (defaults to the current directory for local sessions)")
+	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from, overriding the automatic temporary checkout for remote sessions (defaults to the current directory for local sessions)")
 	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
 	cmd.Flags().IntVar(&opts.replyNote, "reply-note", 0, "With --reply-discussion, the triggering note id; the reply is skipped unless this note is still the latest, so racing or redelivered replies do not double-answer")
 	return cmd
@@ -168,8 +168,8 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		return fmt.Errorf("chat: finding %q not found in review %s (%d finding(s) available; list ids with the review JSON or omit --finding to discuss the whole review)",
 			sess.PinnedFindingID, sess.ReviewID, len(sess.Result.Findings))
 	}
-	// --repo-root applies to resumed sessions too: it is the only way to point
-	// the retrieval tools at a checkout for a resumed remote session.
+	// --repo-root applies to resumed sessions too: it overrides the automatic
+	// temporary checkout with a local one (full history, local edits).
 	if opts.repoRoot != "" {
 		sess.Source.RepoRoot = opts.repoRoot
 	}
@@ -193,14 +193,34 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 		return err
 	}
 
-	reviewCtx, refreshed, err := a.chatContext(ctx, engine, source, profile, sess)
+	// The temporary checkout (when one is prepared below, or during a context
+	// refresh) is shared by context preparation and the retrieval tools; it
+	// lives until the one-shot turn or REPL ends. Ctrl+C cancels the signal
+	// context, chatREPL returns, and this defer removes the clone.
+	var co chatCheckout
+	defer co.release()
+
+	reviewCtx, refreshed, err := a.chatContext(ctx, engine, source, profile, sess, &co)
 	if err != nil {
 		return err
 	}
 
 	// Tools read from a real checkout only; without one, an empty root would
-	// resolve to the process working directory and expose unrelated files.
-	tools := chatToolset(sess.Source.RepoRoot)
+	// resolve to the process working directory and expose unrelated files. A
+	// remote session without --repo-root gets a temporary checkout of the live
+	// head (reusing the refresh clone when one happened) — unless tools are
+	// disabled (max_tool_calls < 0). Checkout failure degrades to tools-off
+	// with a warning: an answer from the diff context beats no conversation.
+	// The temp path stays out of sess.Source.RepoRoot, which is persisted.
+	toolRoot := sess.Source.RepoRoot
+	if toolRoot == "" && model.ReviewMode(sess.Source.Mode) != model.ModeLocal && profile.MaxToolCalls >= 0 {
+		req := a.chatReviewRequest(profile, sess.Source, sess.ContextOptions)
+		if err := a.chatEnsureCheckout(ctx, source, profile, req, &co); err != nil {
+			a.warnf("chat: could not prepare a checkout for the retrieval tools (continuing without them): %v", err)
+		}
+		toolRoot = co.root
+	}
+	tools := chatToolset(toolRoot)
 
 	// --no-session is honored here too, not only for post-review auto-saves:
 	// the user asked for nothing to be persisted, so turns run in memory only
@@ -228,7 +248,7 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 			Result:                   sess.Result,
 			PinnedFindingID:          sess.PinnedFindingID,
 			Messages:                 sess.Conversation(),
-			RepoRoot:                 sess.Source.RepoRoot,
+			RepoRoot:                 toolRoot,
 			Tools:                    tools,
 			DiffFormat:               profile.DiffFormat,
 			DisableSuggestions:       profile.DisableSuggestions,
@@ -588,7 +608,7 @@ func sourceFromResult(result *model.ReviewResult, repoRoot string) session.Sourc
 // reproducible (the working tree moved on), and GitHub staleness detection
 // lands with the GitHub chat front-end. refreshed reports that the session's
 // cache was updated and should be saved.
-func (a *app) chatContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, sess *session.Session) (reviewCtx *model.ReviewContext, refreshed bool, err error) {
+func (a *app) chatContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, sess *session.Session, co *chatCheckout) (reviewCtx *model.ReviewContext, refreshed bool, err error) {
 	refresh := sess.Context == nil
 	if adapter, ok := source.(*glscm.Adapter); ok && model.ReviewMode(sess.Source.Mode) == model.ModeGitLab &&
 		sess.Source.Repo != "" && sess.Source.Identifier > 0 {
@@ -609,7 +629,7 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 	if !refresh {
 		return sess.Context, false, nil
 	}
-	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions))
+	reviewCtx, err = a.chatPrepareContext(ctx, engine, source, profile, a.chatReviewRequest(profile, sess.Source, sess.ContextOptions), co)
 	if err != nil {
 		// A refresh failure must not block the chat when a cached context exists:
 		// stale-but-real context beats no conversation. Without a cache the error
@@ -630,17 +650,68 @@ func (a *app) chatContext(ctx context.Context, engine *review.Engine, source mod
 	return reviewCtx, true, nil
 }
 
+// chatCheckout holds the invocation-scoped temporary checkout shared by
+// context preparation and the retrieval tools. Its path must never be
+// persisted: the checkout is deleted when the invocation ends, so a stored
+// path would dangle on resume. release is safe on the zero value and after
+// repeated calls.
+type chatCheckout struct {
+	root    string
+	cleanup func()
+}
+
+func (c *chatCheckout) release() {
+	if c.cleanup != nil {
+		c.cleanup()
+	}
+	c.root, c.cleanup = "", nil
+}
+
+// chatEnsureCheckout prepares the shared temporary checkout of the session's
+// live head, storing it in co. It is idempotent — a checkout already held
+// (e.g. cloned for a context refresh) is reused — and a source that cannot
+// resolve checkouts leaves co empty without error. The caller owns co and
+// releases it when the invocation ends (one-shot turn done, REPL exited,
+// reply posted).
+func (a *app) chatEnsureCheckout(ctx context.Context, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, co *chatCheckout) error {
+	if co.root != "" {
+		return nil
+	}
+	remote, ok := source.(model.RemoteCheckoutSource)
+	if !ok {
+		return nil
+	}
+	spec, err := remote.ResolveCheckout(ctx, req)
+	if err != nil {
+		return err
+	}
+	prepare := a.prepareCheckout
+	if prepare == nil {
+		prepare = git.NewCheckoutManager().Prepare
+	}
+	root, cleanup, err := prepare(ctx, *spec, git.CheckoutOptions{
+		Workdir: profile.Workdir,
+		Token:   checkoutToken(req.Mode, profile),
+	})
+	if err != nil {
+		return err
+	}
+	co.root, co.cleanup = root, cleanup
+	return nil
+}
+
 // chatPrepareContext prepares a review context through the review pipeline. A
 // remote session normally has no checkout, but the review being discussed had
 // one under the same conditions resolveRepoRoot uses — and preparation depends
 // on it: content filters need file contents, and toolchain capture (which
 // selects version-gated styleguides) needs manifests. So the review's checkout
-// condition is mirrored here: a temporary remote checkout is prepared for the
-// duration of the preparation and cleaned up immediately after, keeping the
-// rebuilt context (toolchain versions, styleguide gating, filtering) aligned
-// with the review being discussed. Its path never leaks into the returned
-// context.
-func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest) (*model.ReviewContext, error) {
+// condition is mirrored here: a temporary remote checkout is prepared into co,
+// keeping the rebuilt context (toolchain versions, styleguide gating,
+// filtering) aligned with the review being discussed. The checkout stays in co
+// so the retrieval tools can read from it for the rest of the invocation — the
+// caller releases it — but its path never leaks into the returned context,
+// which may be persisted.
+func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, source model.ReviewSource, profile config.Profile, req model.ReviewRequest, co *chatCheckout) (*model.ReviewContext, error) {
 	maxToolCalls := req.MaxToolCalls
 	if maxToolCalls == 0 {
 		maxToolCalls = profile.MaxToolCalls
@@ -650,22 +721,11 @@ func (a *app) chatPrepareContext(ctx context.Context, engine *review.Engine, sou
 	needsCheckout := req.IncludeFullFiles || hasContentFilters(req) || maxToolCalls >= 0
 	tempCheckout := false
 	if req.RepoRoot == "" && req.Mode != model.ModeLocal && needsCheckout {
-		if remote, ok := source.(model.RemoteCheckoutSource); ok {
-			spec, err := remote.ResolveCheckout(ctx, req)
-			if err != nil {
-				return nil, err
-			}
-			repoRoot, cleanup, err := git.NewCheckoutManager().Prepare(ctx, *spec, git.CheckoutOptions{
-				Workdir: profile.Workdir,
-				Token:   checkoutToken(req.Mode, profile),
-			})
-			if err != nil {
-				return nil, err
-			}
-			if cleanup != nil {
-				defer cleanup()
-			}
-			req.RepoRoot = repoRoot
+		if err := a.chatEnsureCheckout(ctx, source, profile, req, co); err != nil {
+			return nil, err
+		}
+		if co.root != "" {
+			req.RepoRoot = co.root
 			tempCheckout = true
 		}
 	}
@@ -784,7 +844,8 @@ func sameLLMEndpoint(a, b string) bool {
 // tools when repoRoot is a real directory the retrieval layer can read, or an
 // explicit empty (disabled) set otherwise. An empty root would resolve to the
 // process working directory and let tools inspect unrelated files, so tools stay
-// off until a real checkout is provided (e.g. via --repo-root).
+// off until a real checkout is provided (the automatic temporary checkout for
+// remote sessions, or --repo-root).
 func chatToolset(repoRoot string) []llm.ToolDefinition {
 	if repoRoot == "" {
 		return []llm.ToolDefinition{}
@@ -933,9 +994,22 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		Identifier: mrID,
 		RepoRoot:   opts.repoRoot,
 	}, result.ContextOptions)
-	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req)
+	// The checkout prepared for context preparation is kept until the reply is
+	// posted so the retrieval tools can read from it (the clone this reply
+	// already paid for context filters and toolchain capture). An explicit
+	// --repo-root wins; without a checkout — tools disabled, or nothing needed
+	// one — the tools stay off. co.root is gated on max_tool_calls >= 0: a
+	// clone made for content filters alone must not enable tools the user
+	// disabled.
+	var co chatCheckout
+	defer co.release()
+	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co)
 	if err != nil {
 		return fmt.Errorf("chat: resolving MR context: %w", err)
+	}
+	toolRoot := opts.repoRoot
+	if toolRoot == "" && profile.MaxToolCalls >= 0 {
+		toolRoot = co.root
 	}
 
 	res, err := engine.Discuss(ctx, review.DiscussRequest{
@@ -943,8 +1017,8 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		Result:                   result,
 		PinnedFindingID:          findingID,
 		Messages:                 history,
-		RepoRoot:                 opts.repoRoot,
-		Tools:                    chatToolset(opts.repoRoot),
+		RepoRoot:                 toolRoot,
+		Tools:                    chatToolset(toolRoot),
 		DiffFormat:               profile.DiffFormat,
 		DisableSuggestions:       profile.DisableSuggestions,
 		DisableParallelToolCalls: a.disableParallelToolCalls,

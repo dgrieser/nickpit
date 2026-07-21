@@ -134,6 +134,9 @@ type app struct {
 	stepName                      string
 	findingsFiles                 []string
 	logger                        *logging.Logger
+	// prepareCheckout prepares chat's shared temporary checkout; nil means
+	// git.NewCheckoutManager().Prepare. A seam so tests can fake the clone.
+	prepareCheckout func(ctx context.Context, spec model.CheckoutSpec, opts git.CheckoutOptions) (string, func(), error)
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time
