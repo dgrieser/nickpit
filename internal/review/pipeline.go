@@ -588,36 +588,51 @@ func (st *PipelineState) materializeFromGroupsLocked(req model.ReviewRequest) *m
 
 func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (boundStep, error) {
 	t := entry.Type
+	// needsSource comes from the spec layer so pipeline binding cannot drift
+	// from workflow.StepNeedsSource, which also gates source/repo resolution.
+	bs := boundStep{label: t, needsSource: workflow.StepNeedsSource(t), override: entry.Config, timeBudget: timeBudgetOf(entry.Config)}
 	switch t {
 	case workflow.StepCollectContext:
-		return boundStep{label: t, needsSource: true, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.collectStepFunc()}, nil
+		bs.run = e.collectStepFunc()
+		return bs, nil
 	case workflow.StepVerify:
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.verifyStepFunc(entry.FindingsFrom)}, nil
+		bs.run = e.verifyStepFunc(entry.FindingsFrom)
+		return bs, nil
 	case workflow.StepDedupe:
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.dedupeStepFunc(entry.FindingsFrom)}, nil
+		bs.run = e.dedupeStepFunc(entry.FindingsFrom)
+		return bs, nil
 	case workflow.StepMerge:
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.mergeStepFunc(entry.FindingsFrom)}, nil
+		bs.run = e.mergeStepFunc(entry.FindingsFrom)
+		return bs, nil
 	case workflow.StepFinalize:
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.finalizeStepFunc(entry.FindingsFrom)}, nil
+		bs.run = e.finalizeStepFunc(entry.FindingsFrom)
+		return bs, nil
 	case workflow.StepVerdict:
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.verdictStepFunc(entry.FindingsFrom)}, nil
+		bs.run = e.verdictStepFunc(entry.FindingsFrom)
+		return bs, nil
 	case workflow.StepSummarize:
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.summarizeStepFunc(entry.FindingsFrom)}, nil
+		bs.run = e.summarizeStepFunc(entry.FindingsFrom)
+		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {
-		return boundStep{label: t, needsSource: true, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.reviewStepFunc(id, manual[id])}, nil
+		bs.run = e.reviewStepFunc(id, manual[id])
+		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepVerifyPrefix); ok {
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.verifyVectorStepFunc(id)}, nil
+		bs.run = e.verifyVectorStepFunc(id)
+		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepDedupePrefix); ok {
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.dedupeVectorStepFunc(id)}, nil
+		bs.run = e.dedupeVectorStepFunc(id)
+		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepExtractPrefix); ok {
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.extractStepFunc(id)}, nil
+		bs.run = e.extractStepFunc(id)
+		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepNudgePrefix); ok {
-		return boundStep{label: t, override: entry.Config, timeBudget: timeBudgetOf(entry.Config), run: e.nudgeStepFunc(id)}, nil
+		bs.run = e.nudgeStepFunc(id)
+		return bs, nil
 	}
 	return boundStep{}, fmt.Errorf("workflow: unknown step type %q", t)
 }

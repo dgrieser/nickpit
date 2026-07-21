@@ -4111,7 +4111,7 @@ func TestParseReviewResponsePreservesExplicitEmptyFindingsAcrossBlocks(t *testin
 }
 
 func TestParseVerifyResponseAcceptsRepairedRequiredFieldValidation(t *testing.T) {
-	content := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"ok",}`
+	content := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.8,"remarks":"ok",}`
 	resp, err := parseVerifyResponse(content)
 	if err != nil {
 		t.Fatalf("parseVerifyResponse: %v", err)
@@ -4314,7 +4314,7 @@ func TestParseJSONResponseRejectsUnparseableOutput(t *testing.T) {
 }
 
 func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	_, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
@@ -4327,7 +4327,7 @@ func TestParseFinalizeResponseRequiresFinalization(t *testing.T) {
 }
 
 func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1},"content":"old code"},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep","suggestions":[{"body":"final suggestion","code_location":{"file_path":"f.go","line_range":{"start":1,"end":1,"count":1},"content":"old code"}}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1},"content":"old code"},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep","suggestions":[{"body":"final suggestion","code_location":{"file_path":"f.go","line_range":{"start":1,"end":1,"count":1},"content":"old code"}}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
@@ -4351,7 +4351,7 @@ func TestParseFinalizeResponseAcceptsFinalization(t *testing.T) {
 }
 
 func TestParseFinalizeResponseSalvagesSuggestionWithoutLocationAsInvalid(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1},"content":"old code"},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep","suggestions":[{"body":"final suggestion"}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1},"content":"old code"},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep","suggestions":[{"body":"final suggestion"}]}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
@@ -4379,7 +4379,7 @@ func TestParseMergeResponseRequiresVerification(t *testing.T) {
 }
 
 func TestParseMergeResponseAcceptsVerification(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.8,"remarks":"confirmed"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindMerge, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)
@@ -4403,7 +4403,7 @@ func TestParseFinalizeResponseRequiresVerification(t *testing.T) {
 }
 
 func TestParseFinalizeResponseFlagsInvalidVerificationID(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"not-a-uuid","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"not-a-uuid","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"confidence_score":0.7,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	_, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !errors.As(err, &invalid) {
@@ -4420,7 +4420,7 @@ func TestParseFinalizeResponseFlagsInvalidVerificationID(t *testing.T) {
 // computed in code). The parser must not require it; otherwise every JSON-
 // schema-mode finalize call would fail with InvalidResponseError.
 func TestParseFinalizeResponseAcceptsFinalizationWithoutConfidenceScore(t *testing.T) {
-	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	content := `{"findings":[{"id":"11111111-1111-4111-8111-111111111111","title":"Fix","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}},"verification":{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.8,"remarks":"confirmed"},"finalization":{"title":"Final fix","body":"final body","priority":1,"remarks":"keep"}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindFinalize, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("parseReviewResponse: %v", err)

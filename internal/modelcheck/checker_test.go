@@ -403,7 +403,7 @@ func TestSimpleProbeRetriesExhaustThenFail(t *testing.T) {
 func schemaProbeRequestCount(client *scriptedClient) int {
 	count := 0
 	for _, req := range client.reqs {
-		if req.SchemaKind == llm.SchemaKindJSON && len(req.Schema) > 0 {
+		if req.SchemaKind == llm.SchemaKindJSON && len(req.Schema) > 0 && len(req.Tools) == 0 {
 			count++
 		}
 	}
@@ -760,5 +760,81 @@ func TestCheckerJSONSchemaProbeSetsSchemOnRequest(t *testing.T) {
 	}
 	if string(schemaReq.Schema) == string(llm.FindingsSchema) {
 		t.Fatal("json-schema probe should use simple modelcheck schema, not findings schema")
+	}
+}
+
+// The combined probe is the one that catches guided-decoding runtimes: tools
+// and json_schema pass separately, but with both in one request the model
+// returns schema JSON without ever calling the required tool.
+func TestToolsJSONSchemaProbeDetectsSuppressedToolCalls(t *testing.T) {
+	client := &scriptedClient{
+		responses: successfulEffortDiscoveryResponses("high",
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			// combined probe: schema-shaped answer but no tool call ever happens
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
+	}
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	combined := result.ConfiguredToolsJSONSchema()
+	if combined.Skipped || combined.Status != StatusFailed {
+		t.Fatalf("combined probe = %+v, want failed", combined)
+	}
+	if !strings.Contains(combined.Error, "no tool calls") {
+		t.Fatalf("combined error = %q, want suppressed tool call diagnosis", combined.Error)
+	}
+	summary := result.Summary()
+	if summary.ToolsJSONSchema == nil || *summary.ToolsJSONSchema {
+		t.Fatalf("summary.ToolsJSONSchema = %v, want false", summary.ToolsJSONSchema)
+	}
+	last := client.reqs[len(client.reqs)-1]
+	if len(last.Tools) == 0 || len(last.Schema) == 0 {
+		t.Fatalf("combined request tools=%d schema=%d, want both set", len(last.Tools), len(last.Schema))
+	}
+}
+
+func TestToolsJSONSchemaProbePassesWhenToolCallsSurvive(t *testing.T) {
+	client := &scriptedClient{
+		responses: successfulEffortDiscoveryResponses("high",
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			// combined probe: tool call happens, then schema-shaped final answer
+			scriptedResponse{resp: &llm.ReviewResponse{ToolCalls: []llm.ToolCall{{ID: "call_list2", Name: "list_files", Arguments: `{}`}}}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
+	}
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	combined := result.ConfiguredToolsJSONSchema()
+	if combined.Skipped || combined.Status != StatusOK {
+		t.Fatalf("combined probe = %+v, want ok", combined)
+	}
+	summary := result.Summary()
+	if summary.ToolsJSONSchema == nil || !*summary.ToolsJSONSchema {
+		t.Fatalf("summary.ToolsJSONSchema = %v, want true", summary.ToolsJSONSchema)
+	}
+}
+
+func TestToolsJSONSchemaProbeSkippedWhenPrerequisiteFails(t *testing.T) {
+	client := &scriptedClient{
+		responses: successfulEffortDiscoveryResponses("high",
+			// tools probe: model answers without ever listing → tools failed
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: finalSentinel}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+			scriptedResponse{resp: &llm.ReviewResponse{RawResponse: validJSONProbeResponse}},
+		),
+	}
+	result := runSequential(client, config.Profile{Model: "model", ReasoningEffort: "high"})
+	if result.ConfiguredTools().Status == StatusOK {
+		t.Fatalf("tools status = %s, fixture should fail the tools probe", result.ConfiguredTools().Status)
+	}
+	if combined := result.ConfiguredToolsJSONSchema(); !combined.Skipped {
+		t.Fatalf("combined probe = %+v, want skipped when a prerequisite fails", combined)
+	}
+	if summary := result.Summary(); summary.ToolsJSONSchema != nil {
+		t.Fatalf("summary.ToolsJSONSchema = %v, want nil for skipped probe", summary.ToolsJSONSchema)
 	}
 }

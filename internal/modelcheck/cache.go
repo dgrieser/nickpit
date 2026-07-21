@@ -113,14 +113,27 @@ func WriteCachedCapability(path, baseURL, settings string, capability config.Mod
 func CapabilityFromResult(result Result) config.ModelCapabilities {
 	summary := result.Summary()
 	return config.ModelCapabilities{
-		Model:        result.Model,
-		Compatible:   summary.Compatible,
-		Response:     summary.Response,
-		Reasoning:    config.ReasoningCapabilities(summary.Reasoning),
-		Tools:        summary.Tools,
-		JSONSchema:   cloneBoolPtr(summary.JSONSchema),
-		JSONResponse: cloneBoolPtr(summary.JSONResponse),
+		Model:           result.Model,
+		Compatible:      summary.Compatible,
+		Response:        summary.Response,
+		Reasoning:       config.ReasoningCapabilities(summary.Reasoning),
+		Tools:           summary.Tools,
+		JSONSchema:      cloneBoolPtr(summary.JSONSchema),
+		JSONResponse:    cloneBoolPtr(summary.JSONResponse),
+		ToolsJSONSchema: cloneBoolPtr(summary.ToolsJSONSchema),
 	}
+}
+
+// CapabilityNeedsReprobe reports whether a cached capability predates the
+// combined tools+json_schema probe while both prerequisites pass — the exact
+// case the combined probe exists for. Such entries must be re-probed instead
+// of trusted, or a runtime that suppresses tool calls under json_schema would
+// keep its response format enabled forever. Profile-declared capabilities are
+// exempt by the caller: an explicit declaration is the operator's call.
+func CapabilityNeedsReprobe(capability config.ModelCapabilities) bool {
+	return capability.Tools &&
+		capability.JSONSchema != nil && *capability.JSONSchema &&
+		capability.ToolsJSONSchema == nil
 }
 
 func ResultFromCapability(capability config.ModelCapabilities, disableJSONResponseFormat bool) Result {
@@ -133,6 +146,12 @@ func ResultFromCapability(capability config.ModelCapabilities, disableJSONRespon
 		ProbeResult{Name: "configured_json_output", ReasoningEffort: effort, Status: optionalStatus(capability.JSONResponse), Error: optionalError(capability.JSONResponse)},
 		ProbeResult{Name: "configured_json_schema", ReasoningEffort: effort, Status: optionalStatus(capability.JSONSchema), Error: optionalError(capability.JSONSchema)},
 	)
+	// Only materialize the combined probe when it actually ran: a nil pointer
+	// means "never probed" and must surface as a Skipped placeholder, not as a
+	// passed or failed probe.
+	if capability.ToolsJSONSchema != nil {
+		probes = append(probes, ProbeResult{Name: "configured_tools_json_schema", ReasoningEffort: effort, Tools: true, Status: statusFor(*capability.ToolsJSONSchema)})
+	}
 	return Result{
 		Model:                     capability.Model,
 		ConfiguredEffort:          effort,
@@ -194,6 +213,7 @@ func cloneCapability(capability config.ModelCapabilities) config.ModelCapabiliti
 	capability.Reasoning.Efforts = append([]string(nil), capability.Reasoning.Efforts...)
 	capability.JSONSchema = cloneBoolPtr(capability.JSONSchema)
 	capability.JSONResponse = cloneBoolPtr(capability.JSONResponse)
+	capability.ToolsJSONSchema = cloneBoolPtr(capability.ToolsJSONSchema)
 	return capability
 }
 
