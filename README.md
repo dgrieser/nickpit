@@ -149,6 +149,13 @@ Group-level tokens, longest-prefix routing for subgroups, graceful shutdown, ide
 
 Hidden fingerprint markers make re-runs **idempotent** — already-posted findings are skipped, and an interrupted publish heals itself on the next run.
 
+### 💬 Chat about a Review
+
+After a review you can talk to an agent about it.
+- ask why a finding is a bug
+- push back on a nitpick
+- propose a fix and have it evaluated
+
 ### 🛡️ Structured output, enforced by the API
 
 Findings are structured JSON with `p0`–`p3` priorities, confidence scores, optional fix suggestions, and an overall verdict. NickPit uses API-enforced `response_format` json_schema by default and **automatically falls back** to a prompt-embedded schema when the model doesn't support it (a pre-review model check figures this out for you — also runnable standalone via `nickpit check`).
