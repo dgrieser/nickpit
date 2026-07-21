@@ -441,3 +441,139 @@ func TestChatPrepareContextSkipsCheckoutWhenNothingNeedsOne(t *testing.T) {
 		t.Fatal("context must still be prepared without a checkout")
 	}
 }
+
+// fakeNoteClient is a chatNoteClient that returns canned notes and captures the
+// bodies posted to it. replyErr/noteErr are returned (and cleared) per call so
+// the same fake can drive a threaded-post-then-fallback sequence.
+type fakeNoteClient struct {
+	discussionNotes []glscm.DiscussionNote
+	mrNotes         []glscm.MRNote
+	replyErr        error
+	noteErr         error
+	replyBody       string
+	noteBody        string
+}
+
+func (f *fakeNoteClient) DiscussionNotes(context.Context, string, int, string) ([]glscm.DiscussionNote, error) {
+	return f.discussionNotes, nil
+}
+
+func (f *fakeNoteClient) MRNotes(context.Context, string, int) ([]glscm.MRNote, error) {
+	return f.mrNotes, nil
+}
+
+func (f *fakeNoteClient) ReplyToMRDiscussionPath(_ context.Context, _ string, _ int, _ string, body string) error {
+	f.replyBody = body
+	err := f.replyErr
+	f.replyErr = nil
+	return err
+}
+
+func (f *fakeNoteClient) CreateMRNotePath(_ context.Context, _ string, _ int, body string) error {
+	f.noteBody = body
+	err := f.noteErr
+	f.noteErr = nil
+	return err
+}
+
+func TestChatFailureReplyBody(t *testing.T) {
+	err := errors.New("clone failed: dial tcp: connection refused")
+	body := chatFailureReplyBody(err)
+
+	if !strings.Contains(body, "could not answer this question") {
+		t.Errorf("missing general failure message: %q", body)
+	}
+	if !strings.Contains(body, "Please ask again") {
+		t.Errorf("missing re-ask guidance: %q", body)
+	}
+	if !strings.Contains(body, "clone failed: dial tcp: connection refused") {
+		t.Errorf("missing underlying error text: %q", body)
+	}
+	if !strings.Contains(body, "<details>") || !strings.Contains(body, "</details>") {
+		t.Errorf("error not wrapped in a <details> block: %q", body)
+	}
+	if !strings.Contains(body, "<summary>") {
+		t.Errorf("missing <summary> for the collapsed block: %q", body)
+	}
+	// The error must live inside a fenced code block so it renders literally.
+	if !strings.Contains(body, "```\nclone failed: dial tcp: connection refused\n```") {
+		t.Errorf("error not inside a code fence: %q", body)
+	}
+}
+
+func TestPostChatReply(t *testing.T) {
+	const (
+		botUserID = 5
+		pending   = 10
+	)
+	// Latest non-system note is a user question (id 10) → still pending.
+	userPending := []glscm.DiscussionNote{{ID: 10, AuthorID: 7}}
+	// Latest non-system note is the bot's own → already answered (superseded).
+	answered := []glscm.DiscussionNote{
+		{ID: 10, AuthorID: 7},
+		{ID: 11, AuthorID: botUserID},
+	}
+
+	t.Run("posts threaded reply and escapes quick actions", func(t *testing.T) {
+		c := &fakeNoteClient{discussionNotes: userPending}
+		a := &app{}
+		if err := a.postChatReply(context.Background(), c, "g/p", 1, "d1", pending, botUserID, "ok\n/merge\n/end"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.replyBody == "" {
+			t.Fatal("threaded reply not posted")
+		}
+		if !strings.Contains(c.replyBody, `\`+"/merge") {
+			t.Errorf("quick action /merge not escaped: %q", c.replyBody)
+		}
+		if c.noteBody != "" {
+			t.Errorf("plain note should not be posted when the threaded reply succeeds: %q", c.noteBody)
+		}
+	})
+
+	t.Run("falls back to a plain note carrying the marker on 4xx", func(t *testing.T) {
+		c := &fakeNoteClient{
+			discussionNotes: userPending,
+			replyErr:        &glscm.APIError{Status: 422},
+		}
+		a := &app{}
+		if err := a.postChatReply(context.Background(), c, "g/p", 1, "d1", pending, botUserID, "answer"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.noteBody == "" {
+			t.Fatal("fallback plain note not posted")
+		}
+		if !strings.Contains(c.noteBody, "answer") {
+			t.Errorf("fallback note missing the body: %q", c.noteBody)
+		}
+		if marker := reviewmd.ChatReplyMarker("d1", pending); marker != "" && !strings.Contains(c.noteBody, marker) {
+			t.Errorf("fallback note missing ChatReplyEnvelope marker %q: %q", marker, c.noteBody)
+		}
+	})
+
+	t.Run("returns 5xx error without fallback", func(t *testing.T) {
+		c := &fakeNoteClient{
+			discussionNotes: userPending,
+			replyErr:        &glscm.APIError{Status: 503},
+		}
+		a := &app{}
+		err := a.postChatReply(context.Background(), c, "g/p", 1, "d1", pending, botUserID, "answer")
+		if err == nil {
+			t.Fatal("expected error on 5xx, got nil")
+		}
+		if c.noteBody != "" {
+			t.Errorf("no fallback note expected on 5xx: %q", c.noteBody)
+		}
+	})
+
+	t.Run("posts nothing when superseded", func(t *testing.T) {
+		c := &fakeNoteClient{discussionNotes: answered}
+		a := &app{}
+		if err := a.postChatReply(context.Background(), c, "g/p", 1, "d1", pending, botUserID, "answer"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.replyBody != "" || c.noteBody != "" {
+			t.Errorf("no reply expected when a newer note superseded the pending one: reply=%q note=%q", c.replyBody, c.noteBody)
+		}
+	})
+}

@@ -1005,7 +1005,19 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	defer co.release()
 	reviewCtx, err := a.chatPrepareContext(ctx, engine, adapter, profile, req, &co)
 	if err != nil {
-		return fmt.Errorf("chat: resolving MR context: %w", err)
+		// A context-preparation failure (often a remote checkout that could not
+		// be cloned, or content filters/toolchain capture that could not read
+		// the MR) leaves the author's question unanswered. Post a reply so they
+		// are not left waiting: a plain-language failure message plus the
+		// underlying error inside a collapsed <details> block, posted through the
+		// same path as a normal answer so the thread is marked answered. A re-ask
+		// — not a daemon retry — is the documented recovery for a failure reply,
+		// so postChatReply's result is returned as-is: nil on a successful post
+		// (the daemon treats the event as handled and does not retry), or a 5xx/
+		// transport error when posting itself failed (the daemon retries the
+		// whole turn).
+		a.logf(ctx, "chat: resolving MR context failed: %v", err)
+		return a.postChatReply(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, chatFailureReplyBody(err))
 	}
 	toolRoot := opts.repoRoot
 	if toolRoot == "" && profile.MaxToolCalls >= 0 {
@@ -1039,51 +1051,73 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 		// note so a redelivery retries.
 		return fmt.Errorf("chat: discussion agent returned an empty reply")
 	}
-	// Revalidate immediately before posting: if a newer user note arrived while
-	// the LLM turn was running, posting now would answer out of order AND make
-	// the newer note's child see a bot reply as the latest activity and skip —
-	// permanently dropping that question. Abort instead; the newer note's child
-	// answers with the full history, including the question this turn covered.
-	// (A tiny window between this check and the POST remains; the SCM offers no
-	// atomic check-and-post.)
-	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, opts.replyDiscussion, botUserID)
+	return a.postChatReply(ctx, client, project, mrID, opts.replyDiscussion, pending, botUserID, reply)
+}
+
+// chatNoteClient is the subset of the GitLab client the chat reply path uses:
+// re-reading the thread (for fallback merging and the freshness recheck) and
+// posting the reply (threaded, with a plain-note fallback). Narrowing to an
+// interface lets the posting path be unit-tested without an HTTP server;
+// *glscm.Client satisfies it.
+type chatNoteClient interface {
+	DiscussionNotes(ctx context.Context, project string, iid int, discussionID string) ([]glscm.DiscussionNote, error)
+	MRNotes(ctx context.Context, project string, iid int) ([]glscm.MRNote, error)
+	ReplyToMRDiscussionPath(ctx context.Context, project string, iid int, discussionID, body string) error
+	CreateMRNotePath(ctx context.Context, project string, iid int, body string) error
+}
+
+// postChatReply posts body as the bot's answer to the pending note. It
+// revalidates the thread first: if a newer user note has arrived (or the thread
+// is otherwise no longer pending this note), it returns nil so the newer note's
+// own handling proceeds — posting now would answer out of order and mark the
+// newer question answered, permanently dropping it (a tiny window between this
+// check and the POST remains; the SCM offers no atomic check-and-post).
+// Otherwise it posts via the threaded-reply path, falling back to a plain MR
+// note (carrying a hidden ChatReplyEnvelope) when GitLab rejects the threaded
+// reply so the conversation state survives redeliveries. Sanitize defuses marker
+// lookalikes and control characters; EscapeQuickActions defuses GitLab quick
+// actions (/merge, /close, ...) — the reply is model-generated, and a commenter
+// could prompt the model into emitting one, which the Notes API would execute
+// under the BOT's identity and privileges. 5xx and transport errors stay fatal
+// (returned) so the daemon retries the turn; nil means the reply was delivered
+// or the note was deliberately not posted (superseded).
+func (a *app) postChatReply(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, pending, botUserID int, body string) error {
+	fresh, err := discussionWithFallbacks(ctx, client, project, mrID, discussionID, botUserID)
 	if err != nil {
 		return fmt.Errorf("chat: rechecking thread before reply: %w", err)
 	}
 	if freshPending, stillOK := latestPendingNote(fresh, botUserID); !stillOK || freshPending != pending {
 		return nil
 	}
-	// Sanitize defuses marker lookalikes and control characters;
-	// EscapeQuickActions defuses GitLab quick actions (/merge, /close, ...) —
-	// the reply is model-generated, and a commenter could prompt the model into
-	// emitting one, which the Notes API would execute under the BOT's identity
-	// and privileges.
-	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(reply))
-	err = client.ReplyToMRDiscussionPath(ctx, project, mrID, opts.replyDiscussion, posted)
+	posted := reviewmd.EscapeQuickActions(reviewmd.Sanitize(body))
+	err = client.ReplyToMRDiscussionPath(ctx, project, mrID, discussionID, posted)
 	if err == nil {
 		return nil
 	}
-	// Some GitLab versions reject replies to individual-note discussions with a
-	// 4xx — exactly the roots chat threads can have (summary and general-finding
-	// comments are created through the notes endpoint). Mirror the daemon's
-	// Handler.reply: fall back to a plain MR note so the answer is delivered
-	// (unthreaded) instead of the daemon retrying the same failing request three
-	// times and never answering. 5xx and transport errors stay fatal, which makes
-	// the daemon retry. The note carries a hidden ChatReplyEnvelope binding it to
-	// the discussion and the answered note, so the threaded conversation state
-	// survives: discussionWithFallbacks merges it back on the next read, the
-	// answered question is not re-answered on redelivery, and follow-up turns see
-	// this reply in their history.
 	var apiErr *glscm.APIError
 	if !errors.As(err, &apiErr) || apiErr.Status >= 500 {
 		return err
 	}
 	a.logf(ctx, "chat: threaded reply rejected (%v), posting as a plain MR note", err)
-	body := posted
-	if marker := reviewmd.ChatReplyMarker(opts.replyDiscussion, pending); marker != "" {
-		body += "\n\n" + marker
+	noteBody := posted
+	if marker := reviewmd.ChatReplyMarker(discussionID, pending); marker != "" {
+		noteBody += "\n\n" + marker
 	}
-	return client.CreateMRNotePath(ctx, project, mrID, body)
+	return client.CreateMRNotePath(ctx, project, mrID, noteBody)
+}
+
+// chatFailureReplyBody builds a reply for the case where the chat could not
+// produce an answer at all — currently when preparing the review context failed
+// (a remote checkout that could not be cloned, or content filters/toolchain
+// capture that could not read the MR). The author gets a plain-language apology
+// and an invitation to re-ask, while the underlying error is preserved inside a
+// collapsed <details> block so it is available for debugging without dominating
+// the thread. The body is later passed through Sanitize and EscapeQuickActions
+// by postChatReply, so the error text is inserted verbatim inside a fenced code
+// block here.
+func chatFailureReplyBody(err error) string {
+	return "⚠️ I could not answer this question — preparing the review context failed. Please ask again in a new reply.\n\n" +
+		"<details><summary>Error details</summary>\n\n```\n" + err.Error() + "\n```\n\n</details>"
 }
 
 // discussionWithFallbacks reads a discussion's notes and merges in the bot's
@@ -1092,7 +1126,7 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 // answer is inserted right after the note it answered, as a synthetic bot note,
 // so pending-question detection and history conversion see the thread as if
 // the reply had landed threaded.
-func discussionWithFallbacks(ctx context.Context, client *glscm.Client, project string, mrID int, discussionID string, botUserID int) ([]glscm.DiscussionNote, error) {
+func discussionWithFallbacks(ctx context.Context, client chatNoteClient, project string, mrID int, discussionID string, botUserID int) ([]glscm.DiscussionNote, error) {
 	notes, err := client.DiscussionNotes(ctx, project, mrID, discussionID)
 	if err != nil {
 		return nil, err
