@@ -1628,13 +1628,18 @@ func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
 }
 
 func TestChatSessionHintOnlyForSavedTerminalSession(t *testing.T) {
-	if got := chatSessionHint("abc-123", true); got != "Chat: nickpit chat --session abc-123" {
+	if got := chatSessionHint("abc-123", true, false); got != "To chat about this review, run:\nnickpit chat --session abc-123" {
 		t.Fatalf("chatSessionHint() = %q", got)
 	}
-	if got := chatSessionHint("", true); got != "" {
+	colored := chatSessionHint("abc-123", true, true)
+	if !strings.Contains(colored, "\x1b[38;5;244mTo chat about this review, run:") ||
+		!strings.Contains(colored, "\x1b[38;2;179;189;255;48;2;40;42;64m nickpit chat --session abc-123 ") {
+		t.Fatalf("colored chat hint = %q", colored)
+	}
+	if got := chatSessionHint("", true, false); got != "" {
 		t.Fatalf("empty session hint = %q", got)
 	}
-	if got := chatSessionHint("abc-123", false); got != "" {
+	if got := chatSessionHint("abc-123", false, false); got != "" {
 		t.Fatalf("non-terminal hint = %q", got)
 	}
 }

@@ -1375,7 +1375,8 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	// still emits a fallback overall explanation, so saving would displace the
 	// previous VALID review as the latest session with a no-finding shell.
 	if !reviewProducedNothing(result) {
-		if hint := chatSessionHint(a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA), isTerminal(os.Stderr)); hint != "" {
+		_, noColor := os.LookupEnv("NO_COLOR")
+		if hint := chatSessionHint(a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA), isTerminal(os.Stderr), !noColor); hint != "" {
 			fmt.Fprintln(os.Stderr, hint)
 		}
 	}
@@ -1392,11 +1393,17 @@ func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress,
 	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning
 }
 
-func chatSessionHint(sessionID string, stderrTTY bool) string {
+func chatSessionHint(sessionID string, stderrTTY, useANSI bool) string {
 	if !stderrTTY || sessionID == "" {
 		return ""
 	}
-	return "Chat: nickpit chat --session " + sessionID
+	intro := "To chat about this review, run:"
+	command := "nickpit chat --session " + sessionID
+	if !useANSI {
+		return intro + "\n" + command
+	}
+	return "\x1b[38;5;244m" + intro + "\x1b[0m\n" +
+		"\x1b[38;2;179;189;255;48;2;40;42;64m " + command + " \x1b[0m"
 }
 
 // runWorkflow executes a spec through the pipeline: the embedded DefaultSpec for

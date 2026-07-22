@@ -35,7 +35,7 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	lines := r.buildLinesLocked()
 	r.mu.Unlock()
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"NickPit reviewing", "Workflow 2/3", "review:security", "SEC", "nudges 0/2", "00:00/10:00", "found 3", "kept 3"} {
+	for _, want := range []string{"NickPit reviewing", "Workflow 2/3", "review:security", "review: Security", "nudges 0/2", "00:00 / 10:00", "Security 3", "found 3", "kept 3"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("dashboard missing %q:\n%s", want, joined)
 		}
@@ -55,7 +55,7 @@ func TestLiveRendererFindingLifecycle(t *testing.T) {
 	r.mu.Lock()
 	line := r.findingLineLocked()
 	r.mu.Unlock()
-	for _, want := range []string{"CQ 3", "SEC 0", "found 7", "refuted 1", "duplicate 2", "filtered 1", "kept 3"} {
+	for _, want := range []string{"Code Quality 3", "Security 0", "found 7", "refuted 1", "duplicate 2", "filtered 1", "kept 3"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("finding line missing %q: %s", want, line)
 		}
@@ -85,10 +85,46 @@ func TestLiveProgressFractionReservesNudges(t *testing.T) {
 		info: ProgressInfo{NudgeTotal: 2}, phaseStart: now, deadline: now.Add(time.Minute),
 		doneTurns: 1, activeTurn: true, turn: 2,
 	}
-	line := formatLiveAgent(a, now)
-	// 1 completed / (1 completed + 1 active + 2 future) fills 3 of 12 cells.
-	if !strings.Contains(line, "[███") {
-		t.Fatalf("turn+nudge progress not represented as 3/12: %q", line)
+	line := formatLiveAgent(a, now, false)
+	// 1 completed / (1 completed + 1 active + 2 future) fills 5 of 20 cells.
+	if !strings.Contains(line, "█████") || !strings.Contains(line, "25%") {
+		t.Fatalf("turn+nudge progress not represented as 5/20: %q", line)
+	}
+}
+
+func TestLiveProgressBarUsesStatuslinePaletteWithoutBlinking(t *testing.T) {
+	bar := progressBar(0.5, 20, true)
+	for _, want := range []string{"48;2;177;185;249", "48;2;80;83;112", "38;2;40;42;64"} {
+		if !strings.Contains(bar, want) {
+			t.Errorf("progress bar missing %q: %q", want, bar)
+		}
+	}
+	plain := stripANSI(bar)
+	for _, want := range []string{" Progress", " 50%"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("progress bar text missing %q: %q", want, plain)
+		}
+	}
+	if strings.ContainsRune(plain, '▓') {
+		t.Fatalf("progress bar contains blinking/pulsing cell: %q", bar)
+	}
+	if got := len([]rune(stripANSI(bar))); got != 20 {
+		t.Fatalf("visible progress bar width = %d, want 20", got)
+	}
+}
+
+func TestLiveAgentsUseDistinctPastelColorsAndAlignedNames(t *testing.T) {
+	now := time.Now()
+	a := &liveAgent{info: ProgressInfo{AgentRole: "review", AgentName: "Security"}, phaseStart: now, colorIndex: 0}
+	b := &liveAgent{info: ProgressInfo{AgentRole: "review", AgentName: "Architecture"}, phaseStart: now, colorIndex: 1}
+	lineA := formatLiveAgent(a, now, true)
+	lineB := formatLiveAgent(b, now, true)
+	if !strings.Contains(lineA, liveAgentPastel(0)) || !strings.Contains(lineB, liveAgentPastel(1)) || liveAgentPastel(0) == liveAgentPastel(1) {
+		t.Fatalf("agent colors not distinct:\n%s\n%s", lineA, lineB)
+	}
+	plainA, plainB := stripANSI(lineA), stripANSI(lineB)
+	if strings.Index(plainA, "Progress") != strings.Index(plainB, "Progress") {
+		t.Fatalf("progress columns not aligned:\n%s\n%s", plainA, plainB)
 	}
 }
 
@@ -102,7 +138,7 @@ func TestLoggerFinishLiveLeavesCompactSnapshot(t *testing.T) {
 		t.Fatal("live renderer still attached after finish")
 	}
 	out := buf.String()
-	for _, want := range []string{"Review complete", "01:05", "1 findings", "TEST 2", "filtered 1", "kept 1"} {
+	for _, want := range []string{"Review complete", "01:05", "1 findings", "Testing 2", "filtered 1", "kept 1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("compact snapshot missing %q: %q", want, out)
 		}
