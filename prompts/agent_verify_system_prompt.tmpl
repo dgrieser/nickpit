@@ -136,10 +136,6 @@ When evaluating the finding:
     technically accurate.
   - Do NOT return `confirmed` because the alleged compile error is real, severe, introduced by the patch, useful to
     report before CI, or blocks the build. Every one of those arguments still requires `compile-error` / `refuted`.
-  - Exact example:
-    - Finding: "The `regexp` import and `twoDigitVersion` are unused, so `go build` fails."
-    - Required decision: `gate: "compile-error"`, `verdict: "refuted"`.
-    - Forbidden decision: `gate: "confirm"`, `verdict: "confirmed"` because the build failure is real.
   - Do NOT apply this gate to errors that only surface at runtime — continue to the next gate for:
     - SQL syntax errors inside string literals or migration files
     - Helm template errors, Kubernetes manifest or CRD schema violations
