@@ -639,10 +639,10 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 // TestVerifySystemPromptRefutesUnusedIdentifierFindings pins the compile-error
 // guidance even when a reviewer frames the compiler diagnostic as cleanup or
 // lint work. It also pins the publication-decision semantics, mandatory
-// preflight, exact failure example, and final consistency check that prevent a
-// verifier from confirming a real compiler diagnostic. The unused-identifier
-// bullet renders only the kinds the finding
-// language's default toolchain reports (per unused_identifier_diagnostics in
+// preflight, explicit compiler-diagnostic rule, and final consistency check
+// that prevent a verifier from confirming a real compiler diagnostic. The
+// unused-identifier bullet renders only the kinds the finding's language
+// reports through its default toolchain (per unused_identifier_diagnostics in
 // languages.yaml); elsewhere those are ordinary lint findings and the bullet
 // is omitted.
 func TestVerifySystemPromptRefutesUnusedIdentifierFindings(t *testing.T) {
@@ -687,8 +687,8 @@ func TestVerifySystemPromptRefutesUnusedIdentifierFindings(t *testing.T) {
 					"`verdict` is a review-publication decision",
 					"Before calling tools or investigating technical truth",
 					"Do not call tools merely to prove a compiler diagnostic",
-					"The `regexp` import and `twoDigitVersion` are unused",
-					"Forbidden decision: `gate: \"confirm\"",
+					"Do NOT return `confirmed` because the alleged compile error is real",
+					"requires `compile-error` / `refuted`",
 					"FINAL CONSISTENCY CHECK",
 				} {
 					if !strings.Contains(sysPrompt, want) {
