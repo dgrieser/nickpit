@@ -469,7 +469,7 @@ func progressBar(fraction float64, width int, useANSI bool) string {
 	}
 	var b strings.Builder
 	lastSGR := ""
-	for i := 0; i < width; i++ {
+	for i := range width {
 		fg, bg := "38;2;255;255;255", "48;2;80;83;112"
 		if i < filled {
 			fg, bg = "38;2;40;42;64", "48;2;177;185;249"
@@ -627,7 +627,7 @@ func (r *LiveRenderer) writeFrameLocked(lines []string) {
 	if r.lastRows > 0 {
 		fmt.Fprintf(&b, "\x1b[%dA", r.lastRows)
 	}
-	for i := 0; i < maxRows; i++ {
+	for i := range maxRows {
 		b.WriteByte('\r')
 		if i < len(lines) {
 			b.WriteString(lines[i])

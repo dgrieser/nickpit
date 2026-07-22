@@ -96,14 +96,13 @@ func TestWriteOutsidePreservesTextBelowClearedDashboard(t *testing.T) {
 	if !strings.Contains(out, "\x1b[3A") {
 		t.Fatalf("WriteOutside did not clear the prior 3-row frame: %q", out)
 	}
-	idx := strings.Index(out, "external\n")
-	if idx < 0 {
-		t.Fatalf("WriteOutside dropped the external text: %q", out)
-	}
 	// Critically, the redraw after the text must NOT move the cursor back up —
 	// that would overwrite the just-written external line. The first byte after
 	// "external\n" is the frame's carriage return, not a cursor-up escape.
-	rest := out[idx+len("external\n"):]
+	_, rest, found := strings.Cut(out, "external\n")
+	if !found {
+		t.Fatalf("WriteOutside dropped the external text: %q", out)
+	}
 	if strings.HasPrefix(rest, "\x1b[") {
 		t.Fatalf("dashboard redraw moved the cursor over the external text: %q", rest)
 	}
