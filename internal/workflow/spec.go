@@ -120,6 +120,10 @@ var ReviewVectorIDs = []string{
 // Spec is a complete workflow definition.
 type Spec struct {
 	Version int
+	// Name is a human-readable label for the workflow, shown above the live
+	// progress dashboard. Optional; when unset the dashboard falls back to a
+	// generic "Workflow" label.
+	Name    string
 	Profile string
 	Steps   []StepEntry
 }
@@ -495,13 +499,18 @@ func decodeSpec(node *yaml.Node) (Spec, error) {
 	if node.Kind != yaml.MappingNode {
 		return Spec{}, fmt.Errorf("spec must be a mapping")
 	}
-	if err := checkAllowedKeys(node, "version", "profile", "steps"); err != nil {
+	if err := checkAllowedKeys(node, "version", "name", "profile", "steps"); err != nil {
 		return Spec{}, err
 	}
 	var spec Spec
 	if v := mappingValue(node, "version"); v != nil {
 		if err := v.Decode(&spec.Version); err != nil {
 			return Spec{}, fmt.Errorf("version: %w", err)
+		}
+	}
+	if v := mappingValue(node, "name"); v != nil {
+		if err := v.Decode(&spec.Name); err != nil {
+			return Spec{}, fmt.Errorf("name: %w", err)
 		}
 	}
 	if v := mappingValue(node, "profile"); v != nil {

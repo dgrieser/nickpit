@@ -26,6 +26,8 @@ type WorkflowScope struct {
 	UnitTotal int
 	Lane      string
 	Step      string
+	// Workflow is the human-readable workflow name shown above the dashboard.
+	Workflow string
 }
 
 type workflowScopeKey struct{}
@@ -52,18 +54,14 @@ func contextDeadline(ctx context.Context) time.Time {
 
 // FindingUpdate reports one authoritative finding-set transition.
 type FindingUpdate struct {
-	Lane           string
-	Found          int
-	Refuted        int
-	Duplicate      int
-	Filtered       int
-	Current        int
-	CurrentPresent bool
+	Found     int
+	Refuted   int
+	Duplicate int
+	Filtered  int
 }
 
 type liveFindingStats struct {
 	Found, Refuted, Duplicate, Filtered int
-	CurrentByLane                       map[string]int
 }
 
 type liveAgent struct {
@@ -111,8 +109,7 @@ func newLiveRenderer(w io.Writer, useANSI bool, plan LivePlan) *LiveRenderer {
 	r := &LiveRenderer{
 		w: w, fd: fd, useANSI: useANSI, plan: plan, started: time.Now(),
 		agents: make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
-		findings: liveFindingStats{CurrentByLane: make(map[string]int)},
-		wake:     make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
+		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 		now: time.Now,
 	}
 	go r.run()
@@ -286,9 +283,6 @@ func (r *LiveRenderer) Findings(update FindingUpdate) {
 	r.findings.Refuted += max(update.Refuted, 0)
 	r.findings.Duplicate += max(update.Duplicate, 0)
 	r.findings.Filtered += max(update.Filtered, 0)
-	if update.CurrentPresent && update.Lane != "" {
-		r.findings.CurrentByLane[update.Lane] = max(update.Current, 0)
-	}
 	r.mu.Unlock()
 	r.signal()
 }
@@ -394,10 +388,12 @@ func (r *LiveRenderer) stepLineLocked() string {
 	if len(r.steps) == 0 {
 		return "  Preparing review"
 	}
-	counts := map[string]int{}
+	name := ""
 	unit, total := 0, r.plan.Units
 	for _, scope := range r.steps {
-		counts[scope.Step]++
+		if name == "" && scope.Workflow != "" {
+			name = scope.Workflow
+		}
 		if scope.Unit > unit {
 			unit = scope.Unit
 		}
@@ -405,34 +401,31 @@ func (r *LiveRenderer) stepLineLocked() string {
 			total = scope.UnitTotal
 		}
 	}
-	keys := make([]string, 0, len(counts))
-	for step := range counts {
-		keys = append(keys, step)
+	if name == "" {
+		name = "Workflow"
 	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, step := range keys {
-		if counts[step] > 1 {
-			parts = append(parts, fmt.Sprintf("%s×%d", step, counts[step]))
-		} else {
-			parts = append(parts, step)
-		}
+	return fmt.Sprintf("  %s · %d/%d", name, unit, max(total, 1))
+}
+
+// liveAgentLabel is the left-hand agent name. Any nudge suffix is stripped —
+// nudge progress is reported to the right of the bar, never in the name.
+func liveAgentLabel(a *liveAgent) string {
+	info := a.info
+	if before, _, ok := strings.Cut(info.AgentName, " · Nudge"); ok {
+		info.AgentName = before
 	}
-	return fmt.Sprintf("  Workflow %d/%d · %s", unit, max(total, 1), strings.Join(parts, " · "))
+	label := info.roleName()
+	if label == "" {
+		label = firstNonEmptyLive(info.AgentName, a.scope.Step, info.AgentRole)
+	}
+	return label
 }
 
 func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
-	label := a.info.roleName()
-	if label == "" {
-		label = firstNonEmptyLive(a.info.AgentName, a.scope.Step, a.info.AgentRole)
-	}
-	phase := fmt.Sprintf("turn %d", max(a.turn, 1))
+	label := liveAgentLabel(a)
+	phase := fmt.Sprintf("#%d", max(a.turn, 1))
 	if a.info.NudgeTotal > 0 {
-		if a.info.NudgeIndex > 0 {
-			phase = fmt.Sprintf("nudge %d/%d · turn %d", a.info.NudgeIndex, a.info.NudgeTotal, max(a.turn, 1))
-		} else {
-			phase += fmt.Sprintf(" · nudges 0/%d", a.info.NudgeTotal)
-		}
+		phase += fmt.Sprintf(" · nudges %d/%d", a.info.NudgeIndex, a.info.NudgeTotal)
 	}
 	future := max(a.info.NudgeTotal-a.info.NudgeIndex, 0)
 	denom := a.doneTurns + future
@@ -512,21 +505,8 @@ func liveAgentPastel(index int) string {
 }
 
 func (r *LiveRenderer) findingLineLocked() string {
-	lanes := make([]string, 0, len(r.findings.CurrentByLane))
-	for lane := range r.findings.CurrentByLane {
-		lanes = append(lanes, lane)
-	}
-	sort.Strings(lanes)
-	parts := make([]string, 0, len(lanes))
-	for _, lane := range lanes {
-		parts = append(parts, fmt.Sprintf("%s %d", lane, r.findings.CurrentByLane[lane]))
-	}
-	prefix := "Findings"
-	if len(parts) > 0 {
-		prefix += " " + strings.Join(parts, " ") + " ·"
-	}
-	return fmt.Sprintf("  %s found %d · refuted %d · duplicate %d · filtered %d · kept %d",
-		prefix, r.findings.Found, r.findings.Refuted, r.findings.Duplicate, r.findings.Filtered, r.keptLocked())
+	return fmt.Sprintf("  Findings: %d · refuted %d · duplicate %d · filtered %d · final %d",
+		r.findings.Found, r.findings.Refuted, r.findings.Duplicate, r.findings.Filtered, r.keptLocked())
 }
 
 func firstNonEmptyLive(values ...string) string {

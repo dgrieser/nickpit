@@ -227,7 +227,7 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 	s.totalFindings = append([]model.Finding(nil), loopResult.resp.Findings...)
 	if e.logger != nil {
 		e.logger.LiveFindings(logging.FindingUpdate{
-			Lane: s.agent.name, Found: len(s.totalFindings), Current: len(s.totalFindings), CurrentPresent: true,
+			Found: len(s.totalFindings),
 		})
 	}
 	s.totalTokens = loopResult.tokensUsed
@@ -337,8 +337,7 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	s.totalFindings = appendNewFindings(s.totalFindings, sub.resp.Findings)
 	if e.logger != nil {
 		e.logger.LiveFindings(logging.FindingUpdate{
-			Lane: s.agent.name, Found: len(s.totalFindings) - prevFindings,
-			Current: len(s.totalFindings), CurrentPresent: true,
+			Found: len(s.totalFindings) - prevFindings,
 		})
 	}
 	e.logf(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", iterIdx+1, total, len(sub.resp.Findings), len(s.totalFindings)-prevFindings, len(s.totalFindings))

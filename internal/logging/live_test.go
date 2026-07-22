@@ -14,28 +14,25 @@ func testLiveRenderer(now time.Time) *LiveRenderer {
 		started: now.Add(-90 * time.Second),
 		agents:  make(map[string]*liveAgent),
 		steps:   make(map[string]WorkflowScope),
-		findings: liveFindingStats{
-			CurrentByLane: make(map[string]int),
-		},
-		width: 120, height: 24, now: func() time.Time { return now },
+		width:   120, height: 24, now: func() time.Time { return now },
 	}
 }
 
 func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	r := testLiveRenderer(now)
-	scope := WorkflowScope{Unit: 2, UnitTotal: 3, Lane: "security", Step: "review:security"}
+	scope := WorkflowScope{Unit: 2, UnitTotal: 3, Lane: "security", Step: "review:security", Workflow: "Standard review"}
 	info := ProgressInfo{AgentRole: "review", AgentName: "Security", Group: "Security", NudgeTotal: 2, Turn: 1}
 	r.Step(scope, true)
 	r.AgentStart(info, scope, now.Add(10*time.Minute))
 	r.Progress(info, scope, StageRequest, StateSent, "", now.Add(10*time.Minute))
-	r.Findings(FindingUpdate{Lane: "Security", Found: 3, Current: 3, CurrentPresent: true})
+	r.Findings(FindingUpdate{Found: 3})
 
 	r.mu.Lock()
 	lines := r.buildLinesLocked()
 	r.mu.Unlock()
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"NickPit reviewing", "Workflow 2/3", "review:security", "review: Security", "nudges 0/2", "00:00 / 10:00", "Security 3", "found 3", "kept 3"} {
+	for _, want := range []string{"NickPit reviewing", "Standard review · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings: 3", "final 3"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("dashboard missing %q:\n%s", want, joined)
 		}
@@ -47,18 +44,21 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 
 func TestLiveRendererFindingLifecycle(t *testing.T) {
 	r := testLiveRenderer(time.Now())
-	r.Findings(FindingUpdate{Lane: "Code Quality", Found: 4, Current: 4, CurrentPresent: true})
-	r.Findings(FindingUpdate{Lane: "Security", Found: 3, Current: 3, CurrentPresent: true})
-	r.Findings(FindingUpdate{Lane: "Code Quality", Refuted: 1, Current: 3, CurrentPresent: true})
-	r.Findings(FindingUpdate{Lane: "Security", Duplicate: 2, Filtered: 1, Current: 0, CurrentPresent: true})
+	r.Findings(FindingUpdate{Found: 4})
+	r.Findings(FindingUpdate{Found: 3})
+	r.Findings(FindingUpdate{Refuted: 1})
+	r.Findings(FindingUpdate{Duplicate: 2, Filtered: 1})
 
 	r.mu.Lock()
 	line := r.findingLineLocked()
 	r.mu.Unlock()
-	for _, want := range []string{"Code Quality 3", "Security 0", "found 7", "refuted 1", "duplicate 2", "filtered 1", "kept 3"} {
+	for _, want := range []string{"Findings: 7", "refuted 1", "duplicate 2", "filtered 1", "final 3"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("finding line missing %q: %s", want, line)
 		}
+	}
+	if strings.Contains(line, "Code Quality") || strings.Contains(line, "Security") {
+		t.Errorf("finding line should not mention reviewers: %s", line)
 	}
 }
 
@@ -132,15 +132,33 @@ func TestLoggerFinishLiveLeavesCompactSnapshot(t *testing.T) {
 	var buf bytes.Buffer
 	logger := New(&buf, false, false)
 	logger.SetLiveProgress(LivePlan{Concurrency: 1, Units: 1})
-	logger.LiveFindings(FindingUpdate{Lane: "Testing", Found: 2, Current: 2, CurrentPresent: true})
+	logger.LiveFindings(FindingUpdate{Found: 2})
 	logger.FinishLive(true, 1, 65*time.Second)
 	if logger.LiveEnabled() {
 		t.Fatal("live renderer still attached after finish")
 	}
 	out := buf.String()
-	for _, want := range []string{"Review complete", "01:05", "1 findings", "Testing 2", "filtered 1", "kept 1"} {
+	for _, want := range []string{"Review complete", "01:05", "1 findings", "Findings: 2", "filtered 1", "final 1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("compact snapshot missing %q: %q", want, out)
 		}
+	}
+}
+
+func TestLiveAgentNameDropsNudgeAndTurnUsesHash(t *testing.T) {
+	now := time.Now()
+	a := &liveAgent{
+		info:       ProgressInfo{AgentRole: "review", AgentName: "Performance · Nudge 2", NudgeIndex: 2, NudgeTotal: 3},
+		phaseStart: now, deadline: now.Add(10 * time.Minute), turn: 2,
+	}
+	line := stripANSI(formatLiveAgent(a, now, false))
+	if !strings.Contains(line, "review: Performance") || strings.Contains(line, "Nudge") {
+		t.Errorf("agent name should drop the nudge suffix: %q", line)
+	}
+	if !strings.Contains(line, "#2") || strings.Contains(line, "turn") {
+		t.Errorf("turn should render as #N, never the word turn: %q", line)
+	}
+	if !strings.Contains(line, "nudges 2/3") {
+		t.Errorf("nudge progress should appear to the right of the bar: %q", line)
 	}
 }

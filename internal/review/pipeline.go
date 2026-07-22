@@ -238,6 +238,7 @@ type planUnit struct {
 // Pipeline is a compiled, runnable workflow.
 type Pipeline struct {
 	engine      *Engine
+	name        string
 	units       []planUnit
 	reviewOrder []string
 	needsSource bool
@@ -256,7 +257,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 	}
 	manual := manualReviewVectors(spec)
 	reviewOrder := reviewVectorOrder(spec)
-	p := &Pipeline{engine: e, reviewOrder: reviewOrder}
+	p := &Pipeline{engine: e, name: spec.Name, reviewOrder: reviewOrder}
 	for i := 0; i < len(spec.Steps); i++ {
 		entry := spec.Steps[i]
 		if entry.IsPipeline() {
@@ -420,6 +421,7 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 		scope := logging.WorkflowScope{
 			Unit: unit, UnitTotal: unitTotal,
 			Lane: liveLaneLabel(bs.label, laneIndex), Step: bs.label,
+			Workflow: p.name,
 		}
 		stepCtx = logging.WithWorkflowScope(stepCtx, scope)
 		if p.engine.logger != nil {

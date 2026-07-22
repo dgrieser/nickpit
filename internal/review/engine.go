@@ -625,10 +625,8 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		counts := dropsByVector[vectorIdx]
 		if e.logger != nil {
 			e.logger.LiveFindings(logging.FindingUpdate{
-				Lane:     vectorResults[vectorIdx].run.Name,
 				Refuted:  counts.refuted,
 				Filtered: max(dropped-counts.refuted, 0),
-				Current:  len(keptByVector[vectorIdx]), CurrentPresent: true,
 			})
 		}
 		if dropped > 0 || counts.relocated > 0 {
@@ -871,8 +869,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vecto
 		if len(result.resp.Findings) < 2 {
 			if e.logger != nil {
 				e.logger.LiveFindings(logging.FindingUpdate{
-					Lane: result.run.Name, Duplicate: originalCount - len(result.resp.Findings),
-					Current: len(result.resp.Findings), CurrentPresent: true,
+					Duplicate: originalCount - len(result.resp.Findings),
 				})
 			}
 			continue
@@ -889,8 +886,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vecto
 			}
 			if e.logger != nil {
 				e.logger.LiveFindings(logging.FindingUpdate{
-					Lane: input.run.Name, Duplicate: max(before-after, 0),
-					Current: after, CurrentPresent: true,
+					Duplicate: max(before-after, 0),
 				})
 			}
 		}(i, result, originalCount)
