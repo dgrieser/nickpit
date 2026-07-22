@@ -5,6 +5,7 @@
 bin/
 dist/
 events/
+findings/
 *.swp
 *.log
 loop_corpus.jsonl
