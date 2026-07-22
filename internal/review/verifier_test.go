@@ -638,7 +638,10 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 
 // TestVerifySystemPromptRefutesUnusedIdentifierFindings pins the compile-error
 // guidance even when a reviewer frames the compiler diagnostic as cleanup or
-// lint work. The unused-identifier bullet renders only the kinds the finding
+// lint work. It also pins the publication-decision semantics, mandatory
+// preflight, exact failure example, and final consistency check that prevent a
+// verifier from confirming a real compiler diagnostic. The unused-identifier
+// bullet renders only the kinds the finding
 // language's default toolchain reports (per unused_identifier_diagnostics in
 // languages.yaml); elsewhere those are ordinary lint findings and the bullet
 // is omitted.
@@ -648,9 +651,9 @@ func TestVerifySystemPromptRefutesUnusedIdentifierFindings(t *testing.T) {
 		filePath   string
 		wantBullet string
 	}{
-		{name: "go renders imports and variables", filePath: "main.go", wantBullet: "- unused imports or variables, even when described as lint"},
-		{name: "rust renders imports and variables", filePath: "lib.rs", wantBullet: "- unused imports or variables, even when described as lint"},
-		{name: "csharp renders variables only", filePath: "Program.cs", wantBullet: "- unused variables, even when described as lint"},
+		{name: "go renders imports and variables", filePath: "main.go", wantBullet: "- findings alleging unused imports or variables that the default toolchain reports"},
+		{name: "rust renders imports and variables", filePath: "lib.rs", wantBullet: "- findings alleging unused imports or variables that the default toolchain reports"},
+		{name: "csharp renders variables only", filePath: "Program.cs", wantBullet: "- findings alleging unused variables that the default toolchain reports"},
 		{name: "python omits bullet", filePath: "script.py"},
 		{name: "typescript omits bullet", filePath: "app.ts"},
 	}
@@ -681,6 +684,12 @@ func TestVerifySystemPromptRefutesUnusedIdentifierFindings(t *testing.T) {
 				for _, want := range []string{
 					tc.wantBullet,
 					"calling a compiler-reported problem a lint error or maintainability issue does not bypass this gate",
+					"`verdict` is a review-publication decision",
+					"Before calling tools or investigating technical truth",
+					"Do not call tools merely to prove a compiler diagnostic",
+					"The `regexp` import and `twoDigitVersion` are unused",
+					"Forbidden decision: `gate: \"confirm\"",
+					"FINAL CONSISTENCY CHECK",
 				} {
 					if !strings.Contains(sysPrompt, want) {
 						t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
