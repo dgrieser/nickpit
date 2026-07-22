@@ -1604,6 +1604,46 @@ func captureStderr(t *testing.T, fn func()) string {
 	return captureOutput(t, &os.Stderr, fn)
 }
 
+func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
+	tests := []struct {
+		name                                   string
+		tty                                    bool
+		term                                   string
+		verbose, progress, reasoning, expected bool
+	}{
+		{name: "plain tty", tty: true, term: "xterm-256color", expected: true},
+		{name: "pipe", tty: false, term: "xterm-256color"},
+		{name: "dumb terminal", tty: true, term: "dumb"},
+		{name: "verbose", tty: true, term: "xterm", verbose: true},
+		{name: "explicit progress", tty: true, term: "xterm", progress: true},
+		{name: "reasoning", tty: true, term: "xterm", reasoning: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := liveProgressEnabled(tt.tty, tt.term, tt.verbose, tt.progress, tt.reasoning); got != tt.expected {
+				t.Fatalf("liveProgressEnabled() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestChatSessionHintOnlyForSavedTerminalSession(t *testing.T) {
+	if got := chatSessionHint("abc-123", true, false); got != "To chat about this review, run:\nnickpit chat --session abc-123" {
+		t.Fatalf("chatSessionHint() = %q", got)
+	}
+	colored := chatSessionHint("abc-123", true, true)
+	if !strings.Contains(colored, "\x1b[38;5;244mTo chat about this review, run:") ||
+		!strings.Contains(colored, "\x1b[38;2;179;189;255;48;2;40;42;64m nickpit chat --session abc-123 ") {
+		t.Fatalf("colored chat hint = %q", colored)
+	}
+	if got := chatSessionHint("", true, false); got != "" {
+		t.Fatalf("empty session hint = %q", got)
+	}
+	if got := chatSessionHint("abc-123", false, false); got != "" {
+		t.Fatalf("non-terminal hint = %q", got)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	return captureOutput(t, &os.Stdout, fn)

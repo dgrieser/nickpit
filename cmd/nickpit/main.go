@@ -1178,6 +1178,10 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if err != nil {
 		return err
 	}
+	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning) {
+		logger.SetLiveProgress(logging.LivePlan{Concurrency: a.concurrency, Units: len(spec.Steps)})
+		defer logger.CloseLive()
+	}
 
 	// Resolve additional styleguides (files/URLs) before the credential gate,
 	// model check, and checkout: a broken spec should fail immediately, not
@@ -1330,6 +1334,9 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	if req.DisableSuggestions {
 		result.StripSuggestions()
 	}
+	if a.logger != nil && a.logger.LiveEnabled() {
+		a.logger.FinishLive(true, len(result.Findings), time.Since(a.reviewStart))
+	}
 	var formatter output.Formatter
 	if a.jsonOutput {
 		formatter = output.NewJSONFormatter(os.Stdout)
@@ -1368,7 +1375,10 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	// still emits a fallback overall explanation, so saving would displace the
 	// previous VALID review as the latest session with a no-finding shell.
 	if !reviewProducedNothing(result) {
-		a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA)
+		_, noColor := os.LookupEnv("NO_COLOR")
+		if hint := chatSessionHint(a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA), isTerminal(os.Stderr), !noColor); hint != "" {
+			fmt.Fprintln(os.Stderr, hint)
+		}
 	}
 	// Distinguish "review produced nothing because every reviewer crashed"
 	// from "review succeeded with some soft warnings" — only the former is a
@@ -1377,6 +1387,23 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
+}
+
+func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning bool) bool {
+	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning
+}
+
+func chatSessionHint(sessionID string, stderrTTY, useANSI bool) string {
+	if !stderrTTY || sessionID == "" {
+		return ""
+	}
+	intro := "To chat about this review, run:"
+	command := "nickpit chat --session " + sessionID
+	if !useANSI {
+		return intro + "\n" + command
+	}
+	return "\x1b[38;5;244m" + intro + "\x1b[0m\n" +
+		"\x1b[38;2;179;189;255;48;2;40;42;64m " + command + " \x1b[0m"
 }
 
 // runWorkflow executes a spec through the pipeline: the embedded DefaultSpec for

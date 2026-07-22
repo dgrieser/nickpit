@@ -60,6 +60,7 @@
 # one shared cap across every agent loop in the run. It is intentionally not in
 # the spec — the same workflow runs on different machines with different caps.
 version: 1
+name: Standard review       # optional; shown above the live progress dashboard
 # profile: default          # optional; same as --profile
 
 steps:

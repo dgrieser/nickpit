@@ -238,6 +238,7 @@ type planUnit struct {
 // Pipeline is a compiled, runnable workflow.
 type Pipeline struct {
 	engine      *Engine
+	name        string
 	units       []planUnit
 	reviewOrder []string
 	needsSource bool
@@ -256,7 +257,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 	}
 	manual := manualReviewVectors(spec)
 	reviewOrder := reviewVectorOrder(spec)
-	p := &Pipeline{engine: e, reviewOrder: reviewOrder}
+	p := &Pipeline{engine: e, name: spec.Name, reviewOrder: reviewOrder}
 	for i := 0; i < len(spec.Steps); i++ {
 		entry := spec.Steps[i]
 		if entry.IsPipeline() {
@@ -346,7 +347,7 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 	// capping LLM concurrency globally (reviewers, verify, dedupe, merge, ...).
 	ctx = WithLimiter(ctx, st.limiter)
 	var segments []model.SegmentRuntime
-	for _, unit := range p.units {
+	for unitIdx, unit := range p.units {
 		unitStart := time.Now()
 		errs := make([]error, len(unit.lanes))
 		var wg sync.WaitGroup
@@ -354,7 +355,7 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 			wg.Add(1)
 			go func(i int, lane boundLane) {
 				defer wg.Done()
-				errs[i] = p.runLane(ctx, lane, req, st)
+				errs[i] = p.runLane(ctx, lane, req, st, unitIdx+1, len(p.units), i+1)
 			}(i, lane)
 		}
 		wg.Wait()
@@ -381,7 +382,7 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 	return result, st.Enriched, nil
 }
 
-func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.ReviewRequest, st *PipelineState) error {
+func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.ReviewRequest, st *PipelineState, unit, unitTotal, laneIndex int) error {
 	laneCtx := ctx
 	laneCancel := func() {}
 	if !req.DisableWorkflowTimeBudget {
@@ -417,7 +418,19 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 				continue
 			}
 		}
+		scope := logging.WorkflowScope{
+			Unit: unit, UnitTotal: unitTotal,
+			Lane: liveLaneLabel(bs.label, laneIndex), Step: bs.label,
+			Workflow: p.name,
+		}
+		stepCtx = logging.WithWorkflowScope(stepCtx, scope)
+		if p.engine.logger != nil {
+			p.engine.logger.LiveStep(scope, true)
+		}
 		err := bs.run(stepCtx, p.engine.stepContext(bs.override, req), st)
+		if p.engine.logger != nil {
+			p.engine.logger.LiveStep(scope, false)
+		}
 		stepCancel()
 		if err != nil {
 			// Abort this lane on its first error; sibling lanes run to the barrier.
@@ -425,6 +438,13 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 		}
 	}
 	return nil
+}
+
+func liveLaneLabel(step string, laneIndex int) string {
+	if _, suffix, ok := strings.Cut(step, ":"); ok && suffix != "" {
+		return suffix
+	}
+	return fmt.Sprintf("lane%d", laneIndex)
 }
 
 // unitSegment records the wall-clock span of one executed pipeline unit. Each

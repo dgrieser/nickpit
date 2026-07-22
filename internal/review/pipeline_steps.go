@@ -443,9 +443,19 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) < 2 {
 			return nil
 		}
+		before := len(vr.resp.Findings)
 		resp, run := sc.Engine.runDedupeAgent(ctx, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req)
 		if resp != nil {
 			st.setVectorResponse(vectorID, resp)
+		}
+		after := before
+		if resp != nil {
+			after = len(resp.Findings)
+		}
+		if sc.Engine.logger != nil {
+			sc.Engine.logger.LiveFindings(logging.FindingUpdate{
+				Duplicate: max(before-after, 0),
+			})
 		}
 		st.mu.Lock()
 		// Keyed by vector so telemetry orders runs by groupOrder instead of
@@ -528,6 +538,12 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 		}
 
 		filtered := filterByPriority(mergeResult.resp.Findings, req.PriorityThreshold)
+		if sc.Engine.logger != nil {
+			sc.Engine.logger.LiveFindings(logging.FindingUpdate{
+				Duplicate: max(len(verifiedMergeInputs)-len(mergeResult.resp.Findings), 0),
+				Filtered:  max(len(mergeResult.resp.Findings)-len(filtered), 0),
+			})
+		}
 		// Same normalization as the fused path: reminting an ID must re-sync
 		// Verification.ID, which mirrors the parent finding ID by contract.
 		if overwrote := normalizeFindingIDsWithSeen(filtered, nil); overwrote > 0 {
@@ -788,6 +804,11 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 			mergeSC.Engine.logf(ctx, "Review generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 		}
 		rawMergedCount := len(appendClusterFindings(rawMergedByCluster))
+		if mergeSC.Engine.logger != nil {
+			mergeSC.Engine.logger.LiveFindings(logging.FindingUpdate{
+				Duplicate: max(len(findings)-rawMergedCount, 0),
+			})
+		}
 
 		base := &model.ReviewResult{
 			Findings:               finalizedFindings,

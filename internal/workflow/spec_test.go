@@ -73,7 +73,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1500}}}
 	}
-	want := Spec{Version: SpecVersion, Steps: []StepEntry{
+	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
 		{Type: StepCollectContext, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
 		{Parallel: parallel},
 		{Pipeline: []StepEntry{
