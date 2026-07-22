@@ -1,17 +1,27 @@
+# syntax=docker/dockerfile:1
 # ---- Go build ------------------------------------------------------------
 FROM golang:1.25-alpine AS builder
 WORKDIR /app
 RUN apk add --no-cache git ca-certificates
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -tags "grammar_subset,grammar_subset_python,grammar_subset_rust" -trimpath -ldflags="-s -w" -o /nickpit ./cmd/nickpit
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -tags "grammar_subset,grammar_subset_python,grammar_subset_rust" -trimpath -ldflags="-s -w" -o /nickpit ./cmd/nickpit
 
 # ---- Stage git + its shared libs (bookworm, matches base-debian12) -------
 FROM debian:12-slim AS gitpkg
-RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# Keep apt's downloaded .debs and package lists in BuildKit cache mounts so a
+# cache miss on this stage doesn't re-download on every build. Debian's default
+# docker-clean hook purges the cache after install, so disable it first.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean \
+ && echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates
 # Collect git, its core helpers (git-remote-https is needed for HTTPS clone),
 # and every transitive .so into /bundle, preserving absolute paths (cp --parents)
 # so arch-specific lib dirs (x86_64/aarch64/arm-linux-gnueabihf) land correctly
