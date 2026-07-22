@@ -79,6 +79,59 @@ func TestLiveRendererRedrawOwnsOnlyPreviousRows(t *testing.T) {
 	}
 }
 
+func TestWriteOutsidePreservesTextBelowClearedDashboard(t *testing.T) {
+	now := time.Now()
+	r := testLiveRenderer(now)
+	buf := r.w.(*bytes.Buffer)
+	// Draw a 3-row frame so lastRows is non-zero and the cursor is parked below it.
+	r.mu.Lock()
+	r.writeFrameLocked([]string{"one", "two", "three"})
+	r.mu.Unlock()
+	buf.Reset()
+
+	r.WriteOutside("external\n")
+
+	out := buf.String()
+	// The old dashboard (3 rows) is cleared by moving up over exactly those rows.
+	if !strings.Contains(out, "\x1b[3A") {
+		t.Fatalf("WriteOutside did not clear the prior 3-row frame: %q", out)
+	}
+	idx := strings.Index(out, "external\n")
+	if idx < 0 {
+		t.Fatalf("WriteOutside dropped the external text: %q", out)
+	}
+	// Critically, the redraw after the text must NOT move the cursor back up —
+	// that would overwrite the just-written external line. The first byte after
+	// "external\n" is the frame's carriage return, not a cursor-up escape.
+	rest := out[idx+len("external\n"):]
+	if strings.HasPrefix(rest, "\x1b[") {
+		t.Fatalf("dashboard redraw moved the cursor over the external text: %q", rest)
+	}
+	if r.lastRows == 0 {
+		t.Fatal("dashboard was not redrawn after the external text")
+	}
+}
+
+func TestWriteOutsideAfterFinishJustWritesText(t *testing.T) {
+	now := time.Now()
+	r := testLiveRenderer(now)
+	buf := r.w.(*bytes.Buffer)
+	r.mu.Lock()
+	r.lastRows = 3
+	r.closed = true
+	r.mu.Unlock()
+	buf.Reset()
+
+	r.WriteOutside("boom")
+
+	if out := buf.String(); out != "boom\n" {
+		t.Fatalf("closed WriteOutside = %q, want plain %q with no cursor codes", out, "boom\n")
+	}
+	if r.lastRows != 3 {
+		t.Fatalf("closed WriteOutside changed lastRows to %d, want 3 (frozen)", r.lastRows)
+	}
+}
+
 func TestLiveProgressFractionReservesNudges(t *testing.T) {
 	now := time.Now()
 	a := &liveAgent{

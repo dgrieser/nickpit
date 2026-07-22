@@ -645,6 +645,16 @@ func (r *LiveRenderer) writeFrameLocked(lines []string) {
 func (r *LiveRenderer) WriteOutside(text string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Once finished, the dashboard is a frozen snapshot: emit the text below it
+	// without any cursor manipulation, so a late (racing) write cannot redraw
+	// the final frame on top of scrollback.
+	if r.closed {
+		if !strings.HasSuffix(text, "\n") {
+			text += "\n"
+		}
+		_, _ = io.WriteString(r.w, text)
+		return
+	}
 	var b strings.Builder
 	if r.lastRows > 0 {
 		fmt.Fprintf(&b, "\x1b[%dA", r.lastRows)
