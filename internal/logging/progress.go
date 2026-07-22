@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -18,6 +19,11 @@ type ProgressInfo struct {
 	Effort    string
 	BaseURL   string // rendered as "@ url" after model:effort
 	Turn      int    // LLM call number, 0 = absent
+	// Group keeps one logical reviewer identity across its initial pass and
+	// nudge loops. NudgeIndex is 0 for the initial pass and 1..N afterwards.
+	Group      string
+	NudgeIndex int
+	NudgeTotal int
 
 	// Workflow identifies the running workflow on the top-level Agent line, in
 	// place of the model (the Model line above already shows that). Source is
@@ -214,16 +220,28 @@ func progressLight(text string) string {
 
 // Progress emits a progress line using the ProgressInfo carried in ctx.
 func (l *Logger) Progress(ctx context.Context, stage Stage, state State, msg string) {
-	if l == nil || !l.showProgress {
+	if l == nil {
 		return
 	}
 	info, _ := ProgressInfoFromContext(ctx)
+	if l.live != nil {
+		l.live.Progress(info, WorkflowScopeFromContext(ctx), stage, state, msg, contextDeadline(ctx))
+	}
+	if !l.showProgress {
+		return
+	}
 	l.emitProgress(info, stage, state, msg)
 }
 
 // ProgressFor emits a progress line with explicitly provided ProgressInfo.
 func (l *Logger) ProgressFor(info ProgressInfo, stage Stage, state State, msg string) {
-	if l == nil || !l.showProgress {
+	if l == nil {
+		return
+	}
+	if l.live != nil {
+		l.live.Progress(info, WorkflowScope{}, stage, state, msg, time.Time{})
+	}
+	if !l.showProgress {
 		return
 	}
 	l.emitProgress(info, stage, state, msg)
@@ -231,10 +249,16 @@ func (l *Logger) ProgressFor(info ProgressInfo, stage Stage, state State, msg st
 
 // ProgressToolCall emits a tool-call progress line: "call → result".
 func (l *Logger) ProgressToolCall(ctx context.Context, call, result string) {
-	if l == nil || !l.showProgress {
+	if l == nil {
 		return
 	}
 	info, _ := ProgressInfoFromContext(ctx)
+	if l.live != nil {
+		l.live.Progress(info, WorkflowScopeFromContext(ctx), StageTool, StateNone, call+" → "+result, contextDeadline(ctx))
+	}
+	if !l.showProgress {
+		return
+	}
 	l.emitProgress(info, StageTool, StateNone, call+" → "+result)
 }
 

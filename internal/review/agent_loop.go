@@ -92,6 +92,10 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		return agentLoopResult{}, err
 	}
 	defer release()
+	if e.logger != nil {
+		e.logger.LiveAgentStart(ctx, req.Progress)
+		defer e.logger.LiveAgentDone(req.Progress)
+	}
 
 	llmReq := &llm.ReviewRequest{
 		Messages:          req.Messages,

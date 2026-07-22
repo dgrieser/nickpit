@@ -21,6 +21,7 @@ type Logger struct {
 	showReasoning bool
 	showProgress  bool
 	reasoning     *ReasoningRenderer
+	live          *LiveRenderer
 }
 
 // ReasoningSection is a handle to one labeled block in the ReasoningRenderer.
@@ -156,7 +157,7 @@ func (l *Logger) OpenReasoningSection(info ProgressInfo) *ReasoningSection {
 // the identity, elapsed time, and call numbers without opening a renderer
 // section.
 func (l *Logger) NewReasoningTracker(info ProgressInfo) *ReasoningSection {
-	if l == nil || (!l.showReasoning && !l.showProgress) {
+	if l == nil || (!l.showReasoning && !l.showProgress && l.live == nil) {
 		return nil
 	}
 	sec := &ReasoningSection{
@@ -202,6 +203,10 @@ func (l *Logger) writeRaw(text string) {
 	}
 	if l.reasoning != nil {
 		l.reasoning.WriteOutside(text)
+		return
+	}
+	if l.live != nil {
+		l.live.WriteOutside(text)
 		return
 	}
 	_, _ = io.WriteString(l.w, text)

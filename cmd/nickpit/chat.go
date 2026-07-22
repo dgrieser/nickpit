@@ -1239,17 +1239,17 @@ func chatThreadToMessages(notes []glscm.DiscussionNote, botUserID int) []llm.Mes
 // (e.g. a local uncommitted review whose working tree moved on). headSHA records
 // the remote head the context was built at, so a later chat can detect new
 // commits and recreate the diff.
-func (a *app) persistChatSession(ctx context.Context, profile config.Profile, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) {
+func (a *app) persistChatSession(ctx context.Context, profile config.Profile, req model.ReviewRequest, result *model.ReviewResult, reviewCtx *model.ReviewContext, headSHA string) string {
 	if a.noSession || result == nil {
-		return
+		return ""
 	}
 	if len(result.Findings) == 0 && strings.TrimSpace(result.OverallExplanation) == "" {
-		return
+		return ""
 	}
 	store, err := session.NewStore(a.sessionDir)
 	if err != nil {
 		a.warnf("chat: session store unavailable (review will not be resumable with `nickpit chat`): %v", err)
-		return
+		return ""
 	}
 	sess := session.New()
 	sess.ReviewID = result.ReviewID
@@ -1301,7 +1301,8 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 	}
 	if err := store.Save(sess); err != nil {
 		a.warnf("chat: could not save session (review will not be resumable with `nickpit chat`): %v", err)
-		return
+		return ""
 	}
-	a.logf(ctx, "chat: session saved: id=%s (resume with `nickpit chat --session %s`)", sess.ID, sess.ID)
+	a.logf(ctx, "chat: session saved: id=%s", sess.ID)
+	return sess.ID
 }

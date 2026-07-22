@@ -623,6 +623,14 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		vectorResults[vectorIdx].resp.Findings = keptByVector[vectorIdx]
 		dropped := len(droppedIdxByVector[vectorIdx])
 		counts := dropsByVector[vectorIdx]
+		if e.logger != nil {
+			e.logger.LiveFindings(logging.FindingUpdate{
+				Lane:     vectorResults[vectorIdx].run.Name,
+				Refuted:  counts.refuted,
+				Filtered: max(dropped-counts.refuted, 0),
+				Current:  len(keptByVector[vectorIdx]), CurrentPresent: true,
+			})
+		}
 		if dropped > 0 || counts.relocated > 0 {
 			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d out_of_scope=%d relocated=%d kept=%d policy=%s",
 				vectorResults[vectorIdx].run.Name,
@@ -852,6 +860,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vecto
 		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil || len(result.resp.Findings) < 2 {
 			continue
 		}
+		originalCount := len(result.resp.Findings)
 		if reduced, absorbed := mechanicallyDedupeFindings(result.resp.Findings); absorbed > 0 {
 			resp := cloneReviewResponse(result.resp)
 			resp.Findings = reduced
@@ -860,17 +869,31 @@ func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vecto
 			e.logf(ctx, "Mechanical dedupe: reviewer=%q absorbed=%d findings=%d", result.run.Name, absorbed, len(reduced))
 		}
 		if len(result.resp.Findings) < 2 {
+			if e.logger != nil {
+				e.logger.LiveFindings(logging.FindingUpdate{
+					Lane: result.run.Name, Duplicate: originalCount - len(result.resp.Findings),
+					Current: len(result.resp.Findings), CurrentPresent: true,
+				})
+			}
 			continue
 		}
 		wg.Add(1)
-		go func(idx int, input agentResult) {
+		go func(idx int, input agentResult, before int) {
 			defer wg.Done()
 			resp, run := e.runDedupeAgent(ctx, contextNotes, input, schema, constraints, req)
 			runs[idx] = run
+			after := len(input.resp.Findings)
 			if resp != nil {
 				vectorResults[idx].resp = resp
+				after = len(resp.Findings)
 			}
-		}(i, result)
+			if e.logger != nil {
+				e.logger.LiveFindings(logging.FindingUpdate{
+					Lane: input.run.Name, Duplicate: max(before-after, 0),
+					Current: after, CurrentPresent: true,
+				})
+			}
+		}(i, result, originalCount)
 	}
 	wg.Wait()
 
@@ -3035,10 +3058,14 @@ func normalizeToolPath(path string) string {
 func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *logging.ReasoningSection) (*llm.ReviewResponse, error) {
 	callNum := sec.IncrCallNum()
 	info, ok := logging.ProgressInfoFromContext(ctx)
+	if callNum == 0 {
+		callNum = info.Turn
+	}
 	turnInfo := info.WithTurn(callNum)
 	if ok && e.logger != nil {
-		e.logger.ProgressFor(turnInfo, logging.StageRequest, logging.StateSent, "")
-		e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateStart, "")
+		turnCtx := logging.WithProgressInfo(ctx, turnInfo)
+		e.logger.Progress(turnCtx, logging.StageRequest, logging.StateSent, "")
+		e.logger.Progress(turnCtx, logging.StageReasoning, logging.StateStart, "")
 	}
 	previousSink := req.ReasoningSink
 	callSec := e.openReviewRequestReasoningSection(info, callNum)
@@ -3051,10 +3078,11 @@ func (e *Engine) loggedReview(ctx context.Context, req *llm.ReviewRequest, sec *
 	resp, err := e.reviewWithTimeBudget(ctx, req)
 	elapsed := time.Since(start).Truncate(time.Second)
 	if ok && e.logger != nil {
+		turnCtx := logging.WithProgressInfo(ctx, turnInfo)
 		if resp != nil && resp.Reasoned {
-			e.logger.ProgressFor(turnInfo, logging.StageReasoning, logging.StateDone, elapsed.String())
+			e.logger.Progress(turnCtx, logging.StageReasoning, logging.StateDone, elapsed.String())
 		}
-		e.logger.ProgressFor(turnInfo, logging.StageResponse, logging.StateDone, elapsed.String())
+		e.logger.Progress(turnCtx, logging.StageResponse, logging.StateDone, elapsed.String())
 	}
 	return resp, err
 }

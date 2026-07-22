@@ -87,6 +87,10 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	}
 	messages = append(messages, agent.extraMessages...)
 	info := e.progressInfo(agent.role, agent.name, "")
+	if agent.role == "review" {
+		info.Group = agent.name
+		info.NudgeTotal = req.NudgeCount
+	}
 	sec := e.logger.NewReasoningTracker(info)
 
 	tools := []llm.ToolDefinition(nil)
@@ -221,6 +225,11 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 	}
 	s.enforceResponse(s.agent.name, nil, loopResult.resp)
 	s.totalFindings = append([]model.Finding(nil), loopResult.resp.Findings...)
+	if e.logger != nil {
+		e.logger.LiveFindings(logging.FindingUpdate{
+			Lane: s.agent.name, Found: len(s.totalFindings), Current: len(s.totalFindings), CurrentPresent: true,
+		})
+	}
 	s.totalTokens = loopResult.tokensUsed
 	s.totalToolCalls = loopResult.toolCalls
 	s.totalDuplicates = loopResult.duplicateToolCalls
@@ -302,6 +311,9 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	defer sec.End()
 	loopReq.AgentName = nudgeName
 	loopReq.Progress.AgentName = nudgeName
+	loopReq.Progress.Group = s.agent.name
+	loopReq.Progress.NudgeIndex = iterIdx + 1
+	loopReq.Progress.NudgeTotal = total
 	loopReq.JSONRetryProgressAgentName = nudgeName
 	loopReq.Messages = nudged
 	existingFindings := append([]model.Finding(nil), s.totalFindings...)
@@ -323,6 +335,12 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	s.enforceResponse(nudgeName, existingFindings, sub.resp)
 	prevFindings := len(s.totalFindings)
 	s.totalFindings = appendNewFindings(s.totalFindings, sub.resp.Findings)
+	if e.logger != nil {
+		e.logger.LiveFindings(logging.FindingUpdate{
+			Lane: s.agent.name, Found: len(s.totalFindings) - prevFindings,
+			Current: len(s.totalFindings), CurrentPresent: true,
+		})
+	}
 	e.logf(nudgeCtx, "Nudge findings: round=%d/%d returned=%d new=%d total=%d", iterIdx+1, total, len(sub.resp.Findings), len(s.totalFindings)-prevFindings, len(s.totalFindings))
 	s.totalTokens = addTokenUsage(s.totalTokens, sub.tokensUsed)
 	s.totalToolCalls += sub.toolCalls
