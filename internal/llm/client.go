@@ -478,7 +478,7 @@ func trimSerializedRequestToBytes(payload openai.ChatCompletionRequest, extraBod
 	trimmed := payload
 	trimmed.Messages = append([]openai.ChatCompletionMessage(nil), payload.Messages...)
 	latestUser := -1
-	for i := len(trimmed.Messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(trimmed.Messages) {
 		if trimmed.Messages[i].Role == openai.ChatMessageRoleUser {
 			latestUser = i
 			break
@@ -1376,7 +1376,6 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 			)
 		}
 		payload = trimmed
-		requestBodyBytes = after
 		c.logf(ctx, "LLM request trimmed to byte limit: before_bytes=%d request_body_bytes=%d max_request_bytes=%d", before, after, c.maxRequestBytes)
 	}
 	payloadForLog, err := requestPayloadForLog(payload, requestExtraBody)

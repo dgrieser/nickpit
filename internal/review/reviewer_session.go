@@ -43,7 +43,6 @@ type reviewerSession struct {
 	totalDuplicates  int
 	latestResp       *llm.ReviewResponse
 	latestReasoning  string
-	historyMessages  []llm.Message
 	nudgeMessages    []llm.Message
 	contentMessages  []string
 	toolMessages     []llm.Message
@@ -236,8 +235,7 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 	s.totalDuplicates = loopResult.duplicateToolCalls
 	s.latestResp = loopResult.resp
 	s.latestReasoning = loopResult.reasoningEffort
-	s.historyMessages = messagesWithFinalResponse(loopResult.messages, loopResult.resp)
-	s.nudgeMessages = reviewerNudgeBaseMessages(s.historyMessages)
+	s.nudgeMessages = reviewerNudgeBaseMessages(messagesWithFinalResponse(loopResult.messages, loopResult.resp))
 	s.contentMessages = append([]string(nil), loopResult.contentMessages...)
 	s.toolMessages = append([]llm.Message(nil), loopResult.toolMessages...)
 	s.toolCallHistory = append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
@@ -354,7 +352,6 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	if sub.reasoningEffort != "" {
 		s.nudgeReasoningEffort = sub.reasoningEffort
 	}
-	s.historyMessages = messagesWithFinalResponse(sub.messages, sub.resp)
 	s.contentMessages = append(s.contentMessages, sub.contentMessages...)
 	s.toolMessages = append(s.toolMessages, sub.toolMessages...)
 	s.toolCallHistory = append(s.toolCallHistory, sub.toolCallHistory...)
