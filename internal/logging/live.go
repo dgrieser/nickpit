@@ -310,6 +310,19 @@ func (r *LiveRenderer) Finish(ok bool, findings int, elapsed time.Duration) {
 	r.mu.Unlock()
 	close(r.stop)
 	<-r.done
+	r.writeFinishRule()
+}
+
+// writeFinishRule draws a horizontal rule below the frozen dashboard, matching
+// the review-output footer rule, so the live progress block is visibly
+// separated from the review output that follows it on stdout.
+func (r *LiveRenderer) writeFinishRule() {
+	rule := "---"
+	if r.useANSI {
+		width, _ := r.termSize()
+		rule = "\x1b[2m" + strings.Repeat("─", width) + progressColorReset
+	}
+	_, _ = io.WriteString(r.w, "\n"+rule+"\n\n")
 }
 
 func (r *LiveRenderer) Close() {

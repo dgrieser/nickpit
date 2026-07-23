@@ -116,7 +116,7 @@ func (f *TerminalFormatter) writeFooter(b *strings.Builder, result *model.Review
 		b.WriteString(f.yellow("! " + textsan.StripControl(warning)))
 		b.WriteString("\n")
 	}
-	b.WriteString(f.dim(fmt.Sprintf("Tokens: %s prompt / %s completion / %s total",
+	b.WriteString(f.dim(fmt.Sprintf("Tokens:  %s prompt / %s completion / %s total",
 		model.HumanTokens(result.TokensUsed.PromptTokens),
 		model.HumanTokens(result.TokensUsed.CompletionTokens),
 		model.HumanTokens(result.TokensUsed.TotalTokens))))

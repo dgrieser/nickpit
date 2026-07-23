@@ -240,7 +240,7 @@ func TestTerminalFormatterEmptyFindings(t *testing.T) {
 	if !strings.Contains(out, "! Verify failed for finding #1") {
 		t.Fatalf("missing footer warning:\n%s", out)
 	}
-	if !strings.Contains(out, "Tokens: 0 prompt / 0 completion / 0 total") {
+	if !strings.Contains(out, "Tokens:  0 prompt / 0 completion / 0 total") {
 		t.Fatalf("missing tokens footer:\n%s", out)
 	}
 }
