@@ -67,6 +67,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("disable_styleguides", stringSliceNode(profile.DisableStyleGuides)),
 		yamlEntry("diff_format", yamlScalar(string(profile.DiffFormat))),
 		yamlEntry("max_context_tokens", yamlInt(profile.MaxContextTokens)),
+		yamlEntry("max_request_bytes", yamlInt(profile.MaxRequestBytes)),
 		yamlEntry("max_tool_calls", yamlInt(profile.MaxToolCalls)),
 		yamlEntry("max_duplicate_tool_calls", yamlInt(profile.MaxDuplicateToolCalls)),
 		yamlEntry("max_output_retries", yamlInt(profile.MaxOutputRetries)),

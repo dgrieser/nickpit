@@ -44,6 +44,7 @@ type reviewerSession struct {
 	latestResp       *llm.ReviewResponse
 	latestReasoning  string
 	historyMessages  []llm.Message
+	nudgeMessages    []llm.Message
 	contentMessages  []string
 	toolMessages     []llm.Message
 	toolCallHistory  []toolCallHistoryEntry
@@ -236,6 +237,7 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 	s.latestResp = loopResult.resp
 	s.latestReasoning = loopResult.reasoningEffort
 	s.historyMessages = messagesWithFinalResponse(loopResult.messages, loopResult.resp)
+	s.nudgeMessages = reviewerNudgeBaseMessages(s.historyMessages)
 	s.contentMessages = append([]string(nil), loopResult.contentMessages...)
 	s.toolMessages = append([]llm.Message(nil), loopResult.toolMessages...)
 	s.toolCallHistory = append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)
@@ -306,7 +308,10 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 		s.nudgeErr = err
 		return false
 	}
-	nudged := append(append([]llm.Message(nil), s.historyMessages...), llm.Message{Role: "user", Content: nudgeText})
+	// Every nudge starts from the immutable initial-pass transcript. Previous
+	// nudge prompts and answers add no useful review context and can otherwise
+	// make each serialized request grow without bound.
+	nudged := append(append([]llm.Message(nil), s.nudgeMessages...), llm.Message{Role: "user", Content: nudgeText})
 	loopReq, sec := e.buildAgentLoopRequest(s.agent, req)
 	defer sec.End()
 	loopReq.AgentName = nudgeName
@@ -355,6 +360,20 @@ func (e *Engine) reviewerNudgeTurn(nudgeCtx context.Context, s *reviewerSession,
 	s.toolCallHistory = append(s.toolCallHistory, sub.toolCallHistory...)
 	s.nudgeTurns++
 	return true
+}
+
+// reviewerNudgeBaseMessages removes completed assistant answers while retaining
+// assistant tool-call messages, whose paired tool results require them. The
+// returned initial-pass transcript is kept immutable across all nudge rounds.
+func reviewerNudgeBaseMessages(messages []llm.Message) []llm.Message {
+	base := make([]llm.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) == 0 {
+			continue
+		}
+		base = append(base, msg)
+	}
+	return base
 }
 
 // findingLimitReached reports whether the per-agent finding limit is set and

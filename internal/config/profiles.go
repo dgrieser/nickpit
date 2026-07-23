@@ -81,6 +81,12 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.MaxContextTokens != 0 {
 		base.MaxContextTokens = override.MaxContextTokens
 	}
+	if override.MaxRequestBytesConfigured {
+		base.MaxRequestBytesConfigured = true
+		base.MaxRequestBytes = override.MaxRequestBytes
+	} else if override.MaxRequestBytes != 0 {
+		base.MaxRequestBytes = override.MaxRequestBytes
+	}
 	if override.MaxToolCallsConfigured {
 		base.MaxToolCallsConfigured = true
 		base.MaxToolCalls = override.MaxToolCalls

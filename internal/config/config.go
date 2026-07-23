@@ -66,6 +66,7 @@ type Profile struct {
 	DisableStyleGuides                 []string               `yaml:"disable_styleguides"`
 	DiffFormat                         model.DiffFormat       `yaml:"diff_format"`
 	MaxContextTokens                   int                    `yaml:"max_context_tokens"`
+	MaxRequestBytes                    int                    `yaml:"max_request_bytes"`
 	MaxToolCalls                       int                    `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls              int                    `yaml:"max_duplicate_tool_calls"`
 	MaxOutputRetries                   int                    `yaml:"max_output_retries"`
@@ -83,6 +84,7 @@ type Profile struct {
 	GitLabBaseURL                      string                 `yaml:"gitlab_base_url"`
 	AssetBaseURL                       string                 `yaml:"asset_base_url"`
 	MaxContextTokensConfigured         bool                   `yaml:"-"`
+	MaxRequestBytesConfigured          bool                   `yaml:"-"`
 	APIKeyConfigured                   bool                   `yaml:"-"`
 	MaxToolCallsConfigured             bool                   `yaml:"-"`
 	MaxDuplicateToolCallsConfigured    bool                   `yaml:"-"`
@@ -146,6 +148,7 @@ type Overrides struct {
 	DisableStyleGuides        []string
 	DiffFormat                model.DiffFormat
 	MaxContextTokens          *int
+	MaxRequestBytes           *int
 	ToolCalls                 *int
 	DuplicateToolCalls        *int
 	OutputRetries             *int
@@ -685,6 +688,10 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.MaxContextTokens = *overrides.MaxContextTokens
 		profile.MaxContextTokensConfigured = true
 	}
+	if overrides.MaxRequestBytes != nil {
+		profile.MaxRequestBytes = *overrides.MaxRequestBytes
+		profile.MaxRequestBytesConfigured = true
+	}
 	if overrides.ToolCalls != nil {
 		profile.MaxToolCalls = *overrides.ToolCalls
 		profile.MaxToolCallsConfigured = true
@@ -819,6 +826,9 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	profile = applyProfileDefaults(profile)
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
+	}
+	if profile.MaxRequestBytes < 0 {
+		return Profile{}, fmt.Errorf("config: max_request_bytes must be non-negative")
 	}
 	if profile.MaxReasoningSeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
@@ -1014,6 +1024,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profileNode := profiles.Content[i+1]
 		profile := cfg.Profiles[name]
 		profile.MaxContextTokensConfigured = mappingValue(profileNode, "max_context_tokens") != nil
+		profile.MaxRequestBytesConfigured = mappingValue(profileNode, "max_request_bytes") != nil
 		profile.APIKeyConfigured = mappingValue(profileNode, "api_key") != nil
 		profile.MaxToolCallsConfigured = mappingValue(profileNode, "max_tool_calls") != nil
 		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil

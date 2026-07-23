@@ -112,6 +112,34 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesMaxRequestBytesOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_request_bytes: 1000
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:            "default",
+		configPath:         path,
+		maxRequestBytes:    2048,
+		maxRequestBytesSet: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxRequestBytes != 2048 {
+		t.Fatalf("max request bytes = %d, want 2048", profile.MaxRequestBytes)
+	}
+}
+
 func TestLoadProfileAppliesSmallModelCLIOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -543,6 +571,7 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 		"top-k",
 		"presence-penalty",
 		"max-output-tokens",
+		"max-request-bytes",
 		"small-max-output-tokens",
 		"small-max-tokens",
 		"small-temperature",

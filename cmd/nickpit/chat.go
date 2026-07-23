@@ -933,6 +933,7 @@ func (a *app) chatEngine(ctx context.Context, profile config.Profile, source mod
 	}
 	client := llm.NewOpenAIClient(profile.BaseURL, profile.APIKey, profile.Model)
 	client.SetLogger(logger)
+	client.SetMaxRequestBytes(profile.MaxRequestBytes)
 	client.SetMaxRateLimitDelay(time.Duration(profile.MaxRateLimitDelaySeconds) * time.Second)
 	engine := review.NewEngine(source, client, retrievalEngine, profile)
 	engine.SetLogger(logger)

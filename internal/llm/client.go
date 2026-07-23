@@ -89,6 +89,7 @@ type OpenAIClient struct {
 	logger             *logging.Logger
 	transport          *capturingTransport
 	allowedEfforts     map[string]struct{}
+	maxRequestBytes    int
 }
 
 type SchemaKind string
@@ -414,6 +415,12 @@ func (c *OpenAIClient) SetLogger(logger *logging.Logger) {
 	c.logger = logger
 }
 
+// SetMaxRequestBytes limits the final serialized JSON request body. Zero
+// disables the limit.
+func (c *OpenAIClient) SetMaxRequestBytes(maxBytes int) {
+	c.maxRequestBytes = maxBytes
+}
+
 func (c *OpenAIClient) SetMaxRateLimitDelay(delay time.Duration) {
 	c.retrier.SetMaxRateLimitDelay(delay)
 }
@@ -441,11 +448,137 @@ func LowerReasoningEfforts(effort string) []string {
 }
 
 func requestPayloadForLog(payload openai.ChatCompletionRequest, extraBody map[string]any) (json.RawMessage, error) {
+	return serializedRequestPayload(payload, redactExtraBodyForLog(extraBody))
+}
+
+func serializedRequestPayload(payload openai.ChatCompletionRequest, extraBody map[string]any) (json.RawMessage, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	return mergeOrderedJSONObject(data, redactExtraBodyForLog(extraBody))
+	return mergeOrderedJSONObject(data, extraBody)
+}
+
+const requestContentOmitted = "[Content omitted to fit request byte limit.]"
+
+// trimSerializedRequestToBytes shrinks message content without changing the
+// message/tool-call structure providers validate. Bulky tool results and older
+// turns go first; the latest user message and system prompt retain more
+// headroom and are trimmed only when necessary.
+func trimSerializedRequestToBytes(payload openai.ChatCompletionRequest, extraBody map[string]any, maxBytes int) (openai.ChatCompletionRequest, int, int, bool, error) {
+	serialized, err := serializedRequestPayload(payload, extraBody)
+	if err != nil {
+		return payload, 0, 0, false, err
+	}
+	before := len(serialized)
+	if maxBytes <= 0 || before <= maxBytes {
+		return payload, before, before, false, nil
+	}
+
+	trimmed := payload
+	trimmed.Messages = append([]openai.ChatCompletionMessage(nil), payload.Messages...)
+	latestUser := -1
+	for i := len(trimmed.Messages) - 1; i >= 0; i-- {
+		if trimmed.Messages[i].Role == openai.ChatMessageRoleUser {
+			latestUser = i
+			break
+		}
+	}
+
+	current := before
+	for current > maxBytes {
+		index, minimum := requestTrimCandidate(trimmed.Messages, latestUser)
+		if index < 0 {
+			break
+		}
+		content := trimmed.Messages[index].Content
+		reduction := max(current-maxBytes+256, len(content)/4)
+		target := max(len(content)-reduction, minimum)
+		compacted := compactRequestContent(content, target)
+		if compacted == content {
+			break
+		}
+		trimmed.Messages[index].Content = compacted
+		serialized, err = serializedRequestPayload(trimmed, extraBody)
+		if err != nil {
+			return payload, before, current, false, err
+		}
+		next := len(serialized)
+		if next >= current {
+			break
+		}
+		current = next
+	}
+	return trimmed, before, current, current < before, nil
+}
+
+func requestTrimCandidate(messages []openai.ChatCompletionMessage, latestUser int) (int, int) {
+	bestIndex := -1
+	bestPriority := 5
+	bestReducible := 0
+	bestMinimum := 0
+	for i, msg := range messages {
+		minimum := len(requestContentOmitted)
+		priority := 1
+		switch {
+		case msg.Role == openai.ChatMessageRoleTool:
+			priority = 0
+		case msg.Role == openai.ChatMessageRoleSystem:
+			priority = 3
+			minimum = 256
+		case i == latestUser:
+			priority = 2
+			minimum = 256
+		}
+		reducible := len(msg.Content) - minimum
+		if reducible <= 0 {
+			continue
+		}
+		if priority < bestPriority || priority == bestPriority && reducible > bestReducible {
+			bestIndex = i
+			bestPriority = priority
+			bestReducible = reducible
+			bestMinimum = minimum
+		}
+	}
+	return bestIndex, bestMinimum
+}
+
+func compactRequestContent(content string, maxBytes int) string {
+	if len(content) <= maxBytes {
+		return content
+	}
+	if maxBytes <= len(requestContentOmitted) {
+		return requestContentOmitted
+	}
+	remaining := maxBytes - len(requestContentOmitted) - 2
+	headBytes := remaining / 2
+	tailBytes := remaining - headBytes
+	head := utf8Prefix(content, headBytes)
+	tail := utf8Suffix(content, tailBytes)
+	return head + "\n" + requestContentOmitted + "\n" + tail
+}
+
+func utf8Prefix(value string, maxBytes int) string {
+	if maxBytes >= len(value) {
+		return value
+	}
+	end := max(maxBytes, 0)
+	for end > 0 && value[end]&0xc0 == 0x80 {
+		end--
+	}
+	return value[:end]
+}
+
+func utf8Suffix(value string, maxBytes int) string {
+	if maxBytes >= len(value) {
+		return value
+	}
+	start := len(value) - max(maxBytes, 0)
+	for start < len(value) && value[start]&0xc0 == 0x80 {
+		start++
+	}
+	return value[start:]
 }
 
 // sensitiveExtraBodyKeyFragments marks extra_body keys whose values must not
@@ -1164,6 +1297,7 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 	payload := openai.ChatCompletionRequest{
 		Model:    req.Model,
 		Messages: buildMessages(req),
+		Stream:   true,
 		Tools:    buildTools(req.Tools),
 		StreamOptions: &openai.StreamOptions{
 			IncludeUsage: true,
@@ -1223,6 +1357,28 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 		}
 	}
 
+	serializedPayload, err := serializedRequestPayload(payload, requestExtraBody)
+	if err != nil {
+		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
+	}
+	requestBodyBytes := len(serializedPayload)
+	c.logf(ctx, "LLM request size: request_body_bytes=%d max_request_bytes=%d", requestBodyBytes, c.maxRequestBytes)
+	if c.maxRequestBytes > 0 && requestBodyBytes > c.maxRequestBytes {
+		trimmed, before, after, changed, trimErr := trimSerializedRequestToBytes(payload, requestExtraBody, c.maxRequestBytes)
+		if trimErr != nil {
+			return nil, callUsage, fmt.Errorf("llm: trimming serialized request: %w", trimErr)
+		}
+		if !changed || after > c.maxRequestBytes {
+			return nil, callUsage, fmt.Errorf(
+				"llm: serialized request body too large after trimming: request_body_bytes=%d max_request_bytes=%d",
+				after,
+				c.maxRequestBytes,
+			)
+		}
+		payload = trimmed
+		requestBodyBytes = after
+		c.logf(ctx, "LLM request trimmed to byte limit: before_bytes=%d request_body_bytes=%d max_request_bytes=%d", before, after, c.maxRequestBytes)
+	}
 	payloadForLog, err := requestPayloadForLog(payload, requestExtraBody)
 	if err != nil {
 		return nil, callUsage, fmt.Errorf("llm: encoding request: %w", err)
@@ -1458,6 +1614,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 	// next wait would push it past the retrier's budget we stop retrying
 	// instead of stalling a lane indefinitely on a hard rate limit.
 	var rateLimitWaited time.Duration
+	requestTooLargeRetried := false
 	for attempt := 0; ; attempt++ {
 		streamCtx, streamCancel := context.WithCancel(ctx)
 		streamCtx, slot := contextWithCaptureSlot(streamCtx)
@@ -1479,6 +1636,27 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				c.logf(ctx, "LLM request failed: attempt=%d error=%v", attempt+1, statusErr)
 				if body := httpErrorBody(err, capture); len(body) > 0 {
 					c.logMaybeJSON(ctx, "LLM raw response body:", body)
+				}
+				if status == http.StatusRequestEntityTooLarge && !requestTooLargeRetried {
+					serialized, serializeErr := serializedRequestPayload(payload, extraBody)
+					if serializeErr != nil {
+						return nil, fmt.Errorf("llm: encoding 413 retry request: %w", serializeErr)
+					}
+					target := len(serialized) * 3 / 4
+					if c.maxRequestBytes > 0 {
+						target = min(target, c.maxRequestBytes)
+					}
+					trimmed, before, after, changed, trimErr := trimSerializedRequestToBytes(payload, extraBody, target)
+					if trimErr != nil {
+						return nil, fmt.Errorf("llm: trimming 413 retry request: %w", trimErr)
+					}
+					if changed && after < before {
+						requestTooLargeRetried = true
+						payload = trimmed
+						c.logProgress(ctx, logging.StageModel, logging.StateRetry, "413, retrying trimmed request")
+						c.logf(ctx, "Retrying request after 413 with trimmed payload: before_bytes=%d request_body_bytes=%d target_bytes=%d", before, after, target)
+						continue
+					}
 				}
 				if !c.shouldRetryHTTPStatus(status, attempt) {
 					return nil, statusErr
@@ -1585,6 +1763,12 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 }
 
 func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
+	// Retrying a byte-identical 413 request cannot succeed and can amplify load
+	// on an already constrained gateway. Keep this invariant explicit even if
+	// the retrier's generic status set changes later.
+	if status == http.StatusRequestEntityTooLarge {
+		return false
+	}
 	if !c.retrier.ShouldRetry(status) {
 		return false
 	}
