@@ -1776,6 +1776,13 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, s
 func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	start := time.Now()
 	result, err := e.runAgentOnce(ctx, agent, req)
+	var invalidResp *llm.InvalidResponseError
+	if errors.As(err, &invalidResp) {
+		result.run.InvalidResponse = &model.InvalidResponseDiagnostic{
+			Reason:     invalidResp.Reason,
+			RawContent: invalidResp.RawContent,
+		}
+	}
 	if req.DisableSuggestions && result.resp != nil {
 		model.StripSuggestions(result.resp.Findings)
 	}

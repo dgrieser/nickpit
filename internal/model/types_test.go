@@ -2,11 +2,36 @@ package model
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 )
+
+func TestAgentRunInvalidResponseDiagnosticJSONRoundTrip(t *testing.T) {
+	run := AgentRun{
+		Name:   "verdict",
+		Role:   "verdict",
+		Status: AgentRunStatusFailed,
+		Error:  "model returned invalid JSON",
+		InvalidResponse: &InvalidResponseDiagnostic{
+			Reason:     "candidate repair failed",
+			RawContent: "å malformed response",
+		},
+	}
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got AgentRun
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.InvalidResponse, run.InvalidResponse) {
+		t.Fatalf("invalid response = %#v, want %#v", got.InvalidResponse, run.InvalidResponse)
+	}
+}
 
 func TestReviewPromptPayloadJSONFieldOrder(t *testing.T) {
 	cases := []struct {

@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"unicode"
@@ -14,14 +15,16 @@ import (
 // (trailing commas, single-quoted strings, line/block comments,
 // Python-style True/False/None) before retrying.
 //
-// On total failure, the original strict-parse error is returned so callers
-// can surface the most informative message to the model.
+// On total failure, the error reports both the original strict-parse failure
+// and the deepest recovery failure. This keeps a leading prose character from
+// hiding why an extracted JSON candidate could not be repaired.
 func LenientUnmarshal(content string, v any) error {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return errors.New("empty content")
 	}
-	if err := json.Unmarshal([]byte(trimmed), v); err == nil {
+	strictErr := json.Unmarshal([]byte(trimmed), v)
+	if strictErr == nil {
 		return nil
 	}
 
@@ -32,22 +35,54 @@ func LenientUnmarshal(content string, v any) error {
 		}
 	}
 
-	for _, extracted := range extractJSONCandidates(stripped) {
+	candidates := extractJSONCandidates(stripped)
+	var candidateErr error
+	for _, extracted := range candidates {
 		if err := json.Unmarshal([]byte(extracted), v); err == nil {
 			return nil
 		}
 		repaired := RepairJSON([]byte(extracted))
-		if err := json.Unmarshal(repaired, v); err == nil {
+		err := json.Unmarshal(repaired, v)
+		if err == nil {
 			return nil
 		}
+		candidateErr = err
 	}
 
 	repaired := RepairJSON([]byte(stripped))
-	if err := json.Unmarshal(repaired, v); err == nil {
+	repairedErr := json.Unmarshal(repaired, v)
+	if repairedErr == nil {
 		return nil
 	}
 
-	return json.Unmarshal([]byte(trimmed), v)
+	return &jsonRecoveryError{
+		strictErr:      strictErr,
+		candidateErr:   candidateErr,
+		repairedErr:    repairedErr,
+		candidateCount: len(candidates),
+	}
+}
+
+type jsonRecoveryError struct {
+	strictErr      error
+	candidateErr   error
+	repairedErr    error
+	candidateCount int
+}
+
+func (e *jsonRecoveryError) Error() string {
+	switch {
+	case e.candidateErr != nil:
+		return fmt.Sprintf("strict parse failed: %v; recovery failed for %d balanced JSON candidate(s): %v", e.strictErr, e.candidateCount, e.candidateErr)
+	case e.candidateCount == 0:
+		return fmt.Sprintf("strict parse failed: %v; recovery found no balanced JSON object or array", e.strictErr)
+	default:
+		return fmt.Sprintf("strict parse failed: %v; repaired content still failed: %v", e.strictErr, e.repairedErr)
+	}
+}
+
+func (e *jsonRecoveryError) Unwrap() error {
+	return e.strictErr
 }
 
 // Mergeable lets a target type define its own merge semantics for
@@ -94,9 +129,8 @@ type FallbackType struct {
 // Custom UnmarshalJSON implementations on element types run per candidate
 // during unmarshal, so the merge layer always sees post-unmarshal values.
 //
-// If no candidate parses (primary or fallback) and the repaired full
-// content also fails, the strict-parse error from the trimmed input is
-// returned.
+// If no candidate parses (primary or fallback), LenientUnmarshal reports both
+// the original strict failure and the deepest recovery failure.
 func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) error {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {

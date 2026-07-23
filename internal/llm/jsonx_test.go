@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"maps"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -158,6 +159,11 @@ func TestLenientUnmarshal(t *testing.T) {
 			"[P1] Finding summary\n\n{\"a\":1,\"b\":\"hi\",\"c\":{\"k\":\"v\"}}",
 			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
 		},
+		{
+			"non-ascii prose before json",
+			"å{\"a\":1,\"b\":\"hi\",\"c\":{\"k\":\"v\"}}",
+			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,6 +189,34 @@ func TestLenientUnmarshalReturnsErrorOnGarbage(t *testing.T) {
 	var v any
 	if err := LenientUnmarshal("absolutely no json at all", &v); err == nil {
 		t.Fatalf("expected error for non-JSON content")
+	}
+}
+
+func TestLenientUnmarshalReportsRecoveryFailure(t *testing.T) {
+	var v map[string]any
+	err := LenientUnmarshal(`å{"value":tru}`, &v)
+	if err == nil {
+		t.Fatal("expected malformed candidate to fail")
+	}
+	for _, want := range []string{
+		"strict parse failed: invalid character 'Ã'",
+		"recovery failed for 1 balanced JSON candidate(s)",
+		"invalid character '}' in literal true",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+}
+
+func TestLenientUnmarshalReportsMissingBalancedCandidate(t *testing.T) {
+	var v map[string]any
+	err := LenientUnmarshal(`å{"value":`, &v)
+	if err == nil {
+		t.Fatal("expected truncated candidate to fail")
+	}
+	if !strings.Contains(err.Error(), "recovery found no balanced JSON object or array") {
+		t.Fatalf("error = %q, want missing-balanced-candidate diagnostic", err)
 	}
 }
 

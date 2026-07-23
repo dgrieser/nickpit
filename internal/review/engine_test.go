@@ -1212,6 +1212,35 @@ func TestRunAgent_InvalidJSONRetryExhaustionUsesPartialResponse(t *testing.T) {
 	}
 }
 
+func TestRunAgent_InvalidJSONFailurePreservesFinalResponse(t *testing.T) {
+	first := &llm.InvalidResponseError{
+		RawContent: "å first malformed response",
+		Reason:     "first recovery failure",
+	}
+	final := &llm.InvalidResponseError{
+		RawContent: "å final malformed response",
+		Reason:     "final candidate repair failure",
+	}
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{{err: first}, {err: final}},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("verdict"), model.ReviewRequest{MaxOutputRetries: 1})
+	if err == nil {
+		t.Fatal("expected invalid JSON failure")
+	}
+	if result.run.InvalidResponse == nil {
+		t.Fatal("invalid response diagnostic is nil")
+	}
+	if got, want := result.run.InvalidResponse.Reason, final.Reason; got != want {
+		t.Fatalf("reason = %q, want %q", got, want)
+	}
+	if got, want := result.run.InvalidResponse.RawContent, final.RawContent; got != want {
+		t.Fatalf("raw content = %q, want %q", got, want)
+	}
+}
+
 func TestTestingDuplicateFilePruneRecordsDroppedFindingKeys(t *testing.T) {
 	existing := []model.Finding{nudgeFindingInFile("Existing", "main.go", 1)}
 	dropped := nudgeFindingInFile("Dropped", "main.go", 2)
