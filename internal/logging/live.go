@@ -65,6 +65,11 @@ type liveFindingStats struct {
 	Found, Refuted, Duplicate, Filtered int
 }
 
+// liveAgentLinger keeps a finished agent on the dashboard briefly so short-lived
+// agents (e.g. a reasoning-mine pass) remain readable instead of vanishing the
+// instant they complete.
+const liveAgentLinger = 3 * time.Second
+
 type liveAgent struct {
 	key         string
 	info        ProgressInfo
@@ -74,6 +79,8 @@ type liveAgent struct {
 	doneTurns   int
 	activeTurn  bool
 	visible     bool
+	done        bool
+	doneAt      time.Time
 	turn        int
 	lastStarted time.Time
 	colorIndex  int
@@ -219,6 +226,7 @@ func (r *LiveRenderer) AgentStart(info ProgressInfo, scope WorkflowScope, deadli
 	now := r.now()
 	a.info, a.scope, a.phaseStart, a.deadline = info, scope, now, deadline
 	a.visible, a.lastStarted = true, now
+	a.done, a.doneAt = false, time.Time{}
 	r.mu.Unlock()
 	r.signal()
 }
@@ -226,8 +234,11 @@ func (r *LiveRenderer) AgentStart(info ProgressInfo, scope WorkflowScope, deadli
 func (r *LiveRenderer) AgentDone(info ProgressInfo) {
 	r.mu.Lock()
 	if a := r.agents[liveAgentKey(info)]; a != nil {
-		a.visible = false
+		// Keep the agent on the dashboard for a short grace period so it does not
+		// blink out the instant it finishes; buildLinesLocked drops it once the
+		// linger window elapses.
 		a.activeTurn = false
+		a.done, a.doneAt = true, r.now()
 	}
 	r.mu.Unlock()
 	r.signal()
@@ -359,11 +370,22 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 	now := r.now()
 	visible := make([]*liveAgent, 0)
 	for _, a := range r.agents {
-		if a.visible {
-			visible = append(visible, a)
+		if !a.visible {
+			continue
 		}
+		// Drop finished agents once their linger window has elapsed.
+		if a.done && now.Sub(a.doneAt) >= liveAgentLinger {
+			a.visible = false
+			continue
+		}
+		visible = append(visible, a)
 	}
 	sort.Slice(visible, func(i, j int) bool {
+		// Running agents rank ahead of lingering finished ones, so a just-completed
+		// agent's grace period never hides live work when slots are scarce.
+		if visible[i].done != visible[j].done {
+			return !visible[i].done
+		}
 		if visible[i].lastStarted.Equal(visible[j].lastStarted) {
 			return visible[i].key < visible[j].key
 		}
@@ -435,8 +457,12 @@ func liveAgentLabel(a *liveAgent) string {
 	return label
 }
 
+// liveProgressBarWidth is the width of the agent progress bar. The agent label
+// now lives inside the bar (the old separate left column is gone), so the bar is
+// wide enough to hold a role:name plus the trailing percentage.
+const liveProgressBarWidth = 44
+
 func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
-	label := liveAgentLabel(a)
 	phase := fmt.Sprintf("#%d", max(a.turn, 1))
 	if a.info.NudgeTotal > 0 {
 		phase += fmt.Sprintf(" · nudges %d/%d", a.info.NudgeIndex, a.info.NudgeTotal)
@@ -450,72 +476,91 @@ func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
 	if denom > 0 {
 		fraction = float64(a.doneTurns) / float64(denom)
 	}
-	bar := progressBar(fraction, 20, useANSI)
+	if a.done {
+		fraction = 1.0
+	}
+	bar := progressBar(liveAgentLabel(a), fraction, liveProgressBarWidth, a.colorIndex, useANSI)
 	elapsed := now.Sub(a.phaseStart)
 	limit := "∞"
 	if !a.deadline.IsZero() {
 		limit = shortDuration(a.deadline.Sub(a.phaseStart))
 	}
-	label = padOrTrim(label, 44)
 	phase = padOrTrim(phase, 27)
 	timing := fmt.Sprintf("%s / %s", shortDuration(elapsed), limit)
 	if useANSI {
-		label = progressStyle(liveAgentPastel(a.colorIndex), label)
 		phase = progressLight(phase)
 		timing = progressGrey(timing)
 	}
-	return "  " + label + "  " + bar + "  " + phase + "  " + timing
+	return "  " + bar + "  " + phase + "  " + timing
 }
 
-func progressBar(fraction float64, width int, useANSI bool) string {
-	filled := int(fraction * float64(width))
+// progressBar renders the agent label inside a filled bar tinted with the
+// agent's own colour. The filled portion is a light shade of the agent colour;
+// the unfilled portion is a dark shade. The label (ellipsised to fit) reads dark
+// on the light fill and light on the dark remainder, with the percentage pinned
+// to the right.
+func progressBar(label string, fraction float64, width, colorIndex int, useANSI bool) string {
+	filled := int(fraction*float64(width) + 0.5)
 	filled = min(max(filled, 0), width)
 	percent := min(max(int(fraction*100+0.5), 0), 100)
-	if !useANSI {
-		return strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + fmt.Sprintf(" %3d%%", percent)
-	}
-	left := " Progress"
-	right := fmt.Sprintf("%3d%% ", percent)
-	middle := max(width-len(left)-len(right), 0)
-	text := left + strings.Repeat(" ", middle) + right
+	right := fmt.Sprintf(" %3d%%", percent) // 5 columns: "   0%" … " 100%"
+	labelWidth := max(width-len([]rune(right)), 0)
+	text := []rune(padOrTrim(label, labelWidth) + right)
 	if len(text) > width {
 		text = text[:width]
 	}
+	if !useANSI {
+		return string(text)
+	}
+	c := liveAgentPastelColor(colorIndex)
+	fillFg := rgbSGR("38;2", scaleRGB(c, 0.22)) // dark text on light fill
+	fillBg := rgbSGR("48;2", c)                 // light fill
+	baseFg := rgbSGR("38;2", c)                 // light text on dark remainder
+	baseBg := rgbSGR("48;2", scaleRGB(c, 0.42)) // dark remainder
 	var b strings.Builder
 	lastSGR := ""
-	for i := range width {
-		fg, bg := "38;2;255;255;255", "48;2;80;83;112"
+	for i, r := range text {
+		sgr := "1;" + baseFg + ";" + baseBg
 		if i < filled {
-			fg, bg = "38;2;40;42;64", "48;2;177;185;249"
+			sgr = "1;" + fillFg + ";" + fillBg
 		}
-		bold := ""
-		if i >= 1 && i <= len("Progress") {
-			bold = "1;"
-		}
-		sgr := bold + fg + ";" + bg
 		if sgr != lastSGR {
 			fmt.Fprintf(&b, "\x1b[0m\x1b[%sm", sgr)
 			lastSGR = sgr
 		}
-		b.WriteByte(text[i])
+		b.WriteRune(r)
 	}
 	b.WriteString(progressColorReset)
 	return b.String()
 }
 
-var liveAgentPastels = []string{
-	"38;2;177;185;249", // periwinkle
-	"38;2;166;209;137", // green
-	"38;2;244;184;228", // pink
-	"38;2;239;159;118", // peach
-	"38;2;129;200;190", // teal
-	"38;2;198;160;246", // lavender
-	"38;2;238;212;159", // yellow
-	"38;2;138;173;244", // blue
+// liveAgentPastelRGB holds the per-agent accent colours. Each is used both as a
+// light fill and, scaled down, as a dark remainder/text shade in the bar.
+var liveAgentPastelRGB = [][3]int{
+	{177, 185, 249}, // periwinkle
+	{166, 209, 137}, // green
+	{244, 184, 228}, // pink
+	{239, 159, 118}, // peach
+	{129, 200, 190}, // teal
+	{198, 160, 246}, // lavender
+	{238, 212, 159}, // yellow
+	{138, 173, 244}, // blue
 }
 
-func liveAgentPastel(index int) string {
-	return liveAgentPastels[index%len(liveAgentPastels)]
+func liveAgentPastelColor(index int) [3]int {
+	return liveAgentPastelRGB[index%len(liveAgentPastelRGB)]
+}
+
+func scaleRGB(c [3]int, f float64) [3]int {
+	return [3]int{
+		min(max(int(float64(c[0])*f+0.5), 0), 255),
+		min(max(int(float64(c[1])*f+0.5), 0), 255),
+		min(max(int(float64(c[2])*f+0.5), 0), 255),
+	}
+}
+
+func rgbSGR(prefix string, c [3]int) string {
+	return fmt.Sprintf("%s;%d;%d;%d", prefix, c[0], c[1], c[2])
 }
 
 func (r *LiveRenderer) findingLineLocked() string {

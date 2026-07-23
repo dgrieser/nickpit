@@ -162,21 +162,23 @@ func TestLiveProgressFractionReservesNudges(t *testing.T) {
 		doneTurns: 1, activeTurn: true, turn: 2,
 	}
 	line := formatLiveAgent(a, now, false)
-	// 1 completed / (1 completed + 1 active + 2 future) fills 5 of 20 cells.
-	if !strings.Contains(line, "█████") || !strings.Contains(line, "25%") {
-		t.Fatalf("turn+nudge progress not represented as 5/20: %q", line)
+	// 1 completed / (1 completed + 1 active + 2 future) = 25%.
+	if !strings.Contains(line, "25%") {
+		t.Fatalf("turn+nudge progress not represented as 25%%: %q", line)
 	}
 }
 
-func TestLiveProgressBarUsesStatuslinePaletteWithoutBlinking(t *testing.T) {
-	bar := progressBar(0.5, 20, true)
-	for _, want := range []string{"48;2;177;185;249", "48;2;80;83;112", "38;2;40;42;64"} {
+func TestLiveProgressBarUsesAgentColourWithoutBlinking(t *testing.T) {
+	bar := progressBar("review: Testing", 0.5, liveProgressBarWidth, 0, true)
+	// colorIndex 0 = periwinkle (177,185,249): light fill bg + light text, a dark
+	// scaled remainder bg, and a dark scaled text for the filled portion.
+	for _, want := range []string{"48;2;177;185;249", "38;2;177;185;249", "48;2;74;78;105", "38;2;39;41;55"} {
 		if !strings.Contains(bar, want) {
 			t.Errorf("progress bar missing %q: %q", want, bar)
 		}
 	}
 	plain := stripANSI(bar)
-	for _, want := range []string{" Progress", " 50%"} {
+	for _, want := range []string{"review: Testing", " 50%"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("progress bar text missing %q: %q", want, plain)
 		}
@@ -184,23 +186,74 @@ func TestLiveProgressBarUsesStatuslinePaletteWithoutBlinking(t *testing.T) {
 	if strings.ContainsRune(plain, '▓') {
 		t.Fatalf("progress bar contains blinking/pulsing cell: %q", bar)
 	}
-	if got := len([]rune(stripANSI(bar))); got != 20 {
-		t.Fatalf("visible progress bar width = %d, want 20", got)
+	if got := len([]rune(plain)); got != liveProgressBarWidth {
+		t.Fatalf("visible progress bar width = %d, want %d", got, liveProgressBarWidth)
 	}
 }
 
-func TestLiveAgentsUseDistinctPastelColorsAndAlignedNames(t *testing.T) {
+func TestLiveProgressBarEllipsisesLongLabel(t *testing.T) {
+	plain := stripANSI(progressBar("review: A Very Long Reviewer Name That Overflows The Bar", 0.0, liveProgressBarWidth, 0, true))
+	if got := len([]rune(plain)); got != liveProgressBarWidth {
+		t.Fatalf("width = %d, want %d", got, liveProgressBarWidth)
+	}
+	if !strings.Contains(plain, "…") {
+		t.Fatalf("overflowing label should be ellipsised: %q", plain)
+	}
+	if !strings.Contains(plain, "0%") {
+		t.Fatalf("percentage should survive ellipsis: %q", plain)
+	}
+}
+
+func TestLiveAgentsUseDistinctColoursAndAlignedColumns(t *testing.T) {
 	now := time.Now()
 	a := &liveAgent{info: ProgressInfo{AgentRole: "review", AgentName: "Security"}, phaseStart: now, colorIndex: 0}
 	b := &liveAgent{info: ProgressInfo{AgentRole: "review", AgentName: "Architecture"}, phaseStart: now, colorIndex: 1}
 	lineA := formatLiveAgent(a, now, true)
 	lineB := formatLiveAgent(b, now, true)
-	if !strings.Contains(lineA, liveAgentPastel(0)) || !strings.Contains(lineB, liveAgentPastel(1)) || liveAgentPastel(0) == liveAgentPastel(1) {
+	colorA := rgbSGR("38;2", liveAgentPastelColor(0))
+	colorB := rgbSGR("38;2", liveAgentPastelColor(1))
+	if !strings.Contains(lineA, colorA) || !strings.Contains(lineB, colorB) || colorA == colorB {
 		t.Fatalf("agent colors not distinct:\n%s\n%s", lineA, lineB)
 	}
 	plainA, plainB := stripANSI(lineA), stripANSI(lineB)
-	if strings.Index(plainA, "Progress") != strings.Index(plainB, "Progress") {
-		t.Fatalf("progress columns not aligned:\n%s\n%s", plainA, plainB)
+	if !strings.Contains(plainA, "review: Security") || !strings.Contains(plainB, "review: Architecture") {
+		t.Fatalf("agent label not rendered inside the bar:\n%s\n%s", plainA, plainB)
+	}
+	// The bar is fixed width, so the phase column starts at the same offset.
+	if strings.Index(plainA, "#1") != strings.Index(plainB, "#1") {
+		t.Fatalf("phase columns not aligned:\n%s\n%s", plainA, plainB)
+	}
+}
+
+func TestLiveAgentLingersAfterDoneThenDrops(t *testing.T) {
+	start := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	cur := start
+	r := &LiveRenderer{
+		w: &bytes.Buffer{}, plan: LivePlan{Concurrency: 2, Units: 1},
+		started: start.Add(-90 * time.Second),
+		agents:  make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+		width: 120, height: 24, now: func() time.Time { return cur },
+	}
+	info := ProgressInfo{AgentRole: "review", AgentName: "Reasoning", Group: "Reasoning"}
+	r.AgentStart(info, WorkflowScope{}, time.Time{})
+	r.AgentDone(info)
+
+	dashboard := func() string {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return strings.Join(r.buildLinesLocked(), "\n")
+	}
+
+	// Within the grace window the finished agent stays, showing a full bar.
+	cur = start.Add(1 * time.Second)
+	if joined := dashboard(); !strings.Contains(joined, "review: Reasoning") || !strings.Contains(joined, "100%") {
+		t.Fatalf("finished agent should linger with a full bar within grace:\n%s", joined)
+	}
+
+	// Past the linger window it is dropped.
+	cur = start.Add(liveAgentLinger + time.Second)
+	if joined := dashboard(); strings.Contains(joined, "review: Reasoning") {
+		t.Fatalf("finished agent should drop after linger window:\n%s", joined)
 	}
 }
 
