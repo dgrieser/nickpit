@@ -455,6 +455,163 @@ func TestClientReviewRetries500WithDefaultMaxRetries(t *testing.T) {
 	}
 }
 
+func TestClientReviewDoesNotRetryRequestTooLargeWhenPayloadCannotBeTrimmed(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err == nil || !strings.Contains(err.Error(), "413") {
+		t.Fatalf("error = %v, want 413", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestClientReviewRetriesRequestTooLargeOnceWithTrimmedPayload(t *testing.T) {
+	var attempts int
+	var bodySizes []int
+	var secondMessages []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		bodySizes = append(bodySizes, len(body))
+		if attempts == 1 {
+			http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		rawMessages, _ := payload["messages"].([]any)
+		for _, raw := range rawMessages {
+			if msg, ok := raw.(map[string]any); ok {
+				secondMessages = append(secondMessages, msg)
+			}
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  strings.Repeat("large review context\n", 1000),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if len(bodySizes) != 2 || bodySizes[1] >= bodySizes[0] {
+		t.Fatalf("request body sizes = %v, want smaller retry", bodySizes)
+	}
+	foundOmission := false
+	for _, msg := range secondMessages {
+		content, _ := msg["content"].(string)
+		foundOmission = foundOmission || strings.Contains(content, requestContentOmitted)
+	}
+	if !foundOmission {
+		t.Fatalf("trimmed retry messages = %#v, want omission marker", secondMessages)
+	}
+}
+
+func TestClientReviewStopsAfterSecondRequestTooLarge(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  strings.Repeat("large review context\n", 1000),
+	})
+	if err == nil || !strings.Contains(err.Error(), "413") {
+		t.Fatalf("error = %v, want 413", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want one trimmed retry", attempts)
+	}
+}
+
+func TestClientReviewRejectsSerializedRequestOverByteLimitAndLogsSize(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		attempts++
+	}))
+	defer server.Close()
+
+	var logs bytes.Buffer
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.SetLogger(logging.New(&logs, true, false))
+	client.SetMaxRequestBytes(32)
+
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+		ExtraBody:    map[string]any{"padding": strings.Repeat("x", 100)},
+	})
+	if err == nil {
+		t.Fatal("expected request byte limit error")
+	}
+	for _, want := range []string{"serialized request body too large", "request_body_bytes=", "max_request_bytes=32"} {
+		if !strings.Contains(err.Error()+"\n"+logs.String(), want) {
+			t.Fatalf("missing %q in error/logs:\n%v\n%s", want, err, logs.String())
+		}
+	}
+	if attempts != 0 {
+		t.Fatalf("network attempts = %d, want 0", attempts)
+	}
+}
+
+func TestClientReviewTrimsMessagesToConfiguredByteLimit(t *testing.T) {
+	var requestBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		requestBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.SetMaxRequestBytes(1024)
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  strings.Repeat("large review context\n", 1000),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requestBody) > 1024 {
+		t.Fatalf("request body bytes = %d, want <= 1024", len(requestBody))
+	}
+	if !bytes.Contains(requestBody, []byte(requestContentOmitted)) {
+		t.Fatalf("request body missing omission marker: %s", requestBody)
+	}
+}
+
 // stubJitter makes computed backoffs deterministic: 0.8+0.4*0.5 = 1.0.
 func stubJitter(retrier *Retrier) {
 	retrier.rand = func() float64 { return 0.5 }

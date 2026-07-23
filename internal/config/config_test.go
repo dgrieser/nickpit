@@ -1444,6 +1444,28 @@ profiles:
 	}
 }
 
+func TestLoadConfigRejectsNegativeMaxRequestBytes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_request_bytes: -1
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil {
+		t.Fatal("expected negative max request bytes error")
+	}
+	if got, want := err.Error(), "max_request_bytes must be non-negative"; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want containing %q", got, want)
+	}
+}
+
 func TestLoadConfigMaxFindingsFromFileAndOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

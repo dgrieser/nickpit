@@ -958,8 +958,42 @@ func TestRunAgent_NudgeDuplicate(t *testing.T) {
 			t.Fatalf("call %d reasoning effort = %q, want %q", i+1, req.ReasoningEffort, wantEfforts[i])
 		}
 	}
-	if got := llmClient.reqs[1].Messages; len(got) < 4 || !strings.Contains(got[len(got)-1].Content, "missed issues") {
-		t.Fatalf("first nudge messages = %#v", got)
+	for i, req := range llmClient.reqs[1:] {
+		got := req.Messages
+		if len(got) != 3 || !strings.Contains(got[len(got)-1].Content, "missed issues") {
+			t.Fatalf("nudge %d messages = %#v", i+1, got)
+		}
+		for _, msg := range got {
+			if msg.Role == "assistant" {
+				t.Fatalf("nudge %d retained assistant answer: %#v", i+1, got)
+			}
+			if strings.Contains(msg.Content, "second") || strings.Contains(msg.Content, "duplicate") {
+				t.Fatalf("nudge %d retained previous nudge content: %#v", i+1, got)
+			}
+		}
+	}
+}
+
+func TestReviewerNudgeBaseMessagesKeepsToolPairsAndDropsAssistantAnswers(t *testing.T) {
+	messages := []llm.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "review"},
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "call-1", Name: "read_file", Arguments: `{}`}}},
+		{Role: "tool", ToolCallID: "call-1", Content: "file contents"},
+		{Role: "assistant", Content: "final answer"},
+	}
+
+	got := reviewerNudgeBaseMessages(messages)
+	if len(got) != 4 {
+		t.Fatalf("messages = %#v", got)
+	}
+	if got[2].Role != "assistant" || len(got[2].ToolCalls) != 1 || got[3].Role != "tool" {
+		t.Fatalf("tool pair not preserved: %#v", got)
+	}
+	for _, msg := range got {
+		if msg.Content == "final answer" {
+			t.Fatalf("assistant answer retained: %#v", got)
+		}
 	}
 }
 
