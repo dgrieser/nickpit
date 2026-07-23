@@ -139,7 +139,10 @@ type Spec struct {
 //     no barriers between the steps. This is the only way to fuse the tail —
 //     there is no auto-fusion. Valid only at the top level.
 type StepEntry struct {
-	Type         string
+	Type string
+	// Name is an optional human-readable label for a lane or pipeline group.
+	// Plain steps and parallel groups derive their labels from their contents.
+	Name         string
 	Config       *StepOverride
 	FindingsFrom []string
 	Parallel     []StepEntry
@@ -595,7 +598,7 @@ func decodeParallelChild(node *yaml.Node) (StepEntry, error) {
 }
 
 func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
-	if err := checkAllowedKeys(node, "lane", "config"); err != nil {
+	if err := checkAllowedKeys(node, "name", "lane", "config"); err != nil {
 		return StepEntry{}, err
 	}
 	seq := mappingValue(node, "lane")
@@ -603,6 +606,11 @@ func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
 		return StepEntry{}, fmt.Errorf("lane must be a non-empty list")
 	}
 	entry := StepEntry{}
+	if name := mappingValue(node, "name"); name != nil {
+		if err := name.Decode(&entry.Name); err != nil {
+			return StepEntry{}, fmt.Errorf("name: %w", err)
+		}
+	}
 	for i, child := range seq.Content {
 		if child.Kind == yaml.MappingNode {
 			if mappingValue(child, "parallel") != nil {
@@ -636,7 +644,7 @@ func decodeLaneEntry(node *yaml.Node) (StepEntry, error) {
 // engine streams per cluster. Structural validity (allowed members, order,
 // scopes) is checked in Spec.Validate.
 func decodePipelineEntry(node *yaml.Node) (StepEntry, error) {
-	if err := checkAllowedKeys(node, "pipeline", "config"); err != nil {
+	if err := checkAllowedKeys(node, "name", "pipeline", "config"); err != nil {
 		return StepEntry{}, err
 	}
 	seq := mappingValue(node, "pipeline")
@@ -644,6 +652,11 @@ func decodePipelineEntry(node *yaml.Node) (StepEntry, error) {
 		return StepEntry{}, fmt.Errorf("pipeline must be a non-empty list")
 	}
 	entry := StepEntry{}
+	if name := mappingValue(node, "name"); name != nil {
+		if err := name.Decode(&entry.Name); err != nil {
+			return StepEntry{}, fmt.Errorf("name: %w", err)
+		}
+	}
 	for i, child := range seq.Content {
 		if child.Kind == yaml.MappingNode {
 			if mappingValue(child, "parallel") != nil {

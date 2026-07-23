@@ -183,6 +183,7 @@ const (
 	progressColorBranchToAquaGreen = "38;5;48"
 	progressColorErrorRed          = "38;5;203"
 	progressColorWarnYellow        = "38;5;221"
+	progressColorWineRed           = "38;2;168;42;64"
 )
 
 var progressStageStyles = map[Stage]string{

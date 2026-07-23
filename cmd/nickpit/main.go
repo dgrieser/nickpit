@@ -1226,7 +1226,11 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return err
 	}
 	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning) {
-		logger.SetLiveProgress(logging.LivePlan{Concurrency: a.concurrency, Units: len(spec.Steps)})
+		logger.SetLiveProgress(logging.LivePlan{
+			Concurrency: a.concurrency,
+			Units:       len(spec.Steps),
+			Target:      liveReviewTarget(req),
+		})
 		defer logger.CloseLive()
 	}
 
@@ -1453,6 +1457,23 @@ func (a *app) formatReview(w io.Writer, result *model.ReviewResult) error {
 
 func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning bool) bool {
 	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning
+}
+
+// liveReviewTarget names what a review is looking at, for the live dashboard
+// info line: "org/repo#42" for a GitHub PR, "org/repo!42" for a GitLab MR, or
+// the head ref (falling back to "local") for a local review.
+func liveReviewTarget(req model.ReviewRequest) string {
+	switch req.Mode {
+	case model.ModeGitHub:
+		return fmt.Sprintf("%s#%d", req.Repo, req.Identifier)
+	case model.ModeGitLab:
+		return fmt.Sprintf("%s!%d", req.Repo, req.Identifier)
+	default:
+		if ref := strings.TrimSpace(req.HeadRef); ref != "" {
+			return ref
+		}
+		return "local"
+	}
 }
 
 func chatSessionHint(sessionID string, stderrTTY, useANSI bool, width int) string {

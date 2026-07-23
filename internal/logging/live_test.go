@@ -2,7 +2,6 @@ package logging
 
 import (
 	"bytes"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -33,13 +32,16 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	lines := r.buildLinesLocked()
 	r.mu.Unlock()
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"NickPit reviewing", "Standard review · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings: 3", "final 3"} {
+	for _, want := range []string{"NickPit", "Standard review · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings: 3", "final 3"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("dashboard missing %q:\n%s", want, joined)
 		}
 	}
-	if len(lines) != 5 { // two headers + two bounded slots + findings
-		t.Fatalf("lines = %d, want 5: %q", len(lines), lines)
+	if strings.Contains(joined, "reviewing") {
+		t.Errorf("header should drop the word \"reviewing\":\n%s", joined)
+	}
+	if len(lines) != 6 { // blank + header + info + two bounded slots + findings
+		t.Fatalf("lines = %d, want 6: %q", len(lines), lines)
 	}
 }
 
@@ -170,7 +172,7 @@ func TestLiveProgressFractionReservesNudges(t *testing.T) {
 }
 
 func TestLiveProgressBarUsesAgentColourWithoutBlinking(t *testing.T) {
-	bar := progressBar("review: Testing", 0.5, liveProgressBarWidth, 0, true)
+	bar := progressBar("review: Testing", len("review"), 0.5, liveProgressBarWidth, 0, true)
 	// colorIndex 0 = periwinkle (177,185,249): light fill bg + light text, a dark
 	// scaled remainder bg, and a dark scaled text for the filled portion.
 	for _, want := range []string{"48;2;177;185;249", "38;2;177;185;249", "48;2;74;78;105", "38;2;39;41;55"} {
@@ -193,7 +195,7 @@ func TestLiveProgressBarUsesAgentColourWithoutBlinking(t *testing.T) {
 }
 
 func TestLiveProgressBarEllipsisesLongLabel(t *testing.T) {
-	plain := stripANSI(progressBar("review: A Very Long Reviewer Name That Overflows The Bar", 0.0, liveProgressBarWidth, 0, true))
+	plain := stripANSI(progressBar("review: A Very Long Reviewer Name That Overflows The Bar", len("review"), 0.0, liveProgressBarWidth, 0, true))
 	if got := len([]rune(plain)); got != liveProgressBarWidth {
 		t.Fatalf("width = %d, want %d", got, liveProgressBarWidth)
 	}
@@ -302,7 +304,7 @@ func TestLiveRunningAgentsRankAheadOfLingeringWhenSlotsScarce(t *testing.T) {
 }
 
 func TestProgressBarNonANSIRendersLabelAndPercent(t *testing.T) {
-	bar := progressBar("review: Testing", 0.5, liveProgressBarWidth, 0, false)
+	bar := progressBar("review: Testing", len("review"), 0.5, liveProgressBarWidth, 0, false)
 	if strings.Contains(bar, "\x1b[") {
 		t.Fatalf("non-ANSI bar must not contain escape codes: %q", bar)
 	}
@@ -315,7 +317,7 @@ func TestProgressBarNonANSIRendersLabelAndPercent(t *testing.T) {
 	if !strings.HasSuffix(bar, "50% ") {
 		t.Fatalf("non-ANSI bar percentage not pinned right inside the pad: %q", bar)
 	}
-	long := progressBar("review: A Very Long Reviewer Name That Overflows The Bar", 0.0, liveProgressBarWidth, 0, false)
+	long := progressBar("review: A Very Long Reviewer Name That Overflows The Bar", len("review"), 0.0, liveProgressBarWidth, 0, false)
 	if !strings.Contains(long, "…") {
 		t.Fatalf("non-ANSI overflowing label should be ellipsised: %q", long)
 	}
@@ -325,16 +327,20 @@ func TestProgressBarNonANSIRendersLabelAndPercent(t *testing.T) {
 }
 
 func TestProgressBarKeepsPercentUnsplitAtHighFill(t *testing.T) {
-	// At 94% the naive fill boundary lands inside the percentage suffix; the bar
-	// must snap the fill back so the percentage renders as one contiguous run.
-	bar := progressBar("review: Testing", 0.94, liveProgressBarWidth, 0, true)
-	if right := fmt.Sprintf(" %3d%%", 94); !strings.Contains(bar, right) {
-		t.Fatalf("percentage %q split across the fill boundary: %q", right, bar)
+	c := liveAgentPastelColor(0)
+	// A bold percentage digit opens its own run; if that open carries the fill
+	// colours, the fill boundary split the suffix.
+	fillDigitOpen := "1;" + rgbSGR("38;2", scaleRGB(c, 0.22)) + ";" + rgbSGR("48;2", c) + "m"
+	// 94% would place the fill boundary inside " 94%"; the snap must keep the
+	// digits on the base background instead — the "9" never opens on fill.
+	bar := progressBar("review: Testing", len("review"), 0.94, liveProgressBarWidth, 0, true)
+	if strings.Contains(bar, fillDigitOpen+"9") {
+		t.Fatalf("percentage digit rendered on the fill background (split): %q", bar)
 	}
-	// A complete bar tints everything, including the suffix, in one run.
-	full := progressBar("review: Testing", 1.0, liveProgressBarWidth, 0, true)
-	if right := fmt.Sprintf(" %3d%%", 100); !strings.Contains(full, right) {
-		t.Fatalf("full-bar percentage not contiguous: %q", full)
+	// A complete bar does tint the whole content, the percentage "100" included.
+	full := progressBar("review: Testing", len("review"), 1.0, liveProgressBarWidth, 0, true)
+	if !strings.Contains(full, fillDigitOpen+"1") {
+		t.Fatalf("full bar should tint the percentage on the fill background: %q", full)
 	}
 }
 

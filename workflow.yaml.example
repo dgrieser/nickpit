@@ -29,6 +29,8 @@
 # child can be a `lane:` — a list of steps that run sequentially within the
 # group — so each reviewer's findings are verified and deduped as soon as that
 # reviewer finishes. Each vector may be used by at most one lane per group.
+# Lanes accept an optional `name:` used for runtime reporting, budget messages,
+# and live-progress grouping.
 #
 # A `pipeline:` group is the explicit, streamed post-review tail:
 #   merge → finalize → verdict, optionally followed by summarize.
@@ -37,6 +39,7 @@
 # clusters are still merging; verdict gates on all finalizes and runs once.
 # Listing those steps flat (outside a `pipeline:`) instead runs them strictly
 # sequentially, each over the whole finding set, with a barrier between.
+# Pipelines support the same optional `name:`.
 #
 # `scope` makes a step's fan-out explicit — the work unit each agent operates on
 # (not parallelism; concurrency is the run-level --concurrency cap). Values:
@@ -86,6 +89,7 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+        name: Code quality
         config:
           time_budget:
             max_seconds: 1500
@@ -106,6 +110,7 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+        name: Security
         config:
           time_budget:
             max_seconds: 1500
@@ -126,6 +131,7 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+        name: Architecture
         config:
           time_budget:
             max_seconds: 1500
@@ -146,6 +152,7 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+        name: Performance
         config:
           time_budget:
             max_seconds: 1500
@@ -166,6 +173,7 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+        name: Testing
         config:
           time_budget:
             max_seconds: 1500
@@ -186,6 +194,7 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+        name: Best practices
         config:
           time_budget:
             max_seconds: 1500
@@ -213,6 +222,7 @@ steps:
           scope: cluster
           time_budget:
             weight: 10
+    name: Review synthesis
     config:
       time_budget:
         max_seconds: 1200
@@ -267,6 +277,7 @@ steps:
 #               scope: reviewer
 #               time_budget:
 #                 weight: 10
+#         name: Security review
 #         config:
 #           time_budget:
 #             max_seconds: 1200
@@ -296,6 +307,7 @@ steps:
 #           scope: cluster
 #           time_budget:
 #             weight: 15
+#     name: Review synthesis
 #     config:
 #       time_budget:
 #         max_seconds: 600

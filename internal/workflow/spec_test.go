@@ -66,8 +66,9 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 		}
 	}
 	parallel := make([]StepEntry, len(ReviewVectorIDs))
+	laneNames := []string{"Code quality", "Security", "Architecture", "Performance", "Testing", "Best practices"}
 	for i, id := range ReviewVectorIDs {
-		parallel[i] = StepEntry{Lane: []StepEntry{
+		parallel[i] = StepEntry{Name: laneNames[i], Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
 			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight35}}},
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
@@ -76,7 +77,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
 		{Type: StepCollectContext, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
 		{Parallel: parallel},
-		{Pipeline: []StepEntry{
+		{Name: "Review synthesis", Pipeline: []StepEntry{
 			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}}},
 			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight40}}},
 			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight20}}},
@@ -85,6 +86,35 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestLoadParsesLaneAndPipelineNames(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - parallel:
+      - name: Security review
+        lane:
+          - type: review:security
+  - name: Review synthesis
+    pipeline:
+      - type: merge
+      - type: finalize
+      - type: verdict
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := spec.Steps[0].Parallel[0].Name; got != "Security review" {
+		t.Fatalf("lane name = %q, want %q", got, "Security review")
+	}
+	if got := spec.Steps[1].Name; got != "Review synthesis" {
+		t.Fatalf("pipeline name = %q, want %q", got, "Review synthesis")
 	}
 }
 

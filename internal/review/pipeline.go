@@ -225,6 +225,7 @@ type boundStep struct {
 }
 
 type boundLane struct {
+	name       string
 	steps      []boundStep
 	timeBudget *workflow.TimeBudget
 }
@@ -265,7 +266,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 			// is no auto-fusion anywhere — fusion happens only here.
 			fused := fusedSpecFromPipeline(entry)
 			bs := boundStep{label: strings.Join(fused.labels, "→"), timeBudget: timeBudgetOf(entry.Config), run: e.postMergeFusedStepFunc(fused)}
-			p.units = append(p.units, planUnit{lanes: []boundLane{{steps: []boundStep{bs}}}})
+			p.units = append(p.units, planUnit{lanes: []boundLane{{name: entry.Name, steps: []boundStep{bs}}}})
 			continue
 		}
 		if entry.IsParallel() {
@@ -280,7 +281,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 					lane = append(lane, bs)
 					p.needsSource = p.needsSource || bs.needsSource
 				}
-				unit.lanes = append(unit.lanes, boundLane{steps: lane, timeBudget: timeBudgetOf(sub.Config)})
+				unit.lanes = append(unit.lanes, boundLane{name: sub.Name, steps: lane, timeBudget: timeBudgetOf(sub.Config)})
 			}
 			p.units = append(p.units, unit)
 			continue
@@ -420,7 +421,7 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 		}
 		scope := logging.WorkflowScope{
 			Unit: unit, UnitTotal: unitTotal,
-			Lane: liveLaneLabel(bs.label, laneIndex), Step: bs.label,
+			Lane: liveLaneLabel(lane, bs.label, laneIndex), Step: bs.label,
 			Workflow: p.name,
 		}
 		stepCtx = logging.WithWorkflowScope(stepCtx, scope)
@@ -440,7 +441,10 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 	return nil
 }
 
-func liveLaneLabel(step string, laneIndex int) string {
+func liveLaneLabel(lane boundLane, step string, laneIndex int) string {
+	if name := strings.TrimSpace(lane.name); name != "" {
+		return name
+	}
 	if _, suffix, ok := strings.Cut(step, ":"); ok && suffix != "" {
 		return suffix
 	}
@@ -453,11 +457,7 @@ func liveLaneLabel(step string, laneIndex int) string {
 func unitSegment(unit planUnit, start time.Time) model.SegmentRuntime {
 	steps := make([]string, len(unit.lanes))
 	for i, lane := range unit.lanes {
-		labels := make([]string, len(lane.steps))
-		for j, bs := range lane.steps {
-			labels[j] = bs.label
-		}
-		steps[i] = strings.Join(labels, "→")
+		steps[i] = laneLabel(lane)
 	}
 	return model.SegmentRuntime{
 		Steps:          steps,
@@ -466,6 +466,9 @@ func unitSegment(unit planUnit, start time.Time) model.SegmentRuntime {
 }
 
 func laneLabel(lane boundLane) string {
+	if name := strings.TrimSpace(lane.name); name != "" {
+		return name
+	}
 	labels := make([]string, len(lane.steps))
 	for i, bs := range lane.steps {
 		labels[i] = bs.label

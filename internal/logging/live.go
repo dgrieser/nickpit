@@ -19,6 +19,9 @@ import (
 type LivePlan struct {
 	Concurrency int
 	Units       int
+	// Target names what is under review (e.g. "org/repo#42" or a branch), shown
+	// in the dashboard info line. Empty for source-less runs.
+	Target string
 }
 
 // WorkflowScope identifies the pipeline work enclosing an agent loop.
@@ -120,8 +123,25 @@ func newLiveRenderer(w io.Writer, useANSI bool, plan LivePlan) *LiveRenderer {
 		wake: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{}),
 		now: time.Now,
 	}
+	// Hide the cursor for the life of the dashboard so it does not flicker across
+	// the frame on every redraw; Finish/Close restore it.
+	if useANSI {
+		_, _ = io.WriteString(w, cursorHide)
+	}
 	go r.run()
 	return r
+}
+
+const (
+	cursorHide = "\x1b[?25l"
+	cursorShow = "\x1b[?25h"
+)
+
+// showCursorLocked restores the terminal cursor hidden for the dashboard's life.
+func (r *LiveRenderer) showCursor() {
+	if r.useANSI {
+		_, _ = io.WriteString(r.w, cursorShow)
+	}
 }
 
 // SetLiveProgress enables default TTY progress. Caller owns activation policy.
@@ -325,6 +345,7 @@ func (r *LiveRenderer) Finish(ok bool, findings int, elapsed time.Duration) {
 	r.mu.Unlock()
 	close(r.stop)
 	<-r.done
+	r.showCursor()
 	r.writeFinishRule()
 }
 
@@ -352,6 +373,7 @@ func (r *LiveRenderer) Close() {
 	r.mu.Unlock()
 	close(r.stop)
 	<-r.done
+	r.showCursor()
 }
 
 func (r *LiveRenderer) keptLocked() int {
@@ -397,23 +419,17 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 		return visible[i].lastStarted.Before(visible[j].lastStarted)
 	})
 	slots := r.plan.Concurrency
-	if slots <= 0 || slots > height-4 {
-		slots = height - 4
+	// Chrome is four lines: a leading blank, the header, the info line, and the
+	// findings line — leave one spare row beyond that.
+	if slots <= 0 || slots > height-5 {
+		slots = height - 5
 	}
 	if slots < 1 {
 		slots = 1
 	}
 	hidden := max(len(visible)-slots, 0)
-	activeLabel := fmt.Sprintf("%d active", len(visible))
-	if r.plan.Concurrency > 0 {
-		activeLabel = fmt.Sprintf("%d/%d agents", len(visible), r.plan.Concurrency)
-	}
-	if hidden > 0 {
-		activeLabel += fmt.Sprintf(" · +%d hidden", hidden)
-	}
-	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	spin := spinner[int(now.Sub(r.started)/(100*time.Millisecond))%len(spinner)]
-	lines := []string{fmt.Sprintf("%s NickPit reviewing · %s · %s", spin, shortDuration(now.Sub(r.started)), activeLabel), r.stepLineLocked()}
+	// A leading blank line separates the dashboard from prior scrollback.
+	lines := []string{"", r.headerLineLocked(now, len(visible), hidden), r.stepLineLocked()}
 	for i := 0; i < slots; i++ {
 		if i < len(visible) {
 			lines = append(lines, formatLiveAgent(visible[i], now, r.useANSI))
@@ -425,10 +441,42 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 	return styleLiveLines(r.useANSI, fitLines(lines, width), false)
 }
 
-func (r *LiveRenderer) stepLineLocked() string {
-	if len(r.steps) == 0 {
-		return "  Preparing review"
+var liveSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// headerLineLocked renders the top dashboard line: a grey spinner, the wordmark
+// (Nick in white, Pit in wine-red, both bold), then grey-separated info items
+// (elapsed, agent budget) in their own accent colours.
+func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) string {
+	spin := liveSpinnerFrames[int(now.Sub(r.started)/(100*time.Millisecond))%len(liveSpinnerFrames)]
+	dur := shortDuration(now.Sub(r.started))
+	if !r.useANSI {
+		agents := fmt.Sprintf("%d active", active)
+		if r.plan.Concurrency > 0 {
+			agents = fmt.Sprintf("%d/%d agents", active, r.plan.Concurrency)
+		}
+		if hidden > 0 {
+			agents += fmt.Sprintf(" · +%d hidden", hidden)
+		}
+		return fmt.Sprintf("%s NickPit · %s · %s", spin, dur, agents)
 	}
+	sep := progressGrey(" · ")
+	nickpit := progressStyle(progressColorBold+";"+progressColorWhite, "Nick") +
+		progressStyle(progressColorBold+";"+progressColorWineRed, "Pit")
+	num := func(n int) string { return progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", n)) }
+	var agents string
+	if r.plan.Concurrency > 0 {
+		agents = num(active) + progressGrey("/") + num(r.plan.Concurrency) + " " + progressLight("agents")
+	} else {
+		agents = num(active) + " " + progressLight("active")
+	}
+	if hidden > 0 {
+		agents += sep + progressStyle(progressColorTaskPink, fmt.Sprintf("+%d hidden", hidden))
+	}
+	return progressGrey(spin) + " " + nickpit + sep +
+		progressStyle(progressColorKeyTurquoise, dur) + sep + agents
+}
+
+func (r *LiveRenderer) stepLineLocked() string {
 	name := ""
 	unit, total := 0, r.plan.Units
 	for _, scope := range r.steps {
@@ -442,10 +490,35 @@ func (r *LiveRenderer) stepLineLocked() string {
 			total = scope.UnitTotal
 		}
 	}
+	preparing := len(r.steps) == 0
 	if name == "" {
-		name = "Workflow"
+		if preparing {
+			name = "Preparing review"
+		} else {
+			name = "Workflow"
+		}
 	}
-	return fmt.Sprintf("  %s · %d/%d", name, unit, max(total, 1))
+	total = max(total, 1)
+	if !r.useANSI {
+		s := "  " + name
+		if !preparing {
+			s += fmt.Sprintf(" · %d/%d", unit, total)
+		}
+		if r.plan.Target != "" {
+			s += " · " + r.plan.Target
+		}
+		return s
+	}
+	sep := progressGrey(" · ")
+	parts := []string{progressStyle(progressColorProfile, name)}
+	if !preparing {
+		parts = append(parts, progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", unit))+
+			progressGrey("/")+progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", total)))
+	}
+	if r.plan.Target != "" {
+		parts = append(parts, progressStyle(progressColorKeyTurquoise, r.plan.Target))
+	}
+	return "  " + strings.Join(parts, sep)
 }
 
 // liveAgentLabel is the left-hand agent name. Any nudge suffix is stripped —
@@ -468,10 +541,6 @@ func liveAgentLabel(a *liveAgent) string {
 const liveProgressBarWidth = 44
 
 func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
-	phase := fmt.Sprintf("#%d", max(a.turn, 1))
-	if a.info.NudgeTotal > 0 {
-		phase += fmt.Sprintf(" · nudges %d/%d", a.info.NudgeIndex, a.info.NudgeTotal)
-	}
 	future := max(a.info.NudgeTotal-a.info.NudgeIndex, 0)
 	denom := a.doneTurns + future
 	if a.activeTurn {
@@ -484,27 +553,60 @@ func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
 	if a.done {
 		fraction = 1.0
 	}
-	bar := progressBar(liveAgentLabel(a), fraction, liveProgressBarWidth, a.colorIndex, useANSI)
+	label := liveAgentLabel(a)
+	// Bold only the agent role prefix (e.g. "review"), leaving the ": name" plain.
+	roleLen := 0
+	if role := a.info.AgentRole; role != "" && strings.HasPrefix(label, role) {
+		roleLen = len([]rune(role))
+	}
+	bar := progressBar(label, roleLen, fraction, liveProgressBarWidth, a.colorIndex, useANSI)
 	elapsed := now.Sub(a.phaseStart)
 	limit := "∞"
 	if !a.deadline.IsZero() {
 		limit = shortDuration(a.deadline.Sub(a.phaseStart))
 	}
-	phase = padOrTrim(phase, 27)
+	phase := formatLivePhase(a, useANSI)
 	timing := fmt.Sprintf("%s / %s", shortDuration(elapsed), limit)
 	if useANSI {
-		phase = progressLight(phase)
 		timing = progressGrey(timing)
 	}
 	return "  " + bar + "  " + phase + "  " + timing
+}
+
+// liveAgentPhaseWidth right-pads the turn/nudge column so the timing column
+// aligns; sized for the widest realistic value ("#N · nudges N/N").
+const liveAgentPhaseWidth = 18
+
+// formatLivePhase renders the turn counter and nudge progress with grey
+// separators and slash, numbers in green, the "nudges" word muted.
+func formatLivePhase(a *liveAgent, useANSI bool) string {
+	turn := fmt.Sprintf("#%d", max(a.turn, 1))
+	visible := turn
+	if a.info.NudgeTotal > 0 {
+		visible = fmt.Sprintf("%s · nudges %d/%d", turn, a.info.NudgeIndex, a.info.NudgeTotal)
+	}
+	pad := strings.Repeat(" ", max(liveAgentPhaseWidth-len([]rune(visible)), 0))
+	if !useANSI {
+		return visible + pad
+	}
+	styled := progressStyle(progressColorNumberGreen, turn)
+	if a.info.NudgeTotal > 0 {
+		styled += progressGrey(" · ") + progressLight("nudges ") +
+			progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", a.info.NudgeIndex)) +
+			progressGrey("/") +
+			progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", a.info.NudgeTotal))
+	}
+	return styled + pad
 }
 
 // progressBar renders the agent label inside a filled bar tinted with the
 // agent's own colour. The filled portion is a light shade of the agent colour;
 // the unfilled portion is a dark shade. The label (ellipsised to fit) reads dark
 // on the light fill and light on the dark remainder, with the percentage pinned
-// to the right.
-func progressBar(label string, fraction float64, width, colorIndex int, useANSI bool) string {
+// to the right. Only the first roleLen runes of the label are bold (the agent
+// role), together with the percentage digits — the ": name", spaces and "%" sign
+// stay regular weight.
+func progressBar(label string, roleLen int, fraction float64, width, colorIndex int, useANSI bool) string {
 	percent := min(max(int(fraction*100+0.5), 0), 100)
 	right := []rune(fmt.Sprintf(" %3d%%", percent)) // 5 columns: "   0%" … " 100%"
 	// One space of padding at each end insets the label/percentage from the bar's
@@ -512,12 +614,23 @@ func progressBar(label string, fraction float64, width, colorIndex int, useANSI 
 	// pads plus the percentage suffix (liveProgressBarWidth = 44); labelWidth just
 	// absorbs any slack.
 	labelWidth := max(width-2-len(right), 0)
-	text := []rune{' '}
-	text = append(text, []rune(padOrTrim(label, labelWidth))...)
-	text = append(text, right...)
+	labelRunes := []rune(padOrTrim(label, labelWidth))
+	text := make([]rune, 0, width)
+	bold := make([]bool, 0, width)
 	text = append(text, ' ')
+	bold = append(bold, false)
+	for i, r := range labelRunes {
+		text = append(text, r)
+		bold = append(bold, i < roleLen)
+	}
+	for _, r := range right {
+		text = append(text, r)
+		bold = append(bold, r >= '0' && r <= '9')
+	}
+	text = append(text, ' ')
+	bold = append(bold, false)
 	if len(text) > width {
-		text = text[:width]
+		text, bold = text[:width], bold[:width]
 	}
 	n := len(text)
 	filled := int(fraction*float64(n) + 0.5)
@@ -540,10 +653,15 @@ func progressBar(label string, fraction float64, width, colorIndex int, useANSI 
 	var b strings.Builder
 	lastSGR := ""
 	for i, r := range text {
-		sgr := "1;" + baseFg + ";" + baseBg
+		fg, bg := baseFg, baseBg
 		if i < filled {
-			sgr = "1;" + fillFg + ";" + fillBg
+			fg, bg = fillFg, fillBg
 		}
+		weight := ""
+		if bold[i] {
+			weight = "1;"
+		}
+		sgr := weight + fg + ";" + bg
 		if sgr != lastSGR {
 			fmt.Fprintf(&b, "\x1b[0m\x1b[%sm", sgr)
 			lastSGR = sgr

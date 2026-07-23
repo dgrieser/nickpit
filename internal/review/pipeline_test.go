@@ -1147,6 +1147,32 @@ func TestWorkflowLaneRunsPerVectorVerifyAndDedupeInOrder(t *testing.T) {
 	}
 }
 
+func TestWorkflowGroupNamesLabelRuntimeSegments(t *testing.T) {
+	spec := laneSpec("security")
+	spec.Steps[1].Parallel[0].Name = "Security review"
+	spec.Steps[2] = workflow.StepEntry{Name: "Review synthesis", Pipeline: []workflow.StepEntry{
+		{Type: workflow.StepMerge},
+		{Type: workflow.StepFinalize},
+		{Type: workflow.StepVerdict},
+	}}
+	client := &laneEventLLM{inner: &multiAgentLLM{vectorFindings: map[string]int{"Security": 1}}}
+	pipeline, err := pipelineTestEngine(client).BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := pipeline.Run(context.Background(), &model.ReviewContext{}, laneTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(result.SegmentRuntimes))
+	for _, segment := range result.SegmentRuntimes {
+		got = append(got, segment.Steps...)
+	}
+	if !slices.Contains(got, "Security review") || !slices.Contains(got, "Review synthesis") {
+		t.Fatalf("runtime segment labels = %v, want named lane and pipeline", got)
+	}
+}
+
 func TestWorkflowTestingVectorWiresDuplicateFileValidation(t *testing.T) {
 	client := &multiAgentLLM{vectorFindings: map[string]int{"Testing": 2}}
 	engine := pipelineTestEngine(client)
