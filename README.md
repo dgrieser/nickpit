@@ -168,7 +168,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
 - **Terminal and JSON output**, `--show-progress` live progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
-- **Rootless, distroless, multi-arch Docker image.**
+- **Rootless, distroless, Docker image.**
 - **`nickpit inspect`**: the retrieval toolbox (files, search, callers, callees) as a standalone command tree — no review required.
 
 ## Installation
@@ -186,10 +186,10 @@ make install PREFIX=$HOME/.local
 
 ### Docker
 
-Images are published to `ghcr.io/dgrieser/nickpit` (multi-arch: `amd64`, `arm64`,
-`arm/v7`). The image is **rootless** and **distroless** — it runs as a non-root user
-by default and supports an arbitrary runtime UID, so you can map it to your host user
-to operate on mounted repositories and config.
+Images are published to `ghcr.io/dgrieser/nickpit` (`amd64`). The image is
+**rootless** and **distroless** — it runs as a non-root user by default and
+supports an arbitrary runtime UID, so you can map it to your host user to
+operate on mounted repositories and config.
 
 ```bash
 # Review a host-mounted repo as your own user (rootless).
