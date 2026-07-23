@@ -399,6 +399,30 @@ Pin the chat to one finding with `--finding <id>` and the agent opens by pointin
 
 `nickpit session` uses the normal review output. Select it with `-o|--output markdown|json|raw`: `markdown` is the default and renders on a terminal, while `raw` always emits unrendered Markdown with no colors or terminal styling. The same flag works on review commands. `--json` remains as a compatibility alias for `--output json`.
 
+### Shell Completion
+
+Generate Bash or Zsh completion scripts:
+
+```bash
+# Install persistently for current user
+nickpit completion bash --install
+nickpit completion zsh --install
+
+# Current shell
+source <(nickpit completion bash)
+
+# Bash, persistent
+nickpit completion bash > "${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions/nickpit"
+
+# Zsh, current shell
+source <(nickpit completion zsh)
+
+# Zsh, persistent (ensure this directory is in fpath)
+nickpit completion zsh > "${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions/_nickpit"
+```
+
+Installed completions suggest commands and flags plus saved session/finding ids, output and workflow enums, configured profiles, local Git refs and recent commits, relevant files/directories, and repository-relative `inspect --path` values. Bash-completion discovers its user directory automatically. For Zsh, add `${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions` to `fpath` before running `compinit` if it is not already present.
+
 ## GitLab Webhook Daemon
 
 `nickpit gitlab serve` runs an HTTP daemon that reviews MRs automatically from GitLab **group webhooks** — no CI pipeline integration needed. Each review runs as a separate `nickpit gitlab mr --publish` child process; comment fingerprints keep re-reviews idempotent.

@@ -268,6 +268,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 	root.PersistentFlags().StringVar(&cli.sessionDir, "session-dir", "", "Directory for discussion (chat) session files (default: $NICKPIT_CACHE_DIR/sessions or <user cache>/nickpit/sessions)")
 	root.PersistentFlags().BoolVar(&cli.noSession, "no-session", false, "Do not auto-save a resumable chat session after a review")
+	registerRootCompletions(root, cli)
 
 	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newGitCmd())
@@ -276,6 +277,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cli.newInspectCmd())
 	root.AddCommand(cli.newChatCmd())
 	root.AddCommand(cli.newSessionCmd())
+	root.AddCommand(newCompletionCmd(root))
 	return root
 }
 
@@ -595,9 +597,13 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 	case "commits":
 		cmd.Flags().StringVar(&from, "from", "", "Base commit")
 		cmd.Flags().StringVar(&to, "to", "HEAD", "Head commit")
+		registerGitRefCompletion(cmd, "from", a, true)
+		registerGitRefCompletion(cmd, "to", a, true)
 	case "branch":
 		cmd.Flags().StringVar(&base, "base", "", "Base branch, e.g. the target branch; usually main or master")
 		cmd.Flags().StringVar(&head, "head", "HEAD", "Head branch, e.g. the source branch; usually the branch to review")
+		registerGitRefCompletion(cmd, "base", a, false)
+		registerGitRefCompletion(cmd, "head", a, false)
 	}
 	return cmd
 }
@@ -938,6 +944,8 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 	serveCmd.Flags().IntVar(&reviewConcurrency, "review-concurrency", config.DefaultServeReviewConcurrency, "Maximum parallel review child processes")
 	serveCmd.Flags().StringVar(&logDir, "serve-log-dir", config.DefaultServeLogDir, "Directory for per-review child process logs")
 	serveCmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Minute, "How long running reviews may finish after SIGTERM before being terminated (an interrupted publish heals on the next run via comment fingerprints)")
+	_ = serveCmd.MarkFlagFilename("serve-config", "yaml", "yml")
+	_ = serveCmd.MarkFlagDirname("serve-log-dir")
 	return serveCmd
 }
 
@@ -981,6 +989,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	fileCmd.Flags().IntVar(&lineStart, "line-start", 0, "Optional starting line number for partial file retrieval")
 	fileCmd.Flags().IntVar(&lineEnd, "line-end", 0, "Optional ending line number for partial file retrieval")
 	_ = fileCmd.MarkFlagRequired("path")
+	registerRepoPathCompletion(fileCmd, "path", a, false)
 
 	listFilesCmd := &cobra.Command{
 		Use:   "list",
@@ -999,6 +1008,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path; leave empty to list the repo root")
 	listFilesCmd.Flags().IntVar(&depth, "depth", 1, "Directory depth to traverse when listing files")
+	registerRepoPathCompletion(listFilesCmd, "path", a, true)
 
 	searchCmd := &cobra.Command{
 		Use:   "search",
@@ -1021,6 +1031,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	searchCmd.Flags().IntVar(&maxResults, "max-results", 0, "Maximum number of matches to return; 0 means unlimited")
 	searchCmd.Flags().BoolVar(&caseSensitive, "case-sensitive", false, "Use case-sensitive matching")
 	_ = searchCmd.MarkFlagRequired("query")
+	registerRepoPathCompletion(searchCmd, "path", a, false)
 
 	var callersSymbol, callersPath string
 	var callersDepth int
@@ -1043,6 +1054,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
 	callersCmd.Flags().IntVar(&callersDepth, "depth", 10, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
+	registerRepoPathCompletion(callersCmd, "path", a, false)
 
 	var calleesSymbol, calleesPath string
 	var calleesDepth int
@@ -1065,6 +1077,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
 	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 10, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
+	registerRepoPathCompletion(calleesCmd, "path", a, false)
 
 	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd)
 	return cmd

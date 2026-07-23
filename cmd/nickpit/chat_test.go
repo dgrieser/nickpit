@@ -15,6 +15,7 @@ import (
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
 	"github.com/dgrieser/nickpit/internal/session"
+	"github.com/spf13/cobra"
 )
 
 // A resumed session's stored GitLab host must not receive the active profile's
@@ -68,6 +69,36 @@ func TestChatNeedsStore(t *testing.T) {
 		if got := chatNeedsStore(tc.opts, tc.noSession); got != tc.want {
 			t.Errorf("%s: chatNeedsStore = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestCompleteChatFindingIDs(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.New()
+	priority := 1
+	sess.Result = &model.ReviewResult{Findings: []model.Finding{
+		{ID: "finding-one", Title: "First finding", Priority: &priority},
+		{ID: "finding-two", Title: "Second\nfinding", Priority: &priority},
+	}}
+	if err := store.Save(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &app{sessionDir: dir}
+	got, directive := a.completeChatFindingIDs(chatOptions{sessionID: sess.ID}, "finding-t")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v", directive)
+	}
+	if len(got) != 1 || got[0] != "finding-two\tSecond finding" {
+		t.Fatalf("finding completions = %v", got)
+	}
+	got, _ = a.completeChatFindingIDs(chatOptions{}, "")
+	if len(got) != 2 {
+		t.Fatalf("latest-session findings = %v", got)
 	}
 }
 

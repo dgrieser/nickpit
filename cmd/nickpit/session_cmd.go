@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/spf13/cobra"
@@ -25,9 +26,36 @@ func (a *app) newSessionCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runSession(cmd.Context(), opts, args)
 		},
+		ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) > 0 {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			return a.completeSessionIDs(toComplete)
+		},
 	}
 	cmd.Flags().StringVar(&opts.sessionID, "session", "", "Print an existing session by id")
+	_ = cmd.RegisterFlagCompletionFunc("session", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return a.completeSessionIDs(toComplete)
+	})
 	return cmd
+}
+
+func (a *app) completeSessionIDs(prefix string) ([]string, cobra.ShellCompDirective) {
+	store, err := session.NewStore(a.sessionDir)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	infos, err := store.List()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	candidates := make([]string, 0, len(infos))
+	for _, info := range infos {
+		if strings.HasPrefix(info.ID, prefix) {
+			candidates = append(candidates, info.ID)
+		}
+	}
+	return candidates, cobra.ShellCompDirectiveNoFileComp
 }
 
 func (a *app) runSession(_ context.Context, opts sessionOptions, args []string) error {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/session"
+	"github.com/spf13/cobra"
 )
 
 func TestSessionLatestAsRawMarkdown(t *testing.T) {
@@ -134,6 +135,33 @@ func TestResolveOutputFormat(t *testing.T) {
 				t.Fatalf("format/json = %q/%v, want %q/%v", tc.app.outputFormat, tc.app.jsonOutput, tc.wantFormat, tc.wantJSON)
 			}
 		})
+	}
+}
+
+func TestCompleteSessionIDs(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := saveSessionReview(t, store, "first")
+	second := saveSessionReview(t, store, "second")
+
+	a := &app{sessionDir: dir}
+	got, directive := a.completeSessionIDs("")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive = %v", directive)
+	}
+	if len(got) != 2 || got[0] != second.ID || got[1] != first.ID {
+		t.Fatalf("candidates = %v, want newest first [%s %s]", got, second.ID, first.ID)
+	}
+	got, _ = a.completeSessionIDs(first.ID[:8])
+	if len(got) != 1 || got[0] != first.ID {
+		t.Fatalf("prefix candidates = %v, want [%s]", got, first.ID)
+	}
+	got, _ = a.completeSessionIDs("does-not-match")
+	if len(got) != 0 {
+		t.Fatalf("nonmatching candidates = %v", got)
 	}
 }
 

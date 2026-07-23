@@ -55,6 +55,9 @@ func (a *app) newChatCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.runChat(cmd.Context(), opts, args)
 		},
+		ValidArgsFunction: func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		},
 	}
 	cmd.Flags().StringVar(&opts.sessionID, "session", "", "Resume an existing session by id")
 	cmd.Flags().StringVar(&opts.findingID, "finding", "", "Focus the conversation on a specific finding id")
@@ -67,7 +70,69 @@ func (a *app) newChatCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.repoRoot, "repo-root", "", "Local checkout root the retrieval tools read from, overriding the automatic temporary checkout for remote sessions (defaults to the current directory for local sessions)")
 	cmd.Flags().StringVar(&opts.replyDiscussion, "reply-discussion", "", "GitLab discussion id to answer in-thread: read the thread, run one discussion turn, and post the reply back to the MR (implies --gitlab; non-interactive)")
 	cmd.Flags().IntVar(&opts.replyNote, "reply-note", 0, "With --reply-discussion, the triggering note id; the reply is skipped unless this note is still the latest, so racing or redelivered replies do not double-answer")
+	_ = cmd.MarkFlagFilename("from-json", "json")
+	_ = cmd.MarkFlagDirname("repo-root")
+	_ = cmd.RegisterFlagCompletionFunc("session", func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
+		return a.completeSessionIDs(prefix)
+	})
+	_ = cmd.RegisterFlagCompletionFunc("finding", func(_ *cobra.Command, _ []string, prefix string) ([]string, cobra.ShellCompDirective) {
+		return a.completeChatFindingIDs(opts, prefix)
+	})
 	return cmd
+}
+
+func (a *app) completeChatFindingIDs(opts chatOptions, prefix string) ([]string, cobra.ShellCompDirective) {
+	var result *model.ReviewResult
+	switch {
+	case opts.fromJSON != "":
+		path := opts.fromJSON
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(a.completionBaseDir(), path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var loaded model.ReviewResult
+		if json.Unmarshal(data, &loaded) != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		result = &loaded
+	case opts.gitlab || opts.replyDiscussion != "":
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	default:
+		store, err := session.NewStore(a.sessionDir)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var sess *session.Session
+		if opts.sessionID != "" {
+			sess, err = store.Load(opts.sessionID)
+		} else {
+			sess, err = store.Latest()
+		}
+		if err != nil || sess == nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		result = sess.Result
+	}
+	if result == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	candidates := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		if finding.ID == "" || !strings.HasPrefix(finding.ID, prefix) {
+			continue
+		}
+		title, _, _, _ := reviewmd.FindingDisplay(finding)
+		title = strings.NewReplacer("\t", " ", "\r", " ", "\n", " ").Replace(title)
+		if title == "" {
+			candidates = append(candidates, finding.ID)
+		} else {
+			candidates = append(candidates, finding.ID+"\t"+title)
+		}
+	}
+	return candidates, cobra.ShellCompDirectiveNoFileComp
 }
 
 func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) error {
