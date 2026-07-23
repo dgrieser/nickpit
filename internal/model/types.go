@@ -186,8 +186,8 @@ type AgentRun struct {
 }
 
 type InvalidResponseDiagnostic struct {
-	Reason     string `json:"reason"`
-	RawContent string `json:"raw_content"`
+	Reason     string `json:"reason,omitempty"`
+	RawContent string `json:"raw_content,omitempty"`
 }
 
 // SegmentRuntime is the wall-clock span of one pipeline unit: a single step

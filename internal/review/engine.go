@@ -21,6 +21,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/toolchain"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/versionmatch"
@@ -1777,10 +1778,10 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	start := time.Now()
 	result, err := e.runAgentOnce(ctx, agent, req)
 	var invalidResp *llm.InvalidResponseError
-	if errors.As(err, &invalidResp) {
+	if errors.As(err, &invalidResp) && (invalidResp.Reason != "" || invalidResp.RawContent != "") {
 		result.run.InvalidResponse = &model.InvalidResponseDiagnostic{
 			Reason:     invalidResp.Reason,
-			RawContent: invalidResp.RawContent,
+			RawContent: textsan.RedactSecrets(invalidResp.RawContent),
 		}
 	}
 	if req.DisableSuggestions && result.resp != nil {

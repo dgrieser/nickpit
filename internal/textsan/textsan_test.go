@@ -33,3 +33,27 @@ func TestStripControl(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactSecrets(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"json api key", `{"api_key":"sk-secretvalue"}`, `{"api_key":"[redacted]"}`},
+		{"yaml token", "github_token: ghp_abcdefghijk", `github_token: "[redacted]"`},
+		{"env password", "DB_PASSWORD=hunter123", `DB_PASSWORD="[redacted]"`},
+		{"bearer token", "Authorization header: Bearer abcdefgh.ijklmnop", "Authorization header: Bearer [redacted]"},
+		{"openai token", "request failed for sk-abcdefghijklmnop", "request failed for [redacted]"},
+		{"gitlab token", "request failed for glpat-abcdefghijklmnop", "request failed for [redacted]"},
+		{"aws access key", "request failed for AKIAABCDEFGHIJKLMNOP", "request failed for [redacted]"},
+		{"keeps ordinary text", "token count: 123", "token count: 123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RedactSecrets(tt.in); got != tt.want {
+				t.Fatalf("RedactSecrets(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

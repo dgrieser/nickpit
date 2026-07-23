@@ -10,26 +10,41 @@ import (
 )
 
 func TestAgentRunInvalidResponseDiagnosticJSONRoundTrip(t *testing.T) {
-	run := AgentRun{
-		Name:   "verdict",
-		Role:   "verdict",
-		Status: AgentRunStatusFailed,
-		Error:  "model returned invalid JSON",
-		InvalidResponse: &InvalidResponseDiagnostic{
-			Reason:     "candidate repair failed",
-			RawContent: "å malformed response",
-		},
+	tests := []struct {
+		name   string
+		reason string
+		raw    string
+	}{
+		{"basic", "candidate repair failed", "å malformed response"},
+		{"empty reason", "", "some content"},
+		{"empty raw", "candidate repair failed", ""},
+		{"special characters", `reason "quoted"`, "line 1\nline 2\ttab"},
+		{"long content", "candidate repair failed", strings.Repeat("x", 10_000)},
 	}
-	data, err := json.Marshal(run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got AgentRun
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(got.InvalidResponse, run.InvalidResponse) {
-		t.Fatalf("invalid response = %#v, want %#v", got.InvalidResponse, run.InvalidResponse)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := AgentRun{
+				Name:   "verdict",
+				Role:   "verdict",
+				Status: AgentRunStatusFailed,
+				Error:  "model returned invalid JSON",
+				InvalidResponse: &InvalidResponseDiagnostic{
+					Reason:     tt.reason,
+					RawContent: tt.raw,
+				},
+			}
+			data, err := json.Marshal(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got AgentRun
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got.InvalidResponse, run.InvalidResponse) {
+				t.Fatalf("invalid response = %#v, want %#v", got.InvalidResponse, run.InvalidResponse)
+			}
+		})
 	}
 }
 

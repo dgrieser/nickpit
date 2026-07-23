@@ -36,7 +36,7 @@ func LenientUnmarshal(content string, v any) error {
 	}
 
 	candidates := extractJSONCandidates(stripped)
-	var candidateErr error
+	candidateErrs := make([]error, 0, len(candidates))
 	for _, extracted := range candidates {
 		if err := json.Unmarshal([]byte(extracted), v); err == nil {
 			return nil
@@ -46,7 +46,7 @@ func LenientUnmarshal(content string, v any) error {
 		if err == nil {
 			return nil
 		}
-		candidateErr = err
+		candidateErrs = append(candidateErrs, err)
 	}
 
 	repaired := RepairJSON([]byte(stripped))
@@ -57,7 +57,7 @@ func LenientUnmarshal(content string, v any) error {
 
 	return &jsonRecoveryError{
 		strictErr:      strictErr,
-		candidateErr:   candidateErr,
+		candidateErrs:  candidateErrs,
 		repairedErr:    repairedErr,
 		candidateCount: len(candidates),
 	}
@@ -65,24 +65,32 @@ func LenientUnmarshal(content string, v any) error {
 
 type jsonRecoveryError struct {
 	strictErr      error
-	candidateErr   error
+	candidateErrs  []error
 	repairedErr    error
 	candidateCount int
 }
 
 func (e *jsonRecoveryError) Error() string {
-	switch {
-	case e.candidateErr != nil:
-		return fmt.Sprintf("strict parse failed: %v; recovery failed for %d balanced JSON candidate(s): %v", e.strictErr, e.candidateCount, e.candidateErr)
-	case e.candidateCount == 0:
-		return fmt.Sprintf("strict parse failed: %v; recovery found no balanced JSON object or array", e.strictErr)
-	default:
-		return fmt.Sprintf("strict parse failed: %v; repaired content still failed: %v", e.strictErr, e.repairedErr)
+	var b strings.Builder
+	fmt.Fprintf(&b, "strict parse failed: %v", e.strictErr)
+	if e.candidateCount == 0 {
+		b.WriteString("; recovery found no balanced JSON object or array")
+	} else {
+		fmt.Fprintf(&b, "; recovery failed for %d balanced JSON candidate(s)", e.candidateCount)
+		for i, err := range e.candidateErrs {
+			fmt.Fprintf(&b, "; candidate %d: %v", i+1, err)
+		}
 	}
+	fmt.Fprintf(&b, "; final full-content repair failed: %v", e.repairedErr)
+	return b.String()
 }
 
-func (e *jsonRecoveryError) Unwrap() error {
-	return e.strictErr
+func (e *jsonRecoveryError) Unwrap() []error {
+	errs := make([]error, 0, 2+len(e.candidateErrs))
+	errs = append(errs, e.strictErr)
+	errs = append(errs, e.candidateErrs...)
+	errs = append(errs, e.repairedErr)
+	return errs
 }
 
 // Mergeable lets a target type define its own merge semantics for

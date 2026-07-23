@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"errors"
 	"maps"
 	"reflect"
 	"strings"
@@ -199,13 +200,19 @@ func TestLenientUnmarshalReportsRecoveryFailure(t *testing.T) {
 		t.Fatal("expected malformed candidate to fail")
 	}
 	for _, want := range []string{
-		"strict parse failed: invalid character 'Ã'",
+		"strict parse failed: invalid character",
 		"recovery failed for 1 balanced JSON candidate(s)",
+		"candidate 1:",
 		"invalid character '}' in literal true",
+		"final full-content repair failed:",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want substring %q", err, want)
 		}
+	}
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("error chain lacks json.SyntaxError: %v", err)
 	}
 }
 
@@ -217,6 +224,32 @@ func TestLenientUnmarshalReportsMissingBalancedCandidate(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "recovery found no balanced JSON object or array") {
 		t.Fatalf("error = %q, want missing-balanced-candidate diagnostic", err)
+	}
+	if !strings.Contains(err.Error(), "final full-content repair failed:") {
+		t.Fatalf("error = %q, want final-repair diagnostic", err)
+	}
+}
+
+func TestLenientUnmarshalReportsEveryCandidateFailure(t *testing.T) {
+	var v map[string]any
+	err := LenientUnmarshal(`prefix {"first":tru} middle {"second":nul} suffix`, &v)
+	if err == nil {
+		t.Fatal("expected malformed candidates to fail")
+	}
+	recoveryErr, ok := err.(*jsonRecoveryError)
+	if !ok {
+		t.Fatalf("error type = %T, want *jsonRecoveryError", err)
+	}
+	if got, want := len(recoveryErr.candidateErrs), 2; got != want {
+		t.Fatalf("candidate errors = %d, want %d", got, want)
+	}
+	for _, want := range []string{"candidate 1:", "candidate 2:", "final full-content repair failed:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if got, want := len(recoveryErr.Unwrap()), 4; got != want {
+		t.Fatalf("unwrapped errors = %d, want strict + 2 candidates + final repair (%d)", got, want)
 	}
 }
 
