@@ -42,6 +42,30 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	}
 }
 
+func TestWriteFinishRuleClampsWidthToFooterBounds(t *testing.T) {
+	// A wider-than-max terminal is clamped so the dashboard rule lines up with
+	// the clamped review-output footer rule.
+	r := &LiveRenderer{w: &bytes.Buffer{}, useANSI: true, width: 200, height: 24}
+	r.writeFinishRule()
+	if got, want := r.w.(*bytes.Buffer).String(), "\n\x1b[2m"+strings.Repeat("─", 120)+"\x1b[0m\n\n"; got != want {
+		t.Fatalf("clamped finish rule = %q, want %q", got, want)
+	}
+
+	// A width within bounds is used verbatim.
+	r = &LiveRenderer{w: &bytes.Buffer{}, useANSI: true, width: 90, height: 24}
+	r.writeFinishRule()
+	if got := r.w.(*bytes.Buffer).String(); !strings.Contains(got, strings.Repeat("─", 90)) || strings.Contains(got, strings.Repeat("─", 91)) {
+		t.Fatalf("finish rule at width 90 = %q", got)
+	}
+
+	// Without ANSI the rule degrades to the plain marker, width-independent.
+	r = &LiveRenderer{w: &bytes.Buffer{}, useANSI: false, width: 200, height: 24}
+	r.writeFinishRule()
+	if got := r.w.(*bytes.Buffer).String(); got != "\n---\n\n" {
+		t.Fatalf("non-ANSI finish rule = %q", got)
+	}
+}
+
 func TestLiveRendererFindingLifecycle(t *testing.T) {
 	r := testLiveRenderer(time.Now())
 	r.Findings(FindingUpdate{Found: 4})
