@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -90,6 +91,7 @@ type app struct {
 	styleGuides                   []string
 	disableStyleGuides            []string
 	diffFormat                    string
+	outputFormat                  string
 	jsonOutput                    bool
 	disableJSONResponseFormat     bool
 	maxToolCalls                  int
@@ -172,6 +174,9 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			rootFlags := cmd.Root().PersistentFlags()
+			if err := cli.resolveOutputFormat(rootFlags.Changed("output")); err != nil {
+				return err
+			}
 			cli.profileSet = rootFlags.Changed("profile")
 			cli.includePathsSet = rootFlags.Changed("include-path")
 			cli.excludePathsSet = rootFlags.Changed("exclude-path")
@@ -226,7 +231,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.styleGuides, "styleguide", nil, "Additional styleguide for all agents: file path or HTTP(S) URL, appended to the profile's styleguides; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.disableStyleGuides, "disable-styleguide", nil, "Disable the built-in styleguide for a language; available: all, "+strings.Join(mappings.StyleGuideOrder(), ", ")+"; repeatable")
 	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
-	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
+	root.PersistentFlags().StringVarP(&cli.outputFormat, "output", "o", "markdown", "Output format: markdown, json, or raw")
+	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output (compatibility alias for --output json)")
 	root.PersistentFlags().BoolVar(&cli.disableJSONResponseFormat, "disable-json-response-format", false, "Disable the API-enforced JSON response format (response_format json_schema); on by default, falls back to prompt-embedded schema")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
@@ -269,7 +275,26 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cli.newGitLabCmd())
 	root.AddCommand(cli.newInspectCmd())
 	root.AddCommand(cli.newChatCmd())
+	root.AddCommand(cli.newSessionCmd())
 	return root
+}
+
+func (a *app) resolveOutputFormat(outputSet bool) error {
+	format := strings.ToLower(strings.TrimSpace(a.outputFormat))
+	if a.jsonOutput {
+		if outputSet && format != "json" {
+			return fmt.Errorf("--json cannot be combined with --output %s", a.outputFormat)
+		}
+		format = "json"
+	}
+	switch format {
+	case "markdown", "json", "raw":
+	default:
+		return fmt.Errorf("invalid --output %q: expected markdown, json, or raw", a.outputFormat)
+	}
+	a.outputFormat = format
+	a.jsonOutput = format == "json"
+	return nil
 }
 
 func (a *app) loadProfile() (string, config.Profile, error) {
@@ -1337,13 +1362,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	if a.logger != nil && a.logger.LiveEnabled() {
 		a.logger.FinishLive(true, len(result.Findings), time.Since(a.reviewStart))
 	}
-	var formatter output.Formatter
-	if a.jsonOutput {
-		formatter = output.NewJSONFormatter(os.Stdout)
-	} else {
-		formatter = output.NewTerminalFormatter(os.Stdout, isTerminal(os.Stdout))
-	}
-	if err := formatter.FormatFindings(result); err != nil {
+	if err := a.formatReview(os.Stdout, result); err != nil {
 		return err
 	}
 	// Publish the review back to the origin (GitHub PR or GitLab MR) when
@@ -1387,6 +1406,26 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
+}
+
+// formatReview selects the user-facing output format shared by live reviews
+// and `nickpit session`. Markdown renders when stdout is a terminal and stays
+// unrendered for pipes; raw forces unrendered Markdown even on a terminal.
+func (a *app) formatReview(w io.Writer, result *model.ReviewResult) error {
+	var formatter output.Formatter
+	switch {
+	case a.jsonOutput || a.outputFormat == "json":
+		formatter = output.NewJSONFormatter(w)
+	case a.outputFormat == "raw":
+		formatter = output.NewMarkdownFormatter(w)
+	default:
+		useANSI := false
+		if f, ok := w.(*os.File); ok {
+			useANSI = isTerminal(f)
+		}
+		formatter = output.NewTerminalFormatter(w, useANSI)
+	}
+	return formatter.FormatFindings(result)
 }
 
 func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning bool) bool {

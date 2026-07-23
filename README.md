@@ -166,7 +166,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 - **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id` or just the URL.
 - **Diff filters**: regex include/exclude by path *and* by file content.
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
-- **Terminal and JSON output**, `--show-progress` live progress, `--verbose`/`--debug` down to raw LLM payloads.
+- **Rendered terminal, raw Markdown, and JSON output** live progress with progress bars, `--show-progress` for running progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
 - **Rootless, distroless, Docker image.**
 - **`nickpit inspect`**: the retrieval toolbox (files, search, callers, callees) as a standalone command tree — no review required.
@@ -384,7 +384,11 @@ nickpit chat --finding <finding-id> "why is this actually a bug?"
 # Resume a specific session
 nickpit chat --session <session-id>
 
-# Start a chat from a saved review JSON (e.g. a CI artifact from `--json`)
+# Print the review stored in a previous session (latest when omitted)
+nickpit session [session-id]
+nickpit session --session <session-id> --output json
+
+# Start a chat from a saved review JSON (e.g. a CI artifact from `--output json`)
 nickpit chat --from-json review.json
 
 # Start a chat from a GitLab MR — findings are reassembled from the review NickPit posted
@@ -392,6 +396,8 @@ nickpit chat --gitlab --url https://gitlab.example.com/group/project/-/merge_req
 ```
 
 Pin the chat to one finding with `--finding <id>` and the agent opens by pointing at it; omit it to discuss the whole review. On GitLab, the review NickPit publishes now embeds the full findings JSON (and the overall verdict) as hidden, gzip-compressed markers in the notes, each tagged with a review id and timestamp, so a later chat can regroup them into the exact (newest) review — no local state needed. Because the markers are encoded but not cryptographically signed, only markers in notes authored by the chat token's own user (the bot that published the review) are trusted; markers planted by other commenters are ignored. When an MR carries several reviews, the newest is chosen (`--review-id` overrides). The retrieval tools read from an automatic temporary checkout of the MR head (or a local checkout: `--repo-root`, or the current directory for local sessions) — this includes the daemon's in-thread replies, which answer with code-reading tools enabled.
+
+`nickpit session` uses the normal review output. Select it with `-o|--output markdown|json|raw`: `markdown` is the default and renders on a terminal, while `raw` always emits unrendered Markdown with no colors or terminal styling. The same flag works on review commands. `--json` remains as a compatibility alias for `--output json`.
 
 ## GitLab Webhook Daemon
 
@@ -524,13 +530,13 @@ The review pipeline is driven by a portable workflow spec. The spec is the singl
 nickpit git branch --spec workflow.yaml
 
 # Run a single step on imported findings (no review needed)
-nickpit git branch --step merge --findings reviewer_a.json --findings reviewer_b.json --json
-nickpit git branch --step finalize --findings merged.json --json
-nickpit git branch --step verdict --findings finalized.json --json
-nickpit git branch --step summarize --findings finalized.json --json
+nickpit git branch --step merge --findings reviewer_a.json --findings reviewer_b.json --output json
+nickpit git branch --step finalize --findings merged.json --output json
+nickpit git branch --step verdict --findings finalized.json --output json
+nickpit git branch --step summarize --findings finalized.json --output json
 ```
 
-See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); a parallel child can be a `lane:` — a list of steps that run sequentially within the group, e.g. one reviewer's `review:` → `verify:` → `dedupe:` chain. A `pipeline:` group is the explicit, streamed post-review tail (`merge` → `finalize` → `verdict`, optionally `summarize`): its steps overlap with no barrier between them — each merge cluster flows straight into finalize/summarize while other clusters are still merging, and verdict gates on all finalizes. Listing those steps flat instead runs them strictly sequentially, each over the whole finding set. Each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, top_p, top_k, presence_penalty, reasoning_effort, scope, max_tool_calls, max_output_retries, nudge_count, max_findings, disable_patch_summary, disable_suggestions, verify_drop_policy, confidence_threshold, …) — anything unset inherits the active profile/flags. `scope` makes a step's fan-out explicit — the work unit each agent operates on: `all` (whole finding set), `cluster` (per merge cluster, `merge`/`finalize`/`summarize`), `finding` (per finding, `verify`), or `reviewer` (per reviewer group, `dedupe`); cluster-scoped finalize/summarize is valid only inside a `pipeline:`. Use `model: "@small"` to select the configured nested `small` profile for a step. `review:<vector>` configs can also override internal agents with `mine_reasoning:`, `compile_findings:`, and `nudge:` subconfigs. LLM concurrency is run-level only (`--concurrency`, default `10`, `0` = unlimited): one shared cap across every agent loop in the run — it is intentionally not in the spec. Per-vector steps are addressed as `review:security`, `verify:security`, `dedupe:security`, …; `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any global step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--json` produces; one file = one merge group); inside a `pipeline:` only the `merge` step may carry it. Steps that only consume injected findings (e.g. `merge`, `finalize`, `verdict`, `summarize`) run without a git/PR source. `finalize` now only finalizes finding wording/priority/confidence; include `verdict` after it when a workflow needs final top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score`. `confidence_threshold` is applied only by the `verdict` step.
+See [`workflow.yaml.example`](workflow.yaml.example) for the full format. A spec lists `steps` (optionally grouped under `parallel:` to run concurrently); a parallel child can be a `lane:` — a list of steps that run sequentially within the group, e.g. one reviewer's `review:` → `verify:` → `dedupe:` chain. A `pipeline:` group is the explicit, streamed post-review tail (`merge` → `finalize` → `verdict`, optionally `summarize`): its steps overlap with no barrier between them — each merge cluster flows straight into finalize/summarize while other clusters are still merging, and verdict gates on all finalizes. Listing those steps flat instead runs them strictly sequentially, each over the whole finding set. Each step may carry a `config:` block overriding any model parameter or budget for that step only (model, temperature, top_p, top_k, presence_penalty, reasoning_effort, scope, max_tool_calls, max_output_retries, nudge_count, max_findings, disable_patch_summary, disable_suggestions, verify_drop_policy, confidence_threshold, …) — anything unset inherits the active profile/flags. `scope` makes a step's fan-out explicit — the work unit each agent operates on: `all` (whole finding set), `cluster` (per merge cluster, `merge`/`finalize`/`summarize`), `finding` (per finding, `verify`), or `reviewer` (per reviewer group, `dedupe`); cluster-scoped finalize/summarize is valid only inside a `pipeline:`. Use `model: "@small"` to select the configured nested `small` profile for a step. `review:<vector>` configs can also override internal agents with `mine_reasoning:`, `compile_findings:`, and `nudge:` subconfigs. LLM concurrency is run-level only (`--concurrency`, default `10`, `0` = unlimited): one shared cap across every agent loop in the run — it is intentionally not in the spec. Per-vector steps are addressed as `review:security`, `verify:security`, `dedupe:security`, …; `nudge:<vector>` / `reasoning-extract:<vector>` let you drive extra rounds manually. Any global step can take `findings_from:` to inject previously-emitted findings JSON (the same format `--output json` produces; one file = one merge group); inside a `pipeline:` only the `merge` step may carry it. Steps that only consume injected findings (e.g. `merge`, `finalize`, `verdict`, `summarize`) run without a git/PR source. `finalize` now only finalizes finding wording/priority/confidence; include `verdict` after it when a workflow needs final top-level `overall_correctness`, `overall_explanation`, and `overall_confidence_score`. `confidence_threshold` is applied only by the `verdict` step.
 
 ## Filtering Review Output
 
@@ -549,8 +555,8 @@ nickpit inspect callers --symbol Run --depth 2
 nickpit inspect callers --path internal/review --symbol Run --depth 2
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2
 nickpit inspect callees --path internal/review/engine.go --symbol Run --depth 3
-nickpit inspect search --path internal/review --query inspect_file --context-lines 3 --max-results 5 --json
-nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 --json
+nickpit inspect search --path internal/review --query inspect_file --context-lines 3 --max-results 5 --output json
+nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 --output json
 ```
 
 Retrieval supports `go`, `python`, `nodejs` (including `.jsx`/`.tsx`), and `rust` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis: Go is resolved with the type checker (`go/packages`), TypeScript/JavaScript with esbuild's parser, and Python/Rust with a pure-Go tree-sitter runtime — all CGo-free, so the single static binary stays self-contained.

@@ -198,7 +198,7 @@
 #
 # ---------------------------------------------------------------------------
 # Findings injection: feed previously-emitted findings JSON back into a step.
-# The format is unchanged — it is exactly what NickPit emits with --json.
+# The format is unchanged — it is exactly what NickPit emits with --output json.
 # One file = one merge group; pass several to merge across them. A single file
 # into merge is a passthrough (nothing to merge against). Injected steps run
 # flat (whole-set); only the merge step of a pipeline may carry findings_from.
@@ -213,7 +213,7 @@
 #   - type: summarize
 #
 # Or from the CLI, run a single step on imported findings:
-#   nickpit local branch --step merge --findings a.json --findings b.json --json
-#   nickpit local branch --step finalize --findings merged.json --json
-#   nickpit local branch --step verdict --findings finalized.json --json
-#   nickpit local branch --step summarize --findings finalized.json --json
+#   nickpit local branch --step merge --findings a.json --findings b.json --output json
+#   nickpit local branch --step finalize --findings merged.json --output json
+#   nickpit local branch --step verdict --findings finalized.json --output json
+#   nickpit local branch --step summarize --findings finalized.json --output json
