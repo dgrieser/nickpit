@@ -166,7 +166,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 - **GitHub PRs and GitLab MRs** via direct REST clients — by `--repo`/`--id` or just the URL.
 - **Diff filters**: regex include/exclude by path *and* by file content.
 - **Rate-limit aware**: parses 429 reset times and waits them out (capped), with a reasoning-effort fallback ladder for models having a bad day.
-- **Rendered terminal, raw Markdown, and JSON output** live progress with progress bars, `--show-progress` for running progress, `--verbose`/`--debug` down to raw LLM payloads.
+- **Rendered terminal, raw Markdown, and JSON output**, live progress with progress bars, `--show-progress` for running progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
 - **Rootless, distroless, Docker image.**
 - **`nickpit inspect`**: the retrieval toolbox (files, search, callers, callees) as a standalone command tree — no review required.
