@@ -507,10 +507,15 @@ func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
 func progressBar(label string, fraction float64, width, colorIndex int, useANSI bool) string {
 	percent := min(max(int(fraction*100+0.5), 0), 100)
 	right := []rune(fmt.Sprintf(" %3d%%", percent)) // 5 columns: "   0%" … " 100%"
-	// Callers use a fixed width comfortably larger than the percentage suffix
-	// (liveProgressBarWidth = 44); labelWidth just absorbs any slack.
-	labelWidth := max(width-len(right), 0)
-	text := append([]rune(padOrTrim(label, labelWidth)), right...)
+	// One space of padding at each end insets the label/percentage from the bar's
+	// coloured edges. Callers use a fixed width comfortably larger than the two
+	// pads plus the percentage suffix (liveProgressBarWidth = 44); labelWidth just
+	// absorbs any slack.
+	labelWidth := max(width-2-len(right), 0)
+	text := []rune{' '}
+	text = append(text, []rune(padOrTrim(label, labelWidth))...)
+	text = append(text, right...)
+	text = append(text, ' ')
 	if len(text) > width {
 		text = text[:width]
 	}
@@ -520,7 +525,7 @@ func progressBar(label string, fraction float64, width, colorIndex int, useANSI 
 	// Keep the percentage suffix a single visual piece: a partial fill sweeps
 	// under the label but stops before the digits, so the percentage never
 	// straddles two backgrounds. Only a complete bar tints the suffix too.
-	percentStart := max(n-len(right), 0)
+	percentStart := min(1+labelWidth, n)
 	if filled > percentStart && filled < n {
 		filled = percentStart
 	}

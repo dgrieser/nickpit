@@ -312,14 +312,14 @@ func TestProgressBarNonANSIRendersLabelAndPercent(t *testing.T) {
 	if !strings.Contains(bar, "review: Testing") {
 		t.Fatalf("non-ANSI bar missing label: %q", bar)
 	}
-	if !strings.HasSuffix(bar, "50%") {
-		t.Fatalf("non-ANSI bar percentage not pinned right: %q", bar)
+	if !strings.HasSuffix(bar, "50% ") {
+		t.Fatalf("non-ANSI bar percentage not pinned right inside the pad: %q", bar)
 	}
 	long := progressBar("review: A Very Long Reviewer Name That Overflows The Bar", 0.0, liveProgressBarWidth, 0, false)
 	if !strings.Contains(long, "…") {
 		t.Fatalf("non-ANSI overflowing label should be ellipsised: %q", long)
 	}
-	if !strings.HasSuffix(long, "0%") {
+	if !strings.HasSuffix(long, "0% ") {
 		t.Fatalf("non-ANSI percentage should survive ellipsis: %q", long)
 	}
 }
