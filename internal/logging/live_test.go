@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -250,10 +251,117 @@ func TestLiveAgentLingersAfterDoneThenDrops(t *testing.T) {
 		t.Fatalf("finished agent should linger with a full bar within grace:\n%s", joined)
 	}
 
-	// Past the linger window it is dropped.
-	cur = start.Add(liveAgentLinger + time.Second)
+	// Just shy of the window it is still present.
+	cur = start.Add(liveAgentLinger - time.Millisecond)
+	if joined := dashboard(); !strings.Contains(joined, "review: Reasoning") {
+		t.Fatalf("finished agent dropped before the linger window elapsed:\n%s", joined)
+	}
+
+	// At exactly the window boundary (drop uses >=) it disappears.
+	cur = start.Add(liveAgentLinger)
 	if joined := dashboard(); strings.Contains(joined, "review: Reasoning") {
-		t.Fatalf("finished agent should drop after linger window:\n%s", joined)
+		t.Fatalf("finished agent should drop at exactly the linger window:\n%s", joined)
+	}
+
+	// And it is removed from the map, not merely hidden.
+	r.mu.Lock()
+	_, present := r.agents[liveAgentKey(info)]
+	r.mu.Unlock()
+	if present {
+		t.Fatal("expired agent should be deleted from r.agents, not left to accumulate")
+	}
+}
+
+func TestLiveRunningAgentsRankAheadOfLingeringWhenSlotsScarce(t *testing.T) {
+	start := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	cur := start
+	r := &LiveRenderer{
+		w: &bytes.Buffer{}, plan: LivePlan{Concurrency: 1, Units: 1},
+		started: start.Add(-90 * time.Second),
+		agents:  make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+		width: 120, height: 24, now: func() time.Time { return cur },
+	}
+	alpha := ProgressInfo{AgentRole: "review", AgentName: "Alpha", Group: "Alpha"}
+	beta := ProgressInfo{AgentRole: "review", AgentName: "Beta", Group: "Beta"}
+	// Alpha starts first, then Beta; Alpha finishes and begins lingering while
+	// Beta is still running. With a single slot, the running agent must win it.
+	r.AgentStart(alpha, WorkflowScope{}, time.Time{})
+	cur = start.Add(1 * time.Second)
+	r.AgentStart(beta, WorkflowScope{}, time.Time{})
+	r.AgentDone(alpha)
+
+	r.mu.Lock()
+	joined := strings.Join(r.buildLinesLocked(), "\n")
+	r.mu.Unlock()
+	if !strings.Contains(joined, "review: Beta") {
+		t.Fatalf("running agent should hold the scarce slot:\n%s", joined)
+	}
+	if strings.Contains(joined, "review: Alpha") {
+		t.Fatalf("lingering finished agent should yield the slot to running work:\n%s", joined)
+	}
+}
+
+func TestProgressBarNonANSIRendersLabelAndPercent(t *testing.T) {
+	bar := progressBar("review: Testing", 0.5, liveProgressBarWidth, 0, false)
+	if strings.Contains(bar, "\x1b[") {
+		t.Fatalf("non-ANSI bar must not contain escape codes: %q", bar)
+	}
+	if got := len([]rune(bar)); got != liveProgressBarWidth {
+		t.Fatalf("non-ANSI bar width = %d, want %d", got, liveProgressBarWidth)
+	}
+	if !strings.Contains(bar, "review: Testing") {
+		t.Fatalf("non-ANSI bar missing label: %q", bar)
+	}
+	if !strings.HasSuffix(bar, "50%") {
+		t.Fatalf("non-ANSI bar percentage not pinned right: %q", bar)
+	}
+	long := progressBar("review: A Very Long Reviewer Name That Overflows The Bar", 0.0, liveProgressBarWidth, 0, false)
+	if !strings.Contains(long, "…") {
+		t.Fatalf("non-ANSI overflowing label should be ellipsised: %q", long)
+	}
+	if !strings.HasSuffix(long, "0%") {
+		t.Fatalf("non-ANSI percentage should survive ellipsis: %q", long)
+	}
+}
+
+func TestProgressBarKeepsPercentUnsplitAtHighFill(t *testing.T) {
+	// At 94% the naive fill boundary lands inside the percentage suffix; the bar
+	// must snap the fill back so the percentage renders as one contiguous run.
+	bar := progressBar("review: Testing", 0.94, liveProgressBarWidth, 0, true)
+	if right := fmt.Sprintf(" %3d%%", 94); !strings.Contains(bar, right) {
+		t.Fatalf("percentage %q split across the fill boundary: %q", right, bar)
+	}
+	// A complete bar tints everything, including the suffix, in one run.
+	full := progressBar("review: Testing", 1.0, liveProgressBarWidth, 0, true)
+	if right := fmt.Sprintf(" %3d%%", 100); !strings.Contains(full, right) {
+		t.Fatalf("full-bar percentage not contiguous: %q", full)
+	}
+}
+
+func TestAgentDoneDoesNotResetLingerTimer(t *testing.T) {
+	start := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	cur := start
+	r := &LiveRenderer{
+		w: &bytes.Buffer{}, plan: LivePlan{Concurrency: 2, Units: 1},
+		started: start.Add(-90 * time.Second),
+		agents:  make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+		width: 120, height: 24, now: func() time.Time { return cur },
+	}
+	info := ProgressInfo{AgentRole: "review", AgentName: "Reasoning", Group: "Reasoning"}
+	r.AgentStart(info, WorkflowScope{}, time.Time{})
+	r.AgentDone(info) // stamps doneAt at start
+
+	// A second completion arrives later; it must NOT extend the linger window.
+	cur = start.Add(2 * time.Second)
+	r.AgentDone(info)
+
+	// Past the window measured from the FIRST completion, the agent is gone.
+	cur = start.Add(liveAgentLinger + time.Millisecond)
+	r.mu.Lock()
+	joined := strings.Join(r.buildLinesLocked(), "\n")
+	r.mu.Unlock()
+	if strings.Contains(joined, "review: Reasoning") {
+		t.Fatalf("repeated AgentDone extended the linger window:\n%s", joined)
 	}
 }
 

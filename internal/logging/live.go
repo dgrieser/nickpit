@@ -236,9 +236,12 @@ func (r *LiveRenderer) AgentDone(info ProgressInfo) {
 	if a := r.agents[liveAgentKey(info)]; a != nil {
 		// Keep the agent on the dashboard for a short grace period so it does not
 		// blink out the instant it finishes; buildLinesLocked drops it once the
-		// linger window elapses.
+		// linger window elapses. Stamp the deadline only on the first completion so
+		// a repeated AgentDone never extends the window.
 		a.activeTurn = false
-		a.done, a.doneAt = true, r.now()
+		if !a.done {
+			a.done, a.doneAt = true, r.now()
+		}
 	}
 	r.mu.Unlock()
 	r.signal()
@@ -369,13 +372,15 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 	}
 	now := r.now()
 	visible := make([]*liveAgent, 0)
-	for _, a := range r.agents {
+	for key, a := range r.agents {
 		if !a.visible {
 			continue
 		}
-		// Drop finished agents once their linger window has elapsed.
+		// Drop finished agents once their linger window has elapsed. Deleting the
+		// map entry (safe during range in Go) keeps r.agents from growing without
+		// bound over a long run with many short-lived agents.
 		if a.done && now.Sub(a.doneAt) >= liveAgentLinger {
-			a.visible = false
+			delete(r.agents, key)
 			continue
 		}
 		visible = append(visible, a)
@@ -500,14 +505,24 @@ func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
 // on the light fill and light on the dark remainder, with the percentage pinned
 // to the right.
 func progressBar(label string, fraction float64, width, colorIndex int, useANSI bool) string {
-	filled := int(fraction*float64(width) + 0.5)
-	filled = min(max(filled, 0), width)
 	percent := min(max(int(fraction*100+0.5), 0), 100)
-	right := fmt.Sprintf(" %3d%%", percent) // 5 columns: "   0%" … " 100%"
-	labelWidth := max(width-len([]rune(right)), 0)
-	text := []rune(padOrTrim(label, labelWidth) + right)
+	right := []rune(fmt.Sprintf(" %3d%%", percent)) // 5 columns: "   0%" … " 100%"
+	// Callers use a fixed width comfortably larger than the percentage suffix
+	// (liveProgressBarWidth = 44); labelWidth just absorbs any slack.
+	labelWidth := max(width-len(right), 0)
+	text := append([]rune(padOrTrim(label, labelWidth)), right...)
 	if len(text) > width {
 		text = text[:width]
+	}
+	n := len(text)
+	filled := int(fraction*float64(n) + 0.5)
+	filled = min(max(filled, 0), n)
+	// Keep the percentage suffix a single visual piece: a partial fill sweeps
+	// under the label but stops before the digits, so the percentage never
+	// straddles two backgrounds. Only a complete bar tints the suffix too.
+	percentStart := max(n-len(right), 0)
+	if filled > percentStart && filled < n {
+		filled = percentStart
 	}
 	if !useANSI {
 		return string(text)
