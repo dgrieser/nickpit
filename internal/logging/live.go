@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/dgrieser/nickpit/internal/output"
 	"golang.org/x/term"
 )
 
@@ -320,7 +321,7 @@ func (r *LiveRenderer) writeFinishRule() {
 	rule := "---"
 	if r.useANSI {
 		width, _ := r.termSize()
-		rule = "\x1b[2m" + strings.Repeat("─", width) + progressColorReset
+		rule = "\x1b[2m" + strings.Repeat("─", output.ClampWidth(width)) + progressColorReset
 	}
 	_, _ = io.WriteString(r.w, "\n"+rule+"\n\n")
 }

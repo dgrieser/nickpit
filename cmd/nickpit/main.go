@@ -38,7 +38,6 @@ import (
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 // version is overridden at release build time via -ldflags "-X main.version=...".
@@ -1409,7 +1408,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	// previous VALID review as the latest session with a no-finding shell.
 	if !reviewProducedNothing(result) {
 		_, noColor := os.LookupEnv("NO_COLOR")
-		if hint := chatSessionHint(a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA), isTerminal(os.Stderr), !noColor, ruleWidth(os.Stderr)); hint != "" {
+		if hint := chatSessionHint(a.persistChatSession(ctx, profile, req, result, reviewCtx, headSHA), isTerminal(os.Stderr), !noColor, output.RuleWidth(os.Stderr)); hint != "" {
 			fmt.Fprintln(os.Stderr, hint)
 		}
 	}
@@ -1997,20 +1996,6 @@ func writeJSON(value any) error {
 func isTerminal(f *os.File) bool {
 	stat, err := f.Stat()
 	return err == nil && (stat.Mode()&os.ModeCharDevice) != 0
-}
-
-// ruleWidth returns the horizontal-rule width for f, clamped to the same bounds
-// the terminal formatter uses for its footer rule so the chat hint's separator
-// lines up with the review-output rules above it.
-func ruleWidth(f *os.File) int {
-	if f == nil {
-		return 80
-	}
-	w, _, err := term.GetSize(int(f.Fd()))
-	if err != nil || w <= 0 {
-		return 80
-	}
-	return min(max(w, 60), 120)
 }
 
 func (a *app) writeModelCheckOutput(modelName string, result modelcheck.Result) error {

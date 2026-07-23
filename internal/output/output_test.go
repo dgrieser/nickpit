@@ -12,6 +12,40 @@ import (
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
 
+func TestClampWidth(t *testing.T) {
+	cases := []struct{ in, want int }{
+		{0, terminalMinWidth},
+		{40, terminalMinWidth},
+		{terminalMinWidth, terminalMinWidth},
+		{100, 100},
+		{terminalMaxWidth, terminalMaxWidth},
+		{200, terminalMaxWidth},
+	}
+	for _, c := range cases {
+		if got := ClampWidth(c.in); got != c.want {
+			t.Errorf("ClampWidth(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRuleWidthFallsBackWithoutTerminal(t *testing.T) {
+	if got := RuleWidth(nil); got != terminalDefaultWidth {
+		t.Errorf("RuleWidth(nil) = %d, want %d", got, terminalDefaultWidth)
+	}
+	// A pipe has no size, so RuleWidth falls back to the default width.
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = rd.Close()
+		_ = wr.Close()
+	})
+	if got := RuleWidth(rd); got != terminalDefaultWidth {
+		t.Errorf("RuleWidth(pipe) = %d, want %d", got, terminalDefaultWidth)
+	}
+}
+
 func TestTerminalFormatter(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewTerminalFormatter(&buf, false)

@@ -48,10 +48,30 @@ func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
 	width := terminalDefaultWidth
 	if f, ok := w.(*os.File); ok && f != nil && term.IsTerminal(int(f.Fd())) {
 		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
-			width = min(max(w, terminalMinWidth), terminalMaxWidth)
+			width = ClampWidth(w)
 		}
 	}
 	return &TerminalFormatter{w: w, useANSI: useANSI, width: width}
+}
+
+// ClampWidth clamps a raw terminal column count to the rule-rendering bounds so
+// every horizontal rule (formatter footer, chat hint, live dashboard) is drawn
+// at the same width.
+func ClampWidth(w int) int {
+	return min(max(w, terminalMinWidth), terminalMaxWidth)
+}
+
+// RuleWidth returns the clamped horizontal-rule width for the terminal backing
+// f, falling back to the default width when f is nil, not a terminal, or its
+// size is unavailable.
+func RuleWidth(f *os.File) int {
+	if f == nil {
+		return terminalDefaultWidth
+	}
+	if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+		return ClampWidth(w)
+	}
+	return terminalDefaultWidth
 }
 
 // SetWidth overrides the detected terminal width (test hook).
