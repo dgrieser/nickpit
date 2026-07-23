@@ -59,7 +59,8 @@ spec:
             - --verbose
             {{- end }}
             {{- if .Values.jsonLog }}
-            - --json
+            - --output
+            - json
             {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}

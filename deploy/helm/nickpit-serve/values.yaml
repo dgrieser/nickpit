@@ -106,7 +106,7 @@ volumes:
 # reviews finish before SIGKILL. 660 = 10m grace + 60s buffer.
 terminationGracePeriodSeconds: 660
 
-# Extra daemon flags. --verbose and --json toggle the daemon's own slog output.
+# Extra daemon flags. --verbose and --output json toggle the daemon's own slog output.
 verbose: false
 jsonLog: false
 extraArgs: []

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -90,6 +91,7 @@ type app struct {
 	styleGuides                   []string
 	disableStyleGuides            []string
 	diffFormat                    string
+	outputFormat                  string
 	jsonOutput                    bool
 	disableJSONResponseFormat     bool
 	maxToolCalls                  int
@@ -172,6 +174,9 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			rootFlags := cmd.Root().PersistentFlags()
+			if err := cli.resolveOutputFormat(rootFlags.Changed("output")); err != nil {
+				return err
+			}
 			cli.profileSet = rootFlags.Changed("profile")
 			cli.includePathsSet = rootFlags.Changed("include-path")
 			cli.excludePathsSet = rootFlags.Changed("exclude-path")
@@ -226,7 +231,8 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.styleGuides, "styleguide", nil, "Additional styleguide for all agents: file path or HTTP(S) URL, appended to the profile's styleguides; repeatable")
 	root.PersistentFlags().StringArrayVar(&cli.disableStyleGuides, "disable-styleguide", nil, "Disable the built-in styleguide for a language; available: all, "+strings.Join(mappings.StyleGuideOrder(), ", ")+"; repeatable")
 	root.PersistentFlags().StringVar(&cli.diffFormat, "diff-format", "", "Diff format for agent prompts: git or git-json")
-	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output")
+	root.PersistentFlags().StringVarP(&cli.outputFormat, "output", "o", "markdown", "Output format: markdown, json, or raw")
+	root.PersistentFlags().BoolVar(&cli.jsonOutput, "json", false, "Emit JSON output (compatibility alias for --output json)")
 	root.PersistentFlags().BoolVar(&cli.disableJSONResponseFormat, "disable-json-response-format", false, "Disable the API-enforced JSON response format (response_format json_schema); on by default, falls back to prompt-embedded schema")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolCalls, &cli.maxToolCallsSet), "max-tool-calls", "Maximum tool-call rounds (0 means unlimited by default)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxDuplicateToolCalls, &cli.maxDuplicateToolCallsSet), "max-duplicate-tool-calls", "Maximum duplicate tool calls before tools are disabled")
@@ -262,6 +268,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 	root.PersistentFlags().StringVar(&cli.sessionDir, "session-dir", "", "Directory for discussion (chat) session files (default: $NICKPIT_CACHE_DIR/sessions or <user cache>/nickpit/sessions)")
 	root.PersistentFlags().BoolVar(&cli.noSession, "no-session", false, "Do not auto-save a resumable chat session after a review")
+	registerRootCompletions(root, cli)
 
 	root.AddCommand(cli.newCheckCmd())
 	root.AddCommand(cli.newGitCmd())
@@ -269,7 +276,27 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cli.newGitLabCmd())
 	root.AddCommand(cli.newInspectCmd())
 	root.AddCommand(cli.newChatCmd())
+	root.AddCommand(cli.newSessionCmd())
+	root.AddCommand(newCompletionCmd(root))
 	return root
+}
+
+func (a *app) resolveOutputFormat(outputSet bool) error {
+	format := strings.ToLower(strings.TrimSpace(a.outputFormat))
+	if a.jsonOutput {
+		if outputSet && format != "json" {
+			return fmt.Errorf("--json cannot be combined with --output %s", a.outputFormat)
+		}
+		format = "json"
+	}
+	switch format {
+	case "markdown", "json", "raw":
+	default:
+		return fmt.Errorf("invalid --output %q: expected markdown, json, or raw", a.outputFormat)
+	}
+	a.outputFormat = format
+	a.jsonOutput = format == "json"
+	return nil
 }
 
 func (a *app) loadProfile() (string, config.Profile, error) {
@@ -570,9 +597,13 @@ func (a *app) newLocalReviewCmd(submode string) *cobra.Command {
 	case "commits":
 		cmd.Flags().StringVar(&from, "from", "", "Base commit")
 		cmd.Flags().StringVar(&to, "to", "HEAD", "Head commit")
+		registerGitRefCompletion(cmd, "from", a, true)
+		registerGitRefCompletion(cmd, "to", a, true)
 	case "branch":
 		cmd.Flags().StringVar(&base, "base", "", "Base branch, e.g. the target branch; usually main or master")
 		cmd.Flags().StringVar(&head, "head", "HEAD", "Head branch, e.g. the source branch; usually the branch to review")
+		registerGitRefCompletion(cmd, "base", a, false)
+		registerGitRefCompletion(cmd, "head", a, false)
 	}
 	return cmd
 }
@@ -913,6 +944,8 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 	serveCmd.Flags().IntVar(&reviewConcurrency, "review-concurrency", config.DefaultServeReviewConcurrency, "Maximum parallel review child processes")
 	serveCmd.Flags().StringVar(&logDir, "serve-log-dir", config.DefaultServeLogDir, "Directory for per-review child process logs")
 	serveCmd.Flags().DurationVar(&shutdownGrace, "shutdown-grace", 10*time.Minute, "How long running reviews may finish after SIGTERM before being terminated (an interrupted publish heals on the next run via comment fingerprints)")
+	_ = serveCmd.MarkFlagFilename("serve-config", "yaml", "yml")
+	_ = serveCmd.MarkFlagDirname("serve-log-dir")
 	return serveCmd
 }
 
@@ -956,6 +989,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	fileCmd.Flags().IntVar(&lineStart, "line-start", 0, "Optional starting line number for partial file retrieval")
 	fileCmd.Flags().IntVar(&lineEnd, "line-end", 0, "Optional ending line number for partial file retrieval")
 	_ = fileCmd.MarkFlagRequired("path")
+	registerRepoPathCompletion(fileCmd, "path", a, false)
 
 	listFilesCmd := &cobra.Command{
 		Use:   "list",
@@ -974,6 +1008,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path; leave empty to list the repo root")
 	listFilesCmd.Flags().IntVar(&depth, "depth", 1, "Directory depth to traverse when listing files")
+	registerRepoPathCompletion(listFilesCmd, "path", a, true)
 
 	searchCmd := &cobra.Command{
 		Use:   "search",
@@ -996,6 +1031,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	searchCmd.Flags().IntVar(&maxResults, "max-results", 0, "Maximum number of matches to return; 0 means unlimited")
 	searchCmd.Flags().BoolVar(&caseSensitive, "case-sensitive", false, "Use case-sensitive matching")
 	_ = searchCmd.MarkFlagRequired("query")
+	registerRepoPathCompletion(searchCmd, "path", a, false)
 
 	var callersSymbol, callersPath string
 	var callersDepth int
@@ -1018,6 +1054,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
 	callersCmd.Flags().IntVar(&callersDepth, "depth", 10, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
+	registerRepoPathCompletion(callersCmd, "path", a, false)
 
 	var calleesSymbol, calleesPath string
 	var calleesDepth int
@@ -1040,6 +1077,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
 	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 10, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
+	registerRepoPathCompletion(calleesCmd, "path", a, false)
 
 	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd)
 	return cmd
@@ -1337,13 +1375,7 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	if a.logger != nil && a.logger.LiveEnabled() {
 		a.logger.FinishLive(true, len(result.Findings), time.Since(a.reviewStart))
 	}
-	var formatter output.Formatter
-	if a.jsonOutput {
-		formatter = output.NewJSONFormatter(os.Stdout)
-	} else {
-		formatter = output.NewTerminalFormatter(os.Stdout, isTerminal(os.Stdout))
-	}
-	if err := formatter.FormatFindings(result); err != nil {
+	if err := a.formatReview(os.Stdout, result); err != nil {
 		return err
 	}
 	// Publish the review back to the origin (GitHub PR or GitLab MR) when
@@ -1387,6 +1419,26 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 		return fmt.Errorf("review failed: all reviewer agents errored (%d warning(s))", len(result.Warnings))
 	}
 	return nil
+}
+
+// formatReview selects the user-facing output format shared by live reviews
+// and `nickpit session`. Markdown renders when stdout is a terminal and stays
+// unrendered for pipes; raw forces unrendered Markdown even on a terminal.
+func (a *app) formatReview(w io.Writer, result *model.ReviewResult) error {
+	var formatter output.Formatter
+	switch {
+	case a.jsonOutput || a.outputFormat == "json":
+		formatter = output.NewJSONFormatter(w)
+	case a.outputFormat == "raw":
+		formatter = output.NewMarkdownFormatter(w)
+	default:
+		useANSI := false
+		if f, ok := w.(*os.File); ok {
+			useANSI = isTerminal(f)
+		}
+		formatter = output.NewTerminalFormatter(w, useANSI)
+	}
+	return formatter.FormatFindings(result)
 }
 
 func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning bool) bool {

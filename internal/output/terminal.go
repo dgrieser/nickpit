@@ -35,6 +35,12 @@ type TerminalFormatter struct {
 	width   int
 }
 
+// NewMarkdownFormatter emits the same review layout as TerminalFormatter but
+// preserves Markdown syntax and never adds ANSI colors or terminal rendering.
+func NewMarkdownFormatter(w io.Writer) Formatter {
+	return NewTerminalFormatter(w, false)
+}
+
 func NewTerminalFormatter(w io.Writer, useANSI bool) *TerminalFormatter {
 	if _, disabled := os.LookupEnv("NO_COLOR"); disabled {
 		useANSI = false
