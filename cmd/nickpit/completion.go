@@ -25,7 +25,9 @@ func newCompletionCmd(root *cobra.Command) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Installed %s completion to %s\n", args[0], path)
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Installed %s completion to %s\n", args[0], path); err != nil {
+					return err
+				}
 				return nil
 			}
 			return generateCompletion(root, args[0], cmd.OutOrStdout())
@@ -98,7 +100,7 @@ func writeCompletionFile(path string, data []byte) error {
 		return fmt.Errorf("creating temporary file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("setting file permissions: %w", err)
