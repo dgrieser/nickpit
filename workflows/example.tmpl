@@ -28,7 +28,8 @@
 # group — so each reviewer's findings are verified and deduped as soon as that
 # reviewer finishes. Each vector may be used by at most one lane per group.
 # Lanes accept an optional `name:` used for runtime reporting, budget messages,
-# and live-progress grouping.
+# and live-progress grouping. A `parallel:` group itself accepts an optional
+# `name:`, shown in the live-progress info line while its lanes run concurrently.
 #
 # A `pipeline:` group is the explicit, streamed post-review tail:
 #   merge → finalize → verdict, optionally followed by summarize.
@@ -118,6 +119,7 @@
 #       - type: review:performance
 #         config:
 #           model: "@small"
+#     name: Reviewers
 #   - pipeline:
 #       - type: merge
 #         config:

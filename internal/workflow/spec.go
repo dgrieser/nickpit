@@ -140,8 +140,8 @@ type Spec struct {
 //     there is no auto-fusion. Valid only at the top level.
 type StepEntry struct {
 	Type string
-	// Name is an optional human-readable label for a lane or pipeline group.
-	// Plain steps and parallel groups derive their labels from their contents.
+	// Name is an optional human-readable label for a lane, pipeline, or parallel
+	// group. Plain steps derive their labels from their contents.
 	Name         string
 	Config       *StepOverride
 	FindingsFrom []string
@@ -559,7 +559,7 @@ func decodeStepEntry(node *yaml.Node) (StepEntry, error) {
 }
 
 func decodeParallelEntry(node *yaml.Node) (StepEntry, error) {
-	if err := checkAllowedKeys(node, "parallel"); err != nil {
+	if err := checkAllowedKeys(node, "name", "parallel"); err != nil {
 		return StepEntry{}, err
 	}
 	seq := mappingValue(node, "parallel")
@@ -570,6 +570,11 @@ func decodeParallelEntry(node *yaml.Node) (StepEntry, error) {
 		return StepEntry{}, fmt.Errorf("parallel group is empty")
 	}
 	entry := StepEntry{}
+	if name := mappingValue(node, "name"); name != nil {
+		if err := name.Decode(&entry.Name); err != nil {
+			return StepEntry{}, fmt.Errorf("name: %w", err)
+		}
+	}
 	for i, child := range seq.Content {
 		sub, err := decodeParallelChild(child)
 		if err != nil {

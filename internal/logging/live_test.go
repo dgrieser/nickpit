@@ -21,7 +21,7 @@ func testLiveRenderer(now time.Time) *LiveRenderer {
 func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	r := testLiveRenderer(now)
-	scope := WorkflowScope{Unit: 2, UnitTotal: 3, Lane: "security", Step: "review:security", Workflow: "Standard review"}
+	scope := WorkflowScope{Unit: 2, UnitTotal: 3, Lane: "Security", Step: "review:security", Workflow: "Standard review"}
 	info := ProgressInfo{AgentRole: "review", AgentName: "Security", Group: "Security", NudgeTotal: 2, Turn: 1}
 	r.Step(scope, true)
 	r.AgentStart(info, scope, now.Add(10*time.Minute))
@@ -32,7 +32,8 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	lines := r.buildLinesLocked()
 	r.mu.Unlock()
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"NickPit", "Standard review · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings: 3", "final 3"} {
+	// The info line names the current lane (not the static workflow name).
+	for _, want := range []string{"NickPit", "Security · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings: 3", "final 3"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("dashboard missing %q:\n%s", want, joined)
 		}
@@ -40,8 +41,54 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	if strings.Contains(joined, "reviewing") {
 		t.Errorf("header should drop the word \"reviewing\":\n%s", joined)
 	}
+	if strings.Contains(joined, "Standard review") {
+		t.Errorf("info line should show the lane name, not the workflow name:\n%s", joined)
+	}
 	if len(lines) != 6 { // blank + header + info + two bounded slots + findings
 		t.Fatalf("lines = %d, want 6: %q", len(lines), lines)
+	}
+}
+
+func TestStepLineNamesCurrentLaneOrCount(t *testing.T) {
+	now := time.Now()
+	newR := func() *LiveRenderer {
+		return &LiveRenderer{
+			w: &bytes.Buffer{}, plan: LivePlan{Concurrency: 6, Units: 3, Target: "org/repo#42"},
+			started: now, agents: make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+			width: 150, height: 24, now: func() time.Time { return now },
+		}
+	}
+	// No active steps yet → preparing.
+	if got := newR().stepLineLocked(); !strings.Contains(got, "Preparing review") {
+		t.Fatalf("preparing = %q", got)
+	}
+	// A single named lane (e.g. the synthesis pipeline) → its name.
+	r := newR()
+	r.Step(WorkflowScope{Unit: 3, UnitTotal: 3, Lane: "Review synthesis", Step: "merge"}, true)
+	if got := r.stepLineLocked(); !strings.Contains(got, "Review synthesis · 3/3 · org/repo#42") {
+		t.Fatalf("single named lane = %q", got)
+	}
+	// An unnamed lane (the laneN fallback) → its step label instead of "lane0".
+	r = newR()
+	r.Step(WorkflowScope{Unit: 1, UnitTotal: 3, Lane: "lane0", Step: "collect-context"}, true)
+	if got := r.stepLineLocked(); !strings.Contains(got, "collect-context · 1/3") || strings.Contains(got, "lane0") {
+		t.Fatalf("unnamed lane should fall back to the step label = %q", got)
+	}
+	// Several lanes in an UNNAMED parallel group → a count (names are on the bars).
+	r = newR()
+	for _, n := range []string{"Code quality", "Security", "Architecture"} {
+		r.Step(WorkflowScope{Unit: 2, UnitTotal: 3, Lane: n, Step: "review:" + n}, true)
+	}
+	if got := r.stepLineLocked(); !strings.Contains(got, "3 lanes · 2/3") {
+		t.Fatalf("unnamed parallel group should show a count = %q", got)
+	}
+	// Several lanes in a NAMED parallel group → the group name, not a count.
+	r = newR()
+	for _, n := range []string{"Code quality", "Security", "Architecture"} {
+		r.Step(WorkflowScope{Unit: 2, UnitTotal: 3, Lane: n, Step: "review:" + n, Group: "Reviewers"}, true)
+	}
+	if got := r.stepLineLocked(); !strings.Contains(got, "Reviewers · 2/3") || strings.Contains(got, "3 lanes") {
+		t.Fatalf("named parallel group should show its name = %q", got)
 	}
 }
 

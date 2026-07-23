@@ -76,7 +76,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	}
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
 		{Type: StepCollectContext, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
-		{Parallel: parallel},
+		{Name: "Reviewers", Parallel: parallel},
 		{Name: "Review synthesis", Pipeline: []StepEntry{
 			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}}},
 			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight40}}},
@@ -93,7 +93,8 @@ func TestLoadParsesLaneAndPipelineNames(t *testing.T) {
 	path := writeSpec(t, `
 version: 1
 steps:
-  - parallel:
+  - name: Reviewers
+    parallel:
       - name: Security review
         lane:
           - type: review:security
@@ -109,6 +110,9 @@ steps:
 	}
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("validate: %v", err)
+	}
+	if got := spec.Steps[0].Name; got != "Reviewers" {
+		t.Fatalf("parallel group name = %q, want %q", got, "Reviewers")
 	}
 	if got := spec.Steps[0].Parallel[0].Name; got != "Security review" {
 		t.Fatalf("lane name = %q, want %q", got, "Security review")

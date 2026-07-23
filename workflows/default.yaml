@@ -134,6 +134,7 @@ steps:
         config:
           time_budget:
             max_seconds: 1500
+    name: Reviewers
   - pipeline:
       - type: merge
         config:

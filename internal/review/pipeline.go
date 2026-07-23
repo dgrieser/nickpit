@@ -231,6 +231,9 @@ type boundLane struct {
 }
 
 type planUnit struct {
+	// name is the optional label of a parallel group, shown in live progress
+	// while its lanes run concurrently. Empty for single-lane units.
+	name string
 	// lanes run concurrently; the steps within one lane run sequentially. A
 	// plain sequential step is a single lane of length 1.
 	lanes []boundLane
@@ -270,7 +273,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 			continue
 		}
 		if entry.IsParallel() {
-			unit := planUnit{}
+			unit := planUnit{name: entry.Name}
 			for _, sub := range entry.Parallel {
 				var lane []boundStep
 				for _, ls := range sub.LaneSteps() {
@@ -356,7 +359,7 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 			wg.Add(1)
 			go func(i int, lane boundLane) {
 				defer wg.Done()
-				errs[i] = p.runLane(ctx, lane, req, st, unitIdx+1, len(p.units), i+1)
+				errs[i] = p.runLane(ctx, lane, req, st, unitIdx+1, len(p.units), i+1, unit.name)
 			}(i, lane)
 		}
 		wg.Wait()
@@ -383,7 +386,7 @@ func (p *Pipeline) Run(ctx context.Context, reviewCtx *model.ReviewContext, req 
 	return result, st.Enriched, nil
 }
 
-func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.ReviewRequest, st *PipelineState, unit, unitTotal, laneIndex int) error {
+func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.ReviewRequest, st *PipelineState, unit, unitTotal, laneIndex int, group string) error {
 	laneCtx := ctx
 	laneCancel := func() {}
 	if !req.DisableWorkflowTimeBudget {
@@ -422,7 +425,7 @@ func (p *Pipeline) runLane(ctx context.Context, lane boundLane, req model.Review
 		scope := logging.WorkflowScope{
 			Unit: unit, UnitTotal: unitTotal,
 			Lane: liveLaneLabel(lane, bs.label, laneIndex), Step: bs.label,
-			Workflow: p.name,
+			Group: group, Workflow: p.name,
 		}
 		stepCtx = logging.WithWorkflowScope(stepCtx, scope)
 		if p.engine.logger != nil {

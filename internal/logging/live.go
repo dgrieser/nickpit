@@ -30,6 +30,9 @@ type WorkflowScope struct {
 	UnitTotal int
 	Lane      string
 	Step      string
+	// Group is the optional name of the enclosing parallel group; shown in the
+	// info line while several of its lanes run at once. Empty for single lanes.
+	Group string
 	// Workflow is the human-readable workflow name shown above the dashboard.
 	Workflow string
 }
@@ -477,31 +480,30 @@ func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) strin
 }
 
 func (r *LiveRenderer) stepLineLocked() string {
-	name := ""
+	// Each map entry is one active lane, keyed by its label; the info line names
+	// the current lane/pipeline. When several lanes run in parallel, show the
+	// enclosing group's name if it has one, otherwise a count — the individual
+	// lanes are already visible in the per-agent bars below.
 	unit, total := 0, r.plan.Units
+	var laneName, laneStep, group string
 	for _, scope := range r.steps {
-		if name == "" && scope.Workflow != "" {
-			name = scope.Workflow
-		}
 		if scope.Unit > unit {
 			unit = scope.Unit
 		}
 		if scope.UnitTotal > total {
 			total = scope.UnitTotal
 		}
-	}
-	preparing := len(r.steps) == 0
-	if name == "" {
-		if preparing {
-			name = "Preparing review"
-		} else {
-			name = "Workflow"
+		laneName, laneStep = scope.Lane, scope.Step
+		if scope.Group != "" {
+			group = scope.Group
 		}
 	}
+	count := len(r.steps)
 	total = max(total, 1)
+
 	if !r.useANSI {
-		s := "  " + name
-		if !preparing {
+		s := "  " + stepDisplayName(count, group, laneName, laneStep)
+		if count > 0 {
 			s += fmt.Sprintf(" · %d/%d", unit, total)
 		}
 		if r.plan.Target != "" {
@@ -510,8 +512,15 @@ func (r *LiveRenderer) stepLineLocked() string {
 		return s
 	}
 	sep := progressGrey(" · ")
-	parts := []string{progressStyle(progressColorProfile, name)}
-	if !preparing {
+	var namePart string
+	switch {
+	case count > 1 && strings.TrimSpace(group) == "":
+		namePart = progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", count)) + " " + progressLight("lanes")
+	default:
+		namePart = progressStyle(progressColorProfile, stepDisplayName(count, group, laneName, laneStep))
+	}
+	parts := []string{namePart}
+	if count > 0 {
 		parts = append(parts, progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", unit))+
 			progressGrey("/")+progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", total)))
 	}
@@ -519,6 +528,49 @@ func (r *LiveRenderer) stepLineLocked() string {
 		parts = append(parts, progressStyle(progressColorKeyTurquoise, r.plan.Target))
 	}
 	return "  " + strings.Join(parts, sep)
+}
+
+// stepDisplayName names the info line. For a named parallel group it is the
+// group name; for several unnamed lanes, a count; for a single lane its
+// configured name, falling back to the step label for an unnamed ("laneN")
+// lane so a plain step like collect-context reads sensibly.
+func stepDisplayName(count int, group, laneName, laneStep string) string {
+	switch {
+	case count == 0:
+		return "Preparing review"
+	case count > 1:
+		if g := strings.TrimSpace(group); g != "" {
+			return g
+		}
+		return fmt.Sprintf("%d lanes", count)
+	}
+	if laneName == "" || isFallbackLaneLabel(laneName) {
+		if laneStep != "" {
+			return laneStep
+		}
+	}
+	if laneName != "" {
+		return laneName
+	}
+	if laneStep != "" {
+		return laneStep
+	}
+	return "Workflow"
+}
+
+// isFallbackLaneLabel reports whether s is the "laneN" placeholder the pipeline
+// emits for an unnamed lane (see review.liveLaneLabel), not a real lane name.
+func isFallbackLaneLabel(s string) bool {
+	rest, ok := strings.CutPrefix(s, "lane")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // liveAgentLabel is the left-hand agent name. Any nudge suffix is stripped —
