@@ -395,7 +395,7 @@ func formatProgressModel(useANSI bool, info ProgressInfo, scoped bool) string {
 			modelColor = progressColorMutedModel
 			effortColor = progressColorMutedModel
 		}
-		b.WriteString(progressStyle(modelColor, info.Model))
+		b.WriteString(styleModelWithAlias(info.Model, modelColor))
 		if info.Effort != "" {
 			b.WriteString(progressGrey(":") + progressStyle(effortColor, info.Effort))
 		}
@@ -503,12 +503,30 @@ func colorizeReviewContextMessage(text string) (string, bool) {
 	b.WriteString(" ")
 	b.WriteString(progressLight("on"))
 	b.WriteString(" ")
-	b.WriteString(stylePathParts(repo, progressColorTaskPink))
-	b.WriteString(progressGrey(" @ "))
-	b.WriteString(stylePathParts(head, progressColorBranchFromGold))
-	b.WriteString(progressGrey(" → "))
-	b.WriteString(stylePathParts(base, progressColorBranchToAquaGreen))
+	b.WriteString(styleBranchTarget(repo, head, base))
 	return b.String(), true
+}
+
+// styleModelWithAlias colours a model string for progress output. A leading
+// "@alias " prefix (e.g. "@small Qwen3.6-35B") is rendered a shade lighter than
+// the model name so the alias reads as secondary; the name uses nameColor.
+func styleModelWithAlias(model, nameColor string) string {
+	if strings.HasPrefix(model, "@") {
+		if alias, rest, ok := strings.Cut(model, " "); ok && rest != "" {
+			return progressStyle(progressColorKeyTurquoise, alias) + " " + progressStyle(nameColor, rest)
+		}
+	}
+	return progressStyle(nameColor, model)
+}
+
+// styleBranchTarget renders "repo @ head → base" with the shared progress
+// colours (repo pink, head gold, base aqua-green, separators grey). Reused by
+// the show-progress context line and the live dashboard's info line so a review
+// target looks identical in both.
+func styleBranchTarget(repo, head, base string) string {
+	return stylePathParts(repo, progressColorTaskPink) +
+		progressGrey(" @ ") + stylePathParts(head, progressColorBranchFromGold) +
+		progressGrey(" → ") + stylePathParts(base, progressColorBranchToAquaGreen)
 }
 
 func styleModeWithSubmode(mode string) string {

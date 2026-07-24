@@ -21,8 +21,24 @@ type LivePlan struct {
 	Concurrency int
 	Units       int
 	// Target names what is under review (e.g. "org/repo#42" or a branch), shown
-	// in the dashboard info line. Empty for source-less runs.
+	// on its own line under the header. Empty for source-less runs.
 	Target string
+	// Workflow identity for the info-line "agent info" (name · source · N steps),
+	// mirroring the --show-progress Agent bracket.
+	Workflow       string
+	WorkflowSource string
+	WorkflowSteps  int
+	// Models are the review's configured models (primary and, when it differs, the
+	// "@small" model), shown in the header exactly like the --show-progress model
+	// lines: alias-prefixed name plus reasoning effort.
+	Models []LiveModel
+}
+
+// LiveModel is a model shown in the dashboard header: its display name (which may
+// carry an "@alias " prefix) and reasoning effort.
+type LiveModel struct {
+	Name   string
+	Effort string
 }
 
 // WorkflowScope identifies the pipeline work enclosing an agent loop.
@@ -176,6 +192,14 @@ func (l *Logger) LiveStep(scope WorkflowScope, active bool) {
 	}
 }
 
+// SetLiveTarget updates the review target shown in the dashboard info line once
+// the resolved repo/branch is known (e.g. "repo @ head → base").
+func (l *Logger) SetLiveTarget(target string) {
+	if l != nil && l.live != nil {
+		l.live.SetTarget(target)
+	}
+}
+
 func (l *Logger) LiveFindings(update FindingUpdate) {
 	if l != nil && l.live != nil {
 		l.live.Findings(update)
@@ -316,6 +340,13 @@ func (r *LiveRenderer) Step(scope WorkflowScope, active bool) {
 	r.signal()
 }
 
+func (r *LiveRenderer) SetTarget(target string) {
+	r.mu.Lock()
+	r.plan.Target = target
+	r.mu.Unlock()
+	r.signal()
+}
+
 func (r *LiveRenderer) Findings(update FindingUpdate) {
 	r.mu.Lock()
 	r.findings.Found += max(update.Found, 0)
@@ -342,7 +373,7 @@ func (r *LiveRenderer) Finish(ok bool, findings int, elapsed time.Duration) {
 		mark, word = "✗", "Review stopped"
 	}
 	r.final = []string{
-		fmt.Sprintf("%s %s · %s · %d findings", mark, word, shortDuration(elapsed), findings),
+		r.finalHeaderLocked(mark, word, elapsed, findings, true),
 		r.findingLineLocked(),
 	}
 	r.closed = true
@@ -372,12 +403,36 @@ func (r *LiveRenderer) Close() {
 		return
 	}
 	elapsed := r.now().Sub(r.started)
-	r.final = []string{fmt.Sprintf("✗ Review stopped · %s", shortDuration(elapsed)), r.findingLineLocked()}
+	r.final = []string{r.finalHeaderLocked("✗", "Review stopped", elapsed, 0, false), r.findingLineLocked()}
 	r.closed = true
 	r.mu.Unlock()
 	close(r.stop)
 	<-r.done
 	r.showCursor()
+}
+
+// finalHeaderLocked renders the frozen snapshot's headline: a green ✓ (or red ✗
+// on abort), the status word in bold white (distinct from the turquoise elapsed
+// time), grey middle dots, and — when shown — the findings count in green.
+func (r *LiveRenderer) finalHeaderLocked(mark, word string, elapsed time.Duration, findings int, showFindings bool) string {
+	if !r.useANSI {
+		if showFindings {
+			return fmt.Sprintf("%s %s · %s · %d findings", mark, word, shortDuration(elapsed), findings)
+		}
+		return fmt.Sprintf("%s %s · %s", mark, word, shortDuration(elapsed))
+	}
+	markColor := progressColorNumberGreen
+	if mark == "✗" {
+		markColor = progressColorErrorRed
+	}
+	sep := progressGrey(" · ")
+	line := progressStyle(markColor, mark) + " " +
+		progressStyle(progressColorBold+";"+progressColorWhite, word) + sep +
+		progressStyle(progressColorKeyTurquoise, shortDuration(elapsed))
+	if showFindings {
+		line += sep + progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", findings)) + " " + progressLight("findings")
+	}
+	return line
 }
 
 func (r *LiveRenderer) keptLocked() int {
@@ -422,18 +477,23 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 		}
 		return visible[i].lastStarted.Before(visible[j].lastStarted)
 	})
+	// A leading blank line separates the dashboard from prior scrollback, then the
+	// header, an optional target line, the info line, a blank spacer, the agent
+	// rows, another blank spacer, and the findings footer.
+	head := []string{"", r.headerLineLocked(now)}
+	if target := r.targetLineLocked(); target != "" {
+		head = append(head, target)
+	}
+	head = append(head, r.stepLineLocked(), "")
 	slots := r.plan.Concurrency
-	// Chrome is five lines: a leading blank, the header, the info line, a blank
-	// spacer, and the findings footer — leave one spare row beyond that.
-	if slots <= 0 || slots > height-6 {
-		slots = height - 6
+	// Leave one spare row beyond the chrome (head lines + blank spacer + findings).
+	if maxSlots := height - len(head) - 2; slots <= 0 || slots > maxSlots {
+		slots = maxSlots
 	}
 	if slots < 1 {
 		slots = 1
 	}
-	hidden := max(len(visible)-slots, 0)
-	// A leading blank line separates the dashboard from prior scrollback.
-	lines := []string{"", r.headerLineLocked(now, len(visible), hidden), r.stepLineLocked()}
+	lines := head
 	for i := 0; i < slots; i++ {
 		if i < len(visible) {
 			lines = append(lines, formatLiveAgent(visible[i], now, r.useANSI))
@@ -447,34 +507,54 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 }
 
 // headerLineLocked renders the top dashboard line: the animated "NickPit"
-// wordmark (which replaces the old spinner as the motion cue), then
-// grey-separated info items (elapsed, agent budget) in their own accent colours.
-func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) string {
+// wordmark (which replaces the old spinner as the motion cue), the elapsed time,
+// then the model names in use (comma-separated) — the same names and colours the
+// --show-progress model line uses.
+func (r *LiveRenderer) headerLineLocked(now time.Time) string {
 	dur := shortDuration(now.Sub(r.started))
 	if !r.useANSI {
-		agents := fmt.Sprintf("%d active", active)
-		if r.plan.Concurrency > 0 {
-			agents = fmt.Sprintf("%d/%d agents", active, r.plan.Concurrency)
+		s := fmt.Sprintf("  NickPit · %s", dur)
+		if names := plainModelList(r.plan.Models); names != "" {
+			s += " · " + names
 		}
-		if hidden > 0 {
-			agents += fmt.Sprintf(" · +%d hidden", hidden)
-		}
-		return fmt.Sprintf("  NickPit · %s · %s", dur, agents)
+		return s
 	}
 	sep := progressGrey(" · ")
 	frame := max(int(now.Sub(r.started)/(100*time.Millisecond)), 0)
-	num := func(n int) string { return progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", n)) }
-	var agents string
-	if r.plan.Concurrency > 0 {
-		agents = num(active) + progressGrey("/") + num(r.plan.Concurrency) + " " + progressLight("agents")
-	} else {
-		agents = num(active) + " " + progressLight("active")
+	line := "  " + nickPitWordmark(frame) + sep + progressStyle(progressColorKeyTurquoise, dur)
+	if len(r.plan.Models) > 0 {
+		line += sep + styleModelList(r.plan.Models)
 	}
-	if hidden > 0 {
-		agents += sep + progressStyle(progressColorTaskPink, fmt.Sprintf("+%d hidden", hidden))
+	return line
+}
+
+func plainModelList(models []LiveModel) string {
+	parts := make([]string, 0, len(models))
+	for _, m := range models {
+		if m.Name == "" {
+			continue
+		}
+		s := m.Name
+		if m.Effort != "" {
+			s += ":" + m.Effort
+		}
+		parts = append(parts, s)
 	}
-	return "  " + nickPitWordmark(frame) + sep +
-		progressStyle(progressColorKeyTurquoise, dur) + sep + agents
+	return strings.Join(parts, ", ")
+}
+
+// styleModelList joins models with grey commas, each rendered exactly like the
+// --show-progress model line: "@alias" prefix a shade lighter, name teal, a grey
+// ":" and the reasoning effort. The endpoint URL is intentionally omitted.
+func styleModelList(models []LiveModel) string {
+	parts := make([]string, 0, len(models))
+	for _, m := range models {
+		if m.Name == "" {
+			continue
+		}
+		parts = append(parts, formatProgressModel(true, ProgressInfo{Model: m.Name, Effort: m.Effort}, false))
+	}
+	return strings.Join(parts, progressGrey(", "))
 }
 
 // nickPitGradients are smooth colour ramps the wordmark animation flows through.
@@ -609,13 +689,16 @@ func (r *LiveRenderer) stepLineLocked() string {
 	count := len(r.steps)
 	total = max(total, 1)
 
+	// The workflow "agent info" (name · source · N steps) trails the line, in the
+	// same shape and colours as the --show-progress Agent bracket.
+	wf := formatProgressWorkflow(r.useANSI, r.workflowInfo())
 	if !r.useANSI {
 		s := "  " + stepDisplayName(count, group, laneName, laneStep)
 		if count > 0 {
 			s += fmt.Sprintf(" · %d/%d", unit, total)
 		}
-		if r.plan.Target != "" {
-			s += " · " + r.plan.Target
+		if len(wf) > 0 {
+			s += " · " + strings.Join(wf, " · ")
 		}
 		return s
 	}
@@ -625,17 +708,39 @@ func (r *LiveRenderer) stepLineLocked() string {
 	case count > 1 && strings.TrimSpace(group) == "":
 		namePart = progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", count)) + " " + progressLight("lanes")
 	default:
-		namePart = progressStyle(progressColorProfile, stepDisplayName(count, group, laneName, laneStep))
+		// The current lane/pipeline/step name uses the --show-progress "Agent"
+		// stage colour (bold blue).
+		namePart = progressStyle(progressStageStyles[StageAgent], stepDisplayName(count, group, laneName, laneStep))
 	}
 	parts := []string{namePart}
 	if count > 0 {
 		parts = append(parts, progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", unit))+
 			progressGrey("/")+progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", total)))
 	}
-	if r.plan.Target != "" {
-		parts = append(parts, progressStyle(progressColorKeyTurquoise, r.plan.Target))
-	}
+	parts = append(parts, wf...)
 	return "  " + strings.Join(parts, sep)
+}
+
+// workflowInfo packages the workflow identity the dashboard shows on the info
+// line, reusing formatProgressWorkflow for identical rendering to show-progress.
+func (r *LiveRenderer) workflowInfo() ProgressInfo {
+	return ProgressInfo{
+		Workflow:       r.plan.Workflow,
+		WorkflowSource: r.plan.WorkflowSource,
+		WorkflowSteps:  r.plan.WorkflowSteps,
+	}
+}
+
+// targetLineLocked is the dedicated review-target line (repo @ head → base),
+// shown just under the header; empty when no target is set.
+func (r *LiveRenderer) targetLineLocked() string {
+	if r.plan.Target == "" {
+		return ""
+	}
+	if !r.useANSI {
+		return "  " + r.plan.Target
+	}
+	return "  " + styleLiveTarget(r.plan.Target)
 }
 
 // stepDisplayName names the info line. For a named parallel group it is the
@@ -681,18 +786,30 @@ func isFallbackLaneLabel(s string) bool {
 	return true
 }
 
-// liveAgentLabel is the left-hand agent name. Any nudge suffix is stripped —
-// nudge progress is reported to the right of the bar, never in the name.
+// styleLiveTarget colours a review target for the info line. A "repo @ head →
+// base" target uses the shared branch palette (matching --show-progress); any
+// other form falls back to a single turquoise tint.
+func styleLiveTarget(target string) string {
+	if repo, rest, ok := strings.Cut(target, " @ "); ok {
+		if head, base, ok := strings.Cut(rest, " → "); ok {
+			return styleBranchTarget(repo, head, base)
+		}
+	}
+	return progressStyle(progressColorKeyTurquoise, target)
+}
+
+// liveAgentLabel is the bar's agent name — the name only, without the role/kind
+// prefix. Any nudge suffix is stripped (nudge progress shows to the right of the
+// bar), and empty names fall back to the step/role so the bar is never blank.
 func liveAgentLabel(a *liveAgent) string {
-	info := a.info
-	if before, _, ok := strings.Cut(info.AgentName, " · Nudge"); ok {
-		info.AgentName = before
+	name := a.info.AgentName
+	if before, _, ok := strings.Cut(name, " · Nudge"); ok {
+		name = before
 	}
-	label := info.roleName()
-	if label == "" {
-		label = firstNonEmptyLive(info.AgentName, a.scope.Step, info.AgentRole)
+	if strings.TrimSpace(name) != "" {
+		return name
 	}
-	return label
+	return firstNonEmptyLive(a.scope.Step, a.info.AgentRole)
 }
 
 // liveProgressBarWidth is the width of the agent progress bar. The agent label
@@ -731,12 +848,14 @@ func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
 // aligns; sized for the widest realistic value ("#N · nudges N/N").
 const liveAgentPhaseWidth = 18
 
-// formatLivePhase renders the turn counter and nudge progress with grey
-// separators and slash, numbers in green, the "nudges" word muted.
+// formatLivePhase renders the turn counter and nudge progress. The "#N" round
+// uses the same colouring as --show-progress (formatProgressTurn: a darker-green
+// "#", bright-green number); nudges follow with grey separators/slash.
 func formatLivePhase(a *liveAgent, useANSI bool) string {
+	turnNum := max(a.turn, 1)
 	// Reserve room for a two-digit round from the start so "· nudges" lines up
 	// whether the round is #3 or #12.
-	turn := fmt.Sprintf("#%-2d", max(a.turn, 1))
+	turn := fmt.Sprintf("#%-2d", turnNum)
 	visible := turn
 	if a.info.NudgeTotal > 0 {
 		visible = fmt.Sprintf("%s · nudges %d/%d", turn, a.info.NudgeIndex, a.info.NudgeTotal)
@@ -745,7 +864,9 @@ func formatLivePhase(a *liveAgent, useANSI bool) string {
 	if !useANSI {
 		return visible + pad
 	}
-	styled := progressStyle(progressColorNumberGreen, turn)
+	// formatProgressTurn has no padding; add the two-digit-alignment spaces back.
+	styled := formatProgressTurn(true, turnNum) +
+		strings.Repeat(" ", max(2-len(fmt.Sprintf("%d", turnNum)), 0))
 	if a.info.NudgeTotal > 0 {
 		styled += progressGrey(" · ") + progressLight("nudges ") +
 			progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", a.info.NudgeIndex)) +
@@ -862,14 +983,18 @@ func (r *LiveRenderer) findingLineLocked() string {
 		return fmt.Sprintf("  Findings %d · refuted %d · duplicate %d · filtered %d · final %d",
 			f.Found, f.Refuted, f.Duplicate, f.Filtered, kept)
 	}
-	// Counts stay green; only the separating middle dots are grey.
-	green := func(s string) string { return progressStyle(progressColorNumberGreen, s) }
+	// Each metric gets a semantic colour: the total in teal, refuted red,
+	// duplicate amber, filtered peach, and the surviving "final" count green.
+	// Middle dots stay grey.
+	seg := func(code, label string, n int) string {
+		return progressStyle(code, fmt.Sprintf("%s %d", label, n))
+	}
 	sep := progressGrey(" · ")
-	return "  " + green(fmt.Sprintf("Findings %d", f.Found)) + sep +
-		green(fmt.Sprintf("refuted %d", f.Refuted)) + sep +
-		green(fmt.Sprintf("duplicate %d", f.Duplicate)) + sep +
-		green(fmt.Sprintf("filtered %d", f.Filtered)) + sep +
-		green(fmt.Sprintf("final %d", kept))
+	return "  " + seg(progressColorKeyTeal, "Findings", f.Found) + sep +
+		seg(progressColorErrorRed, "refuted", f.Refuted) + sep +
+		seg(progressColorWarnYellow, "duplicate", f.Duplicate) + sep +
+		seg(progressColorProfile, "filtered", f.Filtered) + sep +
+		seg(progressColorNumberGreen, "final", kept)
 }
 
 func firstNonEmptyLive(values ...string) string {

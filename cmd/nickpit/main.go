@@ -155,9 +155,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+		// A user abort (Ctrl-C / SIGTERM) cancels the context; the resulting error
+		// is expected, not a failure, so exit quietly with the conventional
+		// interrupt code instead of printing an ERROR.
+		if isUserAbort(ctx, err) {
+			os.Exit(130)
+		}
 		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
+}
+
+// isUserAbort reports whether a failed run was a user abort (Ctrl-C / SIGTERM)
+// rather than a genuine error. ctx.Err() catches aborts whose surfaced error
+// does not cleanly wrap context.Canceled; errors.Is covers the rest.
+func isUserAbort(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.Canceled)
 }
 
 func newRootCmd() *cobra.Command {
@@ -1228,10 +1241,26 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 		return err
 	}
 	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning, a.disableLiveProgress) {
+		// Target is set later by the engine once the repo/branch is resolved
+		// (reviewTargetSummary), matching the --show-progress context line. The
+		// workflow identity mirrors the --show-progress Agent bracket.
+		wf := workflowProgressInfo(spec, a.specPath, a.stepName)
+		// Models mirror the --show-progress model lines: the primary model, and the
+		// "@small" model when it resolves to a different model.
+		liveModels := []logging.LiveModel{{Name: profile.Model, Effort: profile.ReasoningEffort}}
+		if small := config.EffectiveSmallProfile(profile); small.Model != profile.Model {
+			liveModels = append(liveModels, logging.LiveModel{
+				Name:   workflow.SmallModelAlias + " " + small.Model,
+				Effort: small.ReasoningEffort,
+			})
+		}
 		logger.SetLiveProgress(logging.LivePlan{
-			Concurrency: a.concurrency,
-			Units:       len(spec.Steps),
-			Target:      liveReviewTarget(req),
+			Concurrency:    a.concurrency,
+			Units:          len(spec.Steps),
+			Workflow:       wf.Workflow,
+			WorkflowSource: wf.WorkflowSource,
+			WorkflowSteps:  wf.WorkflowSteps,
+			Models:         liveModels,
 		})
 		defer logger.CloseLive()
 	}
@@ -1459,23 +1488,6 @@ func (a *app) formatReview(w io.Writer, result *model.ReviewResult) error {
 
 func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning, disableLiveProgress bool) bool {
 	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning && !disableLiveProgress
-}
-
-// liveReviewTarget names what a review is looking at, for the live dashboard
-// info line: "org/repo#42" for a GitHub PR, "org/repo!42" for a GitLab MR, or
-// the head ref (falling back to "local") for a local review.
-func liveReviewTarget(req model.ReviewRequest) string {
-	switch req.Mode {
-	case model.ModeGitHub:
-		return fmt.Sprintf("%s#%d", req.Repo, req.Identifier)
-	case model.ModeGitLab:
-		return fmt.Sprintf("%s!%d", req.Repo, req.Identifier)
-	default:
-		if ref := strings.TrimSpace(req.HeadRef); ref != "" {
-			return ref
-		}
-		return "local"
-	}
 }
 
 func chatSessionHint(sessionID string, stderrTTY, useANSI bool, width int) string {

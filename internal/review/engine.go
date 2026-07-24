@@ -211,6 +211,10 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 		return nil, err
 	}
 	e.logProgress(stage, logging.StateStart, reviewContextSummary(reviewCtx, req))
+	if e.logger != nil {
+		// Show the same resolved repo/branch the show-progress context line uses.
+		e.logger.SetLiveTarget(reviewTargetSummary(reviewCtx))
+	}
 	e.logf(ctx, "Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
 		return nil, ErrEmptyDiff
@@ -3223,12 +3227,21 @@ func reviewContextSummary(ctx *model.ReviewContext, req model.ReviewRequest) str
 	if ctx == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s:%s [%s, ≥%s] on %s @ %s → %s",
+	return fmt.Sprintf("%s:%s [%s, ≥%s] on %s",
 		ctx.Mode, req.Submode,
 		req.ProfileName, req.PriorityThreshold,
-		ctx.Repository.FullName,
-		ctx.Repository.HeadRef, ctx.Repository.BaseRef,
+		reviewTargetSummary(ctx),
 	)
+}
+
+// reviewTargetSummary is the "repo @ head → base" tail of the context summary —
+// shared with the live dashboard so a review target reads the same everywhere.
+func reviewTargetSummary(ctx *model.ReviewContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s @ %s → %s",
+		ctx.Repository.FullName, ctx.Repository.HeadRef, ctx.Repository.BaseRef)
 }
 
 func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {

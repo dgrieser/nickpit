@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1745,5 +1746,23 @@ func TestGitLabServeFailsWithoutConfig(t *testing.T) {
 	err := cmd.ExecuteContext(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "serve config") {
 		t.Fatalf("err = %v, want serve config error", err)
+	}
+}
+
+func TestIsUserAbort(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if !isUserAbort(canceled, errors.New("llm: request failed")) {
+		t.Fatal("a canceled context should be treated as a user abort regardless of the surfaced error")
+	}
+	if !isUserAbort(context.Background(), fmt.Errorf("review run aborted: %w", context.Canceled)) {
+		t.Fatal("an error wrapping context.Canceled should be a user abort")
+	}
+	if isUserAbort(context.Background(), errors.New("review failed: all reviewer agents errored")) {
+		t.Fatal("a genuine failure with a live context should not be a user abort")
+	}
+	if isUserAbort(context.Background(), context.DeadlineExceeded) {
+		t.Fatal("a deadline/timeout is not a user abort")
 	}
 }

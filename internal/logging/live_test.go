@@ -33,7 +33,7 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	r.mu.Unlock()
 	joined := strings.Join(lines, "\n")
 	// The info line names the current lane (not the static workflow name).
-	for _, want := range []string{"NickPit", "Security · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings 3", "final 3"} {
+	for _, want := range []string{"NickPit", "Security · 2/3", "Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings 3", "final 3"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("dashboard missing %q:\n%s", want, joined)
 		}
@@ -44,8 +44,8 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	if strings.Contains(joined, "Standard review") {
 		t.Errorf("info line should show the lane name, not the workflow name:\n%s", joined)
 	}
-	if len(lines) != 7 { // blank + header + info + two bounded slots + blank + findings
-		t.Fatalf("lines = %d, want 7: %q", len(lines), lines)
+	if len(lines) != 8 { // blank + header + info + blank + two bounded slots + blank + findings
+		t.Fatalf("lines = %d, want 8: %q", len(lines), lines)
 	}
 }
 
@@ -62,10 +62,11 @@ func TestStepLineNamesCurrentLaneOrCount(t *testing.T) {
 	if got := newR().stepLineLocked(); !strings.Contains(got, "Preparing review") {
 		t.Fatalf("preparing = %q", got)
 	}
-	// A single named lane (e.g. the synthesis pipeline) → its name.
+	// A single named lane (e.g. the synthesis pipeline) → its name. The target is
+	// now a separate line, so the info line ends at the unit progress.
 	r := newR()
 	r.Step(WorkflowScope{Unit: 3, UnitTotal: 3, Lane: "Review synthesis", Step: "merge"}, true)
-	if got := r.stepLineLocked(); !strings.Contains(got, "Review synthesis · 3/3 · org/repo#42") {
+	if got := r.stepLineLocked(); !strings.Contains(got, "Review synthesis · 3/3") || strings.Contains(got, "org/repo#42") {
 		t.Fatalf("single named lane = %q", got)
 	}
 	// An unnamed lane (the laneN fallback) → its step label instead of "lane0".
@@ -136,14 +137,150 @@ func TestLiveRendererFindingLifecycle(t *testing.T) {
 	}
 }
 
-func TestFindingLineSeparatorsAreGrey(t *testing.T) {
+func TestStyleLiveTargetUsesBranchPalette(t *testing.T) {
+	got := styleLiveTarget("nickpit @ feat/x → origin/main")
+	// Same palette as the --show-progress context line.
+	want := styleBranchTarget("nickpit", "feat/x", "origin/main")
+	if got != want {
+		t.Fatalf("branch target styling drifted from show-progress:\n got %q\nwant %q", got, want)
+	}
+	if stripANSI(got) != "nickpit @ feat/x → origin/main" {
+		t.Fatalf("branch target text = %q", stripANSI(got))
+	}
+	// A non-branch target falls back to a single turquoise tint.
+	fb := styleLiveTarget("org/repo#42")
+	if fb != progressStyle(progressColorKeyTurquoise, "org/repo#42") {
+		t.Fatalf("non-branch target should use the turquoise fallback: %q", fb)
+	}
+}
+
+func TestSetTargetShownOnItsOwnLine(t *testing.T) {
+	r := &LiveRenderer{
+		w: &bytes.Buffer{}, plan: LivePlan{Concurrency: 1, Units: 1},
+		agents: make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+		width: 120, height: 24, now: time.Now,
+	}
+	r.Step(WorkflowScope{Unit: 1, UnitTotal: 1, Lane: "collect-context", Step: "collect-context"}, true)
+	r.SetTarget("nickpit @ feat/x → origin/main")
+	// The target is its own line, not part of the info (step) line.
+	if line := r.stepLineLocked(); strings.Contains(line, "nickpit @ feat/x") {
+		t.Fatalf("target should not be on the info line: %q", line)
+	}
+	if tl := r.targetLineLocked(); !strings.Contains(tl, "nickpit @ feat/x → origin/main") {
+		t.Fatalf("target line missing resolved target: %q", tl)
+	}
+	// It renders as the line right under the header in the full dashboard.
+	r.mu.Lock()
+	lines := r.buildLinesLocked()
+	r.mu.Unlock()
+	if len(lines) < 3 || !strings.Contains(lines[2], "nickpit @ feat/x → origin/main") {
+		t.Fatalf("target should be the second content line (index 2):\n%q", lines)
+	}
+}
+
+func TestInfoLineCarriesWorkflowAgentInfo(t *testing.T) {
+	r := &LiveRenderer{
+		w: &bytes.Buffer{}, plan: LivePlan{Units: 3, Workflow: "Standard review", WorkflowSource: "embedded", WorkflowSteps: 23},
+		agents: make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+		width: 150, height: 24, now: time.Now,
+	}
+	r.Step(WorkflowScope{Unit: 2, UnitTotal: 3, Lane: "Reviewers", Step: "review", Group: "Reviewers"}, true)
+	if got := r.stepLineLocked(); !strings.Contains(got, "Reviewers · 2/3 · Standard review · embedded · 23 steps") {
+		t.Fatalf("info line should carry the workflow agent info: %q", got)
+	}
+	// The lane/pipeline name uses the --show-progress "Agent" stage colour.
+	r.useANSI = true
+	if got := r.stepLineLocked(); !strings.Contains(got, progressStyle(progressStageStyles[StageAgent], "Reviewers")) {
+		t.Fatalf("lane name should use the Agent stage colour: %q", got)
+	}
+}
+
+func TestHeaderShowsModelsWithEffortAndAliasInsteadOfCounter(t *testing.T) {
+	now := time.Now()
+	r := &LiveRenderer{
+		w: &bytes.Buffer{}, now: func() time.Time { return now }, started: now,
+		agents: make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+		plan: LivePlan{Concurrency: 4, Units: 1, Models: []LiveModel{
+			{Name: "BigModel", Effort: "high"},
+			{Name: "@small SmallModel", Effort: "none"},
+		}},
+	}
+	r.mu.Lock()
+	header := r.headerLineLocked(now)
+	r.mu.Unlock()
+	// Names carry the reasoning effort and the "@small" alias, like show-progress.
+	if !strings.Contains(header, "BigModel:high, @small SmallModel:none") {
+		t.Fatalf("header should list models with effort and alias: %q", header)
+	}
+	if strings.Contains(header, "agents") || strings.Contains(header, "active") {
+		t.Fatalf("header should no longer show an agent counter: %q", header)
+	}
+}
+
+func TestLiveAgentLabelIsNameOnly(t *testing.T) {
+	if got := liveAgentLabel(&liveAgent{info: ProgressInfo{AgentRole: "review", AgentName: "Security"}}); got != "Security" {
+		t.Fatalf("label should drop the role/kind and show the name only, got %q", got)
+	}
+	if got := liveAgentLabel(&liveAgent{info: ProgressInfo{AgentRole: "review", AgentName: "Security · Nudge 2"}}); got != "Security" {
+		t.Fatalf("nudge suffix should be stripped, got %q", got)
+	}
+	if got := liveAgentLabel(&liveAgent{info: ProgressInfo{AgentRole: "merge"}, scope: WorkflowScope{Step: "merge"}}); got == "" {
+		t.Fatalf("a blank name should fall back to step/role, got %q", got)
+	}
+}
+
+func TestStyleModelWithAliasLightensAlias(t *testing.T) {
+	got := styleModelWithAlias("@small Foo-1B", progressColorKeyTeal)
+	if !strings.Contains(got, progressStyle(progressColorKeyTurquoise, "@small")) {
+		t.Fatalf("alias should use the lighter turquoise shade: %q", got)
+	}
+	if !strings.Contains(got, progressStyle(progressColorKeyTeal, "Foo-1B")) {
+		t.Fatalf("model name should use the name colour: %q", got)
+	}
+	if plain := styleModelWithAlias("Foo-1B", progressColorKeyTeal); plain != progressStyle(progressColorKeyTeal, "Foo-1B") {
+		t.Fatalf("a non-aliased model should be a single colour: %q", plain)
+	}
+}
+
+func TestFinalHeaderColours(t *testing.T) {
+	r := &LiveRenderer{useANSI: true}
+	// Abort: red ✗, bold-white word, turquoise time, grey dot.
+	stop := r.finalHeaderLocked("✗", "Review stopped", 65*time.Second, 0, false)
+	if !strings.Contains(stop, progressStyle(progressColorErrorRed, "✗")) {
+		t.Fatalf("✗ should be red: %q", stop)
+	}
+	if !strings.Contains(stop, progressStyle(progressColorBold+";"+progressColorWhite, "Review stopped")) {
+		t.Fatalf("status word should be bold white: %q", stop)
+	}
+	if !strings.Contains(stop, progressStyle(progressColorKeyTurquoise, "01:05")) {
+		t.Fatalf("time should be turquoise (distinct from the word): %q", stop)
+	}
+	if !strings.Contains(stop, progressGrey(" · ")) {
+		t.Fatalf("middle dot should be grey: %q", stop)
+	}
+	// Success: green ✓.
+	done := r.finalHeaderLocked("✓", "Review complete", time.Second, 4, true)
+	if !strings.Contains(done, progressStyle(progressColorNumberGreen, "✓")) {
+		t.Fatalf("✓ should be green: %q", done)
+	}
+}
+
+func TestFindingLineHasSemanticColoursAndGreyDots(t *testing.T) {
 	r := &LiveRenderer{useANSI: true, findings: liveFindingStats{Found: 3, Refuted: 1}}
 	line := r.findingLineLocked()
 	if !strings.Contains(line, progressGrey(" · ")) {
 		t.Fatalf("findings separators should be grey: %q", line)
 	}
-	if !strings.Contains(line, progressStyle(progressColorNumberGreen, "Findings 3")) {
-		t.Fatalf("findings counts should stay green: %q", line)
+	for _, want := range []string{
+		progressStyle(progressColorKeyTeal, "Findings 3"),     // total: teal
+		progressStyle(progressColorErrorRed, "refuted 1"),     // dropped: red
+		progressStyle(progressColorWarnYellow, "duplicate 0"), // amber
+		progressStyle(progressColorProfile, "filtered 0"),     // peach
+		progressStyle(progressColorNumberGreen, "final 2"),    // kept: green
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("findings line missing coloured metric %q:\n%q", want, line)
+		}
 	}
 }
 
@@ -194,6 +331,17 @@ func TestNickPitWordmarkFadesWithoutAbruptJumps(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestLivePhaseTurnMatchesShowProgress(t *testing.T) {
+	got := formatLivePhase(&liveAgent{turn: 3, info: ProgressInfo{NudgeTotal: 3}}, true)
+	// The "#N" round reuses the show-progress turn colouring exactly.
+	if !strings.Contains(got, formatProgressTurn(true, 3)) {
+		t.Fatalf("turn should reuse formatProgressTurn: %q", got)
+	}
+	if !strings.Contains(got, progressStyle(progressColorUnitGreen, "#")) {
+		t.Fatalf("# should be the darker unit-green: %q", got)
 	}
 }
 
@@ -340,7 +488,7 @@ func TestLiveAgentsUseDistinctColoursAndAlignedColumns(t *testing.T) {
 		t.Fatalf("agent colors not distinct:\n%s\n%s", lineA, lineB)
 	}
 	plainA, plainB := stripANSI(lineA), stripANSI(lineB)
-	if !strings.Contains(plainA, "review: Security") || !strings.Contains(plainB, "review: Architecture") {
+	if !strings.Contains(plainA, "Security") || !strings.Contains(plainB, "Architecture") {
 		t.Fatalf("agent label not rendered inside the bar:\n%s\n%s", plainA, plainB)
 	}
 	// The bar is fixed width, so the phase column starts at the same offset.
@@ -370,19 +518,19 @@ func TestLiveAgentLingersAfterDoneThenDrops(t *testing.T) {
 
 	// Within the grace window the finished agent stays, showing a full bar.
 	cur = start.Add(1 * time.Second)
-	if joined := dashboard(); !strings.Contains(joined, "review: Reasoning") || !strings.Contains(joined, "100%") {
+	if joined := dashboard(); !strings.Contains(joined, "Reasoning") || !strings.Contains(joined, "100%") {
 		t.Fatalf("finished agent should linger with a full bar within grace:\n%s", joined)
 	}
 
 	// Just shy of the window it is still present.
 	cur = start.Add(liveAgentLinger - time.Millisecond)
-	if joined := dashboard(); !strings.Contains(joined, "review: Reasoning") {
+	if joined := dashboard(); !strings.Contains(joined, "Reasoning") {
 		t.Fatalf("finished agent dropped before the linger window elapsed:\n%s", joined)
 	}
 
 	// At exactly the window boundary (drop uses >=) it disappears.
 	cur = start.Add(liveAgentLinger)
-	if joined := dashboard(); strings.Contains(joined, "review: Reasoning") {
+	if joined := dashboard(); strings.Contains(joined, "Reasoning") {
 		t.Fatalf("finished agent should drop at exactly the linger window:\n%s", joined)
 	}
 
@@ -416,10 +564,10 @@ func TestLiveRunningAgentsRankAheadOfLingeringWhenSlotsScarce(t *testing.T) {
 	r.mu.Lock()
 	joined := strings.Join(r.buildLinesLocked(), "\n")
 	r.mu.Unlock()
-	if !strings.Contains(joined, "review: Beta") {
+	if !strings.Contains(joined, "Beta") {
 		t.Fatalf("running agent should hold the scarce slot:\n%s", joined)
 	}
-	if strings.Contains(joined, "review: Alpha") {
+	if strings.Contains(joined, "Alpha") {
 		t.Fatalf("lingering finished agent should yield the slot to running work:\n%s", joined)
 	}
 }
@@ -487,7 +635,7 @@ func TestAgentDoneDoesNotResetLingerTimer(t *testing.T) {
 	r.mu.Lock()
 	joined := strings.Join(r.buildLinesLocked(), "\n")
 	r.mu.Unlock()
-	if strings.Contains(joined, "review: Reasoning") {
+	if strings.Contains(joined, "Reasoning") {
 		t.Fatalf("repeated AgentDone extended the linger window:\n%s", joined)
 	}
 }
@@ -516,7 +664,7 @@ func TestLiveAgentNameDropsNudgeAndTurnUsesHash(t *testing.T) {
 		phaseStart: now, deadline: now.Add(10 * time.Minute), turn: 2,
 	}
 	line := stripANSI(formatLiveAgent(a, now, false))
-	if !strings.Contains(line, "review: Performance") || strings.Contains(line, "Nudge") {
+	if !strings.Contains(line, "Performance") || strings.Contains(line, "Nudge") {
 		t.Errorf("agent name should drop the nudge suffix: %q", line)
 	}
 	if !strings.Contains(line, "#2") || strings.Contains(line, "turn") {
