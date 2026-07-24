@@ -70,7 +70,11 @@ func (e *Engine) Verdict(ctx context.Context, reviewCtx *model.ReviewContext, in
 		in = stripped
 	}
 	thresholdRank := model.PriorityThresholdRank(opts.PriorityThreshold)
-	if len(in.Findings) == 0 {
+	// Keep the cheap deterministic path when the caller explicitly disabled the
+	// patch summary or verdict filtering removed every finding. Findings already
+	// empty on entry still need the verdict agent to merge context notes into the
+	// overall explanation.
+	if len(in.Findings) == 0 && (opts.DisablePatchSummary || priorityDropped > 0 || dropped > 0) {
 		out, err := in.Clone()
 		if err != nil {
 			return nil, model.AgentRun{}, fmt.Errorf("verdict: cloning input result: %w", err)

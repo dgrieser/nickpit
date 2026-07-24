@@ -12,13 +12,13 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
-func TestVerdictEmptyFindingsResetsStaleExplanation(t *testing.T) {
+func TestVerdictEmptyFindingsWithoutPatchSummaryResetsStaleExplanation(t *testing.T) {
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 	in := &model.ReviewResult{
 		OverallCorrectness: "patch is incorrect",
 		OverallExplanation: "Merged 3 reviewer finding lists into 2 findings.",
 	}
-	out, run, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{})
+	out, run, err := engine.Verdict(context.Background(), sampleReviewCtx(), in, VerdictOptions{DisablePatchSummary: true})
 	if err != nil {
 		t.Fatalf("Verdict returned err: %v", err)
 	}
@@ -30,6 +30,39 @@ func TestVerdictEmptyFindingsResetsStaleExplanation(t *testing.T) {
 	}
 	if out.OverallExplanation != "No finalized findings remained." {
 		t.Fatalf("explanation = %q, want stale text reset", out.OverallExplanation)
+	}
+}
+
+func TestVerdictEmptyFindingsWithPatchSummaryRunsAgent(t *testing.T) {
+	const notes = "This patch adds support for empty review summaries."
+	const explanation = "This patch adds support for empty review summaries. No correctness issues remain."
+	client := &capturingLLM{resps: []*llm.ReviewResponse{{
+		OverallCorrectness: "patch is correct",
+		OverallExplanation: explanation,
+	}}}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+
+	out, run, err := engine.Verdict(context.Background(), sampleReviewCtx(), &model.ReviewResult{}, VerdictOptions{ContextNotes: notes})
+	if err != nil {
+		t.Fatalf("Verdict returned err: %v", err)
+	}
+	if run.Status == model.AgentRunStatusSkipped {
+		t.Fatalf("run status = %v, want verdict agent to run", run.Status)
+	}
+	if len(client.reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(client.reqs))
+	}
+	if userPrompt := taskMessageContent(client.reqs[0]); !strings.Contains(userPrompt, notes) {
+		t.Fatalf("verdict user prompt missing context notes:\n%s", userPrompt)
+	}
+	if out.OverallCorrectness != "patch is correct" {
+		t.Fatalf("correctness = %q, want \"patch is correct\"", out.OverallCorrectness)
+	}
+	if out.OverallExplanation != explanation {
+		t.Fatalf("explanation = %q, want patch summary %q", out.OverallExplanation, explanation)
+	}
+	if out.OverallConfidenceScore != 1 {
+		t.Fatalf("confidence = %.2f, want 1", out.OverallConfidenceScore)
 	}
 }
 
