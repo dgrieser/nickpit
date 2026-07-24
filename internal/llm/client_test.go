@@ -532,6 +532,64 @@ func TestClientReviewRetriesRequestTooLargeOnceWithTrimmedPayload(t *testing.T) 
 	}
 }
 
+func TestClientReviewRetriesPromptTooLong400OnceWithTrimmedPayload(t *testing.T) {
+	var attempts int
+	var bodySizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
+		bodySizes = append(bodySizes, len(body))
+		if attempts == 1 {
+			http.Error(w, "Your prompt is too long. Please reduce the length and try again.", http.StatusBadRequest)
+			return
+		}
+		writeValidReviewSSE(t, w)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	resp, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  strings.Repeat("large review context\n", 1000),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want one trimmed retry", attempts)
+	}
+	if len(bodySizes) != 2 || bodySizes[1] >= bodySizes[0] {
+		t.Fatalf("request body sizes = %v, want smaller retry", bodySizes)
+	}
+}
+
+func TestClientReviewDoesNotRetryUnrelated400(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		http.Error(w, "invalid request parameter", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  strings.Repeat("large review context\n", 1000),
+	})
+	if err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("error = %v, want 400", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want no retry", attempts)
+	}
+}
+
 func TestClientReviewStopsAfterSecondRequestTooLarge(t *testing.T) {
 	var attempts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
