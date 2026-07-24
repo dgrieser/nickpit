@@ -936,12 +936,12 @@ func progressBar(label string, fraction float64, width, colorIndex int, useANSI 
 	// pads plus the percentage suffix (liveProgressBarWidth = 44); labelWidth just
 	// absorbs any slack.
 	labelWidth := max(width-2-len(right), 0)
-	labelRunes := []rune(padOrTrim(label, labelWidth))
+	labelStr := padOrTrim(label, labelWidth)
 	text := make([]rune, 0, width)
 	bold := make([]bool, 0, width)
 	text = append(text, ' ')
 	bold = append(bold, false)
-	for _, r := range labelRunes {
+	for _, r := range labelStr {
 		text = append(text, r)
 		bold = append(bold, false)
 	}
