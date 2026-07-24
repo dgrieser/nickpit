@@ -354,13 +354,15 @@ func verifyConcurrencyLabel(l *Limiter) string {
 	return "∞"
 }
 
-// verifyProgressName scopes a finding's progress name to its reviewer when
-// verifying a single reviewer's findings, e.g. "Code Quality #2".
+// verifyProgressName names a finding's verify agent, scoped to its reviewer when
+// verifying a single reviewer's findings, e.g. "Verify Code Quality #2". The
+// "Verify" prefix keeps it distinct from the reviewer's own agent in progress
+// output where the role/kind is not otherwise shown (the live dashboard).
 func verifyProgressName(reviewerName string, idx int) string {
 	if reviewerName == "" {
-		return fmt.Sprintf("#%d", idx+1)
+		return fmt.Sprintf("Verify #%d", idx+1)
 	}
-	return fmt.Sprintf("%s #%d", reviewerName, idx+1)
+	return fmt.Sprintf("Verify %s #%d", reviewerName, idx+1)
 }
 
 func truncateFindingTitle(title string) string {

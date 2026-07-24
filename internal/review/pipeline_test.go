@@ -1358,3 +1358,16 @@ func TestLiveLaneLabelPrefersName(t *testing.T) {
 		t.Fatalf("unnamed vector step should use its suffix, got %q", got)
 	}
 }
+
+func TestShardProgressName(t *testing.T) {
+	if got := shardProgressName("Finalize", "#2"); got != "Finalize #2" {
+		t.Fatalf("labelled shard name = %q, want %q", got, "Finalize #2")
+	}
+	// No label → empty, so the caller keeps its default single-bar name.
+	if got := shardProgressName("Finalize", ""); got != "" {
+		t.Fatalf("unlabelled shard name = %q, want empty", got)
+	}
+	if got := shardProgressName("Merge", "  "); got != "" {
+		t.Fatalf("blank label should yield empty, got %q", got)
+	}
+}

@@ -36,6 +36,9 @@ type FinalizeOptions struct {
 	// ContextNotes is kept for option-shape compatibility with the post-merge
 	// pipeline, but final correctness/explanation notes are handled by Verdict.
 	ContextNotes string
+	// ShardLabel, when set (e.g. "#2"), distinguishes a per-cluster finalize
+	// shard's live-progress bar; it never affects the telemetry run name.
+	ShardLabel string
 }
 
 func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, in *model.ReviewResult, opts FinalizeOptions) (*model.ReviewResult, model.AgentRun, error) {
@@ -117,6 +120,7 @@ func (e *Engine) Finalize(ctx context.Context, reviewCtx *model.ReviewContext, i
 	e.logProgress(logging.StageFinalize, logging.StateStart, fmt.Sprintf("findings=%d", len(in.Findings)))
 	result, err := e.runAgent(ctx, agentSpec{
 		name:             "Finalize Review",
+		progressName:     shardProgressName("Finalize", opts.ShardLabel),
 		role:             "finalize",
 		system:           system,
 		noToolsSystem:    system,
