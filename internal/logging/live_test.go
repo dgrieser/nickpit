@@ -33,7 +33,7 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	r.mu.Unlock()
 	joined := strings.Join(lines, "\n")
 	// The info line names the current lane (not the static workflow name).
-	for _, want := range []string{"NickPit", "Security · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings: 3", "final 3"} {
+	for _, want := range []string{"NickPit", "Security · 2/3", "review: Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings 3", "final 3"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("dashboard missing %q:\n%s", want, joined)
 		}
@@ -126,7 +126,7 @@ func TestLiveRendererFindingLifecycle(t *testing.T) {
 	r.mu.Lock()
 	line := r.findingLineLocked()
 	r.mu.Unlock()
-	for _, want := range []string{"Findings: 7", "refuted 1", "duplicate 2", "filtered 1", "final 3"} {
+	for _, want := range []string{"Findings 7", "refuted 1", "duplicate 2", "filtered 1", "final 3"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("finding line missing %q: %s", want, line)
 		}
@@ -142,7 +142,7 @@ func TestFindingLineSeparatorsAreGrey(t *testing.T) {
 	if !strings.Contains(line, progressGrey(" · ")) {
 		t.Fatalf("findings separators should be grey: %q", line)
 	}
-	if !strings.Contains(line, progressStyle(progressColorNumberGreen, "Findings: 3")) {
+	if !strings.Contains(line, progressStyle(progressColorNumberGreen, "Findings 3")) {
 		t.Fatalf("findings counts should stay green: %q", line)
 	}
 }
@@ -155,17 +155,44 @@ func TestNickPitWordmarkAnimates(t *testing.T) {
 	if !strings.Contains(f0, "\x1b[1;38;2;") {
 		t.Fatalf("wordmark should be bold truecolour: %q", f0)
 	}
-	// It animates: nearby frames (same mode) and a mode switch both differ.
+	// It animates: adjacent frames and a stage/style switch both differ.
 	if nickPitWordmark(0) == nickPitWordmark(3) {
 		t.Fatalf("wordmark should animate between adjacent frames")
 	}
-	if nickPitWordmark(0) == nickPitWordmark(46) {
-		t.Fatalf("wordmark animation mode should change over time")
+	if nickPitWordmark(0) == nickPitWordmark(2*nickPitStageFrames) {
+		t.Fatalf("wordmark should change gradient/style across stages")
 	}
-	// Every mode still renders exactly the seven letters.
-	for _, frame := range []int{0, 46, 92, 138} {
+	// Every stage/style (and a mid-fade frame) still renders exactly seven letters.
+	for _, frame := range []int{0, 40, 49, 98, 147, 196} {
 		if got := stripANSI(nickPitWordmark(frame)); got != "NickPit" {
-			t.Fatalf("mode at frame %d dropped letters: %q", frame, got)
+			t.Fatalf("stage at frame %d dropped letters: %q", frame, got)
+		}
+	}
+}
+
+func TestNickPitWordmarkFadesWithoutAbruptJumps(t *testing.T) {
+	// Reconstruct the per-letter colour the wordmark uses (stage colour + the
+	// boundary cross-fade) and assert adjacent frames never jump hard.
+	colorAt := func(frame, i, n int) [3]int {
+		pos := frame % nickPitStageFrames
+		fadeStart := nickPitStageFrames - nickPitFadeFrames
+		rgb := nickPitStageColor(frame/nickPitStageFrames, frame, i, n)
+		if pos >= fadeStart {
+			t := smoothstep(float64(pos-fadeStart+1) / float64(nickPitFadeFrames))
+			rgb = lerpRGB(rgb, nickPitStageColor(frame/nickPitStageFrames+1, frame, i, n), t)
+		}
+		return rgb
+	}
+	n := len([]rune("NickPit"))
+	// Span two full stage boundaries (a flow→sweep and a sweep→flow switch).
+	for f := 0; f <= 2*nickPitStageFrames+2; f++ {
+		for i := range n {
+			a, b := colorAt(f, i, n), colorAt(f+1, i, n)
+			for c := range 3 {
+				if d := a[c] - b[c]; d > 64 || d < -64 {
+					t.Fatalf("abrupt colour jump at frame %d letter %d channel %d: %v→%v", f, i, c, a, b)
+				}
+			}
 		}
 	}
 }
@@ -475,7 +502,7 @@ func TestLoggerFinishLiveLeavesCompactSnapshot(t *testing.T) {
 		t.Fatal("live renderer still attached after finish")
 	}
 	out := buf.String()
-	for _, want := range []string{"Review complete", "01:05", "1 findings", "Findings: 2", "filtered 1", "final 1"} {
+	for _, want := range []string{"Review complete", "01:05", "1 findings", "Findings 2", "filtered 1", "final 1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("compact snapshot missing %q: %q", want, out)
 		}

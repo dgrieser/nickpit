@@ -459,7 +459,7 @@ func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) strin
 		if hidden > 0 {
 			agents += fmt.Sprintf(" · +%d hidden", hidden)
 		}
-		return fmt.Sprintf("NickPit · %s · %s", dur, agents)
+		return fmt.Sprintf("  NickPit · %s · %s", dur, agents)
 	}
 	sep := progressGrey(" · ")
 	frame := max(int(now.Sub(r.started)/(100*time.Millisecond)), 0)
@@ -473,88 +473,105 @@ func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) strin
 	if hidden > 0 {
 		agents += sep + progressStyle(progressColorTaskPink, fmt.Sprintf("+%d hidden", hidden))
 	}
-	return nickPitWordmark(frame) + sep +
+	return "  " + nickPitWordmark(frame) + sep +
 		progressStyle(progressColorKeyTurquoise, dur) + sep + agents
 }
 
-// nickPitAccent is the pink-red used for the "Pit" comet animation.
-var nickPitAccent = [3]int{255, 66, 106}
+// nickPitGradients are smooth colour ramps the wordmark animation flows through.
+// Each is a cyclic gradient (last stop blends back to the first).
+var nickPitGradients = [][][3]int{
+	{{255, 66, 106}, {255, 128, 170}, {255, 176, 120}}, // rose → pink → coral
+	{{56, 128, 255}, {80, 210, 255}, {120, 255, 224}},  // blue → cyan → aqua
+	{{72, 210, 130}, {192, 240, 120}, {110, 224, 200}}, // green → lime → teal
+	{{255, 150, 66}, {255, 214, 96}, {255, 118, 176}},  // orange → gold → magenta
+	{{150, 96, 255}, {198, 120, 255}, {255, 122, 214}}, // indigo → violet → magenta
+}
+
+const (
+	// nickPitStageFrames is how long each gradient/style stage runs (~4.8s at the
+	// 100ms redraw tick); nickPitFadeFrames is the tail of each stage that
+	// cross-fades into the next so the switch is never abrupt.
+	nickPitStageFrames = 48
+	nickPitFadeFrames  = 18
+)
 
 // nickPitWordmark renders "NickPit" bold with a per-letter colour that animates
-// with the frame counter. The animation mode cycles every few seconds so the
-// wordmark is never static — it is the dashboard's motion cue in place of the
-// old braille spinner.
+// smoothly with the frame counter — the dashboard's motion cue in place of the
+// old braille spinner. Every stage advances to the next gradient and alternates
+// between two smooth styles (a gradient flowing through the letters and a soft
+// highlight gliding back and forth over the ramp); the last few frames of a
+// stage cross-fade into the next stage so transitions never snap.
 func nickPitWordmark(frame int) string {
 	letters := []rune("NickPit")
 	n := len(letters)
+	stage := frame / nickPitStageFrames
+	posInStage := frame % nickPitStageFrames
+	fadeStart := nickPitStageFrames - nickPitFadeFrames
 	var b strings.Builder
 	for i := range letters {
-		var rgb [3]int
-		switch (frame / 45) % 4 {
-		case 0: // rainbow flowing left→right through the letters
-			rgb = hsvToRGB(mod360(float64(frame*4+i*45)), 0.85, 1)
-		case 1: // a pink-red comet sweeping and bouncing over a cool base
-			t := 1 - float64(absInt(i-bounce(frame, n)))/float64(n)
-			rgb = lerpRGB([3]int{110, 122, 170}, nickPitAccent, t*t)
-		case 2: // a full-spectrum band sliding back and forth
-			rgb = hsvToRGB(float64(((i+bounce(frame, n))*53)%360), 0.95, 1)
-		default: // twinkle: each letter jumps colour on its own beat
-			rgb = hsvToRGB(float64(hashInt(i*7+frame/2)%360), 0.9, 1)
+		rgb := nickPitStageColor(stage, frame, i, n)
+		if posInStage >= fadeStart {
+			// Reaches a full blend to the next stage exactly at the boundary.
+			t := smoothstep(float64(posInStage-fadeStart+1) / float64(nickPitFadeFrames))
+			rgb = lerpRGB(rgb, nickPitStageColor(stage+1, frame, i, n), t)
 		}
 		b.WriteString(progressStyle(progressColorBold+";"+rgbSGR("38;2", rgb), string(letters[i])))
 	}
 	return b.String()
 }
 
-// bounce maps a frame counter to a position in [0, n-1] that ping-pongs.
-func bounce(frame, n int) int {
-	if n <= 1 {
+// nickPitStageColor is the per-letter colour a given stage would show at frame,
+// evaluated continuously in frame so cross-fading two stages stays smooth. Even
+// stages flow the gradient through the letters; odd stages glide a highlight.
+func nickPitStageColor(stage, frame, i, n int) [3]int {
+	grad := nickPitGradients[stage%len(nickPitGradients)]
+	if stage%2 == 1 {
+		// A soft highlight glides back and forth; letters fade into the ramp's deep
+		// end as they move away from it.
+		peak := triangleF(float64(frame)*0.16, float64(n-1))
+		t := 1 - math.Abs(float64(i)-peak)/float64(n)
+		return lerpRGB(scaleRGB(grad[0], 0.4), grad[len(grad)-1], smoothstep(t))
+	}
+	// The whole ramp flows smoothly through the letters.
+	return sampleGradient(grad, frac(float64(frame)*0.032+float64(i)/float64(n)))
+}
+
+// sampleGradient samples a cyclic colour ramp at t in [0,1), smoothstepping
+// between adjacent stops (the last stop wraps to the first).
+func sampleGradient(colors [][3]int, t float64) [3]int {
+	n := len(colors)
+	if n == 0 {
+		return [3]int{255, 255, 255}
+	}
+	if n == 1 {
+		return colors[0]
+	}
+	scaled := frac(t) * float64(n)
+	idx := int(scaled)
+	return lerpRGB(colors[idx%n], colors[(idx+1)%n], smoothstep(scaled-float64(idx)))
+}
+
+// triangleF ping-pongs x over [0, span].
+func triangleF(x, span float64) float64 {
+	if span <= 0 {
 		return 0
 	}
-	period := 2 * (n - 1)
-	t := ((frame % period) + period) % period
-	if t >= n {
-		t = period - t
+	m := math.Mod(math.Mod(x, 2*span)+2*span, 2*span)
+	if m > span {
+		m = 2*span - m
 	}
-	return t
+	return m
 }
 
-func absInt(x int) int {
-	if x < 0 {
-		return -x
+func frac(x float64) float64 { return x - math.Floor(x) }
+
+func smoothstep(t float64) float64 {
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
 	}
-	return x
-}
-
-func hashInt(x int) int {
-	h := uint32(x) * 2654435761
-	h ^= h >> 15
-	return int(h & 0x7fffffff)
-}
-
-func mod360(h float64) float64 { return math.Mod(math.Mod(h, 360)+360, 360) }
-
-// hsvToRGB converts HSV (h in [0,360), s and v in [0,1]) to 8-bit RGB.
-func hsvToRGB(h, s, v float64) [3]int {
-	c := v * s
-	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
-	m := v - c
-	var rr, gg, bb float64
-	switch {
-	case h < 60:
-		rr, gg, bb = c, x, 0
-	case h < 120:
-		rr, gg, bb = x, c, 0
-	case h < 180:
-		rr, gg, bb = 0, c, x
-	case h < 240:
-		rr, gg, bb = 0, x, c
-	case h < 300:
-		rr, gg, bb = x, 0, c
-	default:
-		rr, gg, bb = c, 0, x
-	}
-	return [3]int{int((rr + m) * 255), int((gg + m) * 255), int((bb + m) * 255)}
+	return t * t * (3 - 2*t)
 }
 
 func lerpRGB(a, b [3]int, t float64) [3]int {
@@ -842,13 +859,13 @@ func rgbSGR(prefix string, c [3]int) string {
 func (r *LiveRenderer) findingLineLocked() string {
 	f, kept := r.findings, r.keptLocked()
 	if !r.useANSI {
-		return fmt.Sprintf("  Findings: %d · refuted %d · duplicate %d · filtered %d · final %d",
+		return fmt.Sprintf("  Findings %d · refuted %d · duplicate %d · filtered %d · final %d",
 			f.Found, f.Refuted, f.Duplicate, f.Filtered, kept)
 	}
 	// Counts stay green; only the separating middle dots are grey.
 	green := func(s string) string { return progressStyle(progressColorNumberGreen, s) }
 	sep := progressGrey(" · ")
-	return "  " + green(fmt.Sprintf("Findings: %d", f.Found)) + sep +
+	return "  " + green(fmt.Sprintf("Findings %d", f.Found)) + sep +
 		green(fmt.Sprintf("refuted %d", f.Refuted)) + sep +
 		green(fmt.Sprintf("duplicate %d", f.Duplicate)) + sep +
 		green(fmt.Sprintf("filtered %d", f.Filtered)) + sep +
