@@ -54,7 +54,11 @@ When evaluating the finding:
 
 {{$gate = inc $gate}}{{$gate}}. Non-finding gate (`non-finding`):
   - Judge the finding AS A WHOLE:
-    treat it as a non-finding ONLY when the finding as a whole affirms correct or intended behavior.
+    treat it as a non-finding when the finding as a whole affirms correct or intended behavior OR does not establish
+    any concrete, actionable problem.
+  - Identify the finding's FINAL CONCLUSION, not just an alarming phrase in its title or first paragraph.
+    If the body ultimately says the behavior is correct, intentional, acceptable, already covered, not actionable,
+    or needs no change, the item is a non-finding even when it first describes a hypothetical downside.
   - A finding that contrasts correct old behavior with broken new behavior IS a real finding;
     a phrase praising part of the code does not make the finding a non-finding.
   - If the submitted "finding" does not report a problem, return `refuted`.
@@ -68,6 +72,10 @@ When evaluating the finding:
     - say a change is intentional
     - say a change is acceptable
     - report no problem or only praise/confirm behavior
+    - request optional hardening, extra tests, compatibility, cleanup, or optimization without identifying a concrete
+      failure, uncovered changed behavior, or supported contract that makes the work necessary
+    - claim performance cost without evidence that the path is hot enough and the cost is material
+    - describe only a theoretical risk, then withdraw it as speculative, negligible, intentional, or not worth fixing
   - Affirmative findings often contain phrases similar to these:
     - "no finding"
     - "no issue"
@@ -81,6 +89,10 @@ When evaluating the finding:
     - "correctly handles"
     - "failure doesn't affect"
     - "intentional design"
+    - "not strictly required"
+    - "no immediate code changes required"
+    - "unlikely to register"
+    - "speculative"
 
 {{- if .DiffScopeEnabled}}
 
@@ -160,6 +172,9 @@ When evaluating the finding:
 {{- end}}
     - Non-finding gate -> `refuted` with `non-finding`
   - Locate the exact changed lines, types, and control flow the finding refers to.
+    Before tracing outward, compare every material factual claim with the submitted `code_location.content`.
+    If the cited content already contradicts the claim, do not silently substitute nearby code, an older revision,
+    or the finding's prose for that evidence.
     a. EXISTS IN THE CHANGE:
       - verify the changed code and the affected scenario are CONCRETELY connected
 {{- if .DiffScopeEnabled}}
@@ -182,6 +197,16 @@ When evaluating the finding:
       - trace the actual control flow and the types involved
       - the failure must be reachable for some real input given the surrounding code, guards, and types
       - if the claimed failure is impossible, given the types or bounds, it is NOT confirmed
+    d. INTERNALLY CONSISTENT:
+      - title, body, cited content, recommendation, and claimed impact must describe one compatible problem
+      - do not confirm when the title says behavior is missing but the body says it is always present, or vice versa
+      - do not confirm a regex, escaping, parsing, or language-semantics claim from prose alone; evaluate the actual
+        runtime/toolchain interpretation of the exact cited syntax
+    e. MATERIAL:
+      - for performance findings, require a concrete hot path plus evidence that the alleged work can materially
+        affect supported workloads; operation counts alone do not prove meaningful overhead
+      - for compatibility findings, identify a supported provider, format, version, or documented contract that fails;
+        invented alternative messages or hypothetical consumers are not evidence
   - The remarks must cite the concrete changed `file:line` and explain the reachable failure scenario and why the
     patch introduced or exposes the issue.
   - Do NOT confirm because a description of correct behavior is accurate.
@@ -197,12 +222,19 @@ When evaluating the finding:
     - validation or locking already prevents the failure
     - the bug is impossible given surrounding code
     - the bug is impossible given the types involved (e.g. an index that cannot exceed a type's range)
+    - the submitted `code_location.content` contains the delimiter, guard, flag, or operation the finding says is
+      missing
+    - the finding misreads language, regex-engine, escaping, or parser semantics
+    - the title and body make materially opposite claims about the same behavior
     - the code the finding describes is not present in the changed lines (it was removed by this patch, or never
       appears in the diff)
 
 {{$gate = inc $gate}}{{$gate}}. Unverified gate (`unverified`):
   - Return `unverified` when the finding reports a possible problem, but you cannot prove it true or false from the
     available evidence.
+  - `unverified` requires a concrete possible failure whose truth depends on missing evidence.
+    Do not use it to rescue praise, optional improvements, speculative optimization, or other items already classified
+    as non-findings because they establish no actionable problem.
   - Absence of evidence is NOT refutation.
   - Prefer `unverified` over `refuted` when uncertain: a real bug labeled `unverified` is recoverable downstream, a
     real bug labeled `refuted` is silently dropped.

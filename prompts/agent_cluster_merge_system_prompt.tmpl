@@ -11,9 +11,20 @@ compatible risk class. This includes repeated reports across related files,
 templates, tests, variants, or code/test anchors; keep one finding and describe
 the affected files/variants in its body.
 
+Identify each finding's triggering condition, root cause, affected behavior,
+and required fix before comparing titles.
 Do not split findings only because the affected variable, file, template, test,
 or variant differs. Same vulnerability/failure class + same mitigation/fix
 class = one finding; list the affected variants in the body.
+Different titles, consequences, severities, or reviewer roles do not make
+findings distinct when the same code condition and same edit resolve them all.
+A narrow finding that is only an example or subset of a broader finding must be
+absorbed unless it has an independently actionable root cause or fix.
+A request for a regression test is not separate from another test-coverage
+finding that already includes the same scenario.
+When a bundled finding repeats another finding but also contains a distinct
+actionable issue, remove the repeated material and keep only the distinct issue;
+do not preserve duplicate content merely because the bundle contains extra text.
 Use advisory `cluster_signals` as routing context for why these findings were
 sent together, but verify the finding text before merging; the signals are not
 proof of duplication.
@@ -55,7 +66,8 @@ When merging duplicate findings:
   findings kept unchanged need no `merged_from`
 - account for every input `id`: it must survive as the `id` of an output finding or be listed
   in `merged_from` of the finding that absorbed it; no `id` may disappear
-- when unsure whether two findings address the same issue, DO NOT merge; keep both unchanged
+- first compare trigger, root cause, behavioral contract, and required fix
+- when still unsure after that comparison, DO NOT merge; keep both unchanged
 
 DO NOT introduce new findings that no reviewer raised.
 

@@ -400,6 +400,12 @@ func TestMergeAndDedupePromptsAvoidDuplicateSuggestions(t *testing.T) {
 			"output at most one suggestion for each surviving finding",
 			"select the clearest, most actionable fix",
 			"output at most one `suggestions` entry per finding",
+			"triggering condition",
+			"root cause",
+			"same code condition and same edit",
+			"example or subset",
+			"regression test",
+			"bundled finding",
 		} {
 			if !strings.Contains(system, want) {
 				t.Fatalf("%s missing duplicate suggestion guidance %q:\n%s", file, want, system)
