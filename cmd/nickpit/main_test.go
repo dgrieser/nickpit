@@ -1635,10 +1635,10 @@ func captureStderr(t *testing.T, fn func()) string {
 
 func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
 	tests := []struct {
-		name                                   string
-		tty                                    bool
-		term                                   string
-		verbose, progress, reasoning, expected bool
+		name                                                string
+		tty                                                 bool
+		term                                                string
+		verbose, progress, reasoning, disableLive, expected bool
 	}{
 		{name: "plain tty", tty: true, term: "xterm-256color", expected: true},
 		{name: "pipe", tty: false, term: "xterm-256color"},
@@ -1646,10 +1646,11 @@ func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
 		{name: "verbose", tty: true, term: "xterm", verbose: true},
 		{name: "explicit progress", tty: true, term: "xterm", progress: true},
 		{name: "reasoning", tty: true, term: "xterm", reasoning: true},
+		{name: "disable-live-progress flag", tty: true, term: "xterm-256color", disableLive: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := liveProgressEnabled(tt.tty, tt.term, tt.verbose, tt.progress, tt.reasoning); got != tt.expected {
+			if got := liveProgressEnabled(tt.tty, tt.term, tt.verbose, tt.progress, tt.reasoning, tt.disableLive); got != tt.expected {
 				t.Fatalf("liveProgressEnabled() = %v, want %v", got, tt.expected)
 			}
 		})

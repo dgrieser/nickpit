@@ -44,8 +44,8 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	if strings.Contains(joined, "Standard review") {
 		t.Errorf("info line should show the lane name, not the workflow name:\n%s", joined)
 	}
-	if len(lines) != 6 { // blank + header + info + two bounded slots + findings
-		t.Fatalf("lines = %d, want 6: %q", len(lines), lines)
+	if len(lines) != 7 { // blank + header + info + two bounded slots + blank + findings
+		t.Fatalf("lines = %d, want 7: %q", len(lines), lines)
 	}
 }
 
@@ -136,6 +136,53 @@ func TestLiveRendererFindingLifecycle(t *testing.T) {
 	}
 }
 
+func TestFindingLineSeparatorsAreGrey(t *testing.T) {
+	r := &LiveRenderer{useANSI: true, findings: liveFindingStats{Found: 3, Refuted: 1}}
+	line := r.findingLineLocked()
+	if !strings.Contains(line, progressGrey(" · ")) {
+		t.Fatalf("findings separators should be grey: %q", line)
+	}
+	if !strings.Contains(line, progressStyle(progressColorNumberGreen, "Findings: 3")) {
+		t.Fatalf("findings counts should stay green: %q", line)
+	}
+}
+
+func TestNickPitWordmarkAnimates(t *testing.T) {
+	f0 := nickPitWordmark(0)
+	if got := stripANSI(f0); got != "NickPit" {
+		t.Fatalf("wordmark letters = %q, want NickPit", got)
+	}
+	if !strings.Contains(f0, "\x1b[1;38;2;") {
+		t.Fatalf("wordmark should be bold truecolour: %q", f0)
+	}
+	// It animates: nearby frames (same mode) and a mode switch both differ.
+	if nickPitWordmark(0) == nickPitWordmark(3) {
+		t.Fatalf("wordmark should animate between adjacent frames")
+	}
+	if nickPitWordmark(0) == nickPitWordmark(46) {
+		t.Fatalf("wordmark animation mode should change over time")
+	}
+	// Every mode still renders exactly the seven letters.
+	for _, frame := range []int{0, 46, 92, 138} {
+		if got := stripANSI(nickPitWordmark(frame)); got != "NickPit" {
+			t.Fatalf("mode at frame %d dropped letters: %q", frame, got)
+		}
+	}
+}
+
+func TestLivePhaseReservesTwoDigitRoundForAlignment(t *testing.T) {
+	now := time.Now()
+	single := &liveAgent{info: ProgressInfo{NudgeTotal: 3}, turn: 3, phaseStart: now}
+	double := &liveAgent{info: ProgressInfo{NudgeTotal: 3}, turn: 12, phaseStart: now}
+	for _, useANSI := range []bool{false, true} {
+		ps := stripANSI(formatLivePhase(single, useANSI))
+		pd := stripANSI(formatLivePhase(double, useANSI))
+		if i, j := strings.Index(ps, "nudges"), strings.Index(pd, "nudges"); i != j {
+			t.Fatalf("nudges misaligned (useANSI=%v) between #3 (%q) and #12 (%q)", useANSI, ps, pd)
+		}
+	}
+}
+
 func TestLiveRendererRedrawOwnsOnlyPreviousRows(t *testing.T) {
 	now := time.Now()
 	r := testLiveRenderer(now)
@@ -219,7 +266,7 @@ func TestLiveProgressFractionReservesNudges(t *testing.T) {
 }
 
 func TestLiveProgressBarUsesAgentColourWithoutBlinking(t *testing.T) {
-	bar := progressBar("review: Testing", len("review"), 0.5, liveProgressBarWidth, 0, true)
+	bar := progressBar("review: Testing", 0.5, liveProgressBarWidth, 0, true)
 	// colorIndex 0 = periwinkle (177,185,249): light fill bg + light text, a dark
 	// scaled remainder bg, and a dark scaled text for the filled portion.
 	for _, want := range []string{"48;2;177;185;249", "38;2;177;185;249", "48;2;74;78;105", "38;2;39;41;55"} {
@@ -242,7 +289,7 @@ func TestLiveProgressBarUsesAgentColourWithoutBlinking(t *testing.T) {
 }
 
 func TestLiveProgressBarEllipsisesLongLabel(t *testing.T) {
-	plain := stripANSI(progressBar("review: A Very Long Reviewer Name That Overflows The Bar", len("review"), 0.0, liveProgressBarWidth, 0, true))
+	plain := stripANSI(progressBar("review: A Very Long Reviewer Name That Overflows The Bar", 0.0, liveProgressBarWidth, 0, true))
 	if got := len([]rune(plain)); got != liveProgressBarWidth {
 		t.Fatalf("width = %d, want %d", got, liveProgressBarWidth)
 	}
@@ -351,7 +398,7 @@ func TestLiveRunningAgentsRankAheadOfLingeringWhenSlotsScarce(t *testing.T) {
 }
 
 func TestProgressBarNonANSIRendersLabelAndPercent(t *testing.T) {
-	bar := progressBar("review: Testing", len("review"), 0.5, liveProgressBarWidth, 0, false)
+	bar := progressBar("review: Testing", 0.5, liveProgressBarWidth, 0, false)
 	if strings.Contains(bar, "\x1b[") {
 		t.Fatalf("non-ANSI bar must not contain escape codes: %q", bar)
 	}
@@ -364,7 +411,7 @@ func TestProgressBarNonANSIRendersLabelAndPercent(t *testing.T) {
 	if !strings.HasSuffix(bar, "50% ") {
 		t.Fatalf("non-ANSI bar percentage not pinned right inside the pad: %q", bar)
 	}
-	long := progressBar("review: A Very Long Reviewer Name That Overflows The Bar", len("review"), 0.0, liveProgressBarWidth, 0, false)
+	long := progressBar("review: A Very Long Reviewer Name That Overflows The Bar", 0.0, liveProgressBarWidth, 0, false)
 	if !strings.Contains(long, "…") {
 		t.Fatalf("non-ANSI overflowing label should be ellipsised: %q", long)
 	}
@@ -380,12 +427,12 @@ func TestProgressBarKeepsPercentUnsplitAtHighFill(t *testing.T) {
 	fillDigitOpen := "1;" + rgbSGR("38;2", scaleRGB(c, 0.22)) + ";" + rgbSGR("48;2", c) + "m"
 	// 94% would place the fill boundary inside " 94%"; the snap must keep the
 	// digits on the base background instead — the "9" never opens on fill.
-	bar := progressBar("review: Testing", len("review"), 0.94, liveProgressBarWidth, 0, true)
+	bar := progressBar("review: Testing", 0.94, liveProgressBarWidth, 0, true)
 	if strings.Contains(bar, fillDigitOpen+"9") {
 		t.Fatalf("percentage digit rendered on the fill background (split): %q", bar)
 	}
 	// A complete bar does tint the whole content, the percentage "100" included.
-	full := progressBar("review: Testing", len("review"), 1.0, liveProgressBarWidth, 0, true)
+	full := progressBar("review: Testing", 1.0, liveProgressBarWidth, 0, true)
 	if !strings.Contains(full, fillDigitOpen+"1") {
 		t.Fatalf("full bar should tint the percentage on the fill background: %q", full)
 	}

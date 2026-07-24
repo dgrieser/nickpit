@@ -122,6 +122,7 @@ type app struct {
 	smallReasoningEffort          string
 	showReasoning                 bool
 	showProgress                  bool
+	disableLiveProgress           bool
 	disableSearchToolOptimization bool
 	disableDiffScope              bool
 	disableParallelToolCalls      bool
@@ -255,6 +256,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.smallReasoningEffort, "small-reasoning-effort", "", "Reasoning effort for --small-model / workflow model: \"@small\"; defaults to --reasoning-effort")
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
+	root.PersistentFlags().BoolVar(&cli.disableLiveProgress, "disable-live-progress", false, "Disable the live progress dashboard (quiet stderr; findings still print to stdout)")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableDiffScope, "disable-diff-scope", false, "Allow findings whose code location does not overlap the diff")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
@@ -1225,7 +1227,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if err != nil {
 		return err
 	}
-	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning) {
+	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning, a.disableLiveProgress) {
 		logger.SetLiveProgress(logging.LivePlan{
 			Concurrency: a.concurrency,
 			Units:       len(spec.Steps),
@@ -1455,8 +1457,8 @@ func (a *app) formatReview(w io.Writer, result *model.ReviewResult) error {
 	return formatter.FormatFindings(result)
 }
 
-func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning bool) bool {
-	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning
+func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning, disableLiveProgress bool) bool {
+	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning && !disableLiveProgress
 }
 
 // liveReviewTarget names what a review is looking at, for the live dashboard

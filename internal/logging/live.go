@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -422,10 +423,10 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 		return visible[i].lastStarted.Before(visible[j].lastStarted)
 	})
 	slots := r.plan.Concurrency
-	// Chrome is four lines: a leading blank, the header, the info line, and the
-	// findings line — leave one spare row beyond that.
-	if slots <= 0 || slots > height-5 {
-		slots = height - 5
+	// Chrome is five lines: a leading blank, the header, the info line, a blank
+	// spacer, and the findings footer — leave one spare row beyond that.
+	if slots <= 0 || slots > height-6 {
+		slots = height - 6
 	}
 	if slots < 1 {
 		slots = 1
@@ -440,17 +441,15 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 			lines = append(lines, "")
 		}
 	}
-	lines = append(lines, r.findingLineLocked())
+	// One blank spacer separates the agent rows from the findings footer.
+	lines = append(lines, "", r.findingLineLocked())
 	return styleLiveLines(r.useANSI, fitLines(lines, width), false)
 }
 
-var liveSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// headerLineLocked renders the top dashboard line: a grey spinner, the wordmark
-// (Nick in white, Pit in wine-red, both bold), then grey-separated info items
-// (elapsed, agent budget) in their own accent colours.
+// headerLineLocked renders the top dashboard line: the animated "NickPit"
+// wordmark (which replaces the old spinner as the motion cue), then
+// grey-separated info items (elapsed, agent budget) in their own accent colours.
 func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) string {
-	spin := liveSpinnerFrames[int(now.Sub(r.started)/(100*time.Millisecond))%len(liveSpinnerFrames)]
 	dur := shortDuration(now.Sub(r.started))
 	if !r.useANSI {
 		agents := fmt.Sprintf("%d active", active)
@@ -460,11 +459,10 @@ func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) strin
 		if hidden > 0 {
 			agents += fmt.Sprintf(" · +%d hidden", hidden)
 		}
-		return fmt.Sprintf("%s NickPit · %s · %s", spin, dur, agents)
+		return fmt.Sprintf("NickPit · %s · %s", dur, agents)
 	}
 	sep := progressGrey(" · ")
-	nickpit := progressStyle(progressColorBold+";"+progressColorWhite, "Nick") +
-		progressStyle(progressColorBold+";"+progressColorWineRed, "Pit")
+	frame := max(int(now.Sub(r.started)/(100*time.Millisecond)), 0)
 	num := func(n int) string { return progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", n)) }
 	var agents string
 	if r.plan.Concurrency > 0 {
@@ -475,8 +473,101 @@ func (r *LiveRenderer) headerLineLocked(now time.Time, active, hidden int) strin
 	if hidden > 0 {
 		agents += sep + progressStyle(progressColorTaskPink, fmt.Sprintf("+%d hidden", hidden))
 	}
-	return progressGrey(spin) + " " + nickpit + sep +
+	return nickPitWordmark(frame) + sep +
 		progressStyle(progressColorKeyTurquoise, dur) + sep + agents
+}
+
+// nickPitAccent is the pink-red used for the "Pit" comet animation.
+var nickPitAccent = [3]int{255, 66, 106}
+
+// nickPitWordmark renders "NickPit" bold with a per-letter colour that animates
+// with the frame counter. The animation mode cycles every few seconds so the
+// wordmark is never static — it is the dashboard's motion cue in place of the
+// old braille spinner.
+func nickPitWordmark(frame int) string {
+	letters := []rune("NickPit")
+	n := len(letters)
+	var b strings.Builder
+	for i := range letters {
+		var rgb [3]int
+		switch (frame / 45) % 4 {
+		case 0: // rainbow flowing left→right through the letters
+			rgb = hsvToRGB(mod360(float64(frame*4+i*45)), 0.85, 1)
+		case 1: // a pink-red comet sweeping and bouncing over a cool base
+			t := 1 - float64(absInt(i-bounce(frame, n)))/float64(n)
+			rgb = lerpRGB([3]int{110, 122, 170}, nickPitAccent, t*t)
+		case 2: // a full-spectrum band sliding back and forth
+			rgb = hsvToRGB(float64(((i+bounce(frame, n))*53)%360), 0.95, 1)
+		default: // twinkle: each letter jumps colour on its own beat
+			rgb = hsvToRGB(float64(hashInt(i*7+frame/2)%360), 0.9, 1)
+		}
+		b.WriteString(progressStyle(progressColorBold+";"+rgbSGR("38;2", rgb), string(letters[i])))
+	}
+	return b.String()
+}
+
+// bounce maps a frame counter to a position in [0, n-1] that ping-pongs.
+func bounce(frame, n int) int {
+	if n <= 1 {
+		return 0
+	}
+	period := 2 * (n - 1)
+	t := ((frame % period) + period) % period
+	if t >= n {
+		t = period - t
+	}
+	return t
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func hashInt(x int) int {
+	h := uint32(x) * 2654435761
+	h ^= h >> 15
+	return int(h & 0x7fffffff)
+}
+
+func mod360(h float64) float64 { return math.Mod(math.Mod(h, 360)+360, 360) }
+
+// hsvToRGB converts HSV (h in [0,360), s and v in [0,1]) to 8-bit RGB.
+func hsvToRGB(h, s, v float64) [3]int {
+	c := v * s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	m := v - c
+	var rr, gg, bb float64
+	switch {
+	case h < 60:
+		rr, gg, bb = c, x, 0
+	case h < 120:
+		rr, gg, bb = x, c, 0
+	case h < 180:
+		rr, gg, bb = 0, c, x
+	case h < 240:
+		rr, gg, bb = 0, x, c
+	case h < 300:
+		rr, gg, bb = x, 0, c
+	default:
+		rr, gg, bb = c, 0, x
+	}
+	return [3]int{int((rr + m) * 255), int((gg + m) * 255), int((bb + m) * 255)}
+}
+
+func lerpRGB(a, b [3]int, t float64) [3]int {
+	if t < 0 {
+		t = 0
+	} else if t > 1 {
+		t = 1
+	}
+	return [3]int{
+		a[0] + int(float64(b[0]-a[0])*t),
+		a[1] + int(float64(b[1]-a[1])*t),
+		a[2] + int(float64(b[2]-a[2])*t),
+	}
 }
 
 func (r *LiveRenderer) stepLineLocked() string {
@@ -605,13 +696,7 @@ func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
 	if a.done {
 		fraction = 1.0
 	}
-	label := liveAgentLabel(a)
-	// Bold only the agent role prefix (e.g. "review"), leaving the ": name" plain.
-	roleLen := 0
-	if role := a.info.AgentRole; role != "" && strings.HasPrefix(label, role) {
-		roleLen = len([]rune(role))
-	}
-	bar := progressBar(label, roleLen, fraction, liveProgressBarWidth, a.colorIndex, useANSI)
+	bar := progressBar(liveAgentLabel(a), fraction, liveProgressBarWidth, a.colorIndex, useANSI)
 	elapsed := now.Sub(a.phaseStart)
 	limit := "∞"
 	if !a.deadline.IsZero() {
@@ -632,7 +717,9 @@ const liveAgentPhaseWidth = 18
 // formatLivePhase renders the turn counter and nudge progress with grey
 // separators and slash, numbers in green, the "nudges" word muted.
 func formatLivePhase(a *liveAgent, useANSI bool) string {
-	turn := fmt.Sprintf("#%d", max(a.turn, 1))
+	// Reserve room for a two-digit round from the start so "· nudges" lines up
+	// whether the round is #3 or #12.
+	turn := fmt.Sprintf("#%-2d", max(a.turn, 1))
 	visible := turn
 	if a.info.NudgeTotal > 0 {
 		visible = fmt.Sprintf("%s · nudges %d/%d", turn, a.info.NudgeIndex, a.info.NudgeTotal)
@@ -655,10 +742,9 @@ func formatLivePhase(a *liveAgent, useANSI bool) string {
 // agent's own colour. The filled portion is a light shade of the agent colour;
 // the unfilled portion is a dark shade. The label (ellipsised to fit) reads dark
 // on the light fill and light on the dark remainder, with the percentage pinned
-// to the right. Only the first roleLen runes of the label are bold (the agent
-// role), together with the percentage digits — the ": name", spaces and "%" sign
-// stay regular weight.
-func progressBar(label string, roleLen int, fraction float64, width, colorIndex int, useANSI bool) string {
+// to the right. Only the percentage digits are bold — the label, spaces and "%"
+// sign stay regular weight.
+func progressBar(label string, fraction float64, width, colorIndex int, useANSI bool) string {
 	percent := min(max(int(fraction*100+0.5), 0), 100)
 	right := []rune(fmt.Sprintf(" %3d%%", percent)) // 5 columns: "   0%" … " 100%"
 	// One space of padding at each end insets the label/percentage from the bar's
@@ -671,9 +757,9 @@ func progressBar(label string, roleLen int, fraction float64, width, colorIndex 
 	bold := make([]bool, 0, width)
 	text = append(text, ' ')
 	bold = append(bold, false)
-	for i, r := range labelRunes {
+	for _, r := range labelRunes {
 		text = append(text, r)
-		bold = append(bold, i < roleLen)
+		bold = append(bold, false)
 	}
 	for _, r := range right {
 		text = append(text, r)
@@ -754,8 +840,19 @@ func rgbSGR(prefix string, c [3]int) string {
 }
 
 func (r *LiveRenderer) findingLineLocked() string {
-	return fmt.Sprintf("  Findings: %d · refuted %d · duplicate %d · filtered %d · final %d",
-		r.findings.Found, r.findings.Refuted, r.findings.Duplicate, r.findings.Filtered, r.keptLocked())
+	f, kept := r.findings, r.keptLocked()
+	if !r.useANSI {
+		return fmt.Sprintf("  Findings: %d · refuted %d · duplicate %d · filtered %d · final %d",
+			f.Found, f.Refuted, f.Duplicate, f.Filtered, kept)
+	}
+	// Counts stay green; only the separating middle dots are grey.
+	green := func(s string) string { return progressStyle(progressColorNumberGreen, s) }
+	sep := progressGrey(" · ")
+	return "  " + green(fmt.Sprintf("Findings: %d", f.Found)) + sep +
+		green(fmt.Sprintf("refuted %d", f.Refuted)) + sep +
+		green(fmt.Sprintf("duplicate %d", f.Duplicate)) + sep +
+		green(fmt.Sprintf("filtered %d", f.Filtered)) + sep +
+		green(fmt.Sprintf("final %d", kept))
 }
 
 func firstNonEmptyLive(values ...string) string {
