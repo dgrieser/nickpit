@@ -107,6 +107,11 @@ type liveAgent struct {
 	turn        int
 	lastStarted time.Time
 	colorIndex  int
+	// shown is the animated bar fraction (also drives the percentage); animAt is
+	// when it was last advanced. The bar creeps toward the next step while a turn
+	// runs, then snaps up when the step actually lands.
+	shown  float64
+	animAt time.Time
 }
 
 // LiveRenderer owns a fixed dashboard below existing terminal scrollback.
@@ -275,6 +280,7 @@ func (r *LiveRenderer) AgentStart(info ProgressInfo, scope WorkflowScope, deadli
 	a.info, a.scope, a.phaseStart, a.deadline = info, scope, now, deadline
 	a.visible, a.lastStarted = true, now
 	a.done, a.doneAt = false, time.Time{}
+	a.animAt = now // reset the animation clock; a new agent keeps shown at 0
 	r.mu.Unlock()
 	r.signal()
 }
@@ -818,20 +824,59 @@ func liveAgentLabel(a *liveAgent) string {
 // wide enough to hold a role:name plus the trailing percentage.
 const liveProgressBarWidth = 44
 
-func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
+const (
+	// While a turn runs, the bar creeps this far toward the next step's fraction
+	// (never quite reaching it) with the slow time constant; once the step lands,
+	// it catches up to the confirmed fraction with the fast constant.
+	liveBarCreepFraction = 0.9
+	liveBarCreepSeconds  = 15.0
+	liveBarSnapSeconds   = 0.5
+)
+
+// animateFraction returns the bar's displayed fraction, easing it toward the
+// upcoming step while a turn runs and snapping it up once a step is reached. It
+// mutates the agent's animation state and so must be called once per redraw
+// under the renderer lock.
+func (a *liveAgent) animateFraction(now time.Time) float64 {
+	if a.done {
+		a.shown = 1
+		return 1
+	}
 	future := max(a.info.NudgeTotal-a.info.NudgeIndex, 0)
 	denom := a.doneTurns + future
 	if a.activeTurn {
 		denom++
 	}
-	fraction := 0.0
+	reached := 0.0
 	if denom > 0 {
-		fraction = float64(a.doneTurns) / float64(denom)
+		reached = float64(a.doneTurns) / float64(denom)
 	}
-	if a.done {
-		fraction = 1.0
+	goal := reached
+	if a.activeTurn && denom > 0 {
+		next := float64(a.doneTurns+1) / float64(denom)
+		goal = reached + (next-reached)*liveBarCreepFraction
 	}
-	bar := progressBar(liveAgentLabel(a), fraction, liveProgressBarWidth, a.colorIndex, useANSI)
+	// First observation (e.g. a freshly constructed agent in tests): show the
+	// confirmed fraction immediately, then animate from there.
+	if a.animAt.IsZero() {
+		a.shown, a.animAt = reached, now
+		return a.shown
+	}
+	dt := now.Sub(a.animAt).Seconds()
+	a.animAt = now
+	if dt > 0 {
+		tau := liveBarCreepSeconds
+		if a.shown < reached {
+			tau = liveBarSnapSeconds // a step landed; catch up fast
+		}
+		a.shown += (goal - a.shown) * (1 - math.Exp(-dt/tau))
+	}
+	a.shown = min(max(a.shown, 0), 1)
+	return a.shown
+}
+
+func formatLiveAgent(a *liveAgent, now time.Time, useANSI bool) string {
+	bar := progressBar(liveAgentLabel(a), a.animateFraction(now), liveProgressBarWidth, a.colorIndex, useANSI)
 	elapsed := now.Sub(a.phaseStart)
 	limit := "∞"
 	if !a.deadline.IsZero() {

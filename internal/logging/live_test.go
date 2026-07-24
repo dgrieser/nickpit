@@ -436,6 +436,30 @@ func TestWriteOutsideAfterFinishJustWritesText(t *testing.T) {
 	}
 }
 
+func TestAnimateFractionCreepsThenSnaps(t *testing.T) {
+	start := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	// An active turn with no nudges: denom = 1, reached = 0, next = 1.
+	a := &liveAgent{activeTurn: true, animAt: start}
+	f1 := a.animateFraction(start.Add(1 * time.Second))
+	f2 := a.animateFraction(start.Add(3 * time.Second))
+	if !(f1 > 0 && f2 > f1 && f2 < liveBarCreepFraction) {
+		t.Fatalf("bar should creep up toward the next step but stay below it: f1=%.3f f2=%.3f", f1, f2)
+	}
+
+	// The step lands: the turn completes, so the confirmed fraction jumps to 1.
+	a.activeTurn, a.doneTurns = false, 1
+	f3 := a.animateFraction(start.Add(3*time.Second + 300*time.Millisecond))
+	if f3 <= f2+0.3 {
+		t.Fatalf("bar should snap up quickly once the step is reached: %.3f → %.3f", f2, f3)
+	}
+
+	// A finished agent shows a full bar immediately.
+	a.done = true
+	if got := a.animateFraction(start.Add(4 * time.Second)); got != 1 {
+		t.Fatalf("done agent should show a full bar, got %.3f", got)
+	}
+}
+
 func TestLiveProgressFractionReservesNudges(t *testing.T) {
 	now := time.Now()
 	a := &liveAgent{
