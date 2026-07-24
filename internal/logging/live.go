@@ -384,9 +384,11 @@ func (r *LiveRenderer) Finish(ok bool, findings int, elapsed time.Duration) {
 	}
 	r.closed = true
 	r.mu.Unlock()
+	// Deferred so the cursor is restored even if a panic unwinds through this
+	// path (e.g. from writeFinishRule) instead of leaving the terminal hidden.
+	defer r.showCursor()
 	close(r.stop)
 	<-r.done
-	r.showCursor()
 	r.writeFinishRule()
 }
 
@@ -412,9 +414,9 @@ func (r *LiveRenderer) Close() {
 	r.final = []string{r.finalHeaderLocked("✗", "Review stopped", elapsed, 0, false), r.findingLineLocked()}
 	r.closed = true
 	r.mu.Unlock()
+	defer r.showCursor()
 	close(r.stop)
 	<-r.done
-	r.showCursor()
 }
 
 // finalHeaderLocked renders the frozen snapshot's headline: a green ✓ (or red ✗
