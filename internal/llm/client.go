@@ -1636,10 +1636,10 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 				if body := httpErrorBody(err, capture); len(body) > 0 {
 					c.logMaybeJSON(ctx, "LLM raw response body:", body)
 				}
-				if status == http.StatusRequestEntityTooLarge && !requestTooLargeRetried {
+				if isRequestTooLarge(status, statusErr.message) && !requestTooLargeRetried {
 					serialized, serializeErr := serializedRequestPayload(payload, extraBody)
 					if serializeErr != nil {
-						return nil, fmt.Errorf("llm: encoding 413 retry request: %w", serializeErr)
+						return nil, fmt.Errorf("llm: encoding oversized retry request: %w", serializeErr)
 					}
 					target := len(serialized) * 3 / 4
 					if c.maxRequestBytes > 0 {
@@ -1647,13 +1647,13 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 					}
 					trimmed, before, after, changed, trimErr := trimSerializedRequestToBytes(payload, extraBody, target)
 					if trimErr != nil {
-						return nil, fmt.Errorf("llm: trimming 413 retry request: %w", trimErr)
+						return nil, fmt.Errorf("llm: trimming oversized retry request: %w", trimErr)
 					}
 					if changed && after < before {
 						requestTooLargeRetried = true
 						payload = trimmed
-						c.logProgress(ctx, logging.StageModel, logging.StateRetry, "413, retrying trimmed request")
-						c.logf(ctx, "Retrying request after 413 with trimmed payload: before_bytes=%d request_body_bytes=%d target_bytes=%d", before, after, target)
+						c.logProgress(ctx, logging.StageModel, logging.StateRetry, "prompt too long, retrying trimmed request")
+						c.logf(ctx, "Retrying oversized request with trimmed payload: status=%d before_bytes=%d request_body_bytes=%d target_bytes=%d", status, before, after, target)
 						continue
 					}
 				}
@@ -1759,6 +1759,31 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 		}
 		return resp, nil
 	}
+}
+
+var requestTooLargeBadRequestMessages = []string{
+	"prompt is too long",
+	"prompt too long",
+	"prompt length exceeded",
+	"maximum context length",
+	"context length exceeded",
+	"context_length_exceeded",
+	"input is too long",
+	"input too large",
+	"request exceeds maximum length",
+}
+
+func isRequestTooLarge(status int, message string) bool {
+	if status == http.StatusRequestEntityTooLarge {
+		return true
+	}
+	if status != http.StatusBadRequest {
+		return false
+	}
+	message = strings.ToLower(message)
+	return slices.ContainsFunc(requestTooLargeBadRequestMessages, func(fragment string) bool {
+		return strings.Contains(message, fragment)
+	})
 }
 
 func (c *OpenAIClient) shouldRetryHTTPStatus(status, attempt int) bool {
