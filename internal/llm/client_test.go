@@ -535,6 +535,7 @@ func TestClientReviewRetriesRequestTooLargeOnceWithTrimmedPayload(t *testing.T) 
 func TestClientReviewRetriesPromptTooLong400OnceWithTrimmedPayload(t *testing.T) {
 	var attempts int
 	var bodySizes []int
+	var secondMessages []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		body, err := io.ReadAll(r.Body)
@@ -545,6 +546,16 @@ func TestClientReviewRetriesPromptTooLong400OnceWithTrimmedPayload(t *testing.T)
 		if attempts == 1 {
 			http.Error(w, "Your prompt is too long. Please reduce the length and try again.", http.StatusBadRequest)
 			return
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		rawMessages, _ := payload["messages"].([]any)
+		for _, raw := range rawMessages {
+			if msg, ok := raw.(map[string]any); ok {
+				secondMessages = append(secondMessages, msg)
+			}
 		}
 		writeValidReviewSSE(t, w)
 	}))
@@ -567,6 +578,14 @@ func TestClientReviewRetriesPromptTooLong400OnceWithTrimmedPayload(t *testing.T)
 	if len(bodySizes) != 2 || bodySizes[1] >= bodySizes[0] {
 		t.Fatalf("request body sizes = %v, want smaller retry", bodySizes)
 	}
+	foundOmission := false
+	for _, msg := range secondMessages {
+		content, _ := msg["content"].(string)
+		foundOmission = foundOmission || strings.Contains(content, requestContentOmitted)
+	}
+	if !foundOmission {
+		t.Fatalf("trimmed retry messages = %#v, want omission marker", secondMessages)
+	}
 }
 
 func TestClientReviewDoesNotRetryUnrelated400(t *testing.T) {
@@ -587,6 +606,33 @@ func TestClientReviewDoesNotRetryUnrelated400(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want no retry", attempts)
+	}
+}
+
+func TestIsRequestTooLarge(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		message string
+		want    bool
+	}{
+		{name: "413", status: http.StatusRequestEntityTooLarge, want: true},
+		{name: "observed provider message", status: http.StatusBadRequest, message: "Your prompt is too long. Please reduce the length and try again.", want: true},
+		{name: "prompt too long uppercase", status: http.StatusBadRequest, message: "PROMPT TOO LONG", want: true},
+		{name: "prompt length exceeded", status: http.StatusBadRequest, message: "Prompt length exceeded", want: true},
+		{name: "maximum context length", status: http.StatusBadRequest, message: "This model's maximum context length is 128000 tokens", want: true},
+		{name: "context length code", status: http.StatusBadRequest, message: "context_length_exceeded", want: true},
+		{name: "input too large", status: http.StatusBadRequest, message: "Input too large", want: true},
+		{name: "request exceeds maximum length", status: http.StatusBadRequest, message: "Request exceeds maximum length", want: true},
+		{name: "unrelated 400", status: http.StatusBadRequest, message: "invalid request parameter", want: false},
+		{name: "same message on 401", status: http.StatusUnauthorized, message: "prompt is too long", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRequestTooLarge(tt.status, tt.message); got != tt.want {
+				t.Fatalf("isRequestTooLarge(%d, %q) = %t, want %t", tt.status, tt.message, got, tt.want)
+			}
+		})
 	}
 }
 
