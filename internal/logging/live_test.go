@@ -33,7 +33,7 @@ func TestLiveRendererShowsWorkflowAgentBudgetAndFindings(t *testing.T) {
 	r.mu.Unlock()
 	joined := strings.Join(lines, "\n")
 	// The info line names the current lane (not the static workflow name).
-	for _, want := range []string{"NickPit", "Security · 2/3", "Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings 3", "final 3"} {
+	for _, want := range []string{"NickPit", "Security 2/3", "Security", "#1", "nudges 0/2", "00:00 / 10:00", "Findings 3", "final 3"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("dashboard missing %q:\n%s", want, joined)
 		}
@@ -66,21 +66,27 @@ func TestStepLineNamesCurrentLaneOrCount(t *testing.T) {
 	// now a separate line, so the info line ends at the unit progress.
 	r := newR()
 	r.Step(WorkflowScope{Unit: 3, UnitTotal: 3, Lane: "Review synthesis", Step: "merge"}, true)
-	if got := r.stepLineLocked(); !strings.Contains(got, "Review synthesis · 3/3") || strings.Contains(got, "org/repo#42") {
+	if got := r.stepLineLocked(); !strings.Contains(got, "Review synthesis 3/3") || strings.Contains(got, "org/repo#42") {
 		t.Fatalf("single named lane = %q", got)
 	}
 	// An unnamed lane (the laneN fallback) → its step label instead of "lane0".
 	r = newR()
 	r.Step(WorkflowScope{Unit: 1, UnitTotal: 3, Lane: "lane0", Step: "collect-context"}, true)
-	if got := r.stepLineLocked(); !strings.Contains(got, "collect-context · 1/3") || strings.Contains(got, "lane0") {
+	if got := r.stepLineLocked(); !strings.Contains(got, "collect-context 1/3") || strings.Contains(got, "lane0") {
 		t.Fatalf("unnamed lane should fall back to the step label = %q", got)
+	}
+	// A named plain step (e.g. collect-context named "Context") → its name.
+	r = newR()
+	r.Step(WorkflowScope{Unit: 1, UnitTotal: 3, Lane: "Context", Step: "collect-context"}, true)
+	if got := r.stepLineLocked(); !strings.Contains(got, "Context 1/3") || strings.Contains(got, "collect-context") {
+		t.Fatalf("named plain step should show its name = %q", got)
 	}
 	// Several lanes in an UNNAMED parallel group → a count (names are on the bars).
 	r = newR()
 	for _, n := range []string{"Code quality", "Security", "Architecture"} {
 		r.Step(WorkflowScope{Unit: 2, UnitTotal: 3, Lane: n, Step: "review:" + n}, true)
 	}
-	if got := r.stepLineLocked(); !strings.Contains(got, "3 lanes · 2/3") {
+	if got := r.stepLineLocked(); !strings.Contains(got, "3 lanes 2/3") {
 		t.Fatalf("unnamed parallel group should show a count = %q", got)
 	}
 	// Several lanes in a NAMED parallel group → the group name, not a count.
@@ -88,7 +94,7 @@ func TestStepLineNamesCurrentLaneOrCount(t *testing.T) {
 	for _, n := range []string{"Code quality", "Security", "Architecture"} {
 		r.Step(WorkflowScope{Unit: 2, UnitTotal: 3, Lane: n, Step: "review:" + n, Group: "Reviewers"}, true)
 	}
-	if got := r.stepLineLocked(); !strings.Contains(got, "Reviewers · 2/3") || strings.Contains(got, "3 lanes") {
+	if got := r.stepLineLocked(); !strings.Contains(got, "Reviewers 2/3") || strings.Contains(got, "3 lanes") {
 		t.Fatalf("named parallel group should show its name = %q", got)
 	}
 }
@@ -185,7 +191,7 @@ func TestInfoLineCarriesWorkflowAgentInfo(t *testing.T) {
 		width: 150, height: 24, now: time.Now,
 	}
 	r.Step(WorkflowScope{Unit: 2, UnitTotal: 3, Lane: "Reviewers", Step: "review", Group: "Reviewers"}, true)
-	if got := r.stepLineLocked(); !strings.Contains(got, "Reviewers · 2/3 · Standard review · embedded · 23 steps") {
+	if got := r.stepLineLocked(); !strings.Contains(got, "Reviewers 2/3 · Standard review · embedded · 23 steps") {
 		t.Fatalf("info line should carry the workflow agent info: %q", got)
 	}
 	// The lane/pipeline name uses the --show-progress "Agent" stage colour.
@@ -271,15 +277,18 @@ func TestFindingLineHasSemanticColoursAndGreyDots(t *testing.T) {
 	if !strings.Contains(line, progressGrey(" · ")) {
 		t.Fatalf("findings separators should be grey: %q", line)
 	}
+	// Labels are semantically coloured; every count is green.
 	for _, want := range []string{
-		progressStyle(progressColorKeyTeal, "Findings 3"),     // total: teal
-		progressStyle(progressColorErrorRed, "refuted 1"),     // dropped: red
-		progressStyle(progressColorWarnYellow, "duplicate 0"), // amber
-		progressStyle(progressColorProfile, "filtered 0"),     // peach
-		progressStyle(progressColorNumberGreen, "final 2"),    // kept: green
+		progressStyle(progressColorWhite, "Findings"),    // total: white
+		progressStyle(progressColorErrorRed, "refuted"),  // dropped: red
+		progressStyle("38;5;179", "duplicate"),           // dim gold
+		progressStyle(progressColorProfile, "filtered"),  // peach
+		progressStyle(progressColorNumberGreen, "final"), // kept: green
+		progressStyle(progressColorNumberGreen, "3"),     // counts stay green
+		progressStyle(progressColorNumberGreen, "1"),
 	} {
 		if !strings.Contains(line, want) {
-			t.Fatalf("findings line missing coloured metric %q:\n%q", want, line)
+			t.Fatalf("findings line missing coloured segment %q:\n%q", want, line)
 		}
 	}
 }

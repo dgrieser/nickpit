@@ -1342,3 +1342,19 @@ func TestWorkflowSixLaneSpecMatchesGlobalResultShape(t *testing.T) {
 		t.Fatalf("verify calls = %d, want %d", inner.verifyCalls, len(reviewVectors))
 	}
 }
+
+func TestLiveLaneLabelPrefersName(t *testing.T) {
+	// A configured name wins (this is how a named plain step, e.g. collect-context
+	// with name: Context, surfaces in live progress).
+	if got := liveLaneLabel(boundLane{name: "Context"}, "collect-context", 0); got != "Context" {
+		t.Fatalf("named lane should use its name, got %q", got)
+	}
+	// Unnamed plain step (no ":" in the label) falls back to laneN.
+	if got := liveLaneLabel(boundLane{}, "collect-context", 0); got != "lane0" {
+		t.Fatalf("unnamed plain step should fall back to laneN, got %q", got)
+	}
+	// Unnamed vector step uses the suffix after ":".
+	if got := liveLaneLabel(boundLane{}, "review:security", 1); got != "security" {
+		t.Fatalf("unnamed vector step should use its suffix, got %q", got)
+	}
+}

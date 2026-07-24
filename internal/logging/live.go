@@ -695,7 +695,8 @@ func (r *LiveRenderer) stepLineLocked() string {
 	if !r.useANSI {
 		s := "  " + stepDisplayName(count, group, laneName, laneStep)
 		if count > 0 {
-			s += fmt.Sprintf(" · %d/%d", unit, total)
+			// No dot between the name and its N/M progress.
+			s += fmt.Sprintf(" %d/%d", unit, total)
 		}
 		if len(wf) > 0 {
 			s += " · " + strings.Join(wf, " · ")
@@ -712,12 +713,12 @@ func (r *LiveRenderer) stepLineLocked() string {
 		// stage colour (bold blue).
 		namePart = progressStyle(progressStageStyles[StageAgent], stepDisplayName(count, group, laneName, laneStep))
 	}
-	parts := []string{namePart}
+	// The N/M progress joins the name with a space (no middle dot).
 	if count > 0 {
-		parts = append(parts, progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", unit))+
-			progressGrey("/")+progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", total)))
+		namePart += " " + progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", unit)) +
+			progressGrey("/") + progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", total))
 	}
-	parts = append(parts, wf...)
+	parts := append([]string{namePart}, wf...)
 	return "  " + strings.Join(parts, sep)
 }
 
@@ -983,16 +984,17 @@ func (r *LiveRenderer) findingLineLocked() string {
 		return fmt.Sprintf("  Findings %d · refuted %d · duplicate %d · filtered %d · final %d",
 			f.Found, f.Refuted, f.Duplicate, f.Filtered, kept)
 	}
-	// Each metric gets a semantic colour: the total in teal, refuted red,
-	// duplicate amber, filtered peach, and the surviving "final" count green.
-	// Middle dots stay grey.
-	seg := func(code, label string, n int) string {
-		return progressStyle(code, fmt.Sprintf("%s %d", label, n))
+	// Each label gets a semantic colour — Findings white, refuted red, duplicate a
+	// dim gold, filtered peach, final green — while every count is green and the
+	// middle dots stay grey.
+	const dupGold = "38;5;179" // dimmer yellow/orange than the warn yellow
+	seg := func(labelColor, label string, n int) string {
+		return progressStyle(labelColor, label) + " " + progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", n))
 	}
 	sep := progressGrey(" · ")
-	return "  " + seg(progressColorKeyTeal, "Findings", f.Found) + sep +
+	return "  " + seg(progressColorWhite, "Findings", f.Found) + sep +
 		seg(progressColorErrorRed, "refuted", f.Refuted) + sep +
-		seg(progressColorWarnYellow, "duplicate", f.Duplicate) + sep +
+		seg(dupGold, "duplicate", f.Duplicate) + sep +
 		seg(progressColorProfile, "filtered", f.Filtered) + sep +
 		seg(progressColorNumberGreen, "final", kept)
 }

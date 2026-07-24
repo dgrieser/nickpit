@@ -293,7 +293,7 @@ func (e *Engine) BuildPipeline(spec workflow.Spec) (*Pipeline, error) {
 		if err != nil {
 			return nil, err
 		}
-		p.units = append(p.units, planUnit{lanes: []boundLane{{steps: []boundStep{bs}}}})
+		p.units = append(p.units, planUnit{lanes: []boundLane{{name: entry.Name, steps: []boundStep{bs}}}})
 		p.needsSource = p.needsSource || bs.needsSource
 	}
 	return p, nil

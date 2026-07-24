@@ -140,8 +140,8 @@ type Spec struct {
 //     there is no auto-fusion. Valid only at the top level.
 type StepEntry struct {
 	Type string
-	// Name is an optional human-readable label for a lane, pipeline, or parallel
-	// group. Plain steps derive their labels from their contents.
+	// Name is an optional human-readable label for a plain step, lane, pipeline,
+	// or parallel group, shown in progress output instead of the derived label.
 	Name         string
 	Config       *StepOverride
 	FindingsFrom []string
@@ -723,7 +723,7 @@ func normalizeStepOverride(o *StepOverride) error {
 }
 
 func decodePlainStep(node *yaml.Node) (StepEntry, error) {
-	if err := checkAllowedKeys(node, "type", "config", "findings_from"); err != nil {
+	if err := checkAllowedKeys(node, "type", "name", "config", "findings_from"); err != nil {
 		return StepEntry{}, err
 	}
 	typeNode := mappingValue(node, "type")
@@ -731,6 +731,11 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 		return StepEntry{}, fmt.Errorf("missing type")
 	}
 	entry := StepEntry{Type: typeNode.Value}
+	if name := mappingValue(node, "name"); name != nil {
+		if err := name.Decode(&entry.Name); err != nil {
+			return StepEntry{}, fmt.Errorf("name: %w", err)
+		}
+	}
 	if ff := mappingValue(node, "findings_from"); ff != nil {
 		paths, err := decodeStringOrList(ff)
 		if err != nil {

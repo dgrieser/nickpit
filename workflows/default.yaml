@@ -4,6 +4,7 @@ name: Standard review       # optional; shown above the live progress dashboard
 
 steps:
   - type: collect-context
+    name: Context
     config:
       time_budget:
         max_seconds: 180
@@ -134,7 +135,7 @@ steps:
         config:
           time_budget:
             max_seconds: 1500
-    name: Reviewers
+    name: Review
   - pipeline:
       - type: merge
         config:
@@ -159,7 +160,7 @@ steps:
           scope: cluster
           time_budget:
             weight: 10
-    name: Review synthesis
+    name: Finalize
     config:
       time_budget:
         max_seconds: 1200
