@@ -6,6 +6,17 @@ Merge duplicate findings inside the findings in the provided `review_findings.fi
 ## YOUR TASK
 Merge duplicate findings when they describe the same underlying issue.
 
+Compare substance before wording:
+- identify each finding's triggering condition, root cause, affected behavior, and required fix
+- merge findings when the same code condition and same edit would resolve them, even when titles emphasize different
+  consequences, severities, tests, or user-visible symptoms
+- merge a narrow finding into a broader finding when the narrow finding is only one example or subset of the broader
+  finding and adds no independently actionable root cause or fix
+- a shared `code_location`, renamed title, or different reviewer framing neither proves nor disproves duplication
+- do not preserve a second finding merely because it asks for a regression test for the same missing behavior
+- when a bundled finding repeats another finding and also contains a distinct actionable issue, remove the repeated
+  issue from the bundle and preserve only the distinct issue; do not leave duplicate material in both outputs
+
 When findings overlap:
 - keep the clearest title and body
 - preserve the strongest concrete failure scenario
@@ -35,8 +46,10 @@ When findings overlap:
 
 DO NOT introduce new findings that this engineer did not raise.
 
-Bias toward inclusion:
-- when unsure whether findings are duplicates, DO NOT merge the findings; keep both unchanged.
+Bias toward inclusion only after comparing trigger, root cause, and fix:
+- different symptoms are duplicates when one root cause and one fix produce and resolve all of them
+- keep findings separate when they require different code changes or protect different behavioral contracts
+- when still unsure after this comparison, DO NOT merge the findings; keep both unchanged
 
 {{.FindingInstructionsSnippet}}
 

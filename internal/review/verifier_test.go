@@ -624,11 +624,21 @@ func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
 	for _, want := range []string{
 		"Non-finding gate",
 		"Judge the finding AS A WHOLE",
+		"Identify the finding's FINAL CONCLUSION",
 		"no issue",
 		"Do NOT verify whether the positive statement is true",
 		"Never use the phrase \"no issue\" anywhere in `remarks` except",
 		"When `refuted` because the input is a non-finding",
 		"often contain phrases similar to these",
+		"request optional hardening, extra tests, compatibility, cleanup, or optimization",
+		"uncovered changed behavior",
+		"claim performance cost without evidence",
+		"compare every material factual claim with the submitted `code_location.content`",
+		"title, body, cited content, recommendation, and claimed impact",
+		"operation counts alone do not prove meaningful overhead",
+		"invented alternative messages or hypothetical consumers are not evidence",
+		"`unverified` requires a concrete possible failure",
+		"Do not use it to rescue praise",
 	} {
 		if !strings.Contains(sysPrompt, want) {
 			t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
