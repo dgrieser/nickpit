@@ -1210,6 +1210,73 @@ func TestRunAgent_InvalidJSONRetryExhaustionUsesPartialResponse(t *testing.T) {
 	if result.run.TokensUsed.TotalTokens != 3 {
 		t.Fatalf("tokens = %d, want initial plus partial retry tokens", result.run.TokensUsed.TotalTokens)
 	}
+	if result.run.InvalidResponse != nil {
+		t.Fatalf("invalid response diagnostic = %#v, want nil when partial response is accepted", result.run.InvalidResponse)
+	}
+}
+
+func TestRunAgent_InvalidJSONFailurePreservesFinalResponse(t *testing.T) {
+	first := &llm.InvalidResponseError{
+		RawContent: "å first malformed response",
+		Reason:     "first recovery failure",
+	}
+	final := &llm.InvalidResponseError{
+		RawContent: "\x1bå final malformed response api_key=\"sk-supersecretvalue\" SK-ABCDEFGHIJK",
+		Reason:     "final candidate repair failure password=hunter123\x1b",
+	}
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{{err: first}, {err: final}},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("verdict"), model.ReviewRequest{MaxOutputRetries: 1})
+	if err == nil {
+		t.Fatal("expected invalid JSON failure")
+	}
+	if result.run.InvalidResponse == nil {
+		t.Fatal("invalid response diagnostic is nil")
+	}
+	if got, want := result.run.InvalidResponse.Reason, `final candidate repair failure password="[redacted]"`; got != want {
+		t.Fatalf("reason = %q, want %q", got, want)
+	}
+	if got, want := result.run.InvalidResponse.RawContent, `å final malformed response api_key="[redacted]" [redacted]`; got != want {
+		t.Fatalf("raw content = %q, want %q", got, want)
+	}
+}
+
+func TestRunAgent_InvalidJSONFailureOmitsEmptyDiagnostic(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{err: &llm.InvalidResponseError{}},
+			{err: &llm.InvalidResponseError{}},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("verdict"), model.ReviewRequest{MaxOutputRetries: 1})
+	if err == nil {
+		t.Fatal("expected invalid JSON failure")
+	}
+	if result.run.InvalidResponse != nil {
+		t.Fatalf("invalid response diagnostic = %#v, want nil", result.run.InvalidResponse)
+	}
+}
+
+func TestRunAgent_SuccessOmitsInvalidResponseDiagnostic(t *testing.T) {
+	llmClient := &scriptedLLM{
+		results: []scriptedLLMResult{
+			{resp: nudgeReviewResponse("valid response", 1, nudgeFinding("Finding", 1))},
+		},
+	}
+	engine := nudgeTestEngine(llmClient)
+
+	result, err := engine.runAgent(context.Background(), nudgeTestAgent("verdict"), model.ReviewRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.run.InvalidResponse != nil {
+		t.Fatalf("invalid response diagnostic = %#v, want nil", result.run.InvalidResponse)
+	}
 }
 
 func TestTestingDuplicateFilePruneRecordsDroppedFindingKeys(t *testing.T) {

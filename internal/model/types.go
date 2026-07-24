@@ -179,6 +179,15 @@ type AgentRun struct {
 	// backward compatibility with pre-failure-tolerance consumers).
 	Status string `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// InvalidResponse preserves the final malformed model output separately
+	// from Error. Warnings remain concise while persisted sessions retain enough
+	// evidence to diagnose failed lenient-JSON recovery.
+	InvalidResponse *InvalidResponseDiagnostic `json:"invalid_response,omitempty"`
+}
+
+type InvalidResponseDiagnostic struct {
+	Reason     string `json:"reason,omitempty"`
+	RawContent string `json:"raw_content,omitempty"`
 }
 
 // SegmentRuntime is the wall-clock span of one pipeline unit: a single step

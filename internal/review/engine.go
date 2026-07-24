@@ -21,6 +21,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/toolchain"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/versionmatch"
@@ -1776,6 +1777,13 @@ func (e *Engine) renderContextSystem(template string, req model.ReviewRequest, s
 func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.ReviewRequest) (agentResult, error) {
 	start := time.Now()
 	result, err := e.runAgentOnce(ctx, agent, req)
+	var invalidResp *llm.InvalidResponseError
+	if errors.As(err, &invalidResp) && (invalidResp.Reason != "" || invalidResp.RawContent != "") {
+		result.run.InvalidResponse = &model.InvalidResponseDiagnostic{
+			Reason:     textsan.RedactSecrets(textsan.StripControl(invalidResp.Reason)),
+			RawContent: textsan.RedactSecrets(textsan.StripControl(invalidResp.RawContent)),
+		}
+	}
 	if req.DisableSuggestions && result.resp != nil {
 		model.StripSuggestions(result.resp.Findings)
 	}

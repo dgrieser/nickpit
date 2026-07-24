@@ -35,6 +35,6 @@ Second paragraph.
 
 ---
 
-! Publish failed: 404
+! Warnings: 1 (Publish: 1)
 Tokens:  38.2k prompt / 5.1k completion / 43.3k total
 Runtime: 4m12s

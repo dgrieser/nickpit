@@ -3,9 +3,12 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"unicode"
+
+	"github.com/dgrieser/nickpit/internal/textsan"
 )
 
 // LenientUnmarshal tries to decode arbitrary model-generated text into v.
@@ -14,14 +17,16 @@ import (
 // (trailing commas, single-quoted strings, line/block comments,
 // Python-style True/False/None) before retrying.
 //
-// On total failure, the original strict-parse error is returned so callers
-// can surface the most informative message to the model.
+// On total failure, the error reports both the original strict-parse failure
+// and the deepest recovery failure. This keeps a leading prose character from
+// hiding why an extracted JSON candidate could not be repaired.
 func LenientUnmarshal(content string, v any) error {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return errors.New("empty content")
 	}
-	if err := json.Unmarshal([]byte(trimmed), v); err == nil {
+	strictErr := json.Unmarshal([]byte(trimmed), v)
+	if strictErr == nil {
 		return nil
 	}
 
@@ -32,22 +37,75 @@ func LenientUnmarshal(content string, v any) error {
 		}
 	}
 
-	for _, extracted := range extractJSONCandidates(stripped) {
+	candidates := extractJSONCandidates(stripped)
+	candidateErrs := make([]error, 0, len(candidates))
+	for _, extracted := range candidates {
 		if err := json.Unmarshal([]byte(extracted), v); err == nil {
 			return nil
 		}
 		repaired := RepairJSON([]byte(extracted))
-		if err := json.Unmarshal(repaired, v); err == nil {
+		err := json.Unmarshal(repaired, v)
+		if err == nil {
 			return nil
 		}
+		candidateErrs = append(candidateErrs, err)
 	}
 
 	repaired := RepairJSON([]byte(stripped))
-	if err := json.Unmarshal(repaired, v); err == nil {
+	repairedErr := json.Unmarshal(repaired, v)
+	if repairedErr == nil {
 		return nil
 	}
 
-	return json.Unmarshal([]byte(trimmed), v)
+	return &jsonRecoveryError{
+		strictErr:      strictErr,
+		candidateErrs:  candidateErrs,
+		repairedErr:    repairedErr,
+		candidateCount: len(candidates),
+	}
+}
+
+type jsonRecoveryError struct {
+	strictErr      error
+	candidateErrs  []error
+	repairedErr    error
+	candidateCount int
+}
+
+const maxReportedJSONCandidateErrors = 10
+
+func (e *jsonRecoveryError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "strict parse failed: %s", sanitizeJSONRecoveryError(e.strictErr))
+	if e.candidateCount == 0 {
+		b.WriteString("; recovery found no balanced JSON object or array")
+	} else {
+		fmt.Fprintf(&b, "; recovery failed for %d balanced JSON candidate(s)", e.candidateCount)
+		reported := min(len(e.candidateErrs), maxReportedJSONCandidateErrors)
+		for i, err := range e.candidateErrs[:reported] {
+			fmt.Fprintf(&b, "; candidate %d: %s", i+1, sanitizeJSONRecoveryError(err))
+		}
+		if omitted := len(e.candidateErrs) - reported; omitted > 0 {
+			fmt.Fprintf(&b, "; %d more candidate failures omitted", omitted)
+		}
+	}
+	fmt.Fprintf(&b, "; final full-content repair failed: %s", sanitizeJSONRecoveryError(e.repairedErr))
+	return b.String()
+}
+
+func sanitizeJSONRecoveryError(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return textsan.RedactSecrets(textsan.StripControl(err.Error()))
+}
+
+func (e *jsonRecoveryError) Unwrap() []error {
+	errs := make([]error, 0, 2+len(e.candidateErrs))
+	errs = append(errs, e.strictErr)
+	errs = append(errs, e.candidateErrs...)
+	errs = append(errs, e.repairedErr)
+	return errs
 }
 
 // Mergeable lets a target type define its own merge semantics for
@@ -94,9 +152,8 @@ type FallbackType struct {
 // Custom UnmarshalJSON implementations on element types run per candidate
 // during unmarshal, so the merge layer always sees post-unmarshal values.
 //
-// If no candidate parses (primary or fallback) and the repaired full
-// content also fails, the strict-parse error from the trimmed input is
-// returned.
+// If no candidate parses (primary or fallback), LenientUnmarshal reports both
+// the original strict failure and the deepest recovery failure.
 func LenientUnmarshalMerge(content string, v any, fallbacks ...FallbackType) error {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {

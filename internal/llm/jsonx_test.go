@@ -2,8 +2,10 @@ package llm
 
 import (
 	"encoding/json"
+	"errors"
 	"maps"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -158,6 +160,11 @@ func TestLenientUnmarshal(t *testing.T) {
 			"[P1] Finding summary\n\n{\"a\":1,\"b\":\"hi\",\"c\":{\"k\":\"v\"}}",
 			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
 		},
+		{
+			"non-ascii prose before json",
+			"å{\"a\":1,\"b\":\"hi\",\"c\":{\"k\":\"v\"}}",
+			payload{A: 1, B: "hi", C: map[string]any{"k": "v"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,6 +190,121 @@ func TestLenientUnmarshalReturnsErrorOnGarbage(t *testing.T) {
 	var v any
 	if err := LenientUnmarshal("absolutely no json at all", &v); err == nil {
 		t.Fatalf("expected error for non-JSON content")
+	}
+}
+
+func TestLenientUnmarshalReportsRecoveryFailure(t *testing.T) {
+	var v map[string]any
+	err := LenientUnmarshal(`å{"value":tru}`, &v)
+	if err == nil {
+		t.Fatal("expected malformed candidate to fail")
+	}
+	for _, want := range []string{
+		"strict parse failed: invalid character",
+		"recovery failed for 1 balanced JSON candidate(s)",
+		"candidate 1:",
+		"invalid character '}' in literal true",
+		"final full-content repair failed:",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("error chain lacks json.SyntaxError: %v", err)
+	}
+}
+
+func TestLenientUnmarshalReportsMissingBalancedCandidate(t *testing.T) {
+	var v map[string]any
+	err := LenientUnmarshal(`å{"value":`, &v)
+	if err == nil {
+		t.Fatal("expected truncated candidate to fail")
+	}
+	if !strings.Contains(err.Error(), "recovery found no balanced JSON object or array") {
+		t.Fatalf("error = %q, want missing-balanced-candidate diagnostic", err)
+	}
+	if !strings.Contains(err.Error(), "final full-content repair failed:") {
+		t.Fatalf("error = %q, want final-repair diagnostic", err)
+	}
+	recoveryErr, ok := err.(*jsonRecoveryError)
+	if !ok {
+		t.Fatalf("error type = %T, want *jsonRecoveryError", err)
+	}
+	if got, want := len(recoveryErr.Unwrap()), 2; got != want {
+		t.Fatalf("unwrapped errors = %d, want strict + final repair (%d)", got, want)
+	}
+}
+
+func TestLenientUnmarshalReportsEveryCandidateFailure(t *testing.T) {
+	var v map[string]any
+	err := LenientUnmarshal(`prefix {"first":tru} middle {"second":nul} suffix`, &v)
+	if err == nil {
+		t.Fatal("expected malformed candidates to fail")
+	}
+	recoveryErr, ok := err.(*jsonRecoveryError)
+	if !ok {
+		t.Fatalf("error type = %T, want *jsonRecoveryError", err)
+	}
+	if got, want := len(recoveryErr.candidateErrs), 2; got != want {
+		t.Fatalf("candidate errors = %d, want %d", got, want)
+	}
+	for _, want := range []string{"candidate 1:", "candidate 2:", "final full-content repair failed:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if got, want := len(recoveryErr.Unwrap()), 4; got != want {
+		t.Fatalf("unwrapped errors = %d, want strict + 2 candidates + final repair (%d)", got, want)
+	}
+}
+
+func TestLenientUnmarshalCapsReportedCandidateFailures(t *testing.T) {
+	const candidateCount = 25
+	var v map[string]any
+	err := LenientUnmarshal(strings.Repeat(`{"value":tru} `, candidateCount), &v)
+	if err == nil {
+		t.Fatal("expected malformed candidates to fail")
+	}
+	recoveryErr, ok := err.(*jsonRecoveryError)
+	if !ok {
+		t.Fatalf("error type = %T, want *jsonRecoveryError", err)
+	}
+	for _, want := range []string{
+		"recovery failed for 25 balanced JSON candidate(s)",
+		"candidate 10:",
+		"15 more candidate failures omitted",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "candidate 11:") {
+		t.Fatalf("error reports candidate beyond cap: %q", err)
+	}
+	if got, want := len(recoveryErr.Unwrap()), candidateCount+2; got != want {
+		t.Fatalf("unwrapped errors = %d, want full error chain (%d)", got, want)
+	}
+}
+
+type secretJSONErrorTarget struct{}
+
+func (*secretJSONErrorTarget) UnmarshalJSON([]byte) error {
+	return errors.New("custom decoder failed password=hunter123\x1b")
+}
+
+func TestLenientUnmarshalSanitizesRecoveryErrorText(t *testing.T) {
+	var v secretJSONErrorTarget
+	err := LenientUnmarshal(`{"value":1}`, &v)
+	if err == nil {
+		t.Fatal("expected custom decoder failure")
+	}
+	if strings.Contains(err.Error(), "hunter123") || strings.ContainsRune(err.Error(), '\x1b') {
+		t.Fatalf("error leaks secret or control character: %q", err)
+	}
+	if !strings.Contains(err.Error(), `password="[redacted]"`) {
+		t.Fatalf("error = %q, want redacted custom decoder failure", err)
 	}
 }
 

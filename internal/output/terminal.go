@@ -28,7 +28,7 @@ const (
 // TerminalFormatter renders the review result the way it appears as published
 // GitLab/GitHub comments: the summary comment first, then one comment per
 // finding, with badge labels in place of the badge SVGs and markdown bodies
-// rendered for the terminal. A dim footer keeps token usage and warnings.
+// rendered for the terminal. A dim footer keeps token usage and warning count.
 type TerminalFormatter struct {
 	w       io.Writer
 	useANSI bool
@@ -132,8 +132,8 @@ func (f *TerminalFormatter) writeFinding(b *strings.Builder, finding model.Findi
 }
 
 func (f *TerminalFormatter) writeFooter(b *strings.Builder, result *model.ReviewResult) {
-	for _, warning := range result.Warnings {
-		b.WriteString(f.yellow("! " + textsan.StripControl(warning)))
+	if len(result.Warnings) > 0 {
+		b.WriteString(f.yellow(warningSummary(result.Warnings)))
 		b.WriteString("\n")
 	}
 	b.WriteString(f.dim(fmt.Sprintf("Tokens:  %s prompt / %s completion / %s total",
@@ -144,6 +144,58 @@ func (f *TerminalFormatter) writeFooter(b *strings.Builder, result *model.Review
 	if result.RuntimeSeconds > 0 {
 		b.WriteString(f.dim("Runtime: " + model.HumanDuration(time.Duration(result.RuntimeSeconds*float64(time.Second)))))
 		b.WriteString("\n")
+	}
+}
+
+func warningSummary(warnings []string) string {
+	counts := make(map[string]int)
+	for _, warning := range warnings {
+		counts[warningType(warning)]++
+	}
+	types := make([]string, 0, len(counts))
+	for warningType, count := range counts {
+		types = append(types, fmt.Sprintf("%s: %d", warningType, count))
+	}
+	sort.Strings(types)
+	return fmt.Sprintf("! Warnings: %d (%s)", len(warnings), strings.Join(types, ", "))
+}
+
+func warningType(warning string) string {
+	warning = strings.ToLower(strings.TrimSpace(warning))
+	switch {
+	case strings.HasPrefix(warning, "publish failed"):
+		return "Publish"
+	case strings.HasPrefix(warning, "verify "):
+		return "Verify"
+	case strings.HasPrefix(warning, "context "),
+		strings.HasPrefix(warning, "all changed files omitted"):
+		return "Context"
+	case strings.HasPrefix(warning, "finalize "),
+		strings.HasPrefix(warning, "finalizer "):
+		return "Finalize"
+	case strings.HasPrefix(warning, "verdict "):
+		return "Verdict"
+	case strings.HasPrefix(warning, "summarize "),
+		strings.HasPrefix(warning, "summarizer "):
+		return "Summarize"
+	case strings.HasPrefix(warning, "skipped reasoning-extract:"):
+		return "Reasoning"
+	case strings.HasPrefix(warning, "skipped nudge:"):
+		return "Nudge"
+	case strings.HasPrefix(warning, "skipped review:"),
+		strings.HasPrefix(warning, "all vector reviewers "),
+		strings.Contains(warning, " reviewer "):
+		return "Review"
+	case strings.HasPrefix(warning, "no verified findings remained"),
+		strings.Contains(warning, " merge step "):
+		return "Merge"
+	case strings.HasPrefix(warning, "skipped lane "),
+		strings.HasPrefix(warning, "skipped step "):
+		return "Workflow"
+	case strings.HasPrefix(warning, "confidence threshold "):
+		return "Configuration"
+	default:
+		return "Other"
 	}
 }
 
