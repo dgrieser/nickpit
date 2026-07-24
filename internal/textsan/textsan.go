@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(["']?(?:(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|token|secret|password|credential|authorization|auth))["']?\s*[:=]\s*)("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;&}]+)`)
+	sensitiveAssignmentPattern = regexp.MustCompile(`(?i)(["']?(?:(?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|token|secret|password|credential|authorization|auth))["']?\s*[:=]\s*)("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^\s,;}]+)`)
 	bearerTokenPattern         = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}`)
-	prefixedSecretPattern      = regexp.MustCompile(`\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|glpat-[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{16})\b`)
+	prefixedSecretPattern      = regexp.MustCompile(`(?i)\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|glpat-[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{16})\b`)
 )
 
 // StripControl removes control characters that a terminal could interpret as

@@ -47,6 +47,12 @@ func TestRedactSecrets(t *testing.T) {
 		{"openai token", "request failed for sk-abcdefghijklmnop", "request failed for [redacted]"},
 		{"gitlab token", "request failed for glpat-abcdefghijklmnop", "request failed for [redacted]"},
 		{"aws access key", "request failed for AKIAABCDEFGHIJKLMNOP", "request failed for [redacted]"},
+		{"mixed-case prefixed tokens", "SK-ABCDEFGHIJK GHP_ABCDEFGHIJK GlPaT-AbCdEfGhIjKl", "[redacted] [redacted] [redacted]"},
+		{"ampersand in unquoted value", "api_key=abc&def", `api_key="[redacted]"`},
+		{"query-like unquoted value", "api_key=sk-abcdefgh&session=tok-secret", `api_key="[redacted]"`},
+		{"multiple credentials", `api_key="sk-abcdefgh" and token=ghp_abcdefghijk`, `api_key="[redacted]" and token="[redacted]"`},
+		{"newline-separated credentials", "password=hunter123\naccess_token=secret456", "password=\"[redacted]\"\naccess_token=\"[redacted]\""},
+		{"keeps unicode around credential", "世界 api_key=secretvalue τέλος", `世界 api_key="[redacted]" τέλος`},
 		{"keeps ordinary text", "token count: 123", "token count: 123"},
 	}
 	for _, tt := range tests {

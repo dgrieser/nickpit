@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -118,11 +119,15 @@ func TestTerminalFormatterStripsControlCharsFromUntrustedText(t *testing.T) {
 	if strings.ContainsRune(out, 0x1b) {
 		t.Fatalf("terminal output leaked ESC from untrusted text:\n%q", out)
 	}
-	// The visible content is preserved (only the control byte is dropped).
-	for _, want := range []string{"Title", "INJECT", "Body", "steal", "anation", "estion", "ming"} {
+	// Visible finding content is preserved (only control bytes are dropped);
+	// warning bodies are intentionally omitted from non-JSON output.
+	for _, want := range []string{"Title", "INJECT", "Body", "steal", "anation", "estion", "! Warnings: 1 (Other: 1)"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected preserved text %q in output:\n%q", want, out)
 		}
+	}
+	if strings.Contains(out, "warn") {
+		t.Fatalf("warning body leaked into non-JSON output:\n%q", out)
 	}
 }
 
@@ -271,8 +276,11 @@ func TestTerminalFormatterEmptyFindings(t *testing.T) {
 	if got := strings.Count(out, "---"); got != 1 {
 		t.Fatalf("rules = %d, want exactly 1 (summary|footer):\n%s", got, out)
 	}
-	if !strings.Contains(out, "! Verify failed for finding #1") {
-		t.Fatalf("missing footer warning:\n%s", out)
+	if !strings.Contains(out, "! Warnings: 1 (Verify: 1)") {
+		t.Fatalf("missing footer warning count:\n%s", out)
+	}
+	if strings.Contains(out, "Verify failed") || strings.Contains(out, "upstream 503") {
+		t.Fatalf("footer leaked warning body:\n%s", out)
 	}
 	if !strings.Contains(out, "Tokens:  0 prompt / 0 completion / 0 total") {
 		t.Fatalf("missing tokens footer:\n%s", out)
@@ -313,8 +321,61 @@ func TestTerminalFormatterANSI(t *testing.T) {
 	if !strings.Contains(out, "Race in stream retry") {
 		t.Fatalf("missing glamour-rendered title text:\n%q", out)
 	}
-	if !strings.Contains(out, "\x1b[33m! something failed\x1b[0m") {
-		t.Fatalf("missing yellow footer warning:\n%q", out)
+	if !strings.Contains(out, "\x1b[33m! Warnings: 1 (Other: 1)\x1b[0m") {
+		t.Fatalf("missing yellow footer warning count:\n%q", out)
+	}
+	if strings.Contains(out, "something failed") {
+		t.Fatalf("ANSI footer leaked warning body:\n%q", out)
+	}
+}
+
+func TestWarningSummaryGroupsStableTypesWithoutDescriptions(t *testing.T) {
+	warnings := []string{
+		`Verify failed for finding #1 "secret title": upstream 503`,
+		`Verify cancelled at finding #2 "another title": context canceled`,
+		"Publish failed: token=secret",
+		"unknown sensitive description",
+	}
+	got := warningSummary(warnings)
+	want := "! Warnings: 4 (Other: 1, Publish: 1, Verify: 2)"
+	if got != want {
+		t.Fatalf("warningSummary() = %q, want %q", got, want)
+	}
+	for _, leaked := range []string{"secret title", "another title", "upstream", "token=", "sensitive description"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("warning summary leaked %q: %q", leaked, got)
+		}
+	}
+}
+
+func TestWarningType(t *testing.T) {
+	tests := []struct {
+		warning string
+		want    string
+	}{
+		{"Publish failed: 404", "Publish"},
+		{"Verify failed for finding #1: upstream", "Verify"},
+		{"Context agent failed: upstream", "Context"},
+		{"all changed files omitted by filters", "Context"},
+		{"Finalize failed: upstream", "Finalize"},
+		{"Finalizer output mismatch: omitted=1", "Finalize"},
+		{"Verdict failed: upstream", "Verdict"},
+		{"Summarize failed: upstream", "Summarize"},
+		{"Summarizer output mismatch: omitted=1", "Summarize"},
+		{"Skipped reasoning-extract:security because review failed", "Reasoning"},
+		{"Skipped nudge:security because review failed", "Nudge"},
+		{"Skipped review:security because budget was exhausted", "Review"},
+		{"Security reviewer failed: upstream", "Review"},
+		{"No verified findings remained; skipped merge agent", "Merge"},
+		{"Merge Findings merge step failed: upstream", "Merge"},
+		{`Skipped lane "security" because its time budget was exhausted`, "Workflow"},
+		{"confidence threshold 0.70 is configured but workflow has no verdict step", "Configuration"},
+		{"unrecognized warning text", "Other"},
+	}
+	for _, tt := range tests {
+		if got := warningType(tt.warning); got != tt.want {
+			t.Errorf("warningType(%q) = %q, want %q", tt.warning, got, tt.want)
+		}
 	}
 }
 
@@ -370,6 +431,25 @@ func TestJSONFormatterAlwaysIncludesToolLimitsAndDuplicates(t *testing.T) {
 	}
 	if got, ok := run["duplicate_tool_calls"]; !ok || got != float64(0) {
 		t.Fatalf("agent duplicate_tool_calls = %#v, present=%t", got, ok)
+	}
+}
+
+func TestJSONFormatterPreservesWarningBodies(t *testing.T) {
+	var buf bytes.Buffer
+	formatter := NewJSONFormatter(&buf)
+	warnings := []string{"verify failed: upstream 503", "publish failed: 404"}
+	if err := formatter.FormatFindings(&model.ReviewResult{Warnings: warnings}); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := payload.Warnings, warnings; !reflect.DeepEqual(got, want) {
+		t.Fatalf("warnings = %#v, want %#v", got, want)
 	}
 }
 

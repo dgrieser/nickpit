@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"unicode"
+
+	"github.com/dgrieser/nickpit/internal/textsan"
 )
 
 // LenientUnmarshal tries to decode arbitrary model-generated text into v.
@@ -70,19 +72,32 @@ type jsonRecoveryError struct {
 	candidateCount int
 }
 
+const maxReportedJSONCandidateErrors = 10
+
 func (e *jsonRecoveryError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "strict parse failed: %v", e.strictErr)
+	fmt.Fprintf(&b, "strict parse failed: %s", sanitizeJSONRecoveryError(e.strictErr))
 	if e.candidateCount == 0 {
 		b.WriteString("; recovery found no balanced JSON object or array")
 	} else {
 		fmt.Fprintf(&b, "; recovery failed for %d balanced JSON candidate(s)", e.candidateCount)
-		for i, err := range e.candidateErrs {
-			fmt.Fprintf(&b, "; candidate %d: %v", i+1, err)
+		reported := min(len(e.candidateErrs), maxReportedJSONCandidateErrors)
+		for i, err := range e.candidateErrs[:reported] {
+			fmt.Fprintf(&b, "; candidate %d: %s", i+1, sanitizeJSONRecoveryError(err))
+		}
+		if omitted := len(e.candidateErrs) - reported; omitted > 0 {
+			fmt.Fprintf(&b, "; %d more candidate failures omitted", omitted)
 		}
 	}
-	fmt.Fprintf(&b, "; final full-content repair failed: %v", e.repairedErr)
+	fmt.Fprintf(&b, "; final full-content repair failed: %s", sanitizeJSONRecoveryError(e.repairedErr))
 	return b.String()
+}
+
+func sanitizeJSONRecoveryError(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return textsan.RedactSecrets(textsan.StripControl(err.Error()))
 }
 
 func (e *jsonRecoveryError) Unwrap() []error {

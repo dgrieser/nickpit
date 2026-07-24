@@ -228,6 +228,13 @@ func TestLenientUnmarshalReportsMissingBalancedCandidate(t *testing.T) {
 	if !strings.Contains(err.Error(), "final full-content repair failed:") {
 		t.Fatalf("error = %q, want final-repair diagnostic", err)
 	}
+	recoveryErr, ok := err.(*jsonRecoveryError)
+	if !ok {
+		t.Fatalf("error type = %T, want *jsonRecoveryError", err)
+	}
+	if got, want := len(recoveryErr.Unwrap()), 2; got != want {
+		t.Fatalf("unwrapped errors = %d, want strict + final repair (%d)", got, want)
+	}
 }
 
 func TestLenientUnmarshalReportsEveryCandidateFailure(t *testing.T) {
@@ -250,6 +257,54 @@ func TestLenientUnmarshalReportsEveryCandidateFailure(t *testing.T) {
 	}
 	if got, want := len(recoveryErr.Unwrap()), 4; got != want {
 		t.Fatalf("unwrapped errors = %d, want strict + 2 candidates + final repair (%d)", got, want)
+	}
+}
+
+func TestLenientUnmarshalCapsReportedCandidateFailures(t *testing.T) {
+	const candidateCount = 25
+	var v map[string]any
+	err := LenientUnmarshal(strings.Repeat(`{"value":tru} `, candidateCount), &v)
+	if err == nil {
+		t.Fatal("expected malformed candidates to fail")
+	}
+	recoveryErr, ok := err.(*jsonRecoveryError)
+	if !ok {
+		t.Fatalf("error type = %T, want *jsonRecoveryError", err)
+	}
+	for _, want := range []string{
+		"recovery failed for 25 balanced JSON candidate(s)",
+		"candidate 10:",
+		"15 more candidate failures omitted",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "candidate 11:") {
+		t.Fatalf("error reports candidate beyond cap: %q", err)
+	}
+	if got, want := len(recoveryErr.Unwrap()), candidateCount+2; got != want {
+		t.Fatalf("unwrapped errors = %d, want full error chain (%d)", got, want)
+	}
+}
+
+type secretJSONErrorTarget struct{}
+
+func (*secretJSONErrorTarget) UnmarshalJSON([]byte) error {
+	return errors.New("custom decoder failed password=hunter123\x1b")
+}
+
+func TestLenientUnmarshalSanitizesRecoveryErrorText(t *testing.T) {
+	var v secretJSONErrorTarget
+	err := LenientUnmarshal(`{"value":1}`, &v)
+	if err == nil {
+		t.Fatal("expected custom decoder failure")
+	}
+	if strings.Contains(err.Error(), "hunter123") || strings.ContainsRune(err.Error(), '\x1b') {
+		t.Fatalf("error leaks secret or control character: %q", err)
+	}
+	if !strings.Contains(err.Error(), `password="[redacted]"`) {
+		t.Fatalf("error = %q, want redacted custom decoder failure", err)
 	}
 }
 

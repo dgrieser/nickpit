@@ -1780,8 +1780,8 @@ func (e *Engine) runAgent(ctx context.Context, agent agentSpec, req model.Review
 	var invalidResp *llm.InvalidResponseError
 	if errors.As(err, &invalidResp) && (invalidResp.Reason != "" || invalidResp.RawContent != "") {
 		result.run.InvalidResponse = &model.InvalidResponseDiagnostic{
-			Reason:     invalidResp.Reason,
-			RawContent: textsan.RedactSecrets(invalidResp.RawContent),
+			Reason:     textsan.RedactSecrets(textsan.StripControl(invalidResp.Reason)),
+			RawContent: textsan.RedactSecrets(textsan.StripControl(invalidResp.RawContent)),
 		}
 	}
 	if req.DisableSuggestions && result.resp != nil {
