@@ -520,7 +520,7 @@ func TestWorkflowFusedPostMergeSingleInputSkipsMergeLLM(t *testing.T) {
 	}
 }
 
-func TestWorkflowFusedPostMergeEmptyBranchSkipsLLMs(t *testing.T) {
+func TestWorkflowFusedPostMergeEmptyBranchWithoutPatchSummarySkipsLLMs(t *testing.T) {
 	client := &multiAgentLLM{}
 	engine := pipelineTestEngine(client)
 	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{
@@ -535,7 +535,7 @@ func TestWorkflowFusedPostMergeEmptyBranchSkipsLLMs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal})
+	result, _, err := engine.RunSpecPipeline(context.Background(), pipeline, model.ReviewRequest{Mode: model.ModeLocal, DisablePatchSummary: true})
 	if err != nil {
 		t.Fatal(err)
 	}
