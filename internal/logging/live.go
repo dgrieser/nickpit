@@ -864,7 +864,11 @@ func (a *liveAgent) animateFraction(now time.Time) float64 {
 	}
 	dt := now.Sub(a.animAt).Seconds()
 	a.animAt = now
-	if dt > 0 {
+	// Only ever move the bar forward. denom grows by one whenever a turn goes
+	// active, which lowers reached/goal for the same doneTurns; without this guard
+	// the bar (and percentage) would visibly run backwards. When goal dips below
+	// the current fraction we simply hold until real progress overtakes it.
+	if dt > 0 && goal > a.shown {
 		tau := liveBarCreepSeconds
 		if a.shown < reached {
 			tau = liveBarSnapSeconds // a step landed; catch up fast

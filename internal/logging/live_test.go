@@ -460,6 +460,19 @@ func TestAnimateFractionCreepsThenSnaps(t *testing.T) {
 	}
 }
 
+func TestAnimateFractionNeverGoesBackward(t *testing.T) {
+	start := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	// Bar already at 0.8, then a new turn goes active: denom grows (nudges still
+	// pending) so reached/goal drop well below 0.8. The bar must hold, not regress.
+	a := &liveAgent{
+		animAt: start, shown: 0.8, doneTurns: 1, activeTurn: true,
+		info: ProgressInfo{NudgeTotal: 5, NudgeIndex: 0},
+	}
+	if got := a.animateFraction(start.Add(2 * time.Second)); got < 0.8 {
+		t.Fatalf("bar ran backwards: 0.800 → %.3f", got)
+	}
+}
+
 func TestLiveProgressFractionReservesNudges(t *testing.T) {
 	now := time.Now()
 	a := &liveAgent{
