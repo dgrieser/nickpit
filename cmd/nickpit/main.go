@@ -122,6 +122,7 @@ type app struct {
 	smallReasoningEffort          string
 	showReasoning                 bool
 	showProgress                  bool
+	disableLiveProgress           bool
 	disableSearchToolOptimization bool
 	disableDiffScope              bool
 	disableParallelToolCalls      bool
@@ -154,9 +155,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+		// A user abort (Ctrl-C / SIGTERM) cancels the context; the resulting error
+		// is expected, not a failure, so exit quietly with the conventional
+		// interrupt code instead of printing an ERROR.
+		if isUserAbort(ctx, err) {
+			os.Exit(130)
+		}
 		logging.New(os.Stderr, false, isTerminal(os.Stderr)).PrintError(err)
 		os.Exit(1)
 	}
+}
+
+// isUserAbort reports whether a failed run was a user abort (Ctrl-C / SIGTERM)
+// rather than a genuine error. ctx.Err() catches aborts whose surfaced error
+// does not cleanly wrap context.Canceled; errors.Is covers the rest.
+func isUserAbort(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.Canceled)
 }
 
 func newRootCmd() *cobra.Command {
@@ -255,6 +269,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.smallReasoningEffort, "small-reasoning-effort", "", "Reasoning effort for --small-model / workflow model: \"@small\"; defaults to --reasoning-effort")
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
+	root.PersistentFlags().BoolVar(&cli.disableLiveProgress, "disable-live-progress", false, "Disable the live progress dashboard (quiet stderr; findings still print to stdout)")
 	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
 	root.PersistentFlags().BoolVar(&cli.disableDiffScope, "disable-diff-scope", false, "Allow findings whose code location does not overlap the diff")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
@@ -1225,8 +1240,28 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	if err != nil {
 		return err
 	}
-	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning) {
-		logger.SetLiveProgress(logging.LivePlan{Concurrency: a.concurrency, Units: len(spec.Steps)})
+	if liveProgressEnabled(isTerminal(os.Stderr), os.Getenv("TERM"), a.verbose, a.showProgress, a.showReasoning, a.disableLiveProgress) {
+		// Target is set later by the engine once the repo/branch is resolved
+		// (reviewTargetSummary), matching the --show-progress context line. The
+		// workflow identity mirrors the --show-progress Agent bracket.
+		wf := workflowProgressInfo(spec, a.specPath, a.stepName)
+		// Models mirror the --show-progress model lines: the primary model, and the
+		// "@small" model when it resolves to a different model.
+		liveModels := []logging.LiveModel{{Name: profile.Model, Effort: profile.ReasoningEffort}}
+		if small := config.EffectiveSmallProfile(profile); small.Model != profile.Model {
+			liveModels = append(liveModels, logging.LiveModel{
+				Name:   workflow.SmallModelAlias + " " + small.Model,
+				Effort: small.ReasoningEffort,
+			})
+		}
+		logger.SetLiveProgress(logging.LivePlan{
+			Concurrency:    a.concurrency,
+			Units:          len(spec.Steps),
+			Workflow:       wf.Workflow,
+			WorkflowSource: wf.WorkflowSource,
+			WorkflowSteps:  wf.WorkflowSteps,
+			Models:         liveModels,
+		})
 		defer logger.CloseLive()
 	}
 
@@ -1451,8 +1486,8 @@ func (a *app) formatReview(w io.Writer, result *model.ReviewResult) error {
 	return formatter.FormatFindings(result)
 }
 
-func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning bool) bool {
-	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning
+func liveProgressEnabled(stderrTTY bool, termName string, verbose, showProgress, showReasoning, disableLiveProgress bool) bool {
+	return stderrTTY && termName != "dumb" && !verbose && !showProgress && !showReasoning && !disableLiveProgress
 }
 
 func chatSessionHint(sessionID string, stderrTTY, useANSI bool, width int) string {

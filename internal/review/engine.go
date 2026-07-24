@@ -212,6 +212,10 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 		return nil, err
 	}
 	e.logProgress(stage, logging.StateStart, reviewContextSummary(reviewCtx, req))
+	if e.logger != nil {
+		// Show the same resolved repo/branch the show-progress context line uses.
+		e.logger.SetLiveTarget(reviewTargetSummary(reviewCtx))
+	}
 	e.logf(ctx, "Resolved context: title=%q files=%d commits=%d comments=%d diff_bytes=%d", reviewCtx.Title, len(reviewCtx.ChangedFiles), len(reviewCtx.Commits), len(reviewCtx.Comments), len(reviewCtx.Diff))
 	if len(reviewCtx.ChangedFiles) == 0 && len(reviewCtx.Diff) == 0 {
 		return nil, ErrEmptyDiff
@@ -383,7 +387,11 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 }
 
 type agentSpec struct {
-	name             string
+	name string
+	// progressName overrides the name shown in progress output (the live bar and
+	// reasoning banner) without changing the telemetry run name — used to give
+	// per-cluster synthesis shards distinct bars, e.g. "Finalize #2".
+	progressName     string
 	role             string
 	system           string
 	noToolsSystem    string
@@ -1049,7 +1057,7 @@ func (e *Engine) runClusterMergeAgentsWithStyleGuides(ctx context.Context, userP
 		wg.Add(1)
 		go func(ci int, reduced []model.Finding) {
 			defer wg.Done()
-			outcomes[ci], runs[ci] = e.runClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions)
+			outcomes[ci], runs[ci] = e.runClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, fmt.Sprintf("#%d", ci+1))
 		}(ci, reduced)
 	}
 	wg.Wait()
@@ -1117,8 +1125,8 @@ func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[stri
 
 // runClusterMergeAgentWithStyleGuides judges one ambiguous cluster. Any failure
 // path returns the cluster unmerged so reviewer findings are never lost.
-func (e *Engine) runClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) ([]model.Finding, model.AgentRun) {
-	result, err := e.callClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions)
+func (e *Engine) runClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) ([]model.Finding, model.AgentRun) {
+	result, err := e.callClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, shardLabel)
 	run := result.run
 	if err != nil {
 		return cluster, markMergeRun(run, model.AgentRunStatusFailed, err)
@@ -1269,7 +1277,7 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 	return &clone
 }
 
-func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, error) {
+func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_cluster_merge_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
@@ -1311,6 +1319,7 @@ func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userP
 	}
 	return e.runAgent(ctx, agentSpec{
 		name:          "Merge Findings",
+		progressName:  shardProgressName("Merge", shardLabel),
 		role:          "merge",
 		system:        system,
 		noToolsSystem: system,
@@ -3231,12 +3240,21 @@ func reviewContextSummary(ctx *model.ReviewContext, req model.ReviewRequest) str
 	if ctx == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s:%s [%s, ≥%s] on %s @ %s → %s",
+	return fmt.Sprintf("%s:%s [%s, ≥%s] on %s",
 		ctx.Mode, req.Submode,
 		req.ProfileName, req.PriorityThreshold,
-		ctx.Repository.FullName,
-		ctx.Repository.HeadRef, ctx.Repository.BaseRef,
+		reviewTargetSummary(ctx),
 	)
+}
+
+// reviewTargetSummary is the "repo @ head → base" tail of the context summary —
+// shared with the live dashboard so a review target reads the same everywhere.
+func reviewTargetSummary(ctx *model.ReviewContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s @ %s → %s",
+		ctx.Repository.FullName, ctx.Repository.HeadRef, ctx.Repository.BaseRef)
 }
 
 func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {

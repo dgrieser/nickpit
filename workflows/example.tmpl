@@ -27,6 +27,10 @@
 # child can be a `lane:` — a list of steps that run sequentially within the
 # group — so each reviewer's findings are verified and deduped as soon as that
 # reviewer finishes. Each vector may be used by at most one lane per group.
+# Every entry — a plain step, a `lane:`, a `parallel:` group, and a `pipeline:`
+# (below) — accepts an optional `name:` shown in progress output (runtime
+# reporting, budget messages, and the live-progress info line) in place of the
+# label derived from its contents.
 #
 # A `pipeline:` group is the explicit, streamed post-review tail:
 #   merge → finalize → verdict, optionally followed by summarize.
@@ -108,12 +112,14 @@
 #               scope: reviewer
 #               time_budget:
 #                 weight: 10
+#         name: Security review
 #         config:
 #           time_budget:
 #             max_seconds: 1200
 #       - type: review:performance
 #         config:
 #           model: "@small"
+#     name: Reviewers
 #   - pipeline:
 #       - type: merge
 #         config:
@@ -137,6 +143,7 @@
 #           scope: cluster
 #           time_budget:
 #             weight: 15
+#     name: Review synthesis
 #     config:
 #       time_budget:
 #         max_seconds: 600

@@ -66,17 +66,18 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 		}
 	}
 	parallel := make([]StepEntry, len(ReviewVectorIDs))
+	laneNames := []string{"Code quality", "Security", "Architecture", "Performance", "Testing", "Best practices"}
 	for i, id := range ReviewVectorIDs {
-		parallel[i] = StepEntry{Lane: []StepEntry{
+		parallel[i] = StepEntry{Name: laneNames[i], Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
 			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight35}}},
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1500}}}
 	}
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
-		{Type: StepCollectContext, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
-		{Parallel: parallel},
-		{Pipeline: []StepEntry{
+		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
+		{Name: "Review", Parallel: parallel},
+		{Name: "Finalize", Pipeline: []StepEntry{
 			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}}},
 			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight40}}},
 			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight20}}},
@@ -85,6 +86,62 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	}}
 	if got := DefaultSpec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("embedded default.yaml drifted from constants:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestLoadParsesPlainStepName(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: collect-context
+    name: Context
+  - type: merge
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := spec.Steps[0].Name; got != "Context" {
+		t.Fatalf("plain step name = %q, want %q", got, "Context")
+	}
+	if got := spec.Steps[1].Name; got != "" {
+		t.Fatalf("unnamed step should have no name, got %q", got)
+	}
+}
+
+func TestLoadParsesLaneAndPipelineNames(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - name: Reviewers
+    parallel:
+      - name: Security review
+        lane:
+          - type: review:security
+  - name: Review synthesis
+    pipeline:
+      - type: merge
+      - type: finalize
+      - type: verdict
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := spec.Steps[0].Name; got != "Reviewers" {
+		t.Fatalf("parallel group name = %q, want %q", got, "Reviewers")
+	}
+	if got := spec.Steps[0].Parallel[0].Name; got != "Security review" {
+		t.Fatalf("lane name = %q, want %q", got, "Security review")
+	}
+	if got := spec.Steps[1].Name; got != "Review synthesis" {
+		t.Fatalf("pipeline name = %q, want %q", got, "Review synthesis")
 	}
 }
 

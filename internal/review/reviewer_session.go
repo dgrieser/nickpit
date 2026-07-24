@@ -86,7 +86,11 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 		{Role: "user", Content: agent.user},
 	}
 	messages = append(messages, agent.extraMessages...)
-	info := e.progressInfo(agent.role, agent.name, "")
+	progressName := agent.progressName
+	if progressName == "" {
+		progressName = agent.name
+	}
+	info := e.progressInfo(agent.role, progressName, "")
 	if agent.role == "review" {
 		info.Group = agent.name
 		info.NudgeTotal = req.NudgeCount

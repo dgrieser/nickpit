@@ -1147,6 +1147,32 @@ func TestWorkflowLaneRunsPerVectorVerifyAndDedupeInOrder(t *testing.T) {
 	}
 }
 
+func TestWorkflowGroupNamesLabelRuntimeSegments(t *testing.T) {
+	spec := laneSpec("security")
+	spec.Steps[1].Parallel[0].Name = "Security review"
+	spec.Steps[2] = workflow.StepEntry{Name: "Review synthesis", Pipeline: []workflow.StepEntry{
+		{Type: workflow.StepMerge},
+		{Type: workflow.StepFinalize},
+		{Type: workflow.StepVerdict},
+	}}
+	client := &laneEventLLM{inner: &multiAgentLLM{vectorFindings: map[string]int{"Security": 1}}}
+	pipeline, err := pipelineTestEngine(client).BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := pipeline.Run(context.Background(), &model.ReviewContext{}, laneTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(result.SegmentRuntimes))
+	for _, segment := range result.SegmentRuntimes {
+		got = append(got, segment.Steps...)
+	}
+	if !slices.Contains(got, "Security review") || !slices.Contains(got, "Review synthesis") {
+		t.Fatalf("runtime segment labels = %v, want named lane and pipeline", got)
+	}
+}
+
 func TestWorkflowTestingVectorWiresDuplicateFileValidation(t *testing.T) {
 	client := &multiAgentLLM{vectorFindings: map[string]int{"Testing": 2}}
 	engine := pipelineTestEngine(client)
@@ -1314,5 +1340,34 @@ func TestWorkflowSixLaneSpecMatchesGlobalResultShape(t *testing.T) {
 	}
 	if inner.verifyCalls != len(reviewVectors) {
 		t.Fatalf("verify calls = %d, want %d", inner.verifyCalls, len(reviewVectors))
+	}
+}
+
+func TestLiveLaneLabelPrefersName(t *testing.T) {
+	// A configured name wins (this is how a named plain step, e.g. collect-context
+	// with name: Context, surfaces in live progress).
+	if got := liveLaneLabel(boundLane{name: "Context"}, "collect-context", 0); got != "Context" {
+		t.Fatalf("named lane should use its name, got %q", got)
+	}
+	// Unnamed plain step (no ":" in the label) falls back to laneN.
+	if got := liveLaneLabel(boundLane{}, "collect-context", 0); got != "lane0" {
+		t.Fatalf("unnamed plain step should fall back to laneN, got %q", got)
+	}
+	// Unnamed vector step uses the suffix after ":".
+	if got := liveLaneLabel(boundLane{}, "review:security", 1); got != "security" {
+		t.Fatalf("unnamed vector step should use its suffix, got %q", got)
+	}
+}
+
+func TestShardProgressName(t *testing.T) {
+	if got := shardProgressName("Finalize", "#2"); got != "Finalize #2" {
+		t.Fatalf("labelled shard name = %q, want %q", got, "Finalize #2")
+	}
+	// No label → empty, so the caller keeps its default single-bar name.
+	if got := shardProgressName("Finalize", ""); got != "" {
+		t.Fatalf("unlabelled shard name = %q, want empty", got)
+	}
+	if got := shardProgressName("Merge", "  "); got != "" {
+		t.Fatalf("blank label should yield empty, got %q", got)
 	}
 }

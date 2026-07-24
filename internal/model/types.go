@@ -192,8 +192,8 @@ type InvalidResponseDiagnostic struct {
 
 // SegmentRuntime is the wall-clock span of one pipeline unit: a single step
 // or a parallel group (whose runtime is the span of its slowest lane). Each
-// Steps entry is one lane — a sequential chain joined with "→", e.g.
-// "review:security→verify:security→dedupe:security".
+// Steps entry is one lane: its configured name, or a sequential chain joined
+// with "→" when unnamed, e.g. "review:security→verify:security→dedupe:security".
 type SegmentRuntime struct {
 	Steps          []string `json:"steps"`
 	RuntimeSeconds float64  `json:"runtime_seconds"`

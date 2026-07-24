@@ -695,7 +695,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				defer mergeWG.Done()
 				mergeCtx, mergeCancel := mergeBudget.startOrCanceled()
 				defer mergeCancel()
-				merged, run := mergeSC.Engine.runClusterMergeAgentWithStyleGuides(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergeStyleGuides, st.hasToolchain)
+				merged, run := mergeSC.Engine.runClusterMergeAgentWithStyleGuides(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergeStyleGuides, st.hasToolchain, fmt.Sprintf("#%d", ci+1))
 				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
 			}(ci, reduced)
 		}
@@ -742,10 +742,11 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				summarizeWG.Add(1)
 			}
 			go func(idx int, shard []model.Finding) {
+				shardLabel := fmt.Sprintf("#%d", idx+1)
 				finalizeCtx, finalizeCancel := finalizeBudget.startOrCanceled()
 				defer finalizeCancel()
 				shardResult := &model.ReviewResult{Findings: append([]model.Finding(nil), shard...)}
-				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(finalizeCtx, finalizeSC, st, shardResult)
+				finalized, finalizeRun, finalizeWarnings := runFinalizeShard(finalizeCtx, finalizeSC, st, shardResult, shardLabel)
 
 				// Snapshot the summarize input before releasing the finalize barrier.
 				// After the barrier the verdict path normalizes finalized finding IDs
@@ -786,7 +787,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 					defer summarizeWG.Done()
 					summarizeCtx, summarizeCancel := summarizeBudget.startOrCanceled()
 					defer summarizeCancel()
-					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(summarizeCtx, summarizeSC, summarizeInput)
+					summarized, summarizeRun, summarizeWarnings := runSummarizeShard(summarizeCtx, summarizeSC, summarizeInput, shardLabel)
 					resultMu.Lock()
 					summarizedByCluster[idx] = append([]model.Finding(nil), summarized.Findings...)
 					if summarizeRun != nil {
@@ -955,8 +956,19 @@ func summarizeOptionsFromStep(sc *stepContext) SummarizeOptions {
 	}
 }
 
-func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
+// shardProgressName gives a per-cluster synthesis shard a distinct live-progress
+// name (e.g. "Finalize #2"); an empty label yields "" so the caller keeps its
+// default single-bar name (flat, non-sharded pipelines).
+func shardProgressName(base, label string) string {
+	if strings.TrimSpace(label) == "" {
+		return ""
+	}
+	return base + " " + label
+}
+
+func runFinalizeShard(ctx context.Context, sc *stepContext, st *PipelineState, in *model.ReviewResult, shardLabel string) (*model.ReviewResult, *model.AgentRun, []string) {
 	opts := finalizeOptionsFromStep(sc, st.contextNotes)
+	opts.ShardLabel = shardLabel
 	finalized, run, err := sc.Engine.Finalize(ctx, st.Enriched, in, opts)
 	if err != nil {
 		if finalized != nil {
@@ -1015,8 +1027,9 @@ func runVerdictShard(ctx context.Context, sc *stepContext, st *PipelineState, in
 	return verdict, &run, warnings
 }
 
-func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewResult) (*model.ReviewResult, *model.AgentRun, []string) {
+func runSummarizeShard(ctx context.Context, sc *stepContext, in *model.ReviewResult, shardLabel string) (*model.ReviewResult, *model.AgentRun, []string) {
 	opts := summarizeOptionsFromStep(sc)
+	opts.ShardLabel = shardLabel
 	summarized, run, err := sc.Engine.Summarize(ctx, in, opts)
 	if err != nil {
 		sc.Engine.logf(ctx, "Summarize failed for shard, using finalized shard: error=%v", err)

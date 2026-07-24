@@ -30,6 +30,9 @@ type SummarizeOptions struct {
 	DisablePatchSummary       bool
 	DisableSuggestions        bool
 	RepoRoot                  string
+	// ShardLabel, when set (e.g. "#2"), distinguishes a per-cluster summarize
+	// shard's live-progress bar; it never affects the telemetry run name.
+	ShardLabel string
 }
 
 type summarizeItemKind string
@@ -159,6 +162,7 @@ func (e *Engine) summarizeTextItems(ctx context.Context, items []summarizeTextIt
 	e.logProgress(logging.StageSummarize, logging.StateStart, fmt.Sprintf("items=%d", len(items)))
 	result, err := e.runAgent(ctx, agentSpec{
 		name:             "Summarize Review",
+		progressName:     shardProgressName("Summarize", opts.ShardLabel),
 		role:             "summarize",
 		system:           system,
 		noToolsSystem:    system,

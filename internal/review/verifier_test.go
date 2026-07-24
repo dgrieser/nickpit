@@ -1020,3 +1020,12 @@ func TestVerifyDisableSuggestionsOmitsSuggestions(t *testing.T) {
 		t.Fatalf("verify user prompt should not contain suggestion text:\n%s", userPrompt)
 	}
 }
+
+func TestVerifyProgressNameIncludesVerify(t *testing.T) {
+	if got := verifyProgressName("Performance", 0); got != "Verify Performance #1" {
+		t.Fatalf("scoped verify name = %q, want %q", got, "Verify Performance #1")
+	}
+	if got := verifyProgressName("", 2); got != "Verify #3" {
+		t.Fatalf("unscoped verify name = %q, want %q", got, "Verify #3")
+	}
+}
