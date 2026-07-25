@@ -378,6 +378,60 @@ func (e *Engine) nudgeStepFunc(vectorID string) stepFunc {
 	}
 }
 
+// categorizeStepFunc categorizes and filters the current groups' findings in
+// place, keeping only the ones whose category set is exactly [finding]. When
+// findings are injected, they seed a single group first. Per-finding
+// categorizer failures fail open: the finding is kept and passed on.
+func (e *Engine) categorizeStepFunc(findingsFrom []string) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
+			return err
+		}
+		vr := st.vectorResults()
+		usage, warnings, err := sc.Engine.categorizeAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "")
+		st.writeBackVectorResults(vr)
+		st.mu.Lock()
+		st.categorizeUsage = addTokenUsage(st.categorizeUsage, usage)
+		st.warnings = append(st.warnings, warnings...)
+		st.mu.Unlock()
+		if err != nil {
+			sc.Engine.logf(ctx, "Categorizer failed before verify: tokens=%s warnings=%d error=%v", model.HumanTokens(usage.TotalTokens), len(warnings), err)
+			return err
+		}
+		return nil
+	}
+}
+
+// categorizeVectorStepFunc categorizes and filters one reviewer group's
+// findings in place, admitted through the run-shared limiter. A soft-failed or
+// empty reviewer is a graceful no-op.
+func (e *Engine) categorizeVectorStepFunc(vectorID string) stepFunc {
+	return func(ctx context.Context, sc *stepContext, st *PipelineState) error {
+		vr, ok := st.vectorResult(vectorID)
+		if !ok {
+			return fmt.Errorf("workflow: categorize:%s requires a preceding review:%s step", vectorID, vectorID)
+		}
+		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) == 0 {
+			return nil
+		}
+		vector, ok := reviewVectorByID(vectorID)
+		if !ok {
+			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
+		}
+		results := []agentResult{vr}
+		usage, warnings, err := sc.Engine.categorizeAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name)
+		st.mu.Lock()
+		st.categorizeUsage = addTokenUsage(st.categorizeUsage, usage)
+		st.warnings = append(st.warnings, warnings...)
+		st.mu.Unlock()
+		if err != nil {
+			sc.Engine.logf(ctx, "Categorizer failed for reviewer: reviewer=%s tokens=%s warnings=%d error=%v", vector.name, model.HumanTokens(usage.TotalTokens), len(warnings), err)
+			return err
+		}
+		return nil
+	}
+}
+
 // verifyStepFunc verifies and filters the current groups' findings in place.
 // When findings are injected, they seed a single group first. Per-finding
 // verifier failures are kept as unverified findings with warnings.

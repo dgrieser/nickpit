@@ -62,6 +62,7 @@ func filterCompletions(values []string, prefix string) []string {
 func workflowStepCompletions() []string {
 	steps := []string{
 		workflow.StepCollectContext,
+		workflow.StepCategorize,
 		workflow.StepVerify,
 		workflow.StepDedupe,
 		workflow.StepMerge,
@@ -74,6 +75,7 @@ func workflowStepCompletions() []string {
 			workflow.StepReviewPrefix+vector,
 			workflow.StepExtractPrefix+vector,
 			workflow.StepNudgePrefix+vector,
+			workflow.StepCategorizePrefix+vector,
 			workflow.StepVerifyPrefix+vector,
 			workflow.StepDedupePrefix+vector,
 		)

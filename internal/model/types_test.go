@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -370,5 +371,72 @@ func TestFindingVerificationMergeFromNoKeysReturnsUnclaimed(t *testing.T) {
 	}
 	if dst.ID != "keep" {
 		t.Fatalf("dst mutated: %+v", dst)
+	}
+}
+
+func TestNormalizeFindingCategories(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"canonical order", []string{"finding", "confirmation"}, []string{CategoryConfirmation, CategoryFinding}},
+		{"trims and lowercases", []string{" FINDING "}, []string{CategoryFinding}},
+		{"dedupes", []string{"finding", "finding"}, []string{CategoryFinding}},
+		{"drops unknown", []string{"finding", "vibes"}, []string{CategoryFinding}},
+		{"drops blanks", []string{"", "   ", "finding"}, []string{CategoryFinding}},
+		{"empty stays empty", nil, nil},
+		{"only unknown is empty", []string{"vibes"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NormalizeFindingCategories(tc.in)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("NormalizeFindingCategories(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCategoriesSurviveVerification(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want bool
+	}{
+		{"pure finding survives", []string{CategoryFinding}, true},
+		{"finding plus compilation drops", []string{CategoryCompilation, CategoryFinding}, false},
+		{"finding plus confirmation drops", []string{CategoryConfirmation, CategoryFinding}, false},
+		{"finding plus out of scope drops", []string{CategoryOutsideDiffScope, CategoryFinding}, false},
+		{"confirmation alone drops", []string{CategoryConfirmation}, false},
+		{"compilation alone drops", []string{CategoryCompilation}, false},
+		{"empty drops", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CategoriesSurviveVerification(tc.in); got != tc.want {
+				t.Fatalf("CategoriesSurviveVerification(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFindingCategoriesIsCanonicalAndCopied(t *testing.T) {
+	got := FindingCategories()
+	want := []string{CategoryConfirmation, CategoryCompilation, CategoryOutsideDiffScope, CategoryFinding}
+	if !slices.Equal(got, want) {
+		t.Fatalf("FindingCategories() = %v, want %v", got, want)
+	}
+	got[0] = "mutated"
+	if FindingCategories()[0] != CategoryConfirmation {
+		t.Fatal("FindingCategories must return a copy")
+	}
+	for _, c := range want {
+		if !ValidFindingCategory(c) {
+			t.Fatalf("ValidFindingCategory(%q) = false", c)
+		}
+	}
+	if ValidFindingCategory("vibes") {
+		t.Fatal("ValidFindingCategory(\"vibes\") = true")
 	}
 }

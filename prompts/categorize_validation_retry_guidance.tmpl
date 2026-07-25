@@ -1,0 +1,15 @@
+{{- if .EmptyCategories}}
+The `categories` array must never be empty. Every finding belongs to at least one category. If nothing suppresses the item and it reports a concrete, actionable problem, return `["finding"]`. Do not omit the field and do not return `[]`.
+{{- end}}
+{{- if .UnknownCategories}}
+The previous response used {{len .UnknownCategories}} category name{{if ne (len .UnknownCategories) 1}}s{{end}} that {{if ne (len .UnknownCategories) 1}}are{{else}}is{{end}} not allowed. Use only the allowed names, copied exactly.
+{{- range .UnknownCategories}}
+- rejected: {{if .}}`{{.}}`{{else}}<empty>{{end}}
+{{- end}}
+{{- end}}
+{{- if .AllowedCategories}}
+Allowed categories:
+{{- range .AllowedCategories}}
+- `{{.}}`
+{{- end}}
+{{- end}}

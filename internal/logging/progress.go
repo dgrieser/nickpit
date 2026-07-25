@@ -115,6 +115,7 @@ const (
 	StageTool       Stage = "Tool"
 	StageResult     Stage = "Result"
 	StagePublish    Stage = "Publish"
+	StageCategorize Stage = "Categorize"
 	StageVerify     Stage = "Verify"
 	StageFinalize   Stage = "Finalize"
 	StageVerdict    Stage = "Verdict"
@@ -125,11 +126,12 @@ const (
 var allStages = []Stage{
 	StageNickPit, StageModel, StageAgent, StageReview, StageModelCheck, StageRequest,
 	StageResponse, StageReasoning, StageTool, StageResult, StagePublish,
-	StageVerify, StageFinalize, StageVerdict, StageSummarize,
+	StageCategorize, StageVerify, StageFinalize, StageVerdict, StageSummarize,
 }
 
-// stageColumnWidth is the width of the stage column: len(StageModelCheck),
-// the longest stage name. Guarded by a test over allStages.
+// stageColumnWidth is the width of the stage column: len(StageModelCheck) and
+// len(StageCategorize), the longest stage names. Guarded by a test over
+// allStages.
 const stageColumnWidth = 10
 
 // State is the colored state word of a progress line.
@@ -198,6 +200,7 @@ var progressStageStyles = map[Stage]string{
 	StageReasoning:  "1;38;5;183",
 	StageResponse:   "1;38;5;150",
 	StageTool:       "1;38;5;80",
+	StageCategorize: "1;38;5;153",
 	StageVerify:     "1;38;5;123",
 	StageFinalize:   "1;38;5;207",
 	StageVerdict:    "1;38;5;141",

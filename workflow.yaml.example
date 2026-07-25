@@ -16,8 +16,12 @@
 #                             architecture, performance, testing, bestpractices
 #   reasoning-extract:<vector> extract issues from a reviewer's reasoning trace
 #   nudge:<vector>            one extra "look again" round for a reviewer
+#   categorize:<vector>       triage one reviewer's findings, drop all but
+#                             plain findings
 #   verify:<vector>           verify one reviewer's findings and drop by policy
 #   dedupe:<vector>           de-duplicate one reviewer's findings
+#   categorize                triage all reviewers' findings, drop all but
+#                             plain findings
 #   verify                    verify all reviewers' findings and drop by policy
 #   dedupe                    de-duplicate findings per reviewer
 #   merge                     merge reviewers' findings into one set
@@ -47,15 +51,16 @@
 #   all       one agent over the whole finding set (flat finalize/summarize
 #             and verdict — see the allowed set below)
 #   cluster   one agent per merge cluster   (merge, finalize, summarize)
-#   finding   one agent per finding         (verify)
+#   finding   one agent per finding         (categorize, verify)
 #   reviewer  one agent per reviewer group  (dedupe)
 # Allowed scope per step:
-#   merge     cluster
-#   finalize  all (flat) | cluster (inside a pipeline:)
-#   summarize all (flat) | cluster (inside a pipeline:)
-#   verdict   all
-#   verify    finding
-#   dedupe    reviewer
+#   merge      cluster
+#   finalize   all (flat) | cluster (inside a pipeline:)
+#   summarize  all (flat) | cluster (inside a pipeline:)
+#   verdict    all
+#   categorize finding
+#   verify     finding
+#   dedupe     reviewer
 # scope is optional; an omitted scope uses the value shown for that step in its
 # context. collect-context / review: / reasoning-extract: / nudge: run as a
 # single agent and do not take scope.
@@ -81,11 +86,17 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
+          - type: categorize:codequality
+            config:
+              model: "@small"
+              scope: finding
+              time_budget:
+                weight: 15
           - type: verify:codequality
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 30
           - type: dedupe:codequality
             config:
               scope: reviewer
@@ -102,11 +113,17 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
+          - type: categorize:security
+            config:
+              model: "@small"
+              scope: finding
+              time_budget:
+                weight: 15
           - type: verify:security
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 30
           - type: dedupe:security
             config:
               scope: reviewer
@@ -123,11 +140,17 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
+          - type: categorize:architecture
+            config:
+              model: "@small"
+              scope: finding
+              time_budget:
+                weight: 15
           - type: verify:architecture
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 30
           - type: dedupe:architecture
             config:
               scope: reviewer
@@ -144,11 +167,17 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
+          - type: categorize:performance
+            config:
+              model: "@small"
+              scope: finding
+              time_budget:
+                weight: 15
           - type: verify:performance
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 30
           - type: dedupe:performance
             config:
               scope: reviewer
@@ -165,11 +194,17 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
+          - type: categorize:testing
+            config:
+              model: "@small"
+              scope: finding
+              time_budget:
+                weight: 15
           - type: verify:testing
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 30
           - type: dedupe:testing
             config:
               scope: reviewer
@@ -186,11 +221,17 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
+          - type: categorize:bestpractices
+            config:
+              model: "@small"
+              scope: finding
+              time_budget:
+                weight: 15
           - type: verify:bestpractices
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 30
           - type: dedupe:bestpractices
             config:
               scope: reviewer
@@ -269,6 +310,12 @@ steps:
 #                 model: "@small"
 #                 time_budget:
 #                   weight: 10
+#           - type: categorize:security
+#             config:
+#               model: "@small"
+#               scope: finding
+#               time_budget:
+#                 weight: 10
 #           - type: verify:security
 #             config:
 #               scope: finding
@@ -359,6 +406,8 @@ steps:
 #     config: { nudge_count: 0 }
 #   - type: reasoning-extract:security
 #   - type: nudge:security
+#   - type: categorize
+#     config: { scope: finding }
 #   - type: verify
 #     config: { scope: finding }
 #   - pipeline:

@@ -516,19 +516,18 @@ func (e *Engine) withConfig(profile config.Profile) *Engine {
 	return &clone
 }
 
-// verifyAndFilterVectorFindings runs the verifier on every finding from
-// `vectorResults` and replaces each vector's `resp.Findings` in place with the
-// subset that survives the drop policy. The mutation is intentional: the merge
-// agent reads vectorResults downstream and must see only verified findings.
-// Returns aggregated token usage, soft warnings, and any fatal error. On error,
-// callers should still propagate the returned usage/warnings — they hold the
-// partial-run telemetry up to the failure point.
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, []string, error) {
+// findingRef locates a flattened finding back in its vector's response so the
+// per-finding filters can write survivors back in place.
+type findingRef struct {
+	vectorIdx  int
+	findingIdx int
+}
+
+// flattenVectorFindings collects every finding from the vector results that are
+// eligible for a per-finding agent pass, together with the position each came
+// from. Failed or empty reviewers contribute nothing.
+func flattenVectorFindings(vectorResults []agentResult) ([]model.Finding, []findingRef) {
 	findings := make([]model.Finding, 0)
-	type findingRef struct {
-		vectorIdx  int
-		findingIdx int
-	}
 	refs := make([]findingRef, 0)
 	for vectorIdx, result := range vectorResults {
 		if result.run.Status == model.AgentRunStatusFailed || result.resp == nil {
@@ -539,6 +538,152 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			refs = append(refs, findingRef{vectorIdx: vectorIdx, findingIdx: findingIdx})
 		}
 	}
+	return findings, refs
+}
+
+// categorizeAndFilterVectorFindings runs the categorize agent on every finding
+// from `vectorResults` and replaces each vector's `resp.Findings` in place with
+// the subset whose category set is exactly [finding]. Everything else — an
+// affirmation of correct behavior, a diagnostic the compiler already reports, a
+// claim that cannot be anchored to the patch — is removed before the verifier
+// ever sees it, so verification spends its budget only on real claims.
+//
+// The drop is unconditional and does not consult --verify-drop-policy: that
+// policy weighs verdicts, and a category is not a verdict.
+//
+// Returns aggregated token usage, soft warnings, and any fatal error. On error,
+// callers should still propagate the returned usage/warnings — they hold the
+// partial-run telemetry up to the failure point.
+func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, []string, error) {
+	findings, refs := flattenVectorFindings(vectorResults)
+	if len(findings) == 0 {
+		return model.TokenUsage{}, nil, nil
+	}
+	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
+		e.logf(ctx, "Review generated replacement IDs before categorization: count=%d", overwrote)
+	}
+	opts := categorizeOptionsFromReviewRequest(req)
+	opts.Limiter = limiter
+	opts.ReviewerName = reviewerName
+	categorizeResults, usage, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
+	if err != nil {
+		return usage, warnings, err
+	}
+	if len(categorizeResults) != len(refs) {
+		return usage, warnings, fmt.Errorf("review: categorizer returned %d results for %d findings", len(categorizeResults), len(refs))
+	}
+	type dropCounts struct {
+		confirmation int
+		compilation  int
+		outOfScope   int
+		relocated    int
+	}
+	keptByVector := make(map[int][]model.Finding, len(vectorResults))
+	droppedByVector := make(map[int]int, len(vectorResults))
+	dropsByVector := make(map[int]dropCounts, len(vectorResults))
+	diffScopeEnabled := !opts.DisableDiffScope && reviewCtx != nil && reviewCtx.DiffScopeHunks != nil
+	for i, result := range categorizeResults {
+		ref := refs[i]
+		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
+		// findings[i].ID holds the normalized ID after EnsureFindingIDs above,
+		// which may have replaced an invalid or duplicate reviewer ID. Always
+		// adopt it so corrected IDs survive into verification and downstream
+		// dedupe/merge validation.
+		finding.ID = findings[i].ID
+		categorization := result.Categorization
+		if categorization == nil {
+			categorization = fallbackFindingCategorization(finding)
+		}
+		categories := model.NormalizeFindingCategories(categorization.Categories)
+		if len(categories) == 0 {
+			// The agent had its retries and still produced nothing usable. Fail
+			// open rather than discard a possibly real finding.
+			categories = []string{model.CategoryFinding}
+		}
+		counts := dropsByVector[ref.vectorIdx]
+
+		// The deterministic overlap check is the authority on scope; the agent's
+		// only contribution is a causal location the check can accept instead.
+		outOfScope := false
+		if diffScopeEnabled && !codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
+			replacement := result.ReplacementCodeLocation
+			if replacement == nil || !codeLocationOverlapsDiff(*replacement, reviewCtx.DiffScopeHunks) {
+				outOfScope = true
+			} else {
+				corrected := *replacement
+				corrected.FilePath = normalizeToolPath(strings.TrimSpace(corrected.FilePath))
+				if corrected.LineRange.End < corrected.LineRange.Start {
+					corrected.LineRange.End = corrected.LineRange.Start
+				}
+				corrected.LineRange.Count = corrected.LineRange.EffectiveCount()
+				finding.CodeLocation = corrected
+				counts.relocated++
+			}
+		}
+
+		if outOfScope || !model.CategoriesSurviveVerification(categories) {
+			// Attribute each dropped finding to exactly one reason so the
+			// counters sum to the dropped total. Scope comes first because it is
+			// the deterministic one.
+			switch {
+			case outOfScope || slices.Contains(categories, model.CategoryOutsideDiffScope):
+				counts.outOfScope++
+			case slices.Contains(categories, model.CategoryConfirmation):
+				counts.confirmation++
+			default:
+				counts.compilation++
+			}
+			droppedByVector[ref.vectorIdx]++
+			dropsByVector[ref.vectorIdx] = counts
+			continue
+		}
+		dropsByVector[ref.vectorIdx] = counts
+		keptByVector[ref.vectorIdx] = append(keptByVector[ref.vectorIdx], finding)
+	}
+	for vectorIdx := range vectorResults {
+		if vectorResults[vectorIdx].run.Status == model.AgentRunStatusFailed || vectorResults[vectorIdx].resp == nil {
+			continue
+		}
+		if len(vectorResults[vectorIdx].resp.Findings) == 0 {
+			continue
+		}
+		vectorResults[vectorIdx].resp.Findings = keptByVector[vectorIdx]
+		dropped := droppedByVector[vectorIdx]
+		counts := dropsByVector[vectorIdx]
+		if e.logger != nil {
+			// Categorize drops are not verdicts, so they count as filtered
+			// rather than refuted.
+			e.logger.LiveFindings(logging.FindingUpdate{Filtered: dropped})
+		}
+		if dropped > 0 || counts.relocated > 0 {
+			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d out_of_scope=%d relocated=%d kept=%d",
+				vectorResults[vectorIdx].run.Name,
+				dropped,
+				counts.confirmation,
+				counts.compilation,
+				counts.outOfScope,
+				counts.relocated,
+				len(keptByVector[vectorIdx]),
+			)
+		}
+	}
+	return usage, warnings, nil
+}
+
+// verifyAndFilterVectorFindings runs the verifier on every finding from
+// `vectorResults` and replaces each vector's `resp.Findings` in place with the
+// subset that survives the drop policy. The mutation is intentional: the merge
+// agent reads vectorResults downstream and must see only verified findings.
+//
+// Scope and eligibility are not its concern: a preceding categorize step
+// already removed non-findings, compiler-owned diagnostics, and out-of-scope
+// claims, and re-anchored the findings it could.
+//
+// Returns aggregated token usage, soft warnings, and any fatal error. On error,
+// callers should still propagate the returned usage/warnings — they hold the
+// partial-run telemetry up to the failure point.
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, []string, error) {
+	findings, refs := flattenVectorFindings(vectorResults)
 	if len(findings) == 0 {
 		return model.TokenUsage{}, nil, nil
 	}
@@ -558,13 +703,10 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	type dropCounts struct {
 		refuted    int
 		unverified int
-		outOfScope int
-		relocated  int
 	}
 	keptByVector := make(map[int][]model.Finding, len(vectorResults))
 	droppedIdxByVector := make(map[int]map[int]struct{}, len(vectorResults))
 	dropsByVector := make(map[int]dropCounts, len(vectorResults))
-	diffScopeEnabled := !opts.DisableDiffScope && reviewCtx != nil && reviewCtx.DiffScopeHunks != nil
 	for i, verifyResult := range verifyResults {
 		verification := verifyResult.Verification
 		ref := refs[i]
@@ -580,29 +722,6 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		}
 		v := *verification
 		model.EnsureVerificationID(&v, finding.ID)
-		if diffScopeEnabled && !codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
-			replacement := verifyResult.ReplacementCodeLocation
-			if replacement == nil || !codeLocationOverlapsDiff(*replacement, reviewCtx.DiffScopeHunks) {
-				if droppedIdxByVector[ref.vectorIdx] == nil {
-					droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
-				}
-				droppedIdxByVector[ref.vectorIdx][ref.findingIdx] = struct{}{}
-				counts := dropsByVector[ref.vectorIdx]
-				counts.outOfScope++
-				dropsByVector[ref.vectorIdx] = counts
-				continue
-			}
-			corrected := *replacement
-			corrected.FilePath = normalizeToolPath(strings.TrimSpace(corrected.FilePath))
-			if corrected.LineRange.End < corrected.LineRange.Start {
-				corrected.LineRange.End = corrected.LineRange.Start
-			}
-			corrected.LineRange.Count = corrected.LineRange.EffectiveCount()
-			finding.CodeLocation = corrected
-			counts := dropsByVector[ref.vectorIdx]
-			counts.relocated++
-			dropsByVector[ref.vectorIdx] = counts
-		}
 		drop, reason := shouldDropFinding(&v, opts.DropPolicy)
 		if drop {
 			if droppedIdxByVector[ref.vectorIdx] == nil {
@@ -638,14 +757,12 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 				Filtered: max(dropped-counts.refuted, 0),
 			})
 		}
-		if dropped > 0 || counts.relocated > 0 {
-			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d out_of_scope=%d relocated=%d kept=%d policy=%s",
+		if dropped > 0 {
+			e.logf(ctx, "Verifier filter before merge: reviewer=%s dropped=%d refuted=%d unverified=%d kept=%d policy=%s",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.refuted,
 				counts.unverified,
-				counts.outOfScope,
-				counts.relocated,
 				len(keptByVector[vectorIdx]),
 				normalizeDropPolicy(opts.DropPolicy),
 			)
@@ -734,7 +851,6 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		MaxReasoningSeconds:       req.MaxReasoningSeconds,
 		DisableParallelToolCalls:  req.DisableParallelToolCalls,
 		DisableSuggestions:        req.DisableSuggestions,
-		DisableDiffScope:          req.DisableDiffScope,
 		RepoRoot:                  req.RepoRoot,
 		DropPolicy:                req.VerifyDropPolicy,
 		DiffFormat:                req.DiffFormat,
@@ -2306,6 +2422,8 @@ func exampleSnippetFor(kind llm.SchemaKind, disableSuggestions bool) string {
 	switch kind {
 	case llm.SchemaKindVerify:
 		return llm.VerifyExamplePromptSnippet()
+	case llm.SchemaKindCategorize:
+		return llm.CategorizeExamplePromptSnippet()
 	case llm.SchemaKindMerge:
 		return llm.MergeExamplePromptSnippetFor(disableSuggestions)
 	case llm.SchemaKindFinalize:
@@ -2359,6 +2477,14 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 	if err != nil {
 		return nil, fmt.Errorf("review: rendering no-tools system prompt: %w", err)
 	}
+	return replaceSystemPromptWithoutTools(noToolsPrompt, messages), nil
+}
+
+// replaceSystemPromptWithoutTools rewrites a tool-using conversation for a model
+// that cannot call tools: tool-call assistant turns keep only their prose, tool
+// results become user turns, and the system prompt is swapped for the no-tools
+// render.
+func replaceSystemPromptWithoutTools(noToolsPrompt string, messages []llm.Message) []llm.Message {
 	finalMessages := make([]llm.Message, 0, len(messages))
 	for _, msg := range messages {
 		switch {
@@ -2377,7 +2503,7 @@ func noToolsMessages(agentRole string, systemTemplate string, messages []llm.Mes
 	} else {
 		finalMessages[0] = llm.Message{Role: "system", Content: noToolsPrompt}
 	}
-	return finalMessages, nil
+	return finalMessages
 }
 
 func (e *Engine) renderJSONRetryFeedback(invalid *llm.InvalidResponseError, exampleSnippet string) (string, error) {

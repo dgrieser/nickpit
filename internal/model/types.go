@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -134,6 +136,7 @@ type ReviewResult struct {
 	AgentRuns              []AgentRun      `json:"agent_runs,omitempty"`
 	Warnings               []string        `json:"warnings,omitempty"`
 	TokensUsed             TokenUsage      `json:"tokens_used"`
+	CategorizeTokensUsed   TokenUsage      `json:"categorize_tokens_used"`
 	VerifyTokensUsed       TokenUsage      `json:"verify_tokens_used"`
 	FinalizeTokensUsed     TokenUsage      `json:"finalize_tokens_used"`
 	VerdictTokensUsed      TokenUsage      `json:"verdict_tokens_used"`
@@ -462,11 +465,14 @@ const (
 
 // Verify decision-order gates. The verifier must name the gate that decided
 // its verdict; the gate dictates the verdict (see VerdictForGate).
+//
+// The eligibility gates that used to live here — non-finding, compile-error,
+// and diff-scope — moved to the categorize agent, which runs before verify and
+// expresses them as finding categories (see CategoryConfirmation,
+// CategoryCompilation, CategoryOutsideDiffScope). The verifier only ever sees
+// findings that survived categorization, so it judges truth, not eligibility.
 const (
-	GateNonFinding              = "non-finding"
-	GateDiffScope               = "diff-scope"
 	GateStyleguideContradiction = "styleguide-contradiction"
-	GateCompileError            = "compile-error"
 	GateConfirm                 = "confirm"
 	GateRefute                  = "refute"
 	GateUnverified              = "unverified"
@@ -480,10 +486,141 @@ func VerdictForGate(gate string) (string, bool) {
 		return VerdictConfirmed, true
 	case GateUnverified:
 		return VerdictUnverified, true
-	case GateNonFinding, GateDiffScope, GateStyleguideContradiction, GateCompileError, GateRefute:
+	case GateStyleguideContradiction, GateRefute:
 		return VerdictRefuted, true
 	}
 	return "", false
+}
+
+// Finding categories assigned by the categorize agent, which runs before
+// verify. Categorization is a classification of what KIND of item the reviewer
+// submitted; it makes no claim about whether the item is technically true.
+//
+// The categories are not mutually exclusive: an item may carry several. A
+// finding reaches verification only when its category set is exactly
+// [CategoryFinding] (see CategoriesSurviveVerification).
+const (
+	// CategoryConfirmation marks an item that affirms correct or intended
+	// behavior, or that establishes no concrete actionable problem.
+	CategoryConfirmation = "confirmation"
+	// CategoryCompilation marks an item whose core claim is a diagnostic the
+	// language's default compile or type-check tooling already reports.
+	CategoryCompilation = "compilation"
+	// CategoryOutsideDiffScope marks an item that cannot be anchored to the
+	// patch: neither the submitted location nor any concrete causal location
+	// overlaps a diff hunk.
+	CategoryOutsideDiffScope = "outside-diff-scope"
+	// CategoryFinding marks an item that reports a concrete, actionable
+	// problem. It is the only category that survives to verification.
+	CategoryFinding = "finding"
+)
+
+// findingCategoryOrder is the canonical category order. NormalizeFindingCategories
+// sorts into it so equal category sets compare and render identically.
+var findingCategoryOrder = []string{
+	CategoryConfirmation,
+	CategoryCompilation,
+	CategoryOutsideDiffScope,
+	CategoryFinding,
+}
+
+// FindingCategories returns the known categories in canonical order. The schema
+// layer builds its enum from this, so adding a category here is enough to offer
+// it to the agent.
+func FindingCategories() []string {
+	return slices.Clone(findingCategoryOrder)
+}
+
+// ValidFindingCategory reports whether c is a known category name.
+func ValidFindingCategory(c string) bool {
+	return slices.Contains(findingCategoryOrder, c)
+}
+
+// NormalizeFindingCategories trims, lowercases, drops blanks and unknown names,
+// deduplicates, and returns the result in canonical order. It returns nil when
+// nothing valid remains — callers treat that as "the agent assigned no
+// category", which is a retryable response, never a reason to drop a finding.
+func NormalizeFindingCategories(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		c := strings.ToLower(strings.TrimSpace(raw))
+		if c == "" || !ValidFindingCategory(c) {
+			continue
+		}
+		seen[c] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for _, c := range findingCategoryOrder {
+		if _, ok := seen[c]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// CategoriesSurviveVerification reports whether a categorized finding should be
+// passed on to the verifier. Only a pure [CategoryFinding] set survives: any
+// additional category is a suppression signal, and a set without
+// CategoryFinding reports no actionable problem at all.
+//
+// An empty set never reaches this predicate — the parser retries the agent and,
+// failing that, the caller falls back to [CategoryFinding] so a categorization
+// failure cannot silently swallow a real finding.
+func CategoriesSurviveVerification(cats []string) bool {
+	return len(cats) == 1 && cats[0] == CategoryFinding
+}
+
+// FindingCategorization is the categorize agent's output for one finding. It is
+// deliberately not a field on Finding: categories decide whether a finding
+// proceeds to verification and are then discarded, so they never enter review
+// JSON, session files, or published review bodies.
+type FindingCategorization struct {
+	ID         string   `json:"id"`
+	Categories []string `json:"categories"`
+	Remarks    string   `json:"remarks"`
+}
+
+// MergeFrom implements the merge-aware contract used by jsonx.Mergeable, so a
+// multi-block categorize response refines only the fields a later block
+// actually emitted.
+func (c *FindingCategorization) MergeFrom(other any, presentKeys map[string]bool) (bool, error) {
+	src, ok := other.(*FindingCategorization)
+	if !ok || src == nil {
+		return false, nil
+	}
+	claimed := false
+	if presentKeys["id"] {
+		c.ID = src.ID
+		claimed = true
+	}
+	if presentKeys["categories"] {
+		c.Categories = src.Categories
+		claimed = true
+	}
+	if presentKeys["remarks"] {
+		c.Remarks = src.Remarks
+		claimed = true
+	}
+	return claimed, nil
+}
+
+// EnsureCategorizationID mirrors EnsureVerificationID: the categorization's ID
+// tracks its parent finding's ID, which EnsureFindingIDs already made unique.
+func EnsureCategorizationID(c *FindingCategorization, fallback string) {
+	if c == nil {
+		return
+	}
+	if _, err := uuid.Parse(c.ID); err == nil {
+		return
+	}
+	if _, err := uuid.Parse(fallback); err == nil {
+		c.ID = fallback
+		return
+	}
+	c.ID = uuid.NewString()
 }
 
 type FindingVerification struct {

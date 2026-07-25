@@ -517,14 +517,18 @@ type capturingLLM struct {
 var uuidRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 type multiAgentLLM struct {
-	mu                sync.Mutex
-	context           int
-	vectorCalls       map[string]int
-	verifyCalls       int
-	mergeTools        int
-	mergePayload      map[string]any
-	mergeSchema       []byte
-	mergeRequests     []*llm.ReviewRequest
+	mu              sync.Mutex
+	context         int
+	vectorCalls     map[string]int
+	verifyCalls     int
+	mergeTools      int
+	mergePayload    map[string]any
+	mergeSchema     []byte
+	mergeRequests   []*llm.ReviewRequest
+	categorizeCalls int
+	// categorizeDrop titles the findings the categorize stub suppresses; each
+	// gets the confirmation category, so the filter removes it before verify.
+	categorizeDrop    map[string]bool
 	contextSystem     string
 	vectorContext     map[string]string
 	vectorSystem      map[string]string
@@ -559,6 +563,23 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if s.vectorNudge == nil {
 		s.vectorNudge = make(map[string]string)
+	}
+	if req.SchemaKind == llm.SchemaKindCategorize {
+		s.events = append(s.events, "categorize")
+		s.categorizeCalls++
+		categories := []string{model.CategoryFinding}
+		for title := range s.categorizeDrop {
+			for _, msg := range req.Messages {
+				if strings.Contains(msg.Content, title) {
+					categories = []string{model.CategoryConfirmation}
+					break
+				}
+			}
+		}
+		return &llm.ReviewResponse{
+			Categorization: &model.FindingCategorization{Categories: categories, Remarks: "categorized"},
+			TokensUsed:     model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		}, nil
 	}
 	if req.SchemaKind == llm.SchemaKindVerify {
 		s.events = append(s.events, "verify")

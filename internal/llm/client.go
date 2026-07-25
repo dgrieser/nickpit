@@ -95,14 +95,15 @@ type OpenAIClient struct {
 type SchemaKind string
 
 const (
-	SchemaKindReview    SchemaKind = "review"
-	SchemaKindMerge     SchemaKind = "merge"
-	SchemaKindVerify    SchemaKind = "verify"
-	SchemaKindFinalize  SchemaKind = "finalize"
-	SchemaKindVerdict   SchemaKind = "verdict"
-	SchemaKindSummarize SchemaKind = "summarize"
-	SchemaKindJSON      SchemaKind = "json"
-	SchemaKindText      SchemaKind = "text"
+	SchemaKindReview     SchemaKind = "review"
+	SchemaKindMerge      SchemaKind = "merge"
+	SchemaKindCategorize SchemaKind = "categorize"
+	SchemaKindVerify     SchemaKind = "verify"
+	SchemaKindFinalize   SchemaKind = "finalize"
+	SchemaKindVerdict    SchemaKind = "verdict"
+	SchemaKindSummarize  SchemaKind = "summarize"
+	SchemaKindJSON       SchemaKind = "json"
+	SchemaKindText       SchemaKind = "text"
 )
 
 // ReasoningSink receives streaming reasoning content from collectStream.
@@ -117,7 +118,7 @@ type ResponseConstraints struct {
 	MinPriority                    *int     // finding priority must be >= this value
 	MaxPriority                    *int     // finding priority must be <= this value
 	AllowedCorrectness             []string // overall_correctness must be one of these; nil means default enum
-	RequireReplacementCodeLocation bool     // verify response must include nullable replacement_code_location
+	RequireReplacementCodeLocation bool     // categorize response must include nullable replacement_code_location
 }
 
 type ReviewRequest struct {
@@ -165,18 +166,19 @@ type ToolCall struct {
 }
 
 type ReviewResponse struct {
-	Findings                []model.Finding            `json:"findings"`
-	OverallCorrectness      string                     `json:"overall_correctness"`
-	OverallExplanation      string                     `json:"overall_explanation"`
-	OverallConfidenceScore  float64                    `json:"overall_confidence_score"`
-	Verification            *model.FindingVerification `json:"verification,omitempty"`
-	ReplacementCodeLocation *model.CodeLocation        `json:"replacement_code_location,omitempty"`
-	ToolCalls               []ToolCall                 `json:"tool_calls,omitempty"`
-	RawResponse             string                     `json:"raw_response,omitempty"`
-	TokensUsed              model.TokenUsage           `json:"tokens_used"`
-	ReasoningEffort         string                     `json:"reasoning_effort,omitempty"`
-	Reasoned                bool                       `json:"-"`
-	ToolsOmitted            bool                       `json:"-"`
+	Findings                []model.Finding              `json:"findings"`
+	OverallCorrectness      string                       `json:"overall_correctness"`
+	OverallExplanation      string                       `json:"overall_explanation"`
+	OverallConfidenceScore  float64                      `json:"overall_confidence_score"`
+	Verification            *model.FindingVerification   `json:"verification,omitempty"`
+	Categorization          *model.FindingCategorization `json:"categorization,omitempty"`
+	ReplacementCodeLocation *model.CodeLocation          `json:"replacement_code_location,omitempty"`
+	ToolCalls               []ToolCall                   `json:"tool_calls,omitempty"`
+	RawResponse             string                       `json:"raw_response,omitempty"`
+	TokensUsed              model.TokenUsage             `json:"tokens_used"`
+	ReasoningEffort         string                       `json:"reasoning_effort,omitempty"`
+	Reasoned                bool                         `json:"-"`
+	ToolsOmitted            bool                         `json:"-"`
 }
 
 type capture struct {
@@ -2446,8 +2448,12 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 		}
 		return &ReviewResponse{}, 0, nil
 	}
+	if kind == SchemaKindCategorize {
+		resp, err := parseCategorizeResponse(content, constraints)
+		return resp, 0, err
+	}
 	if kind == SchemaKindVerify {
-		resp, err := parseVerifyResponse(content, constraints)
+		resp, err := parseVerifyResponse(content)
 		return resp, 0, err
 	}
 	if kind == SchemaKindVerdict {
@@ -2612,11 +2618,9 @@ func normalizeSuggestionCodeLocations(suggestions []model.Suggestion, fallback m
 	}
 }
 
-func parseVerifyResponse(content string, constraintOptions ...ResponseConstraints) (*ReviewResponse, error) {
-	var constraints ResponseConstraints
-	if len(constraintOptions) > 0 {
-		constraints = constraintOptions[0]
-	}
+// parseVerifyResponse takes no constraints: since categorization moved to its
+// own agent, the verify response is a flat verdict with no conditional fields.
+func parseVerifyResponse(content string) (*ReviewResponse, error) {
 	var verification model.FindingVerification
 	if err := LenientUnmarshalMerge(content, &verification); err != nil {
 		return nil, &InvalidResponseError{
@@ -2626,16 +2630,15 @@ func parseVerifyResponse(content string, constraintOptions ...ResponseConstraint
 	}
 	verification.ConfidenceScore = model.NormalizeConfidence(verification.ConfidenceScore)
 	raw := mergedRawVerifyBlocks(content)
-	replacement, replacementErrors := parseReplacementCodeLocation(raw)
-	if missing := append(missingVerifyFields(raw, constraints), replacementErrors...); len(missing) > 0 {
-		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
+	if missing := missingVerifyFields(raw); len(missing) > 0 {
+		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
 			MissingFields: missing,
 		}
 	}
 	if verification.Priority < 0 || verification.Priority > 3 {
-		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
+		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
 			MissingFields: []string{"priority (must be 0-3)"},
@@ -2645,20 +2648,170 @@ func parseVerifyResponse(content string, constraintOptions ...ResponseConstraint
 	// the claim instead of walking the decision order, so force a retry.
 	dictated, known := model.VerdictForGate(verification.Gate)
 	if !known {
-		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
+		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
 			MissingFields: []string{"gate (must be a VERDICT DECISION ORDER gate name)"},
 		}
 	}
 	if verification.Verdict != dictated {
-		return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, &InvalidResponseError{
+		return &ReviewResponse{Verification: &verification}, &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
 			MissingFields: []string{fmt.Sprintf("verdict (gate %q dictates %q)", verification.Gate, dictated)},
 		}
 	}
-	return &ReviewResponse{Verification: &verification, ReplacementCodeLocation: replacement}, nil
+	return &ReviewResponse{Verification: &verification}, nil
+}
+
+// CategorizeRetryGuidance is the data behind
+// categorize_validation_retry_guidance.tmpl. It turns a rejected categorize
+// response into a specific instruction ("assign at least one category") rather
+// than a bare schema complaint, because the alternative — treating an
+// uncategorized finding as uncategorizable — would silently drop real findings.
+type CategorizeRetryGuidance struct {
+	EmptyCategories   bool
+	UnknownCategories []string
+	AllowedCategories []string
+}
+
+const categorizeRetryGuidanceTemplate = "categorize_validation_retry_guidance.tmpl"
+
+func parseCategorizeResponse(content string, constraintOptions ...ResponseConstraints) (*ReviewResponse, error) {
+	var constraints ResponseConstraints
+	if len(constraintOptions) > 0 {
+		constraints = constraintOptions[0]
+	}
+	var categorization model.FindingCategorization
+	if err := LenientUnmarshalMerge(content, &categorization); err != nil {
+		return nil, &InvalidResponseError{
+			RawContent: content,
+			Reason:     fmt.Sprintf("could not parse JSON: %v", err),
+		}
+	}
+	raw := mergedRawCategorizeBlocks(content)
+	replacement, replacementErrors := parseReplacementCodeLocation(raw)
+	resp := func() *ReviewResponse {
+		return &ReviewResponse{Categorization: &categorization, ReplacementCodeLocation: replacement}
+	}
+	if missing := append(missingCategorizeFields(raw, constraints), replacementErrors...); len(missing) > 0 {
+		return resp(), &InvalidResponseError{
+			RawContent:    content,
+			Reason:        "response is missing required fields",
+			MissingFields: missing,
+		}
+	}
+
+	// Retry rather than drop. An empty or unrecognized category list is the one
+	// failure mode that could quietly discard a real finding, so it always goes
+	// back to the model with an explicit instruction; only when the retries are
+	// exhausted does the caller fall back to treating the item as a finding.
+	var unknown []string
+	for _, c := range categorization.Categories {
+		if trimmed := strings.ToLower(strings.TrimSpace(c)); trimmed != "" && !model.ValidFindingCategory(trimmed) {
+			unknown = append(unknown, c)
+		}
+	}
+	normalized := model.NormalizeFindingCategories(categorization.Categories)
+	if len(normalized) == 0 || len(unknown) > 0 {
+		var missing []string
+		if len(unknown) > 0 {
+			missing = append(missing, fmt.Sprintf("categories (unknown: %s)", strings.Join(unknown, ", ")))
+		}
+		if len(normalized) == 0 {
+			missing = append(missing, "categories (must name at least one category)")
+		}
+		return resp(), &InvalidResponseError{
+			RawContent:            content,
+			Reason:                "response is missing required fields",
+			MissingFields:         missing,
+			RetryGuidanceTemplate: categorizeRetryGuidanceTemplate,
+			RetryGuidanceData: CategorizeRetryGuidance{
+				EmptyCategories:   len(normalized) == 0,
+				UnknownCategories: unknown,
+				AllowedCategories: allowedCategoriesFor(constraints),
+			},
+		}
+	}
+	categorization.Categories = normalized
+
+	// A successful relocation contradicts the out-of-scope claim: if the agent
+	// found a causal line inside the diff, the finding IS anchorable.
+	if replacement != nil && slices.Contains(normalized, model.CategoryOutsideDiffScope) {
+		return resp(), &InvalidResponseError{
+			RawContent:            content,
+			Reason:                "response is missing required fields",
+			MissingFields:         []string{fmt.Sprintf("categories (%q cannot be combined with a non-null replacement_code_location)", model.CategoryOutsideDiffScope)},
+			RetryGuidanceTemplate: categorizeRetryGuidanceTemplate,
+			RetryGuidanceData: CategorizeRetryGuidance{
+				AllowedCategories: allowedCategoriesFor(constraints),
+			},
+		}
+	}
+	return resp(), nil
+}
+
+// allowedCategoriesFor lists the categories the agent may use. The diff-scope
+// category only exists when the run supplies diff hunks, which is exactly when
+// the scoped schema requires replacement_code_location.
+func allowedCategoriesFor(constraints ResponseConstraints) []string {
+	all := model.FindingCategories()
+	if constraints.RequireReplacementCodeLocation {
+		return all
+	}
+	out := make([]string, 0, len(all))
+	for _, c := range all {
+		if c == model.CategoryOutsideDiffScope {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// mergedRawCategorizeBlocks mirrors mergedRawVerifyBlocks: only candidates that
+// decode into a FindingCategorization contribute their raw keys, so a malformed
+// block cannot satisfy a required-field check on presence alone.
+func mergedRawCategorizeBlocks(content string) map[string]json.RawMessage {
+	top := make(map[string]json.RawMessage)
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return top
+	}
+	candidates := extractJSONCandidates(trimmed)
+	if len(candidates) == 0 {
+		candidates = []string{StripCodeFences(trimmed)}
+	}
+	for _, c := range candidates {
+		_, decoded, ok := decodeJSONCandidate(c, func() any { return new(model.FindingCategorization) })
+		if !ok {
+			continue
+		}
+		var asMap map[string]json.RawMessage
+		if err := json.Unmarshal(decoded, &asMap); err != nil {
+			continue
+		}
+		maps.Copy(top, asMap)
+	}
+	return top
+}
+
+func missingCategorizeFields(raw map[string]json.RawMessage, constraints ResponseConstraints) []string {
+	var missing []string
+	for _, field := range []string{"id", "categories", "remarks"} {
+		if _, ok := raw[field]; !ok {
+			missing = append(missing, field)
+		}
+	}
+	if rawID, ok := raw["id"]; ok && !rawUUIDIsValid(rawID) {
+		missing = append(missing, "id (must be UUID)")
+	}
+	if constraints.RequireReplacementCodeLocation {
+		if _, ok := raw["replacement_code_location"]; !ok {
+			missing = append(missing, "replacement_code_location")
+		}
+	}
+	return missing
 }
 
 // mergedRawVerifyBlocks reconstructs the merged raw view of the verify
@@ -2689,7 +2842,7 @@ func mergedRawVerifyBlocks(content string) map[string]json.RawMessage {
 	return top
 }
 
-func missingVerifyFields(raw map[string]json.RawMessage, constraints ResponseConstraints) []string {
+func missingVerifyFields(raw map[string]json.RawMessage) []string {
 	var missing []string
 	for _, field := range []string{"id", "verdict", "gate", "priority", "confidence_score", "remarks"} {
 		if _, ok := raw[field]; !ok {
@@ -2698,11 +2851,6 @@ func missingVerifyFields(raw map[string]json.RawMessage, constraints ResponseCon
 	}
 	if rawID, ok := raw["id"]; ok && !rawUUIDIsValid(rawID) {
 		missing = append(missing, "id (must be UUID)")
-	}
-	if constraints.RequireReplacementCodeLocation {
-		if _, ok := raw["replacement_code_location"]; !ok {
-			missing = append(missing, "replacement_code_location")
-		}
 	}
 	return missing
 }

@@ -1,6 +1,8 @@
 {{if eq .AgentRole "context"}}Call one of the following tools:
 {{else if eq .AgentRole "review"}}Another senior engineer already collected the code context needed for your code review.
 In some cases you might still need more code context; if necessary, use the following tools:
+{{else if eq .AgentRole "categorize"}}Multiple senior engineers already collected the code context needed.
+Use the following tools only to pin down the exact causal diff line when the finding's own location misses the patch:
 {{else if eq .AgentRole "verify"}}Multiple senior engineers already collected the code context needed.
 In the rare case that you still need more code context for your verification, use the following tools:
 {{else if eq .AgentRole "discuss"}}You already have the review context, the diff, and the findings.
@@ -12,6 +14,9 @@ Important:
 {{- if eq .AgentRole "context"}}
 - In each turn, first decide whether you already have enough context for a useful code review.
 - If you already have enough context, stop calling tools and return the summary of what you believe the patch is intended to do.
+{{- else if eq .AgentRole "categorize"}}
+- Check the provided context first.
+- Do not call tools to judge whether the finding's claim is true; that is the verifier's job.
 {{- else if or (eq .AgentRole "review") (eq .AgentRole "verify")}}
 - Check the provided context first.
 - Only make additional tool calls, if the provided context is really insufficient.

@@ -8,11 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
-	"github.com/dgrieser/nickpit/mappings"
 )
 
 type VerifyRequest struct {
@@ -32,7 +30,6 @@ type VerifyRequest struct {
 	MaxReasoningSeconds       int
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
-	DisableDiffScope          bool
 	DiffFormat                model.DiffFormat
 }
 
@@ -51,15 +48,13 @@ type VerifyOptions struct {
 	MaxReasoningSeconds       int
 	DisableParallelToolCalls  bool
 	DisableSuggestions        bool
-	DisableDiffScope          bool
 	RepoRoot                  string
 	DropPolicy                string
 	DiffFormat                model.DiffFormat
 }
 
 type verifyResult struct {
-	Verification            *model.FindingVerification
-	ReplacementCodeLocation *model.CodeLocation
+	Verification *model.FindingVerification
 }
 
 func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {
@@ -83,11 +78,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 	if err != nil {
 		return nil, usage, err
 	}
-	diffScopeEnabled := !req.DisableDiffScope && req.ReviewCtx.DiffScopeHunks != nil
 	systemSnippet := llm.VerifyExamplePromptSnippet()
-	if diffScopeEnabled {
-		systemSnippet = llm.ScopedVerifyExamplePromptSnippet()
-	}
 	agentKind := "verify"
 	toolInstructions, err := e.renderToolInstructions(toolInstructionsConfig{
 		agentRole:                agentKind,
@@ -111,9 +102,6 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 	if err != nil {
 		return nil, usage, err
 	}
-	// "imports or variables", "imports", "variables", or "" (bullet omitted):
-	// only the kinds the finding language's default toolchain reports.
-	unusedIdentifierKinds := strings.Join(mappings.UnusedIdentifierDiagnostics(filetype.DetectLanguage(req.Finding.CodeLocation.FilePath)), " or ")
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet        string
 		OutputFormatSnippet        string
@@ -122,8 +110,6 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		HasTools                   bool
 		ToolInstructions           string
 		StyleGuideToolchainSnippet string
-		DiffScopeEnabled           bool
-		UnusedIdentifierKinds      string
 	}{
 		OutputSchemaSnippet:        systemSnippet,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
@@ -132,14 +118,15 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		HasTools:                   true,
 		ToolInstructions:           toolInstructions,
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
-		DiffScopeEnabled:           diffScopeEnabled,
-		UnusedIdentifierKinds:      unusedIdentifierKinds,
 	})
 	if err != nil {
 		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	userPrompt, err := e.buildVerifyUserPrompt(req.ReviewCtx, req.Finding, req.DisableSuggestions, req.DisableDiffScope, req.DiffFormat)
+	// includeDiffScope is false: the categorize agent owns the scope decision, so
+	// annotating the verifier's payload with it would only invite the verifier to
+	// re-litigate a question it no longer has a gate for.
+	userPrompt, err := e.buildFindingAgentUserPrompt("verify", req.ReviewCtx, req.Finding, req.DisableSuggestions, false, req.DiffFormat)
 	if err != nil {
 		return nil, usage, err
 	}
@@ -147,9 +134,6 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 	var schema []byte
 	if !req.DisableJSONResponseFormat {
 		schema = llm.VerifySchema
-		if diffScopeEnabled {
-			schema = llm.ScopedVerifySchema
-		}
 	}
 
 	messages := []llm.Message{
@@ -174,7 +158,6 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			Tools:                             reviewerToolDefinitions(),
 			Schema:                            schema,
 			SchemaKind:                        llm.SchemaKindVerify,
-			Constraints:                       llm.ResponseConstraints{RequireReplacementCodeLocation: diffScopeEnabled},
 			Model:                             e.config.Model,
 			MaxTokens:                         e.config.MaxTokens,
 			Temperature:                       e.config.Temperature,
@@ -196,7 +179,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			NoToolsStyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 			JSONRetryExampleSnippet:           systemSnippet,
 			NoToolsMessages: func(messages []llm.Message) ([]llm.Message, error) {
-				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions, noToolsPromptOptions{DiffScopeEnabled: diffScopeEnabled, UnusedIdentifierKinds: unusedIdentifierKinds})
+				return noToolsMessages(agentKind, systemTemplate, messages, systemSnippet, styleGuideToolchainSnippet, req.DisableSuggestions)
 			},
 		})
 		if err != nil {
@@ -206,10 +189,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		resp := loopResult.resp
 		if resp != nil && resp.Verification != nil {
 			model.EnsureVerificationID(resp.Verification, req.Finding.ID)
-			return &verifyResult{
-				Verification:            resp.Verification,
-				ReplacementCodeLocation: resp.ReplacementCodeLocation,
-			}, usage, nil
+			return &verifyResult{Verification: resp.Verification}, usage, nil
 		}
 		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
 			return nil, usage, fmt.Errorf("verify: missing verification in response")
@@ -294,7 +274,6 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				MaxReasoningSeconds:       opts.MaxReasoningSeconds,
 				DisableParallelToolCalls:  opts.DisableParallelToolCalls,
 				DisableSuggestions:        opts.DisableSuggestions,
-				DisableDiffScope:          opts.DisableDiffScope,
 				DiffFormat:                opts.DiffFormat,
 			}
 			result, usage, err := e.verifyFinding(ctx, req)
@@ -373,18 +352,22 @@ func truncateFindingTitle(title string) string {
 	return title
 }
 
-func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions, disableDiffScope bool, format model.DiffFormat) (string, error) {
+// buildFindingAgentUserPrompt renders the payload shared by the two per-finding
+// agents: the full review context plus the one finding under examination.
+// includeDiffScope adds the deterministic `finding_diff_scope` annotation; only
+// the categorize agent uses it, since it owns the scope decision.
+func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions, includeDiffScope bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	base, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("verify: marshalling review payload: %w", err)
+		return "", fmt.Errorf("%s: marshalling review payload: %w", agentKind, err)
 	}
 	var combined map[string]any
 	if err := json.Unmarshal(base, &combined); err != nil {
-		return "", fmt.Errorf("verify: re-decoding review payload: %w", err)
+		return "", fmt.Errorf("%s: re-decoding review payload: %w", agentKind, err)
 	}
 
-	findingForVerify := struct {
+	submitted := struct {
 		ID           string             `json:"id"`
 		Title        string             `json:"title"`
 		Body         string             `json:"body"`
@@ -399,18 +382,18 @@ func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding m
 		CodeLocation: finding.CodeLocation,
 	}
 	if !disableSuggestions {
-		findingForVerify.Suggestions = finding.Suggestions
+		submitted.Suggestions = finding.Suggestions
 	}
-	encoded, err := json.Marshal(findingForVerify)
+	encoded, err := json.Marshal(submitted)
 	if err != nil {
-		return "", fmt.Errorf("verify: marshalling finding: %w", err)
+		return "", fmt.Errorf("%s: marshalling finding: %w", agentKind, err)
 	}
 	var findingMap map[string]any
 	if err := json.Unmarshal(encoded, &findingMap); err != nil {
-		return "", fmt.Errorf("verify: re-decoding finding: %w", err)
+		return "", fmt.Errorf("%s: re-decoding finding: %w", agentKind, err)
 	}
 	combined["finding"] = findingMap
-	if !disableDiffScope && reviewCtx.DiffScopeHunks != nil {
+	if includeDiffScope && reviewCtx.DiffScopeHunks != nil {
 		status := "outside_diff"
 		if codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
 			status = "overlaps_diff"
@@ -420,7 +403,7 @@ func (e *Engine) buildVerifyUserPrompt(reviewCtx *model.ReviewContext, finding m
 
 	out, err := json.MarshalIndent(combined, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("verify: encoding combined payload: %w", err)
+		return "", fmt.Errorf("%s: encoding combined payload: %w", agentKind, err)
 	}
 	return string(out), nil
 }

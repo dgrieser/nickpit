@@ -958,6 +958,7 @@ func laneSpec(vectors ...string) workflow.Spec {
 	for i, id := range vectors {
 		lanes[i] = workflow.StepEntry{Lane: []workflow.StepEntry{
 			{Type: workflow.StepReviewPrefix + id},
+			{Type: workflow.StepCategorizePrefix + id},
 			{Type: workflow.StepVerifyPrefix + id},
 			{Type: workflow.StepDedupePrefix + id},
 		}}
@@ -1046,6 +1047,8 @@ func classifyLaneCall(req *llm.ReviewRequest) string {
 		user = taskMessageContent(req)
 	}
 	switch {
+	case req.SchemaKind == llm.SchemaKindCategorize:
+		return "categorize:" + laneVectorFromContent(user)
 	case req.SchemaKind == llm.SchemaKindVerify:
 		return "verify:" + laneVectorFromContent(user)
 	case strings.Contains(system, "DO NOT produce review findings yourself"):
@@ -1101,7 +1104,7 @@ func laneTestRequest() model.ReviewRequest {
 // Each lane runs review → verify → dedupe in order for its own vector, and the
 // merge step only runs after every lane finished. The unit's segment runtime
 // records the lane chains.
-func TestWorkflowLaneRunsPerVectorVerifyAndDedupeInOrder(t *testing.T) {
+func TestWorkflowLaneRunsPerVectorCategorizeVerifyAndDedupeInOrder(t *testing.T) {
 	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
 	client := &laneEventLLM{inner: inner}
 	engine := pipelineTestEngine(client)
@@ -1120,20 +1123,23 @@ func TestWorkflowLaneRunsPerVectorVerifyAndDedupeInOrder(t *testing.T) {
 	}
 	for _, name := range []string{"Security", "Performance"} {
 		lastReview := lastEventIndex(events, "review:"+name)
+		firstCategorize := firstEventIndex(events, "categorize:"+name)
+		lastCategorize := lastEventIndex(events, "categorize:"+name)
 		firstVerify := firstEventIndex(events, "verify:"+name)
 		lastVerify := lastEventIndex(events, "verify:"+name)
 		dedupeIdx := firstEventIndex(events, "dedupe:"+name)
-		if lastReview < 0 || firstVerify < 0 || dedupeIdx < 0 {
+		if lastReview < 0 || firstCategorize < 0 || firstVerify < 0 || dedupeIdx < 0 {
 			t.Fatalf("missing %s lane events in %v", name, events)
 		}
-		if lastReview > firstVerify || lastVerify > dedupeIdx || dedupeIdx > mergeIdx {
-			t.Fatalf("%s lane out of order: review@%d verify@[%d,%d] dedupe@%d merge@%d", name, lastReview, firstVerify, lastVerify, dedupeIdx, mergeIdx)
+		if lastReview > firstCategorize || lastCategorize > firstVerify || lastVerify > dedupeIdx || dedupeIdx > mergeIdx {
+			t.Fatalf("%s lane out of order: review@%d categorize@[%d,%d] verify@[%d,%d] dedupe@%d merge@%d",
+				name, lastReview, firstCategorize, lastCategorize, firstVerify, lastVerify, dedupeIdx, mergeIdx)
 		}
 	}
 	if len(result.Findings) != 4 {
 		t.Fatalf("findings = %d, want 4", len(result.Findings))
 	}
-	wantSegment := "review:security→verify:security→dedupe:security"
+	wantSegment := "review:security→categorize:security→verify:security→dedupe:security"
 	found := false
 	for _, seg := range result.SegmentRuntimes {
 		for _, step := range seg.Steps {
