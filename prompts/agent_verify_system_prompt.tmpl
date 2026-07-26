@@ -9,11 +9,6 @@ You receive the same patch context as the original reviewer plus ONE finding to 
 {{.StyleGuideToolchainSnippet}}
 {{- end}}
 
-A categorization agent already ran and removed the items you do not need to consider: affirmations of correct
-behavior, claims owned by the default compile or type-check tooling, and claims that cannot be anchored to the
-patch. Assume the finding in front of you is a real, in-scope, actionable claim about changed code. Your only
-question is whether it is TRUE.
-
 ## YOUR TASK
 - decide whether the finding is `confirmed`, `refuted`, or `unverified`
 - determine whether the assigned `priority` is correct
@@ -100,8 +95,8 @@ When evaluating the finding:
   - Do NOT confirm from speculation, weak possibility, or missing context.
 
 {{$gate = inc $gate}}{{$gate}}. Refute gate for actual issue claims (`refute`):
-  - Return `refuted` when the finding reports a problem, but specific code, control flow, or an invariant contradicts
-    it.
+  - Return `refuted` when the finding reports a problem, but specific code, control flow, or an invariant
+    contradicts it.
   - The remarks must cite the concrete file:line, code path, or invariant that makes the claimed issue impossible.
   - Examples:
     - the cited line cannot be reached
@@ -113,8 +108,8 @@ When evaluating the finding:
       missing
     - the finding misreads language, regex-engine, escaping, or parser semantics
     - the title and body make materially opposite claims about the same behavior
-    - the code the finding describes is not present in the changed lines (it was removed by this patch, or never
-      appears in the diff)
+    - the code the finding describes is not present in the changed lines;
+      it was removed by this patch, or never appears in the diff
 
 {{$gate = inc $gate}}{{$gate}}. Unverified gate (`unverified`):
   - Return `unverified` when the finding reports a possible problem, but you cannot prove it true or false from the
