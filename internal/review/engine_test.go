@@ -2496,19 +2496,28 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if result.TotalToolCalls != expectedToolCalls {
 		t.Fatalf("tool calls = %d, want context + one per vector", result.TotalToolCalls)
 	}
+	if llmClient.categorizeCalls != len(reviewVectors) {
+		t.Fatalf("categorize calls = %d, want one per vector finding", llmClient.categorizeCalls)
+	}
+	if result.CategorizeTokensUsed.TotalTokens != len(reviewVectors)*2 {
+		t.Fatalf("categorize tokens = %d, want %d", result.CategorizeTokensUsed.TotalTokens, len(reviewVectors)*2)
+	}
 	if llmClient.verifyCalls != len(reviewVectors) {
 		t.Fatalf("verify calls = %d, want one per vector finding", llmClient.verifyCalls)
 	}
 	if result.VerifyTokensUsed.TotalTokens != len(reviewVectors)*2 {
 		t.Fatalf("verify tokens = %d, want %d", result.VerifyTokensUsed.TotalTokens, len(reviewVectors)*2)
 	}
+	// context + reviewers + merge, then the two per-finding phases: categorize
+	// and verify each spend {1,1,2} per vector finding.
+	perFindingPhases := 2
 	wantUsage := model.TokenUsage{
-		PromptTokens:     1 + len(reviewVectors)*2 + 3 + len(reviewVectors),
-		CompletionTokens: 1 + len(reviewVectors)*1 + 1 + len(reviewVectors),
-		TotalTokens:      2 + len(reviewVectors)*3 + 4 + len(reviewVectors)*2,
+		PromptTokens:     1 + len(reviewVectors)*2 + 3 + len(reviewVectors)*perFindingPhases,
+		CompletionTokens: 1 + len(reviewVectors)*1 + 1 + len(reviewVectors)*perFindingPhases,
+		TotalTokens:      2 + len(reviewVectors)*3 + 4 + len(reviewVectors)*2*perFindingPhases,
 	}
 	if result.TokensUsed != wantUsage {
-		t.Fatalf("total tokens = %+v, want %+v including verifier spend", result.TokensUsed, wantUsage)
+		t.Fatalf("total tokens = %+v, want %+v including categorizer and verifier spend", result.TokensUsed, wantUsage)
 	}
 	if got := llmClient.events[len(llmClient.events)-1]; got != "merge" {
 		t.Fatalf("last event = %q, want merge after verification", got)

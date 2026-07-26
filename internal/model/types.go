@@ -561,10 +561,35 @@ func NormalizeFindingCategories(in []string) []string {
 	return out
 }
 
+// ContentCategories returns the categories that describe WHAT the finding is,
+// dropping CategoryOutsideDiffScope.
+//
+// Scope is settled by a deterministic diff-overlap check in the review engine,
+// never by the agent: the agent is told not to tag an in-diff finding out of
+// scope, so a disagreement is agent error, and honouring it would silently drop
+// a real, in-scope finding. The category is still worth reporting, so callers
+// keep it for telemetry and feed only the content categories to
+// CategoriesSurviveVerification.
+func ContentCategories(cats []string) []string {
+	out := make([]string, 0, len(cats))
+	for _, c := range cats {
+		if c == CategoryOutsideDiffScope {
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // CategoriesSurviveVerification reports whether a categorized finding should be
 // passed on to the verifier. Only a pure [CategoryFinding] set survives: any
 // additional category is a suppression signal, and a set without
 // CategoryFinding reports no actionable problem at all.
+//
+// Pass it the ContentCategories, not the raw set: scope is not its decision.
 //
 // An empty set never reaches this predicate — the parser retries the agent and,
 // failing that, the caller falls back to [CategoryFinding] so a categorization

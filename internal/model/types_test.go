@@ -440,3 +440,49 @@ func TestFindingCategoriesIsCanonicalAndCopied(t *testing.T) {
 		t.Fatal("ValidFindingCategory(\"vibes\") = true")
 	}
 }
+
+func TestContentCategories(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"strips scope, keeps finding", []string{CategoryOutsideDiffScope, CategoryFinding}, []string{CategoryFinding}},
+		{"scope only becomes empty", []string{CategoryOutsideDiffScope}, nil},
+		{"keeps confirmation", []string{CategoryConfirmation, CategoryOutsideDiffScope}, []string{CategoryConfirmation}},
+		{"keeps compilation", []string{CategoryCompilation}, []string{CategoryCompilation}},
+		{"passes through untouched", []string{CategoryConfirmation, CategoryFinding}, []string{CategoryConfirmation, CategoryFinding}},
+		{"empty stays empty", nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ContentCategories(tc.in)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("ContentCategories(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// The two predicates are used as a pair: scope never reaches the survival
+// decision, so an in-diff finding the agent wrongly tagged out of scope must
+// still survive.
+func TestContentCategoriesFeedsSurvivalDecision(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want bool
+	}{
+		{"finding plus stray scope tag survives", []string{CategoryFinding, CategoryOutsideDiffScope}, true},
+		{"scope tag alone does not survive on its own", []string{CategoryOutsideDiffScope}, false},
+		{"confirmation plus scope tag drops", []string{CategoryConfirmation, CategoryOutsideDiffScope}, false},
+		{"pure finding survives", []string{CategoryFinding}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CategoriesSurviveVerification(ContentCategories(tc.in)); got != tc.want {
+				t.Fatalf("survives(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}

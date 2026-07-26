@@ -974,20 +974,26 @@ func laneSpec(vectors ...string) workflow.Spec {
 }
 
 // laneEventLLM wraps multiAgentLLM, recording one classified event per LLM call
-// ("review:Security", "verify:Security", "dedupe:Security", "context", "merge")
-// so tests can assert cross-stage ordering within and across lanes. It can also
-// fail or stall verify calls to exercise lane error and limiter semantics.
+// ("review:Security", "categorize:Security", "verify:Security",
+// "dedupe:Security", "context", "merge") so tests can assert cross-stage
+// ordering within and across lanes. It can also fail or stall verify calls to
+// exercise lane error and limiter semantics, and tracks how many categorize and
+// verify agents — the two per-finding phases that contend for limiter slots —
+// were ever in flight at once.
 type laneEventLLM struct {
 	inner *multiAgentLLM
 
-	verifyErrFor     string        // fail verify calls for this vector's findings
-	verifyHold       time.Duration // sleep inside each verify call
-	verifyRendezvous int           // wait until this many verifies are in flight (1s cap)
+	verifyErrFor         string        // fail verify calls for this vector's findings
+	verifyHold           time.Duration // sleep inside each verify/categorize call
+	verifyRendezvous     int           // wait until this many verifies are in flight (1s cap)
+	categorizeRendezvous int           // wait until this many categorizes are in flight (1s cap)
 
-	mu                sync.Mutex
-	events            []string
-	verifyInFlight    int
-	maxVerifyInFlight int
+	mu                    sync.Mutex
+	events                []string
+	verifyInFlight        int
+	maxVerifyInFlight     int
+	categorizeInFlight    int
+	maxCategorizeInFlight int
 }
 
 func (l *laneEventLLM) Review(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
@@ -995,6 +1001,23 @@ func (l *laneEventLLM) Review(ctx context.Context, req *llm.ReviewRequest) (*llm
 	l.mu.Lock()
 	l.events = append(l.events, label)
 	l.mu.Unlock()
+	if strings.HasPrefix(label, "categorize:") {
+		l.mu.Lock()
+		l.categorizeInFlight++
+		l.maxCategorizeInFlight = max(l.maxCategorizeInFlight, l.categorizeInFlight)
+		l.mu.Unlock()
+		defer func() {
+			l.mu.Lock()
+			l.categorizeInFlight--
+			l.mu.Unlock()
+		}()
+		l.awaitRendezvous(l.categorizeRendezvous, func() int { return l.maxCategorizeInFlight })
+		// Hold alongside verify so a cap of 1 is observable rather than a race.
+		if l.verifyHold > 0 {
+			time.Sleep(l.verifyHold)
+		}
+		return l.inner.Review(ctx, req)
+	}
 	if !strings.HasPrefix(label, "verify:") {
 		return l.inner.Review(ctx, req)
 	}
@@ -1012,24 +1035,31 @@ func (l *laneEventLLM) Review(ctx context.Context, req *llm.ReviewRequest) (*llm
 		l.verifyInFlight--
 		l.mu.Unlock()
 	}()
-	if l.verifyRendezvous > 0 {
-		deadline := time.Now().Add(time.Second)
-		for {
-			l.mu.Lock()
-			// maxVerifyInFlight: once the rendezvous has been observed, later
-			// (possibly lone) verify calls need not wait out the deadline.
-			reached := l.maxVerifyInFlight >= l.verifyRendezvous
-			l.mu.Unlock()
-			if reached || time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}
+	l.awaitRendezvous(l.verifyRendezvous, func() int { return l.maxVerifyInFlight })
 	if l.verifyHold > 0 {
 		time.Sleep(l.verifyHold)
 	}
 	return l.inner.Review(ctx, req)
+}
+
+// awaitRendezvous blocks until `want` agents of one kind have been seen in
+// flight simultaneously, or one second passes. Reading the max (rather than the
+// live count) means a later, possibly lone call does not wait out the deadline
+// once the rendezvous has already been observed.
+func (l *laneEventLLM) awaitRendezvous(want int, observedMax func() int) {
+	if want <= 0 {
+		return
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		l.mu.Lock()
+		reached := observedMax() >= want
+		l.mu.Unlock()
+		if reached || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (l *laneEventLLM) snapshot() []string {
@@ -1216,8 +1246,9 @@ func TestWorkflowTestingVectorWiresDuplicateFileValidation(t *testing.T) {
 	}
 }
 
-// The verify limiter is shared across lanes: with a cap of 1, the four verify
-// calls (two lanes × two findings) never overlap.
+// The limiter is shared across lanes and across per-finding phases: with a cap
+// of 1, neither the four verify calls nor the four categorize calls (two lanes ×
+// two findings each) ever overlap.
 func TestLimiterCapsAcrossLanes(t *testing.T) {
 	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
 	client := &laneEventLLM{inner: inner, verifyHold: 20 * time.Millisecond}
@@ -1234,8 +1265,32 @@ func TestLimiterCapsAcrossLanes(t *testing.T) {
 	if client.maxVerifyInFlight != 1 {
 		t.Fatalf("max verify in flight = %d, want 1", client.maxVerifyInFlight)
 	}
+	// Categorize is admitted through the same run-global limiter as verify, not
+	// through a private one or none at all.
+	if client.maxCategorizeInFlight != 1 {
+		t.Fatalf("max categorize in flight = %d, want 1", client.maxCategorizeInFlight)
+	}
 	if got := len(client.snapshot()); got == 0 {
 		t.Fatal("no events recorded")
+	}
+}
+
+// The counterpart to TestLimiterCapsAcrossLanes: with the default unlimited cap
+// the categorize calls do overlap, so that test's `== 1` is a real constraint
+// rather than a shape the pipeline would produce anyway.
+func TestCategorizeUnlimitedRunsLanesConcurrently(t *testing.T) {
+	inner := &multiAgentLLM{vectorFindings: map[string]int{"Security": 2, "Performance": 2}}
+	client := &laneEventLLM{inner: inner, categorizeRendezvous: 2}
+	engine := pipelineTestEngine(client)
+	pipeline, err := engine.BuildPipeline(laneSpec("security", "performance"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if client.maxCategorizeInFlight < 2 {
+		t.Fatalf("max categorize in flight = %d, want >= 2", client.maxCategorizeInFlight)
 	}
 }
 

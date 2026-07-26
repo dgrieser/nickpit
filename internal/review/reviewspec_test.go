@@ -8,10 +8,13 @@ import (
 )
 
 // reviewerOnlySpec is the reviewer stage of the embedded workflow without
-// finalize/verdict/summarize: collect context, run the vector reviewers, verify,
-// dedupe, merge. Tests use it to exercise the reviewer pipeline and assert the
-// pre-finalize result shape without mocking finalize/summarize LLM calls.
-// Production always runs the full workflow.DefaultSpec through the same path.
+// finalize/verdict/summarize: collect context, run the vector reviewers,
+// categorize, verify, dedupe, merge. Tests use it to exercise the reviewer
+// pipeline and assert the pre-finalize result shape without mocking
+// finalize/summarize LLM calls. It must keep tracking the stage sequence in
+// workflows/default.yaml — production always runs the full
+// workflow.DefaultSpec through the same path, so a stage missing here is a
+// stage the whole engine test family stops covering.
 func reviewerOnlySpec() workflow.Spec {
 	parallel := make([]workflow.StepEntry, len(workflow.ReviewVectorIDs))
 	for i, id := range workflow.ReviewVectorIDs {
@@ -22,6 +25,7 @@ func reviewerOnlySpec() workflow.Spec {
 		Steps: []workflow.StepEntry{
 			{Type: workflow.StepCollectContext},
 			{Parallel: parallel},
+			{Type: workflow.StepCategorize},
 			{Type: workflow.StepVerify},
 			{Type: workflow.StepDedupe},
 			{Type: workflow.StepMerge},

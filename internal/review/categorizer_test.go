@@ -499,6 +499,55 @@ func TestCategorizeAndFilterDisableDiffScopeKeepsOutsideFinding(t *testing.T) {
 	}
 }
 
+// The deterministic overlap check is the only authority on scope. The prompt
+// tells the agent not to tag an in-diff finding out of scope, so a
+// disagreement is agent error — honouring it would silently drop a real,
+// in-scope finding.
+func TestCategorizeAndFilterKeepsInDiffFindingAgentTaggedOutOfScope(t *testing.T) {
+	cases := map[string][]string{
+		"scope only":         {model.CategoryOutsideDiffScope},
+		"scope plus finding": {model.CategoryFinding, model.CategoryOutsideDiffScope},
+	}
+	for name, categories := range cases {
+		t.Run(name, func(t *testing.T) {
+			llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{categorized(categories...)}}
+			engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+			// f.go:10 is inside the scopedReviewCtx hunk.
+			vectorResults := []agentResult{{
+				resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("in diff", "f.go", 10)}},
+				run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
+			}}
+			_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept := vectorResults[0].resp.Findings
+			if len(kept) != 1 || kept[0].Title != "in diff" {
+				t.Fatalf("kept = %#v, want the in-diff finding preserved despite the agent's scope tag", kept)
+			}
+		})
+	}
+}
+
+// --disable-diff-scope turns scope filtering off entirely, so an agent that
+// emits the category anyway (reachable without schema enforcement) must not
+// resurrect the filter the user disabled.
+func TestCategorizeAndFilterDisableDiffScopeIgnoresAgentOutOfScope(t *testing.T) {
+	llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{categorized(model.CategoryOutsideDiffScope)}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("outside", "other.go", 99)}},
+		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
+	}}
+	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{DisableDiffScope: true}, NewLimiter(1), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept := vectorResults[0].resp.Findings; len(kept) != 1 {
+		t.Fatalf("kept = %#v, want the finding preserved with --disable-diff-scope", kept)
+	}
+}
+
 func TestCategorizeExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{
 		{

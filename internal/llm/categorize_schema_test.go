@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/prompts"
 )
 
 func schemaRequiredFields(t *testing.T, raw json.RawMessage) []string {
@@ -296,5 +297,77 @@ func TestParseCategorizeResponseMergesMultipleBlocksLastFieldsWin(t *testing.T) 
 	}
 	if resp.Categorization.Remarks != "reconsidered" {
 		t.Fatalf("remarks = %q", resp.Categorization.Remarks)
+	}
+}
+
+// The retry-guidance template is only ever rendered when a categorize response
+// was already rejected, so a bad field name or syntax error would surface at
+// the worst possible moment. Render it here instead.
+func TestRenderCategorizeRetryGuidance(t *testing.T) {
+	tmpl, err := prompts.Load(categorizeRetryGuidanceTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := model.FindingCategories()
+	cases := []struct {
+		name     string
+		data     CategorizeRetryGuidance
+		contains []string
+		absent   []string
+	}{
+		{
+			name:     "empty categories",
+			data:     CategorizeRetryGuidance{EmptyCategories: true, AllowedCategories: allowed},
+			contains: []string{"must never be empty", `["finding"]`, "`" + model.CategoryConfirmation + "`"},
+			absent:   []string{"not allowed"},
+		},
+		{
+			name:     "unknown categories",
+			data:     CategorizeRetryGuidance{UnknownCategories: []string{"vibes"}, AllowedCategories: allowed},
+			contains: []string{"not allowed", "`vibes`", "`" + model.CategoryFinding + "`"},
+			absent:   []string{"must never be empty"},
+		},
+		{
+			name: "both",
+			data: CategorizeRetryGuidance{
+				EmptyCategories:   true,
+				UnknownCategories: []string{"vibes", "hunch"},
+				AllowedCategories: allowed,
+			},
+			contains: []string{"must never be empty", "`vibes`", "`hunch`", "2 category names"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := RenderPrompt(tmpl, tc.data)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			if strings.TrimSpace(out) == "" {
+				t.Fatal("rendered guidance is empty")
+			}
+			for _, want := range tc.contains {
+				if !strings.Contains(out, want) {
+					t.Errorf("guidance missing %q:\n%s", want, out)
+				}
+			}
+			for _, banned := range tc.absent {
+				if strings.Contains(out, banned) {
+					t.Errorf("guidance unexpectedly contains %q:\n%s", banned, out)
+				}
+			}
+		})
+	}
+}
+
+// A rejection carrying no guidance data at all must still render cleanly rather
+// than erroring inside the retry path.
+func TestRenderCategorizeRetryGuidanceZeroValue(t *testing.T) {
+	tmpl, err := prompts.Load(categorizeRetryGuidanceTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenderPrompt(tmpl, CategorizeRetryGuidance{}); err != nil {
+		t.Fatalf("render: %v", err)
 	}
 }

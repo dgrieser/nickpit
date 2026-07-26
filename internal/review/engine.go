@@ -543,10 +543,18 @@ func flattenVectorFindings(vectorResults []agentResult) ([]model.Finding, []find
 
 // categorizeAndFilterVectorFindings runs the categorize agent on every finding
 // from `vectorResults` and replaces each vector's `resp.Findings` in place with
-// the subset whose category set is exactly [finding]. Everything else — an
-// affirmation of correct behavior, a diagnostic the compiler already reports, a
-// claim that cannot be anchored to the patch — is removed before the verifier
-// ever sees it, so verification spends its budget only on real claims.
+// the subset worth verifying. Everything else — an affirmation of correct
+// behavior, a diagnostic the compiler already reports, a claim that cannot be
+// anchored to the patch — is removed before the verifier ever sees it, so
+// verification spends its budget only on real claims.
+//
+// Two independent decisions gate a finding, and they do not share an authority:
+//   - scope, decided solely by codeLocationOverlapsDiff against the submitted
+//     location and then the agent's replacement location. The agent's
+//     outside-diff-scope category is telemetry, never a drop reason: it is told
+//     not to tag an in-diff finding, so a disagreement is agent error.
+//   - content, decided by the remaining categories, which must be exactly
+//     [finding].
 //
 // The drop is unconditional and does not consult --verify-drop-policy: that
 // policy weighs verdicts, and a category is not a verdict.
@@ -577,6 +585,10 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 		compilation  int
 		outOfScope   int
 		relocated    int
+		// scopeOverruled counts findings the agent tagged out of scope that the
+		// deterministic check kept anyway. Those are agent errors; surfacing the
+		// count keeps them visible instead of silent.
+		scopeOverruled int
 	}
 	keptByVector := make(map[int][]model.Finding, len(vectorResults))
 	droppedByVector := make(map[int]int, len(vectorResults))
@@ -595,15 +607,21 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			categorization = fallbackFindingCategorization(finding)
 		}
 		categories := model.NormalizeFindingCategories(categorization.Categories)
-		if len(categories) == 0 {
-			// The agent had its retries and still produced nothing usable. Fail
-			// open rather than discard a possibly real finding.
-			categories = []string{model.CategoryFinding}
+		// Scope is not the agent's call, so its scope tag never reaches the
+		// keep/drop decision — only the content categories do.
+		content := model.ContentCategories(categories)
+		if len(content) == 0 {
+			// Either the agent produced nothing usable even after its retries, or
+			// its only answer was a scope opinion the deterministic check is about
+			// to settle. Neither is a content reason to drop, so fail open rather
+			// than discard a possibly real finding.
+			content = []string{model.CategoryFinding}
 		}
 		counts := dropsByVector[ref.vectorIdx]
 
-		// The deterministic overlap check is the authority on scope; the agent's
-		// only contribution is a causal location the check can accept instead.
+		// The deterministic overlap check is the sole authority on scope; the
+		// agent's only contribution is a causal location the check can accept
+		// instead of the submitted one.
 		outOfScope := false
 		if diffScopeEnabled && !codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
 			replacement := result.ReplacementCodeLocation
@@ -620,15 +638,18 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 				counts.relocated++
 			}
 		}
+		if !outOfScope && slices.Contains(categories, model.CategoryOutsideDiffScope) {
+			counts.scopeOverruled++
+		}
 
-		if outOfScope || !model.CategoriesSurviveVerification(categories) {
+		if outOfScope || !model.CategoriesSurviveVerification(content) {
 			// Attribute each dropped finding to exactly one reason so the
 			// counters sum to the dropped total. Scope comes first because it is
 			// the deterministic one.
 			switch {
-			case outOfScope || slices.Contains(categories, model.CategoryOutsideDiffScope):
+			case outOfScope:
 				counts.outOfScope++
-			case slices.Contains(categories, model.CategoryConfirmation):
+			case slices.Contains(content, model.CategoryConfirmation):
 				counts.confirmation++
 			default:
 				counts.compilation++
@@ -655,14 +676,15 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			// rather than refuted.
 			e.logger.LiveFindings(logging.FindingUpdate{Filtered: dropped})
 		}
-		if dropped > 0 || counts.relocated > 0 {
-			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d out_of_scope=%d relocated=%d kept=%d",
+		if dropped > 0 || counts.relocated > 0 || counts.scopeOverruled > 0 {
+			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d out_of_scope=%d relocated=%d scope_overruled=%d kept=%d",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.confirmation,
 				counts.compilation,
 				counts.outOfScope,
 				counts.relocated,
+				counts.scopeOverruled,
 				len(keptByVector[vectorIdx]),
 			)
 		}
