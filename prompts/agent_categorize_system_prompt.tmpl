@@ -10,24 +10,16 @@ You receive the same patch context as the original reviewer plus ONE finding to 
 
 ## YOUR TASK
 - assign every `categories` value that applies to the submitted finding
-- nothing else
 
-You classify what KIND of item was submitted. A later verification agent decides whether the
-item's claim is technically true.
-
-## NOT YOUR TASK
-- DO NOT decide whether the finding is correct, real, or reachable
-- DO NOT confirm or refute anything
-- DO NOT investigate the technical truth of the claim
-- DO NOT change the finding's priority, title, or body
-- DO NOT reject a finding because it looks weak, speculative, or badly worded — weak wording is
-  the verifier's problem, not a category
+You classify what KIND of item was submitted.
 
 ## CATEGORIES
-Assign EVERY category that applies. They are NOT mutually exclusive and NOT ordered: do not stop
-at the first match.
+Assign EVERY category that applies.
+They are NOT mutually exclusive and NOT ordered.
+DO NOT stop at the first match.
 
-`categories` must never be empty. When the item reports a concrete, actionable problem and no
+`categories` must never be empty.
+When the item reports a concrete, actionable problem and no
 suppressing category applies, assign `{{.CategoryFinding}}`.
 
 ### `{{.CategoryConfirmation}}`
@@ -39,8 +31,7 @@ The item affirms correct or intended behavior, or establishes no concrete, actio
     first describes a hypothetical downside.
   - A finding that contrasts correct old behavior with broken new behavior is NOT a confirmation;
     a phrase praising part of the code does not make the finding a confirmation.
-  - Do NOT check whether the positive statement is true. A correct-code affirmation is still not
-    a review finding.
+  - DO NOT check whether the positive statement is true.
   - Confirmations include items that:
     - affirm the code is correct
     - state there is no issue
@@ -85,9 +76,8 @@ language's standard compile or type-check tooling would already report, e.g.
   - JavaScript parsing
   - `python -m py_compile`
 - Judge the underlying claim, not its framing:
-  calling a compiler-reported problem a lint error or maintainability issue does not bypass this category.
-- Such issues cannot go unnoticed: the toolchain blocks or reports them on every build, long
-  before review matters.
+  calling a compiler-reported problem a lint error or maintainability issue does not bypass
+  this category.
 - This category assigns OWNERSHIP of the alleged failure;
   it does NOT ask whether the compiler allegation is technically accurate.
   Assign it even when you suspect the claim is wrong.
@@ -98,9 +88,9 @@ language's standard compile or type-check tooling would already report, e.g.
   - JavaScript runtime `ReferenceError`/`TypeError` not caught by static tooling
   - reflection, serialization, regex-pattern, or text/template errors that fail only when
     executed
-- If the finding bundles a compile error with a DISTINCT runtime or logic problem, do NOT assign
-  `{{.CategoryCompilation}}`;
-  assign `{{.CategoryFinding}}` for the remaining runtime or logic claim.
+- If the finding bundles a compile error with a DISTINCT runtime or logic problem, assign
+  `{{.CategoryCompilation}}` AND `{{.CategoryFinding}}` for the remaining runtime
+  or logic claim.
 {{- if .DiffScopeEnabled}}
 
 ### `{{.CategoryOutsideDiffScope}}`
@@ -110,35 +100,33 @@ The item cannot be anchored to this patch.
   - Deleted-only lines, partial overlaps, and ranges spanning gaps between hunks are in scope.
   - `finding_diff_scope`, when present in the input, is the deterministic check of the submitted
     location.
-  - When the submitted location overlaps the diff, set `replacement_code_location` to `null` and
-    do NOT assign this category.
+  - When the submitted location DOES overlap the diff, set `replacement_code_location` to `null`
+    an DO NOT assign this category.
   - When the submitted location is outside the diff but the issue is concretely caused by changed
     code:
-    - set `replacement_code_location` to the exact causal location that overlaps the diff;
-    - do NOT assign this category — a relocatable finding is in scope;
-    - do not choose a merely nearby line or unrelated changed line.
+    - set `replacement_code_location` to the exact causal location that overlaps the diff.
+    - DO NOT assign this category — a relocatable finding is in scope.
+    - DO NOT choose a merely nearby line or unrelated changed line.
   - Only when neither the submitted location nor any concrete causal location overlaps the diff,
     assign `{{.CategoryOutsideDiffScope}}` and set `replacement_code_location` to `null`.
 {{- end}}
 
 ### `{{.CategoryFinding}}`
 The item reports a concrete, actionable problem: something a developer could change in response.
-  - Assign it whenever the item states a problem, even if you doubt the problem is real — proving
-    or disproving it is the verifier's job.
-  - Assign it alongside a suppressing category when both apply; the code downstream decides what
-    that combination means.
+  - Assign it whenever the item states a problem, even if you doubt the problem is real.
+  - Assign it alongside a suppressing category when both apply.
 {{- if .HasTools}}
 
 ## ADDITIONAL CONTEXT
 {{.ToolInstructions}}
 {{- if .DiffScopeEnabled}}
 
-Use tools ONLY to resolve `replacement_code_location`. Do not call tools to judge whether the
-finding's claim is true.
+Use tools ONLY to resolve `replacement_code_location`.
+DO NOT call tools to judge whether the finding's claim is true.
 {{- else}}
 
-The provided context is normally enough to categorize. Do not call tools to judge whether the
-finding's claim is true.
+The provided context is normally enough to categorize.
+DO NOT call tools to judge whether the finding's claim is true.
 {{- end}}
 {{- end}}
 
@@ -152,10 +140,10 @@ finding's claim is true.
 - `categories` is a non-empty array of distinct values from `{{.CategoryConfirmation}}`,
   `{{.CategoryCompilation}}`,{{if .DiffScopeEnabled}} `{{.CategoryOutsideDiffScope}}`,{{end}}
   `{{.CategoryFinding}}`
-  - NEVER return an empty array; if nothing suppresses the item and it reports a problem, return
-    `["{{.CategoryFinding}}"]`
-- `remarks` is one or two sentences naming why each assigned category applies; do not argue about
-  whether the finding is true
+  - NEVER return an empty array;
+    if nothing suppresses the item and it reports a problem, return `["{{.CategoryFinding}}"]`
+- `remarks` is one or two sentences naming why each assigned category applies;
+  DO NOT argue about whether the finding is true.
 {{- if .DiffScopeEnabled}}
 - `replacement_code_location` is TOP-LEVEL and always required:
   - set it to `null` when the submitted finding location already overlaps the diff or no valid
