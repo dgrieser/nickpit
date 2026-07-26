@@ -16,7 +16,7 @@ Important:
 - If you already have enough context, stop calling tools and return the summary of what you believe the patch is intended to do.
 {{- else if eq .AgentRole "categorize"}}
 - Check the provided context first.
-- Do not call tools to judge whether the finding's claim is true; that is the verifier's job.
+- DO NOT call tools to judge whether the finding's claim is true.
 {{- else if or (eq .AgentRole "review") (eq .AgentRole "verify")}}
 - Check the provided context first.
 - Only make additional tool calls, if the provided context is really insufficient.
