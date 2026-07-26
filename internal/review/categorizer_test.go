@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -334,7 +335,7 @@ func TestCategorizeAllCancelledContextWarnsOnceAndStops(t *testing.T) {
 	}
 	// Every finding still gets a fail-open categorization so nothing is lost.
 	for i := range got {
-		if got[i] == nil || !model.CategoriesSurviveVerification(got[i].Categories) {
+		if got[i] == nil || model.VerdictForCategories(got[i].Categories) != model.VerdictConfirmed {
 			t.Fatalf("categorization %d = %#v, want fail-open [finding]", i, got[i])
 		}
 	}
@@ -388,106 +389,84 @@ func TestCategorizeAgentErrorKeepsFinding(t *testing.T) {
 	}
 }
 
-func TestCategorizeAndFilterKeepsOnlyPureFindings(t *testing.T) {
-	llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{
-		categorized(model.CategoryFinding),
-		categorized(model.CategoryConfirmation),
-		categorized(model.CategoryCompilation),
-		categorized(model.CategoryCompilation, model.CategoryFinding),
-		categorized(model.CategoryConfirmation, model.CategoryFinding),
-	}}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	findings := []model.Finding{
-		sampleFinding("keep", "a.go", 1),
-		sampleFinding("praise", "b.go", 1),
-		sampleFinding("compiler owns it", "c.go", 1),
-		sampleFinding("bundled compile", "d.go", 1),
-		sampleFinding("bundled praise", "e.go", 1),
-	}
-	vectorResults := []agentResult{{
-		resp: &llm.ReviewResponse{Findings: findings},
-		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
-	}}
-	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	kept := vectorResults[0].resp.Findings
-	if len(kept) != 1 || kept[0].Title != "keep" {
-		t.Fatalf("kept = %#v, want only the pure finding", kept)
-	}
-}
-
-// A pure confirmation is dropped on every rung except `none`.
-func TestCategorizeAndFilterDropsConfirmationOnEveryRungButNone(t *testing.T) {
-	for _, policy := range []string{model.DropPolicyLenient, model.DropPolicyStandard, model.DropPolicyStrict} {
-		llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{categorized(model.CategoryConfirmation)}}
-		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-		vectorResults := []agentResult{{
-			resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("praise", "a.go", 1)}},
-			run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
-		}}
-		_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{FindingDropPolicy: policy}, NewLimiter(1), "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if kept := vectorResults[0].resp.Findings; len(kept) != 0 {
-			t.Fatalf("policy %q: kept = %#v, want the confirmation dropped", policy, kept)
-		}
-	}
-}
-
-// The whole point of --finding-drop-policy=lenient: a finding the categorizer
-// tagged both `compilation` and `finding` — a compile error bundled with a
-// distinct runtime bug — reaches the verifier instead of being discarded with
-// the compiler's half.
-func TestCategorizeAndFilterLenientKeepsBundledFinding(t *testing.T) {
-	cases := map[string]struct {
-		policy   string
-		wantKept int
+// Categorization maps onto a verdict and the one --verify-drop-policy decides,
+// exactly as it does for the verifier.
+func TestCategorizeAndFilterAppliesDropPolicy(t *testing.T) {
+	cases := []struct {
+		name       string
+		categories []string
+		// keptBy lists the policies under which the finding survives.
+		keptBy []string
 	}{
-		"lenient keeps it":  {model.DropPolicyLenient, 1},
-		"none keeps it":     {model.DropPolicyNone, 1},
-		"standard drops it": {model.DropPolicyStandard, 0},
-		"strict drops it":   {model.DropPolicyStrict, 0},
+		{
+			// Sole finding = confirmed: nothing ever drops it.
+			name:       "sole finding is confirmed",
+			categories: []string{model.CategoryFinding},
+			keptBy:     []string{model.DropPolicyNone, model.DropPolicyRefutedOnly, model.DropPolicyRefutedAndUnverified},
+		},
+		{
+			// A compile error bundled with a distinct runtime bug is not a CLEAR
+			// suppression, so refuted-only keeps it.
+			name:       "finding plus compilation is unverified",
+			categories: []string{model.CategoryCompilation, model.CategoryFinding},
+			keptBy:     []string{model.DropPolicyNone, model.DropPolicyRefutedOnly},
+		},
+		{
+			name:       "finding plus confirmation is unverified",
+			categories: []string{model.CategoryConfirmation, model.CategoryFinding},
+			keptBy:     []string{model.DropPolicyNone, model.DropPolicyRefutedOnly},
+		},
+		{
+			// No finding at all = refuted: clearly suppressible.
+			name:       "pure confirmation is refuted",
+			categories: []string{model.CategoryConfirmation},
+			keptBy:     []string{model.DropPolicyNone},
+		},
+		{
+			name:       "pure compilation is refuted",
+			categories: []string{model.CategoryCompilation},
+			keptBy:     []string{model.DropPolicyNone},
+		},
 	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{
-				categorized(model.CategoryCompilation, model.CategoryFinding),
-			}}
-			engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-			vectorResults := []agentResult{{
-				resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("bundled", "a.go", 1)}},
-				run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
-			}}
-			_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{FindingDropPolicy: tc.policy}, NewLimiter(1), "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if kept := vectorResults[0].resp.Findings; len(kept) != tc.wantKept {
-				t.Fatalf("kept = %#v, want %d", kept, tc.wantKept)
-			}
-		})
+	for _, tc := range cases {
+		for _, policy := range []string{model.DropPolicyNone, model.DropPolicyRefutedOnly, model.DropPolicyRefutedAndUnverified} {
+			t.Run(tc.name+"/"+policy, func(t *testing.T) {
+				llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{categorized(tc.categories...)}}
+				engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+				vectorResults := []agentResult{{
+					resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("f", "a.go", 1)}},
+					run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
+				}}
+				_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantKept := slices.Contains(tc.keptBy, policy)
+				gotKept := len(vectorResults[0].resp.Findings) == 1
+				if gotKept != wantKept {
+					t.Fatalf("categories %v policy %q: kept = %v, want %v", tc.categories, policy, gotKept, wantKept)
+				}
+			})
+		}
 	}
 }
 
-// `none` means the categorize agent's judgement never drops anything — but the
-// deterministic diff-scope check still applies, since --disable-diff-scope is
-// the switch for that.
-func TestCategorizeAndFilterNoneStillHonorsDeterministicScope(t *testing.T) {
+// `none` means this stage drops nothing at all — the deterministic scope drop
+// included. Out-of-scope findings are still caught by the pipeline's final
+// diff-scope safeguard unless --disable-diff-scope.
+func TestCategorizeAndFilterNoneDropsNothingIncludingScope(t *testing.T) {
 	llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{categorized(model.CategoryFinding)}}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	vectorResults := []agentResult{{
 		resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("out of scope", "other.go", 99)}},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 	}}
-	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{FindingDropPolicy: model.DropPolicyNone}, NewLimiter(1), "")
+	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: model.DropPolicyNone}, NewLimiter(1), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kept := vectorResults[0].resp.Findings; len(kept) != 0 {
-		t.Fatalf("kept = %#v, want the unanchorable finding still dropped", kept)
+	if kept := vectorResults[0].resp.Findings; len(kept) != 1 {
+		t.Fatalf("kept = %#v, want the finding preserved under policy none", kept)
 	}
 }
 
@@ -632,7 +611,7 @@ func TestCategorizeExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	if len(llmClient.requests[0].Tools) == 0 {
 		t.Fatal("categorize must expose the retrieval tools for diff-scope relocation")
 	}
-	if got == nil || !model.CategoriesSurviveVerification(got.Categories) {
+	if got == nil || model.VerdictForCategories(got.Categories) != model.VerdictConfirmed {
 		t.Fatalf("categorization = %#v", got)
 	}
 	if usage.TotalTokens != 7 {

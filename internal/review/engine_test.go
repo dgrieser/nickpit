@@ -4680,21 +4680,17 @@ func TestShouldDropFinding(t *testing.T) {
 		wantDrop   bool
 		wantReason string
 	}{
-		{"confirmed never drops (standard)", model.VerdictConfirmed, 0.99, model.DropPolicyStandard, false, "kept"},
-		{"confirmed never drops (strict)", model.VerdictConfirmed, 0.99, model.DropPolicyStrict, false, "kept"},
-		{"refuted high confidence drops", model.VerdictRefuted, 0.85, model.DropPolicyStandard, true, model.VerdictRefuted},
-		{"refuted low confidence drops", model.VerdictRefuted, 0.01, model.DropPolicyStandard, true, model.VerdictRefuted},
-		{"refuted zero confidence drops", model.VerdictRefuted, 0.0, model.DropPolicyStandard, true, model.VerdictRefuted},
-		{"refuted drops under lenient too", model.VerdictRefuted, 0.85, model.DropPolicyLenient, true, model.VerdictRefuted},
-		{"unverified kept (lenient)", model.VerdictUnverified, 0.95, model.DropPolicyLenient, false, "kept"},
-		{"unverified kept (standard)", model.VerdictUnverified, 0.95, model.DropPolicyStandard, false, "kept"},
-		{"unverified drops (strict)", model.VerdictUnverified, 0.0, model.DropPolicyStrict, true, model.VerdictUnverified},
+		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, model.DropPolicyRefutedOnly, false, "kept"},
+		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, model.DropPolicyRefutedAndUnverified, false, "kept"},
+		{"refuted high confidence drops", model.VerdictRefuted, 0.85, model.DropPolicyRefutedOnly, true, model.VerdictRefuted},
+		{"refuted low confidence drops", model.VerdictRefuted, 0.01, model.DropPolicyRefutedOnly, true, model.VerdictRefuted},
+		{"refuted zero confidence drops", model.VerdictRefuted, 0.0, model.DropPolicyRefutedOnly, true, model.VerdictRefuted},
+		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, model.DropPolicyRefutedOnly, false, "kept"},
+		{"unverified drops (both)", model.VerdictUnverified, 0.0, model.DropPolicyRefutedAndUnverified, true, model.VerdictUnverified},
 		{"refuted policy=none kept", model.VerdictRefuted, 0.99, model.DropPolicyNone, false, "kept"},
-		{"missing verdict treated as unverified (standard)", "", 0.99, model.DropPolicyStandard, false, "kept"},
-		{"missing verdict treated as unverified (strict)", "", 0.99, model.DropPolicyStrict, true, model.VerdictUnverified},
-		{"bogus policy defaults to standard behavior", model.VerdictRefuted, 0.9, "garbage", true, model.VerdictRefuted},
-		{"deprecated refuted-only alias behaves as standard", model.VerdictUnverified, 0.9, "refuted-only", false, "kept"},
-		{"deprecated refuted-and-unverified alias behaves as strict", model.VerdictUnverified, 0.9, "refuted-and-unverified", true, model.VerdictUnverified},
+		{"missing verdict treated as unverified (refuted-only)", "", 0.99, model.DropPolicyRefutedOnly, false, "kept"},
+		{"missing verdict treated as unverified (both)", "", 0.99, model.DropPolicyRefutedAndUnverified, true, model.VerdictUnverified},
+		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", true, model.VerdictRefuted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4711,45 +4707,42 @@ func TestShouldDropFinding(t *testing.T) {
 }
 
 func TestShouldDropFindingNilVerification(t *testing.T) {
-	drop, reason := shouldDropFinding(nil, model.DropPolicyStrict)
+	drop, reason := shouldDropFinding(nil, model.DropPolicyRefutedAndUnverified)
 	if drop || reason != "kept" {
 		t.Fatalf("nil verification: drop=%v reason=%q", drop, reason)
 	}
 }
 
-// categoriesSurviveDropPolicy is the categorize half of the ladder; the verify
-// half is TestShouldDropFinding.
-func TestCategoriesSurviveDropPolicy(t *testing.T) {
+// The categorize half goes through the same policy as the verifier, via the
+// verdict its categories imply.
+func TestShouldDropVerdictForCategories(t *testing.T) {
 	cases := []struct {
-		name    string
-		content []string
-		policy  string
-		want    bool
+		name     string
+		content  []string
+		policy   string
+		wantDrop bool
 	}{
-		{"sole finding survives everywhere (none)", []string{model.CategoryFinding}, model.DropPolicyNone, true},
-		{"sole finding survives everywhere (lenient)", []string{model.CategoryFinding}, model.DropPolicyLenient, true},
-		{"sole finding survives everywhere (standard)", []string{model.CategoryFinding}, model.DropPolicyStandard, true},
-		{"sole finding survives everywhere (strict)", []string{model.CategoryFinding}, model.DropPolicyStrict, true},
+		{"sole finding kept (refuted-only)", []string{model.CategoryFinding}, model.DropPolicyRefutedOnly, false},
+		{"sole finding kept (both)", []string{model.CategoryFinding}, model.DropPolicyRefutedAndUnverified, false},
 
-		// A compile error bundled with a distinct runtime bug: standard and
-		// strict drop it, lenient keeps it for the verifier to judge.
-		{"bundled compile drops under standard", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyStandard, false},
-		{"bundled compile drops under strict", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyStrict, false},
-		{"bundled compile survives under lenient", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyLenient, true},
-		{"bundled compile survives under none", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyNone, true},
+		// finding + compilation is unverified: not a CLEAR suppression, so
+		// refuted-only keeps it and only refuted-and-unverified drops it.
+		{"bundled compile kept (refuted-only)", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyRefutedOnly, false},
+		{"bundled compile drops (both)", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyRefutedAndUnverified, true},
 
-		{"pure confirmation drops under lenient", []string{model.CategoryConfirmation}, model.DropPolicyLenient, false},
-		{"pure confirmation drops under standard", []string{model.CategoryConfirmation}, model.DropPolicyStandard, false},
-		{"pure compilation drops under lenient", []string{model.CategoryCompilation}, model.DropPolicyLenient, false},
-		{"none keeps even a pure confirmation", []string{model.CategoryConfirmation}, model.DropPolicyNone, true},
+		// No finding at all is refuted: dropped by either dropping policy.
+		{"pure confirmation drops (refuted-only)", []string{model.CategoryConfirmation}, model.DropPolicyRefutedOnly, true},
+		{"pure compilation drops (both)", []string{model.CategoryCompilation}, model.DropPolicyRefutedAndUnverified, true},
 
-		{"bogus policy defaults to standard behavior", []string{model.CategoryCompilation, model.CategoryFinding}, "garbage", false},
-		{"deprecated alias behaves as standard", []string{model.CategoryCompilation, model.CategoryFinding}, "refuted-only", false},
+		{"policy none keeps everything", []string{model.CategoryConfirmation}, model.DropPolicyNone, false},
+		{"empty content fails open", nil, model.DropPolicyRefutedAndUnverified, false},
+		{"bogus policy defaults to refuted-only behavior", []string{model.CategoryCompilation, model.CategoryFinding}, "garbage", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := categoriesSurviveDropPolicy(tc.content, tc.policy); got != tc.want {
-				t.Fatalf("categoriesSurviveDropPolicy(%v, %q) = %v, want %v", tc.content, tc.policy, got, tc.want)
+			drop, _ := shouldDropVerdict(model.VerdictForCategories(tc.content), tc.policy)
+			if drop != tc.wantDrop {
+				t.Fatalf("shouldDropVerdict(VerdictForCategories(%v), %q) = %v, want %v", tc.content, tc.policy, drop, tc.wantDrop)
 			}
 		})
 	}

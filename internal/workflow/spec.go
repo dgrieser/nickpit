@@ -238,8 +238,7 @@ var stepOverrideKeys = []string{
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds",
 	"nudge_count", "max_findings", "disable_reasoning_extract", "disable_parallel_tool_calls",
-	"disable_patch_summary", "disable_suggestions", "disable_json_response_format",
-	"finding_drop_policy", "verify_drop_policy",
+	"disable_patch_summary", "disable_suggestions", "disable_json_response_format", "verify_drop_policy",
 	"confidence_threshold", "priority_threshold",
 }
 
@@ -367,13 +366,8 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.DisableSuggestions != nil {
 		req.DisableSuggestions = *o.DisableSuggestions
 	}
-	// Deprecated alias first, so an explicit finding_drop_policy in the same
-	// block wins over a leftover verify_drop_policy.
 	if o.VerifyDropPolicy != nil {
-		req.FindingDropPolicy = *o.VerifyDropPolicy
-	}
-	if o.FindingDropPolicy != nil {
-		req.FindingDropPolicy = *o.FindingDropPolicy
+		req.VerifyDropPolicy = *o.VerifyDropPolicy
 	}
 	if o.ConfidenceThreshold != nil {
 		req.ConfidenceThreshold = *o.ConfidenceThreshold

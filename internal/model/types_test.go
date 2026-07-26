@@ -398,26 +398,49 @@ func TestNormalizeFindingCategories(t *testing.T) {
 	}
 }
 
-func TestCategoriesSurviveVerification(t *testing.T) {
+// Categorization is the first pass of verification: the category set maps onto
+// a verdict, and --verify-drop-policy then decides as it does for the verifier.
+func TestVerdictForCategories(t *testing.T) {
 	cases := []struct {
 		name string
 		in   []string
-		want bool
+		want string
 	}{
-		{"pure finding survives", []string{CategoryFinding}, true},
-		{"finding plus compilation drops", []string{CategoryCompilation, CategoryFinding}, false},
-		{"finding plus confirmation drops", []string{CategoryConfirmation, CategoryFinding}, false},
-		{"finding plus out of scope drops", []string{CategoryOutsideDiffScope, CategoryFinding}, false},
-		{"confirmation alone drops", []string{CategoryConfirmation}, false},
-		{"compilation alone drops", []string{CategoryCompilation}, false},
-		{"empty drops", nil, false},
+		{"sole finding is confirmed", []string{CategoryFinding}, VerdictConfirmed},
+		{"finding plus compilation is unverified", []string{CategoryCompilation, CategoryFinding}, VerdictUnverified},
+		{"finding plus confirmation is unverified", []string{CategoryConfirmation, CategoryFinding}, VerdictUnverified},
+		{"pure confirmation is refuted", []string{CategoryConfirmation}, VerdictRefuted},
+		{"pure compilation is refuted", []string{CategoryCompilation}, VerdictRefuted},
+		{"both suppressors without finding is refuted", []string{CategoryConfirmation, CategoryCompilation}, VerdictRefuted},
+		// Nothing usable from the agent must not read as refuted, or a
+		// categorization failure would drop a real finding.
+		{"empty fails open to confirmed", nil, VerdictConfirmed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := CategoriesSurviveVerification(tc.in); got != tc.want {
-				t.Fatalf("CategoriesSurviveVerification(%v) = %v, want %v", tc.in, got, tc.want)
+			if got := VerdictForCategories(tc.in); got != tc.want {
+				t.Fatalf("VerdictForCategories(%v) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// The scope category is stripped before the verdict is derived, so an in-diff
+// finding the agent wrongly tagged out of scope is not turned into a refutation.
+func TestVerdictForCategoriesIgnoresScopeTag(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{[]string{CategoryFinding, CategoryOutsideDiffScope}, VerdictConfirmed},
+		{[]string{CategoryOutsideDiffScope}, VerdictConfirmed},
+		{[]string{CategoryConfirmation, CategoryOutsideDiffScope}, VerdictRefuted},
+		{[]string{CategoryCompilation, CategoryFinding, CategoryOutsideDiffScope}, VerdictUnverified},
+	}
+	for _, tc := range cases {
+		if got := VerdictForCategories(ContentCategories(tc.in)); got != tc.want {
+			t.Fatalf("VerdictForCategories(ContentCategories(%v)) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -464,48 +487,14 @@ func TestContentCategories(t *testing.T) {
 	}
 }
 
-// The two predicates are used as a pair: scope never reaches the survival
-// decision, so an in-diff finding the agent wrongly tagged out of scope must
-// still survive.
-func TestContentCategoriesFeedsSurvivalDecision(t *testing.T) {
-	cases := []struct {
-		name string
-		in   []string
-		want bool
-	}{
-		{"finding plus stray scope tag survives", []string{CategoryFinding, CategoryOutsideDiffScope}, true},
-		{"scope tag alone does not survive on its own", []string{CategoryOutsideDiffScope}, false},
-		{"confirmation plus scope tag drops", []string{CategoryConfirmation, CategoryOutsideDiffScope}, false},
-		{"pure finding survives", []string{CategoryFinding}, true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := CategoriesSurviveVerification(ContentCategories(tc.in)); got != tc.want {
-				t.Fatalf("survives(%v) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestNormalizeDropPolicy(t *testing.T) {
 	for _, p := range ValidDropPolicies {
 		if got := NormalizeDropPolicy(p); got != p {
 			t.Fatalf("NormalizeDropPolicy(%q) = %q, want passthrough", p, got)
 		}
 	}
-	// Deprecated --verify-drop-policy values map onto the rung with the matching
-	// verdict behavior.
-	aliases := map[string]string{
-		"refuted-only":           DropPolicyStandard,
-		"refuted-and-unverified": DropPolicyStrict,
-	}
-	for alias, want := range aliases {
-		if got := NormalizeDropPolicy(alias); got != want {
-			t.Fatalf("NormalizeDropPolicy(%q) = %q, want %q", alias, got, want)
-		}
-	}
 	// An unrecognized value must never drop MORE than the default.
-	for _, p := range []string{"", "garbage", "STANDARD", "leniant"} {
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY", "refuted_only"} {
 		if got := NormalizeDropPolicy(p); got != DefaultDropPolicy {
 			t.Fatalf("NormalizeDropPolicy(%q) = %q, want %q", p, got, DefaultDropPolicy)
 		}
@@ -513,28 +502,25 @@ func TestNormalizeDropPolicy(t *testing.T) {
 }
 
 func TestValidateDropPolicy(t *testing.T) {
-	valid := append(append([]string{}, ValidDropPolicies...), "refuted-only", "refuted-and-unverified")
-	for _, p := range valid {
+	for _, p := range ValidDropPolicies {
 		if err := ValidateDropPolicy(p); err != nil {
 			t.Fatalf("ValidateDropPolicy(%q) = %v, want nil", p, err)
 		}
 	}
-	// A typo must be rejected loudly rather than silently normalizing, which is
-	// exactly how someone asking for `lenient` would otherwise keep getting
-	// `standard`.
-	for _, p := range []string{"", "garbage", "STANDARD", "leniant", "refuted_only"} {
+	// A typo is rejected loudly rather than silently normalizing.
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY", "refuted_only", "lenient", "standard", "strict"} {
 		if err := ValidateDropPolicy(p); err == nil {
 			t.Fatalf("ValidateDropPolicy(%q) = nil, want error", p)
 		}
 	}
 }
 
-func TestValidDropPoliciesAreLadderOrdered(t *testing.T) {
-	want := []string{DropPolicyNone, DropPolicyLenient, DropPolicyStandard, DropPolicyStrict}
+func TestValidDropPoliciesAndDefault(t *testing.T) {
+	want := []string{DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified}
 	if !slices.Equal(ValidDropPolicies, want) {
-		t.Fatalf("ValidDropPolicies = %v, want ladder order %v", ValidDropPolicies, want)
+		t.Fatalf("ValidDropPolicies = %v, want %v", ValidDropPolicies, want)
 	}
-	if DefaultDropPolicy != DropPolicyStandard {
-		t.Fatalf("DefaultDropPolicy = %q, want %q", DefaultDropPolicy, DropPolicyStandard)
+	if DefaultDropPolicy != DropPolicyRefutedOnly {
+		t.Fatalf("DefaultDropPolicy = %q, want %q", DefaultDropPolicy, DropPolicyRefutedOnly)
 	}
 }

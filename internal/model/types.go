@@ -61,7 +61,7 @@ type ReviewRequest struct {
 	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
 	// summarize); 0 = unlimited.
 	Concurrency         int
-	FindingDropPolicy   string
+	VerifyDropPolicy    string
 	ConfidenceThreshold float64
 	NudgeCount          int
 	// MaxFindings caps the findings each review agent may report across its
@@ -561,73 +561,44 @@ func NormalizeFindingCategories(in []string) []string {
 	return out
 }
 
-// Drop policies for --finding-drop-policy: one strictness ladder governing both
-// per-finding filters, ordered from keeping everything to keeping the least.
+// Drop policies for --verify-drop-policy. Defined as constants so the accepted
+// set, the normalization fallback, and the drop decision all reference the same
+// values and cannot drift.
 //
-//	none      categorize keeps every category combination; verify drops nothing
-//	lenient   categorize keeps anything tagged `finding`;   verify drops refuted
-//	standard  categorize keeps only a sole `finding`;       verify drops refuted
-//	strict    categorize keeps only a sole `finding`;       verify drops refuted and unverified
+// The policy governs BOTH per-finding stages: categorization is the first pass
+// of verification, and its category set is translated into a verdict by
+// VerdictForCategories before the same rules apply.
 //
 // They live here rather than in internal/review so the CLI, the workflow spec
-// loader, and the engine all validate against one list and cannot drift.
+// loader, and the engine all validate against one list.
 const (
-	DropPolicyNone     = "none"
-	DropPolicyLenient  = "lenient"
-	DropPolicyStandard = "standard"
-	DropPolicyStrict   = "strict"
+	DropPolicyNone                 = "none"
+	DropPolicyRefutedOnly          = "refuted-only"
+	DropPolicyRefutedAndUnverified = "refuted-and-unverified"
 )
 
-// DefaultDropPolicy is the rung applied when nothing is configured, and the
-// fallback for an unrecognized value.
-const DefaultDropPolicy = DropPolicyStandard
+// DefaultDropPolicy is applied when nothing is configured, and is the fallback
+// for an unrecognized value.
+const DefaultDropPolicy = DropPolicyRefutedOnly
 
-// Deprecated --verify-drop-policy values, accepted as aliases so specs and
-// scripts written against the old verify-only flag keep working.
-const (
-	legacyDropPolicyRefutedOnly          = "refuted-only"
-	legacyDropPolicyRefutedAndUnverified = "refuted-and-unverified"
-)
+// ValidDropPolicies lists the accepted --verify-drop-policy values.
+var ValidDropPolicies = []string{DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified}
 
-// ValidDropPolicies lists the accepted --finding-drop-policy values in ladder
-// order (most permissive first).
-var ValidDropPolicies = []string{DropPolicyNone, DropPolicyLenient, DropPolicyStandard, DropPolicyStrict}
-
-// legacyDropPolicy maps a deprecated --verify-drop-policy value onto the ladder.
-// The old flag only controlled the verifier, so both aliases land on the rung
-// with the matching verdict behavior and the default category bar.
-func legacyDropPolicy(policy string) (string, bool) {
-	switch policy {
-	case legacyDropPolicyRefutedOnly:
-		return DropPolicyStandard, true
-	case legacyDropPolicyRefutedAndUnverified:
-		return DropPolicyStrict, true
-	}
-	return "", false
-}
-
-// ValidateDropPolicy returns an error when policy is neither a current value nor
-// a deprecated alias. Callers validate up front so a typo surfaces as an error
-// instead of silently normalizing to the default.
+// ValidateDropPolicy returns an error when policy is not one of the supported
+// values. Callers validate up front so a typo surfaces as an error instead of
+// silently normalizing to the default.
 func ValidateDropPolicy(policy string) error {
 	if slices.Contains(ValidDropPolicies, policy) {
 		return nil
 	}
-	if _, ok := legacyDropPolicy(policy); ok {
-		return nil
-	}
-	return fmt.Errorf("invalid finding-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
+	return fmt.Errorf("invalid verify-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
 }
 
-// NormalizeDropPolicy resolves a configured value to a ladder rung, translating
-// deprecated aliases. An unrecognized value falls back to the default rather
-// than erroring, so a validation gap never drops more than intended.
+// NormalizeDropPolicy resolves a configured value, falling back to the default
+// rather than erroring so a validation gap never drops more than intended.
 func NormalizeDropPolicy(policy string) string {
 	if slices.Contains(ValidDropPolicies, policy) {
 		return policy
-	}
-	if translated, ok := legacyDropPolicy(policy); ok {
-		return translated
 	}
 	return DefaultDropPolicy
 }
@@ -640,7 +611,7 @@ func NormalizeDropPolicy(policy string) string {
 // scope, so a disagreement is agent error, and honouring it would silently drop
 // a real, in-scope finding. The category is still worth reporting, so callers
 // keep it for telemetry and feed only the content categories to
-// CategoriesSurviveVerification.
+// VerdictForCategories.
 func ContentCategories(cats []string) []string {
 	out := make([]string, 0, len(cats))
 	for _, c := range cats {
@@ -655,18 +626,35 @@ func ContentCategories(cats []string) []string {
 	return out
 }
 
-// CategoriesSurviveVerification reports whether a categorized finding should be
-// passed on to the verifier. Only a pure [CategoryFinding] set survives: any
-// additional category is a suppression signal, and a set without
-// CategoryFinding reports no actionable problem at all.
+// VerdictForCategories translates a categorized finding into a verification
+// verdict, so the single --verify-drop-policy governs the categorize stage the
+// same way it governs the verifier. Categorization is the first pass of
+// verification, not a separate policy:
 //
-// Pass it the ContentCategories, not the raw set: scope is not its decision.
+//	[finding]           confirmed   a clean, actionable finding
+//	finding + anything  unverified  e.g. a compile error bundled with a distinct
+//	                                runtime bug — not clearly suppressible, so it
+//	                                survives unless the policy drops unverified
+//	no finding at all   refuted     a confirmation, or a diagnostic the compiler
+//	                                owns: clearly not a finding
 //
-// An empty set never reaches this predicate — the parser retries the agent and,
-// failing that, the caller falls back to [CategoryFinding] so a categorization
-// failure cannot silently swallow a real finding.
-func CategoriesSurviveVerification(cats []string) bool {
-	return len(cats) == 1 && cats[0] == CategoryFinding
+// Pass it the ContentCategories, not the raw set: scope is a deterministic
+// diff-overlap decision, not the agent's.
+//
+// An empty set means the agent produced nothing usable even after its retries;
+// that yields confirmed, so a categorization failure cannot swallow a real
+// finding.
+func VerdictForCategories(content []string) string {
+	if len(content) == 0 {
+		return VerdictConfirmed
+	}
+	if !slices.Contains(content, CategoryFinding) {
+		return VerdictRefuted
+	}
+	if len(content) == 1 {
+		return VerdictConfirmed
+	}
+	return VerdictUnverified
 }
 
 // FindingCategorization is the categorize agent's output for one finding. It is
