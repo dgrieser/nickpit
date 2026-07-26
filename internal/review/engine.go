@@ -554,13 +554,12 @@ func flattenVectorFindings(vectorResults []agentResult) ([]model.Finding, []find
 // `finding` is confirmed, `finding` plus anything else is unverified (kept
 // unless the policy also drops unverified), and no `finding` at all is refuted.
 //
-// Scope is decided separately and does not go through the agent's judgement:
-// codeLocationOverlapsDiff checks the submitted location, then the agent's
-// replacement location. The agent's outside-diff-scope category is telemetry,
-// never a drop reason — it is told not to tag an in-diff finding, so a
-// disagreement is agent error. Under policy `none` this stage drops nothing at
-// all; out-of-scope findings are still caught by the final diff-scope safeguard
-// unless --disable-diff-scope.
+// Scope is settled separately and is NOT governed by the policy. A finding is
+// dropped as out of scope when either signal says it cannot be anchored to the
+// patch — the deterministic codeLocationOverlapsDiff check (after trying the
+// agent's replacement location), or the agent's own outside-diff-scope category
+// — and that holds under every policy including `none`. The single switch is
+// --disable-diff-scope.
 //
 // Returns aggregated token usage, soft warnings, and any fatal error. On error,
 // callers should still propagate the returned usage/warnings — they hold the
@@ -592,10 +591,11 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 		unverified int
 		outOfScope int
 		relocated  int
-		// scopeOverruled counts findings the agent tagged out of scope that the
-		// deterministic check kept anyway. Those are agent errors; surfacing the
-		// count keeps them visible instead of silent.
-		scopeOverruled int
+		// scopeAgentOnly counts findings dropped on the agent's outside-diff-scope
+		// tag alone, where the deterministic overlap check found the cited location
+		// inside the diff. Surfacing the count keeps that disagreement visible,
+		// since it is the case where a mistagged finding would be lost.
+		scopeAgentOnly int
 	}
 	keptByVector := make(map[int][]model.Finding, len(vectorResults))
 	droppedByVector := make(map[int]int, len(vectorResults))
@@ -618,46 +618,54 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 		// keep/drop decision — only the content categories do.
 		content := model.ContentCategories(categories)
 		if len(content) == 0 {
-			// Either the agent produced nothing usable even after its retries, or
-			// its only answer was a scope opinion the deterministic check is about
-			// to settle. Neither is a content reason to drop, so fail open rather
-			// than discard a possibly real finding.
+			// The agent produced nothing usable even after its retries, or its only
+			// answer was the scope tag (handled separately below). Neither is a
+			// content reason to drop, so fail open rather than discard a possibly
+			// real finding.
 			content = []string{model.CategoryFinding}
 		}
 		counts := dropsByVector[ref.vectorIdx]
 
-		// The deterministic overlap check is the sole authority on scope; the
-		// agent's only contribution is a causal location the check can accept
-		// instead of the submitted one.
+		// Scope is settled outside the drop policy: a finding that cannot be
+		// anchored to the patch is dropped whenever diff-scope is active, whatever
+		// --verify-drop-policy says. Only --disable-diff-scope turns it off.
 		outOfScope := false
-		if diffScopeEnabled && !codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
-			replacement := result.ReplacementCodeLocation
-			if replacement == nil || !codeLocationOverlapsDiff(*replacement, reviewCtx.DiffScopeHunks) {
-				outOfScope = true
-			} else {
-				corrected := *replacement
-				corrected.FilePath = normalizeToolPath(strings.TrimSpace(corrected.FilePath))
-				if corrected.LineRange.End < corrected.LineRange.Start {
-					corrected.LineRange.End = corrected.LineRange.Start
+		relocated := false
+		if diffScopeEnabled {
+			if !codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
+				replacement := result.ReplacementCodeLocation
+				if replacement == nil || !codeLocationOverlapsDiff(*replacement, reviewCtx.DiffScopeHunks) {
+					outOfScope = true
+				} else {
+					corrected := *replacement
+					corrected.FilePath = normalizeToolPath(strings.TrimSpace(corrected.FilePath))
+					if corrected.LineRange.End < corrected.LineRange.Start {
+						corrected.LineRange.End = corrected.LineRange.Start
+					}
+					corrected.LineRange.Count = corrected.LineRange.EffectiveCount()
+					finding.CodeLocation = corrected
+					counts.relocated++
+					relocated = true
 				}
-				corrected.LineRange.Count = corrected.LineRange.EffectiveCount()
-				finding.CodeLocation = corrected
-				counts.relocated++
+			}
+			// The agent's own scope tag drops the finding too: it read the whole
+			// claim, not just the cited line, so it can see that the substance is
+			// about unchanged code. It cannot coexist with a successful relocation
+			// (parseCategorizeResponse rejects that pair), so guarding on relocated
+			// only protects against a finding we just re-anchored.
+			if !relocated && slices.Contains(categories, model.CategoryOutsideDiffScope) {
+				if !outOfScope {
+					counts.scopeAgentOnly++
+				}
+				outOfScope = true
 			}
 		}
-		if !outOfScope && slices.Contains(categories, model.CategoryOutsideDiffScope) {
-			counts.scopeOverruled++
-		}
 
-		// Policy `none` drops nothing at this stage, scope included.
 		dropCategorized, reason := shouldDropVerdict(model.VerdictForCategories(content), opts.DropPolicy)
-		if model.NormalizeDropPolicy(opts.DropPolicy) == model.DropPolicyNone {
-			outOfScope = false
-		}
 		if outOfScope || dropCategorized {
 			// Attribute each dropped finding to exactly one reason so the
-			// counters sum to the dropped total. Scope comes first because it is
-			// the deterministic one.
+			// counters sum to the dropped total. Scope comes first: it is the
+			// decision the policy does not govern.
 			switch {
 			case outOfScope:
 				counts.outOfScope++
@@ -690,8 +698,8 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			// rather than refuted.
 			e.logger.LiveFindings(logging.FindingUpdate{Filtered: dropped})
 		}
-		if dropped > 0 || counts.relocated > 0 || counts.scopeOverruled > 0 {
-			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d unverified=%d out_of_scope=%d relocated=%d scope_overruled=%d kept=%d policy=%s",
+		if dropped > 0 || counts.relocated > 0 {
+			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d unverified=%d out_of_scope=%d relocated=%d scope_agent_only=%d kept=%d policy=%s",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.confirmation,
@@ -699,7 +707,7 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 				counts.unverified,
 				counts.outOfScope,
 				counts.relocated,
-				counts.scopeOverruled,
+				counts.scopeAgentOnly,
 				len(keptByVector[vectorIdx]),
 				model.NormalizeDropPolicy(opts.DropPolicy),
 			)

@@ -76,8 +76,11 @@
 #   none                     drop nothing, in either stage
 #   refuted-only             drop refuted; keep unverified
 #   refuted-and-unverified   drop both
-# Set per step it affects only that step's filter. Diff-scope dropping is
-# deterministic and switched with --disable-diff-scope, not by this policy.
+# Set per step it affects only that step's filter. Diff-scope is NOT governed by
+# this policy: a finding that cannot be anchored to the patch — by the
+# deterministic hunk-overlap check or by the categorizer's own
+# `outside-diff-scope` tag — is always dropped, even under `none`. The only
+# switch for that is --disable-diff-scope.
 #
 # LLM concurrency is run-level only (--concurrency, default 10, 0 = unlimited):
 # one shared cap across every agent loop in the run. It is intentionally not in

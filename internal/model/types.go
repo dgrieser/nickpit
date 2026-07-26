@@ -606,12 +606,10 @@ func NormalizeDropPolicy(policy string) string {
 // ContentCategories returns the categories that describe WHAT the finding is,
 // dropping CategoryOutsideDiffScope.
 //
-// Scope is settled by a deterministic diff-overlap check in the review engine,
-// never by the agent: the agent is told not to tag an in-diff finding out of
-// scope, so a disagreement is agent error, and honouring it would silently drop
-// a real, in-scope finding. The category is still worth reporting, so callers
-// keep it for telemetry and feed only the content categories to
-// VerdictForCategories.
+// Scope is not part of the verdict: the review engine drops an out-of-scope
+// finding outright whenever diff-scope is active, regardless of
+// --verify-drop-policy. Callers therefore keep the raw set for that decision and
+// pass only the content categories to VerdictForCategories.
 func ContentCategories(cats []string) []string {
 	out := make([]string, 0, len(cats))
 	for _, c := range cats {
@@ -638,8 +636,9 @@ func ContentCategories(cats []string) []string {
 //	no finding at all   refuted     a confirmation, or a diagnostic the compiler
 //	                                owns: clearly not a finding
 //
-// Pass it the ContentCategories, not the raw set: scope is a deterministic
-// diff-overlap decision, not the agent's.
+// Pass it the ContentCategories, not the raw set: an out-of-scope finding is
+// dropped by the engine outside the policy entirely, so folding scope into the
+// verdict would double-count it.
 //
 // An empty set means the agent produced nothing usable even after its retries;
 // that yields confirmed, so a categorization failure cannot swallow a real
