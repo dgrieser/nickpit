@@ -553,11 +553,10 @@ func flattenVectorFindings(vectorResults []agentResult) ([]model.Finding, []find
 //     location and then the agent's replacement location. The agent's
 //     outside-diff-scope category is telemetry, never a drop reason: it is told
 //     not to tag an in-diff finding, so a disagreement is agent error.
-//   - content, decided by the remaining categories, which must be exactly
-//     [finding].
-//
-// The drop is unconditional and does not consult --verify-drop-policy: that
-// policy weighs verdicts, and a category is not a verdict.
+//   - content, decided by the remaining categories against
+//     --finding-drop-policy: `none` keeps every combination, `lenient` keeps
+//     anything tagged `finding`, and `standard`/`strict` keep only a sole
+//     `finding`.
 //
 // Returns aggregated token usage, soft warnings, and any fatal error. On error,
 // callers should still propagate the returned usage/warnings — they hold the
@@ -642,7 +641,7 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			counts.scopeOverruled++
 		}
 
-		if outOfScope || !model.CategoriesSurviveVerification(content) {
+		if outOfScope || !categoriesSurviveDropPolicy(content, opts.DropPolicy) {
 			// Attribute each dropped finding to exactly one reason so the
 			// counters sum to the dropped total. Scope comes first because it is
 			// the deterministic one.
@@ -677,7 +676,7 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			e.logger.LiveFindings(logging.FindingUpdate{Filtered: dropped})
 		}
 		if dropped > 0 || counts.relocated > 0 || counts.scopeOverruled > 0 {
-			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d out_of_scope=%d relocated=%d scope_overruled=%d kept=%d",
+			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d out_of_scope=%d relocated=%d scope_overruled=%d kept=%d policy=%s",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.confirmation,
@@ -686,6 +685,7 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 				counts.relocated,
 				counts.scopeOverruled,
 				len(keptByVector[vectorIdx]),
+				model.NormalizeDropPolicy(opts.DropPolicy),
 			)
 		}
 	}
@@ -786,7 +786,7 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 				counts.refuted,
 				counts.unverified,
 				len(keptByVector[vectorIdx]),
-				normalizeDropPolicy(opts.DropPolicy),
+				model.NormalizeDropPolicy(opts.DropPolicy),
 			)
 		}
 	}
@@ -803,8 +803,8 @@ func shouldDropFinding(v *model.FindingVerification, policy string) (bool, strin
 	if v == nil {
 		return false, "kept"
 	}
-	policy = normalizeDropPolicy(policy)
-	if policy == DropPolicyNone {
+	policy = model.NormalizeDropPolicy(policy)
+	if policy == model.DropPolicyNone {
 		return false, "kept"
 	}
 	verdict := v.Verdict
@@ -813,11 +813,13 @@ func shouldDropFinding(v *model.FindingVerification, policy string) (bool, strin
 		verdict = model.VerdictUnverified
 	}
 	switch policy {
-	case DropPolicyRefutedOnly:
+	case model.DropPolicyLenient, model.DropPolicyStandard:
+		// Refuted is a positive finding of falsehood; unverified only means the
+		// evidence ran out, so it survives.
 		if verdict != model.VerdictRefuted {
 			return false, "kept"
 		}
-	case DropPolicyRefutedAndUnverified:
+	case model.DropPolicyStrict:
 		if verdict == model.VerdictConfirmed {
 			return false, "kept"
 		}
@@ -827,14 +829,23 @@ func shouldDropFinding(v *model.FindingVerification, policy string) (bool, strin
 	return true, verdict
 }
 
-// Drop policies for --verify-drop-policy. Defined as constants so the accepted
-// set, the normalization fallback, and the drop decision all reference the same
-// values and cannot drift.
-const (
-	DropPolicyNone                 = "none"
-	DropPolicyRefutedOnly          = "refuted-only"
-	DropPolicyRefutedAndUnverified = "refuted-and-unverified"
-)
+// categoriesSurviveDropPolicy reports whether a categorized finding's content
+// categories clear the policy's bar. Scope is deliberately not considered here:
+// it is a deterministic diff-overlap decision, switched with --disable-diff-scope
+// rather than with a policy about the agents' judgement.
+func categoriesSurviveDropPolicy(content []string, policy string) bool {
+	switch model.NormalizeDropPolicy(policy) {
+	case model.DropPolicyNone:
+		return true
+	case model.DropPolicyLenient:
+		// The item is a finding even though something else also applies — e.g. a
+		// compile error bundled with a distinct runtime bug. Keep it and let the
+		// verifier judge the claim.
+		return slices.Contains(content, model.CategoryFinding)
+	default:
+		return model.CategoriesSurviveVerification(content)
+	}
+}
 
 // Default tool-call arguments. defaultCallHierarchyDepth in particular must be
 // used both where the find_callers/find_callees dedup key is computed and where
@@ -843,26 +854,6 @@ const (
 	defaultCallHierarchyDepth = 10
 	defaultSearchContextLines = 5
 )
-
-// ValidDropPolicies lists the accepted values for --verify-drop-policy.
-var ValidDropPolicies = []string{DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified}
-
-// ValidateDropPolicy returns an error when policy is not one of the supported values.
-func ValidateDropPolicy(policy string) error {
-	if slices.Contains(ValidDropPolicies, policy) {
-		return nil
-	}
-	return fmt.Errorf("invalid verify-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
-}
-
-func normalizeDropPolicy(policy string) string {
-	switch policy {
-	case DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified:
-		return policy
-	default:
-		return DropPolicyRefutedOnly
-	}
-}
 
 func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 	return VerifyOptions{
@@ -874,7 +865,7 @@ func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 		DisableParallelToolCalls:  req.DisableParallelToolCalls,
 		DisableSuggestions:        req.DisableSuggestions,
 		RepoRoot:                  req.RepoRoot,
-		DropPolicy:                req.VerifyDropPolicy,
+		DropPolicy:                req.FindingDropPolicy,
 		DiffFormat:                req.DiffFormat,
 	}
 }

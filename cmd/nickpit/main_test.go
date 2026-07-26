@@ -1179,12 +1179,12 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		DisableSuggestions:        true,
 		DisablePatchSummary:       true,
 		DisableReasoningExtract:   true,
-		VerifyDropPolicy:          "refuted-only",
+		FindingDropPolicy:         model.DropPolicyStandard,
 		ConfidenceThreshold:       0.7,
 		PriorityThreshold:         "p1",
 	}
 	got := agentSummary(profile, req)
-	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, ≤10 findings, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop refuted-only, confidence ≥0.7, ≥p1"
+	want := "Structured ≤3 nudges, ≤5 retries, ≤300s reasoning, ≤300s rate-limit-delay, ≤15 concurrency, ∞ tool calls, ≤10 findings, parallel, ≤5 duplicates, no suggestions, no patch summary, no reasoning extract, drop standard, confidence ≥0.7, ≥p1"
 	if got != want {
 		t.Fatalf("agentSummary()\n got: %s\nwant: %s", got, want)
 	}
@@ -1195,7 +1195,7 @@ func TestAgentSummaryOmitsDefaultsAndSerial(t *testing.T) {
 		DisableJSONResponseFormat: true,
 		DisableParallelToolCalls:  true,
 		Concurrency:               10,
-		VerifyDropPolicy:          "none",
+		FindingDropPolicy:         model.DropPolicyNone,
 		PriorityThreshold:         "p3",
 	}
 	got := agentSummary(config.Profile{}, req)

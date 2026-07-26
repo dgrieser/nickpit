@@ -209,16 +209,20 @@ type StepOverride struct {
 	MaxReasoningSeconds   *int `yaml:"max_reasoning_seconds"`
 
 	// Stage-specific tunables.
-	NudgeCount                *int     `yaml:"nudge_count"`
-	MaxFindings               *int     `yaml:"max_findings"`
-	DisableReasoningExtract   *bool    `yaml:"disable_reasoning_extract"`
-	DisableParallelToolCalls  *bool    `yaml:"disable_parallel_tool_calls"`
-	DisablePatchSummary       *bool    `yaml:"disable_patch_summary"`
-	DisableSuggestions        *bool    `yaml:"disable_suggestions"`
-	DisableJSONResponseFormat *bool    `yaml:"disable_json_response_format"`
-	VerifyDropPolicy          *string  `yaml:"verify_drop_policy"`
-	ConfidenceThreshold       *float64 `yaml:"confidence_threshold"`
-	PriorityThreshold         *string  `yaml:"priority_threshold"`
+	NudgeCount                *int    `yaml:"nudge_count"`
+	MaxFindings               *int    `yaml:"max_findings"`
+	DisableReasoningExtract   *bool   `yaml:"disable_reasoning_extract"`
+	DisableParallelToolCalls  *bool   `yaml:"disable_parallel_tool_calls"`
+	DisablePatchSummary       *bool   `yaml:"disable_patch_summary"`
+	DisableSuggestions        *bool   `yaml:"disable_suggestions"`
+	DisableJSONResponseFormat *bool   `yaml:"disable_json_response_format"`
+	FindingDropPolicy         *string `yaml:"finding_drop_policy"`
+	// VerifyDropPolicy is the deprecated name for FindingDropPolicy, kept so
+	// specs written against the old verify-only flag keep loading. When both are
+	// set the new key wins.
+	VerifyDropPolicy    *string  `yaml:"verify_drop_policy"`
+	ConfidenceThreshold *float64 `yaml:"confidence_threshold"`
+	PriorityThreshold   *string  `yaml:"priority_threshold"`
 
 	// Review-only internal agent overrides. These keys are accepted only under
 	// config on review:<vector> steps. Each inherits the already-resolved review
@@ -234,7 +238,8 @@ var stepOverrideKeys = []string{
 	"max_tool_calls", "max_duplicate_tool_calls",
 	"max_output_retries", "max_reasoning_seconds",
 	"nudge_count", "max_findings", "disable_reasoning_extract", "disable_parallel_tool_calls",
-	"disable_patch_summary", "disable_suggestions", "disable_json_response_format", "verify_drop_policy",
+	"disable_patch_summary", "disable_suggestions", "disable_json_response_format",
+	"finding_drop_policy", "verify_drop_policy",
 	"confidence_threshold", "priority_threshold",
 }
 
@@ -362,8 +367,13 @@ func (o *StepOverride) Resolve(p config.Profile, req model.ReviewRequest) (confi
 	if o.DisableSuggestions != nil {
 		req.DisableSuggestions = *o.DisableSuggestions
 	}
+	// Deprecated alias first, so an explicit finding_drop_policy in the same
+	// block wins over a leftover verify_drop_policy.
 	if o.VerifyDropPolicy != nil {
-		req.VerifyDropPolicy = *o.VerifyDropPolicy
+		req.FindingDropPolicy = *o.VerifyDropPolicy
+	}
+	if o.FindingDropPolicy != nil {
+		req.FindingDropPolicy = *o.FindingDropPolicy
 	}
 	if o.ConfidenceThreshold != nil {
 		req.ConfidenceThreshold = *o.ConfidenceThreshold

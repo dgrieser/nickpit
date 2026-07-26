@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -815,7 +816,7 @@ func TestValidateAcceptsNudgeAfterReview(t *testing.T) {
 
 func TestStepOverrideResolveIdentity(t *testing.T) {
 	base := config.Profile{Model: "base", ReasoningEffort: "high", MaxToolCalls: 7}
-	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, VerifyDropPolicy: "refuted-only"}
+	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, FindingDropPolicy: model.DropPolicyStandard}
 	gotProfile, gotReq := (*StepOverride)(nil).Resolve(base, req)
 	if !reflect.DeepEqual(gotProfile, base) {
 		t.Fatalf("nil override changed profile: %+v", gotProfile)
@@ -1114,5 +1115,47 @@ func TestCategorizeStepNeedsSourceAndConsumesFindings(t *testing.T) {
 	}
 	if legal, ok := legalScopes(StepCategorizePrefix + "security"); !ok || len(legal) != 1 || legal[0] != ScopeFinding {
 		t.Errorf("legalScopes(categorize:security) = %v/%v, want [finding]", legal, ok)
+	}
+}
+
+// finding_drop_policy replaces verify_drop_policy. The old key still loads so
+// existing specs keep working, and an explicit new key wins when both appear.
+func TestFindingDropPolicyResolvesAndAcceptsDeprecatedKey(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  string
+		want string
+	}{
+		{"new key", "finding_drop_policy: lenient", model.DropPolicyLenient},
+		{"deprecated key", "verify_drop_policy: refuted-and-unverified", "refuted-and-unverified"},
+		{"new key wins over deprecated", "finding_drop_policy: none\n              verify_drop_policy: refuted-only", model.DropPolicyNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := Load(writeSpec(t, `
+version: 1
+steps:
+  - type: review:performance
+  - type: categorize:performance
+    config:
+              `+tc.cfg+`
+  - type: merge
+`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := spec.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			step := spec.Steps[1]
+			_, req := step.Config.Resolve(config.Profile{}, model.ReviewRequest{})
+			if req.FindingDropPolicy != tc.want {
+				t.Fatalf("FindingDropPolicy = %q, want %q", req.FindingDropPolicy, tc.want)
+			}
+			// Whatever key was used, the engine resolves it to a ladder rung.
+			if got := model.NormalizeDropPolicy(req.FindingDropPolicy); !slices.Contains(model.ValidDropPolicies, got) {
+				t.Fatalf("normalized %q to %q, not a ladder rung", req.FindingDropPolicy, got)
+			}
+		})
 	}
 }

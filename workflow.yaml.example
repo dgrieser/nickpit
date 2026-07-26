@@ -16,12 +16,12 @@
 #                             architecture, performance, testing, bestpractices
 #   reasoning-extract:<vector> extract issues from a reviewer's reasoning trace
 #   nudge:<vector>            one extra "look again" round for a reviewer
-#   categorize:<vector>       triage one reviewer's findings, drop all but
-#                             plain findings
-#   verify:<vector>           verify one reviewer's findings and drop by policy
+#   categorize:<vector>       triage one reviewer's findings and drop by
+#                             finding_drop_policy
+#   verify:<vector>           verify one reviewer's findings and drop by
+#                             finding_drop_policy
 #   dedupe:<vector>           de-duplicate one reviewer's findings
-#   categorize                triage all reviewers' findings, drop all but
-#                             plain findings
+#   categorize                triage all reviewers' findings and drop by policy
 #   verify                    verify all reviewers' findings and drop by policy
 #   dedupe                    de-duplicate findings per reviewer
 #   merge                     merge reviewers' findings into one set
@@ -64,6 +64,17 @@
 # scope is optional; an omitted scope uses the value shown for that step in its
 # context. collect-context / review: / reasoning-extract: / nudge: run as a
 # single agent and do not take scope.
+#
+# `finding_drop_policy` is one strictness ladder governing BOTH per-finding
+# filters (it replaces the deprecated `verify_drop_policy`):
+#   none      categorize keeps every category combination; verify drops nothing
+#   lenient   categorize keeps anything tagged `finding`;   verify drops refuted
+#   standard  categorize keeps only a sole `finding`;       verify drops refuted
+#   strict    categorize keeps only a sole `finding`;       verify drops refuted
+#             and unverified
+# Set per step it affects only that step's filter, so a lane wanting a looser
+# category bar sets it on its `categorize:` step. Diff-scope dropping is
+# deterministic and switched with --disable-diff-scope, not by this policy.
 #
 # LLM concurrency is run-level only (--concurrency, default 10, 0 = unlimited):
 # one shared cap across every agent loop in the run. It is intentionally not in
@@ -307,12 +318,12 @@ steps:
 #           - type: categorize:security
 #             config:
 #               scope: finding
+#               finding_drop_policy: lenient
 #               time_budget:
 #                 weight: 15
 #           - type: verify:security
 #             config:
 #               scope: finding
-#               verify_drop_policy: refuted-and-unverified
 #               time_budget:
 #                 weight: 20
 #           - type: dedupe:security
@@ -362,7 +373,7 @@ steps:
 #   max_tool_calls, max_duplicate_tool_calls,
 #   max_output_retries, max_reasoning_seconds,
 #   nudge_count, max_findings, disable_reasoning_extract, disable_parallel_tool_calls,
-#   disable_patch_summary, disable_suggestions, disable_json_response_format, verify_drop_policy,
+#   disable_patch_summary, disable_suggestions, disable_json_response_format, finding_drop_policy,
 #   confidence_threshold, priority_threshold
 # Review steps also accept internal-agent subconfigs: mine_reasoning,
 # compile_findings, nudge; those subconfigs also accept time_budget.

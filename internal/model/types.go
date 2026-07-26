@@ -61,7 +61,7 @@ type ReviewRequest struct {
 	// run (one shared limiter: reviewers, verify, dedupe, merge, finalize,
 	// summarize); 0 = unlimited.
 	Concurrency         int
-	VerifyDropPolicy    string
+	FindingDropPolicy   string
 	ConfidenceThreshold float64
 	NudgeCount          int
 	// MaxFindings caps the findings each review agent may report across its
@@ -559,6 +559,77 @@ func NormalizeFindingCategories(in []string) []string {
 		}
 	}
 	return out
+}
+
+// Drop policies for --finding-drop-policy: one strictness ladder governing both
+// per-finding filters, ordered from keeping everything to keeping the least.
+//
+//	none      categorize keeps every category combination; verify drops nothing
+//	lenient   categorize keeps anything tagged `finding`;   verify drops refuted
+//	standard  categorize keeps only a sole `finding`;       verify drops refuted
+//	strict    categorize keeps only a sole `finding`;       verify drops refuted and unverified
+//
+// They live here rather than in internal/review so the CLI, the workflow spec
+// loader, and the engine all validate against one list and cannot drift.
+const (
+	DropPolicyNone     = "none"
+	DropPolicyLenient  = "lenient"
+	DropPolicyStandard = "standard"
+	DropPolicyStrict   = "strict"
+)
+
+// DefaultDropPolicy is the rung applied when nothing is configured, and the
+// fallback for an unrecognized value.
+const DefaultDropPolicy = DropPolicyStandard
+
+// Deprecated --verify-drop-policy values, accepted as aliases so specs and
+// scripts written against the old verify-only flag keep working.
+const (
+	legacyDropPolicyRefutedOnly          = "refuted-only"
+	legacyDropPolicyRefutedAndUnverified = "refuted-and-unverified"
+)
+
+// ValidDropPolicies lists the accepted --finding-drop-policy values in ladder
+// order (most permissive first).
+var ValidDropPolicies = []string{DropPolicyNone, DropPolicyLenient, DropPolicyStandard, DropPolicyStrict}
+
+// legacyDropPolicy maps a deprecated --verify-drop-policy value onto the ladder.
+// The old flag only controlled the verifier, so both aliases land on the rung
+// with the matching verdict behavior and the default category bar.
+func legacyDropPolicy(policy string) (string, bool) {
+	switch policy {
+	case legacyDropPolicyRefutedOnly:
+		return DropPolicyStandard, true
+	case legacyDropPolicyRefutedAndUnverified:
+		return DropPolicyStrict, true
+	}
+	return "", false
+}
+
+// ValidateDropPolicy returns an error when policy is neither a current value nor
+// a deprecated alias. Callers validate up front so a typo surfaces as an error
+// instead of silently normalizing to the default.
+func ValidateDropPolicy(policy string) error {
+	if slices.Contains(ValidDropPolicies, policy) {
+		return nil
+	}
+	if _, ok := legacyDropPolicy(policy); ok {
+		return nil
+	}
+	return fmt.Errorf("invalid finding-drop-policy %q (allowed: %s)", policy, strings.Join(ValidDropPolicies, ", "))
+}
+
+// NormalizeDropPolicy resolves a configured value to a ladder rung, translating
+// deprecated aliases. An unrecognized value falls back to the default rather
+// than erroring, so a validation gap never drops more than intended.
+func NormalizeDropPolicy(policy string) string {
+	if slices.Contains(ValidDropPolicies, policy) {
+		return policy
+	}
+	if translated, ok := legacyDropPolicy(policy); ok {
+		return translated
+	}
+	return DefaultDropPolicy
 }
 
 // ContentCategories returns the categories that describe WHAT the finding is,

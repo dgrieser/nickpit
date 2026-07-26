@@ -227,6 +227,7 @@ type app struct {
 	disableSuggestions            bool
 	disableWorkflowTimeBudget     bool
 	concurrency                   int
+	findingDropPolicy             string
 	verifyDropPolicy              string
 	confidenceThreshold           float64
 	disableModelCheck             bool
@@ -297,7 +298,12 @@ func newRootCmd() *cobra.Command {
 			cli.excludePathsSet = rootFlags.Changed("exclude-path")
 			cli.includeContentSet = rootFlags.Changed("include-content")
 			cli.excludeContentSet = rootFlags.Changed("exclude-content")
-			if err := review.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
+			// --verify-drop-policy is the deprecated name; an explicit
+			// --finding-drop-policy always wins.
+			if rootFlags.Changed("verify-drop-policy") && !rootFlags.Changed("finding-drop-policy") {
+				cli.findingDropPolicy = cli.verifyDropPolicy
+			}
+			if err := model.ValidateDropPolicy(cli.findingDropPolicy); err != nil {
 				return err
 			}
 			normalizedPriority, err := model.NormalizePriorityThreshold(cli.priorityThreshold)
@@ -377,7 +383,11 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableSuggestions, "disable-suggestions", false, "Omit code suggestions from prompts and review output")
 	root.PersistentFlags().BoolVar(&cli.disableWorkflowTimeBudget, "disable-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
-	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
+	root.PersistentFlags().StringVar(&cli.findingDropPolicy, "finding-drop-policy", model.DefaultDropPolicy, "How aggressively the categorize and verify agents drop findings before merge: none (keep all), lenient (keep anything tagged a finding; drop refuted), standard (keep only sole findings; drop refuted), strict (also drop unverified)")
+	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", model.DefaultDropPolicy, "Deprecated: use --finding-drop-policy")
+	if err := root.PersistentFlags().MarkDeprecated("verify-drop-policy", "use --finding-drop-policy"); err != nil {
+		panic(err)
+	}
 	root.PersistentFlags().Float64Var(&cli.confidenceThreshold, "confidence-threshold", 0.7, "Minimum finalized confidence_score required for the verdict step to keep a finding (0 = keep all)")
 	root.PersistentFlags().BoolVar(&cli.disableModelCheck, "disable-model-check", false, "Disable pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
@@ -1409,7 +1419,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 	req.DisableDiffScope = a.disableDiffScope
 	req.DisableReasoningExtract = a.disableReasoningExtract
 	req.Concurrency = a.concurrency
-	req.VerifyDropPolicy = a.verifyDropPolicy
+	req.FindingDropPolicy = a.findingDropPolicy
 	req.ConfidenceThreshold = a.confidenceThreshold
 	if req.DiffFormat == "" {
 		req.DiffFormat = profile.DiffFormat
@@ -2731,8 +2741,8 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 	if req.DisableDiffScope {
 		flags = append(flags, "unscoped findings")
 	}
-	if req.VerifyDropPolicy != "" && req.VerifyDropPolicy != review.DropPolicyNone {
-		flags = append(flags, fmt.Sprintf("drop %s", req.VerifyDropPolicy))
+	if req.FindingDropPolicy != "" && req.FindingDropPolicy != model.DropPolicyNone {
+		flags = append(flags, fmt.Sprintf("drop %s", model.NormalizeDropPolicy(req.FindingDropPolicy)))
 	}
 	if req.ConfidenceThreshold > 0 {
 		flags = append(flags, fmt.Sprintf("confidence ≥%g", req.ConfidenceThreshold))

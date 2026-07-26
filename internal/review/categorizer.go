@@ -51,7 +51,10 @@ type CategorizeOptions struct {
 	DisableSuggestions        bool
 	DisableDiffScope          bool
 	RepoRoot                  string
-	DiffFormat                model.DiffFormat
+	// DropPolicy is --finding-drop-policy: it decides which category
+	// combinations survive to verification. See categoriesSurviveDropPolicy.
+	DropPolicy string
+	DiffFormat model.DiffFormat
 }
 
 type categorizeResult struct {
@@ -381,6 +384,7 @@ func categorizeOptionsFromReviewRequest(req model.ReviewRequest) CategorizeOptio
 		DisableSuggestions:        req.DisableSuggestions,
 		DisableDiffScope:          req.DisableDiffScope,
 		RepoRoot:                  req.RepoRoot,
+		DropPolicy:                req.FindingDropPolicy,
 		DiffFormat:                req.DiffFormat,
 	}
 }

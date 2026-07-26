@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
@@ -23,7 +24,8 @@ func registerRootCompletions(root *cobra.Command, a *app) {
 	registerEnumCompletion(root, "diff-format", []string{"git", "git-json"})
 	registerEnumCompletion(root, "reasoning-effort", reasoningEffortCompletions)
 	registerEnumCompletion(root, "small-reasoning-effort", reasoningEffortCompletions)
-	registerEnumCompletion(root, "verify-drop-policy", []string{"none", "refuted-only", "refuted-and-unverified"})
+	registerEnumCompletion(root, "finding-drop-policy", model.ValidDropPolicies)
+	registerEnumCompletion(root, "verify-drop-policy", model.ValidDropPolicies)
 	registerEnumCompletion(root, "priority-threshold", []string{"0", "1", "2", "3"})
 	registerEnumCompletion(root, "disable-styleguide", append([]string{"all"}, mappings.StyleGuideOrder()...))
 	registerEnumCompletion(root, "step", workflowStepCompletions())

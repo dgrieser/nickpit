@@ -418,23 +418,76 @@ func TestCategorizeAndFilterKeepsOnlyPureFindings(t *testing.T) {
 	}
 }
 
-// The drop is a classification, not a verdict, so --verify-drop-policy=none
-// must not resurrect a categorized-out finding.
-func TestCategorizeAndFilterIgnoresVerifyDropPolicy(t *testing.T) {
-	for _, policy := range []string{DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified} {
+// A pure confirmation is dropped on every rung except `none`.
+func TestCategorizeAndFilterDropsConfirmationOnEveryRungButNone(t *testing.T) {
+	for _, policy := range []string{model.DropPolicyLenient, model.DropPolicyStandard, model.DropPolicyStrict} {
 		llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{categorized(model.CategoryConfirmation)}}
 		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 		vectorResults := []agentResult{{
 			resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("praise", "a.go", 1)}},
 			run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 		}}
-		_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
+		_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{FindingDropPolicy: policy}, NewLimiter(1), "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if kept := vectorResults[0].resp.Findings; len(kept) != 0 {
 			t.Fatalf("policy %q: kept = %#v, want the confirmation dropped", policy, kept)
 		}
+	}
+}
+
+// The whole point of --finding-drop-policy=lenient: a finding the categorizer
+// tagged both `compilation` and `finding` — a compile error bundled with a
+// distinct runtime bug — reaches the verifier instead of being discarded with
+// the compiler's half.
+func TestCategorizeAndFilterLenientKeepsBundledFinding(t *testing.T) {
+	cases := map[string]struct {
+		policy   string
+		wantKept int
+	}{
+		"lenient keeps it":  {model.DropPolicyLenient, 1},
+		"none keeps it":     {model.DropPolicyNone, 1},
+		"standard drops it": {model.DropPolicyStandard, 0},
+		"strict drops it":   {model.DropPolicyStrict, 0},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{
+				categorized(model.CategoryCompilation, model.CategoryFinding),
+			}}
+			engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+			vectorResults := []agentResult{{
+				resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("bundled", "a.go", 1)}},
+				run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
+			}}
+			_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{FindingDropPolicy: tc.policy}, NewLimiter(1), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kept := vectorResults[0].resp.Findings; len(kept) != tc.wantKept {
+				t.Fatalf("kept = %#v, want %d", kept, tc.wantKept)
+			}
+		})
+	}
+}
+
+// `none` means the categorize agent's judgement never drops anything — but the
+// deterministic diff-scope check still applies, since --disable-diff-scope is
+// the switch for that.
+func TestCategorizeAndFilterNoneStillHonorsDeterministicScope(t *testing.T) {
+	llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{categorized(model.CategoryFinding)}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	vectorResults := []agentResult{{
+		resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("out of scope", "other.go", 99)}},
+		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
+	}}
+	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{FindingDropPolicy: model.DropPolicyNone}, NewLimiter(1), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept := vectorResults[0].resp.Findings; len(kept) != 0 {
+		t.Fatalf("kept = %#v, want the unanchorable finding still dropped", kept)
 	}
 }
 

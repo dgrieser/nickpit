@@ -486,3 +486,55 @@ func TestContentCategoriesFeedsSurvivalDecision(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeDropPolicy(t *testing.T) {
+	for _, p := range ValidDropPolicies {
+		if got := NormalizeDropPolicy(p); got != p {
+			t.Fatalf("NormalizeDropPolicy(%q) = %q, want passthrough", p, got)
+		}
+	}
+	// Deprecated --verify-drop-policy values map onto the rung with the matching
+	// verdict behavior.
+	aliases := map[string]string{
+		"refuted-only":           DropPolicyStandard,
+		"refuted-and-unverified": DropPolicyStrict,
+	}
+	for alias, want := range aliases {
+		if got := NormalizeDropPolicy(alias); got != want {
+			t.Fatalf("NormalizeDropPolicy(%q) = %q, want %q", alias, got, want)
+		}
+	}
+	// An unrecognized value must never drop MORE than the default.
+	for _, p := range []string{"", "garbage", "STANDARD", "leniant"} {
+		if got := NormalizeDropPolicy(p); got != DefaultDropPolicy {
+			t.Fatalf("NormalizeDropPolicy(%q) = %q, want %q", p, got, DefaultDropPolicy)
+		}
+	}
+}
+
+func TestValidateDropPolicy(t *testing.T) {
+	valid := append(append([]string{}, ValidDropPolicies...), "refuted-only", "refuted-and-unverified")
+	for _, p := range valid {
+		if err := ValidateDropPolicy(p); err != nil {
+			t.Fatalf("ValidateDropPolicy(%q) = %v, want nil", p, err)
+		}
+	}
+	// A typo must be rejected loudly rather than silently normalizing, which is
+	// exactly how someone asking for `lenient` would otherwise keep getting
+	// `standard`.
+	for _, p := range []string{"", "garbage", "STANDARD", "leniant", "refuted_only"} {
+		if err := ValidateDropPolicy(p); err == nil {
+			t.Fatalf("ValidateDropPolicy(%q) = nil, want error", p)
+		}
+	}
+}
+
+func TestValidDropPoliciesAreLadderOrdered(t *testing.T) {
+	want := []string{DropPolicyNone, DropPolicyLenient, DropPolicyStandard, DropPolicyStrict}
+	if !slices.Equal(ValidDropPolicies, want) {
+		t.Fatalf("ValidDropPolicies = %v, want ladder order %v", ValidDropPolicies, want)
+	}
+	if DefaultDropPolicy != DropPolicyStandard {
+		t.Fatalf("DefaultDropPolicy = %q, want %q", DefaultDropPolicy, DropPolicyStandard)
+	}
+}
