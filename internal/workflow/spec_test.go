@@ -56,6 +56,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	weight10 := 10
 	weight15 := 15
 	weight20 := 20
+	weight25 := 25
 	weight30 := 30
 	weight40 := 40
 	reviewConfig := func() *StepOverride {
@@ -69,7 +70,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Name: laneNames[i], Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
-			{Type: StepCategorizePrefix + id, Config: &StepOverride{Model: &small, Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight15}}},
+			{Type: StepCategorizePrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight25}}},
 			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight30}}},
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1500}}}

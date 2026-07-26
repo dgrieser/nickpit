@@ -18,10 +18,9 @@ steps:
                 model: "@small"
           - type: categorize:codequality
             config:
-              model: "@small"
               scope: finding
               time_budget:
-                weight: 15
+                weight: 25
           - type: verify:codequality
             config:
               scope: finding
@@ -45,10 +44,9 @@ steps:
                 model: "@small"
           - type: categorize:security
             config:
-              model: "@small"
               scope: finding
               time_budget:
-                weight: 15
+                weight: 25
           - type: verify:security
             config:
               scope: finding
@@ -72,10 +70,9 @@ steps:
                 model: "@small"
           - type: categorize:architecture
             config:
-              model: "@small"
               scope: finding
               time_budget:
-                weight: 15
+                weight: 25
           - type: verify:architecture
             config:
               scope: finding
@@ -99,10 +96,9 @@ steps:
                 model: "@small"
           - type: categorize:performance
             config:
-              model: "@small"
               scope: finding
               time_budget:
-                weight: 15
+                weight: 25
           - type: verify:performance
             config:
               scope: finding
@@ -126,10 +122,9 @@ steps:
                 model: "@small"
           - type: categorize:testing
             config:
-              model: "@small"
               scope: finding
               time_budget:
-                weight: 15
+                weight: 25
           - type: verify:testing
             config:
               scope: finding
@@ -153,10 +148,9 @@ steps:
                 model: "@small"
           - type: categorize:bestpractices
             config:
-              model: "@small"
               scope: finding
               time_budget:
-                weight: 15
+                weight: 25
           - type: verify:bestpractices
             config:
               scope: finding

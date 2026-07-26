@@ -181,7 +181,11 @@ func TestCategorizeSystemPromptOmitsStyleguidesAndVerdicts(t *testing.T) {
 			t.Errorf("categorize prompt must not contain %q:\n%s", banned, system)
 		}
 	}
-	for _, want := range []string{"## NOT YOUR TASK", "DO NOT confirm or refute anything", "`categories` must never be empty"} {
+	for _, want := range []string{
+		"You classify what KIND of item was submitted.",
+		"`categories` must never be empty",
+		"DO NOT call tools to judge whether the finding's claim is true",
+	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("categorize prompt missing %q:\n%s", want, system)
 		}
@@ -205,7 +209,7 @@ func TestCategorizeSystemPromptHasConfirmationRule(t *testing.T) {
 		"`confirmation`",
 		"Judge the finding AS A WHOLE",
 		"Identify the finding's FINAL CONCLUSION",
-		"Do NOT check whether the positive statement is true",
+		"DO NOT check whether the positive statement is true",
 		"often contain phrases similar to these",
 		"request optional hardening, extra tests, compatibility, cleanup, or optimization",
 		"uncovered changed behavior",
@@ -257,9 +261,11 @@ func TestCategorizeSystemPromptFlagsUnusedIdentifierFindings(t *testing.T) {
 					}
 					continue
 				}
+				// Stop each pin short of a line wrap so reflowing the prompt does
+				// not fail the test on its own.
 				for _, want := range []string{
 					tc.wantBullet,
-					"calling a compiler-reported problem a lint error or maintainability issue does not bypass this category",
+					"calling a compiler-reported problem a lint error or maintainability issue",
 					"it does NOT ask whether the compiler allegation is technically accurate",
 					"Do NOT assign it to errors that only surface at runtime",
 				} {
