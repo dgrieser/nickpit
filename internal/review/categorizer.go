@@ -64,17 +64,17 @@ type categorizeResult struct {
 }
 
 func (e *Engine) Categorize(ctx context.Context, req CategorizeRequest) (*model.FindingCategorization, model.TokenUsage, error) {
-	result, usage, err := e.categorizeFinding(ctx, req)
+	result, usage, _, err := e.categorizeFinding(ctx, req)
 	if result == nil {
 		return nil, usage, err
 	}
 	return result.Categorization, usage, err
 }
 
-func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (*categorizeResult, model.TokenUsage, error) {
+func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (*categorizeResult, model.TokenUsage, int, error) {
 	usage := model.TokenUsage{}
 	if req.ReviewCtx == nil {
-		return nil, usage, fmt.Errorf("categorize: nil review context")
+		return nil, usage, 0, fmt.Errorf("categorize: nil review context")
 	}
 	if model.EnsureFindingID(&req.Finding) {
 		e.logf(ctx, "Categorize generated replacement ID for invalid finding ID: title=%q", req.Finding.Title)
@@ -82,7 +82,7 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 
 	systemTemplate, err := e.loadPrompt("agent_categorize_system_prompt.tmpl")
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	diffScopeEnabled := !req.DisableDiffScope && req.ReviewCtx.DiffScopeHunks != nil
 	systemSnippet := llm.CategorizeExamplePromptSnippet()
@@ -95,18 +95,18 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
 	})
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	commonSnippets, err := agentCommonSystemPromptSnippets(agentKind, systemSnippet, req.DisableSuggestions)
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	// No styleguides: the compilation category needs the toolchain versions to
 	// know which compiler owns a diagnostic, but styleguide rules are evidence
 	// for verification, not for classification.
 	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentKind, nil, len(req.ReviewCtx.ToolchainVersions) > 0)
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	// "imports or variables", "imports", "variables", or "" (bullet omitted):
 	// only the kinds the finding language's default toolchain reports.
@@ -127,12 +127,12 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, promptData)
 	if err != nil {
-		return nil, usage, fmt.Errorf("categorize: rendering system prompt: %w", err)
+		return nil, usage, 0, fmt.Errorf("categorize: rendering system prompt: %w", err)
 	}
 
 	userPrompt, err := e.buildFindingAgentUserPrompt(agentKind, req.ReviewCtx, req.Finding, req.DisableSuggestions, !req.DisableDiffScope, req.DiffFormat)
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 
 	var schema []byte
@@ -191,7 +191,7 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 			},
 		})
 		if err != nil {
-			return nil, usage, err
+			return nil, usage, state.toolCalls, err
 		}
 		usage = addTokenUsage(usage, loopResult.tokensUsed)
 		resp := loopResult.resp
@@ -200,10 +200,10 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 			return &categorizeResult{
 				Categorization:          resp.Categorization,
 				ReplacementCodeLocation: resp.ReplacementCodeLocation,
-			}, usage, nil
+			}, usage, state.toolCalls, nil
 		}
 		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
-			return nil, usage, fmt.Errorf("categorize: missing categorization in response")
+			return nil, usage, state.toolCalls, fmt.Errorf("categorize: missing categorization in response")
 		}
 		e.logf(ctx, "Categorize: missing categorization, retrying: attempt=%d", attempt+1)
 		if len(loopResult.messages) > 0 {
@@ -253,7 +253,7 @@ func categorizeNoToolsMessages(systemTemplate string, messages []llm.Message, da
 }
 
 func (e *Engine) CategorizeAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts CategorizeOptions) ([]*model.FindingCategorization, model.TokenUsage, []string, error) {
-	results, usage, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
+	results, usage, _, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
 	categorizations := make([]*model.FindingCategorization, len(results))
 	for i := range results {
 		categorizations[i] = results[i].Categorization
@@ -261,21 +261,22 @@ func (e *Engine) CategorizeAll(ctx context.Context, reviewCtx *model.ReviewConte
 	return categorizations, usage, warnings, err
 }
 
-func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts CategorizeOptions) ([]categorizeResult, model.TokenUsage, []string, error) {
+func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts CategorizeOptions) ([]categorizeResult, model.TokenUsage, int, []string, error) {
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Categorize generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 	}
 	results := make([]categorizeResult, len(findings))
 	if len(findings) == 0 {
-		return results, model.TokenUsage{}, nil, nil
+		return results, model.TokenUsage{}, 0, nil, nil
 	}
 
 	var (
-		mu       sync.Mutex
-		usageSum model.TokenUsage
-		warnings []string
-		wg       sync.WaitGroup
+		mu        sync.Mutex
+		usageSum  model.TokenUsage
+		toolCalls int
+		warnings  []string
+		wg        sync.WaitGroup
 	)
 	categorizeStart := time.Now()
 	e.logProgress(logging.StageCategorize, logging.StateStart, fmt.Sprintf("%sfindings=%d concurrency=%s", categorizeReviewerPrefix(opts.ReviewerName), len(findings), verifyConcurrencyLabel(opts.Limiter)))
@@ -314,11 +315,12 @@ func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewConte
 				DisableDiffScope:          opts.DisableDiffScope,
 				DiffFormat:                opts.DiffFormat,
 			}
-			result, usage, err := e.categorizeFinding(ctx, req)
+			result, usage, calls, err := e.categorizeFinding(ctx, req)
 			mu.Lock()
 			usageSum.PromptTokens += usage.PromptTokens
 			usageSum.CompletionTokens += usage.CompletionTokens
 			usageSum.TotalTokens += usage.TotalTokens
+			toolCalls += calls
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("Categorize failed for finding #%d %q: %v", idx+1, f.Title, err))
 			}
@@ -339,7 +341,7 @@ func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewConte
 		}
 	}
 	e.logProgress(logging.StageCategorize, logging.StateDone, fmt.Sprintf("%sfindings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", categorizeReviewerPrefix(opts.ReviewerName), len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(categorizeStart))))
-	return results, usageSum, warnings, nil
+	return results, usageSum, toolCalls, warnings, nil
 }
 
 // fallbackFindingCategorization fails open. A categorize agent that errored, or

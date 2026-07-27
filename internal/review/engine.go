@@ -561,13 +561,13 @@ func flattenVectorFindings(vectorResults []agentResult) ([]model.Finding, []find
 // — and that holds under every policy including `none`. The single switch is
 // --disable-diff-scope.
 //
-// Returns aggregated token usage, soft warnings, and any fatal error. On error,
-// callers should still propagate the returned usage/warnings — they hold the
-// partial-run telemetry up to the failure point.
-func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, []string, error) {
+// Returns aggregated token usage, tool calls, soft warnings, and any fatal
+// error. On error, callers should still propagate the returned telemetry and
+// warnings — they hold the partial-run data up to the failure point.
+func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, int, []string, error) {
 	findings, refs := flattenVectorFindings(vectorResults)
 	if len(findings) == 0 {
-		return model.TokenUsage{}, nil, nil
+		return model.TokenUsage{}, 0, nil, nil
 	}
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Review generated replacement IDs before categorization: count=%d", overwrote)
@@ -575,12 +575,12 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 	opts := categorizeOptionsFromReviewRequest(req)
 	opts.Limiter = limiter
 	opts.ReviewerName = reviewerName
-	categorizeResults, usage, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
+	categorizeResults, usage, toolCalls, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
 	if err != nil {
-		return usage, warnings, err
+		return usage, toolCalls, warnings, err
 	}
 	if len(categorizeResults) != len(refs) {
-		return usage, warnings, fmt.Errorf("review: categorizer returned %d results for %d findings", len(categorizeResults), len(refs))
+		return usage, toolCalls, warnings, fmt.Errorf("review: categorizer returned %d results for %d findings", len(categorizeResults), len(refs))
 	}
 	type dropCounts struct {
 		confirmation int
@@ -713,7 +713,7 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			)
 		}
 	}
-	return usage, warnings, nil
+	return usage, toolCalls, warnings, nil
 }
 
 // verifyAndFilterVectorFindings runs the verifier on every finding from

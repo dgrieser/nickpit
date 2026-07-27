@@ -1131,6 +1131,18 @@ func laneTestRequest() model.ReviewRequest {
 	}
 }
 
+func TestPipelineAssembleIncludesCategorizerToolCalls(t *testing.T) {
+	st := newPipelineState(&model.ReviewContext{}, nil)
+	st.result = &model.ReviewResult{}
+	st.contextRun = &model.AgentRun{ToolCalls: 2}
+	st.categorizeToolCalls = 3
+
+	result := (&Pipeline{engine: &Engine{}}).assemble(st, model.ReviewRequest{})
+	if result.TotalToolCalls != 5 {
+		t.Fatalf("total tool calls = %d, want context + categorizer calls", result.TotalToolCalls)
+	}
+}
+
 // Each lane runs review → verify → dedupe in order for its own vector, and the
 // merge step only runs after every lane finished. The unit's segment runtime
 // records the lane chains.

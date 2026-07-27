@@ -60,18 +60,19 @@ type PipelineState struct {
 	dedupeRuns       []model.AgentRun
 	// Per-vector dedupe runs, keyed so telemetry orders them by groupOrder
 	// instead of the nondeterministic lane-completion order.
-	dedupeVectorRuns map[string][]model.AgentRun
-	mergeRuns        []model.AgentRun
-	mergeReasoning   string
-	finalizeRuns     []model.AgentRun
-	verdictRun       *model.AgentRun
-	summarizeRuns    []model.AgentRun
-	categorizeUsage  model.TokenUsage
-	verifyUsage      model.TokenUsage
-	finalizeUsage    model.TokenUsage
-	verdictUsage     model.TokenUsage
-	summarizeUsage   model.TokenUsage
-	warnings         []string
+	dedupeVectorRuns    map[string][]model.AgentRun
+	mergeRuns           []model.AgentRun
+	mergeReasoning      string
+	finalizeRuns        []model.AgentRun
+	verdictRun          *model.AgentRun
+	summarizeRuns       []model.AgentRun
+	categorizeUsage     model.TokenUsage
+	categorizeToolCalls int
+	verifyUsage         model.TokenUsage
+	finalizeUsage       model.TokenUsage
+	verdictUsage        model.TokenUsage
+	summarizeUsage      model.TokenUsage
+	warnings            []string
 }
 
 type groupEntry struct {
@@ -515,7 +516,7 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	res.FinalizeTokensUsed = st.finalizeUsage
 	res.VerdictTokensUsed = st.verdictUsage
 	res.SummarizeTokensUsed = st.summarizeUsage
-	res.TotalToolCalls = toolCalls
+	res.TotalToolCalls = toolCalls + st.categorizeToolCalls
 	res.ReasoningEffort = reasoning
 	if req.DisableSuggestions {
 		res.StripSuggestions()

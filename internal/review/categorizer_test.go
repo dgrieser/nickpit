@@ -355,7 +355,7 @@ func TestCategorizeExhaustedRetriesKeepsFinding(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: findings},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 	}}
-	_, warnings, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{MaxOutputRetries: 1}, NewLimiter(1), "")
+	_, _, warnings, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{MaxOutputRetries: 1}, NewLimiter(1), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestCategorizeAgentErrorKeepsFinding(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("real bug", "a.go", 1)}},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 	}}
-	_, warnings, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "")
+	_, _, warnings, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestCategorizeAndFilterAppliesDropPolicy(t *testing.T) {
 					resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("f", "a.go", 1)}},
 					run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 				}}
-				_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
+				_, _, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -461,7 +461,7 @@ func TestCategorizeAndFilterDropsOutOfScopeUnderEveryPolicy(t *testing.T) {
 			resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("out of scope", "other.go", 99)}},
 			run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 		}}
-		_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
+		_, _, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -495,7 +495,7 @@ func TestCategorizeAndFilterRelocatesOrDropsWhollyOutOfScopeFindings(t *testing.
 		resp: &llm.ReviewResponse{Findings: findings},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 	}}
-	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "")
+	_, _, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(1), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ func TestCategorizeAndFilterDisableDiffScopeKeepsOutsideFinding(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("outside", "other.go", 99)}},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 	}}
-	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{DisableDiffScope: true}, NewLimiter(1), "")
+	_, _, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{DisableDiffScope: true}, NewLimiter(1), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestCategorizeAndFilterDropsAgentTaggedOutOfScope(t *testing.T) {
 					resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("in diff", "f.go", 10)}},
 					run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 				}}
-				_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
+				_, _, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{VerifyDropPolicy: policy}, NewLimiter(1), "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -580,7 +580,7 @@ func TestCategorizeAndFilterDisableDiffScopeIgnoresAgentOutOfScope(t *testing.T)
 		resp: &llm.ReviewResponse{Findings: []model.Finding{sampleFinding("outside", "other.go", 99)}},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
 	}}
-	_, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{DisableDiffScope: true}, NewLimiter(1), "")
+	_, _, _, err := engine.categorizeAndFilterVectorFindings(context.Background(), scopedReviewCtx(), vectorResults, model.ReviewRequest{DisableDiffScope: true}, NewLimiter(1), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,6 +619,33 @@ func TestCategorizeExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	}
 	if usage.TotalTokens != 7 {
 		t.Fatalf("usage = %#v, want both calls accounted", usage)
+	}
+}
+
+func TestCategorizeAllReportsToolCalls(t *testing.T) {
+	llmClient := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{
+		{
+			ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"main.go"}`}},
+		},
+		{
+			Categorization: &model.FindingCategorization{Categories: []string{model.CategoryFinding}},
+		},
+	}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+	_, _, toolCalls, warnings, err := engine.categorizeAll(
+		context.Background(),
+		sampleReviewCtx(),
+		[]model.Finding{sampleFinding("x", "main.go", 1)},
+		CategorizeOptions{Limiter: NewLimiter(1)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	if toolCalls != 1 {
+		t.Fatalf("tool calls = %d, want 1", toolCalls)
 	}
 }
 

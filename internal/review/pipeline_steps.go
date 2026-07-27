@@ -388,10 +388,11 @@ func (e *Engine) categorizeStepFunc(findingsFrom []string) stepFunc {
 			return err
 		}
 		vr := st.vectorResults()
-		usage, warnings, err := sc.Engine.categorizeAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "")
+		usage, toolCalls, warnings, err := sc.Engine.categorizeAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "")
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.categorizeUsage = addTokenUsage(st.categorizeUsage, usage)
+		st.categorizeToolCalls += toolCalls
 		st.warnings = append(st.warnings, warnings...)
 		st.mu.Unlock()
 		if err != nil {
@@ -419,9 +420,10 @@ func (e *Engine) categorizeVectorStepFunc(vectorID string) stepFunc {
 			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
 		}
 		results := []agentResult{vr}
-		usage, warnings, err := sc.Engine.categorizeAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name)
+		usage, toolCalls, warnings, err := sc.Engine.categorizeAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name)
 		st.mu.Lock()
 		st.categorizeUsage = addTokenUsage(st.categorizeUsage, usage)
+		st.categorizeToolCalls += toolCalls
 		st.warnings = append(st.warnings, warnings...)
 		st.mu.Unlock()
 		if err != nil {
