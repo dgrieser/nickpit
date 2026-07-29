@@ -16,13 +16,9 @@
 #                             architecture, performance, testing, bestpractices
 #   reasoning-extract:<vector> extract issues from a reviewer's reasoning trace
 #   nudge:<vector>            one extra "look again" round for a reviewer
-#   categorize:<vector>       triage one reviewer's findings and drop by
-#                             verify_drop_policy
-#   verify:<vector>           verify one reviewer's findings and drop by
-#                             verify_drop_policy
+#   verify:<vector>           classify and verify one reviewer's findings
 #   dedupe:<vector>           de-duplicate one reviewer's findings
-#   categorize                triage all reviewers' findings and drop by policy
-#   verify                    verify all reviewers' findings and drop by policy
+#   verify                    classify and verify all reviewers' findings
 #   dedupe                    de-duplicate findings per reviewer
 #   merge                     merge reviewers' findings into one set
 #   finalize                  finalize priorities/confidence/wording
@@ -51,22 +47,21 @@
 #   all       one agent over the whole finding set (flat finalize/summarize
 #             and verdict — see the allowed set below)
 #   cluster   one agent per merge cluster   (merge, finalize, summarize)
-#   finding   one agent per finding         (categorize, verify)
+#   finding   one internal agent chain per finding (verify)
 #   reviewer  one agent per reviewer group  (dedupe)
 # Allowed scope per step:
 #   merge      cluster
 #   finalize   all (flat) | cluster (inside a pipeline:)
 #   summarize  all (flat) | cluster (inside a pipeline:)
 #   verdict    all
-#   categorize finding
 #   verify     finding
 #   dedupe     reviewer
 # scope is optional; an omitted scope uses the value shown for that step in its
 # context. collect-context / review: / reasoning-extract: / nudge: run as a
 # single agent and do not take scope.
 #
-# `verify_drop_policy` governs BOTH per-finding stages: categorization is the
-# first pass of verification, so its categories map onto a verdict —
+# `verify_drop_policy` governs both private classification routing and verifier
+# verdict filtering. Classification is internal to verify:
 #   only `finding`     -> confirmed
 #   `finding` + more   -> unverified  (e.g. a compile error bundled with a
 #                                      distinct runtime bug)
@@ -76,11 +71,9 @@
 #   none                     drop nothing, in either stage
 #   refuted-only             drop refuted; keep unverified
 #   refuted-and-unverified   drop both
-# Set per step it affects only that step's filter. Diff-scope is NOT governed by
-# this policy: a finding that cannot be anchored to the patch — by the
-# deterministic hunk-overlap check or by the categorizer's own
-# `outside-diff-scope` tag — is always dropped, even under `none`. The only
-# switch for that is --disable-diff-scope.
+# Set per step it affects only that step's filter. Diff-scope is not governed by
+# this policy: deterministic repair drops findings that cannot be anchored to
+# the patch, even under `none`. The only switch is --disable-diff-scope.
 #
 # LLM concurrency is run-level only (--concurrency, default 10, 0 = unlimited):
 # one shared cap across every agent loop in the run. It is intentionally not in
@@ -103,16 +96,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:codequality
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:codequality
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:codequality
             config:
               scope: reviewer
@@ -129,16 +117,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:security
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:security
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:security
             config:
               scope: reviewer
@@ -155,16 +138,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:architecture
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:architecture
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:architecture
             config:
               scope: reviewer
@@ -181,16 +159,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:performance
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:performance
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:performance
             config:
               scope: reviewer
@@ -207,16 +180,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:testing
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:testing
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:testing
             config:
               scope: reviewer
@@ -233,16 +201,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:bestpractices
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:bestpractices
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:bestpractices
             config:
               scope: reviewer
@@ -321,17 +284,12 @@ steps:
 #                 model: "@small"
 #                 time_budget:
 #                   weight: 10
-#           - type: categorize:security
-#             config:
-#               scope: finding
-#               time_budget:
-#                 weight: 15
 #           - type: verify:security
 #             config:
 #               scope: finding
 #               verify_drop_policy: refuted-and-unverified
 #               time_budget:
-#                 weight: 20
+#                 weight: 35
 #           - type: dedupe:security
 #             config:
 #               scope: reviewer
@@ -416,8 +374,6 @@ steps:
 #     config: { nudge_count: 0 }
 #   - type: reasoning-extract:security
 #   - type: nudge:security
-#   - type: categorize
-#     config: { scope: finding }
 #   - type: verify
 #     config: { scope: finding }
 #   - pipeline:

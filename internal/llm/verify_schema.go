@@ -8,9 +8,9 @@ import (
 // must name the decision-order gate that decided; forcing the choice makes the
 // model walk the gate list instead of free-judging whether the issue is real.
 //
-// The eligibility gates (non-finding, compile-error, diff-scope) are gone: the
-// categorize agent handles them before verify runs, so every gate left here is
-// an evidence judgement.
+// Eligibility is resolved before verify by private descriptive classification
+// and deterministic diff-scope validation, so every gate left here is an
+// evidence judgement.
 func verifyGateSchema(gates []any) map[string]any {
 	return map[string]any{
 		"type": "string",

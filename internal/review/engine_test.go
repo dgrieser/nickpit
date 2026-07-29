@@ -4713,9 +4713,7 @@ func TestShouldDropFindingNilVerification(t *testing.T) {
 	}
 }
 
-// The categorize half goes through the same policy as the verifier, via the
-// verdict its categories imply.
-func TestShouldDropVerdictForCategories(t *testing.T) {
+func TestShouldDropCategories(t *testing.T) {
 	cases := []struct {
 		name     string
 		content  []string
@@ -4740,9 +4738,9 @@ func TestShouldDropVerdictForCategories(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			drop, _ := shouldDropVerdict(model.VerdictForCategories(tc.content), tc.policy)
+			drop, _ := shouldDropCategories(tc.content, tc.policy)
 			if drop != tc.wantDrop {
-				t.Fatalf("shouldDropVerdict(VerdictForCategories(%v), %q) = %v, want %v", tc.content, tc.policy, drop, tc.wantDrop)
+				t.Fatalf("shouldDropCategories(%v, %q) = %v, want %v", tc.content, tc.policy, drop, tc.wantDrop)
 			}
 		})
 	}

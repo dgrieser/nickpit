@@ -37,6 +37,9 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 		cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)
 	}
 	s.requests = append(s.requests, &cloned)
+	if req.SchemaKind == llm.SchemaKindCategorize {
+		return categorized(model.CategoryFinding), nil
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -106,9 +109,6 @@ func TestVerifyPromptDropsEligibilityGates(t *testing.T) {
 		req := llmClient.requests[0]
 		if string(req.Schema) != string(llm.VerifySchema) {
 			t.Fatalf("with_hunks=%v: schema = %s, want the single verify schema", withHunks, req.Schema)
-		}
-		if req.Constraints.RequireReplacementCodeLocation {
-			t.Fatalf("with_hunks=%v: verifier must not require replacement_code_location", withHunks)
 		}
 		for name, messages := range map[string][]llm.Message{"tools": req.Messages, "no_tools": req.NoToolsMessages} {
 			if len(messages) == 0 {

@@ -60,19 +60,19 @@ type PipelineState struct {
 	dedupeRuns       []model.AgentRun
 	// Per-vector dedupe runs, keyed so telemetry orders them by groupOrder
 	// instead of the nondeterministic lane-completion order.
-	dedupeVectorRuns    map[string][]model.AgentRun
-	mergeRuns           []model.AgentRun
-	mergeReasoning      string
-	finalizeRuns        []model.AgentRun
-	verdictRun          *model.AgentRun
-	summarizeRuns       []model.AgentRun
-	categorizeUsage     model.TokenUsage
-	categorizeToolCalls int
-	verifyUsage         model.TokenUsage
-	finalizeUsage       model.TokenUsage
-	verdictUsage        model.TokenUsage
-	summarizeUsage      model.TokenUsage
-	warnings            []string
+	dedupeVectorRuns      map[string][]model.AgentRun
+	mergeRuns             []model.AgentRun
+	mergeReasoning        string
+	finalizeRuns          []model.AgentRun
+	verdictRun            *model.AgentRun
+	summarizeRuns         []model.AgentRun
+	categorizeUsage       model.TokenUsage
+	verificationToolCalls int
+	verifyUsage           model.TokenUsage
+	finalizeUsage         model.TokenUsage
+	verdictUsage          model.TokenUsage
+	summarizeUsage        model.TokenUsage
+	warnings              []string
 }
 
 type groupEntry struct {
@@ -508,15 +508,16 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	allRuns, usage, toolCalls, reasoning := st.aggregateTelemetry()
 	res.AgentRuns = allRuns
 	res.Warnings = appendAgentRunWarnings(st.warnings, allRuns, st.contextErr)
-	// Categorizer and verifier calls are tracked as phase telemetry rather than
-	// AgentRuns, but they still count toward the review's total model spend.
+	// Classifier and verifier calls are tracked as phase telemetry rather than
+	// AgentRuns, but they still count toward the review's total model spend and
+	// tool-call total.
 	res.TokensUsed = addTokenUsage(addTokenUsage(usage, st.categorizeUsage), st.verifyUsage)
 	res.CategorizeTokensUsed = st.categorizeUsage
 	res.VerifyTokensUsed = st.verifyUsage
 	res.FinalizeTokensUsed = st.finalizeUsage
 	res.VerdictTokensUsed = st.verdictUsage
 	res.SummarizeTokensUsed = st.summarizeUsage
-	res.TotalToolCalls = toolCalls + st.categorizeToolCalls
+	res.TotalToolCalls = toolCalls + st.verificationToolCalls
 	res.ReasoningEffort = reasoning
 	if req.DisableSuggestions {
 		res.StripSuggestions()
@@ -624,9 +625,6 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 	case workflow.StepCollectContext:
 		bs.run = e.collectStepFunc()
 		return bs, nil
-	case workflow.StepCategorize:
-		bs.run = e.categorizeStepFunc(entry.FindingsFrom)
-		return bs, nil
 	case workflow.StepVerify:
 		bs.run = e.verifyStepFunc(entry.FindingsFrom)
 		return bs, nil
@@ -648,10 +646,6 @@ func (e *Engine) bindStep(entry workflow.StepEntry, manual map[string]bool) (bou
 	}
 	if id, ok := stepVector(t, workflow.StepReviewPrefix); ok {
 		bs.run = e.reviewStepFunc(id, manual[id])
-		return bs, nil
-	}
-	if id, ok := stepVector(t, workflow.StepCategorizePrefix); ok {
-		bs.run = e.categorizeVectorStepFunc(id)
 		return bs, nil
 	}
 	if id, ok := stepVector(t, workflow.StepVerifyPrefix); ok {

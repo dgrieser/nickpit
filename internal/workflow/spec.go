@@ -33,7 +33,6 @@ const SmallModelAlias = "@small"
 // addressed with a "<prefix><vector-id>" type, e.g. "review:security".
 const (
 	StepCollectContext = "collect-context"
-	StepCategorize     = "categorize"
 	StepVerify         = "verify"
 	StepDedupe         = "dedupe"
 	StepMerge          = "merge"
@@ -41,12 +40,11 @@ const (
 	StepVerdict        = "verdict"
 	StepSummarize      = "summarize"
 
-	StepReviewPrefix     = "review:"
-	StepExtractPrefix    = "reasoning-extract:"
-	StepNudgePrefix      = "nudge:"
-	StepCategorizePrefix = "categorize:"
-	StepVerifyPrefix     = "verify:"
-	StepDedupePrefix     = "dedupe:"
+	StepReviewPrefix  = "review:"
+	StepExtractPrefix = "reasoning-extract:"
+	StepNudgePrefix   = "nudge:"
+	StepVerifyPrefix  = "verify:"
+	StepDedupePrefix  = "dedupe:"
 )
 
 // Scope identifiers name the work unit a step's agents operate on. Scope
@@ -75,8 +73,6 @@ func legalScopes(stepType string) ([]string, bool) {
 		return []string{ScopeAll, ScopeCluster}, true
 	case stepType == StepVerdict:
 		return []string{ScopeAll}, true
-	case stepType == StepCategorize || strings.HasPrefix(stepType, StepCategorizePrefix):
-		return []string{ScopeFinding}, true
 	case stepType == StepVerify || strings.HasPrefix(stepType, StepVerifyPrefix):
 		return []string{ScopeFinding}, true
 	case stepType == StepDedupe || strings.HasPrefix(stepType, StepDedupePrefix):
@@ -106,7 +102,7 @@ func validateScope(stepType string, cfg *StepOverride) error {
 // perVectorPrefixes lists every step prefix that addresses a single reviewer
 // vector. Per-vector steps touch only their vector's group/session, so they are
 // the only steps allowed inside parallel groups and lanes.
-var perVectorPrefixes = []string{StepReviewPrefix, StepExtractPrefix, StepNudgePrefix, StepCategorizePrefix, StepVerifyPrefix, StepDedupePrefix}
+var perVectorPrefixes = []string{StepReviewPrefix, StepExtractPrefix, StepNudgePrefix, StepVerifyPrefix, StepDedupePrefix}
 
 // ReviewVectorIDs is the canonical, ordered set of reviewer vector identifiers.
 // The order matches the engine's reviewVectors so DefaultSpec() reproduces the
@@ -868,9 +864,9 @@ func (s Spec) Validate() error {
 		// pipeline state (the enriched context, the flat result, or all groups)
 		// and must run sequentially.
 		if inParallel && !isPerVectorStep(entry.Type) {
-			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only per-vector steps (review:/categorize:/verify:/dedupe:/nudge:/reasoning-extract:) may run concurrently", idx, entry.Type)
+			return "", fmt.Errorf("workflow: step %d: %q cannot run inside a parallel group; only per-vector steps (review:/verify:/dedupe:/nudge:/reasoning-extract:) may run concurrently", idx, entry.Type)
 		}
-		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix, StepCategorizePrefix, StepVerifyPrefix, StepDedupePrefix} {
+		for _, prefix := range []string{StepExtractPrefix, StepNudgePrefix, StepVerifyPrefix, StepDedupePrefix} {
 			if v, ok := vectorOf(entry.Type, prefix); ok && !reviewed[v] && !laneReviewed[v] {
 				return "", fmt.Errorf("workflow: step %d: %q requires a preceding %s%s step (in an earlier step or earlier in the same lane)", idx, entry.Type, StepReviewPrefix, v)
 			}
@@ -953,14 +949,14 @@ func (s Spec) Validate() error {
 }
 
 // stepDiscardedAfterMerge reports whether a step's work would be silently
-// thrown away when it runs after the merge step: categorize/verify/dedupe
-// (global or per-vector) mutate the grouped findings, but
+// thrown away when it runs after the merge step: verify/dedupe (global or
+// per-vector) mutate the grouped findings, but
 // finalize/verdict/output consume the flat result the merge already set.
 func stepDiscardedAfterMerge(stepType string) bool {
-	if stepType == StepCategorize || stepType == StepVerify || stepType == StepDedupe {
+	if stepType == StepVerify || stepType == StepDedupe {
 		return true
 	}
-	for _, prefix := range []string{StepCategorizePrefix, StepVerifyPrefix, StepDedupePrefix} {
+	for _, prefix := range []string{StepVerifyPrefix, StepDedupePrefix} {
 		if _, ok := vectorOf(stepType, prefix); ok {
 			return true
 		}
@@ -1150,7 +1146,7 @@ func isPerVectorStep(t string) bool {
 
 func validateStepType(t string) error {
 	switch t {
-	case StepCollectContext, StepCategorize, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
+	case StepCollectContext, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
 		return nil
 	case "":
 		return fmt.Errorf("missing step type")
@@ -1167,17 +1163,17 @@ func validateStepType(t string) error {
 }
 
 // StepNeedsSource reports whether a step type requires a review source.
-// Context collection and the reviewers read the source directly. Categorize and
-// verify steps (bare and per-vector) do too: the diff-scope category and the
-// confirm gate are defined against the changed files, so a standalone run
+// Context collection and the reviewers read the source directly. Verify steps
+// (bare and per-vector) do too: deterministic diff scope and technical truth
+// are defined against the changed files, so a standalone run
 // (--step verify on injected findings) must still resolve the source —
 // otherwise the prompt carries no patch context. The remaining post-reviewer
 // steps operate purely on in-memory or injected findings.
 func StepNeedsSource(stepType string) bool {
-	if stepType == StepCollectContext || stepType == StepCategorize || stepType == StepVerify {
+	if stepType == StepCollectContext || stepType == StepVerify {
 		return true
 	}
-	for _, prefix := range []string{StepCategorizePrefix, StepVerifyPrefix, StepReviewPrefix} {
+	for _, prefix := range []string{StepVerifyPrefix, StepReviewPrefix} {
 		if _, ok := vectorOf(stepType, prefix); ok {
 			return true
 		}
@@ -1232,7 +1228,7 @@ func (s *Spec) FlatSteps() []*StepEntry {
 // and review/nudge/reasoning-extract steps ignore them.
 func StepConsumesFindings(stepType string) bool {
 	switch stepType {
-	case StepCategorize, StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
+	case StepVerify, StepDedupe, StepMerge, StepFinalize, StepVerdict, StepSummarize:
 		return true
 	default:
 		return false

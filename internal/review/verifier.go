@@ -58,17 +58,17 @@ type verifyResult struct {
 }
 
 func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {
-	result, usage, err := e.verifyFinding(ctx, req)
+	result, usage, _, err := e.verifyFinding(ctx, req)
 	if result == nil {
 		return nil, usage, err
 	}
 	return result.Verification, usage, err
 }
 
-func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyResult, model.TokenUsage, error) {
+func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyResult, model.TokenUsage, int, error) {
 	usage := model.TokenUsage{}
 	if req.ReviewCtx == nil {
-		return nil, usage, fmt.Errorf("verify: nil review context")
+		return nil, usage, 0, fmt.Errorf("verify: nil review context")
 	}
 	if model.EnsureFindingID(&req.Finding) {
 		e.logf(ctx, "Verify generated replacement ID for invalid finding ID: title=%q", req.Finding.Title)
@@ -76,7 +76,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 
 	systemTemplate, err := e.loadPrompt("agent_verify_system_prompt.tmpl")
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	systemSnippet := llm.VerifyExamplePromptSnippet()
 	agentKind := "verify"
@@ -85,22 +85,22 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		parallelToolCallGuidance: !req.DisableParallelToolCalls,
 	})
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	commonSnippets, err := agentCommonSystemPromptSnippets("verify", systemSnippet, req.DisableSuggestions)
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	styleGuides := req.StyleGuides
 	if styleGuides == nil {
 		styleGuides, err = e.styleGuidesFor(req.ReviewCtx)
 		if err != nil {
-			return nil, usage, err
+			return nil, usage, 0, err
 		}
 	}
 	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet(agentKind, styleGuides, len(req.ReviewCtx.ToolchainVersions) > 0)
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, struct {
 		OutputSchemaSnippet        string
@@ -120,15 +120,12 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 		StyleGuideToolchainSnippet: styleGuideToolchainSnippet,
 	})
 	if err != nil {
-		return nil, usage, fmt.Errorf("verify: rendering system prompt: %w", err)
+		return nil, usage, 0, fmt.Errorf("verify: rendering system prompt: %w", err)
 	}
 
-	// includeDiffScope is false: the categorize agent owns the scope decision, so
-	// annotating the verifier's payload with it would only invite the verifier to
-	// re-litigate a question it no longer has a gate for.
-	userPrompt, err := e.buildFindingAgentUserPrompt("verify", req.ReviewCtx, req.Finding, req.DisableSuggestions, false, req.DiffFormat)
+	userPrompt, err := e.buildFindingAgentUserPrompt("verify", req.ReviewCtx, req.Finding, req.DisableSuggestions, req.DiffFormat)
 	if err != nil {
-		return nil, usage, err
+		return nil, usage, 0, err
 	}
 
 	var schema []byte
@@ -183,16 +180,16 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			},
 		})
 		if err != nil {
-			return nil, usage, err
+			return nil, usage, state.toolCalls, err
 		}
 		usage = addTokenUsage(usage, loopResult.tokensUsed)
 		resp := loopResult.resp
 		if resp != nil && resp.Verification != nil {
 			model.EnsureVerificationID(resp.Verification, req.Finding.ID)
-			return &verifyResult{Verification: resp.Verification}, usage, nil
+			return &verifyResult{Verification: resp.Verification}, usage, state.toolCalls, nil
 		}
 		if !outputRetriesRemaining(attempt, req.MaxOutputRetries) {
-			return nil, usage, fmt.Errorf("verify: missing verification in response")
+			return nil, usage, state.toolCalls, fmt.Errorf("verify: missing verification in response")
 		}
 		e.logf(ctx, "Verify: missing verification, retrying: attempt=%d", attempt+1)
 		if len(loopResult.messages) > 0 {
@@ -202,7 +199,7 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 }
 
 func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, []string, error) {
-	results, usage, warnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
+	results, usage, _, warnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
 	verifications := make([]*model.FindingVerification, len(results))
 	for i := range results {
 		verifications[i] = results[i].Verification
@@ -210,14 +207,14 @@ func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 	return verifications, usage, warnings, err
 }
 
-func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]verifyResult, model.TokenUsage, []string, error) {
+func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]verifyResult, model.TokenUsage, int, []string, error) {
 	findings = append([]model.Finding(nil), findings...)
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Verify generated replacement IDs for invalid finding IDs: count=%d", overwrote)
 	}
 	results := make([]verifyResult, len(findings))
 	if len(findings) == 0 {
-		return results, model.TokenUsage{}, nil, nil
+		return results, model.TokenUsage{}, 0, nil, nil
 	}
 
 	// Resolve style guides once: the result depends only on reviewCtx, which is
@@ -226,17 +223,18 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 	// treats it as "provided" even when the repo has no matching guides.
 	sharedStyleGuides, err := e.styleGuidesFor(reviewCtx)
 	if err != nil {
-		return nil, model.TokenUsage{}, nil, err
+		return nil, model.TokenUsage{}, 0, nil, err
 	}
 	if sharedStyleGuides == nil {
 		sharedStyleGuides = []model.StyleGuide{}
 	}
 
 	var (
-		mu       sync.Mutex
-		usageSum model.TokenUsage
-		warnings []string
-		wg       sync.WaitGroup
+		mu        sync.Mutex
+		usageSum  model.TokenUsage
+		toolCalls int
+		warnings  []string
+		wg        sync.WaitGroup
 	)
 	verifyStart := time.Now()
 	e.logProgress(logging.StageVerify, logging.StateStart, fmt.Sprintf("%sfindings=%d concurrency=%s", verifyReviewerPrefix(opts.ReviewerName), len(findings), verifyConcurrencyLabel(opts.Limiter)))
@@ -276,11 +274,12 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 				DisableSuggestions:        opts.DisableSuggestions,
 				DiffFormat:                opts.DiffFormat,
 			}
-			result, usage, err := e.verifyFinding(ctx, req)
+			result, usage, calls, err := e.verifyFinding(ctx, req)
 			mu.Lock()
 			usageSum.PromptTokens += usage.PromptTokens
 			usageSum.CompletionTokens += usage.CompletionTokens
 			usageSum.TotalTokens += usage.TotalTokens
+			toolCalls += calls
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("Verify failed for finding #%d %q: %v", idx+1, f.Title, err))
 			}
@@ -301,7 +300,7 @@ func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, 
 		}
 	}
 	e.logProgress(logging.StageVerify, logging.StateDone, fmt.Sprintf("%sfindings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", verifyReviewerPrefix(opts.ReviewerName), len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(verifyStart))))
-	return results, usageSum, warnings, nil
+	return results, usageSum, toolCalls, warnings, nil
 }
 
 func fallbackUnverifiedVerification(f model.Finding) *model.FindingVerification {
@@ -352,11 +351,9 @@ func truncateFindingTitle(title string) string {
 	return title
 }
 
-// buildFindingAgentUserPrompt renders the payload shared by the two per-finding
-// agents: the full review context plus the one finding under examination.
-// includeDiffScope adds the deterministic `finding_diff_scope` annotation; only
-// the categorize agent uses it, since it owns the scope decision.
-func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions, includeDiffScope bool, format model.DiffFormat) (string, error) {
+// buildFindingAgentUserPrompt renders the verifier payload: the full review
+// context plus the one finding under examination.
+func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool, format model.DiffFormat) (string, error) {
 	payload := model.PromptPayloadFromContextWithDiffFormat(reviewCtx, format)
 	base, err := json.Marshal(payload)
 	if err != nil {
@@ -393,13 +390,6 @@ func (e *Engine) buildFindingAgentUserPrompt(agentKind string, reviewCtx *model.
 		return "", fmt.Errorf("%s: re-decoding finding: %w", agentKind, err)
 	}
 	combined["finding"] = findingMap
-	if includeDiffScope && reviewCtx.DiffScopeHunks != nil {
-		status := "outside_diff"
-		if codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
-			status = "overlaps_diff"
-		}
-		combined["finding_diff_scope"] = status
-	}
 
 	out, err := json.MarshalIndent(combined, "", "  ")
 	if err != nil {

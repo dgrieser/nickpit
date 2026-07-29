@@ -377,7 +377,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableSuggestions, "disable-suggestions", false, "Omit code suggestions from prompts and review output")
 	root.PersistentFlags().BoolVar(&cli.disableWorkflowTimeBudget, "disable-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
-	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", model.DefaultDropPolicy, "Which verdicts cause a finding to be dropped before merge, across both the categorize and verify agents: none, refuted-only, refuted-and-unverified")
+	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", model.DefaultDropPolicy, "Which classified findings and verifier verdicts are dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.confidenceThreshold, "confidence-threshold", 0.7, "Minimum finalized confidence_score required for the verdict step to keep a finding (0 = keep all)")
 	root.PersistentFlags().BoolVar(&cli.disableModelCheck, "disable-model-check", false, "Disable pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")

@@ -466,11 +466,8 @@ const (
 // Verify decision-order gates. The verifier must name the gate that decided
 // its verdict; the gate dictates the verdict (see VerdictForGate).
 //
-// The eligibility gates that used to live here — non-finding, compile-error,
-// and diff-scope — moved to the categorize agent, which runs before verify and
-// expresses them as finding categories (see CategoryConfirmation,
-// CategoryCompilation, CategoryOutsideDiffScope). The verifier only ever sees
-// findings that survived categorization, so it judges truth, not eligibility.
+// Eligibility classification is performed privately before the verifier. The
+// verifier judges technical truth without receiving those categories.
 const (
 	GateStyleguideContradiction = "styleguide-contradiction"
 	GateConfirm                 = "confirm"
@@ -492,13 +489,12 @@ func VerdictForGate(gate string) (string, bool) {
 	return "", false
 }
 
-// Finding categories assigned by the categorize agent, which runs before
-// verify. Categorization is a classification of what KIND of item the reviewer
-// submitted; it makes no claim about whether the item is technically true.
+// Finding categories assigned by the private classification phase inside
+// verify. Categorization describes what KIND of item the reviewer submitted;
+// it makes no claim about whether the item is technically true.
 //
-// The categories are not mutually exclusive: an item may carry several. A
-// finding reaches verification only when its category set is exactly
-// [CategoryFinding] (see CategoriesSurviveVerification).
+// The categories are not mutually exclusive: an item may carry several. Go
+// applies routing policy without exposing its consequences to the model.
 const (
 	// CategoryConfirmation marks an item that affirms correct or intended
 	// behavior, or that establishes no concrete actionable problem.
@@ -506,12 +502,7 @@ const (
 	// CategoryCompilation marks an item whose core claim is a diagnostic the
 	// language's default compile or type-check tooling already reports.
 	CategoryCompilation = "compilation"
-	// CategoryOutsideDiffScope marks an item that cannot be anchored to the
-	// patch: neither the submitted location nor any concrete causal location
-	// overlaps a diff hunk.
-	CategoryOutsideDiffScope = "outside-diff-scope"
-	// CategoryFinding marks an item that reports a concrete, actionable
-	// problem. It is the only category that survives to verification.
+	// CategoryFinding marks a distinct runtime, behavioral, or logic problem.
 	CategoryFinding = "finding"
 )
 
@@ -520,7 +511,6 @@ const (
 var findingCategoryOrder = []string{
 	CategoryConfirmation,
 	CategoryCompilation,
-	CategoryOutsideDiffScope,
 	CategoryFinding,
 }
 
@@ -565,9 +555,7 @@ func NormalizeFindingCategories(in []string) []string {
 // set, the normalization fallback, and the drop decision all reference the same
 // values and cannot drift.
 //
-// The policy governs BOTH per-finding stages: categorization is the first pass
-// of verification, and its category set is translated into a verdict by
-// VerdictForCategories before the same rules apply.
+// The policy governs both private categorization routing and verifier verdicts.
 //
 // They live here rather than in internal/review so the CLI, the workflow spec
 // loader, and the engine all validate against one list.
@@ -601,59 +589,6 @@ func NormalizeDropPolicy(policy string) string {
 		return policy
 	}
 	return DefaultDropPolicy
-}
-
-// ContentCategories returns the categories that describe WHAT the finding is,
-// dropping CategoryOutsideDiffScope.
-//
-// Scope is not part of the verdict: the review engine drops an out-of-scope
-// finding outright whenever diff-scope is active, regardless of
-// --verify-drop-policy. Callers therefore keep the raw set for that decision and
-// pass only the content categories to VerdictForCategories.
-func ContentCategories(cats []string) []string {
-	out := make([]string, 0, len(cats))
-	for _, c := range cats {
-		if c == CategoryOutsideDiffScope {
-			continue
-		}
-		out = append(out, c)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// VerdictForCategories translates a categorized finding into a verification
-// verdict, so the single --verify-drop-policy governs the categorize stage the
-// same way it governs the verifier. Categorization is the first pass of
-// verification, not a separate policy:
-//
-//	[finding]           confirmed   a clean, actionable finding
-//	finding + anything  unverified  e.g. a compile error bundled with a distinct
-//	                                runtime bug — not clearly suppressible, so it
-//	                                survives unless the policy drops unverified
-//	no finding at all   refuted     a confirmation, or a diagnostic the compiler
-//	                                owns: clearly not a finding
-//
-// Pass it the ContentCategories, not the raw set: an out-of-scope finding is
-// dropped by the engine outside the policy entirely, so folding scope into the
-// verdict would double-count it.
-//
-// An empty set means the agent produced nothing usable even after its retries;
-// that yields confirmed, so a categorization failure cannot swallow a real
-// finding.
-func VerdictForCategories(content []string) string {
-	if len(content) == 0 {
-		return VerdictConfirmed
-	}
-	if !slices.Contains(content, CategoryFinding) {
-		return VerdictRefuted
-	}
-	if len(content) == 1 {
-		return VerdictConfirmed
-	}
-	return VerdictUnverified
 }
 
 // FindingCategorization is the categorize agent's output for one finding. It is

@@ -115,10 +115,9 @@ type ReasoningSink interface {
 
 // ResponseConstraints narrows what values are acceptable in a parsed agent response.
 type ResponseConstraints struct {
-	MinPriority                    *int     // finding priority must be >= this value
-	MaxPriority                    *int     // finding priority must be <= this value
-	AllowedCorrectness             []string // overall_correctness must be one of these; nil means default enum
-	RequireReplacementCodeLocation bool     // categorize response must include nullable replacement_code_location
+	MinPriority        *int     // finding priority must be >= this value
+	MaxPriority        *int     // finding priority must be <= this value
+	AllowedCorrectness []string // overall_correctness must be one of these; nil means default enum
 }
 
 type ReviewRequest struct {
@@ -166,19 +165,18 @@ type ToolCall struct {
 }
 
 type ReviewResponse struct {
-	Findings                []model.Finding              `json:"findings"`
-	OverallCorrectness      string                       `json:"overall_correctness"`
-	OverallExplanation      string                       `json:"overall_explanation"`
-	OverallConfidenceScore  float64                      `json:"overall_confidence_score"`
-	Verification            *model.FindingVerification   `json:"verification,omitempty"`
-	Categorization          *model.FindingCategorization `json:"categorization,omitempty"`
-	ReplacementCodeLocation *model.CodeLocation          `json:"replacement_code_location,omitempty"`
-	ToolCalls               []ToolCall                   `json:"tool_calls,omitempty"`
-	RawResponse             string                       `json:"raw_response,omitempty"`
-	TokensUsed              model.TokenUsage             `json:"tokens_used"`
-	ReasoningEffort         string                       `json:"reasoning_effort,omitempty"`
-	Reasoned                bool                         `json:"-"`
-	ToolsOmitted            bool                         `json:"-"`
+	Findings               []model.Finding              `json:"findings"`
+	OverallCorrectness     string                       `json:"overall_correctness"`
+	OverallExplanation     string                       `json:"overall_explanation"`
+	OverallConfidenceScore float64                      `json:"overall_confidence_score"`
+	Verification           *model.FindingVerification   `json:"verification,omitempty"`
+	Categorization         *model.FindingCategorization `json:"categorization,omitempty"`
+	ToolCalls              []ToolCall                   `json:"tool_calls,omitempty"`
+	RawResponse            string                       `json:"raw_response,omitempty"`
+	TokensUsed             model.TokenUsage             `json:"tokens_used"`
+	ReasoningEffort        string                       `json:"reasoning_effort,omitempty"`
+	Reasoned               bool                         `json:"-"`
+	ToolsOmitted           bool                         `json:"-"`
 }
 
 type capture struct {
@@ -2678,10 +2676,6 @@ type CategorizeRetryGuidance struct {
 const categorizeRetryGuidanceTemplate = "categorize_validation_retry_guidance.tmpl"
 
 func parseCategorizeResponse(content string, constraintOptions ...ResponseConstraints) (*ReviewResponse, error) {
-	var constraints ResponseConstraints
-	if len(constraintOptions) > 0 {
-		constraints = constraintOptions[0]
-	}
 	var categorization model.FindingCategorization
 	if err := LenientUnmarshalMerge(content, &categorization); err != nil {
 		return nil, &InvalidResponseError{
@@ -2690,11 +2684,10 @@ func parseCategorizeResponse(content string, constraintOptions ...ResponseConstr
 		}
 	}
 	raw := mergedRawCategorizeBlocks(content)
-	replacement, replacementErrors := parseReplacementCodeLocation(raw)
 	resp := func() *ReviewResponse {
-		return &ReviewResponse{Categorization: &categorization, ReplacementCodeLocation: replacement}
+		return &ReviewResponse{Categorization: &categorization}
 	}
-	if missing := append(missingCategorizeFields(raw, constraints), replacementErrors...); len(missing) > 0 {
+	if missing := missingCategorizeFields(raw); len(missing) > 0 {
 		return resp(), &InvalidResponseError{
 			RawContent:    content,
 			Reason:        "response is missing required fields",
@@ -2729,44 +2722,12 @@ func parseCategorizeResponse(content string, constraintOptions ...ResponseConstr
 			RetryGuidanceData: CategorizeRetryGuidance{
 				EmptyCategories:   len(normalized) == 0,
 				UnknownCategories: unknown,
-				AllowedCategories: allowedCategoriesFor(constraints),
+				AllowedCategories: model.FindingCategories(),
 			},
 		}
 	}
 	categorization.Categories = normalized
-
-	// A successful relocation contradicts the out-of-scope claim: if the agent
-	// found a causal line inside the diff, the finding IS anchorable.
-	if replacement != nil && slices.Contains(normalized, model.CategoryOutsideDiffScope) {
-		return resp(), &InvalidResponseError{
-			RawContent:            content,
-			Reason:                "response is missing required fields",
-			MissingFields:         []string{fmt.Sprintf("categories (%q cannot be combined with a non-null replacement_code_location)", model.CategoryOutsideDiffScope)},
-			RetryGuidanceTemplate: categorizeRetryGuidanceTemplate,
-			RetryGuidanceData: CategorizeRetryGuidance{
-				AllowedCategories: allowedCategoriesFor(constraints),
-			},
-		}
-	}
 	return resp(), nil
-}
-
-// allowedCategoriesFor lists the categories the agent may use. The diff-scope
-// category only exists when the run supplies diff hunks, which is exactly when
-// the scoped schema requires replacement_code_location.
-func allowedCategoriesFor(constraints ResponseConstraints) []string {
-	all := model.FindingCategories()
-	if constraints.RequireReplacementCodeLocation {
-		return all
-	}
-	out := make([]string, 0, len(all))
-	for _, c := range all {
-		if c == model.CategoryOutsideDiffScope {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
 }
 
 // mergedRawCategorizeBlocks mirrors mergedRawVerifyBlocks: only candidates that
@@ -2796,7 +2757,7 @@ func mergedRawCategorizeBlocks(content string) map[string]json.RawMessage {
 	return top
 }
 
-func missingCategorizeFields(raw map[string]json.RawMessage, constraints ResponseConstraints) []string {
+func missingCategorizeFields(raw map[string]json.RawMessage) []string {
 	var missing []string
 	for _, field := range []string{"id", "categories", "remarks"} {
 		if _, ok := raw[field]; !ok {
@@ -2805,11 +2766,6 @@ func missingCategorizeFields(raw map[string]json.RawMessage, constraints Respons
 	}
 	if rawID, ok := raw["id"]; ok && !rawUUIDIsValid(rawID) {
 		missing = append(missing, "id (must be UUID)")
-	}
-	if constraints.RequireReplacementCodeLocation {
-		if _, ok := raw["replacement_code_location"]; !ok {
-			missing = append(missing, "replacement_code_location")
-		}
 	}
 	return missing
 }
@@ -2853,21 +2809,6 @@ func missingVerifyFields(raw map[string]json.RawMessage) []string {
 		missing = append(missing, "id (must be UUID)")
 	}
 	return missing
-}
-
-func parseReplacementCodeLocation(raw map[string]json.RawMessage) (*model.CodeLocation, []string) {
-	rawLocation, ok := raw["replacement_code_location"]
-	if !ok || string(bytes.TrimSpace(rawLocation)) == "null" {
-		return nil, nil
-	}
-	if missing := codeLocationFieldErrors("replacement_code_location", rawLocation); len(missing) > 0 {
-		return nil, missing
-	}
-	var location model.CodeLocation
-	if err := json.Unmarshal(rawLocation, &location); err != nil {
-		return nil, []string{"replacement_code_location (must be an object or null)"}
-	}
-	return &location, nil
 }
 
 // parseSummarizeResponse parses the summarize pass output. Unlike review/merge/

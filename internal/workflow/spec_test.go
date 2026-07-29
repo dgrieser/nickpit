@@ -56,9 +56,9 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	weight10 := 10
 	weight15 := 15
 	weight20 := 20
-	weight25 := 25
 	weight30 := 30
 	weight40 := 40
+	weight55 := 55
 	reviewConfig := func() *StepOverride {
 		return &StepOverride{
 			MineReasoning:   &AgentOverride{Model: &small},
@@ -70,8 +70,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Name: laneNames[i], Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
-			{Type: StepCategorizePrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight25}}},
-			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight30}}},
+			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight55}}},
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1500}}}
 	}
@@ -177,7 +176,7 @@ func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 	if len(parallel.Parallel) != len(ReviewVectorIDs) {
 		t.Fatalf("parallel lanes = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs))
 	}
-	wantLane := []string{StepReviewPrefix, StepCategorizePrefix, StepVerifyPrefix, StepDedupePrefix}
+	wantLane := []string{StepReviewPrefix, StepVerifyPrefix, StepDedupePrefix}
 	for i, lane := range parallel.Parallel {
 		if !lane.IsLane() || len(lane.Lane) != len(wantLane) {
 			t.Fatalf("parallel child %d is not a %d-step lane: %+v", i, len(wantLane), lane)
@@ -532,7 +531,7 @@ func TestScopeRejections(t *testing.T) {
 		"scope on collect-context": "version: 1\nsteps:\n  - type: collect-context\n    config: { scope: all }\n",
 		"scope on review":          "version: 1\nsteps:\n  - type: review:security\n    config: { scope: finding }\n",
 		"illegal verify scope":     "version: 1\nsteps:\n  - type: review:security\n  - type: verify:security\n    config: { scope: cluster }\n",
-		"illegal categorize scope": "version: 1\nsteps:\n  - type: review:security\n  - type: categorize:security\n    config: { scope: reviewer }\n",
+		"removed categorize step":  "version: 1\nsteps:\n  - type: review:security\n  - type: categorize:security\n    config: { scope: reviewer }\n",
 		"illegal merge scope":      "version: 1\nsteps:\n  - type: merge\n    config: { scope: finding }\n",
 		"flat finalize cluster":    "version: 1\nsteps:\n  - type: finalize\n    config: { scope: cluster }\n",
 		"flat summarize cluster":   "version: 1\nsteps:\n  - type: summarize\n    config: { scope: cluster }\n",
@@ -1065,54 +1064,14 @@ func TestStepNeedsSource(t *testing.T) {
 	}
 }
 
-// The categorize step is a first-class per-vector step: it must obey the same
-// ordering, placement, and source rules as verify.
-func TestCategorizeStepValidation(t *testing.T) {
-	rejected := map[string]string{
-		"per-vector without a preceding review": "version: 1\nsteps:\n  - type: categorize:security\n",
-		"after merge discards its work":         "version: 1\nsteps:\n  - type: merge\n  - type: categorize\n",
-		"per-vector after merge":                "version: 1\nsteps:\n  - type: review:security\n  - type: merge\n  - type: categorize:security\n",
-		"global step inside a parallel group":   "version: 1\nsteps:\n  - parallel:\n      - type: categorize\n",
-		"unknown vector":                        "version: 1\nsteps:\n  - type: categorize:vibes\n",
-	}
-	for name, body := range rejected {
-		t.Run(name, func(t *testing.T) {
-			spec, err := Load(writeSpec(t, body))
-			if err != nil {
-				return // rejected at parse — acceptable
-			}
-			if err := spec.Validate(); err == nil {
-				t.Fatal("expected error, got nil")
-			}
-		})
-	}
-
-	t.Run("accepted in a lane before verify", func(t *testing.T) {
-		spec, err := Load(writeSpec(t, "version: 1\nsteps:\n  - parallel:\n      - lane:\n          - type: review:security\n          - type: categorize:security\n            config: { scope: finding }\n          - type: verify:security\n            config: { scope: finding }\n  - type: merge\n"))
-		if err != nil {
-			t.Fatal(err)
+func TestCategorizeWorkflowStepsAreRejected(t *testing.T) {
+	for _, stepType := range []string{"categorize", "categorize:security"} {
+		spec, err := Load(writeSpec(t, "version: 1\nsteps:\n  - type: "+stepType+"\n"))
+		if err == nil {
+			err = spec.Validate()
 		}
-		if err := spec.Validate(); err != nil {
-			t.Fatal(err)
+		if err == nil {
+			t.Fatalf("%q unexpectedly accepted", stepType)
 		}
-	})
-}
-
-// Categorize judges scope and compiler ownership against the changed files, so
-// it needs a source even when its findings are injected.
-func TestCategorizeStepNeedsSourceAndConsumesFindings(t *testing.T) {
-	for _, stepType := range []string{StepCategorize, StepCategorizePrefix + "security"} {
-		if !StepNeedsSource(stepType) {
-			t.Errorf("StepNeedsSource(%q) = false, want true", stepType)
-		}
-	}
-	if !StepConsumesFindings(StepCategorize) {
-		t.Errorf("StepConsumesFindings(%q) = false, want true", StepCategorize)
-	}
-	if legal, ok := legalScopes(StepCategorize); !ok || len(legal) != 1 || legal[0] != ScopeFinding {
-		t.Errorf("legalScopes(%q) = %v/%v, want [finding]", StepCategorize, legal, ok)
-	}
-	if legal, ok := legalScopes(StepCategorizePrefix + "security"); !ok || len(legal) != 1 || legal[0] != ScopeFinding {
-		t.Errorf("legalScopes(categorize:security) = %v/%v, want [finding]", legal, ok)
 	}
 }

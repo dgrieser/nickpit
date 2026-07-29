@@ -958,7 +958,6 @@ func laneSpec(vectors ...string) workflow.Spec {
 	for i, id := range vectors {
 		lanes[i] = workflow.StepEntry{Lane: []workflow.StepEntry{
 			{Type: workflow.StepReviewPrefix + id},
-			{Type: workflow.StepCategorizePrefix + id},
 			{Type: workflow.StepVerifyPrefix + id},
 			{Type: workflow.StepDedupePrefix + id},
 		}}
@@ -1131,15 +1130,15 @@ func laneTestRequest() model.ReviewRequest {
 	}
 }
 
-func TestPipelineAssembleIncludesCategorizerToolCalls(t *testing.T) {
+func TestPipelineAssembleIncludesInternalVerificationToolCalls(t *testing.T) {
 	st := newPipelineState(&model.ReviewContext{}, nil)
 	st.result = &model.ReviewResult{}
 	st.contextRun = &model.AgentRun{ToolCalls: 2}
-	st.categorizeToolCalls = 3
+	st.verificationToolCalls = 3
 
 	result := (&Pipeline{engine: &Engine{}}).assemble(st, model.ReviewRequest{})
 	if result.TotalToolCalls != 5 {
-		t.Fatalf("total tool calls = %d, want context + categorizer calls", result.TotalToolCalls)
+		t.Fatalf("total tool calls = %d, want context + internal verification calls", result.TotalToolCalls)
 	}
 }
 
@@ -1181,7 +1180,7 @@ func TestWorkflowLaneRunsPerVectorCategorizeVerifyAndDedupeInOrder(t *testing.T)
 	if len(result.Findings) != 4 {
 		t.Fatalf("findings = %d, want 4", len(result.Findings))
 	}
-	wantSegment := "review:security→categorize:security→verify:security→dedupe:security"
+	wantSegment := "review:security→verify:security→dedupe:security"
 	found := false
 	for _, seg := range result.SegmentRuntimes {
 		for _, step := range seg.Steps {

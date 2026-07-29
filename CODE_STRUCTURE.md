@@ -23,8 +23,9 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/pipeline.go`: Pipeline model and execution state for workflow steps, groups, lanes, and result aggregation.
 - `internal/review/pipeline_steps.go`: Step implementations for context collection, review lanes, merge, finalize, verdict, summarize, and fused post-merge execution.
 - `internal/review/reviewer_session.go`: Reviewer session state, main review execution, nudge handling, and reasoning-mining/update subagents.
-- `internal/review/categorizer.go`: Per-finding categorize agents that run before verification. Assigns each finding any number of categories (`confirmation`, `compilation`, `outside-diff-scope`, `finding`), resolves the diff-scope replacement location, and fails open to `finding` so a categorize failure never drops a real finding.
-- `internal/review/verifier.go`: Per-finding verification agents, verifier options, fallback unverified results, and verifier telemetry. Eligibility gating lives in the categorizer; verify only judges whether a claim is true.
+- `internal/review/categorizer.go`: Private per-finding descriptive classification inside verification. The classifier is blind to routing outcomes, diff scope, tools, and verifier evidence; Go applies the configured drop policy and classification failures fail open.
+- `internal/review/diff_scope.go`: Canonical old/new diff windows, deterministic overlap checks, and scope filtering used for location repair and retry guidance.
+- `internal/review/verifier.go`: Per-finding evidence verification, verifier options, fallback unverified results, and verifier telemetry.
 - `internal/review/discuss.go`: Discussion (chat) agent. Free-form, schema-less, tool-enabled `Engine.Discuss` turn: builds the system prompt from the full findings JSON, diff, and styleguides, optionally opens on a pinned finding, and runs one conversation turn returning the reply plus the messages to persist.
 - `internal/review/finalizer.go`: Final finding polishing, priority constraints, finalization payloads, and finalizer output application.
 - `internal/review/verdict.go`: Overall verdict agent prompt payloads, confidence-threshold filtering before verdict, and verdict fallback behavior.

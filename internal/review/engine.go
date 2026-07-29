@@ -414,7 +414,9 @@ type agentSpec struct {
 	// maxFindings caps the findings the reviewer session may accumulate across
 	// its initial pass and nudges; 0 = unlimited. Enforced by a one-retry
 	// validator per turn, then by cutting the weakest findings.
-	maxFindings int
+	maxFindings       int
+	enforceDiffScope  bool
+	allowedDiffScopes []model.CodeLocation
 }
 
 type agentResult struct {
@@ -541,33 +543,13 @@ func flattenVectorFindings(vectorResults []agentResult) ([]model.Finding, []find
 	return findings, refs
 }
 
-// categorizeAndFilterVectorFindings runs the categorize agent on every finding
-// from `vectorResults` and replaces each vector's `resp.Findings` in place with
-// the subset worth verifying. Everything else — an affirmation of correct
-// behavior, a diagnostic the compiler already reports, a claim that cannot be
-// anchored to the patch — is removed before the verifier ever sees it, so
-// verification spends its budget only on real claims.
-//
-// Categorization is the first pass of verification, so the same
-// --verify-drop-policy decides: model.VerdictForCategories turns the category
-// set into a verdict, and shouldDropVerdict applies the policy to it. A sole
-// `finding` is confirmed, `finding` plus anything else is unverified (kept
-// unless the policy also drops unverified), and no `finding` at all is refuted.
-//
-// Scope is settled separately and is NOT governed by the policy. A finding is
-// dropped as out of scope when either signal says it cannot be anchored to the
-// patch — the deterministic codeLocationOverlapsDiff check (after trying the
-// agent's replacement location), or the agent's own outside-diff-scope category
-// — and that holds under every policy including `none`. The single switch is
-// --disable-diff-scope.
-//
-// Returns aggregated token usage, tool calls, soft warnings, and any fatal
-// error. On error, callers should still propagate the returned telemetry and
-// warnings — they hold the partial-run data up to the failure point.
-func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, int, []string, error) {
+// categorizeAndFilterVectorFindings performs the private classification half of
+// verification. The model only emits descriptive labels; Go applies the drop
+// policy without exposing its routing consequences to either model.
+func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, []string, error) {
 	findings, refs := flattenVectorFindings(vectorResults)
 	if len(findings) == 0 {
-		return model.TokenUsage{}, 0, nil, nil
+		return model.TokenUsage{}, nil, nil
 	}
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Review generated replacement IDs before categorization: count=%d", overwrote)
@@ -575,32 +557,21 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 	opts := categorizeOptionsFromReviewRequest(req)
 	opts.Limiter = limiter
 	opts.ReviewerName = reviewerName
-	categorizeResults, usage, toolCalls, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
+	categorizeResults, usage, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
 	if err != nil {
-		return usage, toolCalls, warnings, err
+		return usage, warnings, err
 	}
 	if len(categorizeResults) != len(refs) {
-		return usage, toolCalls, warnings, fmt.Errorf("review: categorizer returned %d results for %d findings", len(categorizeResults), len(refs))
+		return usage, warnings, fmt.Errorf("review: categorizer returned %d results for %d findings", len(categorizeResults), len(refs))
 	}
 	type dropCounts struct {
 		confirmation int
 		compilation  int
-		// unverified counts findings whose categories imply unverified — `finding`
-		// bundled with a suppressing category — dropped only under
-		// refuted-and-unverified.
-		unverified int
-		outOfScope int
-		relocated  int
-		// scopeAgentOnly counts findings dropped on the agent's outside-diff-scope
-		// tag alone, where the deterministic overlap check found the cited location
-		// inside the diff. Surfacing the count keeps that disagreement visible,
-		// since it is the case where a mistagged finding would be lost.
-		scopeAgentOnly int
+		unverified   int
 	}
 	keptByVector := make(map[int][]model.Finding, len(vectorResults))
 	droppedByVector := make(map[int]int, len(vectorResults))
 	dropsByVector := make(map[int]dropCounts, len(vectorResults))
-	diffScopeEnabled := !opts.DisableDiffScope && reviewCtx != nil && reviewCtx.DiffScopeHunks != nil
 	for i, result := range categorizeResults {
 		ref := refs[i]
 		finding := vectorResults[ref.vectorIdx].resp.Findings[ref.findingIdx]
@@ -614,64 +585,16 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			categorization = fallbackFindingCategorization(finding)
 		}
 		categories := model.NormalizeFindingCategories(categorization.Categories)
-		// Scope is not the agent's call, so its scope tag never reaches the
-		// keep/drop decision — only the content categories do.
-		content := model.ContentCategories(categories)
-		if len(content) == 0 {
-			// The agent produced nothing usable even after its retries, or its only
-			// answer was the scope tag (handled separately below). Neither is a
-			// content reason to drop, so fail open rather than discard a possibly
-			// real finding.
-			content = []string{model.CategoryFinding}
+		if len(categories) == 0 {
+			categories = []string{model.CategoryFinding}
 		}
 		counts := dropsByVector[ref.vectorIdx]
-
-		// Scope is settled outside the drop policy: a finding that cannot be
-		// anchored to the patch is dropped whenever diff-scope is active, whatever
-		// --verify-drop-policy says. Only --disable-diff-scope turns it off.
-		outOfScope := false
-		relocated := false
-		if diffScopeEnabled {
-			if !codeLocationOverlapsDiff(finding.CodeLocation, reviewCtx.DiffScopeHunks) {
-				replacement := result.ReplacementCodeLocation
-				if replacement == nil || !codeLocationOverlapsDiff(*replacement, reviewCtx.DiffScopeHunks) {
-					outOfScope = true
-				} else {
-					corrected := *replacement
-					corrected.FilePath = normalizeToolPath(strings.TrimSpace(corrected.FilePath))
-					if corrected.LineRange.End < corrected.LineRange.Start {
-						corrected.LineRange.End = corrected.LineRange.Start
-					}
-					corrected.LineRange.Count = corrected.LineRange.EffectiveCount()
-					finding.CodeLocation = corrected
-					counts.relocated++
-					relocated = true
-				}
-			}
-			// The agent's own scope tag drops the finding too: it read the whole
-			// claim, not just the cited line, so it can see that the substance is
-			// about unchanged code. It cannot coexist with a successful relocation
-			// (parseCategorizeResponse rejects that pair), so guarding on relocated
-			// only protects against a finding we just re-anchored.
-			if !relocated && slices.Contains(categories, model.CategoryOutsideDiffScope) {
-				if !outOfScope {
-					counts.scopeAgentOnly++
-				}
-				outOfScope = true
-			}
-		}
-
-		dropCategorized, reason := shouldDropVerdict(model.VerdictForCategories(content), opts.DropPolicy)
-		if outOfScope || dropCategorized {
-			// Attribute each dropped finding to exactly one reason so the
-			// counters sum to the dropped total. Scope comes first: it is the
-			// decision the policy does not govern.
+		dropCategorized, reason := shouldDropCategories(categories, opts.DropPolicy)
+		if dropCategorized {
 			switch {
-			case outOfScope:
-				counts.outOfScope++
 			case reason == model.VerdictUnverified:
 				counts.unverified++
-			case slices.Contains(content, model.CategoryConfirmation):
+			case slices.Contains(categories, model.CategoryConfirmation):
 				counts.confirmation++
 			default:
 				counts.compilation++
@@ -698,40 +621,61 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 			// rather than refuted.
 			e.logger.LiveFindings(logging.FindingUpdate{Filtered: dropped})
 		}
-		if dropped > 0 || counts.relocated > 0 {
-			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d unverified=%d out_of_scope=%d relocated=%d scope_agent_only=%d kept=%d policy=%s",
+		if dropped > 0 {
+			e.logf(ctx, "Categorize filter before verify: reviewer=%s dropped=%d confirmation=%d compilation=%d unverified=%d kept=%d policy=%s",
 				vectorResults[vectorIdx].run.Name,
 				dropped,
 				counts.confirmation,
 				counts.compilation,
 				counts.unverified,
-				counts.outOfScope,
-				counts.relocated,
-				counts.scopeAgentOnly,
 				len(keptByVector[vectorIdx]),
 				model.NormalizeDropPolicy(opts.DropPolicy),
 			)
 		}
 	}
-	return usage, toolCalls, warnings, nil
+	return usage, warnings, nil
 }
 
-// verifyAndFilterVectorFindings runs the verifier on every finding from
-// `vectorResults` and replaces each vector's `resp.Findings` in place with the
-// subset that survives the drop policy. The mutation is intentional: the merge
-// agent reads vectorResults downstream and must see only verified findings.
-//
-// Scope and eligibility are not its concern: a preceding categorize step
-// already removed non-findings, compiler-owned diagnostics, and out-of-scope
-// claims, and re-anchored the findings it could.
-//
-// Returns aggregated token usage, soft warnings, and any fatal error. On error,
-// callers should still propagate the returned usage/warnings — they hold the
-// partial-run telemetry up to the failure point.
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (model.TokenUsage, []string, error) {
+func shouldDropCategories(categories []string, policy string) (bool, string) {
+	if len(categories) == 0 {
+		return false, "kept"
+	}
+	policy = model.NormalizeDropPolicy(policy)
+	if policy == model.DropPolicyNone {
+		return false, "kept"
+	}
+	hasFinding := slices.Contains(categories, model.CategoryFinding)
+	if !hasFinding {
+		return true, model.VerdictRefuted
+	}
+	if len(categories) > 1 && policy == model.DropPolicyRefutedAndUnverified {
+		return true, model.VerdictUnverified
+	}
+	return false, "kept"
+}
+
+type verificationTelemetry struct {
+	CategorizeUsage model.TokenUsage
+	VerifyUsage     model.TokenUsage
+	VerifyToolCalls int
+}
+
+// verifyAndFilterVectorFindings is the atomic workflow operation: deterministic
+// scope handling, blind classification and routing, then blind truth
+// verification for the survivors.
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (verificationTelemetry, []string, error) {
+	telemetry := verificationTelemetry{}
+	scopeWarnings := e.prepareFindingsForVerification(ctx, reviewCtx, vectorResults, req)
+	categorizeUsage, categorizeWarnings, err := e.categorizeAndFilterVectorFindings(ctx, reviewCtx, vectorResults, req, limiter, reviewerName)
+	telemetry.CategorizeUsage = categorizeUsage
+	warnings := append(scopeWarnings, categorizeWarnings...)
+	if err != nil {
+		return telemetry, warnings, err
+	}
+
 	findings, refs := flattenVectorFindings(vectorResults)
 	if len(findings) == 0 {
-		return model.TokenUsage{}, nil, nil
+		return telemetry, warnings, nil
 	}
 	if overwrote := model.EnsureFindingIDs(findings); overwrote > 0 {
 		e.logf(ctx, "Review generated replacement IDs before verification: count=%d", overwrote)
@@ -739,12 +683,15 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 	opts := verifyOptionsFromReviewRequest(req)
 	opts.Limiter = limiter
 	opts.ReviewerName = reviewerName
-	verifyResults, usage, warnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
+	verifyResults, usage, verifyCalls, verifyWarnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
+	telemetry.VerifyUsage = usage
+	telemetry.VerifyToolCalls = verifyCalls
+	warnings = append(warnings, verifyWarnings...)
 	if err != nil {
-		return usage, warnings, err
+		return telemetry, warnings, err
 	}
 	if len(verifyResults) != len(refs) {
-		return usage, warnings, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifyResults), len(refs))
+		return telemetry, warnings, fmt.Errorf("review: verifier returned %d results for %d findings", len(verifyResults), len(refs))
 	}
 	type dropCounts struct {
 		refuted    int
@@ -814,14 +761,46 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 			)
 		}
 	}
-	return usage, warnings, nil
+	return telemetry, warnings, nil
 }
 
-// shouldDropVerdict returns whether a verdict is severe enough to drop a finding
-// before merge, plus a label describing why (or why not). Both per-finding
-// stages go through it: the verifier passes its own verdict, and the categorize
-// stage passes the verdict its categories imply (see model.VerdictForCategories),
-// so one --verify-drop-policy governs both.
+func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest) []string {
+	if req.DisableDiffScope || reviewCtx == nil || reviewCtx.DiffScopeHunks == nil {
+		return nil
+	}
+	allowed := allowedDiffCodeLocations(reviewCtx.DiffScopeHunks)
+	repair := e.responseCodeLocationRepairer(req.RepoRoot, true, allowed)
+	var warnings []string
+	for i := range vectorResults {
+		resp := vectorResults[i].resp
+		if vectorResults[i].run.Status == model.AgentRunStatusFailed || resp == nil || len(resp.Findings) == 0 {
+			continue
+		}
+		if repair != nil {
+			repair(ctx, resp)
+		}
+		kept := make([]model.Finding, 0, len(resp.Findings))
+		for _, finding := range resp.Findings {
+			if codeLocationOverlapsAllowed(finding.CodeLocation, allowed) {
+				kept = append(kept, finding)
+				continue
+			}
+			warnings = append(warnings, fmt.Sprintf("Dropped out-of-diff finding %q from %s after deterministic location repair could not find an allowed code_location", finding.Title, vectorResults[i].run.Name))
+		}
+		dropped := len(resp.Findings) - len(kept)
+		resp.Findings = kept
+		if dropped > 0 {
+			if e.logger != nil {
+				e.logger.LiveFindings(logging.FindingUpdate{Filtered: dropped})
+			}
+			e.logf(ctx, "Diff-scope filter before categorization: reviewer=%s dropped=%d kept=%d", vectorResults[i].run.Name, dropped, len(kept))
+		}
+	}
+	return warnings
+}
+
+// shouldDropVerdict returns whether a verifier verdict is severe enough to drop
+// a finding before merge, plus a label describing why (or why not).
 //
 // Labels:
 //   - "refuted" / "unverified": verdict reason for dropping
@@ -1388,10 +1367,6 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 		return nil
 	}
 	clone := *resp
-	if resp.ReplacementCodeLocation != nil {
-		replacement := *resp.ReplacementCodeLocation
-		clone.ReplacementCodeLocation = &replacement
-	}
 	clone.Findings = make([]model.Finding, len(resp.Findings))
 	for i, finding := range resp.Findings {
 		clone.Findings[i] = finding

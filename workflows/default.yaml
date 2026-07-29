@@ -16,16 +16,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:codequality
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:codequality
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:codequality
             config:
               scope: reviewer
@@ -42,16 +37,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:security
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:security
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:security
             config:
               scope: reviewer
@@ -68,16 +58,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:architecture
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:architecture
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:architecture
             config:
               scope: reviewer
@@ -94,16 +79,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:performance
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:performance
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:performance
             config:
               scope: reviewer
@@ -120,16 +100,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:testing
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:testing
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:testing
             config:
               scope: reviewer
@@ -146,16 +121,11 @@ steps:
                 model: "@small"
               compile_findings:
                 model: "@small"
-          - type: categorize:bestpractices
-            config:
-              scope: finding
-              time_budget:
-                weight: 25
           - type: verify:bestpractices
             config:
               scope: finding
               time_budget:
-                weight: 30
+                weight: 55
           - type: dedupe:bestpractices
             config:
               scope: reviewer

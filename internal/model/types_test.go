@@ -398,55 +398,9 @@ func TestNormalizeFindingCategories(t *testing.T) {
 	}
 }
 
-// Categorization is the first pass of verification: the category set maps onto
-// a verdict, and --verify-drop-policy then decides as it does for the verifier.
-func TestVerdictForCategories(t *testing.T) {
-	cases := []struct {
-		name string
-		in   []string
-		want string
-	}{
-		{"sole finding is confirmed", []string{CategoryFinding}, VerdictConfirmed},
-		{"finding plus compilation is unverified", []string{CategoryCompilation, CategoryFinding}, VerdictUnverified},
-		{"finding plus confirmation is unverified", []string{CategoryConfirmation, CategoryFinding}, VerdictUnverified},
-		{"pure confirmation is refuted", []string{CategoryConfirmation}, VerdictRefuted},
-		{"pure compilation is refuted", []string{CategoryCompilation}, VerdictRefuted},
-		{"both suppressors without finding is refuted", []string{CategoryConfirmation, CategoryCompilation}, VerdictRefuted},
-		// Nothing usable from the agent must not read as refuted, or a
-		// categorization failure would drop a real finding.
-		{"empty fails open to confirmed", nil, VerdictConfirmed},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := VerdictForCategories(tc.in); got != tc.want {
-				t.Fatalf("VerdictForCategories(%v) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// The scope category is stripped before the verdict is derived, so an in-diff
-// finding the agent wrongly tagged out of scope is not turned into a refutation.
-func TestVerdictForCategoriesIgnoresScopeTag(t *testing.T) {
-	cases := []struct {
-		in   []string
-		want string
-	}{
-		{[]string{CategoryFinding, CategoryOutsideDiffScope}, VerdictConfirmed},
-		{[]string{CategoryOutsideDiffScope}, VerdictConfirmed},
-		{[]string{CategoryConfirmation, CategoryOutsideDiffScope}, VerdictRefuted},
-		{[]string{CategoryCompilation, CategoryFinding, CategoryOutsideDiffScope}, VerdictUnverified},
-	}
-	for _, tc := range cases {
-		if got := VerdictForCategories(ContentCategories(tc.in)); got != tc.want {
-			t.Fatalf("VerdictForCategories(ContentCategories(%v)) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 func TestFindingCategoriesIsCanonicalAndCopied(t *testing.T) {
 	got := FindingCategories()
-	want := []string{CategoryConfirmation, CategoryCompilation, CategoryOutsideDiffScope, CategoryFinding}
+	want := []string{CategoryConfirmation, CategoryCompilation, CategoryFinding}
 	if !slices.Equal(got, want) {
 		t.Fatalf("FindingCategories() = %v, want %v", got, want)
 	}
@@ -461,29 +415,6 @@ func TestFindingCategoriesIsCanonicalAndCopied(t *testing.T) {
 	}
 	if ValidFindingCategory("vibes") {
 		t.Fatal("ValidFindingCategory(\"vibes\") = true")
-	}
-}
-
-func TestContentCategories(t *testing.T) {
-	cases := []struct {
-		name string
-		in   []string
-		want []string
-	}{
-		{"strips scope, keeps finding", []string{CategoryOutsideDiffScope, CategoryFinding}, []string{CategoryFinding}},
-		{"scope only becomes empty", []string{CategoryOutsideDiffScope}, nil},
-		{"keeps confirmation", []string{CategoryConfirmation, CategoryOutsideDiffScope}, []string{CategoryConfirmation}},
-		{"keeps compilation", []string{CategoryCompilation}, []string{CategoryCompilation}},
-		{"passes through untouched", []string{CategoryConfirmation, CategoryFinding}, []string{CategoryConfirmation, CategoryFinding}},
-		{"empty stays empty", nil, nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := ContentCategories(tc.in)
-			if !slices.Equal(got, tc.want) {
-				t.Fatalf("ContentCategories(%v) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
 	}
 }
 
