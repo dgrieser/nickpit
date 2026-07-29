@@ -2447,7 +2447,7 @@ func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constrai
 		return &ReviewResponse{}, 0, nil
 	}
 	if kind == SchemaKindCategorize {
-		resp, err := parseCategorizeResponse(content, constraints)
+		resp, err := parseCategorizeResponse(content)
 		return resp, 0, err
 	}
 	if kind == SchemaKindVerify {
@@ -2675,7 +2675,7 @@ type CategorizeRetryGuidance struct {
 
 const categorizeRetryGuidanceTemplate = "categorize_validation_retry_guidance.tmpl"
 
-func parseCategorizeResponse(content string, constraintOptions ...ResponseConstraints) (*ReviewResponse, error) {
+func parseCategorizeResponse(content string) (*ReviewResponse, error) {
 	var categorization model.FindingCategorization
 	if err := LenientUnmarshalMerge(content, &categorization); err != nil {
 		return nil, &InvalidResponseError{

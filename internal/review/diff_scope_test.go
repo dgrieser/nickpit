@@ -1,10 +1,13 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
@@ -128,5 +131,32 @@ func TestPipelineAssembleAppliesFinalDiffScopeSafeguard(t *testing.T) {
 	result := pipeline.assemble(st, model.ReviewRequest{})
 	if len(result.Findings) != 1 || result.Findings[0].Title != "inside" {
 		t.Fatalf("findings = %#v", result.Findings)
+	}
+}
+
+func TestPrepareFindingsForVerificationAggregatesOutOfDiffWarnings(t *testing.T) {
+	ctx := &model.ReviewContext{DiffScopeHunks: []model.DiffHunk{{
+		FilePath: "f.go",
+		OldStart: 10,
+		OldLines: 1,
+		NewStart: 10,
+		NewLines: 1,
+		Content:  " changed()\n",
+	}}}
+	results := []agentResult{{
+		run: model.AgentRun{Name: "Security"},
+		resp: &llm.ReviewResponse{Findings: []model.Finding{
+			{Title: "outside one", CodeLocation: model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 1, End: 1}, Content: "one()"}},
+			{Title: "outside two", CodeLocation: model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 2, End: 2}, Content: "two()"}},
+		}},
+	}}
+	engine := NewEngine(nil, nil, nil, config.Profile{})
+
+	warnings := engine.prepareFindingsForVerification(context.Background(), ctx, results, model.ReviewRequest{})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Dropped 2 out-of-diff finding(s) from Security") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	if len(results[0].resp.Findings) != 0 {
+		t.Fatalf("findings = %#v, want both dropped", results[0].resp.Findings)
 	}
 }

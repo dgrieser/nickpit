@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/mappings"
 )
 
 // CategorizeRequest carries one finding into the private classifier.
@@ -73,12 +76,17 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 	if err != nil {
 		return nil, usage, err
 	}
+	language := strings.TrimSpace(req.Finding.CodeLocation.Language)
+	if language == "" {
+		language = filetype.DetectLanguage(req.Finding.CodeLocation.FilePath)
+	}
 	promptData := categorizePromptData{
-		OutputSchemaSnippet:  systemSnippet,
-		OutputFormatSnippet:  commonSnippets.outputFormat,
-		CategoryConfirmation: model.CategoryConfirmation,
-		CategoryCompilation:  model.CategoryCompilation,
-		CategoryFinding:      model.CategoryFinding,
+		OutputSchemaSnippet:   systemSnippet,
+		OutputFormatSnippet:   commonSnippets.outputFormat,
+		UnusedIdentifierKinds: strings.Join(mappings.UnusedIdentifierDiagnostics(language), " or "),
+		CategoryConfirmation:  model.CategoryConfirmation,
+		CategoryCompilation:   model.CategoryCompilation,
+		CategoryFinding:       model.CategoryFinding,
 	}
 	systemPrompt, err := llm.RenderPrompt(systemTemplate, promptData)
 	if err != nil {
@@ -159,11 +167,12 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 // categorizePromptData keeps the classifier's descriptive labels explicit at
 // the prompt boundary.
 type categorizePromptData struct {
-	OutputSchemaSnippet  string
-	OutputFormatSnippet  string
-	CategoryConfirmation string
-	CategoryCompilation  string
-	CategoryFinding      string
+	OutputSchemaSnippet   string
+	OutputFormatSnippet   string
+	UnusedIdentifierKinds string
+	CategoryConfirmation  string
+	CategoryCompilation   string
+	CategoryFinding       string
 }
 
 func buildCategorizeUserPrompt(reviewCtx *model.ReviewContext, finding model.Finding, disableSuggestions bool) (string, error) {
@@ -299,7 +308,7 @@ func fallbackFindingCategorization(f model.Finding) *model.FindingCategorization
 	return c
 }
 
-// categorizeReviewerPrefix labels per-reviewer categorize progress lines; the
+// categorizeReviewerPrefix labels per-reviewer categorize progress lines.
 // An unnamed classification phase keeps its unprefixed format.
 func categorizeReviewerPrefix(reviewerName string) string {
 	if reviewerName == "" {

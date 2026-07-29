@@ -41,7 +41,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `internal/llm/client.go`: OpenAI-compatible client, request construction, streaming, tool calls, retries, reasoning handling, and JSON/schema response modes.
 - `internal/llm/schema.go`: Schema-kind dispatch and shared schema helpers.
-- `internal/llm/categorize_schema.go`: Categorization response schema (scoped and unscoped variants).
+- `internal/llm/categorize_schema.go`: Descriptive categorization response schema.
 - `internal/llm/verify_schema.go`: Verification response schema.
 - `internal/llm/merge_schema.go`: Merge/dedupe response schema.
 - `internal/llm/finalize_schema.go`: Finalization response schema and suggestion-shape handling.

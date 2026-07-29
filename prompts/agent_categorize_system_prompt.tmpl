@@ -37,8 +37,14 @@ standard compiler, parser, or type checker.
 
 - Classify ownership of the alleged diagnostic. Do not check whether the
   compiler allegation is accurate.
-- Framing does not change ownership: a compiler-reported unused identifier
-  described as lint, cleanup, or maintainability still belongs here.
+{{- if .UnusedIdentifierKinds}}
+- For this finding's language, the default toolchain reports unused
+  {{.UnusedIdentifierKinds}}. Such an item belongs here even when framed as
+  lint, cleanup, or maintainability.
+{{- else}}
+- Do not assume unused imports or variables belong here. For this finding's
+  language, they may require an opt-in lint or compiler flag.
+{{- end}}
 - Examples include diagnostics attributed to `go build` or `go vet`, `rustc` or
   `cargo check`, `tsc`, JavaScript parsing, or `python -m py_compile`.
 - Do not assign this category to failures that surface only at runtime:

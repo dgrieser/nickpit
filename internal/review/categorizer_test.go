@@ -43,9 +43,13 @@ func (s *scriptedCategorizeLLM) Review(_ context.Context, req *llm.ReviewRequest
 }
 
 func categorized(categories ...string) *llm.ReviewResponse {
+	return categorizedWithUsage(model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}, categories...)
+}
+
+func categorizedWithUsage(usage model.TokenUsage, categories ...string) *llm.ReviewResponse {
 	return &llm.ReviewResponse{
 		Categorization: &model.FindingCategorization{Categories: categories, Remarks: "classified"},
-		TokensUsed:     model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		TokensUsed:     usage,
 	}
 }
 
@@ -142,6 +146,56 @@ func TestCategorizeAllAttachesByIndex(t *testing.T) {
 	}
 	if usage.TotalTokens != 6 {
 		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestCategorizeAllAggregatesVariableConcurrentUsage(t *testing.T) {
+	client := &scriptedCategorizeLLM{responses: []*llm.ReviewResponse{
+		categorizedWithUsage(model.TokenUsage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}, model.CategoryFinding),
+		categorizedWithUsage(model.TokenUsage{PromptTokens: 7, CompletionTokens: 11, TotalTokens: 18}, model.CategoryFinding),
+		categorizedWithUsage(model.TokenUsage{PromptTokens: 13, CompletionTokens: 17, TotalTokens: 30}, model.CategoryFinding),
+	}}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+	findings := []model.Finding{
+		sampleFinding("a", "a.go", 1),
+		sampleFinding("b", "b.go", 2),
+		sampleFinding("c", "c.go", 3),
+	}
+
+	_, usage, warnings, err := engine.CategorizeAll(context.Background(), sampleReviewCtx(), findings, CategorizeOptions{Limiter: NewLimiter(3)})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("err=%v warnings=%v", err, warnings)
+	}
+	want := (model.TokenUsage{PromptTokens: 22, CompletionTokens: 31, TotalTokens: 53})
+	if usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
+func TestCategorizePromptUsesLanguageSpecificUnusedIdentifierMapping(t *testing.T) {
+	tests := []struct {
+		language string
+		want     string
+	}{
+		{language: "go", want: "default toolchain reports unused\n  imports or variables"},
+		{language: "typescript", want: "Do not assume unused imports or variables"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.language, func(t *testing.T) {
+			client := &scriptedCategorizeLLM{}
+			engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+			finding := sampleFinding("unused local", "file.ts", 1)
+			finding.CodeLocation.Language = tt.language
+			if _, _, err := engine.Categorize(context.Background(), CategorizeRequest{
+				ReviewCtx: sampleReviewCtx(),
+				Finding:   finding,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if system := client.requests[0].Messages[0].Content; !strings.Contains(system, tt.want) {
+				t.Fatalf("system prompt missing %q:\n%s", tt.want, system)
+			}
+		})
 	}
 }
 

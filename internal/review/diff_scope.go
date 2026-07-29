@@ -142,9 +142,10 @@ func filterFindingsByDiffScope(findings []model.Finding, hunks []model.DiffHunk)
 	if len(findings) == 0 {
 		return findings, 0
 	}
+	allowed := allowedDiffCodeLocations(hunks)
 	kept := make([]model.Finding, 0, len(findings))
 	for _, finding := range findings {
-		if codeLocationOverlapsDiff(finding.CodeLocation, hunks) {
+		if codeLocationOverlapsAllowed(finding.CodeLocation, allowed) {
 			kept = append(kept, finding)
 		}
 	}

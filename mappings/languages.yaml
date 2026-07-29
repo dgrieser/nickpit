@@ -187,10 +187,9 @@ path_rules:
         - notes.txt
 
 # Languages where the standard compiler reports unused imports or variables
-# by default — as errors or on-by-default warnings. Drives the verify agent's
-# compile-error gate: findings about the listed kinds are refuted for these
-# languages because the toolchain surfaces them on every build; everywhere
-# else they stay ordinary lint/cleanup findings.
+# by default — as errors or on-by-default warnings. Drives the classifier's
+# compilation category: findings about the listed kinds are compiler-owned for
+# these languages; everywhere else they stay ordinary lint/cleanup findings.
 #
 # Kinds: `imports`, `variables`. Only list what the default toolchain really
 # reports: swift/kotlin/csharp warn on unused variables but ignore unused

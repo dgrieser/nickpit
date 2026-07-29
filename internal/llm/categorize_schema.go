@@ -27,15 +27,20 @@ func categorizeCategoriesSchema(categories []any) map[string]any {
 var categorizeSchemaDefinition = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
-		"id": map[string]any{"type": "string", "examples": []any{"<uuid-v4>"}},
-		"categories": categorizeCategoriesSchema([]any{
-			model.CategoryConfirmation,
-			model.CategoryCompilation,
-			model.CategoryFinding,
-		}),
-		"remarks": map[string]any{"type": "string", "examples": []any{"Reports a concrete null dereference on the changed path."}},
+		"id":         map[string]any{"type": "string", "examples": []any{"<uuid-v4>"}},
+		"categories": categorizeCategoriesSchema(findingCategorySchemaValues()),
+		"remarks":    map[string]any{"type": "string", "examples": []any{"Reports a concrete null dereference on the changed path."}},
 	},
 	"required": []string{"id", "categories", "remarks"},
+}
+
+func findingCategorySchemaValues() []any {
+	categories := model.FindingCategories()
+	values := make([]any, len(categories))
+	for i, category := range categories {
+		values[i] = category
+	}
+	return values
 }
 
 var CategorizeSchema = mustMarshalCleanSchema(categorizeSchemaDefinition)

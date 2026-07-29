@@ -769,15 +769,12 @@ func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *
 		return nil
 	}
 	allowed := allowedDiffCodeLocations(reviewCtx.DiffScopeHunks)
-	repair := e.responseCodeLocationRepairer(req.RepoRoot, true, allowed)
+	relocate := e.diffScopeCodeLocationRelocator(req.RepoRoot, allowed)
 	var warnings []string
 	for i := range vectorResults {
 		resp := vectorResults[i].resp
 		if vectorResults[i].run.Status == model.AgentRunStatusFailed || resp == nil || len(resp.Findings) == 0 {
 			continue
-		}
-		if repair != nil {
-			repair(ctx, resp)
 		}
 		kept := make([]model.Finding, 0, len(resp.Findings))
 		for _, finding := range resp.Findings {
@@ -785,11 +782,21 @@ func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *
 				kept = append(kept, finding)
 				continue
 			}
-			warnings = append(warnings, fmt.Sprintf("Dropped out-of-diff finding %q from %s after deterministic location repair could not find an allowed code_location", finding.Title, vectorResults[i].run.Name))
+			if relocate != nil {
+				relocate(ctx, &finding.CodeLocation)
+			}
+			if codeLocationOverlapsAllowed(finding.CodeLocation, allowed) {
+				kept = append(kept, finding)
+			}
 		}
 		dropped := len(resp.Findings) - len(kept)
 		resp.Findings = kept
 		if dropped > 0 {
+			reviewer := strings.TrimSpace(vectorResults[i].run.Name)
+			if reviewer == "" {
+				reviewer = "injected findings"
+			}
+			warnings = append(warnings, fmt.Sprintf("Dropped %d out-of-diff finding(s) from %s after deterministic location repair found no unique allowed code_location", dropped, reviewer))
 			if e.logger != nil {
 				e.logger.LiveFindings(logging.FindingUpdate{Filtered: dropped})
 			}
