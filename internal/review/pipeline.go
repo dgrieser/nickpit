@@ -494,10 +494,20 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 		res = st.materializeFromGroups(req)
 	}
 	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
-		var dropped int
+		var dropped []model.Finding
 		res.Findings, dropped = filterFindingsByDiffScope(res.Findings, st.Enriched.DiffScopeHunks)
-		if dropped > 0 {
-			p.engine.logf(context.Background(), "Final diff-scope safeguard: dropped=%d kept=%d", dropped, len(res.Findings))
+		for i, finding := range dropped {
+			if p.engine.logger != nil {
+				p.engine.logger.ProgressFor(
+					p.engine.progressInfo("verify", fmt.Sprintf("Final Diff Scope #%d", i+1), truncateFindingTitle(finding.Title)),
+					logging.StageVerify,
+					logging.StateSkip,
+					"dropped reason=out-of-diff safeguard=final",
+				)
+			}
+		}
+		if len(dropped) > 0 {
+			p.engine.logf(context.Background(), "Final diff-scope safeguard: dropped=%d kept=%d", len(dropped), len(res.Findings))
 			if len(res.Findings) == 0 {
 				res.OverallCorrectness = "patch is correct"
 				res.OverallExplanation = "No in-scope findings remained after diff-scope filtering."

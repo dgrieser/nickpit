@@ -287,12 +287,38 @@ func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewConte
 	}
 	wg.Wait()
 	for i := range results {
+		fallback := false
 		if results[i].Categorization == nil {
 			results[i].Categorization = fallbackFindingCategorization(findings[i])
+			fallback = true
+		}
+		if e.logger != nil {
+			categories := effectiveFindingCategories(results[i].Categorization)
+			msg := fmt.Sprintf("categories=%s", strings.Join(categories, ","))
+			if fallback {
+				msg += " fallback=true"
+			}
+			e.logger.ProgressFor(
+				e.progressInfo("categorize", categorizeProgressName(opts.ReviewerName, i), truncateFindingTitle(findings[i].Title)),
+				logging.StageCategorize,
+				logging.StateOK,
+				msg,
+			)
 		}
 	}
 	e.logProgress(logging.StageCategorize, logging.StateDone, fmt.Sprintf("%sfindings=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s warnings=%d runtime=%s", categorizeReviewerPrefix(opts.ReviewerName), len(findings), model.HumanTokens(usageSum.PromptTokens), model.HumanTokens(usageSum.CompletionTokens), model.HumanTokens(usageSum.TotalTokens), len(warnings), model.HumanDuration(time.Since(categorizeStart))))
 	return results, usageSum, warnings, nil
+}
+
+func effectiveFindingCategories(categorization *model.FindingCategorization) []string {
+	if categorization == nil {
+		return []string{model.CategoryFinding}
+	}
+	categories := model.NormalizeFindingCategories(categorization.Categories)
+	if len(categories) == 0 {
+		return []string{model.CategoryFinding}
+	}
+	return categories
 }
 
 // fallbackFindingCategorization fails open. A categorize agent that errored, or

@@ -224,11 +224,11 @@ func TestFormatProgressANSI(t *testing.T) {
 			want:  progressTestStyle(progressStageStyles[StageModel], "Model     ") + " " + progressTestStyle(progressColorWarnYellow, "retry") + "\n",
 		},
 		{
-			name:  "gray skip state",
+			name:  "purple skip state",
 			info:  ProgressInfo{},
 			stage: StageModelCheck,
 			state: StateSkip,
-			want:  progressTestStyle(progressStageStyles[StageModelCheck], "ModelCheck") + " " + progressTestStyle(progressColorDarkGrey, "skip") + "\n",
+			want:  progressTestStyle(progressStageStyles[StageModelCheck], "ModelCheck") + " " + progressTestStyle(progressColorSkipPurple, "skip") + "\n",
 		},
 		{
 			name:  "blue start state",
@@ -370,6 +370,16 @@ func TestColorizeProgressNumbers(t *testing.T) {
 		progressTestStyle(progressColorUnitGreen, "∞")
 	if got := colorizeProgressMessage(msg); got != want {
 		t.Fatalf("numbers = %q, want %q", got, want)
+	}
+}
+
+func TestColorizeProgressDroppedRed(t *testing.T) {
+	msg := "dropped reason=out-of-diff"
+	want := progressTestStyle(progressColorErrorRed, "dropped") + " " +
+		progressTestStyle(progressColorKeyTurquoise, "reason") + progressTestGrey("=") +
+		progressTestLight("out-of-diff")
+	if got := colorizeProgressMessage(msg); got != want {
+		t.Fatalf("dropped message = %q, want %q", got, want)
 	}
 }
 

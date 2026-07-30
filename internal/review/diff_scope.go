@@ -138,16 +138,19 @@ func rangesOverlap(start, end, hunkStart, hunkLines int) bool {
 	return start <= hunkEnd && end >= hunkStart
 }
 
-func filterFindingsByDiffScope(findings []model.Finding, hunks []model.DiffHunk) ([]model.Finding, int) {
+func filterFindingsByDiffScope(findings []model.Finding, hunks []model.DiffHunk) ([]model.Finding, []model.Finding) {
 	if len(findings) == 0 {
-		return findings, 0
+		return findings, nil
 	}
 	allowed := allowedDiffCodeLocations(hunks)
 	kept := make([]model.Finding, 0, len(findings))
+	dropped := make([]model.Finding, 0)
 	for _, finding := range findings {
 		if codeLocationOverlapsAllowed(finding.CodeLocation, allowed) {
 			kept = append(kept, finding)
+			continue
 		}
+		dropped = append(dropped, finding)
 	}
-	return kept, len(findings) - len(kept)
+	return kept, dropped
 }

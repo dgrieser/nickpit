@@ -584,13 +584,18 @@ func (e *Engine) categorizeAndFilterVectorFindings(ctx context.Context, reviewCt
 		if categorization == nil {
 			categorization = fallbackFindingCategorization(finding)
 		}
-		categories := model.NormalizeFindingCategories(categorization.Categories)
-		if len(categories) == 0 {
-			categories = []string{model.CategoryFinding}
-		}
+		categories := effectiveFindingCategories(categorization)
 		counts := dropsByVector[ref.vectorIdx]
 		dropCategorized, reason := shouldDropCategories(categories, opts.DropPolicy)
 		if dropCategorized {
+			if e.logger != nil {
+				e.logger.ProgressFor(
+					e.progressInfo("categorize", categorizeProgressName(reviewerName, i), truncateFindingTitle(finding.Title)),
+					logging.StageCategorize,
+					logging.StateSkip,
+					fmt.Sprintf("dropped categories=%s reason=%s policy=%s", strings.Join(categories, ","), reason, model.NormalizeDropPolicy(opts.DropPolicy)),
+				)
+			}
 			switch {
 			case reason == model.VerdictUnverified:
 				counts.unverified++
@@ -717,6 +722,14 @@ func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *m
 		model.EnsureVerificationID(&v, finding.ID)
 		drop, reason := shouldDropFinding(&v, opts.DropPolicy)
 		if drop {
+			if e.logger != nil {
+				e.logger.ProgressFor(
+					e.progressInfo("verify", verifyProgressName(reviewerName, i), truncateFindingTitle(finding.Title)),
+					logging.StageVerify,
+					logging.StateSkip,
+					fmt.Sprintf("dropped verdict=%s policy=%s", reason, model.NormalizeDropPolicy(opts.DropPolicy)),
+				)
+			}
 			if droppedIdxByVector[ref.vectorIdx] == nil {
 				droppedIdxByVector[ref.vectorIdx] = make(map[int]struct{})
 			}
@@ -777,7 +790,7 @@ func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *
 			continue
 		}
 		kept := make([]model.Finding, 0, len(resp.Findings))
-		for _, finding := range resp.Findings {
+		for findingIdx, finding := range resp.Findings {
 			if codeLocationOverlapsAllowed(finding.CodeLocation, allowed) {
 				kept = append(kept, finding)
 				continue
@@ -787,6 +800,15 @@ func (e *Engine) prepareFindingsForVerification(ctx context.Context, reviewCtx *
 			}
 			if codeLocationOverlapsAllowed(finding.CodeLocation, allowed) {
 				kept = append(kept, finding)
+				continue
+			}
+			if e.logger != nil {
+				e.logger.ProgressFor(
+					e.progressInfo("verify", verifyProgressName(vectorResults[i].run.Name, findingIdx), truncateFindingTitle(finding.Title)),
+					logging.StageVerify,
+					logging.StateSkip,
+					"dropped reason=out-of-diff",
+				)
 			}
 		}
 		dropped := len(resp.Findings) - len(kept)

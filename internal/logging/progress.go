@@ -159,7 +159,7 @@ func stateColor(state State) string {
 	case StateRetry, StateWarn:
 		return progressColorWarnYellow
 	case StateSkip:
-		return progressColorDarkGrey
+		return progressColorSkipPurple
 	default:
 		return progressColorLightGrey
 	}
@@ -187,6 +187,7 @@ const (
 	progressColorBranchToAquaGreen = "38;5;48"
 	progressColorErrorRed          = "38;5;203"
 	progressColorWarnYellow        = "38;5;221"
+	progressColorSkipPurple        = "38;5;177"
 )
 
 var progressStageStyles = map[Stage]string{
@@ -672,6 +673,8 @@ func writeProgressWord(b *strings.Builder, runes []rune, i int) int {
 	switch word {
 	case "true", "false":
 		b.WriteString(progressStyle(progressColorBoolGreen, word))
+	case "dropped":
+		b.WriteString(progressStyle(progressColorErrorRed, word))
 	default:
 		b.WriteString(progressLight(word))
 	}
