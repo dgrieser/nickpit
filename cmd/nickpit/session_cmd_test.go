@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -22,7 +24,7 @@ func TestSessionLatestAsRawMarkdown(t *testing.T) {
 
 	var out bytes.Buffer
 	a := &app{sessionDir: dir, outputFormat: "raw"}
-	if err := a.runSessionTo(sessionOptions{}, nil, &out); err != nil {
+	if err := a.runSessionTo(context.Background(), sessionOptions{}, nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "latest") || strings.Contains(out.String(), "older") {
@@ -47,7 +49,7 @@ func TestSessionExplicitAsJSON(t *testing.T) {
 
 	var out bytes.Buffer
 	a := &app{sessionDir: dir, jsonOutput: true}
-	if err := a.runSessionTo(sessionOptions{sessionID: sess.ID}, nil, &out); err != nil {
+	if err := a.runSessionTo(context.Background(), sessionOptions{sessionID: sess.ID}, nil, &out); err != nil {
 		t.Fatal(err)
 	}
 	var result model.ReviewResult
@@ -69,18 +71,18 @@ func TestSessionArgumentAndErrors(t *testing.T) {
 	a := &app{sessionDir: dir, outputFormat: "raw"}
 
 	var out bytes.Buffer
-	if err := a.runSessionTo(sessionOptions{}, []string{sess.ID}, &out); err != nil {
+	if err := a.runSessionTo(context.Background(), sessionOptions{}, []string{sess.ID}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "argument") {
 		t.Fatalf("argument session not printed:\n%s", out.String())
 	}
-	if err := a.runSessionTo(sessionOptions{sessionID: sess.ID}, []string{sess.ID}, &out); err == nil || !strings.Contains(err.Error(), "not both") {
+	if err := a.runSessionTo(context.Background(), sessionOptions{sessionID: sess.ID}, []string{sess.ID}, &out); err == nil || !strings.Contains(err.Error(), "not both") {
 		t.Fatalf("argument/flag conflict error = %v", err)
 	}
 
 	empty := &app{sessionDir: t.TempDir()}
-	if err := empty.runSessionTo(sessionOptions{}, nil, &out); err == nil || !strings.Contains(err.Error(), "no saved sessions") {
+	if err := empty.runSessionTo(context.Background(), sessionOptions{}, nil, &out); err == nil || !strings.Contains(err.Error(), "no saved sessions") {
 		t.Fatalf("empty store error = %v", err)
 	}
 
@@ -88,8 +90,75 @@ func TestSessionArgumentAndErrors(t *testing.T) {
 	if err := store.Save(noResult); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.runSessionTo(sessionOptions{sessionID: noResult.ID}, nil, &out); err == nil || !strings.Contains(err.Error(), "has no saved review") {
+	if err := a.runSessionTo(context.Background(), sessionOptions{sessionID: noResult.ID}, nil, &out); err == nil || !strings.Contains(err.Error(), "has no saved review") {
 		t.Fatalf("missing result error = %v", err)
+	}
+}
+
+func TestSessionClipboardCopiesUnstyledReview(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := saveSessionReview(t, store, "copied")
+
+	var copied []byte
+	var out bytes.Buffer
+	a := &app{sessionDir: dir, outputFormat: "markdown"}
+	a.clipboardCopy = func(_ context.Context, data []byte) (string, error) {
+		copied = data
+		return "test-helper", nil
+	}
+	if err := a.runSessionTo(context.Background(), sessionOptions{clipboard: true}, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(copied), "### copied") {
+		t.Fatalf("clipboard payload missing Markdown review:\n%s", copied)
+	}
+	if strings.ContainsRune(string(copied), '\x1b') {
+		t.Fatalf("clipboard payload contains ANSI escapes:\n%q", copied)
+	}
+	// The confirmation replaces the review: printing both would defeat the copy.
+	if strings.Contains(out.String(), "### copied") {
+		t.Fatalf("review printed alongside the copy:\n%s", out.String())
+	}
+	for _, want := range []string{"Copied review of session " + sess.ID, "via test-helper"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("confirmation %q missing %q", out.String(), want)
+		}
+	}
+}
+
+func TestSessionClipboardJSONAndFailure(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveSessionReview(t, store, "as-json")
+
+	var copied []byte
+	var out bytes.Buffer
+	a := &app{sessionDir: dir, outputFormat: "json"}
+	a.clipboardCopy = func(_ context.Context, data []byte) (string, error) {
+		copied = data
+		return "test-helper", nil
+	}
+	if err := a.runSessionTo(context.Background(), sessionOptions{clipboard: true}, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	var result model.ReviewResult
+	if err := json.Unmarshal(copied, &result); err != nil {
+		t.Fatalf("clipboard payload is not the JSON output: %v\n%s", err, copied)
+	}
+
+	a.clipboardCopy = func(_ context.Context, _ []byte) (string, error) {
+		return "", errors.New("no clipboard helper found in PATH")
+	}
+	err = a.runSessionTo(context.Background(), sessionOptions{clipboard: true}, nil, &out)
+	if err == nil || !strings.Contains(err.Error(), "no clipboard helper found in PATH") {
+		t.Fatalf("clipboard failure error = %v", err)
 	}
 }
 

@@ -142,6 +142,9 @@ type app struct {
 	// prepareCheckout prepares chat's shared temporary checkout; nil means
 	// git.NewCheckoutManager().Prepare. A seam so tests can fake the clone.
 	prepareCheckout func(ctx context.Context, spec model.CheckoutSpec, opts git.CheckoutOptions) (string, func(), error)
+	// clipboardCopy writes text to the system clipboard; nil means
+	// clipboard.Copy. A seam so tests need no clipboard helper installed.
+	clipboardCopy func(ctx context.Context, data []byte) (string, error)
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time
@@ -1494,21 +1497,25 @@ func chatSessionHint(sessionID string, stderrTTY, useANSI bool, width int) strin
 	if !stderrTTY || sessionID == "" {
 		return ""
 	}
-	intro := "To chat about this review, run:"
-	command := "nickpit chat --session " + sessionID
+	intro := "To chat about this review, or copy it to the clipboard, run:"
+	chatCommand := "nickpit chat --session " + sessionID
+	copyCommand := "nickpit session " + sessionID + " --clipboard"
 	if !useANSI {
-		return "\n---\n\n" + intro + "\n" + command
+		return "\n---\n\n" + intro + "\n" + chatCommand + "\n" + copyCommand
 	}
 	if width <= 0 {
 		width = 80
 	}
 	// Rule and intro share the dim grey of the review-output footer (Tokens /
-	// Runtime); the command keeps its periwinkle foreground but drops the block
-	// background so it reads as text, not a chip.
+	// Runtime); the commands keep their periwinkle foreground but drop the block
+	// background so they read as text, not chips. The copy command sits one small
+	// hue step towards cyan so the two lines read as distinct commands without
+	// looking like different kinds of output.
 	rule := "\x1b[2m" + strings.Repeat("─", width) + "\x1b[0m"
 	return "\n" + rule + "\n\n" +
 		"\x1b[2m" + intro + "\x1b[0m\n" +
-		"\x1b[38;2;179;189;255m" + command + "\x1b[0m"
+		"\x1b[38;2;179;189;255m" + chatCommand + "\x1b[0m\n" +
+		"\x1b[38;2;179;209;250m" + copyCommand + "\x1b[0m"
 }
 
 // runWorkflow executes a spec through the pipeline: the embedded DefaultSpec for

@@ -388,6 +388,9 @@ nickpit chat --session <session-id>
 nickpit session [session-id]
 nickpit session --session <session-id> --output json
 
+# Copy that review to the system clipboard instead of printing it
+nickpit session [session-id] --clipboard
+
 # Start a chat from a saved review JSON (e.g. a CI artifact from `--output json`)
 nickpit chat --from-json review.json
 
@@ -398,6 +401,8 @@ nickpit chat --gitlab --url https://gitlab.example.com/group/project/-/merge_req
 Pin the chat to one finding with `--finding <id>` and the agent opens by pointing at it; omit it to discuss the whole review. On GitLab, the review NickPit publishes now embeds the full findings JSON (and the overall verdict) as hidden, gzip-compressed markers in the notes, each tagged with a review id and timestamp, so a later chat can regroup them into the exact (newest) review — no local state needed. Because the markers are encoded but not cryptographically signed, only markers in notes authored by the chat token's own user (the bot that published the review) are trusted; markers planted by other commenters are ignored. When an MR carries several reviews, the newest is chosen (`--review-id` overrides). The retrieval tools read from an automatic temporary checkout of the MR head (or a local checkout: `--repo-root`, or the current directory for local sessions) — this includes the daemon's in-thread replies, which answer with code-reading tools enabled.
 
 `nickpit session` uses the normal review output. Select it with `-o|--output markdown|json|raw`: `markdown` is the default and renders on a terminal, while `raw` always emits unrendered Markdown with no colors or terminal styling. The same flag works on review commands. `--json` remains as a compatibility alias for `--output json`.
+
+`--clipboard` copies the review to the system clipboard instead of printing it, and prints a one-line confirmation naming the helper it used. The clipboard always receives unstyled source — Markdown for `--output markdown|raw`, JSON for `--output json` — so it pastes cleanly into an MR comment, an issue, or a chat. There is no portable clipboard syscall, so NickPit shells out to the first working helper for the platform: `pbcopy` on macOS, `clip.exe` on Windows (fed UTF-16LE so non-ASCII survives), and on Linux/BSD `wl-copy` first under Wayland, otherwise `xclip` then `xsel`, falling back to `termux-clipboard-set` and WSL's `clip.exe`. When none of them is installed or works (a headless session, for example), the command fails with the list of candidates tried and what to install; pipe the output instead. The hint printed after every review shows both the chat and the clipboard command for the session it just saved.
 
 ### Shell Completion
 

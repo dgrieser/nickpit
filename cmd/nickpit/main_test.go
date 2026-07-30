@@ -1659,13 +1659,16 @@ func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
 }
 
 func TestChatSessionHintOnlyForSavedTerminalSession(t *testing.T) {
-	if got := chatSessionHint("abc-123", true, false, 80); got != "\n---\n\nTo chat about this review, run:\nnickpit chat --session abc-123" {
+	want := "\n---\n\nTo chat about this review, or copy it to the clipboard, run:\n" +
+		"nickpit chat --session abc-123\nnickpit session abc-123 --clipboard"
+	if got := chatSessionHint("abc-123", true, false, 80); got != want {
 		t.Fatalf("chatSessionHint() = %q", got)
 	}
 	colored := chatSessionHint("abc-123", true, true, 12)
 	if !strings.Contains(colored, "\x1b[2m────────────\x1b[0m") ||
-		!strings.Contains(colored, "\x1b[2mTo chat about this review, run:\x1b[0m") ||
-		!strings.Contains(colored, "\x1b[38;2;179;189;255mnickpit chat --session abc-123\x1b[0m") {
+		!strings.Contains(colored, "\x1b[2mTo chat about this review, or copy it to the clipboard, run:\x1b[0m") ||
+		!strings.Contains(colored, "\x1b[38;2;179;189;255mnickpit chat --session abc-123\x1b[0m") ||
+		!strings.Contains(colored, "\x1b[38;2;179;209;250mnickpit session abc-123 --clipboard\x1b[0m") {
 		t.Fatalf("colored chat hint = %q", colored)
 	}
 	if strings.Contains(colored, "48;2;40;42;64") {
