@@ -240,11 +240,43 @@ NickPit loads configuration in this order (later wins):
 3. Environment variables
 4. CLI flags
 
-The profile to use follows the same order: `active_profile` from the config file selects the profile unless `--profile` is passed explicitly on the command line.
+The profile to use follows the same order: `active_profile` from the config file selects the profile, `NICKPIT_PROFILE` overrides that, and an explicit `--profile` on the command line wins over both. A workflow spec's `profile:` field still retargets the profile for that run. A name that no profile defines fails immediately with `profile "<name>" not found`, so a typo cannot quietly turn into a half-configured run.
 
 Run `make generate` or `make build` to generate `.nickpit.yaml.example` from the built-in defaults.
 
 The built-in `default` profile targets OpenRouter at `https://openrouter.ai/api/v1`. You must specify a model explicitly, and unless you set `api_key` in config, NickPit expects the API key in `OPENROUTER_API_KEY`. When the active profile ends up with no API key at all, `NICKPIT_API_KEY` is used as a last-resort fallback.
+
+### Environment variables
+
+Useful when the config file is baked into an image or CI runner and only a few knobs should differ per environment. An explicitly passed flag always wins over the variable; an unset or empty variable changes nothing.
+
+| Variable | Flag equivalent |
+| --- | --- |
+| `NICKPIT_PROFILE` | `--profile` |
+| `NICKPIT_CONFIG` | `--config` |
+| `NICKPIT_SPEC` | `--spec` (ignored when `--step` is passed, since the two are mutually exclusive) |
+| `NICKPIT_SESSION_DIR` | `--session-dir` |
+| `NICKPIT_OUTPUT` | `--output` / `-o` |
+| `NICKPIT_PRIORITY_THRESHOLD` | `--priority-threshold` |
+| `NICKPIT_VERIFY_DROP_POLICY` | `--verify-drop-policy` |
+| `NICKPIT_CONFIDENCE_THRESHOLD` | `--confidence-threshold` |
+| `NICKPIT_DIFF_FORMAT` | `--diff-format` |
+| `NICKPIT_MAX_CONTEXT_TOKENS` | `--max-context-tokens` |
+| `NICKPIT_MAX_REQUEST_BYTES` | `--max-request-bytes` |
+| `NICKPIT_MAX_TOOL_CALLS` | `--max-tool-calls` |
+| `NICKPIT_MAX_DUPLICATE_TOOL_CALLS` | `--max-duplicate-tool-calls` |
+| `NICKPIT_MAX_OUTPUT_RETRIES` | `--max-output-retries` |
+| `NICKPIT_MAX_REASONING_SECONDS` | `--max-reasoning-seconds` |
+| `NICKPIT_MAX_RATE_LIMIT_DELAY_SECONDS` | `--max-rate-limit-delay-seconds` |
+| `NICKPIT_NUDGE_COUNT` | `--nudge-count` |
+| `NICKPIT_MAX_FINDINGS` | `--max-findings` |
+| `NICKPIT_MAX_SESSIONS` | `--max-sessions` |
+
+A `0` from the environment is honored where `0` is meaningful (`--max-tool-calls`, `--nudge-count`, `--max-findings`, `--max-sessions`, `--max-request-bytes`, `--max-rate-limit-delay-seconds`), so it is not mistaken for "unset". A non-numeric value fails the run with the variable name in the error.
+
+Model and provider settings have their own variables: `NICKPIT_MODEL`, `NICKPIT_BASE_URL`, `NICKPIT_API_KEY`, `NICKPIT_REASONING_EFFORT`, the sampling knobs and their `NICKPIT_SMALL_*` counterparts (see [The `small` model alias](#the-small-model-alias)), plus `NICKPIT_WORKDIR`, `NICKPIT_GITHUB_TOKEN`, `NICKPIT_GITLAB_TOKEN`, `NICKPIT_GITLAB_BASE_URL`, and `NICKPIT_CACHE_DIR`.
+
+`--concurrency` stays CLI-only on purpose: the execution shape of a run should be visible in the command that started it, not inherited from the environment.
 
 ### The `small` model alias
 

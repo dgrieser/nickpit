@@ -1923,3 +1923,76 @@ func TestIsUserAbort(t *testing.T) {
 		t.Fatal("a deadline/timeout is not a user abort")
 	}
 }
+
+func TestApplyEnvDefaults(t *testing.T) {
+	t.Setenv("NICKPIT_CONFIG", "env.nickpit.yaml")
+	t.Setenv("NICKPIT_SESSION_DIR", "/tmp/env-sessions")
+	t.Setenv("NICKPIT_OUTPUT", "json")
+	t.Setenv("NICKPIT_PRIORITY_THRESHOLD", "1")
+	t.Setenv("NICKPIT_VERIFY_DROP_POLICY", "refuted-only")
+	t.Setenv("NICKPIT_CONFIDENCE_THRESHOLD", "0.42")
+	t.Setenv("NICKPIT_SPEC", "env-workflow.yaml")
+
+	cli := &app{configPath: config.DefaultConfigPath, outputFormat: "markdown", priorityThreshold: "3", confidenceThreshold: 0.7}
+	if err := cli.applyEnvDefaults(func(string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if cli.configPath != "env.nickpit.yaml" {
+		t.Fatalf("config path = %q", cli.configPath)
+	}
+	if cli.sessionDir != "/tmp/env-sessions" {
+		t.Fatalf("session dir = %q", cli.sessionDir)
+	}
+	if cli.outputFormat != "json" {
+		t.Fatalf("output format = %q", cli.outputFormat)
+	}
+	if cli.priorityThreshold != "1" {
+		t.Fatalf("priority threshold = %q", cli.priorityThreshold)
+	}
+	if cli.verifyDropPolicy != "refuted-only" {
+		t.Fatalf("verify drop policy = %q", cli.verifyDropPolicy)
+	}
+	if cli.confidenceThreshold != 0.42 {
+		t.Fatalf("confidence threshold = %v", cli.confidenceThreshold)
+	}
+	if cli.specPath != "env-workflow.yaml" {
+		t.Fatalf("spec path = %q", cli.specPath)
+	}
+}
+
+func TestApplyEnvDefaultsKeepsExplicitFlags(t *testing.T) {
+	t.Setenv("NICKPIT_CONFIG", "env.nickpit.yaml")
+	t.Setenv("NICKPIT_OUTPUT", "json")
+	t.Setenv("NICKPIT_CONFIDENCE_THRESHOLD", "0.42")
+
+	cli := &app{configPath: "flag.nickpit.yaml", outputFormat: "raw", confidenceThreshold: 0.9}
+	if err := cli.applyEnvDefaults(func(string) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if cli.configPath != "flag.nickpit.yaml" || cli.outputFormat != "raw" || cli.confidenceThreshold != 0.9 {
+		t.Fatalf("flags overwritten: config=%q output=%q confidence=%v", cli.configPath, cli.outputFormat, cli.confidenceThreshold)
+	}
+}
+
+// An explicit --step must suppress an ambient NICKPIT_SPEC: the two are mutually
+// exclusive, so injecting the spec would turn a valid single-step run into an error.
+func TestApplyEnvDefaultsSkipsSpecEnvWhenStepGiven(t *testing.T) {
+	t.Setenv("NICKPIT_SPEC", "env-workflow.yaml")
+
+	cli := &app{stepName: "merge"}
+	if err := cli.applyEnvDefaults(func(name string) bool { return name == "step" }); err != nil {
+		t.Fatal(err)
+	}
+	if cli.specPath != "" {
+		t.Fatalf("spec path = %q, want empty", cli.specPath)
+	}
+}
+
+func TestApplyEnvDefaultsRejectsInvalidConfidenceThreshold(t *testing.T) {
+	t.Setenv("NICKPIT_CONFIDENCE_THRESHOLD", "high")
+
+	err := (&app{}).applyEnvDefaults(func(string) bool { return false })
+	if err == nil || !strings.Contains(err.Error(), "NICKPIT_CONFIDENCE_THRESHOLD") {
+		t.Fatalf("err = %v, want NICKPIT_CONFIDENCE_THRESHOLD parse error", err)
+	}
+}

@@ -1724,3 +1724,154 @@ func TestExpandPath(t *testing.T) {
 		t.Fatalf("expandPath(empty) = %q, want empty", got)
 	}
 }
+
+func TestLoadConfigUsesBudgetEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_MAX_CONTEXT_TOKENS", "12345")
+	t.Setenv("NICKPIT_MAX_REQUEST_BYTES", "4096")
+	t.Setenv("NICKPIT_MAX_TOOL_CALLS", "7")
+	t.Setenv("NICKPIT_MAX_DUPLICATE_TOOL_CALLS", "2")
+	t.Setenv("NICKPIT_MAX_OUTPUT_RETRIES", "1")
+	t.Setenv("NICKPIT_MAX_REASONING_SECONDS", "42")
+	t.Setenv("NICKPIT_MAX_RATE_LIMIT_DELAY_SECONDS", "600")
+	// 0 must survive: the default is 3, so a plain zero value proves the
+	// companion Configured flag is set.
+	t.Setenv("NICKPIT_NUDGE_COUNT", "0")
+	t.Setenv("NICKPIT_MAX_FINDINGS", "5")
+	t.Setenv("NICKPIT_MAX_SESSIONS", "3")
+	t.Setenv("NICKPIT_DIFF_FORMAT", "git-json")
+
+	_, profile, err := Load("", Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"max_context_tokens", profile.MaxContextTokens, 12345},
+		{"max_request_bytes", profile.MaxRequestBytes, 4096},
+		{"max_tool_calls", profile.MaxToolCalls, 7},
+		{"max_duplicate_tool_calls", profile.MaxDuplicateToolCalls, 2},
+		{"max_output_retries", profile.MaxOutputRetries, 1},
+		{"max_reasoning_seconds", profile.MaxReasoningSeconds, 42},
+		{"max_rate_limit_delay_seconds", profile.MaxRateLimitDelaySeconds, 600},
+		{"nudge_count", profile.NudgeCount, 0},
+		{"max_findings", profile.MaxFindings, 5},
+		{"max_sessions", profile.MaxSessions, 3},
+	}
+	for _, check := range checks {
+		if check.got != check.want {
+			t.Fatalf("%s = %d, want %d", check.name, check.got, check.want)
+		}
+	}
+	if profile.DiffFormat != model.DiffFormatGitJson {
+		t.Fatalf("diff format = %q", profile.DiffFormat)
+	}
+}
+
+func TestLoadConfigOverridesBeatBudgetEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_NUDGE_COUNT", "1")
+	t.Setenv("NICKPIT_MAX_CONTEXT_TOKENS", "1000")
+	t.Setenv("NICKPIT_DIFF_FORMAT", "git-json")
+
+	_, profile, err := Load("", Overrides{
+		NudgeCount:       ptrTo(9),
+		MaxContextTokens: ptrTo(2000),
+		DiffFormat:       model.DiffFormatGit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.NudgeCount != 9 {
+		t.Fatalf("nudge count = %d, want 9", profile.NudgeCount)
+	}
+	if profile.MaxContextTokens != 2000 {
+		t.Fatalf("max context tokens = %d, want 2000", profile.MaxContextTokens)
+	}
+	if profile.DiffFormat != model.DiffFormatGit {
+		t.Fatalf("diff format = %q, want git", profile.DiffFormat)
+	}
+}
+
+func TestLoadConfigRejectsInvalidBudgetEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_MAX_FINDINGS", "lots")
+
+	_, _, err := Load("", Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "NICKPIT_MAX_FINDINGS") {
+		t.Fatalf("err = %v, want NICKPIT_MAX_FINDINGS parse error", err)
+	}
+}
+
+func TestLoadConfigRejectsInvalidDiffFormatEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_DIFF_FORMAT", "raw")
+
+	_, _, err := Load("", Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "diff_format") {
+		t.Fatalf("err = %v, want diff_format validation error", err)
+	}
+}
+
+func TestLoadConfigProfileEnvBeatsFileActiveProfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+active_profile: alpha
+profiles:
+  alpha:
+    model: alpha-model
+    base_url: https://alpha.test/v1
+    api_key: alpha-key
+  beta:
+    model: beta-model
+    base_url: https://beta.test/v1
+    api_key: beta-key
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NICKPIT_PROFILE", "beta")
+
+	cfg, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != "beta" || profile.Model != "beta-model" {
+		t.Fatalf("active profile = %q, model = %q, want beta", cfg.ActiveProfile, profile.Model)
+	}
+
+	// An explicit --profile still wins over the environment.
+	cfg, profile, err = Load(path, Overrides{Profile: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ActiveProfile != "alpha" || profile.Model != "alpha-model" {
+		t.Fatalf("override active profile = %q, model = %q, want alpha", cfg.ActiveProfile, profile.Model)
+	}
+}
+
+// An unknown profile name must name itself in the error, whether it arrives via
+// NICKPIT_PROFILE or --profile, instead of surfacing as a missing model or base
+// URL from the empty profile the lookup used to materialize.
+func TestLoadConfigRejectsUnknownProfileName(t *testing.T) {
+	t.Setenv("NICKPIT_MODEL", "primary-model")
+	t.Setenv("NICKPIT_PROFILE", "nope")
+	_, _, envErr := Load("", Overrides{})
+
+	t.Setenv("NICKPIT_PROFILE", "")
+	_, _, flagErr := Load("", Overrides{Profile: "nope"})
+
+	for _, err := range []error{envErr, flagErr} {
+		if err == nil || !strings.Contains(err.Error(), `profile "nope" not found`) {
+			t.Fatalf("err = %v, want unknown profile error", err)
+		}
+	}
+}

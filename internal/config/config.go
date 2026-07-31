@@ -429,6 +429,12 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	}
 
 	activeProfile := cfg.ActiveProfile
+	// NICKPIT_PROFILE sits between the config file and --profile: an ambient
+	// environment can retarget a committed active_profile, an explicit flag
+	// still wins over both.
+	if value := strings.TrimSpace(os.Getenv("NICKPIT_PROFILE")); value != "" {
+		activeProfile = value
+	}
 	if overrides.Profile != "" {
 		activeProfile = overrides.Profile
 	}
@@ -436,6 +442,13 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 		activeProfile = DefaultProfileName
 	}
 	resolvedProfile := resolveProfileName(cfg, activeProfile)
+	// Check existence before applyEnv: applyEnv writes the profile back into the
+	// map, which would materialize an unknown name as an empty profile and
+	// report a misspelled --profile / NICKPIT_PROFILE as a missing model or base
+	// URL instead of the name that was never defined.
+	if _, err := ResolveProfile(cfg, resolvedProfile); err != nil {
+		return nil, Profile{}, err
+	}
 	if err := applyEnv(cfg, resolvedProfile); err != nil {
 		return nil, Profile{}, err
 	}
@@ -601,6 +614,40 @@ func applyEnv(cfg *Config, profileName string) error {
 	}
 	if value := os.Getenv("NICKPIT_WORKDIR"); value != "" {
 		profile.Workdir = value
+	}
+	if value := os.Getenv("NICKPIT_DIFF_FORMAT"); strings.TrimSpace(value) != "" {
+		profile.DiffFormat = model.DiffFormat(strings.TrimSpace(value))
+	}
+	// Budget fields where 0 carries meaning (unlimited / disabled), so the
+	// companion Configured flag must be set exactly like applyOverrides does —
+	// otherwise applyProfileDefaults would read a deliberate 0 as "unset" and
+	// overwrite it with the built-in default.
+	for _, budget := range []struct {
+		name       string
+		field      *int
+		configured *bool
+	}{
+		{"NICKPIT_MAX_CONTEXT_TOKENS", &profile.MaxContextTokens, &profile.MaxContextTokensConfigured},
+		{"NICKPIT_MAX_REQUEST_BYTES", &profile.MaxRequestBytes, &profile.MaxRequestBytesConfigured},
+		{"NICKPIT_MAX_TOOL_CALLS", &profile.MaxToolCalls, &profile.MaxToolCallsConfigured},
+		{"NICKPIT_MAX_DUPLICATE_TOOL_CALLS", &profile.MaxDuplicateToolCalls, &profile.MaxDuplicateToolCallsConfigured},
+		{"NICKPIT_MAX_OUTPUT_RETRIES", &profile.MaxOutputRetries, &profile.MaxOutputRetriesConfigured},
+		{"NICKPIT_MAX_REASONING_SECONDS", &profile.MaxReasoningSeconds, &profile.MaxReasoningSecondsConfigured},
+		{"NICKPIT_MAX_RATE_LIMIT_DELAY_SECONDS", &profile.MaxRateLimitDelaySeconds, &profile.MaxRateLimitDelaySecondsConfigured},
+		{"NICKPIT_NUDGE_COUNT", &profile.NudgeCount, &profile.NudgeCountConfigured},
+		{"NICKPIT_MAX_FINDINGS", &profile.MaxFindings, &profile.MaxFindingsConfigured},
+		{"NICKPIT_MAX_SESSIONS", &profile.MaxSessions, &profile.MaxSessionsConfigured},
+	} {
+		value := os.Getenv(budget.name)
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		parsed, err := parseEnvInt(budget.name, value)
+		if err != nil {
+			return err
+		}
+		*budget.field = parsed
+		*budget.configured = true
 	}
 	if value := os.Getenv("GITHUB_TOKEN"); value != "" {
 		profile.GitHubToken = value
