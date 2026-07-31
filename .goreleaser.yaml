@@ -10,9 +10,13 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
-      # -trimpath drops the VCS stamp Go would embed, so the commit is passed
-      # explicitly. A tagged build prints the tag alone; the commit shows up for
-      # snapshot/untagged builds.
+      # Go would embed the revision itself here (-trimpath does not suppress
+      # that), but only as whatever the release runner's checkout looks like:
+      # a shallow or detached CI clone can end up flagged vcs.modified, which
+      # would print a bogus "-dirty" suffix. goreleaser knows the exact commit
+      # it is releasing, so stamp it explicitly and never consult the fallback.
+      # Only untagged builds render it — a tagged build prints the tag alone,
+      # since the tag already pins its commit.
       - -X main.commit={{.FullCommit}}
     goos:
       - linux

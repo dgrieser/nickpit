@@ -197,8 +197,10 @@ type ReviewEnvelope struct {
 	HeadRef                string    `json:"head_ref,omitempty"`
 	Model                  string    `json:"model,omitempty"`
 	// NickpitVersion is the build that produced the review, so a chat
-	// reassembled from the notes reports the version that wrote them.
-	NickpitVersion string `json:"ver,omitempty"`
+	// reassembled from the notes reports the version that wrote them. The key is
+	// "npver", not "ver": this envelope has no schema version of its own, and a
+	// bare "ver" would read like one.
+	NickpitVersion string `json:"npver,omitempty"`
 	// FindingsTotal declares how many findings this review published across its
 	// carriers. Reassembly uses it to reject a review whose finding envelopes
 	// have not all landed yet — the summary (which carries this envelope) is

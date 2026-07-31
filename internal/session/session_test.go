@@ -3,6 +3,7 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -218,6 +219,59 @@ func TestPruneSweepsOrphanedTempFilesWithoutCap(t *testing.T) {
 	}
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Fatalf("orphaned temp file survived the sweep: %v", err)
+	}
+}
+
+// The session a save just wrote is never its own prune victim. Files can share
+// an mtime (coarse filesystem granularity, or a burst of saves inside one tick),
+// and losing that tie would delete the transcript whose id the caller is about
+// to print as resumable. The cap still holds: the protected file counts towards
+// it, so the older ones absorb the whole excess.
+func TestPruneNeverDeletesTheSessionJustSaved(t *testing.T) {
+	dir := t.TempDir()
+	// Lay the files down uncapped, so the setup saves do not prune each other,
+	// then prune the same directory through a capped store.
+	seed, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	var ids []string
+	for range 3 {
+		sess := New()
+		ids = append(ids, sess.ID)
+		if err := seed.Save(sess); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+	// Flatten every mtime so age cannot rescue any file: only the keep-id guard
+	// can.
+	stamp := time.Now().Add(-time.Minute)
+	for _, id := range ids {
+		path, _ := seed.Path(id)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+	}
+
+	store, err := NewStore(dir, WithMaxStored(1))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	// With every mtime equal the tie-break is the file name, so the smallest
+	// uuid is the first victim. Protecting exactly that one makes the guard the
+	// only thing that can save it.
+	kept := slices.Min(ids)
+	store.prune(kept)
+
+	if _, err := store.Load(kept); err != nil {
+		t.Fatalf("the just-saved session %s was pruned: %v", kept, err)
+	}
+	infos, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("stored sessions = %d, want 1 (the cap still applies)", len(infos))
 	}
 }
 

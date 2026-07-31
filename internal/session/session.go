@@ -346,7 +346,7 @@ func (s *Store) Save(sess *Session) error {
 	}
 	// The successful save is the new baseline for this process's next save.
 	sess.loadedUpdatedAt = sess.UpdatedAt
-	s.prune()
+	s.prune(sess.ID)
 	return nil
 }
 
@@ -357,11 +357,22 @@ func (s *Store) Save(sess *Session) error {
 // holding unrelated JSON, which must never be deleted. The temp sweep runs
 // regardless of the cap — with trimming off (the default) orphaned temp files
 // would otherwise never be collected.
+//
+// keepID is the session the triggering Save just wrote: it still counts towards
+// the cap but is never itself deleted. Its mtime can tie with the files it is
+// ranked against (filesystems with coarse timestamp granularity, or a burst of
+// saves), and losing that tie would discard the transcript the caller is about
+// to hand back as a resumable id. Pass "" when no session is protected.
+//
 // Best-effort: a prune failure never fails the save that triggered it.
-func (s *Store) prune() {
+func (s *Store) prune(keepID string) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return
+	}
+	keepName := ""
+	if keepID = strings.TrimSpace(keepID); keepID != "" {
+		keepName = keepID + ".json"
 	}
 	type fileAge struct {
 		name string
@@ -397,17 +408,35 @@ func (s *Store) prune() {
 	if s.maxStored <= 0 || len(files) <= s.maxStored {
 		return
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
-	for _, file := range files[:len(files)-s.maxStored] {
+	// Oldest first, breaking mtime ties on the name so equal-timestamped files
+	// (coarse filesystem granularity, or several saves inside one tick) are
+	// ordered reproducibly instead of by sort.Slice's arbitrary choice.
+	sort.Slice(files, func(i, j int) bool {
+		if !files[i].mod.Equal(files[j].mod) {
+			return files[i].mod.Before(files[j].mod)
+		}
+		return files[i].name < files[j].name
+	})
+	excess := len(files) - s.maxStored
+	for _, file := range files {
+		if excess == 0 {
+			break
+		}
+		if file.name == keepName {
+			continue
+		}
 		// Re-stat before removing: a concurrent process may have just renamed a
 		// fresh save into place under this name, and deleting it would discard
 		// that session's newest turns. Unchanged mtime means the listing is
-		// still accurate for this victim.
+		// still accurate for this victim; a changed one is now among the newest,
+		// so move on and take the next-oldest instead.
 		path := filepath.Join(s.dir, file.name)
 		if info, err := os.Stat(path); err != nil || !info.ModTime().Equal(file.mod) {
 			continue
 		}
-		_ = os.Remove(path)
+		if err := os.Remove(path); err == nil {
+			excess--
+		}
 	}
 }
 

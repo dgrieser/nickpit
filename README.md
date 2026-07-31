@@ -502,7 +502,7 @@ Every run names the build it came from: a `NickPit <version>` line under `--show
 
 The review itself carries the version too, stamped once when the review completes: a `NickPit: <version>` footer line above runtime and tokens in rendered and raw Markdown output, `nickpit_version` in JSON, and a field in the hidden gzipped review envelope published to GitLab/GitHub. It travels with the saved session, so `nickpit session` and a chat reassembled from MR/PR markers report the build that produced the review — not the one reading it.
 
-A released build reports its tag (`v0.0.14`) — the tag already pins the commit. Any other build appends the short commit (`dev+995c910`, or `dev+995c910-dirty` when the tree had uncommitted changes), taken from `-ldflags "-X main.commit=..."` when set and otherwise from the revision Go embeds for builds inside a git checkout. Container images pass the tag and SHA as `VERSION`/`COMMIT` build args, because the build context excludes `.git`.
+A released build reports its tag (`v0.0.14`) — the tag already pins the commit. Any other build appends the short commit (`dev+995c910`, or `dev+995c910-dirty` when the tree had uncommitted changes), taken from `-ldflags "-X main.commit=..."` when set and otherwise from the revision Go embeds. `make build` stamps it explicitly, because the embedded fallback is missing exactly where it is most wanted: Go's VCS detection expects `.git` to be a directory, so a build from a linked git worktree would report a bare `dev`. Container images pass the tag and SHA as `VERSION`/`COMMIT` build args, because the build context excludes `.git`. Override either with `make build VERSION=v0.1.0 COMMIT=abc1234`.
 
 ### Patch Summary
 

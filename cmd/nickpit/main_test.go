@@ -1708,6 +1708,23 @@ func TestResolveBuildRevision(t *testing.T) {
 		t.Fatalf("an already-short ldflags commit must pass through: %q", got)
 	}
 
+	// The Makefile appends "-dirty" to the stamped commit, so truncation must
+	// step around the suffix instead of eating it — reporting a modified tree as
+	// clean is worse than not reporting it at all.
+	commit = "995c9107a8bd4cf0deadbeef-dirty"
+	if got := resolveBuildRevision(); got != "995c910-dirty" {
+		t.Fatalf("dirty ldflags commit = %q, want the short form with the suffix", got)
+	}
+	commit = "995c910-dirty"
+	if got := resolveBuildRevision(); got != "995c910-dirty" {
+		t.Fatalf("an already-short dirty commit must pass through: %q", got)
+	}
+	// A bare suffix names no revision at all.
+	commit = "-dirty"
+	if got := resolveBuildRevision(); got == "-dirty" {
+		t.Fatalf("a commitless -dirty must not render as a revision: %q", got)
+	}
+
 	// Unstamped: whatever the test binary's own build info says. `go test` embeds
 	// VCS info in a git checkout, so assert the shape rather than a fixed hash.
 	commit = ""

@@ -42,10 +42,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version and commit are overridden at release build time via -ldflags
-// "-X main.version=... -X main.commit=...". An unstamped commit is read from the
-// build info Go embeds for any build inside a git checkout, so a plain
-// `go build`/`go install` still names its revision.
+// version and commit are overridden at build time via -ldflags
+// "-X main.version=... -X main.commit=..." (the Makefile, goreleaser and the
+// Dockerfile all do). An unstamped commit falls back to the build info Go
+// embeds, so a plain `go install` from a normal clone still names its revision
+// — but only from a normal clone: Go's VCS detection wants ".git" to be a
+// directory, and a linked git worktree has it as a file, so a worktree build
+// gets nothing. That is why the Makefile stamps explicitly rather than relying
+// on the fallback.
 var (
 	version = "dev"
 	commit  = ""
@@ -108,10 +112,17 @@ func resolveBuildRevision() string {
 }
 
 // shortCommit truncates a full hash to the customary seven characters, leaving
-// anything already short (an ldflags-provided short hash) untouched.
+// anything already short (an ldflags-provided short hash) untouched. A "-dirty"
+// suffix is split off first and restored after: the Makefile appends it to the
+// stamped commit, and truncating "995c910-dirty" to seven characters would
+// silently report a modified tree as clean.
 func shortCommit(hash string) string {
+	hash, dirty := strings.CutSuffix(hash, "-dirty")
 	if len(hash) > 7 {
-		return hash[:7]
+		hash = hash[:7]
+	}
+	if hash != "" && dirty {
+		hash += "-dirty"
 	}
 	return hash
 }
