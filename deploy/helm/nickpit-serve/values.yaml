@@ -93,7 +93,8 @@ resources:
     memory: 2Gi
 
 # Ephemeral scratch volumes (root fs is read-only). work holds git clones +
-# per-review logs; tmp and home cover git's incidental writes.
+# per-review logs; tmp and home cover git's incidental writes (including the
+# session cache — see maxSessions).
 volumes:
   work:
     sizeLimit: 5Gi
@@ -101,6 +102,14 @@ volumes:
     sizeLimit: 1Gi
   home:
     sizeLimit: 256Mi
+
+# Cap on auto-saved chat sessions, passed to every review child as
+# --max-sessions. Sessions land in $HOME/.cache/nickpit/sessions on the `home`
+# volume and each one holds a full review context, so the CLI default (0 =
+# unlimited) would grow one file per reviewed MR until the emptyDir sizeLimit
+# trips and Kubernetes evicts the pod. Raise this together with
+# volumes.home.sizeLimit; 0 restores unlimited (only sane with durable storage).
+maxSessions: 50
 
 # MUST exceed serve.shutdownGrace (600s for "10m") so Kubernetes lets in-flight
 # reviews finish before SIGKILL. 660 = 10m grace + 60s buffer.

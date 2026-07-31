@@ -1554,6 +1554,86 @@ profiles:
 	}
 }
 
+func TestLoadConfigMaxSessions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_sessions: 50
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxSessions != 50 {
+		t.Fatalf("max sessions = %d", profile.MaxSessions)
+	}
+	if !profile.MaxSessionsConfigured {
+		t.Fatal("expected max_sessions to be marked as configured")
+	}
+
+	// Explicit zero from the CLI must win over the config file (keep everything).
+	_, profile, err = Load(path, Overrides{MaxSessions: intPtr(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxSessions != 0 {
+		t.Fatalf("explicit zero max sessions = %d", profile.MaxSessions)
+	}
+}
+
+func TestLoadConfigMaxSessionsDefaultsToUnlimited(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxSessions != 0 {
+		t.Fatalf("default max sessions = %d, want 0 (unlimited)", profile.MaxSessions)
+	}
+	if profile.MaxSessionsConfigured {
+		t.Fatal("unset max_sessions marked as configured")
+	}
+}
+
+func TestLoadConfigRejectsNegativeMaxSessions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_sessions: -1
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = Load(path, Overrides{})
+	if err == nil {
+		t.Fatal("expected negative max sessions error")
+	}
+	if got, want := err.Error(), "max_sessions must be non-negative"; !strings.Contains(got, want) {
+		t.Fatalf("error = %q, want containing %q", got, want)
+	}
+}
+
 func TestLoadConfigExplicitZeroToolCallOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

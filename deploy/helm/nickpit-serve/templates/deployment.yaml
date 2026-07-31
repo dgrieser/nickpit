@@ -62,6 +62,13 @@ spec:
             - --output
             - json
             {{- end }}
+            {{- if gt (int .Values.maxSessions) 0 }}
+            # Root persistent flag: the daemon forwards it to every review
+            # child, so their auto-saved sessions prune instead of filling the
+            # `home` emptyDir.
+            - --max-sessions
+            - {{ .Values.maxSessions | quote }}
+            {{- end }}
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

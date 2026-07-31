@@ -169,17 +169,16 @@ func (a *app) runChat(ctx context.Context, opts chatOptions, args []string) erro
 	var store *session.Store
 	if chatNeedsStore(opts, a.noSession) {
 		var err error
-		store, err = session.NewStore(a.sessionDir)
+		store, err = session.NewStore(a.sessionDir, session.WithMaxStored(profile.MaxSessions))
 		if err != nil {
 			return err
 		}
 	}
-	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
-	logger.SetShowReasoning(a.showReasoning)
-	logger.SetShowProgress(a.showProgress)
+	logger := a.newLogger()
 	// a.logf routes through a.logger; without this assignment every save-failure
 	// warning in this command would be silently dropped.
 	a.logger = logger
+	logger.LogVersion(ctx)
 
 	sess, created, err := a.resolveChatSession(ctx, store, profile, opts)
 	if err != nil {
@@ -964,11 +963,10 @@ func (a *app) runChatGitLabReply(ctx context.Context, profile config.Profile, op
 	client := glscm.NewClient(apiBaseURL, profile.GitLabToken)
 	adapter := glscm.NewAdapter(client, profile.AssetBaseURL)
 
-	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
-	logger.SetShowReasoning(a.showReasoning)
-	logger.SetShowProgress(a.showProgress)
+	logger := a.newLogger()
 	// a.logf routes through a.logger; wire it so warnings are not dropped.
 	a.logger = logger
+	logger.LogVersion(ctx)
 
 	// Carrier markers are only encoded, not authenticated, so provenance is
 	// verified against the token's own user: the bot that posted the review. A
@@ -1309,10 +1307,10 @@ func (a *app) persistChatSession(ctx context.Context, profile config.Profile, re
 	if a.noSession || result == nil {
 		return ""
 	}
-	if len(result.Findings) == 0 && strings.TrimSpace(result.OverallExplanation) == "" {
-		return ""
-	}
-	store, err := session.NewStore(a.sessionDir)
+	// A finding-free review is saved too: "why did you find nothing here?" is a
+	// legitimate follow-up, and the cached context makes it answerable without
+	// re-fetching the diff.
+	store, err := session.NewStore(a.sessionDir, session.WithMaxStored(profile.MaxSessions))
 	if err != nil {
 		a.warnf("chat: session store unavailable (review will not be resumable with `nickpit chat`): %v", err)
 		return ""

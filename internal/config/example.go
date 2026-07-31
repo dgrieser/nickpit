@@ -75,6 +75,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("max_rate_limit_delay_seconds", yamlInt(profile.MaxRateLimitDelaySeconds)),
 		yamlEntry("nudge_count", yamlInt(profile.NudgeCount)),
 		yamlEntry("max_findings", yamlInt(profile.MaxFindings)),
+		yamlEntry("max_sessions", yamlInt(profile.MaxSessions)),
 		yamlEntry("disable_patch_summary", yamlBool(profile.DisablePatchSummary)),
 		yamlEntry("disable_suggestions", yamlBool(profile.DisableSuggestions)),
 		yamlEntry("disable_workflow_time_budget", yamlBool(profile.DisableWorkflowTimeBudget)),

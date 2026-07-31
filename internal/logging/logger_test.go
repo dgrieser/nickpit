@@ -35,6 +35,55 @@ func TestPrintErrorANSI(t *testing.T) {
 // PrintWarning must reach the terminal even on a NON-verbose logger — it exists
 // so save failures and similar non-fatal damage are visible in default runs —
 // and strips control characters like PrintError.
+// The build version reaches whichever line-based channel is active, exactly
+// once: a progress line under --show-progress or --show-reasoning, a verbose
+// line under --verbose alone, and nothing at all in a default run.
+func TestLogVersionUsesTheActiveChannelOnce(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	emit := func(setup func(*Logger)) string {
+		var buf bytes.Buffer
+		logger := New(&buf, false, false)
+		logger.SetVersion(" v1.2.3 ")
+		setup(logger)
+		logger.LogVersion(context.Background())
+		return buf.String()
+	}
+
+	progress := emit(func(l *Logger) { l.SetShowProgress(true) })
+	if !strings.HasPrefix(progress, "NickPit") || !strings.Contains(progress, "v1.2.3") {
+		t.Fatalf("progress-mode version line = %q", progress)
+	}
+	if strings.Count(progress, "v1.2.3") != 1 {
+		t.Fatalf("version announced more than once: %q", progress)
+	}
+
+	verbose := emit(func(l *Logger) { l.enabled = true })
+	if !strings.Contains(verbose, "nickpit: version v1.2.3") {
+		t.Fatalf("verbose-mode version line = %q", verbose)
+	}
+
+	// Both flags on: the progress line only, not a duplicate verbose line.
+	both := emit(func(l *Logger) {
+		l.enabled = true
+		l.SetShowProgress(true)
+	})
+	if strings.Count(both, "v1.2.3") != 1 || strings.Contains(both, "nickpit: version") {
+		t.Fatalf("progress + verbose should announce once as progress: %q", both)
+	}
+
+	if quiet := emit(func(*Logger) {}); quiet != "" {
+		t.Fatalf("a default run should stay silent: %q", quiet)
+	}
+
+	var buf bytes.Buffer
+	unset := New(&buf, true, false)
+	unset.SetShowProgress(true)
+	unset.LogVersion(context.Background())
+	if buf.String() != "" {
+		t.Fatalf("no version set should emit nothing: %q", buf.String())
+	}
+}
+
 func TestPrintWarningPlainNotVerboseGated(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	var buf bytes.Buffer

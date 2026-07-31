@@ -297,6 +297,43 @@ func TestStripMarkers(t *testing.T) {
 	}
 }
 
+// The build that produced a review rides in the gzipped review envelope, both in
+// the visible summary's carrier and in the externalized carrier notes, so a chat
+// reassembled from MR/PR markers reports the version that wrote them. It stays
+// invisible in the rendered body.
+func TestReviewEnvelopeCarriesNickpitVersion(t *testing.T) {
+	result := &model.ReviewResult{
+		ReviewID:           "rev-ver",
+		OverallCorrectness: "patch is correct",
+		OverallExplanation: "version carrier test",
+		NickpitVersion:     "v1.2.3",
+	}
+	renderer := NewRenderer("https://host/")
+
+	summary, carried := renderer.SummaryBodyCarried(result)
+	if !carried {
+		t.Fatal("envelope should ride in the visible summary")
+	}
+	if strings.Contains(StripMarkers(summary), "v1.2.3") {
+		t.Fatalf("version must stay in the hidden marker, not the visible body: %q", summary)
+	}
+	if got := ReviewResultsByID([]string{summary})["rev-ver"]; got == nil || got.NickpitVersion != "v1.2.3" {
+		t.Fatalf("summary carrier lost the version: %+v", got)
+	}
+
+	notes := renderer.CarrierNotes(result, nil)
+	if got := ReviewResultsByID(notes)["rev-ver"]; got == nil || got.NickpitVersion != "v1.2.3" {
+		t.Fatalf("carrier notes lost the version: %+v", got)
+	}
+
+	// An envelope written before the field existed reassembles with an empty
+	// version rather than failing.
+	result.NickpitVersion = ""
+	if got := ReviewResultsByID([]string{renderer.SummaryBody(result)})["rev-ver"]; got == nil || got.NickpitVersion != "" {
+		t.Fatalf("versionless envelope = %+v", got)
+	}
+}
+
 func TestCarrierNotesReassemble(t *testing.T) {
 	result := &model.ReviewResult{
 		ReviewID:               "rev-c",

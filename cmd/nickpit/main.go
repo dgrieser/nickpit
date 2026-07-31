@@ -14,9 +14,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,8 +42,100 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version is overridden at release build time via -ldflags "-X main.version=...".
-var version = "dev"
+// version and commit are overridden at build time via -ldflags
+// "-X main.version=... -X main.commit=..." (the Makefile, goreleaser and the
+// Dockerfile all do). An unstamped commit falls back to the build info Go
+// embeds, so a plain `go install` from a normal clone still names its revision
+// — but only from a normal clone: Go's VCS detection wants ".git" to be a
+// directory, and a linked git worktree has it as a file, so a worktree build
+// gets nothing. That is why the Makefile stamps explicitly rather than relying
+// on the fallback.
+var (
+	version = "dev"
+	commit  = ""
+)
+
+// displayVersion renders the build version for every output surface: goreleaser
+// passes the tag without its leading "v" (0.0.14), so add it back for anything
+// that looks like a version number. Untagged builds ("dev") get the short commit
+// appended — "dev+995c910", or "dev+995c910-dirty" when the tree had uncommitted
+// changes — because "dev" alone identifies nothing in a bug report. A release tag
+// already pins its commit, so it stays clean.
+func displayVersion() string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "dev"
+	}
+	switch {
+	case isDigit(v[0]):
+		return "v" + v
+	case (v[0] == 'v' || v[0] == 'V') && len(v) > 1 && isDigit(v[1]):
+		// Already tagged ("v0.0.14"); a tag pins its own commit.
+		return v
+	}
+	if rev := buildRevision(); rev != "" {
+		return v + "+" + rev
+	}
+	return v
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// buildRevision is the short commit plus a "-dirty" suffix for a modified tree,
+// or "" when neither ldflags nor the embedded build info knows one. Resolved once:
+// every progress line, footer and marker asks for it.
+var buildRevision = sync.OnceValue(resolveBuildRevision)
+
+func resolveBuildRevision() string {
+	if c := shortCommit(strings.TrimSpace(commit)); c != "" {
+		return c
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	var revision string
+	var dirty bool
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			dirty = setting.Value == "true"
+		}
+	}
+	revision = shortCommit(revision)
+	if revision != "" && dirty {
+		revision += "-dirty"
+	}
+	return revision
+}
+
+// shortCommit truncates a full hash to the customary seven characters, leaving
+// anything already short (an ldflags-provided short hash) untouched. A "-dirty"
+// suffix is split off first and restored after: the Makefile appends it to the
+// stamped commit, and truncating "995c910-dirty" to seven characters would
+// silently report a modified tree as clean.
+func shortCommit(hash string) string {
+	hash, dirty := strings.CutSuffix(hash, "-dirty")
+	if len(hash) > 7 {
+		hash = hash[:7]
+	}
+	if hash != "" && dirty {
+		hash += "-dirty"
+	}
+	return hash
+}
+
+// newLogger builds the stderr logger every command logs through, with the flags
+// and build version already applied so no caller can forget one.
+func (a *app) newLogger() *logging.Logger {
+	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
+	logger.SetShowReasoning(a.showReasoning)
+	logger.SetShowProgress(a.showProgress)
+	logger.SetVersion(displayVersion())
+	return logger
+}
 
 type app struct {
 	model                   string
@@ -112,6 +206,8 @@ type app struct {
 	maxFindingsSet                bool
 	priorityThreshold             string
 	sessionDir                    string
+	maxSessions                   int
+	maxSessionsSet                bool
 	noSession                     bool
 	configPath                    string
 	githubToken                   string
@@ -188,7 +284,7 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "nickpit",
 		Short:         "AI-powered code review for local git, GitHub PRs, and GitLab MRs",
-		Version:       version,
+		Version:       displayVersion(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
@@ -288,6 +384,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.stepName, "step", "", "Run a single pipeline step (e.g. merge, finalize, verdict, summarize, review:security); mutually exclusive with --spec")
 	root.PersistentFlags().StringArrayVar(&cli.findingsFiles, "findings", nil, "Findings JSON file(s) to inject; repeatable. For --step merge each file is one group")
 	root.PersistentFlags().StringVar(&cli.sessionDir, "session-dir", "", "Directory for discussion (chat) session files (default: $NICKPIT_CACHE_DIR/sessions or <user cache>/nickpit/sessions)")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxSessions, &cli.maxSessionsSet), "max-sessions", "Maximum session files kept in the session directory; the oldest are deleted when a save exceeds it (0 = unlimited)")
 	root.PersistentFlags().BoolVar(&cli.noSession, "no-session", false, "Do not auto-save a resumable chat session after a review")
 	registerRootCompletions(root, cli)
 
@@ -356,6 +453,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	var maxFindings *int
 	if a.maxFindingsSet {
 		maxFindings = &a.maxFindings
+	}
+	var maxSessions *int
+	if a.maxSessionsSet {
+		maxSessions = &a.maxSessions
 	}
 	var temperature *float64
 	if a.temperatureSet {
@@ -475,6 +576,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		RateLimitDelaySeconds:     rateLimitDelaySeconds,
 		NudgeCount:                nudgeCount,
 		MaxFindings:               maxFindings,
+		MaxSessions:               maxSessions,
 		DisablePatchSummary:       a.disablePatchSummary,
 		DisableSuggestions:        a.disableSuggestions,
 		DisableWorkflowTimeBudget: a.disableWorkflowTimeBudget,
@@ -861,6 +963,9 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 				logHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
 			}
 			log := slog.New(logHandler)
+			// A daemon outlives the terminal that started it: record which build is
+			// serving so its log alone answers "what version is running?".
+			log.Info("nickpit serve starting", "version", displayVersion())
 
 			groups, warnings := serve.NewGroupSet(cmd.Context(), cfg.Groups, baseURL, func(ctx context.Context, client *glscm.Client) (int, error) {
 				user, err := client.CurrentUser(ctx)
@@ -911,14 +1016,18 @@ func (a *app) newGitLabServeCmd() *cobra.Command {
 			}
 			// Session flags given to the daemon apply to its children: reviews
 			// save (or skip) their resumable chat sessions where the operator
-			// asked, not silently in the default directory. Both flags are root
-			// persistent flags, so review and chat children parse them alike.
+			// asked, not silently in the default directory, and prune to the cap
+			// the operator set. All three are root persistent flags, so review and
+			// chat children parse them alike.
 			var sessionArgs []string
 			if a.noSession {
 				sessionArgs = append(sessionArgs, "--no-session")
 			}
 			if a.sessionDir != "" {
 				sessionArgs = append(sessionArgs, "--session-dir", a.sessionDir)
+			}
+			if a.maxSessionsSet {
+				sessionArgs = append(sessionArgs, "--max-sessions", strconv.Itoa(a.maxSessions))
 			}
 			childArgs := append(append([]string(nil), cfg.Review.ExtraArgs...), sessionArgs...)
 			dispatcher := serve.NewDispatcher(runner, serve.GitLabTopicLookup, serve.WorkerConfig{
@@ -1128,10 +1237,9 @@ func (a *app) newCheckCmd() *cobra.Command {
 				}
 				return fmt.Errorf("missing LLM API key for profile %q; %s", profileName, missingAPIKeyHint(profileName, false))
 			}
-			logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
-			logger.SetShowReasoning(a.showReasoning)
-			logger.SetShowProgress(a.showProgress)
+			logger := a.newLogger()
 			a.logger = logger
+			logger.LogVersion(cmd.Context())
 			checkReq := model.ReviewRequest{
 				MaxContextTokens:          profile.MaxContextTokens,
 				MaxToolCalls:              profile.MaxToolCalls,
@@ -1229,10 +1337,11 @@ func (a *app) newCheckCmd() *cobra.Command {
 
 func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrievalEngine retrieval.Engine, profileName string, profile config.Profile, req model.ReviewRequest) error {
 	a.reviewStart = time.Now()
-	logger := logging.New(os.Stderr, a.verbose, isTerminal(os.Stderr))
-	logger.SetShowReasoning(a.showReasoning)
-	logger.SetShowProgress(a.showProgress)
+	logger := a.newLogger()
 	a.logger = logger
+	// Banner first, before the profile identity bracket is attached: the build
+	// version belongs to the run, not to a model or agent.
+	logger.LogVersion(ctx)
 	ctx = logging.WithProgressInfo(ctx, profileProgressInfo(profile))
 
 	// Resolve the workflow spec. Every review runs through a workflow: an
@@ -1264,6 +1373,7 @@ func (a *app) runReview(ctx context.Context, source model.ReviewSource, retrieva
 			WorkflowSource: wf.WorkflowSource,
 			WorkflowSteps:  wf.WorkflowSteps,
 			Models:         liveModels,
+			Version:        logger.Version(),
 		})
 		defer logger.CloseLive()
 	}
@@ -1420,6 +1530,10 @@ func (a *app) emitResult(ctx context.Context, source model.ReviewSource, profile
 	if req.DisableSuggestions {
 		result.StripSuggestions()
 	}
+	// Stamp the build here, at the single funnel every consumer sits behind:
+	// stdout (terminal/markdown/JSON), the published MR/PR carriers, and the
+	// saved chat session all read it off the result.
+	result.NickpitVersion = displayVersion()
 	if a.logger != nil && a.logger.LiveEnabled() {
 		a.logger.FinishLive(true, len(result.Findings), time.Since(a.reviewStart))
 	}

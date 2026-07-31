@@ -102,6 +102,8 @@ func ProgressInfoFromContext(ctx context.Context) (ProgressInfo, bool) {
 type Stage string
 
 const (
+	// StageNickPit is the run banner: the nickpit build that produced the output.
+	StageNickPit    Stage = "NickPit"
 	StageModel      Stage = "Model"
 	StageAgent      Stage = "Agent"
 	StageReview     Stage = "Review"
@@ -121,7 +123,7 @@ const (
 
 // allStages exists for the column-width guard test.
 var allStages = []Stage{
-	StageModel, StageAgent, StageReview, StageModelCheck, StageRequest,
+	StageNickPit, StageModel, StageAgent, StageReview, StageModelCheck, StageRequest,
 	StageResponse, StageReasoning, StageTool, StageResult, StagePublish,
 	StageVerify, StageFinalize, StageVerdict, StageSummarize,
 }
@@ -186,6 +188,7 @@ const (
 )
 
 var progressStageStyles = map[Stage]string{
+	StageNickPit:    "1;38;5;213",
 	StageModel:      "1;38;5;81",
 	StageAgent:      "1;38;5;111",
 	StageModelCheck: "1;38;5;114",

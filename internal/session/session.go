@@ -24,11 +24,14 @@ import (
 // incompatibly so old files can be detected.
 const Version = 1
 
-// maxStoredSessions bounds how many session files a store keeps. Every review
-// auto-saves a session (including reviews run by the serve daemon's children),
-// so without a cap the directory grows one file — containing a full review
-// context — per review, forever. Save prunes the oldest files past this limit.
-const maxStoredSessions = 50
+// DefaultMaxStoredSessions is how many session files a store keeps when no cap
+// is configured: 0, meaning unlimited. Every review auto-saves a session
+// (including reviews run by the serve daemon's children), so the directory
+// grows one file — containing a full review context — per review; a pruned
+// session is a conversation that can no longer be resumed, so trimming is
+// opt-in via --max-sessions / max_sessions (WithMaxStored) rather than a
+// silent default.
+const DefaultMaxStoredSessions = 0
 
 // Source describes where a session's review came from, with enough detail to
 // recreate the diff at resume time (from a local ref range or a remote MR/PR).
@@ -160,7 +163,23 @@ func UserMessage(content string) Message {
 
 // Store reads and writes sessions under a directory.
 type Store struct {
-	dir string
+	dir       string
+	maxStored int
+}
+
+// StoreOption configures a Store.
+type StoreOption func(*Store)
+
+// WithMaxStored caps how many session files the store keeps: Save prunes the
+// oldest files beyond n. Zero (the default) and any negative value keep every
+// session.
+func WithMaxStored(n int) StoreOption {
+	return func(s *Store) {
+		if n < 0 {
+			n = 0
+		}
+		s.maxStored = n
+	}
 }
 
 // DefaultDir resolves the session directory: $NICKPIT_CACHE_DIR/sessions when
@@ -177,7 +196,7 @@ func DefaultDir() (string, error) {
 }
 
 // NewStore builds a store rooted at dir; an empty dir uses DefaultDir.
-func NewStore(dir string) (*Store, error) {
+func NewStore(dir string, opts ...StoreOption) (*Store, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		resolved, err := DefaultDir()
@@ -186,7 +205,11 @@ func NewStore(dir string) (*Store, error) {
 		}
 		dir = resolved
 	}
-	return &Store{dir: dir}, nil
+	store := &Store{dir: dir, maxStored: DefaultMaxStoredSessions}
+	for _, opt := range opts {
+		opt(store)
+	}
+	return store, nil
 }
 
 // Dir returns the store's directory.
@@ -323,19 +346,33 @@ func (s *Store) Save(sess *Session) error {
 	}
 	// The successful save is the new baseline for this process's next save.
 	sess.loadedUpdatedAt = sess.UpdatedAt
-	s.prune()
+	s.prune(sess.ID)
 	return nil
 }
 
-// prune deletes the oldest session files beyond maxStoredSessions, judged by
-// file modification time so no session needs to be decoded. Only files whose
-// name is a session id (a UUID, as New always mints) participate: --session-dir
-// may point at a directory holding unrelated JSON, which must never be deleted.
+// prune sweeps orphaned temp files and, when the store has a cap, deletes the
+// oldest session files beyond it, judged by file modification time so no
+// session needs to be decoded. Only files whose name is a session id (a UUID,
+// as New always mints) participate: --session-dir may point at a directory
+// holding unrelated JSON, which must never be deleted. The temp sweep runs
+// regardless of the cap — with trimming off (the default) orphaned temp files
+// would otherwise never be collected.
+//
+// keepID is the session the triggering Save just wrote: it still counts towards
+// the cap but is never itself deleted. Its mtime can tie with the files it is
+// ranked against (filesystems with coarse timestamp granularity, or a burst of
+// saves), and losing that tie would discard the transcript the caller is about
+// to hand back as a resumable id. Pass "" when no session is protected.
+//
 // Best-effort: a prune failure never fails the save that triggered it.
-func (s *Store) prune() {
+func (s *Store) prune(keepID string) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return
+	}
+	keepName := ""
+	if keepID = strings.TrimSpace(keepID); keepID != "" {
+		keepName = keepID + ".json"
 	}
 	type fileAge struct {
 		name string
@@ -355,6 +392,10 @@ func (s *Store) prune() {
 			}
 			continue
 		}
+		if s.maxStored <= 0 {
+			// Unlimited: no session file is a prune candidate, so skip stat'ing them.
+			continue
+		}
 		if !isSessionFileName(entry.Name()) {
 			continue
 		}
@@ -364,20 +405,38 @@ func (s *Store) prune() {
 		}
 		files = append(files, fileAge{name: entry.Name(), mod: info.ModTime()})
 	}
-	if len(files) <= maxStoredSessions {
+	if s.maxStored <= 0 || len(files) <= s.maxStored {
 		return
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
-	for _, file := range files[:len(files)-maxStoredSessions] {
+	// Oldest first, breaking mtime ties on the name so equal-timestamped files
+	// (coarse filesystem granularity, or several saves inside one tick) are
+	// ordered reproducibly instead of by sort.Slice's arbitrary choice.
+	sort.Slice(files, func(i, j int) bool {
+		if !files[i].mod.Equal(files[j].mod) {
+			return files[i].mod.Before(files[j].mod)
+		}
+		return files[i].name < files[j].name
+	})
+	excess := len(files) - s.maxStored
+	for _, file := range files {
+		if excess == 0 {
+			break
+		}
+		if file.name == keepName {
+			continue
+		}
 		// Re-stat before removing: a concurrent process may have just renamed a
 		// fresh save into place under this name, and deleting it would discard
 		// that session's newest turns. Unchanged mtime means the listing is
-		// still accurate for this victim.
+		// still accurate for this victim; a changed one is now among the newest,
+		// so move on and take the next-oldest instead.
 		path := filepath.Join(s.dir, file.name)
 		if info, err := os.Stat(path); err != nil || !info.ModTime().Equal(file.mod) {
 			continue
 		}
-		_ = os.Remove(path)
+		if err := os.Remove(path); err == nil {
+			excess--
+		}
 	}
 }
 

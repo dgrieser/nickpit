@@ -372,7 +372,7 @@ Known limitation: the hidden fingerprint markers are read from all existing PR/M
 
 After a review you can talk to an agent about it. The discussion agent gets the same context a reviewer/verifier has — the diff, the toolchain, the applicable styleguides, and the same retrieval tools — plus the **complete findings JSON and the overall verdict**. It is free-form: no workflow, no output schema, no priority gates. Ask why a finding is a bug, push back on a nitpick, or propose a fix and have it evaluated.
 
-Every review automatically saves a resumable session — including the exact prepared context the reviewers saw — so chatting needs no re-fetch (disable with `--no-session`). Session files live under `$NICKPIT_CACHE_DIR/sessions` (or `<user cache>/nickpit/sessions`); override with `--session-dir`. The store keeps the 50 most recent sessions. Resuming a GitLab session checks the MR's live head and recreates the diff when new commits landed. For remote sessions the retrieval tools read from a temporary checkout of the live head, cloned automatically for the duration of the chat (the same mechanism reviews use) and removed when it ends; pass `--repo-root <checkout>` to use a local checkout instead (full history, local edits). Code-reading tools stay off only when tools are disabled (`max_tool_calls: -1`) or the checkout cannot be prepared.
+Every review automatically saves a resumable session — including the exact prepared context the reviewers saw — so chatting needs no re-fetch (disable with `--no-session`). A review that found nothing is saved too, so "why did you find nothing here?" stays answerable. Session files live under `$NICKPIT_CACHE_DIR/sessions` (or `<user cache>/nickpit/sessions`); override with `--session-dir`. The store keeps every session by default; cap it with `--max-sessions` or `max_sessions` in config (`0` = unlimited) and each save deletes the oldest files beyond the cap. Resuming a GitLab session checks the MR's live head and recreates the diff when new commits landed. For remote sessions the retrieval tools read from a temporary checkout of the live head, cloned automatically for the duration of the chat (the same mechanism reviews use) and removed when it ends; pass `--repo-root <checkout>` to use a local checkout instead (full history, local edits). Code-reading tools stay off only when tools are disabled (`max_tool_calls: -1`) or the checkout cannot be prepared.
 
 ```bash
 # Chat about the most recent review (interactive REPL)
@@ -497,6 +497,12 @@ Per-review child logs land in `log_dir` (default `logs/`) as `review-<project>-<
 ### Progress
 
 Append `--show-progress` to print review details and tool calls on stderr.
+
+Every run names the build it came from: a `NickPit <version>` line under `--show-progress`/`--show-reasoning`, a `nickpit: version <version>` line under `--verbose`, the version beside the wordmark in the live dashboard header (and in its frozen final line), and a `nickpit serve starting` log entry for the daemon.
+
+The review itself carries the version too, stamped once when the review completes: a `NickPit: <version>` footer line above runtime and tokens in rendered and raw Markdown output, `nickpit_version` in JSON, and a field in the hidden gzipped review envelope published to GitLab/GitHub. It travels with the saved session, so `nickpit session` and a chat reassembled from MR/PR markers report the build that produced the review — not the one reading it.
+
+A released build reports its tag (`v0.0.14`) — the tag already pins the commit. Any other build appends the short commit (`dev+995c910`, or `dev+995c910-dirty` when the tree had uncommitted changes), taken from `-ldflags "-X main.commit=..."` when set and otherwise from the revision Go embeds. `make build` stamps it explicitly, because the embedded fallback is missing exactly where it is most wanted: Go's VCS detection expects `.git` to be a directory, so a build from a linked git worktree would report a bare `dev`. Container images pass the tag and SHA as `VERSION`/`COMMIT` build args, because the build context excludes `.git`. Override either with `make build VERSION=v0.1.0 COMMIT=abc1234`.
 
 ### Patch Summary
 

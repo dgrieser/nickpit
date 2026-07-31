@@ -7,6 +7,18 @@ BINDIR ?= $(PREFIX)/bin
 # still works but embeds all ~200 grammars (~24 MB larger binary).
 GRAMMAR_TAGS = grammar_subset,grammar_subset_python,grammar_subset_rust
 
+# Build identity, reported by `nickpit --version` and stamped into every review.
+# Go can embed the revision itself, but only from a normal clone: its VCS
+# detection expects ".git" to be a directory, and a linked git worktree has it
+# as a file — a worktree build would report a bare "dev". So stamp it here.
+# Both are overridable (`make build VERSION=v0.1.0`); a source tree with no git
+# yields an empty COMMIT and the binary just says "dev". "-dirty" matches what
+# Go's own vcs.modified reports: any uncommitted change, untracked files
+# included.
+VERSION ?= dev
+COMMIT ?= $(shell git rev-parse --short=7 HEAD 2>/dev/null)$(shell git status --porcelain 2>/dev/null | grep -q . && echo -dirty)
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT)
+
 .DEFAULT_GOAL := build
 
 .PHONY: help generate build debug install test race lint modernize vet fmt
@@ -22,11 +34,11 @@ generate: ## Generate checked-in files
 
 build: generate ## Build the nickpit binary into ./bin
 	mkdir -p ./bin
-	go build -tags "$(GRAMMAR_TAGS)" -o ./bin/$(APP) ./cmd/$(APP)
+	go build -tags "$(GRAMMAR_TAGS)" -ldflags "$(LDFLAGS)" -o ./bin/$(APP) ./cmd/$(APP)
 
 debug: generate ## Build debug version of nickpit binary into ./bin
 	mkdir -p ./bin
-	go build -tags "$(GRAMMAR_TAGS)" -o ./bin/$(APP) -gcflags "-N -l" ./cmd/$(APP)
+	go build -tags "$(GRAMMAR_TAGS)" -ldflags "$(LDFLAGS)" -o ./bin/$(APP) -gcflags "-N -l" ./cmd/$(APP)
 
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*## "}; /^[a-zA-Z0-9_.-]+:.*## / {printf "%-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
