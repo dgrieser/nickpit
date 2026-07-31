@@ -19,6 +19,8 @@ func writeProfileFixtures(t *testing.T) (cfgPath, specPath string) {
     base_url: http://alt
     api_key: ka
     model: m-alt
+  incomplete:
+    api_key: ki
 `
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -45,6 +47,24 @@ func TestLoadProfileForSpecHonorsSpecProfile(t *testing.T) {
 	}
 	if profile.Model != "m-alt" || profile.BaseURL != "http://alt" {
 		t.Fatalf("profile = %q/%q, want m-alt/http://alt", profile.Model, profile.BaseURL)
+	}
+}
+
+func TestLoadProfileForSpecBypassesAmbientProfile(t *testing.T) {
+	for _, ambientProfile := range []string{"missing", "incomplete"} {
+		t.Run(ambientProfile, func(t *testing.T) {
+			cfg, spec := writeProfileFixtures(t)
+			t.Setenv("NICKPIT_PROFILE", ambientProfile)
+			a := &app{configPath: cfg, profile: "default", specPath: spec}
+
+			name, profile, err := a.loadProfileForSpec()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name != "alt" || profile.Model != "m-alt" {
+				t.Fatalf("profile = %q/%q, want alt/m-alt", name, profile.Model)
+			}
+		})
 	}
 }
 

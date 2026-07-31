@@ -289,6 +289,9 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			rootFlags := cmd.Root().PersistentFlags()
+			if err := cli.applyEnvDefaults(rootFlags.Changed); err != nil {
+				return err
+			}
 			if err := cli.resolveOutputFormat(rootFlags.Changed("output")); err != nil {
 				return err
 			}
@@ -397,6 +400,50 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(cli.newSessionCmd())
 	root.AddCommand(newCompletionCmd(root))
 	return root
+}
+
+// applyEnvDefaults fills the run-level flags that live outside the config
+// profile (config.applyEnv covers the profile fields) from NICKPIT_* variables.
+// changed reports whether a root persistent flag was passed explicitly; an
+// explicit flag always wins over the environment. Values are validated by the
+// same checks the flags go through, so a bad env value fails the same way.
+func (a *app) applyEnvDefaults(changed func(string) bool) error {
+	for _, spec := range []struct {
+		flag  string
+		env   string
+		field *string
+	}{
+		{"config", "NICKPIT_CONFIG", &a.configPath},
+		{"session-dir", "NICKPIT_SESSION_DIR", &a.sessionDir},
+		{"output", "NICKPIT_OUTPUT", &a.outputFormat},
+		{"priority-threshold", "NICKPIT_PRIORITY_THRESHOLD", &a.priorityThreshold},
+		{"verify-drop-policy", "NICKPIT_VERIFY_DROP_POLICY", &a.verifyDropPolicy},
+	} {
+		if changed(spec.flag) {
+			continue
+		}
+		if value := strings.TrimSpace(os.Getenv(spec.env)); value != "" {
+			*spec.field = value
+		}
+	}
+	// NICKPIT_SPEC also yields to an explicit --step: the two are mutually
+	// exclusive, so an ambient spec must not turn a single-step run into an
+	// error.
+	if !changed("spec") && !changed("step") {
+		if value := strings.TrimSpace(os.Getenv("NICKPIT_SPEC")); value != "" {
+			a.specPath = value
+		}
+	}
+	if !changed("confidence-threshold") {
+		if value := strings.TrimSpace(os.Getenv("NICKPIT_CONFIDENCE_THRESHOLD")); value != "" {
+			parsed, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				return fmt.Errorf("NICKPIT_CONFIDENCE_THRESHOLD must be a number: %w", err)
+			}
+			a.confidenceThreshold = parsed
+		}
+	}
+	return nil
 }
 
 func (a *app) resolveOutputFormat(outputSet bool) error {
@@ -1765,20 +1812,18 @@ func (a *app) loadProfileNamed(name string) (string, config.Profile, error) {
 // a workflow spec's `profile:` field. It must be used instead of loadProfile by
 // commands that build a review source and request, so a spec-selected profile
 // drives the SCM adapter (token/base URL), the request budgets, and the workdir
-// — not just the LLM client. CLI flags still override the spec profile.
+// — not just the LLM client. In choosing *which* profile is loaded the spec wins
+// over both --profile and NICKPIT_PROFILE; the value-level flags (--model,
+// --base-url, sampling knobs, budgets) still override that profile's fields.
 func (a *app) loadProfileForSpec() (string, config.Profile, error) {
-	name, profile, err := a.loadProfile()
-	if err != nil {
-		return "", config.Profile{}, err
-	}
 	specProfile, err := a.specProfile()
 	if err != nil {
 		return "", config.Profile{}, err
 	}
-	if specProfile != "" && specProfile != name {
+	if specProfile != "" {
 		return a.loadProfileNamed(specProfile)
 	}
-	return name, profile, nil
+	return a.loadProfile()
 }
 
 // specProfile returns the `profile:` declared by a --spec file, or "" when no
