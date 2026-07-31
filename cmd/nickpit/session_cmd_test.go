@@ -96,37 +96,72 @@ func TestSessionArgumentAndErrors(t *testing.T) {
 }
 
 func TestSessionClipboardCopiesUnstyledReview(t *testing.T) {
+	// markdown and raw both have to reach the clipboard as Markdown source: the
+	// styled variant only ever renders to a terminal, never to the clipboard.
+	for _, format := range []string{"markdown", "raw"} {
+		t.Run(format, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := session.NewStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess := saveSessionReview(t, store, "copied")
+
+			var copied []byte
+			var out bytes.Buffer
+			a := &app{sessionDir: dir, outputFormat: format}
+			a.clipboardCopy = func(_ context.Context, data []byte) (string, error) {
+				copied = data
+				return "test-helper", nil
+			}
+			if err := a.runSessionTo(context.Background(), sessionOptions{clipboard: true}, nil, &out); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(copied), "### copied") {
+				t.Fatalf("clipboard payload missing Markdown review:\n%s", copied)
+			}
+			if strings.ContainsRune(string(copied), '\x1b') {
+				t.Fatalf("clipboard payload contains ANSI escapes:\n%q", copied)
+			}
+			// The confirmation replaces the review: printing both would defeat the copy.
+			if strings.Contains(out.String(), "### copied") {
+				t.Fatalf("review printed alongside the copy:\n%s", out.String())
+			}
+			for _, want := range []string{"Copied review of session " + sess.ID, "via test-helper"} {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("confirmation %q missing %q", out.String(), want)
+				}
+			}
+		})
+	}
+}
+
+// failingWriter stands in for a closed pipe or a full disk.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func TestSessionClipboardSurvivesUnwritableConfirmation(t *testing.T) {
 	dir := t.TempDir()
 	store, err := session.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess := saveSessionReview(t, store, "copied")
+	saveSessionReview(t, store, "copied")
 
-	var copied []byte
-	var out bytes.Buffer
-	a := &app{sessionDir: dir, outputFormat: "markdown"}
-	a.clipboardCopy = func(_ context.Context, data []byte) (string, error) {
-		copied = data
+	copied := false
+	a := &app{sessionDir: dir, outputFormat: "raw"}
+	a.clipboardCopy = func(_ context.Context, _ []byte) (string, error) {
+		copied = true
 		return "test-helper", nil
 	}
-	if err := a.runSessionTo(context.Background(), sessionOptions{clipboard: true}, nil, &out); err != nil {
-		t.Fatal(err)
+	// The review is already on the clipboard, so a confirmation that cannot be
+	// written must not report the command as failed.
+	if err := a.runSessionTo(context.Background(), sessionOptions{clipboard: true}, nil, failingWriter{}); err != nil {
+		t.Fatalf("copy reported as failed after an unwritable confirmation: %v", err)
 	}
-	if !strings.Contains(string(copied), "### copied") {
-		t.Fatalf("clipboard payload missing Markdown review:\n%s", copied)
-	}
-	if strings.ContainsRune(string(copied), '\x1b') {
-		t.Fatalf("clipboard payload contains ANSI escapes:\n%q", copied)
-	}
-	// The confirmation replaces the review: printing both would defeat the copy.
-	if strings.Contains(out.String(), "### copied") {
-		t.Fatalf("review printed alongside the copy:\n%s", out.String())
-	}
-	for _, want := range []string{"Copied review of session " + sess.ID, "via test-helper"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("confirmation %q missing %q", out.String(), want)
-		}
+	if !copied {
+		t.Fatal("clipboard was never written")
 	}
 }
 

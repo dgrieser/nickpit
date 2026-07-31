@@ -56,7 +56,7 @@ func Copy(ctx context.Context, data []byte) (string, error) {
 		return "", fmt.Errorf("clipboard: no clipboard helper is known for %s", goos)
 	}
 	var (
-		missing []string
+		missing []helper
 		errs    []error
 	)
 	runCtx, cancel := context.WithTimeout(ctx, copyTimeout)
@@ -64,7 +64,7 @@ func Copy(ctx context.Context, data []byte) (string, error) {
 	for _, h := range helpers {
 		path, err := lookPath(h.name)
 		if err != nil {
-			missing = append(missing, h.name)
+			missing = append(missing, h)
 			continue
 		}
 		payload := data
@@ -84,10 +84,27 @@ func Copy(ctx context.Context, data []byte) (string, error) {
 		}
 	}
 	if len(errs) > 0 {
-		return "", fmt.Errorf("clipboard: no clipboard helper succeeded: %w", errors.Join(errs...))
+		failed := fmt.Errorf("clipboard: no clipboard helper succeeded: %w", errors.Join(errs...))
+		if len(missing) == 0 {
+			return "", failed
+		}
+		// The installed helpers failing does not make the absent ones irrelevant:
+		// on a Wayland session without wl-clipboard, xclip is present and cannot
+		// open a display, so "install wl-clipboard" is the actionable part.
+		return "", fmt.Errorf("%w; not installed: %s (%s)", failed,
+			strings.Join(names(missing), ", "), installHint(missing))
 	}
 	return "", fmt.Errorf("clipboard: no clipboard helper found in PATH (tried %s); %s",
-		strings.Join(missing, ", "), installHint(helpers))
+		strings.Join(names(missing), ", "), installHint(missing))
+}
+
+// names lists the executables of a helper chain.
+func names(helpers []helper) []string {
+	out := make([]string, 0, len(helpers))
+	for _, h := range helpers {
+		out = append(out, h.name)
+	}
+	return out
 }
 
 // helpersFor returns the helper chain for a GOOS. wayland reports whether
@@ -115,10 +132,12 @@ func helpersFor(goos string, wayland bool) []helper {
 			chain = append(append(chain, x11...), wl...)
 		}
 		// Termux (Android) and WSL, where the Windows helper is reachable from
-		// the Linux side. clip.exe needs the same UTF-16LE treatment as native.
+		// the Linux side. clip.exe needs the same UTF-16LE treatment as native and
+		// carries no install hint: it is a WSL bonus, never something a Unix user
+		// could install, so suggesting it would only add noise.
 		chain = append(chain,
 			helper{name: "termux-clipboard-set", install: "install the Termux:API package"},
-			helper{name: "clip.exe", encode: utf16LEWithBOM, install: "clip.exe is part of Windows"},
+			helper{name: "clip.exe", encode: utf16LEWithBOM},
 		)
 		return chain
 	default:
@@ -166,7 +185,13 @@ func runHelper(ctx context.Context, path string, args []string, data []byte) err
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.WaitDelay = waitDelay
 	cmd.Stdin = bytes.NewReader(data)
-	if errFile, err := os.CreateTemp("", "nickpit-clipboard-*.err"); err == nil {
+	// An uncreatable temp file (full or read-only TMPDIR) costs diagnostics, not
+	// the copy: os/exec points a nil Stderr at the null device, so the helper
+	// stays quiet instead of writing into the user's terminal. Keep the reason so
+	// a failing helper can say why its stderr is missing rather than looking
+	// silently mute.
+	errFile, captureErr := os.CreateTemp("", "nickpit-clipboard-*.err")
+	if captureErr == nil {
 		defer func() {
 			name := errFile.Name()
 			_ = errFile.Close()
@@ -177,6 +202,9 @@ func runHelper(ctx context.Context, path string, args []string, data []byte) err
 	if err := cmd.Run(); err != nil {
 		if msg := helperStderr(cmd.Stderr); msg != "" {
 			return fmt.Errorf("%w: %s", err, msg)
+		}
+		if captureErr != nil {
+			return fmt.Errorf("%w (stderr not captured: %v)", err, captureErr)
 		}
 		return err
 	}

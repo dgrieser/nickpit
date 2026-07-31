@@ -120,7 +120,12 @@ func (a *app) copyReviewToClipboard(ctx context.Context, sess *session.Session, 
 	if err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	_, err = fmt.Fprintf(w, "Copied review of session %s to the clipboard (%d bytes) via %s.\n",
-		textsan.StripControl(sess.ID), buf.Len(), helper)
-	return err
+	if _, err := fmt.Fprintf(w, "Copied review of session %s to the clipboard (%d bytes) via %s.\n",
+		textsan.StripControl(sess.ID), buf.Len(), helper); err != nil {
+		// The clipboard already holds the review; a confirmation that could not be
+		// written (closed pipe, full disk) is not a failed copy, so warn instead of
+		// reporting the command as failed.
+		a.warnf("session: could not print the clipboard confirmation: %v", err)
+	}
+	return nil
 }

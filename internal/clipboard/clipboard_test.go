@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +96,33 @@ func TestCopyErrors(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no clipboard helper succeeded") || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("failing-helper error = %v", err)
 	}
+	if strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("nothing was missing, yet the error claims otherwise: %v", err)
+	}
+
+	// Mixed: the installed helper fails and the one that would fit the session
+	// type is absent, so the install hint must survive alongside the failure.
+	getenv = func(string) string { return "wayland-0" }
+	lookPath = func(name string) (string, error) {
+		if name == "xclip" {
+			return "/usr/bin/xclip", nil
+		}
+		return "", exec.ErrNotFound
+	}
+	run = func(context.Context, string, []string, []byte) error { return errors.New("Can't open display") }
+	_, err = Copy(context.Background(), []byte("x"))
+	if err == nil {
+		t.Fatal("mixed missing/failing chain should fail")
+	}
+	for _, want := range []string{"xclip: Can't open display", "not installed: wl-copy", "install wl-clipboard"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("mixed-chain error %v missing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "install xclip") {
+		t.Fatalf("install hint offered for an installed helper: %v", err)
+	}
+	getenv = func(string) string { return "" }
 
 	// A cancelled caller context stops after the first candidate instead of
 	// retrying the whole chain against a dead context.
@@ -160,6 +189,26 @@ func TestRunHelperPipesStdinAndReportsStderr(t *testing.T) {
 	}
 }
 
+func TestRunHelperReportsMissingStderrCapture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TMPDIR redirection is POSIX-specific")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	// An uncreatable temp file must not turn a working copy into a failure...
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "does-not-exist"))
+	if err := runHelper(context.Background(), "/bin/sh", []string{"-c", "exit 0"}, []byte("review")); err != nil {
+		t.Fatalf("copy failed because stderr could not be captured: %v", err)
+	}
+	// ...and when the helper does fail, the error says why its stderr is missing
+	// instead of looking silently mute.
+	err := runHelper(context.Background(), "/bin/sh", []string{"-c", "echo broken >&2; exit 3"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "stderr not captured") {
+		t.Fatalf("error = %v, want a note that stderr capture was unavailable", err)
+	}
+}
+
 func TestCopyTimeoutBoundsAHangingHelper(t *testing.T) {
 	restore := stub(t)
 	defer restore()
@@ -189,12 +238,4 @@ func stub(t *testing.T) func() {
 	return func() {
 		lookPath, run, goos, getenv = origLook, origRun, origGOOS, origEnv
 	}
-}
-
-func names(helpers []helper) []string {
-	out := make([]string, 0, len(helpers))
-	for _, h := range helpers {
-		out = append(out, h.name)
-	}
-	return out
 }
