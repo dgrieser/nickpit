@@ -1665,10 +1665,12 @@ func TestChatSessionHintOnlyForSavedTerminalSession(t *testing.T) {
 		t.Fatalf("chatSessionHint() = %q", got)
 	}
 	colored := chatSessionHint("abc-123", true, true, 12)
+	// Both lines share the periwinkle command color; only the subcommand that
+	// tells them apart is lifted to the lighter shade.
 	if !strings.Contains(colored, "\x1b[2m────────────\x1b[0m") ||
 		!strings.Contains(colored, "\x1b[2mTo chat about this review, or copy it to the clipboard, run:\x1b[0m") ||
-		!strings.Contains(colored, "\x1b[38;2;179;189;255mnickpit chat --session abc-123\x1b[0m") ||
-		!strings.Contains(colored, "\x1b[38;2;179;209;250mnickpit session abc-123 --clipboard\x1b[0m") {
+		!strings.Contains(colored, "\x1b[38;2;179;189;255mnickpit \x1b[38;2;179;209;250mchat\x1b[38;2;179;189;255m --session abc-123\x1b[0m") ||
+		!strings.Contains(colored, "\x1b[38;2;179;189;255mnickpit \x1b[38;2;179;209;250msession\x1b[38;2;179;189;255m abc-123 --clipboard\x1b[0m") {
 		t.Fatalf("colored chat hint = %q", colored)
 	}
 	if strings.Contains(colored, "48;2;40;42;64") {
