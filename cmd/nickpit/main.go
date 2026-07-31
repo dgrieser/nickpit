@@ -1816,18 +1816,14 @@ func (a *app) loadProfileNamed(name string) (string, config.Profile, error) {
 // over both --profile and NICKPIT_PROFILE; the value-level flags (--model,
 // --base-url, sampling knobs, budgets) still override that profile's fields.
 func (a *app) loadProfileForSpec() (string, config.Profile, error) {
-	name, profile, err := a.loadProfile()
-	if err != nil {
-		return "", config.Profile{}, err
-	}
 	specProfile, err := a.specProfile()
 	if err != nil {
 		return "", config.Profile{}, err
 	}
-	if specProfile != "" && specProfile != name {
+	if specProfile != "" {
 		return a.loadProfileNamed(specProfile)
 	}
-	return name, profile, nil
+	return a.loadProfile()
 }
 
 // specProfile returns the `profile:` declared by a --spec file, or "" when no
