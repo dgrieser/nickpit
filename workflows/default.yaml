@@ -20,7 +20,9 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:codequality
             config:
               scope: reviewer
@@ -41,7 +43,9 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:security
             config:
               scope: reviewer
@@ -62,7 +66,9 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:architecture
             config:
               scope: reviewer
@@ -83,7 +89,9 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:performance
             config:
               scope: reviewer
@@ -104,7 +112,9 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:testing
             config:
               scope: reviewer
@@ -125,7 +135,9 @@ steps:
             config:
               scope: finding
               time_budget:
-                weight: 35
+                weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:bestpractices
             config:
               scope: reviewer

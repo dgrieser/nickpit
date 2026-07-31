@@ -57,8 +57,8 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	weight15 := 15
 	weight20 := 20
 	weight30 := 30
-	weight35 := 35
 	weight40 := 40
+	weight55 := 55
 	reviewConfig := func() *StepOverride {
 		return &StepOverride{
 			MineReasoning:   &AgentOverride{Model: &small},
@@ -70,7 +70,7 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Name: laneNames[i], Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
-			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight35}}},
+			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight55}, Categorize: &AgentOverride{Model: &small}}},
 			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1500}}}
 	}
@@ -176,9 +176,15 @@ func TestDefaultSpecReviewersAreParallel(t *testing.T) {
 	if len(parallel.Parallel) != len(ReviewVectorIDs) {
 		t.Fatalf("parallel lanes = %d, want %d", len(parallel.Parallel), len(ReviewVectorIDs))
 	}
+	wantLane := []string{StepReviewPrefix, StepVerifyPrefix, StepDedupePrefix}
 	for i, lane := range parallel.Parallel {
-		if !lane.IsLane() || len(lane.Lane) != 3 {
-			t.Fatalf("parallel child %d is not a 3-step lane: %+v", i, lane)
+		if !lane.IsLane() || len(lane.Lane) != len(wantLane) {
+			t.Fatalf("parallel child %d is not a %d-step lane: %+v", i, len(wantLane), lane)
+		}
+		for j, prefix := range wantLane {
+			if !strings.HasPrefix(lane.Lane[j].Type, prefix) {
+				t.Fatalf("parallel child %d step %d = %q, want a %q step", i, j, lane.Lane[j].Type, prefix)
+			}
 		}
 	}
 }
@@ -273,6 +279,51 @@ steps:
 	}
 }
 
+func TestLoadParsesVerifyCategorizeOverride(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: verify:security
+    config:
+      model: primary
+      categorize:
+        model: "@small"
+        reasoning_effort: low
+  - type: verify
+    config:
+      categorize:
+        max_output_retries: 3
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vector := spec.Steps[0].Config
+	if vector == nil || vector.Categorize == nil {
+		t.Fatalf("categorize override not parsed: %+v", vector)
+	}
+	if vector.Categorize.Model == nil || *vector.Categorize.Model != SmallModelAlias {
+		t.Fatalf("categorize model = %+v", vector.Categorize.Model)
+	}
+	if vector.Categorize.ReasoningEffort == nil || *vector.Categorize.ReasoningEffort != "low" {
+		t.Fatalf("categorize effort = %+v", vector.Categorize.ReasoningEffort)
+	}
+	global := spec.Steps[1].Config
+	if global == nil || global.Categorize == nil || global.Categorize.MaxOutputRetries == nil || *global.Categorize.MaxOutputRetries != 3 {
+		t.Fatalf("global verify categorize override = %+v", global)
+	}
+}
+
+func TestCategorizeOverrideResolvesSmallModel(t *testing.T) {
+	small := SmallModelAlias
+	override := &AgentOverride{Model: &small}
+	base := config.Profile{Model: "primary", Small: config.SmallModelConfig{Model: "cheap"}}
+	got, _ := override.Resolve(base, model.ReviewRequest{})
+	if got.Model != "cheap" {
+		t.Fatalf("categorize model = %q, want cheap", got.Model)
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	cases := map[string]string{
 		"unknown top key":                 "version: 1\nbogus: x\nsteps:\n  - type: merge\n",
@@ -282,6 +333,11 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 		"review-only config on merge":     "version: 1\nsteps:\n  - type: merge\n    config:\n      mine_reasoning: {}\n",
 		"unknown review internal key":     "version: 1\nsteps:\n  - type: review:security\n    config:\n      mine_reasoning:\n        bogus: 1\n",
 		"non-mapping review internal key": "version: 1\nsteps:\n  - type: review:security\n    config:\n      nudge: small\n",
+		"categorize on review step":       "version: 1\nsteps:\n  - type: review:security\n    config:\n      categorize:\n        model: \"@small\"\n",
+		"categorize on merge":             "version: 1\nsteps:\n  - type: merge\n    config:\n      categorize: {}\n",
+		"categorize time_budget":          "version: 1\nsteps:\n  - type: verify:security\n    config:\n      categorize:\n        time_budget: { weight: 20 }\n",
+		"unknown categorize key":          "version: 1\nsteps:\n  - type: verify\n    config:\n      categorize:\n        bogus: 1\n",
+		"non-mapping categorize":          "version: 1\nsteps:\n  - type: verify\n    config:\n      categorize: small\n",
 		"scalar step":                     "version: 1\nsteps:\n  - merge\n",
 		"nested parallel":                 "version: 1\nsteps:\n  - parallel:\n      - parallel:\n          - type: merge\n",
 	}
@@ -525,6 +581,7 @@ func TestScopeRejections(t *testing.T) {
 		"scope on collect-context": "version: 1\nsteps:\n  - type: collect-context\n    config: { scope: all }\n",
 		"scope on review":          "version: 1\nsteps:\n  - type: review:security\n    config: { scope: finding }\n",
 		"illegal verify scope":     "version: 1\nsteps:\n  - type: review:security\n  - type: verify:security\n    config: { scope: cluster }\n",
+		"removed categorize step":  "version: 1\nsteps:\n  - type: review:security\n  - type: categorize:security\n    config: { scope: reviewer }\n",
 		"illegal merge scope":      "version: 1\nsteps:\n  - type: merge\n    config: { scope: finding }\n",
 		"flat finalize cluster":    "version: 1\nsteps:\n  - type: finalize\n    config: { scope: cluster }\n",
 		"flat summarize cluster":   "version: 1\nsteps:\n  - type: summarize\n    config: { scope: cluster }\n",
@@ -807,7 +864,7 @@ func TestValidateAcceptsNudgeAfterReview(t *testing.T) {
 
 func TestStepOverrideResolveIdentity(t *testing.T) {
 	base := config.Profile{Model: "base", ReasoningEffort: "high", MaxToolCalls: 7}
-	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, VerifyDropPolicy: "refuted-only"}
+	req := model.ReviewRequest{MaxToolCalls: 7, NudgeCount: 3, VerifyDropPolicy: model.DropPolicyRefutedOnly}
 	gotProfile, gotReq := (*StepOverride)(nil).Resolve(base, req)
 	if !reflect.DeepEqual(gotProfile, base) {
 		t.Fatalf("nil override changed profile: %+v", gotProfile)
@@ -1054,5 +1111,17 @@ func TestStepNeedsSource(t *testing.T) {
 	}
 	if !SingleStepSpec(StepVerify, []string{"findings.json"}).NeedsSource() {
 		t.Error("SingleStepSpec(verify).NeedsSource() = false, want true")
+	}
+}
+
+func TestCategorizeWorkflowStepsAreRejected(t *testing.T) {
+	for _, stepType := range []string{"categorize", "categorize:security"} {
+		spec, err := Load(writeSpec(t, "version: 1\nsteps:\n  - type: "+stepType+"\n"))
+		if err == nil {
+			err = spec.Validate()
+		}
+		if err == nil {
+			t.Fatalf("%q unexpectedly accepted", stepType)
+		}
 	}
 }

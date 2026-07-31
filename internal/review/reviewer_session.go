@@ -104,7 +104,7 @@ func (e *Engine) buildAgentLoopRequest(agent agentSpec, req model.ReviewRequest)
 	reviewSnippet := exampleSnippetFor(agent.schemaKind, req.DisableSuggestions)
 	var repairResponse func(context.Context, *llm.ReviewResponse) codeLocationRepairResult
 	if agent.role == "review" {
-		repairResponse = e.responseCodeLocationRepairer(req.RepoRoot)
+		repairResponse = e.responseCodeLocationRepairer(req.RepoRoot, agent.enforceDiffScope, agent.allowedDiffScopes)
 	}
 	// req.MaxOutputRetries is passed through verbatim: 0 means unlimited
 	// (outputRetriesRemaining treats 0 as no cap). The default for an UNSET

@@ -60,17 +60,19 @@ type PipelineState struct {
 	dedupeRuns       []model.AgentRun
 	// Per-vector dedupe runs, keyed so telemetry orders them by groupOrder
 	// instead of the nondeterministic lane-completion order.
-	dedupeVectorRuns map[string][]model.AgentRun
-	mergeRuns        []model.AgentRun
-	mergeReasoning   string
-	finalizeRuns     []model.AgentRun
-	verdictRun       *model.AgentRun
-	summarizeRuns    []model.AgentRun
-	verifyUsage      model.TokenUsage
-	finalizeUsage    model.TokenUsage
-	verdictUsage     model.TokenUsage
-	summarizeUsage   model.TokenUsage
-	warnings         []string
+	dedupeVectorRuns      map[string][]model.AgentRun
+	mergeRuns             []model.AgentRun
+	mergeReasoning        string
+	finalizeRuns          []model.AgentRun
+	verdictRun            *model.AgentRun
+	summarizeRuns         []model.AgentRun
+	categorizeUsage       model.TokenUsage
+	verificationToolCalls int
+	verifyUsage           model.TokenUsage
+	finalizeUsage         model.TokenUsage
+	verdictUsage          model.TokenUsage
+	summarizeUsage        model.TokenUsage
+	warnings              []string
 }
 
 type groupEntry struct {
@@ -212,6 +214,15 @@ func (sc *stepContext) internalAgentContext(override *workflow.AgentOverride) in
 	}
 	profile, req := override.Resolve(sc.Engine.config, sc.Req)
 	return internalAgentContext{Engine: sc.Engine.withConfig(profile), Req: req}
+}
+
+// categorizeAgentContext resolves the verify step's categorize subconfig, which
+// routes the blind classifier to its own model parameters.
+func (sc *stepContext) categorizeAgentContext() internalAgentContext {
+	if sc.Override == nil {
+		return internalAgentContext{Engine: sc.Engine, Req: sc.Req}
+	}
+	return sc.internalAgentContext(sc.Override.Categorize)
 }
 
 type stepFunc func(ctx context.Context, sc *stepContext, st *PipelineState) error
@@ -492,10 +503,20 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 		res = st.materializeFromGroups(req)
 	}
 	if !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil {
-		var dropped int
+		var dropped []model.Finding
 		res.Findings, dropped = filterFindingsByDiffScope(res.Findings, st.Enriched.DiffScopeHunks)
-		if dropped > 0 {
-			p.engine.logf(context.Background(), "Final diff-scope safeguard: dropped=%d kept=%d", dropped, len(res.Findings))
+		for i, finding := range dropped {
+			if p.engine.logger != nil {
+				p.engine.logger.ProgressFor(
+					p.engine.progressInfo("verify", fmt.Sprintf("Final Diff Scope #%d", i+1), truncateFindingTitle(finding.Title)),
+					logging.StageVerify,
+					logging.StateSkip,
+					"dropped reason=out-of-diff safeguard=final",
+				)
+			}
+		}
+		if len(dropped) > 0 {
+			p.engine.logf(context.Background(), "Final diff-scope safeguard: dropped=%d kept=%d", len(dropped), len(res.Findings))
 			if len(res.Findings) == 0 {
 				res.OverallCorrectness = "patch is correct"
 				res.OverallExplanation = "No in-scope findings remained after diff-scope filtering."
@@ -506,14 +527,16 @@ func (p *Pipeline) assemble(st *PipelineState, req model.ReviewRequest) *model.R
 	allRuns, usage, toolCalls, reasoning := st.aggregateTelemetry()
 	res.AgentRuns = allRuns
 	res.Warnings = appendAgentRunWarnings(st.warnings, allRuns, st.contextErr)
-	// Verifier calls are tracked as phase telemetry rather than AgentRuns, but
-	// they still count toward the review's total model spend.
-	res.TokensUsed = addTokenUsage(usage, st.verifyUsage)
+	// Classifier and verifier calls are tracked as phase telemetry rather than
+	// AgentRuns, but they still count toward the review's total model spend and
+	// tool-call total.
+	res.TokensUsed = addTokenUsage(addTokenUsage(usage, st.categorizeUsage), st.verifyUsage)
+	res.CategorizeTokensUsed = st.categorizeUsage
 	res.VerifyTokensUsed = st.verifyUsage
 	res.FinalizeTokensUsed = st.finalizeUsage
 	res.VerdictTokensUsed = st.verdictUsage
 	res.SummarizeTokensUsed = st.summarizeUsage
-	res.TotalToolCalls = toolCalls
+	res.TotalToolCalls = toolCalls + st.verificationToolCalls
 	res.ReasoningEffort = reasoning
 	if req.DisableSuggestions {
 		res.StripSuggestions()

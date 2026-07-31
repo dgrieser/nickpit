@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -370,5 +371,87 @@ func TestFindingVerificationMergeFromNoKeysReturnsUnclaimed(t *testing.T) {
 	}
 	if dst.ID != "keep" {
 		t.Fatalf("dst mutated: %+v", dst)
+	}
+}
+
+func TestNormalizeFindingCategories(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"canonical order", []string{"finding", "confirmation"}, []string{CategoryConfirmation, CategoryFinding}},
+		{"trims and lowercases", []string{" FINDING "}, []string{CategoryFinding}},
+		{"dedupes", []string{"finding", "finding"}, []string{CategoryFinding}},
+		{"drops unknown", []string{"finding", "vibes"}, []string{CategoryFinding}},
+		{"drops blanks", []string{"", "   ", "finding"}, []string{CategoryFinding}},
+		{"empty stays empty", nil, nil},
+		{"only unknown is empty", []string{"vibes"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := NormalizeFindingCategories(tc.in)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("NormalizeFindingCategories(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFindingCategoriesIsCanonicalAndCopied(t *testing.T) {
+	got := FindingCategories()
+	want := []string{CategoryConfirmation, CategoryCompilation, CategoryFinding}
+	if !slices.Equal(got, want) {
+		t.Fatalf("FindingCategories() = %v, want %v", got, want)
+	}
+	got[0] = "mutated"
+	if FindingCategories()[0] != CategoryConfirmation {
+		t.Fatal("FindingCategories must return a copy")
+	}
+	for _, c := range want {
+		if !ValidFindingCategory(c) {
+			t.Fatalf("ValidFindingCategory(%q) = false", c)
+		}
+	}
+	if ValidFindingCategory("vibes") {
+		t.Fatal("ValidFindingCategory(\"vibes\") = true")
+	}
+}
+
+func TestNormalizeDropPolicy(t *testing.T) {
+	for _, p := range ValidDropPolicies {
+		if got := NormalizeDropPolicy(p); got != p {
+			t.Fatalf("NormalizeDropPolicy(%q) = %q, want passthrough", p, got)
+		}
+	}
+	// An unrecognized value must never drop MORE than the default.
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY", "refuted_only"} {
+		if got := NormalizeDropPolicy(p); got != DefaultDropPolicy {
+			t.Fatalf("NormalizeDropPolicy(%q) = %q, want %q", p, got, DefaultDropPolicy)
+		}
+	}
+}
+
+func TestValidateDropPolicy(t *testing.T) {
+	for _, p := range ValidDropPolicies {
+		if err := ValidateDropPolicy(p); err != nil {
+			t.Fatalf("ValidateDropPolicy(%q) = %v, want nil", p, err)
+		}
+	}
+	// A typo is rejected loudly rather than silently normalizing.
+	for _, p := range []string{"", "garbage", "REFUTED-ONLY", "refuted_only", "lenient", "standard", "strict"} {
+		if err := ValidateDropPolicy(p); err == nil {
+			t.Fatalf("ValidateDropPolicy(%q) = nil, want error", p)
+		}
+	}
+}
+
+func TestValidDropPoliciesAndDefault(t *testing.T) {
+	want := []string{DropPolicyNone, DropPolicyRefutedOnly, DropPolicyRefutedAndUnverified}
+	if !slices.Equal(ValidDropPolicies, want) {
+		t.Fatalf("ValidDropPolicies = %v, want %v", ValidDropPolicies, want)
+	}
+	if DefaultDropPolicy != DropPolicyRefutedOnly {
+		t.Fatalf("DefaultDropPolicy = %q, want %q", DefaultDropPolicy, DropPolicyRefutedOnly)
 	}
 }

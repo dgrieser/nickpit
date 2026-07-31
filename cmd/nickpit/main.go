@@ -297,7 +297,7 @@ func newRootCmd() *cobra.Command {
 			cli.excludePathsSet = rootFlags.Changed("exclude-path")
 			cli.includeContentSet = rootFlags.Changed("include-content")
 			cli.excludeContentSet = rootFlags.Changed("exclude-content")
-			if err := review.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
+			if err := model.ValidateDropPolicy(cli.verifyDropPolicy); err != nil {
 				return err
 			}
 			normalizedPriority, err := model.NormalizePriorityThreshold(cli.priorityThreshold)
@@ -377,7 +377,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.disableSuggestions, "disable-suggestions", false, "Omit code suggestions from prompts and review output")
 	root.PersistentFlags().BoolVar(&cli.disableWorkflowTimeBudget, "disable-workflow-time-budget", false, "Ignore time_budget entries in workflow specs")
 	root.PersistentFlags().IntVar(&cli.concurrency, "concurrency", 10, "Maximum parallel LLM agent loops across the whole run (0 = unlimited)")
-	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", "refuted-only", "Which verifier verdicts cause a finding to be dropped before merge: none, refuted-only, refuted-and-unverified")
+	root.PersistentFlags().StringVar(&cli.verifyDropPolicy, "verify-drop-policy", model.DefaultDropPolicy, "Which classified findings and verifier verdicts are dropped before merge: none, refuted-only, refuted-and-unverified")
 	root.PersistentFlags().Float64Var(&cli.confidenceThreshold, "confidence-threshold", 0.7, "Minimum finalized confidence_score required for the verdict step to keep a finding (0 = keep all)")
 	root.PersistentFlags().BoolVar(&cli.disableModelCheck, "disable-model-check", false, "Disable pre-review model capability checks")
 	root.PersistentFlags().StringVar(&cli.specPath, "spec", "", "Run a workflow spec file (YAML) instead of the embedded default workflow")
@@ -1951,7 +1951,18 @@ func modelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest, useSm
 		if stepUsesSmall == useSmallModel {
 			requirements.merge(stepModelRequirements(entry.Type, stepReq.DisableJSONResponseFormat))
 		}
-		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) || entry.Config == nil {
+		if entry.Config == nil {
+			continue
+		}
+		if entry.Type == workflow.StepVerify || strings.HasPrefix(entry.Type, workflow.StepVerifyPrefix) {
+			// The categorize classifier uses no tools and emits one JSON object,
+			// so it demands strictly less than the verify step around it.
+			if agentUsesSmall(stepUsesSmall, entry.Config.Categorize) == useSmallModel {
+				requirements.merge(categorizeModelRequirements(agentDisableJSONResponseFormat(stepReq, entry.Config.Categorize)))
+			}
+			continue
+		}
+		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) {
 			continue
 		}
 		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) == useSmallModel {
@@ -1987,6 +1998,12 @@ func agentUsesSmall(stepUsesSmall bool, override *workflow.AgentOverride) bool {
 
 func textModelRequirements() modelCapabilityRequirements {
 	return modelCapabilityRequirements{Response: true}
+}
+
+func categorizeModelRequirements(disableJSONResponseFormat bool) modelCapabilityRequirements {
+	requirements := modelCapabilityRequirements{Response: true}
+	requirements.requireJSON(!disableJSONResponseFormat)
+	return requirements
 }
 
 func reviewerModelRequirements(disableJSONResponseFormat bool) modelCapabilityRequirements {
@@ -2731,7 +2748,7 @@ func agentSummary(profile config.Profile, req model.ReviewRequest) string {
 	if req.DisableDiffScope {
 		flags = append(flags, "unscoped findings")
 	}
-	if req.VerifyDropPolicy != "" && req.VerifyDropPolicy != review.DropPolicyNone {
+	if req.VerifyDropPolicy != "" && req.VerifyDropPolicy != model.DropPolicyNone {
 		flags = append(flags, fmt.Sprintf("drop %s", req.VerifyDropPolicy))
 	}
 	if req.ConfidenceThreshold > 0 {

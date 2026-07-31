@@ -978,6 +978,22 @@ func TestSmallModelRequirementsRequireToolsForReviewAlias(t *testing.T) {
 	}
 }
 
+func TestSmallModelRequirementsForCategorizeAliasSkipTools(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	spec := workflow.Spec{Version: workflow.SpecVersion, Steps: []workflow.StepEntry{{
+		Type:   workflow.StepVerifyPrefix + "security",
+		Config: &workflow.StepOverride{Categorize: &workflow.AgentOverride{Model: &alias}},
+	}}}
+	small := smallModelRequirementsForSpec(spec, model.ReviewRequest{})
+	if small.Tools || !small.JSONSchema || small.JSONOutput {
+		t.Fatalf("categorize small-model requirements = %+v, want JSON schema without tools", small)
+	}
+	// The verifier itself stays on the primary model, which still needs tools.
+	if primary := primaryModelRequirements(spec, model.ReviewRequest{}); !primary.Tools {
+		t.Fatalf("primary requirements = %+v, want tools for the verify step", primary)
+	}
+}
+
 func TestSmallModelRequirementsHonorSchemaOverride(t *testing.T) {
 	alias := workflow.SmallModelAlias
 	disable := true
@@ -1179,7 +1195,7 @@ func TestAgentSummaryFlagsAndOrder(t *testing.T) {
 		DisableSuggestions:        true,
 		DisablePatchSummary:       true,
 		DisableReasoningExtract:   true,
-		VerifyDropPolicy:          "refuted-only",
+		VerifyDropPolicy:          model.DropPolicyRefutedOnly,
 		ConfidenceThreshold:       0.7,
 		PriorityThreshold:         "p1",
 	}
@@ -1195,7 +1211,7 @@ func TestAgentSummaryOmitsDefaultsAndSerial(t *testing.T) {
 		DisableJSONResponseFormat: true,
 		DisableParallelToolCalls:  true,
 		Concurrency:               10,
-		VerifyDropPolicy:          "none",
+		VerifyDropPolicy:          model.DropPolicyNone,
 		PriorityThreshold:         "p3",
 	}
 	got := agentSummary(config.Profile{}, req)

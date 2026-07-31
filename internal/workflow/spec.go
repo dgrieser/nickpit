@@ -222,6 +222,15 @@ type StepOverride struct {
 	MineReasoning   *AgentOverride `yaml:"mine_reasoning"`
 	CompileFindings *AgentOverride `yaml:"compile_findings"`
 	Nudge           *AgentOverride `yaml:"nudge"`
+
+	// Verify-only internal agent override, accepted only under config on
+	// verify / verify:<vector> steps. Categorize is the blind classifier that
+	// runs before evidence verification: no tools, no patch context, one small
+	// JSON object out — the cheapest agent of a verify step to route to a
+	// smaller model. time_budget is not accepted here: classification and
+	// verification share the verify step's budget as one unit, so a per-agent
+	// budget would be a silent no-op.
+	Categorize *AgentOverride `yaml:"categorize"`
 }
 
 var stepOverrideKeys = []string{
@@ -235,6 +244,11 @@ var stepOverrideKeys = []string{
 }
 
 var reviewInternalOverrideKeys = []string{"mine_reasoning", "compile_findings", "nudge"}
+
+var verifyInternalOverrideKeys = []string{CategorizeAgentKey}
+
+// CategorizeAgentKey is the verify step's internal-agent subconfig key.
+const CategorizeAgentKey = "categorize"
 
 // AgentOverride is the subset of per-step config that can sensibly apply to an
 // internal agent spawned by a review step.
@@ -264,6 +278,13 @@ var agentOverrideKeys = []string{
 	"max_output_retries", "max_reasoning_seconds",
 	"disable_parallel_tool_calls", "disable_json_response_format",
 }
+
+// categorizeOverrideKeys drops time_budget from the shared agent keys: the
+// classifier runs inside the verify step's own budget, so accepting a separate
+// one there would silently do nothing (see StepOverride.Categorize).
+var categorizeOverrideKeys = slices.DeleteFunc(slices.Clone(agentOverrideKeys), func(key string) bool {
+	return key == "time_budget"
+})
 
 // TimeBudget controls wall-clock budgeting for workflow steps and groups.
 // max_seconds sets a local cap, speedup_threshold controls when urgent retries
@@ -747,7 +768,7 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 		if err := checkAllowedKeys(cfg, allowedStepOverrideKeys(entry.Type)...); err != nil {
 			return StepEntry{}, fmt.Errorf("config: %w", err)
 		}
-		if err := checkReviewInternalOverrides(entry.Type, cfg); err != nil {
+		if err := checkInternalOverrides(entry.Type, cfg); err != nil {
 			return StepEntry{}, fmt.Errorf("config: %w", err)
 		}
 		var override StepOverride
@@ -764,17 +785,34 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 
 func allowedStepOverrideKeys(stepType string) []string {
 	allowed := slices.Clone(stepOverrideKeys)
-	if strings.HasPrefix(stepType, StepReviewPrefix) {
-		allowed = append(allowed, reviewInternalOverrideKeys...)
-	}
-	return allowed
+	return append(allowed, internalOverrideKeys(stepType)...)
 }
 
-func checkReviewInternalOverrides(stepType string, cfg *yaml.Node) error {
-	if !strings.HasPrefix(stepType, StepReviewPrefix) {
+// internalOverrideKeys returns the internal-agent subconfig keys a step type
+// accepts under config: review steps spawn mine_reasoning/compile_findings/
+// nudge, verify steps spawn the categorize classifier.
+func internalOverrideKeys(stepType string) []string {
+	switch {
+	case strings.HasPrefix(stepType, StepReviewPrefix):
+		return reviewInternalOverrideKeys
+	case stepType == StepVerify || strings.HasPrefix(stepType, StepVerifyPrefix):
+		return verifyInternalOverrideKeys
+	default:
 		return nil
 	}
-	for _, key := range reviewInternalOverrideKeys {
+}
+
+// internalAgentOverrideKeys returns the keys one internal-agent subconfig
+// accepts.
+func internalAgentOverrideKeys(agentKey string) []string {
+	if agentKey == CategorizeAgentKey {
+		return categorizeOverrideKeys
+	}
+	return agentOverrideKeys
+}
+
+func checkInternalOverrides(stepType string, cfg *yaml.Node) error {
+	for _, key := range internalOverrideKeys(stepType) {
 		node := mappingValue(cfg, key)
 		if node == nil {
 			continue
@@ -782,7 +820,7 @@ func checkReviewInternalOverrides(stepType string, cfg *yaml.Node) error {
 		if node.Kind != yaml.MappingNode {
 			return fmt.Errorf("%s: must be a mapping", key)
 		}
-		if err := checkAllowedKeys(node, agentOverrideKeys...); err != nil {
+		if err := checkAllowedKeys(node, internalAgentOverrideKeys(key)...); err != nil {
 			return fmt.Errorf("%s: %w", key, err)
 		}
 	}
@@ -950,8 +988,8 @@ func (s Spec) Validate() error {
 
 // stepDiscardedAfterMerge reports whether a step's work would be silently
 // thrown away when it runs after the merge step: verify/dedupe (global or
-// per-vector) mutate the grouped findings, but finalize/verdict/output consume
-// the flat result the merge already set.
+// per-vector) mutate the grouped findings, but
+// finalize/verdict/output consume the flat result the merge already set.
 func stepDiscardedAfterMerge(stepType string) bool {
 	if stepType == StepVerify || stepType == StepDedupe {
 		return true
@@ -1164,20 +1202,21 @@ func validateStepType(t string) error {
 
 // StepNeedsSource reports whether a step type requires a review source.
 // Context collection and the reviewers read the source directly. Verify steps
-// (bare and per-vector) do too: the confirm gate and diff-scope judgement are
-// defined against the changed files, so a standalone verify (--step verify on
-// injected findings) must still resolve the source — otherwise the verifier
-// prompt carries no patch context. The remaining post-reviewer steps operate
-// purely on in-memory or injected findings.
+// (bare and per-vector) do too: deterministic diff scope and technical truth
+// are defined against the changed files, so a standalone run
+// (--step verify on injected findings) must still resolve the source —
+// otherwise the prompt carries no patch context. The remaining post-reviewer
+// steps operate purely on in-memory or injected findings.
 func StepNeedsSource(stepType string) bool {
 	if stepType == StepCollectContext || stepType == StepVerify {
 		return true
 	}
-	if _, ok := vectorOf(stepType, StepVerifyPrefix); ok {
-		return true
+	for _, prefix := range []string{StepVerifyPrefix, StepReviewPrefix} {
+		if _, ok := vectorOf(stepType, prefix); ok {
+			return true
+		}
 	}
-	_, ok := vectorOf(stepType, StepReviewPrefix)
-	return ok
+	return false
 }
 
 // NeedsSource reports whether any step in the spec requires a review source.

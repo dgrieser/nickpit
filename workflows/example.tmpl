@@ -14,9 +14,9 @@
 #                             architecture, performance, testing, bestpractices
 #   reasoning-extract:<vector> extract issues from a reviewer's reasoning trace
 #   nudge:<vector>            one extra "look again" round for a reviewer
-#   verify:<vector>           verify one reviewer's findings and drop by policy
+#   verify:<vector>           classify and verify one reviewer's findings
 #   dedupe:<vector>           de-duplicate one reviewer's findings
-#   verify                    verify all reviewers' findings and drop by policy
+#   verify                    classify and verify all reviewers' findings
 #   dedupe                    de-duplicate findings per reviewer
 #   merge                     merge reviewers' findings into one set
 #   finalize                  finalize priorities/confidence/wording
@@ -45,18 +45,33 @@
 #   all       one agent over the whole finding set (flat finalize/summarize
 #             and verdict — see the allowed set below)
 #   cluster   one agent per merge cluster   (merge, finalize, summarize)
-#   finding   one agent per finding         (verify)
+#   finding   one internal agent chain per finding (verify)
 #   reviewer  one agent per reviewer group  (dedupe)
 # Allowed scope per step:
-#   merge     cluster
-#   finalize  all (flat) | cluster (inside a pipeline:)
-#   summarize all (flat) | cluster (inside a pipeline:)
-#   verdict   all
-#   verify    finding
-#   dedupe    reviewer
+#   merge      cluster
+#   finalize   all (flat) | cluster (inside a pipeline:)
+#   summarize  all (flat) | cluster (inside a pipeline:)
+#   verdict    all
+#   verify     finding
+#   dedupe     reviewer
 # scope is optional; an omitted scope uses the value shown for that step in its
 # context. collect-context / review: / reasoning-extract: / nudge: run as a
 # single agent and do not take scope.
+#
+# `verify_drop_policy` governs both private classification routing and verifier
+# verdict filtering. Classification is internal to verify:
+#   only `finding`     -> confirmed
+#   `finding` + more   -> unverified  (e.g. a compile error bundled with a
+#                                      distinct runtime bug)
+#   no `finding`       -> refuted     (a confirmation, or a compiler-owned
+#                                      diagnostic)
+# and the policy then applies as it does to the verifier's own verdict:
+#   none                     drop nothing, in either stage
+#   refuted-only             drop refuted; keep unverified
+#   refuted-and-unverified   drop both
+# Set per step it affects only that step's filter. Diff-scope is not governed by
+# this policy: deterministic repair drops findings that cannot be anchored to
+# the patch, even under `none`. The only switch is --disable-diff-scope.
 #
 # LLM concurrency is run-level only (--concurrency, default 10, 0 = unlimited):
 # one shared cap across every agent loop in the run. It is intentionally not in
@@ -106,7 +121,9 @@
 #               scope: finding
 #               verify_drop_policy: refuted-and-unverified
 #               time_budget:
-#                 weight: 20
+#                 weight: 35
+#               categorize:
+#                 model: "@small"
 #           - type: dedupe:security
 #             config:
 #               scope: reviewer
@@ -158,6 +175,10 @@
 #   confidence_threshold, priority_threshold
 # Review steps also accept internal-agent subconfigs: mine_reasoning,
 # compile_findings, nudge; those subconfigs also accept time_budget.
+# Verify steps accept the categorize subconfig for the blind classifier that
+# runs before evidence verification (no tools, JSON out only). It takes the same
+# keys except time_budget: classification and verification share the verify
+# step's budget.
 # time_budget keys:
 #   max_seconds       max wall-clock seconds for the step/lane/pipeline
 #   speedup_threshold 50..100; 100 disables early urgent retry

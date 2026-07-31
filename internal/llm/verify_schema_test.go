@@ -31,35 +31,6 @@ func TestVerifySchemaRequiresAllFields(t *testing.T) {
 	}
 }
 
-func TestScopedVerifySchemaRequiresNullableReplacementLocation(t *testing.T) {
-	var schema map[string]any
-	if err := json.Unmarshal(ScopedVerifySchema, &schema); err != nil {
-		t.Fatal(err)
-	}
-	requiredAny, _ := schema["required"].([]any)
-	required := make([]string, 0, len(requiredAny))
-	for _, value := range requiredAny {
-		if field, ok := value.(string); ok {
-			required = append(required, field)
-		}
-	}
-	if !slices.Contains(required, "replacement_code_location") {
-		t.Fatalf("required = %v", required)
-	}
-	properties := schema["properties"].(map[string]any)
-	replacement := properties["replacement_code_location"].(map[string]any)
-	if len(replacement["anyOf"].([]any)) != 2 {
-		t.Fatalf("replacement schema = %#v", replacement)
-	}
-	var example map[string]any
-	if err := json.Unmarshal([]byte(ScopedVerifyExamplePromptSnippet()), &example); err != nil {
-		t.Fatal(err)
-	}
-	if value, ok := example["replacement_code_location"]; !ok || value != nil {
-		t.Fatalf("replacement example = %#v", value)
-	}
-}
-
 func TestVerifySchemaStripsExamples(t *testing.T) {
 	if schemaContainsKey(VerifySchema, "examples") {
 		t.Fatalf("schema unexpectedly contains examples: %s", VerifySchema)
@@ -129,34 +100,6 @@ func TestParseVerifyResponseHappyPath(t *testing.T) {
 	}
 	if resp.Verification.Remarks != "not reachable" {
 		t.Fatalf("remarks = %q", resp.Verification.Remarks)
-	}
-}
-
-func TestParseScopedVerifyResponseRequiresAndParsesReplacementLocation(t *testing.T) {
-	constraints := ResponseConstraints{RequireReplacementCodeLocation: true}
-	missing := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.9,"remarks":"real"}`
-	_, err := parseReviewResponse(missing, SchemaKindVerify, constraints)
-	var invalid *InvalidResponseError
-	if !asErr(err, &invalid) || !slices.Contains(invalid.MissingFields, "replacement_code_location") {
-		t.Fatalf("err = %#v, want missing replacement_code_location", err)
-	}
-
-	content := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.9,"remarks":"real","replacement_code_location":{"file_path":"f.go","line_range":{"start":7,"end":7,"count":1},"content":"changed"}}`
-	resp, err := parseReviewResponse(content, SchemaKindVerify, constraints)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ReplacementCodeLocation == nil || resp.ReplacementCodeLocation.FilePath != "f.go" || resp.ReplacementCodeLocation.LineRange.Start != 7 {
-		t.Fatalf("replacement = %#v", resp.ReplacementCodeLocation)
-	}
-
-	nullContent := `{"id":"11111111-1111-4111-8111-111111111111","verdict":"confirmed","gate":"confirm","priority":1,"confidence_score":0.9,"remarks":"real","replacement_code_location":null}`
-	resp, err = parseReviewResponse(nullContent, SchemaKindVerify, constraints)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.ReplacementCodeLocation != nil {
-		t.Fatalf("null replacement = %#v", resp.ReplacementCodeLocation)
 	}
 }
 
@@ -293,7 +236,7 @@ func TestParseVerifyResponseRejectsOutOfRangePriority(t *testing.T) {
 }
 
 func TestParseVerifyResponseRejectsGateVerdictMismatch(t *testing.T) {
-	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "confirmed", "gate": "compile-error", "priority": 1, "confidence_score": 0.9, "remarks": "compile error"}`
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "confirmed", "gate": "styleguide-contradiction", "priority": 1, "confidence_score": 0.9, "remarks": "styleguide allows it"}`
 	_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	var invalid *InvalidResponseError
 	if !asErr(err, &invalid) {
@@ -304,14 +247,31 @@ func TestParseVerifyResponseRejectsGateVerdictMismatch(t *testing.T) {
 	}
 }
 
-func TestParseVerifyResponseAcceptsCompileErrorRefutation(t *testing.T) {
-	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "refuted", "gate": "compile-error", "priority": 1, "confidence_score": 0.9, "remarks": "compiler-caught"}`
+func TestParseVerifyResponseAcceptsStyleguideRefutation(t *testing.T) {
+	content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "refuted", "gate": "styleguide-contradiction", "priority": 1, "confidence_score": 0.9, "remarks": "the styleguide allows this pattern"}`
 	resp, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
 	if err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	if resp.Verification.Gate != model.GateCompileError {
+	if resp.Verification.Gate != model.GateStyleguideContradiction {
 		t.Fatalf("verification = %+v", resp.Verification)
+	}
+}
+
+// The categorize agent owns non-finding, compile-error, and diff-scope now.
+// A verifier still naming one of them is judging eligibility instead of truth,
+// so the parser must reject it and force a retry.
+func TestParseVerifyResponseRejectsRetiredEligibilityGates(t *testing.T) {
+	for _, gate := range []string{"non-finding", "compile-error", "diff-scope"} {
+		content := `{"id": "11111111-1111-4111-8111-111111111111", "verdict": "refuted", "gate": "` + gate + `", "priority": 1, "confidence_score": 0.9, "remarks": "x"}`
+		_, err := parseReviewResponse(content, SchemaKindVerify, ResponseConstraints{})
+		var invalid *InvalidResponseError
+		if !asErr(err, &invalid) {
+			t.Fatalf("gate %q: expected InvalidResponseError, got %v", gate, err)
+		}
+		if len(invalid.MissingFields) != 1 || !strings.Contains(invalid.MissingFields[0], "gate") {
+			t.Fatalf("gate %q: missing fields = %v", gate, invalid.MissingFields)
+		}
 	}
 }
 
@@ -329,10 +289,7 @@ func TestParseVerifyResponseRejectsUnknownGate(t *testing.T) {
 
 func TestVerdictForGateCoversAllGates(t *testing.T) {
 	cases := map[string]string{
-		model.GateNonFinding:              model.VerdictRefuted,
-		model.GateDiffScope:               model.VerdictRefuted,
 		model.GateStyleguideContradiction: model.VerdictRefuted,
-		model.GateCompileError:            model.VerdictRefuted,
 		model.GateConfirm:                 model.VerdictConfirmed,
 		model.GateRefute:                  model.VerdictRefuted,
 		model.GateUnverified:              model.VerdictUnverified,
@@ -343,8 +300,11 @@ func TestVerdictForGateCoversAllGates(t *testing.T) {
 			t.Fatalf("VerdictForGate(%q) = %q/%v, want %q", gate, got, ok, want)
 		}
 	}
-	if _, ok := model.VerdictForGate(""); ok {
-		t.Fatal("empty gate must be unknown")
+	// The eligibility gates moved to the categorize agent.
+	for _, retired := range []string{"", "non-finding", "compile-error", "diff-scope"} {
+		if _, ok := model.VerdictForGate(retired); ok {
+			t.Fatalf("gate %q must be unknown", retired)
+		}
 	}
 }
 

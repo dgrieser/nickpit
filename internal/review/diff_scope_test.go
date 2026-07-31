@@ -1,10 +1,70 @@
 package review
 
 import (
+	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 )
+
+func TestAllowedDiffCodeLocationsAreCompleteCodeLocationJSON(t *testing.T) {
+	hunks := []model.DiffHunk{{
+		FilePath: "pkg/demo.go",
+		Language: "go",
+		OldStart: 10,
+		OldLines: 2,
+		NewStart: 10,
+		NewLines: 2,
+		Content:  " context\n-old()\n+new()\n",
+	}}
+
+	allowed := allowedDiffCodeLocations(hunks)
+	if len(allowed) != 2 {
+		t.Fatalf("allowed locations = %#v, want old and new code_location", allowed)
+	}
+	contents := map[string]bool{}
+	for _, got := range allowed {
+		if got.FilePath != "pkg/demo.go" ||
+			got.LineRange != (model.LineRange{Start: 10, End: 11, Count: 2}) ||
+			got.Language != "go" {
+			t.Fatalf("code_location = %#v", got)
+		}
+		contents[got.Content] = true
+	}
+	if !contents["context\nold()"] || !contents["context\nnew()"] {
+		t.Fatalf("allowed contents = %#v, want old and new sides", contents)
+	}
+
+	encoded, err := json.Marshal(allowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []model.CodeLocation
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("allowed windows are not code_location JSON: %v", err)
+	}
+	jsonText := string(encoded)
+	for _, field := range []string{`"file_path"`, `"line_range"`, `"start"`, `"end"`, `"count"`, `"language"`, `"content"`} {
+		if !strings.Contains(jsonText, field) {
+			t.Fatalf("allowed JSON %s missing %s", jsonText, field)
+		}
+	}
+}
+
+func TestAllowedDiffCodeLocationsSkipsEmptySides(t *testing.T) {
+	hunks := []model.DiffHunk{
+		{FilePath: "added.go", NewStart: 4, NewLines: 1, Content: "+added()\n"},
+		{FilePath: "deleted.go", OldStart: 7, OldLines: 1, Content: "-deleted()\n"},
+	}
+	allowed := allowedDiffCodeLocations(hunks)
+	if len(allowed) != 2 {
+		t.Fatalf("allowed locations = %#v, want one non-empty side per hunk", allowed)
+	}
+}
 
 func TestCodeLocationOverlapsDiffAcceptsAnyOldOrNewSideIntersection(t *testing.T) {
 	hunks := []model.DiffHunk{
@@ -71,5 +131,32 @@ func TestPipelineAssembleAppliesFinalDiffScopeSafeguard(t *testing.T) {
 	result := pipeline.assemble(st, model.ReviewRequest{})
 	if len(result.Findings) != 1 || result.Findings[0].Title != "inside" {
 		t.Fatalf("findings = %#v", result.Findings)
+	}
+}
+
+func TestPrepareFindingsForVerificationAggregatesOutOfDiffWarnings(t *testing.T) {
+	ctx := &model.ReviewContext{DiffScopeHunks: []model.DiffHunk{{
+		FilePath: "f.go",
+		OldStart: 10,
+		OldLines: 1,
+		NewStart: 10,
+		NewLines: 1,
+		Content:  " changed()\n",
+	}}}
+	results := []agentResult{{
+		run: model.AgentRun{Name: "Security"},
+		resp: &llm.ReviewResponse{Findings: []model.Finding{
+			{Title: "outside one", CodeLocation: model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 1, End: 1}, Content: "one()"}},
+			{Title: "outside two", CodeLocation: model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 2, End: 2}, Content: "two()"}},
+		}},
+	}}
+	engine := NewEngine(nil, nil, nil, config.Profile{})
+
+	warnings := engine.prepareFindingsForVerification(context.Background(), ctx, results, model.ReviewRequest{})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Dropped 2 out-of-diff finding(s) from Security") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	if len(results[0].resp.Findings) != 0 {
+		t.Fatalf("findings = %#v, want both dropped", results[0].resp.Findings)
 	}
 }

@@ -398,7 +398,7 @@ func (e *Engine) repairResponseOrRetry(ctx context.Context, req agentLoopRequest
 	if len(result.RetryFields) == 0 {
 		return nil
 	}
-	return &llm.InvalidResponseError{
+	invalid := &llm.InvalidResponseError{
 		RawContent:            resp.RawResponse,
 		Reason:                "code_location needs file_path plus content or line_range",
 		MissingFields:         result.RetryFields,
@@ -407,6 +407,12 @@ func (e *Engine) repairResponseOrRetry(ctx context.Context, req agentLoopRequest
 		RetryGuidanceTemplate: "",
 		PartialResponse:       resp,
 	}
+	if len(result.AllowedCodeLocations) > 0 {
+		invalid.Reason = "one or more finding code_location values are outside the review diff"
+		invalid.RetryGuidanceTemplate = "code_location_diff_scope_retry_guidance.tmpl"
+		invalid.RetryGuidanceData = newDiffScopeRetryGuidance(result.AllowedCodeLocations)
+	}
+	return invalid
 }
 
 func (e *Engine) canRetryCodeLocation(state *agentLoopState, maxRetries int) bool {

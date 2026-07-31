@@ -309,9 +309,181 @@ func TestRepairResponseCodeLocationsRequestsRetryForMissingAnchors(t *testing.T)
 	}
 }
 
+func TestRepairResponseCodeLocationsRelocatesUniqueInDiffMatch(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "causal()\noutside()\ncausal()\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	allowed := []model.CodeLocation{{
+		FilePath:  "pkg/demo.go",
+		LineRange: model.LineRange{Start: 3, End: 3, Count: 1},
+		Language:  "go",
+		Content:   "causal()",
+	}}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title:           "Causal issue",
+		Body:            "body",
+		ConfidenceScore: 0.85,
+		Priority:        intPtr(1),
+		CodeLocation: model.CodeLocation{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 1, End: 1, Count: 1},
+			Content:   "causal()",
+		},
+	}}}
+	repair := engine.responseCodeLocationRepairer(repoRoot, true, allowed)
+	result := repair(context.Background(), resp)
+
+	if result.Repaired == 0 || len(result.RetryFields) != 0 {
+		t.Fatalf("repair result = %+v, want unique in-diff relocation", result)
+	}
+	if got := resp.Findings[0].CodeLocation.LineRange; got != (model.LineRange{Start: 3, End: 3, Count: 1}) {
+		t.Fatalf("relocated range = %+v, want line 3", got)
+	}
+}
+
+func TestRepairResponseCodeLocationsDoesNotChooseFirstOfMultipleInDiffMatches(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "causal()\nother()\ncausal()\noutside()\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	allowed := []model.CodeLocation{
+		{FilePath: "pkg/demo.go", LineRange: model.LineRange{Start: 1, End: 1, Count: 1}, Content: "causal()"},
+		{FilePath: "pkg/demo.go", LineRange: model.LineRange{Start: 3, End: 3, Count: 1}, Content: "causal()"},
+	}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title: "Ambiguous issue",
+		CodeLocation: model.CodeLocation{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 4, End: 4, Count: 1},
+			Content:   "causal()",
+		},
+	}}}
+
+	result := engine.responseCodeLocationRepairer(repoRoot, true, allowed)(context.Background(), resp)
+	if len(result.RetryFields) == 0 {
+		t.Fatalf("repair result = %+v, want retry for ambiguous in-diff matches", result)
+	}
+	if got := resp.Findings[0].CodeLocation.LineRange.Start; got != 4 {
+		t.Fatalf("ambiguous location moved to line %d", got)
+	}
+}
+
+func TestRepairResponseCodeLocationsPreservesOldSideDiffEvidence(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "context()\nnew()\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	allowed := []model.CodeLocation{
+		{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 1, End: 2, Count: 2},
+			Language:  "go",
+			Content:   "context()\nold()",
+		},
+		{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 1, End: 2, Count: 2},
+			Language:  "go",
+			Content:   "context()\nnew()",
+		},
+	}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title: "Removed behavior",
+		CodeLocation: model.CodeLocation{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 2, End: 2, Count: 1},
+			Language:  "go",
+			Content:   "old()",
+		},
+	}}}
+
+	repair := engine.responseCodeLocationRepairer(repoRoot, true, allowed)
+	result := repair(context.Background(), resp)
+	if len(result.RetryFields) != 0 {
+		t.Fatalf("repair result = %+v", result)
+	}
+	if got := resp.Findings[0].CodeLocation.Content; got != "old()" {
+		t.Fatalf("old-side content changed to %q", got)
+	}
+}
+
+func TestOutOfDiffRetryGuidanceDoesNotRequireRetrieval(t *testing.T) {
+	engine := NewEngine(nil, nil, nil, config.Profile{})
+	allowed := []model.CodeLocation{{
+		FilePath:  "pkg/demo.go",
+		LineRange: model.LineRange{Start: 2, End: 2, Count: 1},
+		Content:   "causal()",
+	}}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title: "Outside issue",
+		CodeLocation: model.CodeLocation{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 1, End: 1, Count: 1},
+			Content:   "outside()",
+		},
+	}}}
+
+	invalid := engine.repairResponseOrRetry(context.Background(), agentLoopRequest{
+		RepairResponse: engine.responseCodeLocationRepairer("", true, allowed),
+	}, resp)
+	if invalid == nil || invalid.RetryGuidanceTemplate != "code_location_diff_scope_retry_guidance.tmpl" {
+		t.Fatalf("retry = %#v, want diff-scope guidance without retrieval", invalid)
+	}
+}
+
+func TestOutOfDiffRetryGuidanceUsesExactCodeLocationJSON(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "outside()\ncontext()\ncausal()\n")
+	engine := NewEngine(nil, nil, retrieval.NewLocalEngine(), config.Profile{})
+	allowed := []model.CodeLocation{{
+		FilePath:  "pkg/demo.go",
+		LineRange: model.LineRange{Start: 2, End: 3, Count: 2},
+		Language:  "go",
+		Content:   "context()\ncausal()",
+	}}
+	resp := &llm.ReviewResponse{Findings: []model.Finding{{
+		Title:           "Outside issue",
+		Body:            "body",
+		ConfidenceScore: 0.85,
+		Priority:        intPtr(1),
+		CodeLocation: model.CodeLocation{
+			FilePath:  "pkg/demo.go",
+			LineRange: model.LineRange{Start: 1, End: 1, Count: 1},
+			Content:   "outside()",
+		},
+	}}}
+	invalid := engine.repairResponseOrRetry(context.Background(), agentLoopRequest{
+		RepairResponse: engine.responseCodeLocationRepairer(repoRoot, true, allowed),
+	}, resp)
+	if invalid == nil {
+		t.Fatal("expected out-of-diff validation retry")
+	}
+	if invalid.RetryGuidanceTemplate != "code_location_diff_scope_retry_guidance.tmpl" {
+		t.Fatalf("retry guidance = %q", invalid.RetryGuidanceTemplate)
+	}
+	rendered, err := engine.renderJSONRetryFeedback(invalid, llm.FindingsExamplePromptSnippet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"file_path": "pkg/demo.go"`,
+		`"line_range": {`,
+		`"start": 2`,
+		`"end": 3`,
+		`"count": 2`,
+		`"language": "go"`,
+		`"content": "context()\ncausal()"`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("retry guidance missing %q:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, `"old_start"`) || strings.Contains(rendered, `"new_start"`) {
+		t.Fatalf("retry guidance should contain code_location JSON, not diff-hunk JSON:\n%s", rendered)
+	}
+}
+
 func runCodeLocationRepair(t *testing.T, engine *Engine, repoRoot string, resp *llm.ReviewResponse) codeLocationRepairResult {
 	t.Helper()
-	repair := engine.responseCodeLocationRepairer(repoRoot)
+	repair := engine.responseCodeLocationRepairer(repoRoot, false, nil)
 	if repair == nil {
 		t.Fatal("repairer is nil")
 	}

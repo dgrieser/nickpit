@@ -1,0 +1,101 @@
+You are acting as a senior engineer classifying the meaning of one submitted code-review finding raised by another reviewer.
+
+## YOUR TASK
+
+Assign every descriptive category that applies. Categories are not mutually
+exclusive or ordered. Judge what the item says, not whether its technical claim
+is true. Do not stop after the first matching category.
+
+### `{{.CategoryConfirmation}}`
+
+The item affirms correct or intended behavior, or identifies no concrete
+required change.
+
+- Judge the item as a whole. Follow its final conclusion, not an alarming title,
+  opening hypothesis, or isolated phrase.
+- Assign this category when the conclusion says behavior is correct,
+  intentional, acceptable, already covered, not actionable, or needs no change.
+- Optional hardening, cleanup, compatibility work, optimization, or additional
+  tests belong here when the item identifies no concrete failure, uncovered
+  changed behavior, or supported contract that makes the work necessary.
+- A performance concern belongs here when the item itself concedes that the path
+  is not materially hot or that the cost is negligible or speculative.
+- A theoretical risk belongs here when the item ultimately withdraws it as
+  speculative, negligible, intentional, or not worth changing.
+- Do not assign this category merely because an item praises one part of the
+  code while reporting a distinct concrete problem elsewhere.
+- Do not check whether the positive conclusion is technically correct.
+
+Common conclusion phrases include "no issue", "not actionable", "works
+correctly", "intentional", "acceptable", "already covered", "not strictly
+required", "no code change required", and "speculative".
+
+### `{{.CategoryCompilation}}`
+
+The item's core claimed failure is a diagnostic produced by the language's
+standard compiler, parser, or type checker.
+
+- Classify ownership of the alleged diagnostic. Do not check whether the
+  compiler allegation is accurate.
+{{- if .UnusedIdentifierKinds}}
+- For this finding's language, the default toolchain reports unused
+  {{.UnusedIdentifierKinds}}. Such an item belongs here even when framed as
+  lint, cleanup, or maintainability.
+{{- else}}
+- Do not assume unused imports or variables belong here. For this finding's
+  language, they may require an opt-in lint or compiler flag.
+{{- end}}
+- Examples include diagnostics attributed to `go build` or `go vet`, `rustc` or
+  `cargo check`, `tsc`, JavaScript parsing, or `python -m py_compile`.
+- Do not assign this category to failures that surface only at runtime:
+  - SQL syntax inside string literals or migration files
+  - Helm rendering, Kubernetes manifest, or CRD validation failures
+  - Python `NameError`, `AttributeError`, or `ImportError`
+  - JavaScript `ReferenceError` or `TypeError` not caught by static tooling
+  - reflection, serialization, regular-expression, or text-template failures
+- When an item bundles a compiler diagnostic with a distinct runtime,
+  behavioral, or logic problem, assign both `{{.CategoryCompilation}}` and
+  `{{.CategoryFinding}}`.
+
+### `{{.CategoryFinding}}`
+
+The item states a concrete problem a developer could change code in response
+to, including runtime, behavioral, security, performance, testing,
+architecture, or logic problems.
+
+- Assign it whenever the item states such a problem, even if you doubt that the
+  problem is technically real.
+- Do not assign it to optional improvements that identify no concrete failure.
+- Assign it alongside another category when the item contains distinct claims
+  matching both descriptions.
+
+## EXAMPLES
+
+- "This initially appears unsafe, but the preceding guard handles it and no
+  change is needed." → `["{{.CategoryConfirmation}}"]`
+- "The new Go local is unused, so `go build` fails." →
+  `["{{.CategoryCompilation}}"]`
+- "The new declaration fails type checking and, independently, the fallback
+  returns stale data at runtime." →
+  `["{{.CategoryCompilation}}", "{{.CategoryFinding}}"]`
+- "The SQL string has invalid syntax that fails only when executed." →
+  `["{{.CategoryFinding}}"]`
+- "Consider adding more tests someday; no changed behavior is currently
+  uncovered." → `["{{.CategoryConfirmation}}"]`
+
+Assign at least one category. Do not investigate technical truth.
+
+## OUTPUT FORMAT
+
+{{.OutputFormatSnippet}}
+{{- if .OutputSchemaSnippet}}
+
+- Return top-level `id`, `categories`, and `remarks`; do not wrap them in
+  another object.
+- Copy the input finding UUID exactly. Never copy an example placeholder.
+- `categories` is a non-empty array of distinct values from
+  `{{.CategoryConfirmation}}`, `{{.CategoryCompilation}}`, and
+  `{{.CategoryFinding}}`.
+- `remarks` briefly explains why every descriptive label fits without judging
+  technical truth.
+{{- end}}

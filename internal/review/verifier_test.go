@@ -37,6 +37,9 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 		cloned.Tools = append([]llm.ToolDefinition(nil), req.Tools...)
 	}
 	s.requests = append(s.requests, &cloned)
+	if req.SchemaKind == llm.SchemaKindCategorize {
+		return categorized(model.CategoryFinding), nil
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -75,7 +78,7 @@ func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
 		if len(messages) != 2 {
 			t.Fatalf("messages = %#v, want system/user", messages)
 		}
-		if !strings.Contains(messages[0].Content, strings.TrimSpace(llm.ScopedVerifyExamplePromptSnippet())) {
+		if !strings.Contains(messages[0].Content, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
 			t.Fatalf("system prompt missing verify example:\n%s", messages[0].Content)
 		}
 		if messages[1].Role != "user" || !strings.Contains(messages[1].Content, `"finding"`) {
@@ -84,115 +87,64 @@ func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
 	}
 }
 
-func TestVerifyWithoutDiffScopeHunksUsesLegacyPromptAndSchema(t *testing.T) {
-	llmClient := &scriptedVerifyLLM{}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{
-		ReviewCtx: sampleReviewCtx(),
-		Finding:   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req := llmClient.requests[0]
-	if string(req.Schema) != string(llm.VerifySchema) {
-		t.Fatalf("schema = %s, want legacy verify schema", req.Schema)
-	}
-	if req.Constraints.RequireReplacementCodeLocation {
-		t.Fatal("source-less verifier unexpectedly requires replacement_code_location")
-	}
-	for _, messages := range [][]llm.Message{req.Messages, req.NoToolsMessages} {
-		system := messages[0].Content
-		if strings.Contains(system, "Diff-scope gate") || strings.Contains(system, "replacement_code_location") {
-			t.Fatalf("source-less verifier prompt contains diff-scope instructions:\n%s", system)
+// Scope, non-findings, and compiler-owned diagnostics belong to the categorize
+// agent now. The verifier must carry no trace of them — in either prompt
+// variant, and whether or not the run has diff hunks — or it will keep
+// re-deciding eligibility it no longer has a gate for.
+func TestVerifyPromptDropsEligibilityGates(t *testing.T) {
+	for _, withHunks := range []bool{false, true} {
+		llmClient := &scriptedVerifyLLM{}
+		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+		reviewCtx := sampleReviewCtx()
+		if withHunks {
+			reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
 		}
-		if !strings.Contains(system, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
-			t.Fatalf("source-less verifier prompt missing legacy example:\n%s", system)
-		}
-	}
-}
-
-func TestVerifyDisableDiffScopeRestoresLegacyPromptAndSchema(t *testing.T) {
-	llmClient := &scriptedVerifyLLM{}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	reviewCtx := sampleReviewCtx()
-	reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
-	finding := model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 9, End: 9}}}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{
-		ReviewCtx:        reviewCtx,
-		Finding:          finding,
-		DisableDiffScope: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := llmClient.requests[0]
-	if string(req.Schema) != string(llm.VerifySchema) {
-		t.Fatalf("schema = %s, want legacy verify schema", req.Schema)
-	}
-	for _, messages := range [][]llm.Message{req.Messages, req.NoToolsMessages} {
-		if len(messages) == 0 {
-			t.Fatal("missing verifier prompt messages")
-		}
-		system := messages[0].Content
-		if strings.Contains(system, "Diff-scope gate") || strings.Contains(system, "replacement_code_location") {
-			t.Fatalf("legacy verifier prompt contains diff-scope instructions:\n%s", system)
-		}
-		if !strings.Contains(system, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
-			t.Fatalf("legacy verifier prompt missing legacy example:\n%s", system)
-		}
-		assertVerifierGateNumbering(t, system, []string{
-			"1. Non-finding gate (`non-finding`):",
-			"2. Styleguide contradiction gate (`styleguide-contradiction`):",
-			"3. Compile-error gate (`compile-error`):",
-			"4. Confirm gate (`confirm`):",
-			"5. Refute gate for actual issue claims (`refute`):",
-			"6. Unverified gate (`unverified`):",
+		_, _, err := engine.Verify(context.Background(), VerifyRequest{
+			ReviewCtx: reviewCtx,
+			Finding:   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 9, End: 9}}},
 		})
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(taskMessageContent(req)), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := payload["finding_diff_scope"]; ok {
-		t.Fatalf("legacy payload includes finding_diff_scope: %#v", payload)
-	}
-}
-
-func TestVerifyAnnotatesDeterministicDiffScopeStatus(t *testing.T) {
-	llmClient := &scriptedVerifyLLM{}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	reviewCtx := sampleReviewCtx()
-	reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
-	finding := model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 9, End: 9}}}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := llmClient.requests[0]
-	if string(req.Schema) != string(llm.ScopedVerifySchema) {
-		t.Fatalf("schema = %s, want scoped verify schema", req.Schema)
-	}
-	if len(req.NoToolsMessages) == 0 || !strings.Contains(req.NoToolsMessages[0].Content, "Diff-scope gate") ||
-		!strings.Contains(req.NoToolsMessages[0].Content, strings.TrimSpace(llm.ScopedVerifyExamplePromptSnippet())) {
-		t.Fatalf("no-tools verifier prompt missing scoped guidance: %#v", req.NoToolsMessages)
-	}
-	assertVerifierGateNumbering(t, req.Messages[0].Content, []string{
-		"1. Non-finding gate (`non-finding`):",
-		"2. Diff-scope gate (`diff-scope`):",
-		"3. Styleguide contradiction gate (`styleguide-contradiction`):",
-		"4. Compile-error gate (`compile-error`):",
-		"5. Confirm gate (`confirm`):",
-		"6. Refute gate for actual issue claims (`refute`):",
-		"7. Unverified gate (`unverified`):",
-	})
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(taskMessageContent(req)), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload["finding_diff_scope"] != "outside_diff" {
-		t.Fatalf("finding_diff_scope = %#v", payload["finding_diff_scope"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := llmClient.requests[0]
+		if string(req.Schema) != string(llm.VerifySchema) {
+			t.Fatalf("with_hunks=%v: schema = %s, want the single verify schema", withHunks, req.Schema)
+		}
+		for name, messages := range map[string][]llm.Message{"tools": req.Messages, "no_tools": req.NoToolsMessages} {
+			if len(messages) == 0 {
+				t.Fatalf("with_hunks=%v: missing %s verifier prompt", withHunks, name)
+			}
+			system := messages[0].Content
+			// Structural markers only: the injected styleguides legitimately
+			// mention things like `go build`, so matching on those would fail
+			// on the styleguide text rather than on the verifier's own prompt.
+			for _, banned := range []string{
+				"Diff-scope gate", "Non-finding gate", "Compile-error gate",
+				"replacement_code_location", "finding_diff_scope",
+				"MANDATORY PREFLIGHT", "WHAT THE VERDICT MEANS", "FINAL CONSISTENCY CHECK",
+				"`compile-error`", "`non-finding`", "`diff-scope`",
+			} {
+				if strings.Contains(system, banned) {
+					t.Errorf("with_hunks=%v: %s verifier prompt still contains %q:\n%s", withHunks, name, banned, system)
+				}
+			}
+			if !strings.Contains(system, strings.TrimSpace(llm.VerifyExamplePromptSnippet())) {
+				t.Errorf("with_hunks=%v: %s verifier prompt missing example:\n%s", withHunks, name, system)
+			}
+			assertVerifierGateNumbering(t, system, []string{
+				"1. Styleguide contradiction gate (`styleguide-contradiction`):",
+				"2. Confirm gate (`confirm`):",
+				"3. Refute gate for actual issue claims (`refute`):",
+				"4. Unverified gate (`unverified`):",
+			})
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(taskMessageContent(req)), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := payload["finding_diff_scope"]; ok {
+			t.Fatalf("with_hunks=%v: verifier payload includes finding_diff_scope: %#v", withHunks, payload)
+		}
 	}
 }
 
@@ -369,7 +321,7 @@ func TestVerifyAndFilterPropagatesCorrectedIDs(t *testing.T) {
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
 
-	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(0), "")
+	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, model.ReviewRequest{}, NewLimiter(0), "", internalAgentContext{})
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
@@ -413,8 +365,8 @@ func TestVerifyAndFilterDowngradesLowConfidenceRefuted(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: reviewerFindings},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
-	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly}
-	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
+	req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly}
+	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "", internalAgentContext{})
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
@@ -440,8 +392,8 @@ func TestVerifyAndFilterKeepsVerifierFailuresAsUnverified(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: reviewerFindings},
 		run:  model.AgentRun{Name: "Reviewer 1", Role: "review", Status: model.AgentRunStatusOK},
 	}}
-	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyRefutedOnly}
-	_, warnings, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "")
+	req := model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly}
+	_, warnings, err := engine.verifyAndFilterVectorFindings(context.Background(), sampleReviewCtx(), vectorResults, req, NewLimiter(1), "", internalAgentContext{})
 	if err != nil {
 		t.Fatalf("verifyAndFilterVectorFindings returned err: %v", err)
 	}
@@ -455,79 +407,6 @@ func TestVerifyAndFilterKeepsVerifierFailuresAsUnverified(t *testing.T) {
 	assertFallbackUnverified(t, kept[0].Verification, 2)
 	if kept[0].Verification.ID != kept[0].ID {
 		t.Fatalf("verification ID = %q, finding ID = %q, want matching IDs", kept[0].Verification.ID, kept[0].ID)
-	}
-}
-
-func TestVerifyAndFilterRelocatesOrDropsWhollyOutOfScopeFindings(t *testing.T) {
-	reviewCtx := sampleReviewCtx()
-	reviewCtx.DiffScopeHunks = []model.DiffHunk{{
-		FilePath: "f.go",
-		OldStart: 10,
-		OldLines: 3,
-		NewStart: 10,
-		NewLines: 2,
-	}}
-	findings := []model.Finding{
-		{Title: "already scoped", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 10, End: 10}}},
-		{Title: "relocate", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 100, End: 100}}},
-		{Title: "deleted anchor", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 12, End: 12}}},
-		{Title: "drop", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-	}
-	confirmed := func() *model.FindingVerification {
-		return &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "confirmed"}
-	}
-	llmClient := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{
-		{Verification: confirmed(), ReplacementCodeLocation: &model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-		{Verification: confirmed(), ReplacementCodeLocation: &model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: 11, End: 11}, Content: "changed"}},
-		{Verification: confirmed()},
-		{Verification: confirmed()},
-	}}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	vectorResults := []agentResult{{
-		resp: &llm.ReviewResponse{Findings: findings},
-		run:  model.AgentRun{Name: "Reviewer 1", Role: "review"},
-	}}
-	req := model.ReviewRequest{VerifyDropPolicy: DropPolicyNone}
-	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), reviewCtx, vectorResults, req, NewLimiter(1), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	kept := vectorResults[0].resp.Findings
-	if len(kept) != 3 {
-		t.Fatalf("kept findings = %#v, want three", kept)
-	}
-	if kept[0].Title != "already scoped" || kept[0].CodeLocation.LineRange.Start != 10 {
-		t.Fatalf("valid original location changed: %#v", kept[0])
-	}
-	if kept[1].Title != "relocate" || kept[1].CodeLocation.LineRange != (model.LineRange{Start: 11, End: 11, Count: 1}) {
-		t.Fatalf("relocated finding = %#v", kept[1])
-	}
-	if kept[2].Title != "deleted anchor" || kept[2].CodeLocation.LineRange.Start != 12 {
-		t.Fatalf("deleted anchor not preserved: %#v", kept[2])
-	}
-}
-
-func TestVerifyAndFilterDisableDiffScopeKeepsOutsideFinding(t *testing.T) {
-	reviewCtx := sampleReviewCtx()
-	reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
-	finding := model.Finding{Title: "outside", Body: "b", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 99, End: 99}}}
-	llmClient := &scriptedVerifyLLM{responses: []*llm.ReviewResponse{{
-		Verification:            &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 2, ConfidenceScore: 0.9, Remarks: "confirmed"},
-		ReplacementCodeLocation: &model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}, Content: "changed"},
-	}}}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	vectorResults := []agentResult{{resp: &llm.ReviewResponse{Findings: []model.Finding{finding}}, run: model.AgentRun{Name: "Reviewer 1", Role: "review"}}}
-	req := model.ReviewRequest{DisableDiffScope: true, VerifyDropPolicy: DropPolicyNone}
-	_, _, err := engine.verifyAndFilterVectorFindings(context.Background(), reviewCtx, vectorResults, req, NewLimiter(1), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(vectorResults[0].resp.Findings) != 1 {
-		t.Fatalf("outside finding dropped with --disable-diff-scope: %#v", vectorResults[0].resp.Findings)
-	}
-	if got := vectorResults[0].resp.Findings[0].CodeLocation.FilePath; got != "other.go" {
-		t.Fatalf("outside finding relocated with --disable-diff-scope: %q", got)
 	}
 }
 
@@ -600,113 +479,6 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 	}
 	if last := secondMessages[len(secondMessages)-1]; last.Role != "user" || !strings.Contains(last.Content, "You used the following tools up to now") {
 		t.Fatalf("synthetic followup = %#v", last)
-	}
-}
-
-// TestVerifySystemPromptHasNonFindingRule pins the detection guidance: the
-// verifier is told to return non-finding "findings" (affirmations / "no issue"
-// items) as `refuted` so the code demotes or drops them (never blocking).
-func TestVerifySystemPromptHasNonFindingRule(t *testing.T) {
-	llmClient := &scriptedVerifyLLM{
-		responses: []*llm.ReviewResponse{
-			{Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 3, ConfidenceScore: 0.0, Remarks: "no issue"}},
-		},
-	}
-	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{
-		ReviewCtx: sampleReviewCtx(),
-		Finding:   model.Finding{Title: "No issue", Body: "x", Priority: intPtr(3), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
-	})
-	if err != nil {
-		t.Fatalf("Verify returned err: %v", err)
-	}
-	sysPrompt := llmClient.requests[0].Messages[0].Content
-	for _, want := range []string{
-		"Non-finding gate",
-		"Judge the finding AS A WHOLE",
-		"Identify the finding's FINAL CONCLUSION",
-		"no issue",
-		"Do NOT verify whether the positive statement is true",
-		"Never use the phrase \"no issue\" anywhere in `remarks` except",
-		"When `refuted` because the input is a non-finding",
-		"often contain phrases similar to these",
-		"request optional hardening, extra tests, compatibility, cleanup, or optimization",
-		"uncovered changed behavior",
-		"claim performance cost without evidence",
-		"compare every material factual claim with the submitted `code_location.content`",
-		"title, body, cited content, recommendation, and claimed impact",
-		"operation counts alone do not prove meaningful overhead",
-		"invented alternative messages or hypothetical consumers are not evidence",
-		"`unverified` requires a concrete possible failure",
-		"Do not use it to rescue praise",
-	} {
-		if !strings.Contains(sysPrompt, want) {
-			t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
-		}
-	}
-}
-
-// TestVerifySystemPromptRefutesUnusedIdentifierFindings pins the compile-error
-// guidance even when a reviewer frames the compiler diagnostic as cleanup or
-// lint work. It also pins the publication-decision semantics, mandatory
-// preflight, explicit compiler-diagnostic rule, and final consistency check
-// that prevent a verifier from confirming a real compiler diagnostic. The
-// unused-identifier bullet renders only the kinds the finding's language
-// reports through its default toolchain (per unused_identifier_diagnostics in
-// languages.yaml); elsewhere those are ordinary lint findings and the bullet
-// is omitted.
-func TestVerifySystemPromptRefutesUnusedIdentifierFindings(t *testing.T) {
-	tests := []struct {
-		name       string
-		filePath   string
-		wantBullet string
-	}{
-		{name: "go renders imports and variables", filePath: "main.go", wantBullet: "- findings alleging unused imports or variables that the default toolchain reports"},
-		{name: "rust renders imports and variables", filePath: "lib.rs", wantBullet: "- findings alleging unused imports or variables that the default toolchain reports"},
-		{name: "csharp renders variables only", filePath: "Program.cs", wantBullet: "- findings alleging unused variables that the default toolchain reports"},
-		{name: "python omits bullet", filePath: "script.py"},
-		{name: "typescript omits bullet", filePath: "app.ts"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			llmClient := &scriptedVerifyLLM{}
-			engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
-			_, _, err := engine.Verify(context.Background(), VerifyRequest{
-				ReviewCtx: sampleReviewCtx(),
-				Finding: model.Finding{
-					Title:        "Remove unused import",
-					Body:         "Remove the unused import to maintain code cleanliness and avoid lint errors.",
-					Priority:     intPtr(3),
-					CodeLocation: model.CodeLocation{FilePath: tc.filePath, LineRange: model.LineRange{Start: 1, End: 1}},
-				},
-			})
-			if err != nil {
-				t.Fatalf("Verify returned err: %v", err)
-			}
-			for _, messages := range [][]llm.Message{llmClient.requests[0].Messages, llmClient.requests[0].NoToolsMessages} {
-				sysPrompt := messages[0].Content
-				if tc.wantBullet == "" {
-					if strings.Contains(sysPrompt, "- unused imports") || strings.Contains(sysPrompt, "- unused variables") {
-						t.Fatalf("unused-identifier bullet unexpectedly present:\n%s", sysPrompt)
-					}
-					continue
-				}
-				for _, want := range []string{
-					tc.wantBullet,
-					"calling a compiler-reported problem a lint error or maintainability issue does not bypass this gate",
-					"`verdict` is a review-publication decision",
-					"Before calling tools or investigating technical truth",
-					"Do not call tools merely to prove a compiler diagnostic",
-					"Do NOT return `confirmed` because the alleged compile error is real",
-					"requires `compile-error` / `refuted`",
-					"FINAL CONSISTENCY CHECK",
-				} {
-					if !strings.Contains(sysPrompt, want) {
-						t.Fatalf("verify system prompt missing %q:\n%s", want, sysPrompt)
-					}
-				}
-			}
-		})
 	}
 }
 

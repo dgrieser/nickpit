@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,8 +13,9 @@ import (
 )
 
 type codeLocationRepairResult struct {
-	Repaired    int
-	RetryFields []string
+	Repaired             int
+	RetryFields          []string
+	AllowedCodeLocations []model.CodeLocation
 }
 
 type codeLocationRepairQuery struct {
@@ -21,8 +23,8 @@ type codeLocationRepairQuery struct {
 	code string
 }
 
-func (e *Engine) responseCodeLocationRepairer(repoRoot string) func(context.Context, *llm.ReviewResponse) codeLocationRepairResult {
-	if e == nil || e.retrieval == nil || strings.TrimSpace(repoRoot) == "" {
+func (e *Engine) responseCodeLocationRepairer(repoRoot string, enforceDiffScope bool, allowed []model.CodeLocation) func(context.Context, *llm.ReviewResponse) codeLocationRepairResult {
+	if e == nil || (!enforceDiffScope && (e.retrieval == nil || strings.TrimSpace(repoRoot) == "")) {
 		return nil
 	}
 	return func(ctx context.Context, resp *llm.ReviewResponse) codeLocationRepairResult {
@@ -30,21 +32,44 @@ func (e *Engine) responseCodeLocationRepairer(repoRoot string) func(context.Cont
 			ctx = context.Background()
 		}
 		repairer := &codeLocationRepairer{
-			engine:    e,
-			repoRoot:  repoRoot,
-			retrieval: e.retrieval,
-			findCache: make(map[codeLocationRepairQuery]*retrieval.FindLinesResult),
+			engine:           e,
+			repoRoot:         repoRoot,
+			retrieval:        e.retrieval,
+			findCache:        make(map[codeLocationRepairQuery]*retrieval.FindLinesResult),
+			enforceDiffScope: enforceDiffScope,
+			allowed:          append([]model.CodeLocation(nil), allowed...),
 		}
 		return repairer.repairResponse(ctx, resp)
 	}
 }
 
+func (e *Engine) diffScopeCodeLocationRelocator(repoRoot string, allowed []model.CodeLocation) func(context.Context, *model.CodeLocation) bool {
+	if e == nil || e.retrieval == nil || strings.TrimSpace(repoRoot) == "" {
+		return nil
+	}
+	repairer := &codeLocationRepairer{
+		engine:    e,
+		repoRoot:  repoRoot,
+		retrieval: e.retrieval,
+		findCache: make(map[codeLocationRepairQuery]*retrieval.FindLinesResult),
+		allowed:   append([]model.CodeLocation(nil), allowed...),
+	}
+	return func(ctx context.Context, loc *model.CodeLocation) bool {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return repairer.repairFindingToAllowed(ctx, "finding.code_location", loc)
+	}
+}
+
 type codeLocationRepairer struct {
-	engine    *Engine
-	repoRoot  string
-	retrieval retrieval.Engine
-	findCache map[codeLocationRepairQuery]*retrieval.FindLinesResult
-	retrySeen map[string]struct{}
+	engine           *Engine
+	repoRoot         string
+	retrieval        retrieval.Engine
+	findCache        map[codeLocationRepairQuery]*retrieval.FindLinesResult
+	retrySeen        map[string]struct{}
+	enforceDiffScope bool
+	allowed          []model.CodeLocation
 }
 
 type contentRepairStatus int
@@ -63,20 +88,126 @@ func (r *codeLocationRepairer) repairResponse(ctx context.Context, resp *llm.Rev
 	for i := range resp.Findings {
 		finding := &resp.Findings[i]
 		prefix := fmt.Sprintf("findings[%d]", i)
-		changed, _ := r.repairLocation(ctx, prefix+".code_location", &finding.CodeLocation, &result)
-		result.Repaired += changed
-		result.Repaired += r.repairSuggestions(ctx, prefix+".suggestions", finding.Suggestions, &result)
-		if finding.Finalization != nil {
-			result.Repaired += r.repairSuggestions(ctx, prefix+".finalization.suggestions", finding.Finalization.Suggestions, &result)
+		canRepairFromCheckout := r.retrieval != nil && strings.TrimSpace(r.repoRoot) != ""
+		preserveDiffEvidence := r.enforceDiffScope && codeLocationMatchesAllowedEvidence(finding.CodeLocation, r.allowed)
+		initiallyOutOfScope := r.enforceDiffScope && !codeLocationOverlapsAllowed(finding.CodeLocation, r.allowed)
+		if canRepairFromCheckout && !preserveDiffEvidence && !initiallyOutOfScope {
+			changed, _ := r.repairLocation(ctx, prefix+".code_location", &finding.CodeLocation, &result)
+			result.Repaired += changed
 		}
-		if finding.Summarization != nil {
-			result.Repaired += r.repairSuggestions(ctx, prefix+".summarization.suggestions", finding.Summarization.Suggestions, &result)
+		if r.enforceDiffScope && !codeLocationOverlapsAllowed(finding.CodeLocation, r.allowed) {
+			if r.repairFindingToAllowed(ctx, prefix+".code_location", &finding.CodeLocation) {
+				result.Repaired++
+			} else {
+				r.addRetry(&result, prefix+".code_location (must be inside an allowed diff code_location)")
+				if len(result.AllowedCodeLocations) == 0 {
+					result.AllowedCodeLocations = append([]model.CodeLocation(nil), r.allowed...)
+				}
+			}
+		}
+		if canRepairFromCheckout {
+			result.Repaired += r.repairSuggestions(ctx, prefix+".suggestions", finding.Suggestions, &result)
+			if finding.Finalization != nil {
+				result.Repaired += r.repairSuggestions(ctx, prefix+".finalization.suggestions", finding.Finalization.Suggestions, &result)
+			}
+			if finding.Summarization != nil {
+				result.Repaired += r.repairSuggestions(ctx, prefix+".summarization.suggestions", finding.Summarization.Suggestions, &result)
+			}
 		}
 	}
 	if result.Repaired > 0 {
 		r.logf(ctx, "Code location repair completed: repaired=%d retry_fields=%d", result.Repaired, len(result.RetryFields))
 	}
 	return result
+}
+
+func (r *codeLocationRepairer) repairFindingToAllowed(ctx context.Context, field string, loc *model.CodeLocation) bool {
+	if r == nil || r.retrieval == nil || strings.TrimSpace(r.repoRoot) == "" || loc == nil || strings.TrimSpace(loc.Content) == "" {
+		return false
+	}
+	path := normalizeReviewPath(loc.FilePath)
+	if path == "" || !allowedContainsPath(r.allowed, path) {
+		return false
+	}
+	found, err := r.findLines(ctx, path, loc.Content)
+	if err != nil || found == nil {
+		return false
+	}
+	var matched *retrieval.CodeLocation
+	for _, match := range found.Matches {
+		candidate := model.CodeLocation{
+			FilePath: match.CodeLocation.FilePath,
+			LineRange: model.LineRange{
+				Start: match.CodeLocation.LineRange.Start,
+				End:   match.CodeLocation.LineRange.End,
+				Count: match.CodeLocation.LineRange.Count,
+			},
+			Language: match.CodeLocation.Language,
+			Content:  match.CodeLocation.Content,
+		}
+		if codeLocationOverlapsAllowed(candidate, r.allowed) {
+			if matched != nil {
+				return false
+			}
+			location := match.CodeLocation
+			matched = &location
+		}
+	}
+	if matched == nil {
+		return false
+	}
+	r.applyFindLinesLocation(ctx, field, loc, *matched, "unique_diff_content")
+	return true
+}
+
+func allowedContainsPath(allowed []model.CodeLocation, path string) bool {
+	for _, candidate := range allowed {
+		if normalizeReviewPath(candidate.FilePath) == path {
+			return true
+		}
+	}
+	return false
+}
+
+// codeLocationMatchesAllowedEvidence preserves submitted old-side evidence that
+// cannot be reconstructed from the post-change checkout. It also avoids
+// needless checkout repair for an already-consistent new-side location.
+func codeLocationMatchesAllowedEvidence(loc model.CodeLocation, allowed []model.CodeLocation) bool {
+	if strings.TrimSpace(loc.Content) == "" || !codeLocationOverlapsAllowed(loc, allowed) {
+		return false
+	}
+	path := normalizeReviewPath(loc.FilePath)
+	for _, candidate := range allowed {
+		if normalizeReviewPath(candidate.FilePath) != path ||
+			!rangesOverlap(loc.LineRange.Start, max(loc.LineRange.End, loc.LineRange.Start), candidate.LineRange.Start, candidate.LineRange.EffectiveCount()) {
+			continue
+		}
+		content := &retrieval.FileContent{Path: path, Content: candidate.Content}
+		for _, match := range retrieval.FindLinesIn(content, loc.Content).Matches {
+			matchStart := candidate.LineRange.Start + match.CodeLocation.LineRange.Start - 1
+			if rangesOverlap(
+				loc.LineRange.Start,
+				max(loc.LineRange.End, loc.LineRange.Start),
+				matchStart,
+				max(match.CodeLocation.LineRange.End-match.CodeLocation.LineRange.Start+1, 1),
+			) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type diffScopeRetryGuidance struct {
+	AllowedCodeLocationsJSON string
+}
+
+func newDiffScopeRetryGuidance(allowed []model.CodeLocation) diffScopeRetryGuidance {
+	encoded, err := json.MarshalIndent(allowed, "", "  ")
+	if err != nil {
+		return diffScopeRetryGuidance{AllowedCodeLocationsJSON: "[]"}
+	}
+	return diffScopeRetryGuidance{AllowedCodeLocationsJSON: string(encoded)}
 }
 
 func (r *codeLocationRepairer) repairSuggestions(ctx context.Context, prefix string, suggestions []model.Suggestion, result *codeLocationRepairResult) int {

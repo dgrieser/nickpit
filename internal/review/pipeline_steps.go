@@ -138,6 +138,11 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 			schema = llm.FindingsSchemaWithConstraintsFor(vector.constraints, req.DisableSuggestions)
 		}
 	}
+	enforceDiffScope := !req.DisableDiffScope && st.Enriched != nil && st.Enriched.DiffScopeHunks != nil
+	var allowedDiffScopes []model.CodeLocation
+	if enforceDiffScope {
+		allowedDiffScopes = allowedDiffCodeLocations(st.Enriched.DiffScopeHunks)
+	}
 	return agentSpec{
 		name:                          vector.name,
 		role:                          "review",
@@ -153,6 +158,8 @@ func (e *Engine) buildReviewerAgentSpec(vector reviewVector, st *PipelineState, 
 		reviewSessionValidateResponse: vector.validateResponse,
 		reviewSessionEnforceResponse:  vector.enforceResponse,
 		maxFindings:                   req.MaxFindings,
+		enforceDiffScope:              enforceDiffScope,
+		allowedDiffScopes:             allowedDiffScopes,
 	}, nil
 }
 
@@ -387,14 +394,16 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 			return err
 		}
 		vr := st.vectorResults()
-		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "")
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "", sc.categorizeAgentContext())
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
-		st.verifyUsage = addTokenUsage(st.verifyUsage, usage)
+		st.categorizeUsage = addTokenUsage(st.categorizeUsage, telemetry.CategorizeUsage)
+		st.verifyUsage = addTokenUsage(st.verifyUsage, telemetry.VerifyUsage)
+		st.verificationToolCalls += telemetry.VerifyToolCalls
 		st.warnings = append(st.warnings, warnings...)
 		st.mu.Unlock()
 		if err != nil {
-			sc.Engine.logf(ctx, "Verifier failed before merge: tokens=%s warnings=%d error=%v", model.HumanTokens(usage.TotalTokens), len(warnings), err)
+			sc.Engine.logf(ctx, "Verifier failed before merge: categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
 			return err
 		}
 		return nil
@@ -419,13 +428,15 @@ func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
 			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
 		}
 		results := []agentResult{vr}
-		usage, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name, sc.categorizeAgentContext())
 		st.mu.Lock()
-		st.verifyUsage = addTokenUsage(st.verifyUsage, usage)
+		st.categorizeUsage = addTokenUsage(st.categorizeUsage, telemetry.CategorizeUsage)
+		st.verifyUsage = addTokenUsage(st.verifyUsage, telemetry.VerifyUsage)
+		st.verificationToolCalls += telemetry.VerifyToolCalls
 		st.warnings = append(st.warnings, warnings...)
 		st.mu.Unlock()
 		if err != nil {
-			sc.Engine.logf(ctx, "Verifier failed for reviewer: reviewer=%s tokens=%s warnings=%d error=%v", vector.name, model.HumanTokens(usage.TotalTokens), len(warnings), err)
+			sc.Engine.logf(ctx, "Verifier failed for reviewer: reviewer=%s categorize_tokens=%s verify_tokens=%s warnings=%d error=%v", vector.name, model.HumanTokens(telemetry.CategorizeUsage.TotalTokens), model.HumanTokens(telemetry.VerifyUsage.TotalTokens), len(warnings), err)
 			return err
 		}
 		return nil

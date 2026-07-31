@@ -1,0 +1,10 @@
+The top-level finding code location must identify the exact causal changed code.
+Choose a code location inside one of these allowed diff windows. These values
+already use the required `code_location` JSON shape:
+
+{{.AllowedCodeLocationsJSON}}
+
+Return the shortest exact causal subrange with matching `content`. Copy a whole
+window only when that whole window is causal. Do not choose nearby or unrelated
+code. If no allowed window contains the causal code, omit the finding instead
+of inventing an anchor.

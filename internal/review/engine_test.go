@@ -517,14 +517,18 @@ type capturingLLM struct {
 var uuidRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 type multiAgentLLM struct {
-	mu                sync.Mutex
-	context           int
-	vectorCalls       map[string]int
-	verifyCalls       int
-	mergeTools        int
-	mergePayload      map[string]any
-	mergeSchema       []byte
-	mergeRequests     []*llm.ReviewRequest
+	mu              sync.Mutex
+	context         int
+	vectorCalls     map[string]int
+	verifyCalls     int
+	mergeTools      int
+	mergePayload    map[string]any
+	mergeSchema     []byte
+	mergeRequests   []*llm.ReviewRequest
+	categorizeCalls int
+	// categorizeDrop titles the findings the categorize stub suppresses; each
+	// gets the confirmation category, so the filter removes it before verify.
+	categorizeDrop    map[string]bool
 	contextSystem     string
 	vectorContext     map[string]string
 	vectorSystem      map[string]string
@@ -559,6 +563,23 @@ func (s *multiAgentLLM) Review(_ context.Context, req *llm.ReviewRequest) (*llm.
 	}
 	if s.vectorNudge == nil {
 		s.vectorNudge = make(map[string]string)
+	}
+	if req.SchemaKind == llm.SchemaKindCategorize {
+		s.events = append(s.events, "categorize")
+		s.categorizeCalls++
+		categories := []string{model.CategoryFinding}
+		for title := range s.categorizeDrop {
+			for _, msg := range req.Messages {
+				if strings.Contains(msg.Content, title) {
+					categories = []string{model.CategoryConfirmation}
+					break
+				}
+			}
+		}
+		return &llm.ReviewResponse{
+			Categorization: &model.FindingCategorization{Categories: categories, Remarks: "categorized"},
+			TokensUsed:     model.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+		}, nil
 	}
 	if req.SchemaKind == llm.SchemaKindVerify {
 		s.events = append(s.events, "verify")
@@ -2475,19 +2496,28 @@ func TestEngineRunsContextVectorsMergeWithIndependentToolBudgets(t *testing.T) {
 	if result.TotalToolCalls != expectedToolCalls {
 		t.Fatalf("tool calls = %d, want context + one per vector", result.TotalToolCalls)
 	}
+	if llmClient.categorizeCalls != len(reviewVectors) {
+		t.Fatalf("categorize calls = %d, want one per vector finding", llmClient.categorizeCalls)
+	}
+	if result.CategorizeTokensUsed.TotalTokens != len(reviewVectors)*2 {
+		t.Fatalf("categorize tokens = %d, want %d", result.CategorizeTokensUsed.TotalTokens, len(reviewVectors)*2)
+	}
 	if llmClient.verifyCalls != len(reviewVectors) {
 		t.Fatalf("verify calls = %d, want one per vector finding", llmClient.verifyCalls)
 	}
 	if result.VerifyTokensUsed.TotalTokens != len(reviewVectors)*2 {
 		t.Fatalf("verify tokens = %d, want %d", result.VerifyTokensUsed.TotalTokens, len(reviewVectors)*2)
 	}
+	// context + reviewers + merge, then the two per-finding phases: categorize
+	// and verify each spend {1,1,2} per vector finding.
+	perFindingPhases := 2
 	wantUsage := model.TokenUsage{
-		PromptTokens:     1 + len(reviewVectors)*2 + 3 + len(reviewVectors),
-		CompletionTokens: 1 + len(reviewVectors)*1 + 1 + len(reviewVectors),
-		TotalTokens:      2 + len(reviewVectors)*3 + 4 + len(reviewVectors)*2,
+		PromptTokens:     1 + len(reviewVectors)*2 + 3 + len(reviewVectors)*perFindingPhases,
+		CompletionTokens: 1 + len(reviewVectors)*1 + 1 + len(reviewVectors)*perFindingPhases,
+		TotalTokens:      2 + len(reviewVectors)*3 + 4 + len(reviewVectors)*2*perFindingPhases,
 	}
 	if result.TokensUsed != wantUsage {
-		t.Fatalf("total tokens = %+v, want %+v including verifier spend", result.TokensUsed, wantUsage)
+		t.Fatalf("total tokens = %+v, want %+v including categorizer and verifier spend", result.TokensUsed, wantUsage)
 	}
 	if got := llmClient.events[len(llmClient.events)-1]; got != "merge" {
 		t.Fatalf("last event = %q, want merge after verification", got)
@@ -4650,16 +4680,16 @@ func TestShouldDropFinding(t *testing.T) {
 		wantDrop   bool
 		wantReason string
 	}{
-		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, "refuted-only", false, "kept"},
-		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, "refuted-and-unverified", false, "kept"},
-		{"refuted high confidence drops", model.VerdictRefuted, 0.85, "refuted-only", true, model.VerdictRefuted},
-		{"refuted low confidence drops", model.VerdictRefuted, 0.01, "refuted-only", true, model.VerdictRefuted},
-		{"refuted zero confidence drops", model.VerdictRefuted, 0.0, "refuted-only", true, model.VerdictRefuted},
-		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, "refuted-only", false, "kept"},
-		{"unverified drops (both)", model.VerdictUnverified, 0.0, "refuted-and-unverified", true, model.VerdictUnverified},
-		{"refuted policy=none kept", model.VerdictRefuted, 0.99, "none", false, "kept"},
-		{"missing verdict treated as unverified (refuted-only)", "", 0.99, "refuted-only", false, "kept"},
-		{"missing verdict treated as unverified (both)", "", 0.99, "refuted-and-unverified", true, model.VerdictUnverified},
+		{"confirmed never drops (refuted-only)", model.VerdictConfirmed, 0.99, model.DropPolicyRefutedOnly, false, "kept"},
+		{"confirmed never drops (both)", model.VerdictConfirmed, 0.99, model.DropPolicyRefutedAndUnverified, false, "kept"},
+		{"refuted high confidence drops", model.VerdictRefuted, 0.85, model.DropPolicyRefutedOnly, true, model.VerdictRefuted},
+		{"refuted low confidence drops", model.VerdictRefuted, 0.01, model.DropPolicyRefutedOnly, true, model.VerdictRefuted},
+		{"refuted zero confidence drops", model.VerdictRefuted, 0.0, model.DropPolicyRefutedOnly, true, model.VerdictRefuted},
+		{"unverified kept (refuted-only)", model.VerdictUnverified, 0.95, model.DropPolicyRefutedOnly, false, "kept"},
+		{"unverified drops (both)", model.VerdictUnverified, 0.0, model.DropPolicyRefutedAndUnverified, true, model.VerdictUnverified},
+		{"refuted policy=none kept", model.VerdictRefuted, 0.99, model.DropPolicyNone, false, "kept"},
+		{"missing verdict treated as unverified (refuted-only)", "", 0.99, model.DropPolicyRefutedOnly, false, "kept"},
+		{"missing verdict treated as unverified (both)", "", 0.99, model.DropPolicyRefutedAndUnverified, true, model.VerdictUnverified},
 		{"bogus policy defaults to refuted-only behavior", model.VerdictRefuted, 0.9, "garbage", true, model.VerdictRefuted},
 	}
 	for _, tc := range cases {
@@ -4677,34 +4707,41 @@ func TestShouldDropFinding(t *testing.T) {
 }
 
 func TestShouldDropFindingNilVerification(t *testing.T) {
-	drop, reason := shouldDropFinding(nil, "refuted-and-unverified")
+	drop, reason := shouldDropFinding(nil, model.DropPolicyRefutedAndUnverified)
 	if drop || reason != "kept" {
 		t.Fatalf("nil verification: drop=%v reason=%q", drop, reason)
 	}
 }
 
-func TestNormalizeDropPolicyFallback(t *testing.T) {
-	for _, p := range []string{"", "garbage", "REFUTED-ONLY"} {
-		if got := normalizeDropPolicy(p); got != "refuted-only" {
-			t.Fatalf("normalizeDropPolicy(%q) = %q, want refuted-only", p, got)
-		}
-	}
-	for _, p := range []string{"none", "refuted-only", "refuted-and-unverified"} {
-		if got := normalizeDropPolicy(p); got != p {
-			t.Fatalf("normalizeDropPolicy(%q) = %q, want passthrough", p, got)
-		}
-	}
-}
+func TestShouldDropCategories(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  []string
+		policy   string
+		wantDrop bool
+	}{
+		{"sole finding kept (refuted-only)", []string{model.CategoryFinding}, model.DropPolicyRefutedOnly, false},
+		{"sole finding kept (both)", []string{model.CategoryFinding}, model.DropPolicyRefutedAndUnverified, false},
 
-func TestValidateDropPolicy(t *testing.T) {
-	for _, p := range []string{"none", "refuted-only", "refuted-and-unverified"} {
-		if err := ValidateDropPolicy(p); err != nil {
-			t.Fatalf("ValidateDropPolicy(%q) = %v, want nil", p, err)
-		}
+		// finding + compilation is unverified: not a CLEAR suppression, so
+		// refuted-only keeps it and only refuted-and-unverified drops it.
+		{"bundled compile kept (refuted-only)", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyRefutedOnly, false},
+		{"bundled compile drops (both)", []string{model.CategoryCompilation, model.CategoryFinding}, model.DropPolicyRefutedAndUnverified, true},
+
+		// No finding at all is refuted: dropped by either dropping policy.
+		{"pure confirmation drops (refuted-only)", []string{model.CategoryConfirmation}, model.DropPolicyRefutedOnly, true},
+		{"pure compilation drops (both)", []string{model.CategoryCompilation}, model.DropPolicyRefutedAndUnverified, true},
+
+		{"policy none keeps everything", []string{model.CategoryConfirmation}, model.DropPolicyNone, false},
+		{"empty content fails open", nil, model.DropPolicyRefutedAndUnverified, false},
+		{"bogus policy defaults to refuted-only behavior", []string{model.CategoryCompilation, model.CategoryFinding}, "garbage", false},
 	}
-	for _, p := range []string{"", "garbage", "REFUTED-ONLY", "refuted_only"} {
-		if err := ValidateDropPolicy(p); err == nil {
-			t.Fatalf("ValidateDropPolicy(%q) = nil, want error", p)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			drop, _ := shouldDropCategories(tc.content, tc.policy)
+			if drop != tc.wantDrop {
+				t.Fatalf("shouldDropCategories(%v, %q) = %v, want %v", tc.content, tc.policy, drop, tc.wantDrop)
+			}
+		})
 	}
 }
