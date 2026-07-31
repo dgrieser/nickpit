@@ -142,6 +142,9 @@ type app struct {
 	// prepareCheckout prepares chat's shared temporary checkout; nil means
 	// git.NewCheckoutManager().Prepare. A seam so tests can fake the clone.
 	prepareCheckout func(ctx context.Context, spec model.CheckoutSpec, opts git.CheckoutOptions) (string, func(), error)
+	// clipboardCopy writes text to the system clipboard; nil means
+	// clipboard.Copy. A seam so tests need no clipboard helper installed.
+	clipboardCopy func(ctx context.Context, data []byte) (string, error)
 	// reviewStart anchors the whole-review runtime (model check, checkout,
 	// pipeline through summarize), stamped at runReview entry.
 	reviewStart time.Time
@@ -1494,21 +1497,41 @@ func chatSessionHint(sessionID string, stderrTTY, useANSI bool, width int) strin
 	if !stderrTTY || sessionID == "" {
 		return ""
 	}
-	intro := "To chat about this review, run:"
-	command := "nickpit chat --session " + sessionID
+	intro := "To chat about this review, or copy it to the clipboard, run:"
+	chatCommand := "nickpit chat --session " + sessionID
+	copyCommand := "nickpit session " + sessionID + " --clipboard"
 	if !useANSI {
-		return "\n---\n\n" + intro + "\n" + command
+		return "\n---\n\n" + intro + "\n" + chatCommand + "\n" + copyCommand
 	}
 	if width <= 0 {
 		width = 80
 	}
 	// Rule and intro share the dim grey of the review-output footer (Tokens /
-	// Runtime); the command keeps its periwinkle foreground but drops the block
-	// background so it reads as text, not a chip.
+	// Runtime); both command lines keep the same periwinkle foreground and drop
+	// the block background so they read as text, not chips. Only the subcommand
+	// that distinguishes the two lines (chat vs session) is lifted one small hue
+	// step towards cyan, so the eye lands on the word that differs.
 	rule := "\x1b[2m" + strings.Repeat("─", width) + "\x1b[0m"
 	return "\n" + rule + "\n\n" +
 		"\x1b[2m" + intro + "\x1b[0m\n" +
-		"\x1b[38;2;179;189;255m" + command + "\x1b[0m"
+		highlightSubcommand(chatCommand, "chat") + "\n" +
+		highlightSubcommand(copyCommand, "session")
+}
+
+// ANSI foregrounds shared by the post-review hint: periwinkle for the command
+// line, one hue step lighter for the subcommand inside it.
+const (
+	hintCommandColor    = "\x1b[38;2;179;189;255m"
+	hintSubcommandColor = "\x1b[38;2;179;209;250m"
+)
+
+// highlightSubcommand renders a `nickpit <sub> ...` line in the hint's command
+// color with sub in the lighter shade.
+func highlightSubcommand(command, sub string) string {
+	rest := strings.TrimPrefix(command, "nickpit "+sub)
+	return hintCommandColor + "nickpit " +
+		hintSubcommandColor + sub +
+		hintCommandColor + rest + "\x1b[0m"
 }
 
 // runWorkflow executes a spec through the pipeline: the embedded DefaultSpec for
