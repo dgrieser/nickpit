@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ type Logger struct {
 	enabled       bool
 	showReasoning bool
 	showProgress  bool
+	version       string
 	reasoning     *ReasoningRenderer
 	live          *LiveRenderer
 }
@@ -128,6 +130,42 @@ func (l *Logger) SetShowProgress(enabled bool) {
 		return
 	}
 	l.showProgress = enabled
+}
+
+// SetVersion records the running nickpit build so every output surface can name
+// it: LogVersion announces it on the progress/verbose channels, and the live
+// dashboard shows it in its header (see LivePlan.Version). Like the other
+// setters this runs during command setup, before any agent goroutine starts.
+func (l *Logger) SetVersion(version string) {
+	if l == nil {
+		return
+	}
+	l.version = strings.TrimSpace(version)
+}
+
+// Version returns the recorded build version, or "" when none was set.
+func (l *Logger) Version() string {
+	if l == nil {
+		return ""
+	}
+	return l.version
+}
+
+// LogVersion announces the running build once, on whichever line-based channel
+// is active: a progress line under --show-progress or --show-reasoning,
+// otherwise a verbose line under --verbose. It is deliberately not routed
+// through Progress — the live dashboard carries the version in its own header
+// instead of as a stage row.
+func (l *Logger) LogVersion(ctx context.Context) {
+	if l == nil || l.version == "" {
+		return
+	}
+	switch {
+	case l.showProgress || l.reasoning != nil:
+		l.emitProgress(ProgressInfo{}, StageNickPit, StateNone, l.version)
+	case l.Enabled():
+		l.Verbosef(ctx, "nickpit: version %s", l.version)
+	}
 }
 
 func (l *Logger) Enabled() bool {

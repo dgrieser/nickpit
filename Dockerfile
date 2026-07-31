@@ -7,9 +7,15 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY . .
+# .dockerignore excludes .git, so Go cannot stamp the revision itself: the build
+# identity has to be passed in (the Docker workflow supplies tag and SHA).
+# Unset, the binary reports "dev" with no commit.
+ARG VERSION=dev
+ARG COMMIT=""
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -tags "grammar_subset,grammar_subset_python,grammar_subset_rust" -trimpath -ldflags="-s -w" -o /nickpit ./cmd/nickpit
+    CGO_ENABLED=0 go build -tags "grammar_subset,grammar_subset_python,grammar_subset_rust" -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /nickpit ./cmd/nickpit
 
 # ---- Stage git + its shared libs (bookworm, matches base-debian12) -------
 FROM debian:12-slim AS gitpkg

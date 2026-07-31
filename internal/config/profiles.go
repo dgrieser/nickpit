@@ -129,6 +129,12 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.MaxFindings != 0 {
 		base.MaxFindings = override.MaxFindings
 	}
+	if override.MaxSessionsConfigured {
+		base.MaxSessionsConfigured = true
+		base.MaxSessions = override.MaxSessions
+	} else if override.MaxSessions != 0 {
+		base.MaxSessions = override.MaxSessions
+	}
 	if override.DisablePatchSummary {
 		base.DisablePatchSummary = true
 	}

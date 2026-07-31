@@ -104,15 +104,16 @@ func TestStoreListEmptyDir(t *testing.T) {
 }
 
 func TestStorePrunesOldest(t *testing.T) {
+	const cap = 5
 	dir := t.TempDir()
-	store, err := NewStore(dir)
+	store, err := NewStore(dir, WithMaxStored(cap))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
 	// Create one more session than the cap; backdate each file so modification
 	// times are strictly ordered and the oldest is unambiguous.
 	var first string
-	for i := 0; i <= maxStoredSessions; i++ {
+	for i := 0; i <= cap; i++ {
 		sess := New()
 		if i == 0 {
 			first = sess.ID
@@ -121,7 +122,7 @@ func TestStorePrunesOldest(t *testing.T) {
 			t.Fatalf("save %d: %v", i, err)
 		}
 		path, _ := store.Path(sess.ID)
-		stamp := time.Now().Add(time.Duration(i-maxStoredSessions-1) * time.Hour)
+		stamp := time.Now().Add(time.Duration(i-cap-1) * time.Hour)
 		if err := os.Chtimes(path, stamp, stamp); err != nil {
 			t.Fatalf("chtimes: %v", err)
 		}
@@ -140,11 +141,83 @@ func TestStorePrunesOldest(t *testing.T) {
 			count++
 		}
 	}
-	if count != maxStoredSessions {
-		t.Fatalf("stored sessions = %d, want %d", count, maxStoredSessions)
+	if count != cap {
+		t.Fatalf("stored sessions = %d, want %d", count, cap)
 	}
 	if _, err := store.Load(first); err == nil {
 		t.Fatalf("oldest session %s should have been pruned", first)
+	}
+}
+
+// Without an explicit cap the store keeps every session: pruning is opt-in, so
+// a resumable conversation is never deleted behind the user's back.
+func TestStoreKeepsEverythingWithoutCap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if store.maxStored != DefaultMaxStoredSessions {
+		t.Fatalf("default maxStored = %d, want %d", store.maxStored, DefaultMaxStoredSessions)
+	}
+	var ids []string
+	for i := range 12 {
+		sess := New()
+		ids = append(ids, sess.ID)
+		if err := store.Save(sess); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+		// Backdate so the oldest would be an obvious prune victim if a cap applied.
+		path, _ := store.Path(sess.ID)
+		stamp := time.Now().Add(time.Duration(i-len(ids)-1) * time.Hour)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+	}
+	for _, id := range ids {
+		if _, err := store.Load(id); err != nil {
+			t.Fatalf("session %s was pruned without a cap: %v", id, err)
+		}
+	}
+	// A negative cap means the same thing as zero, not "delete everything".
+	unlimited, err := NewStore(dir, WithMaxStored(-1))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := unlimited.Save(New()); err != nil {
+		t.Fatalf("save with negative cap: %v", err)
+	}
+	for _, id := range ids {
+		if _, err := unlimited.Load(id); err != nil {
+			t.Fatalf("session %s was pruned with a negative cap: %v", id, err)
+		}
+	}
+}
+
+// The orphaned-temp-file sweep is the one part of prune that must still run
+// when trimming is off — otherwise crashed saves accumulate forever.
+func TestPruneSweepsOrphanedTempFilesWithoutCap(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	orphan := filepath.Join(dir, ".session-abandoned.tmp")
+	if err := os.WriteFile(orphan, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write orphan: %v", err)
+	}
+	stamp := time.Now().Add(-2 * time.Hour) // older than the one-hour grace period
+	if err := os.Chtimes(orphan, stamp, stamp); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := store.Save(New()); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphaned temp file survived the sweep: %v", err)
 	}
 }
 
@@ -180,8 +253,9 @@ func TestListIgnoresForeignJSONFiles(t *testing.T) {
 }
 
 func TestPruneIgnoresForeignJSONFiles(t *testing.T) {
+	const cap = 3
 	dir := t.TempDir()
-	store, err := NewStore(dir)
+	store, err := NewStore(dir, WithMaxStored(cap))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -195,7 +269,7 @@ func TestPruneIgnoresForeignJSONFiles(t *testing.T) {
 	if err := os.Chtimes(foreign, stamp, stamp); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	for i := 0; i <= maxStoredSessions; i++ {
+	for i := 0; i <= cap; i++ {
 		if err := store.Save(New()); err != nil {
 			t.Fatalf("save %d: %v", i, err)
 		}

@@ -493,6 +493,54 @@ func TestJSONFormatterRuntimeSecondsNumeric(t *testing.T) {
 	}
 }
 
+// The build that produced a review is reported by both output formats: a footer
+// line in the rendered form and nickpit_version in JSON. Results without one
+// (older sessions, imported findings) render exactly as before.
+func TestFormattersReportNickpitVersion(t *testing.T) {
+	result := &model.ReviewResult{
+		Findings:           []model.Finding{},
+		OverallCorrectness: "patch is correct",
+		RuntimeSeconds:     12,
+		NickpitVersion:     "v1.2.3",
+	}
+
+	var rendered bytes.Buffer
+	if err := NewMarkdownFormatter(&rendered).FormatFindings(result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rendered.String(), "NickPit: v1.2.3") {
+		t.Fatalf("rendered footer should name the build:\n%s", rendered.String())
+	}
+
+	var jsonBuf bytes.Buffer
+	if err := NewJSONFormatter(&jsonBuf).FormatFindings(result); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(jsonBuf.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := payload["nickpit_version"]; got != "v1.2.3" {
+		t.Fatalf("nickpit_version = %#v", got)
+	}
+
+	result.NickpitVersion = ""
+	var bare bytes.Buffer
+	if err := NewMarkdownFormatter(&bare).FormatFindings(result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(bare.String(), "NickPit:") {
+		t.Fatalf("versionless result should print no version footer:\n%s", bare.String())
+	}
+	var bareJSON bytes.Buffer
+	if err := NewJSONFormatter(&bareJSON).FormatFindings(result); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(bareJSON.String(), "nickpit_version") {
+		t.Fatalf("versionless result should omit the JSON field:\n%s", bareJSON.String())
+	}
+}
+
 func TestJSONFormatterIncludesVerification(t *testing.T) {
 	var buf bytes.Buffer
 	formatter := NewJSONFormatter(&buf)

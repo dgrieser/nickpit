@@ -10,6 +10,10 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
+      # -trimpath drops the VCS stamp Go would embed, so the commit is passed
+      # explicitly. A tagged build prints the tag alone; the commit shows up for
+      # snapshot/untagged builds.
+      - -X main.commit={{.FullCommit}}
     goos:
       - linux
       - darwin

@@ -136,15 +136,23 @@ func (f *TerminalFormatter) writeFooter(b *strings.Builder, result *model.Review
 		b.WriteString(f.yellow(warningSummary(result.Warnings)))
 		b.WriteString("\n")
 	}
+	// Build first, then runtime, then tokens: the version identifies what
+	// produced the numbers below it. It is the build that ran the review, not the
+	// one printing it — a saved session or an imported result keeps the version it
+	// was reviewed with.
+	if version := strings.TrimSpace(result.NickpitVersion); version != "" {
+		b.WriteString(f.dim("NickPit: " + version))
+		b.WriteString("\n")
+	}
+	if result.RuntimeSeconds > 0 {
+		b.WriteString(f.dim("Runtime: " + model.HumanDuration(time.Duration(result.RuntimeSeconds*float64(time.Second)))))
+		b.WriteString("\n")
+	}
 	b.WriteString(f.dim(fmt.Sprintf("Tokens:  %s prompt / %s completion / %s total",
 		model.HumanTokens(result.TokensUsed.PromptTokens),
 		model.HumanTokens(result.TokensUsed.CompletionTokens),
 		model.HumanTokens(result.TokensUsed.TotalTokens))))
 	b.WriteString("\n")
-	if result.RuntimeSeconds > 0 {
-		b.WriteString(f.dim("Runtime: " + model.HumanDuration(time.Duration(result.RuntimeSeconds*float64(time.Second)))))
-		b.WriteString("\n")
-	}
 }
 
 func warningSummary(warnings []string) string {

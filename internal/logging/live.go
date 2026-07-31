@@ -32,6 +32,10 @@ type LivePlan struct {
 	// "@small" model), shown in the header exactly like the --show-progress model
 	// lines: alias-prefixed name plus reasoning effort.
 	Models []LiveModel
+	// Version is the running nickpit build, shown right after the wordmark so a
+	// dashboard screenshot always names the version that produced it. Empty
+	// leaves the header as it was.
+	Version string
 }
 
 // LiveModel is a model shown in the dashboard header: its display name (which may
@@ -421,9 +425,14 @@ func (r *LiveRenderer) Close() {
 
 // finalHeaderLocked renders the frozen snapshot's headline: a green ✓ (or red ✗
 // on abort), the status word in bold white (distinct from the turquoise elapsed
-// time), grey middle dots, and — when shown — the findings count in green.
+// time), the build version, grey middle dots, and — when shown — the findings
+// count in green. The version is repeated here because this line, not the live
+// header, is what stays in the scrollback.
 func (r *LiveRenderer) finalHeaderLocked(mark, word string, elapsed time.Duration, findings int, showFindings bool) string {
 	if !r.useANSI {
+		if r.plan.Version != "" {
+			word += " " + r.plan.Version
+		}
 		if showFindings {
 			return fmt.Sprintf("%s %s · %s · %d findings", mark, word, shortDuration(elapsed), findings)
 		}
@@ -435,8 +444,11 @@ func (r *LiveRenderer) finalHeaderLocked(mark, word string, elapsed time.Duratio
 	}
 	sep := progressGrey(" · ")
 	line := progressStyle(markColor, mark) + " " +
-		progressStyle(progressColorBold+";"+progressColorWhite, word) + sep +
-		progressStyle(progressColorKeyTurquoise, shortDuration(elapsed))
+		progressStyle(progressColorBold+";"+progressColorWhite, word)
+	if r.plan.Version != "" {
+		line += " " + progressGrey(r.plan.Version)
+	}
+	line += sep + progressStyle(progressColorKeyTurquoise, shortDuration(elapsed))
 	if showFindings {
 		line += sep + progressStyle(progressColorNumberGreen, fmt.Sprintf("%d", findings)) + " " + progressLight("findings")
 	}
@@ -515,13 +527,17 @@ func (r *LiveRenderer) buildLinesLocked() []string {
 }
 
 // headerLineLocked renders the top dashboard line: the animated "NickPit"
-// wordmark (which replaces the old spinner as the motion cue), the elapsed time,
-// then the model names in use (comma-separated) — the same names and colours the
-// --show-progress model line uses.
+// wordmark (which replaces the old spinner as the motion cue), the build
+// version, the elapsed time, then the model names in use (comma-separated) —
+// the same names and colours the --show-progress model line uses.
 func (r *LiveRenderer) headerLineLocked(now time.Time) string {
 	dur := shortDuration(now.Sub(r.started))
 	if !r.useANSI {
-		s := fmt.Sprintf("  NickPit · %s", dur)
+		s := "  NickPit"
+		if r.plan.Version != "" {
+			s += " " + r.plan.Version
+		}
+		s += " · " + dur
 		if names := plainModelList(r.plan.Models); names != "" {
 			s += " · " + names
 		}
@@ -529,7 +545,13 @@ func (r *LiveRenderer) headerLineLocked(now time.Time) string {
 	}
 	sep := progressGrey(" · ")
 	frame := max(int(now.Sub(r.started)/(100*time.Millisecond)), 0)
-	line := "  " + nickPitWordmark(frame) + sep + progressStyle(progressColorKeyTurquoise, dur)
+	line := "  " + nickPitWordmark(frame)
+	if r.plan.Version != "" {
+		// Dim: the version identifies the build without competing with the
+		// animated wordmark or the live counters beside it.
+		line += " " + progressGrey(r.plan.Version)
+	}
+	line += sep + progressStyle(progressColorKeyTurquoise, dur)
 	if len(r.plan.Models) > 0 {
 		line += sep + styleModelList(r.plan.Models)
 	}

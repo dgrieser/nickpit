@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/git"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/review"
@@ -99,6 +101,72 @@ func TestCompleteChatFindingIDs(t *testing.T) {
 	got, _ = a.completeChatFindingIDs(chatOptions{}, "")
 	if len(got) != 2 {
 		t.Fatalf("latest-session findings = %v", got)
+	}
+}
+
+// A clean review — no findings and no overall explanation (a workflow without a
+// verdict step) — must still be saved: "why did you find nothing?" is a valid
+// chat, and only --no-session suppresses the save.
+func TestPersistChatSessionSavesFindingFreeReview(t *testing.T) {
+	dir := t.TempDir()
+	a := &app{sessionDir: dir, logger: logging.New(io.Discard, false, false)}
+	result := &model.ReviewResult{ReviewID: "review-1"}
+	reviewCtx := &model.ReviewContext{DiffHeadSHA: "head-1"}
+	req := model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: dir}
+
+	id := a.persistChatSession(context.Background(), config.Profile{}, req, result, reviewCtx, "head-1")
+	if id == "" {
+		t.Fatal("finding-free review was not persisted")
+	}
+	store, err := session.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Load(id)
+	if err != nil {
+		t.Fatalf("load persisted session: %v", err)
+	}
+	if sess.Result == nil || sess.Result.ReviewID != "review-1" {
+		t.Fatalf("persisted result = %+v", sess.Result)
+	}
+
+	a.noSession = true
+	if id := a.persistChatSession(context.Background(), config.Profile{}, req, result, reviewCtx, "head-1"); id != "" {
+		t.Fatalf("--no-session still saved: %q", id)
+	}
+}
+
+// max_sessions reaches the store that the auto-save writes through, so the cap
+// actually trims. Zero (the default) keeps everything.
+func TestPersistChatSessionHonorsMaxSessions(t *testing.T) {
+	dir := t.TempDir()
+	a := &app{sessionDir: dir, logger: logging.New(io.Discard, false, false)}
+	req := model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: dir}
+	countSessions := func() int {
+		store, err := session.NewStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		infos, err := store.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(infos)
+	}
+
+	for range 4 {
+		if id := a.persistChatSession(context.Background(), config.Profile{}, req, &model.ReviewResult{}, nil, ""); id == "" {
+			t.Fatal("uncapped save failed")
+		}
+	}
+	if got := countSessions(); got != 4 {
+		t.Fatalf("uncapped sessions = %d, want 4", got)
+	}
+	if id := a.persistChatSession(context.Background(), config.Profile{MaxSessions: 2}, req, &model.ReviewResult{}, nil, ""); id == "" {
+		t.Fatal("capped save failed")
+	}
+	if got := countSessions(); got != 2 {
+		t.Fatalf("sessions after max_sessions=2 save = %d, want 2", got)
 	}
 }
 

@@ -153,6 +153,12 @@ type ReviewResult struct {
 	Model           string           `json:"model,omitempty"`
 	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 	TotalToolCalls  int              `json:"total_tool_calls,omitempty"`
+	// NickpitVersion is the nickpit build that produced this review. Stamped
+	// once the review completes, so it travels with everything downstream: JSON
+	// and terminal output, the saved chat session, and the hidden SCM review
+	// envelope — a review reassembled from MR/PR markers still names the build
+	// that wrote it, not the one reading it.
+	NickpitVersion string `json:"nickpit_version,omitempty"`
 }
 
 // StripSuggestions removes code suggestions from every finding in the result.

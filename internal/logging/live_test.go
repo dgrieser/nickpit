@@ -223,6 +223,60 @@ func TestHeaderShowsModelsWithEffortAndAliasInsteadOfCounter(t *testing.T) {
 	}
 }
 
+// The dashboard names the build that produced it: dimmed after the wordmark in
+// the live header, and again in the frozen final header that stays in scrollback.
+func TestHeaderAndFinalHeaderShowVersion(t *testing.T) {
+	now := time.Now()
+	newRenderer := func(useANSI bool) *LiveRenderer {
+		return &LiveRenderer{
+			w: &bytes.Buffer{}, useANSI: useANSI, now: func() time.Time { return now }, started: now,
+			agents: make(map[string]*liveAgent), steps: make(map[string]WorkflowScope),
+			plan: LivePlan{Version: "v1.2.3", Models: []LiveModel{{Name: "BigModel", Effort: "high"}}},
+		}
+	}
+
+	plain := newRenderer(false)
+	plain.mu.Lock()
+	header := plain.headerLineLocked(now)
+	final := plain.finalHeaderLocked("✓", "Review complete", time.Second, 2, true)
+	plain.mu.Unlock()
+	if !strings.Contains(header, "NickPit v1.2.3 · ") {
+		t.Fatalf("plain header should name the version after the wordmark: %q", header)
+	}
+	if !strings.Contains(header, "BigModel:high") {
+		t.Fatalf("plain header should still list models: %q", header)
+	}
+	if !strings.Contains(final, "Review complete v1.2.3 · ") {
+		t.Fatalf("plain final header should name the version: %q", final)
+	}
+
+	ansi := newRenderer(true)
+	ansi.mu.Lock()
+	header = ansi.headerLineLocked(now)
+	final = ansi.finalHeaderLocked("✓", "Review complete", time.Second, 2, true)
+	ansi.mu.Unlock()
+	if !strings.Contains(header, progressGrey("v1.2.3")) {
+		t.Fatalf("styled header version should be grey: %q", header)
+	}
+	if !strings.Contains(final, progressGrey("v1.2.3")) {
+		t.Fatalf("styled final header version should be grey: %q", final)
+	}
+
+	// No version configured leaves both headers exactly as they were.
+	none := newRenderer(false)
+	none.plan.Version = ""
+	none.mu.Lock()
+	header = none.headerLineLocked(now)
+	final = none.finalHeaderLocked("✓", "Review complete", time.Second, 2, true)
+	none.mu.Unlock()
+	if !strings.HasPrefix(header, "  NickPit · ") {
+		t.Fatalf("versionless header = %q", header)
+	}
+	if !strings.HasPrefix(final, "✓ Review complete · ") {
+		t.Fatalf("versionless final header = %q", final)
+	}
+}
+
 func TestLiveAgentLabelIsNameOnly(t *testing.T) {
 	if got := liveAgentLabel(&liveAgent{info: ProgressInfo{AgentRole: "review", AgentName: "Security"}}); got != "Security" {
 		t.Fatalf("label should drop the role/kind and show the name only, got %q", got)

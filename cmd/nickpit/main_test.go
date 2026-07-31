@@ -11,13 +11,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
+	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/workflow"
 )
 
@@ -1655,6 +1658,122 @@ func TestLiveProgressEnabledOnlyForPlainTTY(t *testing.T) {
 				t.Fatalf("liveProgressEnabled() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+// goreleaser injects the tag without its leading "v", so a release renders clean
+// (its tag already pins the commit). An untagged build carries the short commit,
+// because "dev" alone identifies nothing in a bug report.
+func TestDisplayVersion(t *testing.T) {
+	originalVersion, originalCommit := version, commit
+	t.Cleanup(func() { version, commit = originalVersion, originalCommit })
+	commit = "995c9107a8bd4cf0"
+	buildRevision = func() string { return shortCommit(commit) }
+	t.Cleanup(func() { buildRevision = sync.OnceValue(resolveBuildRevision) })
+
+	for _, tt := range []struct{ build, want string }{
+		{"0.0.14", "v0.0.14"},
+		{"1.2.3-rc1", "v1.2.3-rc1"},
+		{"v0.0.14", "v0.0.14"},
+		{" dev ", "dev+995c910"},
+		{"", "dev+995c910"},
+		{"feature-branch", "feature-branch+995c910"},
+	} {
+		version = tt.build
+		if got := displayVersion(); got != tt.want {
+			t.Fatalf("displayVersion(%q) = %q, want %q", tt.build, got, tt.want)
+		}
+	}
+
+	// No revision anywhere (no ldflags, no embedded build info): the bare name.
+	buildRevision = func() string { return "" }
+	version = "dev"
+	if got := displayVersion(); got != "dev" {
+		t.Fatalf("revisionless dev build = %q", got)
+	}
+}
+
+// The revision falls back from -X main.commit to Go's embedded VCS stamp, keeps
+// seven characters, and flags a modified tree.
+func TestResolveBuildRevision(t *testing.T) {
+	originalCommit := commit
+	t.Cleanup(func() { commit = originalCommit })
+
+	commit = "995c9107a8bd4cf0deadbeef"
+	if got := resolveBuildRevision(); got != "995c910" {
+		t.Fatalf("ldflags commit = %q, want the short form", got)
+	}
+	commit = "995c910"
+	if got := resolveBuildRevision(); got != "995c910" {
+		t.Fatalf("an already-short ldflags commit must pass through: %q", got)
+	}
+
+	// Unstamped: whatever the test binary's own build info says. `go test` embeds
+	// VCS info in a git checkout, so assert the shape rather than a fixed hash.
+	commit = ""
+	rev := resolveBuildRevision()
+	if rev != "" {
+		bare := strings.TrimSuffix(rev, "-dirty")
+		if len(bare) != 7 {
+			t.Fatalf("embedded revision %q should be a 7-char hash (plus optional -dirty)", rev)
+		}
+	}
+}
+
+// emitResult is the one funnel every consumer sits behind, so stamping the build
+// there puts it in the JSON on stdout and in the saved session at once (and, for
+// a published review, in the hidden SCM envelope rendered from the same result).
+func TestEmitResultStampsVersionForOutputAndSession(t *testing.T) {
+	original := version
+	t.Cleanup(func() { version = original })
+	version = "3.2.1"
+
+	dir := t.TempDir()
+	a := &app{sessionDir: dir, jsonOutput: true, logger: logging.New(io.Discard, false, false)}
+	req := model.ReviewRequest{Mode: model.ModeLocal, RepoRoot: dir}
+	result := &model.ReviewResult{ReviewID: "rev-emit", OverallCorrectness: "patch is correct"}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = a.emitResult(context.Background(), nil, config.Profile{}, req, result, nil, "")
+	})
+	if err != nil {
+		t.Fatalf("emitResult: %v", err)
+	}
+	var payload map[string]any
+	if jsonErr := json.Unmarshal([]byte(out), &payload); jsonErr != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", jsonErr, out)
+	}
+	if got := payload["nickpit_version"]; got != "v3.2.1" {
+		t.Fatalf("stdout nickpit_version = %#v", got)
+	}
+
+	store, storeErr := session.NewStore(dir)
+	if storeErr != nil {
+		t.Fatal(storeErr)
+	}
+	sess, latestErr := store.Latest()
+	if latestErr != nil || sess == nil {
+		t.Fatalf("no session saved: %v", latestErr)
+	}
+	if sess.Result == nil || sess.Result.NickpitVersion != "v3.2.1" {
+		t.Fatalf("session result version = %+v", sess.Result)
+	}
+}
+
+// The logger every command logs through carries the flags AND the version, so a
+// new command cannot forget to name its build.
+func TestNewLoggerCarriesFlagsAndVersion(t *testing.T) {
+	original := version
+	t.Cleanup(func() { version = original })
+	version = "9.9.9"
+	a := &app{verbose: true, showProgress: true}
+	logger := a.newLogger()
+	if got := logger.Version(); got != "v9.9.9" {
+		t.Fatalf("logger version = %q", got)
+	}
+	if !logger.Enabled() {
+		t.Fatal("newLogger dropped --verbose")
 	}
 }
 
