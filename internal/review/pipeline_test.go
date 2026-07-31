@@ -1194,6 +1194,95 @@ func TestWorkflowLaneRunsPerVectorCategorizeVerifyAndDedupeInOrder(t *testing.T)
 	}
 }
 
+// modelByKindLLM records the model each agent call was issued with, keyed by
+// schema kind, so per-agent model overrides can be asserted end to end.
+type modelByKindLLM struct {
+	inner *multiAgentLLM
+
+	mu     sync.Mutex
+	models map[llm.SchemaKind][]string
+}
+
+func (m *modelByKindLLM) Review(ctx context.Context, req *llm.ReviewRequest) (*llm.ReviewResponse, error) {
+	m.mu.Lock()
+	if m.models == nil {
+		m.models = make(map[llm.SchemaKind][]string)
+	}
+	m.models[req.SchemaKind] = append(m.models[req.SchemaKind], req.Model)
+	m.mu.Unlock()
+	return m.inner.Review(ctx, req)
+}
+
+func (m *modelByKindLLM) modelsFor(kind llm.SchemaKind) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.models[kind]...)
+}
+
+func TestVerifyStepCategorizeOverrideRoutesClassifierModel(t *testing.T) {
+	alias := workflow.SmallModelAlias
+	client := &modelByKindLLM{inner: &multiAgentLLM{vectorFindings: map[string]int{"Security": 2}}}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{
+		Model: "large-model",
+		Small: config.SmallModelConfig{Model: "small-model"},
+	})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+	spec := laneSpec("security")
+	spec.Steps[1].Parallel[0].Lane[1].Config = &workflow.StepOverride{
+		Categorize: &workflow.AgentOverride{Model: &alias},
+	}
+	pipeline, err := engine.BuildPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	categorizeModels := client.modelsFor(llm.SchemaKindCategorize)
+	verifyModels := client.modelsFor(llm.SchemaKindVerify)
+	if len(categorizeModels) == 0 || len(verifyModels) == 0 {
+		t.Fatalf("missing agent calls: categorize=%v verify=%v", categorizeModels, verifyModels)
+	}
+	for _, got := range categorizeModels {
+		if got != "small-model" {
+			t.Fatalf("categorize models = %v, want all small-model", categorizeModels)
+		}
+	}
+	for _, got := range verifyModels {
+		if got != "large-model" {
+			t.Fatalf("verify models = %v, want all large-model", verifyModels)
+		}
+	}
+}
+
+// Without a categorize subconfig the classifier inherits the verify step's own
+// model, even when a small profile is configured for other steps to use.
+func TestVerifyStepWithoutCategorizeOverrideInheritsStepModel(t *testing.T) {
+	client := &modelByKindLLM{inner: &multiAgentLLM{vectorFindings: map[string]int{"Security": 2}}}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{
+		Model: "large-model",
+		Small: config.SmallModelConfig{Model: "small-model"},
+	})
+	engine.SetLogger(logging.New(os.Stderr, false, false))
+	pipeline, err := engine.BuildPipeline(laneSpec("security"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = engine.RunSpecPipeline(context.Background(), pipeline, laneTestRequest()); err != nil {
+		t.Fatal(err)
+	}
+	categorizeModels := client.modelsFor(llm.SchemaKindCategorize)
+	verifyModels := client.modelsFor(llm.SchemaKindVerify)
+	if len(categorizeModels) == 0 || len(verifyModels) == 0 {
+		t.Fatalf("missing agent calls: categorize=%v verify=%v", categorizeModels, verifyModels)
+	}
+	for _, got := range append(categorizeModels, verifyModels...) {
+		if got != "large-model" {
+			t.Fatalf("categorize=%v verify=%v, want all large-model", categorizeModels, verifyModels)
+		}
+	}
+}
+
 func TestWorkflowGroupNamesLabelRuntimeSegments(t *testing.T) {
 	spec := laneSpec("security")
 	spec.Steps[1].Parallel[0].Name = "Security review"

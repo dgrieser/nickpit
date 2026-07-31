@@ -668,10 +668,17 @@ type verificationTelemetry struct {
 // verifyAndFilterVectorFindings is the atomic workflow operation: deterministic
 // scope handling, blind classification and routing, then blind truth
 // verification for the survivors.
-func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string) (verificationTelemetry, []string, error) {
+// categorize carries the classifier's own engine clone and request, which
+// differ from the verifier's when the verify step configures a categorize
+// override (e.g. model: "@small"); the zero value means "same as the verifier".
+func (e *Engine) verifyAndFilterVectorFindings(ctx context.Context, reviewCtx *model.ReviewContext, vectorResults []agentResult, req model.ReviewRequest, limiter *Limiter, reviewerName string, categorize internalAgentContext) (verificationTelemetry, []string, error) {
 	telemetry := verificationTelemetry{}
+	categorizeEngine, categorizeReq := e, req
+	if categorize.Engine != nil {
+		categorizeEngine, categorizeReq = categorize.Engine, categorize.Req
+	}
 	scopeWarnings := e.prepareFindingsForVerification(ctx, reviewCtx, vectorResults, req)
-	categorizeUsage, categorizeWarnings, err := e.categorizeAndFilterVectorFindings(ctx, reviewCtx, vectorResults, req, limiter, reviewerName)
+	categorizeUsage, categorizeWarnings, err := categorizeEngine.categorizeAndFilterVectorFindings(ctx, reviewCtx, vectorResults, categorizeReq, limiter, reviewerName)
 	telemetry.CategorizeUsage = categorizeUsage
 	warnings := append(scopeWarnings, categorizeWarnings...)
 	if err != nil {

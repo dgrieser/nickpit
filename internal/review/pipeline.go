@@ -216,6 +216,15 @@ func (sc *stepContext) internalAgentContext(override *workflow.AgentOverride) in
 	return internalAgentContext{Engine: sc.Engine.withConfig(profile), Req: req}
 }
 
+// categorizeAgentContext resolves the verify step's categorize subconfig, which
+// routes the blind classifier to its own model parameters.
+func (sc *stepContext) categorizeAgentContext() internalAgentContext {
+	if sc.Override == nil {
+		return internalAgentContext{Engine: sc.Engine, Req: sc.Req}
+	}
+	return sc.internalAgentContext(sc.Override.Categorize)
+}
+
 type stepFunc func(ctx context.Context, sc *stepContext, st *PipelineState) error
 
 type boundStep struct {

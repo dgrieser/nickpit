@@ -80,6 +80,7 @@ func TestVerifyProgressPrintsVerdictDrop(t *testing.T) {
 		model.ReviewRequest{VerifyDropPolicy: model.DropPolicyRefutedOnly},
 		NewLimiter(1),
 		"Security",
+		internalAgentContext{},
 	)
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("err=%v warnings=%v", err, warnings)

@@ -122,6 +122,8 @@
 #               verify_drop_policy: refuted-and-unverified
 #               time_budget:
 #                 weight: 35
+#               categorize:
+#                 model: "@small"
 #           - type: dedupe:security
 #             config:
 #               scope: reviewer
@@ -173,6 +175,10 @@
 #   confidence_threshold, priority_threshold
 # Review steps also accept internal-agent subconfigs: mine_reasoning,
 # compile_findings, nudge; those subconfigs also accept time_budget.
+# Verify steps accept the categorize subconfig for the blind classifier that
+# runs before evidence verification (no tools, JSON out only). It takes the same
+# keys except time_budget: classification and verification share the verify
+# step's budget.
 # time_budget keys:
 #   max_seconds       max wall-clock seconds for the step/lane/pipeline
 #   speedup_threshold 50..100; 100 disables early urgent retry

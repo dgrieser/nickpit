@@ -101,6 +101,8 @@ steps:
               scope: finding
               time_budget:
                 weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:codequality
             config:
               scope: reviewer
@@ -122,6 +124,8 @@ steps:
               scope: finding
               time_budget:
                 weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:security
             config:
               scope: reviewer
@@ -143,6 +147,8 @@ steps:
               scope: finding
               time_budget:
                 weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:architecture
             config:
               scope: reviewer
@@ -164,6 +170,8 @@ steps:
               scope: finding
               time_budget:
                 weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:performance
             config:
               scope: reviewer
@@ -185,6 +193,8 @@ steps:
               scope: finding
               time_budget:
                 weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:testing
             config:
               scope: reviewer
@@ -206,6 +216,8 @@ steps:
               scope: finding
               time_budget:
                 weight: 55
+              categorize:
+                model: "@small"
           - type: dedupe:bestpractices
             config:
               scope: reviewer
@@ -290,6 +302,8 @@ steps:
 #               verify_drop_policy: refuted-and-unverified
 #               time_budget:
 #                 weight: 35
+#               categorize:
+#                 model: "@small"
 #           - type: dedupe:security
 #             config:
 #               scope: reviewer
@@ -341,6 +355,10 @@ steps:
 #   confidence_threshold, priority_threshold
 # Review steps also accept internal-agent subconfigs: mine_reasoning,
 # compile_findings, nudge; those subconfigs also accept time_budget.
+# Verify steps accept the categorize subconfig for the blind classifier that
+# runs before evidence verification (no tools, JSON out only). It takes the same
+# keys except time_budget: classification and verification share the verify
+# step's budget.
 # time_budget keys:
 #   max_seconds       max wall-clock seconds for the step/lane/pipeline
 #   speedup_threshold 50..100; 100 disables early urgent retry

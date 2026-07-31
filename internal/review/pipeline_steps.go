@@ -394,7 +394,7 @@ func (e *Engine) verifyStepFunc(findingsFrom []string) stepFunc {
 			return err
 		}
 		vr := st.vectorResults()
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "")
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, vr, sc.Req, st.limiter, "", sc.categorizeAgentContext())
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.categorizeUsage = addTokenUsage(st.categorizeUsage, telemetry.CategorizeUsage)
@@ -428,7 +428,7 @@ func (e *Engine) verifyVectorStepFunc(vectorID string) stepFunc {
 			return fmt.Errorf("workflow: unknown reviewer vector %q", vectorID)
 		}
 		results := []agentResult{vr}
-		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name)
+		telemetry, warnings, err := sc.Engine.verifyAndFilterVectorFindings(ctx, st.Enriched, results, sc.Req, st.limiter, vector.name, sc.categorizeAgentContext())
 		st.mu.Lock()
 		st.categorizeUsage = addTokenUsage(st.categorizeUsage, telemetry.CategorizeUsage)
 		st.verifyUsage = addTokenUsage(st.verifyUsage, telemetry.VerifyUsage)

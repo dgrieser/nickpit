@@ -1951,7 +1951,18 @@ func modelRequirementsForSpec(spec workflow.Spec, req model.ReviewRequest, useSm
 		if stepUsesSmall == useSmallModel {
 			requirements.merge(stepModelRequirements(entry.Type, stepReq.DisableJSONResponseFormat))
 		}
-		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) || entry.Config == nil {
+		if entry.Config == nil {
+			continue
+		}
+		if entry.Type == workflow.StepVerify || strings.HasPrefix(entry.Type, workflow.StepVerifyPrefix) {
+			// The categorize classifier uses no tools and emits one JSON object,
+			// so it demands strictly less than the verify step around it.
+			if agentUsesSmall(stepUsesSmall, entry.Config.Categorize) == useSmallModel {
+				requirements.merge(categorizeModelRequirements(agentDisableJSONResponseFormat(stepReq, entry.Config.Categorize)))
+			}
+			continue
+		}
+		if !strings.HasPrefix(entry.Type, workflow.StepReviewPrefix) {
 			continue
 		}
 		if agentUsesSmall(stepUsesSmall, entry.Config.MineReasoning) == useSmallModel {
@@ -1987,6 +1998,12 @@ func agentUsesSmall(stepUsesSmall bool, override *workflow.AgentOverride) bool {
 
 func textModelRequirements() modelCapabilityRequirements {
 	return modelCapabilityRequirements{Response: true}
+}
+
+func categorizeModelRequirements(disableJSONResponseFormat bool) modelCapabilityRequirements {
+	requirements := modelCapabilityRequirements{Response: true}
+	requirements.requireJSON(!disableJSONResponseFormat)
+	return requirements
 }
 
 func reviewerModelRequirements(disableJSONResponseFormat bool) modelCapabilityRequirements {
