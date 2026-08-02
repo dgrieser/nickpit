@@ -46,24 +46,21 @@ type WebhookEvent struct {
 }
 
 type eventUser struct {
-	ID       int    `json:"id"`
-	Username string `json:"username"`
+	ID int `json:"id"`
 }
 
 type eventProject struct {
 	ID                int    `json:"id"`
 	PathWithNamespace string `json:"path_with_namespace"`
-	DefaultBranch     string `json:"default_branch"`
 }
 
 // eventAttributes covers merge_request events (action, iid, draft, oldrev),
-// emoji events (action, name, awardable_type, awardable_id), and note events
+// emoji events (action, name, awardable_type), and note events
 // (id, note, noteable_type, system, discussion_id).
 type eventAttributes struct {
 	Action string `json:"action"`
 	IID    int    `json:"iid"`
 	Draft  bool   `json:"draft"`
-	State  string `json:"state"`
 	OldRev string `json:"oldrev"`
 	// last_commit.id is the MR head SHA in merge_request events.
 	LastCommit struct {
@@ -72,7 +69,6 @@ type eventAttributes struct {
 	// Emoji-event fields.
 	Name          string `json:"name"`
 	AwardableType string `json:"awardable_type"`
-	AwardableID   int    `json:"awardable_id"`
 	// Note-event fields. ID is the note's id (present on other kinds too,
 	// unused there). Type distinguishes threaded notes ("DiscussionNote",
 	// "DiffNote") from top-level comments (null) — GitLab sends discussion_id
@@ -93,11 +89,12 @@ type eventChanges struct {
 	} `json:"draft"`
 }
 
-// eventMR is the merge_request object embedded in emoji and note events.
+// eventMR is the merge_request object embedded in emoji and note events. The
+// worker does not trust its draft/state snapshot: the authoritative values are
+// re-read from the API (gitlab.MRStatus) before a review runs, so only the
+// fields the daemon actually consumes are decoded here.
 type eventMR struct {
-	IID        int    `json:"iid"`
-	Draft      bool   `json:"draft"`
-	State      string `json:"state"`
+	IID        int `json:"iid"`
 	LastCommit struct {
 		ID string `json:"id"`
 	} `json:"last_commit"`

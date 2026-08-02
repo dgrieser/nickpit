@@ -98,22 +98,26 @@ func NewDispatcher(runner ReviewRunner, lookup TopicLookup, cfg WorkerConfig, lo
 	}
 }
 
-// Enqueue accepts an event from the webhook handler. Never blocks: when the
-// queue is full the event is dropped and counted, keeping the handler's
-// fast-ack guarantee.
-func (d *Dispatcher) Enqueue(event Event) {
+// Enqueue accepts an event from the webhook handler. Never blocks, keeping the
+// handler's fast-ack guarantee. It reports whether the event was accepted:
+// queued, coalesced onto an existing job, or deliberately dropped as an
+// already-reviewed duplicate all count as accepted. False means the event was
+// LOST — the dispatcher is closed (shutdown) or the queue is full — and the
+// webhook must be answered with a non-2xx status so GitLab redelivers it.
+func (d *Dispatcher) Enqueue(event Event) bool {
 	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return
+		return false
 	}
 	// Duplicate auto-trigger for an already-reviewed head (GitLab webhook
 	// retries): drop before it occupies a queue slot. Manual triggers always
-	// pass — the user asked.
+	// pass — the user asked. The drop is intentional, so it counts as
+	// accepted: a redelivery would only be dropped again.
 	if event.Kind == TriggerAuto && event.HeadSHA != "" && d.recent.Contains(shaKey(event.ProjectID, event.IID, event.HeadSHA)) {
 		d.log.Debug("dropping already-reviewed head", "project", event.ProjectPath, "iid", event.IID, "sha", event.HeadSHA)
-		return
+		return true
 	}
 	if state, ok := d.states[key]; ok {
 		switch state.status {
@@ -126,14 +130,16 @@ func (d *Dispatcher) Enqueue(event Event) {
 		default:
 			state.latest = mergeEvents(state.latest, event)
 		}
-		return
+		return true
 	}
 	select {
 	case d.queue <- key:
 		d.states[key] = &jobState{status: stateQueued, latest: event}
+		return true
 	default:
 		d.dropped++
 		d.log.Error("job queue full, dropping event", "project", event.ProjectPath, "iid", event.IID, "dropped_total", d.dropped)
+		return false
 	}
 }
 

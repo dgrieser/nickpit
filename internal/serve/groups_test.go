@@ -77,6 +77,41 @@ func TestGroupCheckSecret(t *testing.T) {
 	}
 }
 
+// A group whose signing token cannot be parsed and that has no webhook secret
+// holds no usable credential: it must fail closed. In particular the empty
+// stored secret must not compare equal to an absent X-Gitlab-Token header.
+func TestNewGroupSetUnparseableSigningTokenFailsClosed(t *testing.T) {
+	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
+		{Path: "platform", Token: "t", SigningToken: "whsec_not!!base64"},
+	}, "https://gitlab.example.com", nil)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want the unparseable-token warning", warnings)
+	}
+	group := set.Match("platform/api")
+	if group == nil {
+		t.Fatal("group must still exist")
+	}
+	if group.UsesSigning() {
+		t.Fatal("unparseable signing token must not enable signing")
+	}
+	if group.CheckSecret("") {
+		t.Fatal("request without X-Gitlab-Token must be rejected (fail closed)")
+	}
+	if group.CheckSecret("anything") {
+		t.Fatal("no token may authenticate against a group without a credential")
+	}
+}
+
+// An empty stored secret rejects every token, including the empty one — the
+// fail-closed guarantee CheckSecret provides for groups without a usable
+// credential.
+func TestGroupCheckSecretEmptyStoredSecretRejectsAll(t *testing.T) {
+	group := &Group{Path: "platform"}
+	if group.CheckSecret("") || group.CheckSecret("whatever") {
+		t.Fatal("empty stored secret must reject every token")
+	}
+}
+
 func TestNewGroupSetBotLookup(t *testing.T) {
 	lookup := func(ctx context.Context, client *gitlab.Client) (int, error) {
 		return 999, nil

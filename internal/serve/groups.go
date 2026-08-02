@@ -38,8 +38,14 @@ func (g *Group) UsesSigning() bool {
 }
 
 // CheckSecret compares a webhook's X-Gitlab-Token against the group secret in
-// constant time.
+// constant time. A group without a stored secret rejects every token: the
+// empty secret is the "no usable credential" state (e.g. an unparseable
+// signing token with no webhook_secret fallback) and must fail closed rather
+// than let the empty header compare equal to the empty secret.
 func (g *Group) CheckSecret(token string) bool {
+	if len(g.secret) == 0 {
+		return false
+	}
 	return subtle.ConstantTimeCompare([]byte(token), g.secret) == 1
 }
 

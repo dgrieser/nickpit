@@ -335,14 +335,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.log.Debug("chat reply candidate", "project", event.Project.PathWithNamespace, "iid", decision.IID, "discussion", decision.DiscussionID)
 		writeJSON(w, map[string]string{"status": "chat"})
 	case decision.Command != CommandNone:
-		h.handleCommand(event, group, decision)
+		if !h.handleCommand(event, group, decision) {
+			// The review the command asked for was NOT queued (queue full or
+			// shutting down). Say so with a 503 — GitLab redelivers non-2xx
+			// webhooks, so the request is retried instead of silently lost.
+			h.log.Error("rejecting command: review queue unavailable", "project", event.Project.PathWithNamespace, "iid", decision.IID, "command", decision.Command.String())
+			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "rejected", "reason": "review queue unavailable"})
+			return
+		}
 		h.log.Info("command received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "command", decision.Command.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "command", "command": decision.Command.String()})
 	case decision.Kind == TriggerNone:
 		h.log.Debug("ignoring event", "project", event.Project.PathWithNamespace, "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "ignored", "reason": decision.Reason})
 	default:
-		h.dispatcher.Enqueue(Event{
+		accepted := h.dispatcher.Enqueue(Event{
 			Kind:        decision.Kind,
 			ProjectID:   event.Project.ID,
 			ProjectPath: event.Project.PathWithNamespace,
@@ -350,6 +357,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			HeadSHA:     decision.HeadSHA,
 			Group:       group,
 		})
+		if !accepted {
+			// Queue full or shutting down: answering "queued" would make
+			// GitLab mark the delivery successful and never redeliver, losing
+			// the review. A 503 makes GitLab retry.
+			h.log.Error("rejecting event: review queue unavailable", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String())
+			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"status": "rejected", "reason": "review queue unavailable"})
+			return
+		}
 		h.log.Info("event received", "project", event.Project.PathWithNamespace, "iid", decision.IID, "trigger", decision.Kind.String(), "reason", decision.Reason)
 		writeJSON(w, map[string]string{"status": "queued"})
 	}
@@ -383,12 +398,15 @@ func authMethod(group *Group) string {
 // requests re-enter the normal enqueue path with their manual-trigger
 // bypasses intact; the reply policy is deliberately quiet — a reaction emoji
 // acknowledges review/abort, a comment reply appears only when there is
-// something to say.
-func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Decision) {
+// something to say. It reports whether the command was executed: false means
+// a review command's enqueue was rejected (queue full or shutting down) — no
+// ack emoji is awarded then, and the caller answers the webhook with a
+// non-2xx status so GitLab redelivers it.
+func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Decision) bool {
 	projectID := event.Project.ID
 	switch decision.Command {
 	case CommandReview:
-		h.dispatcher.Enqueue(Event{
+		accepted := h.dispatcher.Enqueue(Event{
 			Kind:        decision.Kind,
 			ProjectID:   projectID,
 			ProjectPath: event.Project.PathWithNamespace,
@@ -396,6 +414,11 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 			HeadSHA:     decision.HeadSHA,
 			Group:       group,
 		})
+		if !accepted {
+			// Do not ack a review that was never queued: the emoji would tell
+			// the user their request was taken.
+			return false
+		}
 		go h.ackNote(group, projectID, decision, h.cfg.AckEmoji)
 	case CommandAbort:
 		outcome := h.dispatcher.Abort(projectID, decision.IID)
@@ -417,6 +440,7 @@ func (h *Handler) handleCommand(event *WebhookEvent, group *Group, decision Deci
 	case CommandUnknown:
 		go h.reply(group, projectID, decision, unknownText(h.cfg.CommandKeyword, decision.UnknownArg))
 	}
+	return true
 }
 
 // admitChat reserves a chat admission slot and registers the event with the
@@ -670,6 +694,11 @@ func (h *Handler) reply(group *Group, projectID int, decision Decision, body str
 }
 
 func writeJSON(w http.ResponseWriter, payload any) {
+	writeJSONStatus(w, http.StatusOK, payload)
+}
+
+func writeJSONStatus(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }

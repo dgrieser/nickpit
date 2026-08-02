@@ -478,6 +478,54 @@ func TestTakeRefusesJobsAfterShutdown(t *testing.T) {
 	}
 }
 
+// Enqueue reports acceptance: queued, coalesced, and deliberate dedup drops
+// are accepted; a full queue and a closed dispatcher are rejections the
+// handler turns into a 503 so GitLab redelivers.
+func TestEnqueueReportsAcceptance(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	if !dispatcher.Enqueue(autoEvent(1, "sha-1", group)) {
+		t.Fatal("fresh enqueue must be accepted")
+	}
+	if !dispatcher.Enqueue(autoEvent(1, "sha-2", group)) {
+		t.Fatal("coalescing onto a queued job must be accepted")
+	}
+	// An already-reviewed head is dropped on purpose; a redelivery would only
+	// be dropped again, so it counts as accepted (no 503, no GitLab retry).
+	dispatcher.markReviewed(42, 2, "sha-x")
+	if !dispatcher.Enqueue(autoEvent(2, "sha-x", group)) {
+		t.Fatal("dedup drop must be accepted")
+	}
+}
+
+func TestEnqueueRejectsWhenQueueFull(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	// Fill the queue channel directly (no workers are draining it).
+	for len(dispatcher.queue) < cap(dispatcher.queue) {
+		dispatcher.queue <- jobKey{ProjectID: -1, IID: len(dispatcher.queue)}
+	}
+	if dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("full queue must reject the event")
+	}
+	dispatcher.mu.Lock()
+	dropped := dispatcher.dropped
+	dispatcher.mu.Unlock()
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+}
+
+func TestEnqueueRejectsAfterShutdown(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.Shutdown(0) // no workers started: returns immediately, marks closed
+	if dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("closed dispatcher must reject the event")
+	}
+}
+
 func TestSHALRUEviction(t *testing.T) {
 	lru := newSHALRU(2)
 	lru.Add("a")
