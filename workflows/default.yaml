@@ -28,6 +28,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Code quality
         config:
           time_budget:
@@ -51,6 +57,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Security
         config:
           time_budget:
@@ -74,6 +86,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Architecture
         config:
           time_budget:
@@ -97,6 +115,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Performance
         config:
           time_budget:
@@ -120,6 +144,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Testing
         config:
           time_budget:
@@ -143,6 +173,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Best practices
         config:
           time_budget:
@@ -154,6 +190,12 @@ steps:
           scope: cluster
           time_budget:
             weight: 30
+          context:
+            styleguides: true
+            diff: true
+            commits: true
+            comments: true
+            toolchain: true
       - type: finalize
         config:
           model: "@small"

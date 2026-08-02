@@ -1014,7 +1014,7 @@ func suggestionCandidateCount(findings []model.Finding) int {
 // findings intact and only records the dedupe run for telemetry. Mechanically
 // detectable duplicates are folded in code first; the LLM agent only sees the
 // reduced set.
-func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) []model.AgentRun {
+func (e *Engine) runDedupeAgents(ctx context.Context, userPrompt string, contextNotes string, vectorResults []agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) []model.AgentRun {
 	runs := make([]model.AgentRun, len(vectorResults))
 	var wg sync.WaitGroup
 	for i := range vectorResults {
@@ -1041,7 +1041,7 @@ func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vecto
 		wg.Add(1)
 		go func(idx int, input agentResult, before int) {
 			defer wg.Done()
-			resp, run := e.runDedupeAgent(ctx, contextNotes, input, schema, constraints, req)
+			resp, run := e.runDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req, styleGuides, hasToolchainVersions)
 			runs[idx] = run
 			after := len(input.resp.Findings)
 			if resp != nil {
@@ -1067,8 +1067,8 @@ func (e *Engine) runDedupeAgents(ctx context.Context, contextNotes string, vecto
 	return out
 }
 
-func (e *Engine) runDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (*llm.ReviewResponse, model.AgentRun) {
-	result, err := e.callDedupeAgent(ctx, contextNotes, input, schema, constraints, req)
+func (e *Engine) runDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (*llm.ReviewResponse, model.AgentRun) {
+	result, err := e.callDedupeAgent(ctx, userPrompt, contextNotes, input, schema, constraints, req, styleGuides, hasToolchainVersions)
 	run := result.run
 	if err != nil {
 		run = markDedupeRun(run, model.AgentRunStatusFailed, err)
@@ -1090,12 +1090,16 @@ func (e *Engine) runDedupeAgent(ctx context.Context, contextNotes string, input 
 	return resp, run
 }
 
-func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, error) {
+func (e *Engine) callDedupeAgent(ctx context.Context, userPrompt string, contextNotes string, input agentResult, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_dedupe_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
 	}
 	commonSnippets, err := agentCommonSystemPromptSnippets("dedupe", exampleSnippetFor(llm.SchemaKindMerge, req.DisableSuggestions), req.DisableSuggestions)
+	if err != nil {
+		return agentResult{}, err
+	}
+	styleGuideToolchainSnippet, err := e.renderStyleGuideToolchainSnippet("dedupe", styleGuides, hasToolchainVersions)
 	if err != nil {
 		return agentResult{}, err
 	}
@@ -1105,17 +1109,20 @@ func (e *Engine) callDedupeAgent(ctx context.Context, contextNotes string, input
 		OutputFormatSnippet        string
 		DisableSuggestions         bool
 		DisableDiffScope           bool
+		StyleGuideToolchainSnippet string
 	}{
 		FindingInstructionsSnippet: commonSnippets.findingInstructions,
 		PrioritySnippet:            commonSnippets.priority,
 		OutputFormatSnippet:        commonSnippets.outputFormat,
 		DisableSuggestions:         req.DisableSuggestions,
 		DisableDiffScope:           req.DisableDiffScope,
+		StyleGuideToolchainSnippet: strings.TrimSpace(styleGuideToolchainSnippet),
 	})
 	if err != nil {
 		return agentResult{}, fmt.Errorf("review: rendering dedupe system prompt: %w", err)
 	}
 	dedupeUser, err := llm.RenderJSON(map[string]any{
+		"review_context":      json.RawMessage(userPrompt),
 		"context_agent_notes": contextNotes,
 		"review_findings": map[string]any{
 			"name":                     input.run.Name,
@@ -1168,11 +1175,7 @@ func markDedupeRun(run model.AgentRun, status string, err error) model.AgentRun 
 // run concurrently. A failed or invalid micro-merge keeps its cluster's
 // findings unmerged — bias toward inclusion: a rare surviving near-duplicate
 // beats silently losing a reviewer's finding.
-func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest) (agentResult, []model.AgentRun) {
-	return e.runClusterMergeAgentsWithStyleGuides(ctx, userPrompt, contextNotes, inputs, schema, constraints, req, nil, false)
-}
-
-func (e *Engine) runClusterMergeAgentsWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, []model.AgentRun) {
+func (e *Engine) runClusterMergeAgents(ctx context.Context, userPrompt string, contextNotes string, inputs []pairwiseMergeInput, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool) (agentResult, []model.AgentRun) {
 	if len(inputs) == 0 {
 		result := emptyVerifiedMergeResult()
 		return result, []model.AgentRun{result.run}
@@ -1212,7 +1215,7 @@ func (e *Engine) runClusterMergeAgentsWithStyleGuides(ctx context.Context, userP
 		wg.Add(1)
 		go func(ci int, reduced []model.Finding) {
 			defer wg.Done()
-			outcomes[ci], runs[ci] = e.runClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, fmt.Sprintf("#%d", ci+1))
+			outcomes[ci], runs[ci] = e.runClusterMergeAgent(ctx, userPrompt, contextNotes, reduced, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, fmt.Sprintf("#%d", ci+1))
 		}(ci, reduced)
 	}
 	wg.Wait()
@@ -1278,10 +1281,10 @@ func flattenMergeMembers(inputs []pairwiseMergeInput) ([]model.Finding, map[stri
 	return findings, reviewerByID
 }
 
-// runClusterMergeAgentWithStyleGuides judges one ambiguous cluster. Any failure
-// path returns the cluster unmerged so reviewer findings are never lost.
-func (e *Engine) runClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) ([]model.Finding, model.AgentRun) {
-	result, err := e.callClusterMergeAgentWithStyleGuides(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, shardLabel)
+// runClusterMergeAgent judges one ambiguous cluster. Any failure path returns
+// the cluster unmerged so reviewer findings are never lost.
+func (e *Engine) runClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) ([]model.Finding, model.AgentRun) {
+	result, err := e.callClusterMergeAgent(ctx, userPrompt, contextNotes, cluster, reviewerByID, schema, constraints, req, styleGuides, hasToolchainVersions, shardLabel)
 	run := result.run
 	if err != nil {
 		return cluster, markMergeRun(run, model.AgentRunStatusFailed, err)
@@ -1428,7 +1431,7 @@ func cloneReviewResponse(resp *llm.ReviewResponse) *llm.ReviewResponse {
 	return &clone
 }
 
-func (e *Engine) callClusterMergeAgentWithStyleGuides(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) (agentResult, error) {
+func (e *Engine) callClusterMergeAgent(ctx context.Context, userPrompt string, contextNotes string, cluster []model.Finding, reviewerByID map[string]string, schema []byte, constraints llm.ResponseConstraints, req model.ReviewRequest, styleGuides []model.StyleGuide, hasToolchainVersions bool, shardLabel string) (agentResult, error) {
 	systemTemplate, err := e.loadPrompt("agent_cluster_merge_system_prompt.tmpl")
 	if err != nil {
 		return agentResult{}, err
@@ -2751,12 +2754,12 @@ func detectedVersionsFor(ctx *model.ReviewContext, language string) []string {
 	return out
 }
 
-// mergeStyleGuides returns the styleguides for merge prompts. A source-less
-// merge workflow (e.g. --step merge --findings a.json) never runs
+// stepStyleGuides returns the styleguides for dedupe and merge prompts. A
+// source-less workflow (e.g. --step merge --findings a.json) never runs
 // ensurePrompts, so st.styleGuides stays unset; fall back to resolving
 // directly — a nil context yields no language guides but still carries the
 // user-supplied additional guides.
-func (e *Engine) mergeStyleGuides(st *PipelineState) ([]model.StyleGuide, error) {
+func (e *Engine) stepStyleGuides(st *PipelineState) ([]model.StyleGuide, error) {
 	st.mu.Lock()
 	ready, guides, enriched := st.promptsReady, st.styleGuides, st.Enriched
 	st.mu.Unlock()

@@ -22,6 +22,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
 )
@@ -2757,7 +2758,7 @@ func TestDedupeAgentDisableSuggestionsOmitsSuggestions(t *testing.T) {
 		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}, OverallConfidenceScore: 0.9},
 	}
 
-	if _, err := engine.callDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}); err != nil {
+	if _, err := engine.callDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}, nil, false); err != nil {
 		t.Fatalf("callDedupeAgent returned err: %v", err)
 	}
 	if len(llmClient.mergeRequests) != 1 {
@@ -2773,6 +2774,207 @@ func TestDedupeAgentDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	}
 }
 
+// contextIncludeReviewCtx carries one section per `context:` include flag so a
+// dropped section is observable by its absence from the rendered payload.
+func contextIncludeReviewCtx() *model.ReviewContext {
+	return &model.ReviewContext{
+		Repository:   model.RepositoryInfo{FullName: "repo"},
+		Title:        "title",
+		ChangedFiles: []model.ChangedFile{{Path: "main.go", Status: model.FileModified, Additions: 1}},
+		DiffFiles: []model.DiffFile{{
+			FilePath: "main.go",
+			Language: "go",
+			Content:  "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+dedupeDiffMarker\n",
+		}},
+		Commits:           []model.CommitSummary{{SHA: "abc123", Message: "dedupeCommitMarker", Author: "dev"}},
+		Comments:          []model.Comment{{Author: "reviewer", Body: "dedupeCommentMarker"}},
+		ToolchainVersions: []model.ToolchainVersion{{Language: "go", Source: "go.mod", Version: "1.25"}},
+	}
+}
+
+// runDedupeStepForContextTest drives the real dedupe step over two findings and
+// returns the captured request, so the tests below assert on what the agent
+// actually received.
+func runDedupeStepForContextTest(t *testing.T, override *workflow.StepOverride) *llm.ReviewRequest {
+	t.Helper()
+	a := clusterTestFinding("Fix alpha issue", 1)
+	b := clusterTestFinding("Fix beta issue", 13)
+	llmClient := &multiAgentLLM{
+		dedupeResponses: []*llm.ReviewResponse{{
+			Findings:               []model.Finding{a, b},
+			OverallCorrectness:     "patch is incorrect",
+			OverallExplanation:     "deduped",
+			OverallConfidenceScore: 0.9,
+		}},
+	}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	st := newPipelineState(contextIncludeReviewCtx(), []string{"security"})
+	if err := engine.ensurePrompts(st); err != nil {
+		t.Fatalf("ensurePrompts returned err: %v", err)
+	}
+	st.setGroup("security", agentResult{
+		run:  model.AgentRun{Name: "Security", Role: "review"},
+		resp: &llm.ReviewResponse{Findings: []model.Finding{a, b}, OverallConfidenceScore: 0.9},
+	}, nil)
+
+	step := engine.dedupeVectorStepFunc("security")
+	sc := &stepContext{Engine: engine, Req: model.ReviewRequest{}, Override: override}
+	if err := step(context.Background(), sc, st); err != nil {
+		t.Fatalf("dedupe step returned err: %v", err)
+	}
+	if len(llmClient.mergeRequests) != 1 {
+		t.Fatalf("dedupe requests = %d, want 1", len(llmClient.mergeRequests))
+	}
+	return llmClient.mergeRequests[0]
+}
+
+// The dedupe agent judges whether two findings share a root cause and fix, so
+// it needs the same patch and styleguides the merge agent gets; without them it
+// can only compare wording.
+func TestDedupeStepSendsReviewContextAndStyleGuides(t *testing.T) {
+	req := runDedupeStepForContextTest(t, nil)
+
+	system := req.Messages[0].Content
+	if !strings.Contains(system, "## STYLEGUIDES") {
+		t.Fatalf("dedupe system prompt missing styleguide section: %q", system)
+	}
+	// The toolchain version in the context selects the version-specific guide,
+	// the same selection the reviewers and the merge agent get.
+	if !strings.Contains(system, "Go 1.25 — Complete Developer Guideline") {
+		t.Fatalf("dedupe system prompt missing styleguide content: %q", system)
+	}
+	if !strings.Contains(system, "Check the provided `toolchain_versions`") {
+		t.Fatalf("dedupe system prompt missing toolchain instruction: %q", system)
+	}
+	userPrompt := taskMessageContent(req)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(userPrompt), &payload); err != nil {
+		t.Fatalf("unmarshal dedupe user prompt: %v", err)
+	}
+	reviewContext, ok := payload["review_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("dedupe payload review_context = %#v, want object", payload["review_context"])
+	}
+	for _, key := range []string{"changed_files", "diff_files", "commits", "comments", "toolchain_versions"} {
+		if _, ok := reviewContext[key]; !ok {
+			t.Fatalf("dedupe review_context missing %q by default: %#v", key, reviewContext)
+		}
+	}
+	for _, marker := range []string{"dedupeDiffMarker", "dedupeCommitMarker", "dedupeCommentMarker"} {
+		if !strings.Contains(userPrompt, marker) {
+			t.Fatalf("dedupe user prompt missing %s:\n%s", marker, userPrompt)
+		}
+	}
+	// Styleguides ride in the system prompt only; duplicating them into the
+	// payload would double their (large) token cost.
+	if _, ok := reviewContext["style_guides"]; ok {
+		t.Fatalf("dedupe review_context should not include style_guides: %#v", reviewContext["style_guides"])
+	}
+	if _, ok := payload["review_findings"]; !ok {
+		t.Fatalf("dedupe payload missing review_findings: %#v", payload)
+	}
+}
+
+// Every `context:` key turned off strips its section from the dedupe prompt,
+// while the changed-file list — never gated — survives.
+func TestDedupeStepContextIncludeDropsExcludedSections(t *testing.T) {
+	off := false
+	req := runDedupeStepForContextTest(t, &workflow.StepOverride{Context: &workflow.ContextInclude{
+		StyleGuides: &off,
+		Diff:        &off,
+		Commits:     &off,
+		Comments:    &off,
+		Toolchain:   &off,
+	}})
+
+	system := req.Messages[0].Content
+	if strings.Contains(system, "## STYLEGUIDES") || strings.Contains(system, "Developer Guideline") {
+		t.Fatalf("dedupe system prompt kept styleguides after context.styleguides=false: %q", system)
+	}
+	if strings.Contains(system, "Check the provided `toolchain_versions`") {
+		t.Fatalf("dedupe system prompt kept toolchain instruction after context.toolchain=false: %q", system)
+	}
+	userPrompt := taskMessageContent(req)
+	for _, marker := range []string{"dedupeDiffMarker", "dedupeCommitMarker", "dedupeCommentMarker"} {
+		if strings.Contains(userPrompt, marker) {
+			t.Fatalf("dedupe user prompt kept %s after it was excluded:\n%s", marker, userPrompt)
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(userPrompt), &payload); err != nil {
+		t.Fatalf("unmarshal dedupe user prompt: %v", err)
+	}
+	reviewContext, ok := payload["review_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("dedupe payload review_context = %#v, want object", payload["review_context"])
+	}
+	for _, key := range []string{"diff_files", "diff_hunks", "commits", "comments", "toolchain_versions"} {
+		if _, ok := reviewContext[key]; ok {
+			t.Fatalf("dedupe review_context kept excluded %q: %#v", key, reviewContext[key])
+		}
+	}
+	// Never gated: the findings are meaningless without knowing which files the
+	// change touched.
+	if _, ok := reviewContext["changed_files"]; !ok {
+		t.Fatalf("dedupe review_context dropped changed_files: %#v", reviewContext)
+	}
+	// Trimming the context must not touch the findings under judgment.
+	if _, ok := payload["review_findings"]; !ok {
+		t.Fatalf("dedupe payload missing review_findings: %#v", payload)
+	}
+}
+
+// `toolchain: false` trims the prompt without changing styleguide resolution:
+// the detected Go 1.25 still selects the version-specific guide, so excluding
+// the versions cannot silently downgrade the step to the generic guide.
+func TestDedupeStepToolchainOffStillVersionsStyleGuides(t *testing.T) {
+	off := false
+	req := runDedupeStepForContextTest(t, &workflow.StepOverride{Context: &workflow.ContextInclude{Toolchain: &off}})
+
+	system := req.Messages[0].Content
+	if !strings.Contains(system, "Go 1.25 — Complete Developer Guideline") {
+		t.Fatalf("dedupe system prompt lost the version-specific styleguide with toolchain off: %q", system)
+	}
+	if strings.Contains(system, "# Go — Common Developer Guideline") {
+		t.Fatalf("dedupe system prompt downgraded to the generic styleguide with toolchain off: %q", system)
+	}
+	if strings.Contains(system, "Check the provided `toolchain_versions`") {
+		t.Fatalf("dedupe system prompt kept toolchain instruction after context.toolchain=false: %q", system)
+	}
+	userPrompt := taskMessageContent(req)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(userPrompt), &payload); err != nil {
+		t.Fatalf("unmarshal dedupe user prompt: %v", err)
+	}
+	reviewContext, ok := payload["review_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("dedupe payload review_context = %#v, want object", payload["review_context"])
+	}
+	if _, ok := reviewContext["toolchain_versions"]; ok {
+		t.Fatalf("dedupe review_context kept toolchain_versions: %#v", reviewContext["toolchain_versions"])
+	}
+}
+
+// A partially-off block leaves every unset section in place.
+func TestDedupeStepContextIncludePartialKeepsRest(t *testing.T) {
+	off := false
+	req := runDedupeStepForContextTest(t, &workflow.StepOverride{Context: &workflow.ContextInclude{Commits: &off}})
+
+	if system := req.Messages[0].Content; !strings.Contains(system, "## STYLEGUIDES") {
+		t.Fatalf("dedupe system prompt dropped styleguides for a commits-only exclusion: %q", system)
+	}
+	userPrompt := taskMessageContent(req)
+	if strings.Contains(userPrompt, "dedupeCommitMarker") {
+		t.Fatalf("dedupe user prompt kept commits after context.commits=false:\n%s", userPrompt)
+	}
+	for _, marker := range []string{"dedupeDiffMarker", "dedupeCommentMarker"} {
+		if !strings.Contains(userPrompt, marker) {
+			t.Fatalf("dedupe user prompt dropped %s for a commits-only exclusion:\n%s", marker, userPrompt)
+		}
+	}
+}
+
 func TestClusterMergeDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	a := clusterTestFinding("Fix alpha issue", 1)
 	a.Suggestions = []model.Suggestion{{Body: "alpha suggestion should be omitted", LineRange: model.LineRange{Start: 1, End: 1}}}
@@ -2785,7 +2987,7 @@ func TestClusterMergeDisableSuggestionsOmitsSuggestions(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true})
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}, nil, false)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want 1", len(llmClient.mergeRequests))
@@ -2881,7 +3083,7 @@ func TestClusterMergeReturnedRunMatchesPartialStepStatus(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
 
 	if len(runs) != 1 {
 		t.Fatalf("merge runs = %d, want 1", len(runs))
@@ -2914,7 +3116,7 @@ func TestClusterMergeErrorMarksRunFailedAndKeepsFindings(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{clusterTestFinding("Fix beta issue", 13)}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(runs) != 1 {
 		t.Fatalf("merge runs = %d, want 1", len(runs))
@@ -2940,7 +3142,7 @@ func TestClusterMergeFoldsMechanicalDuplicatesWithoutLLM(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 0 {
 		t.Fatalf("merge requests = %d, want pure mechanical fold", len(llmClient.mergeRequests))
@@ -2964,7 +3166,7 @@ func TestClusterMergeDistinctFindingsPassThroughWithoutLLM(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 0 {
 		t.Fatalf("merge requests = %d, want none for distinct findings", len(llmClient.mergeRequests))
@@ -2990,7 +3192,7 @@ func TestClusterMergeVerdictlessInputsWithFindingsReportIncorrect(t *testing.T) 
 		{name: "b.json", role: "merge_input", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
 	}
 
-	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(result.resp.Findings) != 2 {
 		t.Fatalf("findings = %d, want both preserved", len(result.resp.Findings))
@@ -3001,7 +3203,7 @@ func TestClusterMergeVerdictlessInputsWithFindingsReportIncorrect(t *testing.T) 
 
 	// Explicit "patch is correct" alongside findings stays untouched.
 	inputs[0].response.OverallCorrectness = "patch is correct"
-	result, _ = engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, _ = engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 	if result.resp.OverallCorrectness != "patch is correct" {
 		t.Fatalf("overall correctness = %q, want explicit input verdict preserved", result.resp.OverallCorrectness)
 	}
@@ -3021,7 +3223,7 @@ func TestClusterMergeCrossFileTitleTwinsRouteToLLM(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one micro-merge for the cross-file cluster", len(llmClient.mergeRequests))
@@ -3054,7 +3256,7 @@ func TestClusterMergeCrossFileRelatedTitleAndBodyRouteToLLM(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one micro-merge for the related cross-file cluster", len(llmClient.mergeRequests))
@@ -3087,7 +3289,7 @@ func TestClusterMergeCrossFileRootCauseRouteToLLM(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one micro-merge for the root-cause cross-file cluster", len(llmClient.mergeRequests))
@@ -3148,7 +3350,7 @@ func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.
 		response: &llm.ReviewResponse{Findings: []model.Finding{finding}, OverallConfidenceScore: 0.9},
 	}}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(runs) != 1 {
 		t.Fatalf("merge runs = %d, want 1 skipped run", len(runs))
@@ -3464,7 +3666,7 @@ func TestClusterMergeStripsMergedFromOnAccept(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
 		t.Fatalf("runs = %#v, want one ok micro-merge", runs)
@@ -3500,7 +3702,7 @@ func TestClusterMergeRepairsMissingMergedFromWithoutRetry(t *testing.T) {
 		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
 
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("merge requests = %d, want one request with provenance repair and no retry", len(llmClient.mergeRequests))
@@ -3564,7 +3766,7 @@ func TestRunDedupeAgentsSelectsOneSuggestionWithLLM(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}}
 
-	runs := engine.runDedupeAgents(context.Background(), "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	runs := engine.runDedupeAgents(context.Background(), "{}", "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 1 || len(runs) != 1 {
 		t.Fatalf("requests/runs = %d/%d, want one dedupe agent", len(llmClient.mergeRequests), len(runs))
@@ -3590,7 +3792,7 @@ func TestClusterMergeSelectsOneSuggestionWithLLM(t *testing.T) {
 		{name: "B", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
 	}
 
-	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 1 || len(runs) != 1 || runs[0].Status != model.AgentRunStatusOK {
 		t.Fatalf("requests/runs = %d/%+v, want one successful merge agent", len(llmClient.mergeRequests), runs)
@@ -3613,7 +3815,7 @@ func TestRunDedupeAgentsMechanicalPrePassSkipsLLMWhenReduced(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}}
 
-	runs := engine.runDedupeAgents(context.Background(), "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	runs := engine.runDedupeAgents(context.Background(), "{}", "", vectorResults, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if len(llmClient.mergeRequests) != 0 {
 		t.Fatalf("LLM dedupe requests = %d, want 0 after mechanical fold to one", len(llmClient.mergeRequests))
@@ -3643,7 +3845,7 @@ func TestDedupeAgentAcceptsDedupedReviewerFindings(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}
 
-	resp, run := engine.runDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{})
+	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
 
 	if run.Status != model.AgentRunStatusOK {
 		t.Fatalf("dedupe status = %q, want ok: %s", run.Status, run.Error)
@@ -3669,7 +3871,7 @@ func TestDedupeAgentRejectsUnknownIDsAndFallsBack(t *testing.T) {
 		run:  model.AgentRun{Name: "Testing", Role: "review"},
 	}
 
-	resp, run := engine.runDedupeAgent(context.Background(), "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1})
+	resp, run := engine.runDedupeAgent(context.Background(), "{}", "", input, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
 
 	if resp != nil {
 		t.Fatalf("dedupe resp = %#v, want fallback/no replacement", resp)
