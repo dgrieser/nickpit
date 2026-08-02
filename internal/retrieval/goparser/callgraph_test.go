@@ -161,6 +161,66 @@ func Use() {
 	}
 }
 
+func TestBuildGraphResolvesSymbolsInTestFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/test\n\ngo 1.25.0\n")
+	writeTestFile(t, dir, "pkg/a.go", `package pkg
+
+func Alpha() {}
+
+func UseAlpha() {
+	Alpha()
+}
+`)
+	writeTestFile(t, dir, "pkg/a_test.go", `package pkg
+
+import "testing"
+
+func testHelper() {
+	Alpha()
+}
+
+func TestAlpha(t *testing.T) {
+	testHelper()
+}
+`)
+
+	graph, err := BuildGraph(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A symbol defined in a _test.go file resolves callees and callers.
+	callees, err := graph.Find("testHelper", "pkg/a_test.go", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callees.Root.Children) != 1 || callees.Root.Children[0].Name != "Alpha" {
+		t.Fatalf("testHelper callees = %#v", callees.Root.Children)
+	}
+	callers, err := graph.Find("testHelper", "pkg/a_test.go", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "TestAlpha" {
+		t.Fatalf("testHelper callers = %#v", callers.Root.Children)
+	}
+
+	// The base package is loaded twice (pkg and pkg [pkg.test]); non-test
+	// symbols and their edges must not be duplicated.
+	alphaCallers, err := graph.Find("Alpha", "pkg/a.go", 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(alphaCallers.Root.Children))
+	for _, child := range alphaCallers.Root.Children {
+		names = append(names, child.Name)
+	}
+	if len(names) != 2 || names[0] != "UseAlpha" || names[1] != "testHelper" {
+		t.Fatalf("Alpha callers = %v, want exactly [UseAlpha testHelper]", names)
+	}
+}
+
 func writeTestFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	path := filepath.Join(root, rel)

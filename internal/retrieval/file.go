@@ -247,7 +247,7 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 		contextLines = DefaultSearchContextLines(query)
 	}
 
-	results, normalizedPath, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalQueryMatcher(query, caseSensitive))
+	results, normalizedPath, truncatedFiles, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalQueryMatcher(query, caseSensitive))
 	if err != nil {
 		return nil, err
 	}
@@ -255,24 +255,26 @@ func (e *LocalEngine) Search(_ context.Context, repoRoot, path, query string, co
 	effectiveQuery := query
 	unescapedQuery := unescapeSearchQuery(query)
 	if len(results) == 0 && unescapedQuery != query {
-		fallback, _, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalQueryMatcher(unescapedQuery, caseSensitive))
+		fallback, _, fallbackTruncated, err := runFileSearch(repoRoot, path, contextLines, maxResults, literalQueryMatcher(unescapedQuery, caseSensitive))
 		if err != nil {
 			return nil, err
 		}
 		if len(fallback) > 0 {
 			results = fallback
 			effectiveQuery = unescapedQuery
+			truncatedFiles = fallbackTruncated
 		}
 	}
 
 	return &SearchResults{
-		Path:          normalizedPath,
-		Query:         effectiveQuery,
-		ContextLines:  contextLines,
-		MaxResults:    maxResults,
-		CaseSensitive: caseSensitive,
-		ResultCount:   len(results),
-		Results:       results,
+		Path:           normalizedPath,
+		Query:          effectiveQuery,
+		ContextLines:   contextLines,
+		MaxResults:     maxResults,
+		CaseSensitive:  caseSensitive,
+		ResultCount:    len(results),
+		Results:        results,
+		TruncatedFiles: truncatedFiles,
 	}, nil
 }
 
@@ -312,21 +314,22 @@ func (e *LocalEngine) SearchRegex(_ context.Context, repoRoot, path string, patt
 		}
 		return spans
 	}
-	results, normalizedPath, err := runFileSearch(repoRoot, path, contextLines, maxResults, matcher)
+	results, normalizedPath, truncatedFiles, err := runFileSearch(repoRoot, path, contextLines, maxResults, matcher)
 	if err != nil {
 		return nil, err
 	}
 	return &SearchResults{
-		Path:         normalizedPath,
-		Query:        pattern.String(),
-		ContextLines: contextLines,
-		MaxResults:   maxResults,
-		ResultCount:  len(results),
-		Results:      results,
+		Path:           normalizedPath,
+		Query:          pattern.String(),
+		ContextLines:   contextLines,
+		MaxResults:     maxResults,
+		ResultCount:    len(results),
+		Results:        results,
+		TruncatedFiles: truncatedFiles,
 	}, nil
 }
 
-func runFileSearch(repoRoot, path string, contextLines, maxResults int, matcher func(rawLines []string) []lineSpan) ([]SearchResult, string, error) {
+func runFileSearch(repoRoot, path string, contextLines, maxResults int, matcher func(rawLines []string) []lineSpan) ([]SearchResult, string, []string, error) {
 	if contextLines < 0 {
 		contextLines = 0
 	}
@@ -362,30 +365,33 @@ func runFileSearch(repoRoot, path string, contextLines, maxResults int, matcher 
 		return nil
 	}
 
-	normalizedPath, err := walkRepoTextFiles(repoRoot, path, appendMatches)
+	normalizedPath, truncatedFiles, err := walkRepoTextFiles(repoRoot, path, appendMatches)
 	if err != nil && err != errSearchLimitReached {
-		return nil, normalizedPath, fmt.Errorf("retrieval: searching %s: %w", searchScopeLabel(path, normalizedPath), err)
+		return nil, normalizedPath, truncatedFiles, fmt.Errorf("retrieval: searching %s: %w", searchScopeLabel(path, normalizedPath), err)
 	}
-	return results, normalizedPath, nil
+	return results, normalizedPath, truncatedFiles, nil
 }
 
 // walkRepoTextFiles resolves path within repoRoot and invokes visit with the
 // repo-relative path and normalized text content of each non-ignored text file.
 // When path is a file, only that file is visited; when it is a directory (or
-// empty, meaning the repo root), its tree is walked. The returned string is the
-// normalized path that was resolved. A non-nil error from visit stops the walk
-// and is returned to the caller.
-func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string) error) (string, error) {
+// empty, meaning the repo root), its tree is walked. It returns the normalized
+// path that was resolved and the repo-relative paths of visited text files
+// whose content was clipped at the per-file byte cap (so callers can report
+// that matches past the cap may be missing). A non-nil error from visit stops
+// the walk and is returned to the caller.
+func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string) error) (string, []string, error) {
 	normalizedPath, fullPath, err := repofs.ResolvePath(repoRoot, path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	info, err := os.Stat(fullPath)
 	if err != nil {
-		return normalizedPath, err
+		return normalizedPath, nil, err
 	}
 	ignores := repofs.NewIgnoreMatcher(repoRoot)
 
+	var truncatedFiles []string
 	visitFile := func(relPath string, respectIgnores bool) error {
 		if respectIgnores && ignores.IsIgnored(relPath, false) {
 			return nil
@@ -394,21 +400,24 @@ func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string
 		if err != nil {
 			return err
 		}
-		data, _, err := readFileCapped(repoRoot, fileFullPath, maxRetrievedFileBytes)
+		data, truncated, err := readFileCapped(repoRoot, fileFullPath, maxRetrievedFileBytes)
 		if err != nil {
 			return nil
 		}
 		if !isTextContent(data) {
 			return nil
 		}
+		if truncated {
+			truncatedFiles = append(truncatedFiles, relPath)
+		}
 		return visit(relPath, normalizeText(string(data)))
 	}
 
 	if !info.IsDir() {
 		if err := visitFile(normalizedPath, false); err != nil {
-			return normalizedPath, err
+			return normalizedPath, truncatedFiles, err
 		}
-		return normalizedPath, nil
+		return normalizedPath, truncatedFiles, nil
 	}
 
 	walkErr := filepath.WalkDir(fullPath, func(currentPath string, d os.DirEntry, walkErr error) error {
@@ -432,9 +441,9 @@ func walkRepoTextFiles(repoRoot, path string, visit func(relPath, content string
 		return visitFile(relPath, true)
 	})
 	if walkErr != nil {
-		return normalizedPath, walkErr
+		return normalizedPath, truncatedFiles, walkErr
 	}
-	return normalizedPath, nil
+	return normalizedPath, truncatedFiles, nil
 }
 
 // searchScopeLabel renders the path used in scope error messages, falling back

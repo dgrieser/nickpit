@@ -36,6 +36,9 @@ func collectFilesByExt(repoRoot string, scope lookupScope, exts map[string]struc
 			return err
 		}
 		if d.IsDir() {
+			if d.Name() == ".git" && path != root {
+				return filepath.SkipDir
+			}
 			relPath, relErr := repofs.RelPath(repoRoot, path)
 			if relErr == nil && relPath != "" && ignores.IsIgnored(relPath, true) {
 				return filepath.SkipDir

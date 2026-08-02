@@ -13,7 +13,6 @@ import (
 )
 
 type languageBackend interface {
-	language() string
 	supportsExt(ext string) bool
 	findSymbols(ctx context.Context, repoRoot, name string, scope lookupScope) ([]*SymbolInfo, error)
 	findCallers(ctx context.Context, repoRoot string, symbol *SymbolInfo, scope lookupScope, depth int) (*CallHierarchy, error)
@@ -183,8 +182,6 @@ func resolveSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*res
 }
 
 type goBackend struct{}
-
-func (goBackend) language() string { return "go" }
 
 func (goBackend) supportsExt(ext string) bool { return ext == ".go" }
 

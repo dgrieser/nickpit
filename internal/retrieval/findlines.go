@@ -18,7 +18,7 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 	specifiedCode := code
 	code = NormalizeFindLinesCode(code)
 	matches := make([]FindLinesMatch, 0)
-	normalizedPath, err := walkRepoTextFiles(repoRoot, path, func(relPath, content string) error {
+	normalizedPath, truncatedFiles, err := walkRepoTextFiles(repoRoot, path, func(relPath, content string) error {
 		remaining := maxFindLinesMatches - len(matches)
 		if remaining <= 0 {
 			return errSearchLimitReached
@@ -34,10 +34,11 @@ func (e *LocalEngine) FindLines(_ context.Context, repoRoot, path, code string) 
 		return nil, fmt.Errorf("retrieval: find_lines %s: %w", searchScopeLabel(path, normalizedPath), err)
 	}
 	return &FindLinesResult{
-		Path:       normalizedPath,
-		Code:       specifiedCode,
-		MatchCount: len(matches),
-		Matches:    matches,
+		Path:           normalizedPath,
+		Code:           specifiedCode,
+		MatchCount:     len(matches),
+		Matches:        matches,
+		TruncatedFiles: truncatedFiles,
 	}, nil
 }
 

@@ -2,7 +2,6 @@ package goparser
 
 import (
 	"context"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
@@ -21,20 +20,6 @@ type Symbol struct {
 	StartLine int
 	EndLine   int
 	Source    string
-}
-
-func FindSymbol(_ context.Context, repoRoot, name, path string) (*Symbol, error) {
-	results, err := FindSymbols(context.Background(), repoRoot, name, path)
-	if err != nil {
-		return nil, err
-	}
-	if len(results) == 0 {
-		if path != "" {
-			return nil, fmt.Errorf("symbol %q not found in %q", name, path)
-		}
-		return nil, fmt.Errorf("symbol %q not found", name)
-	}
-	return &results[0], nil
 }
 
 func FindSymbols(_ context.Context, repoRoot, name, path string) ([]Symbol, error) {
@@ -123,6 +108,9 @@ func collectGoFiles(repoRoot, path string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
+			if d.Name() == ".git" && path != root {
+				return filepath.SkipDir
+			}
 			relPath, relErr := repofs.RelPath(repoRoot, path)
 			if relErr == nil && relPath != "" && ignores.IsIgnored(relPath, true) {
 				return filepath.SkipDir

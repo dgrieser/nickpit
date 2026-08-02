@@ -192,6 +192,83 @@ func TestLocalEngineReturnsLowConfidenceErrorsForDynamicPythonAndNodeCalls(t *te
 	}
 }
 
+func TestLocalEngineReturnsLowConfidenceErrorsForFilesWithParseErrors(t *testing.T) {
+	// A file-level parse error must degrade every symbol in the file to the
+	// low-confidence path, matching the nodejs backend's behavior.
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "broken.py", `def run():
+    helper()
+
+def helper():
+    return 1
+
+def broken(:
+`)
+	writeRetrievalFile(t, repoRoot, "broken.rs", `fn run() {
+    helper();
+}
+
+fn helper() {}
+
+fn broken( {{{
+`)
+
+	engine := NewLocalEngine()
+
+	_, err := engine.FindCallees(context.Background(), repoRoot, SymbolRef{Name: "run", Path: "broken.py"}, 1)
+	if err == nil || !strings.Contains(err.Error(), "could not be resolved confidently for python") {
+		t.Fatalf("python error = %v", err)
+	}
+
+	_, err = engine.FindCallees(context.Background(), repoRoot, SymbolRef{Name: "run", Path: "broken.rs"}, 1)
+	if err == nil || !strings.Contains(err.Error(), "could not be resolved confidently for rust") {
+		t.Fatalf("rust error = %v", err)
+	}
+}
+
+func TestLocalEngineFindNodeCallHierarchyResolvesTSSourceFromJSSpecifier(t *testing.T) {
+	// TS NodeNext/ESM code imports "./util.js" while the source on disk is
+	// util.ts; the import must still resolve to the TS file.
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "src/util.ts", `export function helper() {
+  return 1
+}
+`)
+	writeRetrievalFile(t, repoRoot, "src/runner.ts", `import { helper } from "./util.js"
+
+export function run() {
+  helper()
+}
+`)
+
+	engine := NewLocalEngine()
+	callers, err := engine.FindCallers(context.Background(), repoRoot, SymbolRef{Name: "helper", Path: "src/util.ts"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(callers.Root.Children) != 1 || callers.Root.Children[0].Name != "run" || callers.Root.Children[0].CodeLocation.FilePath != "src/runner.ts" {
+		t.Fatalf("callers = %#v", callers.Root.Children)
+	}
+}
+
+func TestLocalEngineGetSymbolSkipsGitDirectoryDuringRepoWideSearch(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "pkg/run.py", "def Run():\n    return 1\n")
+	writeRetrievalFile(t, repoRoot, ".git/hooks/hook.py", "def GitHook():\n    return 2\n")
+
+	engine := NewLocalEngine()
+	if _, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "GitHook"}); err == nil {
+		t.Fatal("expected symbol under .git to stay invisible")
+	}
+	symbol, err := engine.GetSymbol(context.Background(), repoRoot, SymbolRef{Name: "Run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if symbol.Path != "pkg/run.py" {
+		t.Fatalf("symbol = %#v", symbol)
+	}
+}
+
 func TestLocalEnginePathScopeSelectsIntendedBackend(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "pkg/run.py", `def Run():

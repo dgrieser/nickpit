@@ -142,6 +142,63 @@ func TestIgnoreMatcherSupportsCharacterClasses(t *testing.T) {
 	}
 }
 
+func TestIgnoreMatcherSupportsNegatedCharacterClasses(t *testing.T) {
+	tests := []struct {
+		name      string
+		gitignore string
+		path      string
+		want      bool
+	}{
+		{name: "bang negation excludes digits", gitignore: "file[!0-9].txt\n", path: "file5.txt", want: false},
+		{name: "bang negation matches letter", gitignore: "file[!0-9].txt\n", path: "fileA.txt", want: true},
+		{name: "bang negation matches non-digit bang", gitignore: "file[!0-9].txt\n", path: "file!.txt", want: true},
+		{name: "caret negation excludes digits", gitignore: "file[^0-9].txt\n", path: "file5.txt", want: false},
+		{name: "caret negation matches letter", gitignore: "file[^0-9].txt\n", path: "fileA.txt", want: true},
+		{name: "positive class still matches digit", gitignore: "file[0-9].txt\n", path: "file5.txt", want: true},
+		{name: "positive class still rejects letter", gitignore: "file[0-9].txt\n", path: "fileA.txt", want: false},
+		{name: "negated class inside subdirectory pattern", gitignore: "logs/day[!0-9].txt\n", path: "logs/dayX.txt", want: true},
+		{name: "negated class inside subdirectory pattern rejects digit", gitignore: "logs/day[!0-9].txt\n", path: "logs/day1.txt", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeFile(t, repoRoot, ".gitignore", tt.gitignore)
+			matcher := NewIgnoreMatcher(repoRoot)
+			if got := matcher.IsIgnored(tt.path, false); got != tt.want {
+				t.Fatalf("IsIgnored(%q) with pattern %q = %t, want %t", tt.path, tt.gitignore, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIgnoreMatcherBareGlobstarMatchesEverything(t *testing.T) {
+	tests := []struct {
+		name      string
+		gitignore string
+		path      string
+		isDir     bool
+		want      bool
+	}{
+		{name: "bare globstar matches root file", gitignore: "**\n", path: "a.txt", want: true},
+		{name: "bare globstar matches nested file", gitignore: "**\n", path: "dir/b.txt", want: true},
+		{name: "bare globstar matches directory", gitignore: "**\n", path: "dir", isDir: true, want: true},
+		{name: "anchored globstar matches everything", gitignore: "/**\n", path: "dir/b.txt", want: true},
+		{name: "directory globstar matches directory", gitignore: "**/\n", path: "dir", isDir: true, want: true},
+		{name: "directory globstar matches file under directory", gitignore: "**/\n", path: "dir/b.txt", want: true},
+		{name: "directory globstar skips root file", gitignore: "**/\n", path: "a.txt", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeFile(t, repoRoot, ".gitignore", tt.gitignore)
+			matcher := NewIgnoreMatcher(repoRoot)
+			if got := matcher.IsIgnored(tt.path, tt.isDir); got != tt.want {
+				t.Fatalf("IsIgnored(%q, isDir=%t) with pattern %q = %t, want %t", tt.path, tt.isDir, tt.gitignore, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIgnoreMatcherSupportsEscapedClosingBracketInCharacterClass(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeFile(t, repoRoot, ".gitignore", "file[\\]].txt\n")
