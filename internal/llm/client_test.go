@@ -4211,6 +4211,43 @@ func TestParseReviewResponseOmittedFindingsReportedMissing(t *testing.T) {
 	}
 }
 
+// A findings value that is neither an array nor null lost that block's
+// findings during lenient merging; it must trigger a retry (keeping the rest
+// of the extraction as the partial response) instead of silently passing as
+// an empty findings list.
+func TestParseReviewResponseMalformedFindingsValueReportsInvalid(t *testing.T) {
+	content := `{"findings":"invalid"}
+{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	if !slices.Contains(invalid.MissingFields, "findings (must be an array)") {
+		t.Fatalf("missing fields = %v, want to contain findings (must be an array)", invalid.MissingFields)
+	}
+	// The extracted remainder is returned alongside the error; the client
+	// stamps it as the PartialResponse for the retry-exhausted salvage path.
+	if resp == nil || resp.OverallCorrectness != "patch is correct" {
+		t.Fatalf("partial = %+v, want extracted overall fields kept", resp)
+	}
+}
+
+// A malformed findings value in one block is not excused by a valid array in
+// another: content was lost, so the model is asked again.
+func TestParseReviewResponseMalformedFindingsBesideValidArrayStillInvalid(t *testing.T) {
+	content := `{"findings":"invalid"}
+{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	if !slices.Contains(invalid.MissingFields, "findings (must be an array)") {
+		t.Fatalf("missing fields = %v, want to contain findings (must be an array)", invalid.MissingFields)
+	}
+}
+
 func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 	content := `{"findings":[{"title":"[P1] Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})

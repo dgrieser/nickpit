@@ -63,13 +63,18 @@ type WorkerConfig struct {
 // Dispatcher owns the coalescing queue and the worker pool. All mutable state
 // sits behind one mutex; the daemon is concurrent by construction.
 type Dispatcher struct {
-	mu      sync.Mutex
-	states  map[jobKey]*jobState
-	queue   chan jobKey
-	recent  *shaLRU
-	closed  bool
-	running int
-	dropped int
+	mu     sync.Mutex
+	states map[jobKey]*jobState
+	queue  chan jobKey
+	// overflow parks pending re-run keys when the queue channel is full at
+	// finish time. Those events were already acknowledged with a 2xx, so they
+	// must not be dropped; take moves them into freed queue slots. Only
+	// re-runs land here — new events still get backpressure via Enqueue.
+	overflow []jobKey
+	recent   *shaLRU
+	closed   bool
+	running  int
+	dropped  int
 
 	runner ReviewRunner
 	topics *topicCache
@@ -181,14 +186,11 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 						return
 					}
 					event, jobCtx, ok := d.take(key)
-					// A pending event parked behind the running review was
-					// already acknowledged with a 2xx, so it must not depend
-					// on a free queue slot: finish hands it straight back to
-					// this worker instead of re-queueing.
-					for ok {
-						d.process(jobCtx, event)
-						event, jobCtx, ok = d.finish(key)
+					if !ok {
+						continue
 					}
+					d.process(jobCtx, event)
+					d.finish(key)
 				}
 			}
 		})
@@ -259,6 +261,9 @@ func (d *Dispatcher) Stats() (queued, running int) {
 func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// The receive that delivered key freed a queue slot; move parked re-run
+	// keys into freed slots so the overflow drains as workers cycle.
+	d.drainOverflowLocked()
 	// Once shutdown began, no new review may start: only already-running
 	// reviews get the grace period. The worker loop's cancellation checks
 	// alone can lose the select race against a non-empty queue.
@@ -277,18 +282,19 @@ func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	return state.latest, ctx, true
 }
 
-// finish completes a job. A pending event received mid-run is handed back to
-// the same worker for immediate execution rather than re-queued: it was
-// already acknowledged with a 2xx at enqueue time, so a full queue must not
-// be able to drop it. Only shutdown ends the chain early — the event cannot
-// run then, and that loss is logged.
-func (d *Dispatcher) finish(key jobKey) (Event, context.Context, bool) {
+// finish completes a job. A pending event received mid-run re-queues the MR
+// at the back of the queue — behind other waiting MRs, so a busy MR cannot
+// monopolize a worker. The re-run was already acknowledged with a 2xx at
+// enqueue time, so a full queue must not drop it: it parks in the overflow
+// and take moves it into the next freed slot. Only shutdown loses it — the
+// event cannot run then, and that loss is logged.
+func (d *Dispatcher) finish(key jobKey) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.running--
 	state, ok := d.states[key]
 	if !ok {
-		return Event{}, nil, false
+		return
 	}
 	if state.cancel != nil {
 		state.cancel()
@@ -297,21 +303,35 @@ func (d *Dispatcher) finish(key jobKey) (Event, context.Context, bool) {
 	state.startedAt = time.Time{}
 	if state.pending == nil {
 		delete(d.states, key)
-		return Event{}, nil, false
+		return
 	}
 	if d.closed {
 		d.dropped++
 		d.log.Warn("shutdown: dropping pending re-run", "project", state.pending.ProjectPath, "iid", state.pending.IID)
 		delete(d.states, key)
-		return Event{}, nil, false
+		return
 	}
 	state.latest = *state.pending
 	state.pending = nil
-	ctx, cancel := context.WithCancel(d.jobCtx)
-	state.cancel = cancel
-	state.startedAt = time.Now()
-	d.running++
-	return state.latest, ctx, true
+	state.status = stateQueued
+	select {
+	case d.queue <- key:
+	default:
+		d.overflow = append(d.overflow, key)
+	}
+}
+
+// drainOverflowLocked moves parked re-run keys into free queue slots,
+// preserving their order. Callers hold d.mu.
+func (d *Dispatcher) drainOverflowLocked() {
+	for len(d.overflow) > 0 {
+		select {
+		case d.queue <- d.overflow[0]:
+			d.overflow = d.overflow[1:]
+		default:
+			return
+		}
+	}
 }
 
 // Abort cancels the MR's review: a queued job is removed (its stale queue key

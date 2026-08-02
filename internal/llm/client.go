@@ -2959,15 +2959,19 @@ func missingVerdictFields(parsed *ReviewResponse, constraints ResponseConstraint
 // view, matching the parsed-side fallback that requires a preceding Finding.
 //
 // hasFindingsKey reports whether any candidate object carried a "findings"
-// key at all. The key is removed from top before copying (its items land in
-// findings instead), so callers cannot recover presence from top — without
-// this bool a `{"findings": null}` response would be indistinguishable from
-// one that omitted the key entirely.
-func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, findings []json.RawMessage, hasFindingsKey bool) {
+// key whose value decodes as an array or is an explicit null. The key is
+// removed from top before copying (its items land in findings instead), so
+// callers cannot recover presence from top — without this bool a
+// `{"findings": null}` response would be indistinguishable from one that
+// omitted the key entirely. malformedFindings reports a "findings" value of
+// any other type (string, number, object): that block's findings are lost,
+// so the response must not pass as an empty list — the caller asks again,
+// keeping whatever else was extracted.
+func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, findings []json.RawMessage, hasFindingsKey, malformedFindings bool) {
 	top = make(map[string]json.RawMessage)
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
-		return top, findings, false
+		return top, findings, false, false
 	}
 	candidates := extractJSONCandidates(trimmed)
 	if len(candidates) == 0 {
@@ -2978,10 +2982,13 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 			asMap := *parsed.(*map[string]json.RawMessage)
 			_, hasFindings := asMap["findings"]
 			if hasFindings {
-				hasFindingsKey = true
 				var items []json.RawMessage
 				if json.Unmarshal(asMap["findings"], &items) == nil {
+					// An array, or an explicit null (items stays nil).
+					hasFindingsKey = true
 					findings = append(findings, items...)
+				} else {
+					malformedFindings = true
 				}
 				delete(asMap, "findings")
 				maps.Copy(top, asMap)
@@ -2999,7 +3006,7 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 			findings = append(findings, asArr...)
 		}
 	}
-	return top, findings, hasFindingsKey
+	return top, findings, hasFindingsKey, malformedFindings
 }
 
 func rawCandidateIsBareFinding(decoded []byte) bool {
@@ -3014,9 +3021,14 @@ func rawCandidateIsBareFinding(decoded []byte) bool {
 }
 
 func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind, constraints ResponseConstraints) []string {
-	raw, rawFindings, hasFindingsKey := mergedRawReviewBlocks(content)
+	raw, rawFindings, hasFindingsKey, malformedFindings := mergedRawReviewBlocks(content)
 	var missing []string
-	if !hasFindingsKey && len(rawFindings) == 0 && parsed.Findings == nil {
+	if malformedFindings {
+		// A block's findings value was neither an array nor null; whatever it
+		// carried is lost, so the response must not pass as an empty list.
+		// The retry keeps everything else that was extracted.
+		missing = append(missing, "findings (must be an array)")
+	} else if !hasFindingsKey && len(rawFindings) == 0 && parsed.Findings == nil {
 		missing = append(missing, "findings")
 	}
 	if len(rawFindings) > len(parsed.Findings) {

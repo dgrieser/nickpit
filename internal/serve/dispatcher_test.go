@@ -542,9 +542,35 @@ func TestEnqueueRejectsAfterCloseIntake(t *testing.T) {
 	}
 }
 
+// A pending re-run re-queues at the back, behind other waiting MRs: a busy MR
+// must not monopolize a worker by having its re-runs jump the queue.
+func TestDispatcherPendingRerunDoesNotStarveQueuedMRs(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true)
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+
+	// While MR 7 runs: MR 8 queues up, then a new head for MR 7 parks as its
+	// pending re-run.
+	env.dispatcher.Enqueue(autoEvent(8, "sha-1", env.group))
+	env.gitlab.mu.Lock()
+	env.gitlab.headSHA = "sha-2"
+	env.gitlab.mu.Unlock()
+	env.dispatcher.Enqueue(autoEvent(7, "sha-2", env.group))
+
+	close(env.runner.gate)
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 3 })
+	var iids []int
+	for _, spec := range env.runner.ran() {
+		iids = append(iids, spec.IID)
+	}
+	if iids[0] != 7 || iids[1] != 8 || iids[2] != 7 {
+		t.Fatalf("run order = %v, want [7 8 7] (re-run behind queued MR 8)", iids)
+	}
+}
+
 // A pending re-run was acknowledged with a 2xx at enqueue time, so it must
-// not be dropped when the queue happens to be full at finish time: the worker
-// that ran the review executes it directly instead of re-queueing.
+// not be dropped when the queue happens to be full at finish time: it parks
+// in the overflow and re-enters the queue as slots free up.
 func TestDispatcherPendingRerunSurvivesFullQueue(t *testing.T) {
 	env := newDispatcherEnv(t, 1, true)
 	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
