@@ -60,6 +60,11 @@ func filterCompletions(values []string, prefix string) []string {
 	return out
 }
 
+// workflowStepCompletions lists only the steps that are valid as a standalone
+// --step spec. The per-vector verify:/dedupe:/nudge:/reasoning-extract: steps
+// require a preceding review:<vector> step in the same spec
+// (workflow.Spec.Validate), so a single-step run can never use them and they
+// must not be offered.
 func workflowStepCompletions() []string {
 	steps := []string{
 		workflow.StepCollectContext,
@@ -71,13 +76,7 @@ func workflowStepCompletions() []string {
 		workflow.StepSummarize,
 	}
 	for _, vector := range workflow.ReviewVectorIDs {
-		steps = append(steps,
-			workflow.StepReviewPrefix+vector,
-			workflow.StepExtractPrefix+vector,
-			workflow.StepNudgePrefix+vector,
-			workflow.StepVerifyPrefix+vector,
-			workflow.StepDedupePrefix+vector,
-		)
+		steps = append(steps, workflow.StepReviewPrefix+vector)
 	}
 	return steps
 }

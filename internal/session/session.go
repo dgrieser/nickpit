@@ -212,9 +212,6 @@ func NewStore(dir string, opts ...StoreOption) (*Store, error) {
 	return store, nil
 }
 
-// Dir returns the store's directory.
-func (s *Store) Dir() string { return s.dir }
-
 // Path returns the file path for a session id.
 func (s *Store) Path(id string) (string, error) {
 	if err := validateID(id); err != nil {

@@ -132,7 +132,7 @@ func TestCapabilityCacheLegacyEntryMissesFingerprint(t *testing.T) {
 	}
 }
 
-func TestFindProfileCapabilityUsesModelOnly(t *testing.T) {
+func TestFindProfileCapabilityForUsesModelOnly(t *testing.T) {
 	profile := config.Profile{
 		Model:   "model",
 		BaseURL: "https://example.invalid/v1",
@@ -142,12 +142,44 @@ func TestFindProfileCapabilityUsesModelOnly(t *testing.T) {
 			Reasoning:  config.ReasoningCapabilities{Efforts: []string{"high"}},
 		}},
 	}
-	got, ok := FindProfileCapability(profile)
+	got, ok := FindProfileCapabilityFor(profile, profile.Model)
 	if !ok {
 		t.Fatal("expected profile capability")
 	}
 	if got.Model != "model" {
 		t.Fatalf("model = %q", got.Model)
+	}
+	if _, ok := FindProfileCapabilityFor(profile, "other-model"); ok {
+		t.Fatal("unexpected capability for undeclared model")
+	}
+}
+
+func TestResultFromCapabilityCarriesOptionalErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     *bool
+		wantError string
+	}{
+		{name: "never probed", value: nil, wantError: ""},
+		{name: "supported", value: boolPtr(true), wantError: ""},
+		{name: "unsupported", value: boolPtr(false), wantError: "reported unsupported by provider profile/cache"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			capability := config.ModelCapabilities{
+				Model:        "m",
+				Response:     true,
+				JSONResponse: cloneBoolPtr(tc.value),
+				JSONSchema:   cloneBoolPtr(tc.value),
+			}
+			result := ResultFromCapability(capability, false)
+			if got := result.ConfiguredJSONOutput().Error; got != tc.wantError {
+				t.Fatalf("json output error = %q, want %q", got, tc.wantError)
+			}
+			if got := result.ConfiguredJSONSchema().Error; got != tc.wantError {
+				t.Fatalf("json schema error = %q, want %q", got, tc.wantError)
+			}
+		})
 	}
 }
 

@@ -47,10 +47,6 @@ func NormalizeModel(model string) string {
 	return strings.TrimSpace(model)
 }
 
-func FindProfileCapability(profile config.Profile) (config.ModelCapabilities, bool) {
-	return FindProfileCapabilityFor(profile, profile.Model)
-}
-
 // FindProfileCapabilityFor looks up a pre-declared capability for an explicit
 // model in the profile's supported_models list, rather than the profile's
 // primary model. Used to resolve configured small-profile aliases.
@@ -239,8 +235,14 @@ func optionalStatus(ok *bool) Status {
 	return statusFor(*ok)
 }
 
-func optionalError(_ *bool) string {
-	return ""
+// optionalError complements optionalStatus for probes reconstructed from a
+// stored capability: the original probe error is not persisted, so a failed
+// capability gets a short synthetic message instead of an empty one.
+func optionalError(ok *bool) string {
+	if ok == nil || *ok {
+		return ""
+	}
+	return "reported unsupported by provider profile/cache"
 }
 
 func firstEffort(efforts []string) string {

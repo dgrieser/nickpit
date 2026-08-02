@@ -361,7 +361,10 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.nudgeCount, &cli.nudgeCountSet), "nudge-count", "Number of nudge rounds asking each reviewer to look again (0 disables)")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxFindings, &cli.maxFindingsSet), "max-findings", "Maximum findings each review agent may report; weakest findings are cut when exceeded (0 = unlimited)")
 	root.PersistentFlags().StringVar(&cli.priorityThreshold, "priority-threshold", "3", "Minimum priority to display: 0 (highest) to 3 (lowest)")
-	root.PersistentFlags().StringVar(&cli.configPath, "config", ".nickpit.yaml", "Config file path")
+	// The default is the empty string, not config.DefaultConfigPath: an empty
+	// path tells config.Load to run the tolerant implicit lookup, while any
+	// explicit --config / NICKPIT_CONFIG path must exist.
+	root.PersistentFlags().StringVar(&cli.configPath, "config", "", "Config file path (default \""+config.DefaultConfigPath+"\")")
 	root.PersistentFlags().StringVar(&cli.githubToken, "github-token", "", "GitHub token override")
 	root.PersistentFlags().StringVar(&cli.gitlabToken, "gitlab-token", "", "GitLab token override")
 	root.PersistentFlags().StringVar(&cli.gitlabBaseURL, "gitlab-base-url", "", "GitLab API base URL")
@@ -848,6 +851,7 @@ func (a *app) newGitHubCmd() *cobra.Command {
 				Identifier:                pr,
 				IncludeComments:           a.includeComments,
 				IncludeCommits:            a.includeCommits,
+				IncludeFullFiles:          a.includeFullFiles,
 				IncludePaths:              profile.IncludePaths,
 				ExcludePaths:              profile.ExcludePaths,
 				IncludeContent:            profile.IncludeContent,
@@ -928,6 +932,7 @@ func (a *app) newGitLabCmd() *cobra.Command {
 				Identifier:                mr,
 				IncludeComments:           a.includeComments,
 				IncludeCommits:            a.includeCommits,
+				IncludeFullFiles:          a.includeFullFiles,
 				IncludePaths:              profile.IncludePaths,
 				ExcludePaths:              profile.ExcludePaths,
 				IncludeContent:            profile.IncludeContent,

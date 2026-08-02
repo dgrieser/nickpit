@@ -383,6 +383,60 @@ profiles:
 	}
 }
 
+func TestLoadMissingConfigFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    func(t *testing.T) string
+		wantErr string
+	}{
+		{
+			name: "explicit missing path errors",
+			path: func(t *testing.T) string {
+				return filepath.Join(t.TempDir(), "missing.nickpit.yaml")
+			},
+			wantErr: "config: file not found:",
+		},
+		{
+			name: "implicit missing default proceeds on defaults",
+			path: func(t *testing.T) string {
+				// Run in a directory without a .nickpit.yaml so the implicit
+				// DefaultConfigPath lookup misses.
+				t.Chdir(t.TempDir())
+				return ""
+			},
+		},
+		{
+			name: "explicit existing path loads",
+			path: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				if err := os.WriteFile(path, []byte("profiles:\n  default:\n    model: file-model\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NICKPIT_MODEL", "test-model")
+			t.Setenv("NICKPIT_API_KEY", "test-key")
+			_, profile, err := Load(tc.path(t), Overrides{})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile.Model != "test-model" {
+				t.Fatalf("model = %q", profile.Model)
+			}
+		})
+	}
+}
+
 func TestLoadConfigUsesPrimaryModelEnv(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "from-openrouter-env")
 	t.Setenv("NICKPIT_MODEL", "primary-model")
