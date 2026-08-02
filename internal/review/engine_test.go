@@ -2925,6 +2925,37 @@ func TestDedupeStepContextIncludeDropsExcludedSections(t *testing.T) {
 	}
 }
 
+// `toolchain: false` trims the prompt without changing styleguide resolution:
+// the detected Go 1.25 still selects the version-specific guide, so excluding
+// the versions cannot silently downgrade the step to the generic guide.
+func TestDedupeStepToolchainOffStillVersionsStyleGuides(t *testing.T) {
+	off := false
+	req := runDedupeStepForContextTest(t, &workflow.StepOverride{Context: &workflow.ContextInclude{Toolchain: &off}})
+
+	system := req.Messages[0].Content
+	if !strings.Contains(system, "Go 1.25 — Complete Developer Guideline") {
+		t.Fatalf("dedupe system prompt lost the version-specific styleguide with toolchain off: %q", system)
+	}
+	if strings.Contains(system, "# Go — Common Developer Guideline") {
+		t.Fatalf("dedupe system prompt downgraded to the generic styleguide with toolchain off: %q", system)
+	}
+	if strings.Contains(system, "Check the provided `toolchain_versions`") {
+		t.Fatalf("dedupe system prompt kept toolchain instruction after context.toolchain=false: %q", system)
+	}
+	userPrompt := taskMessageContent(req)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(userPrompt), &payload); err != nil {
+		t.Fatalf("unmarshal dedupe user prompt: %v", err)
+	}
+	reviewContext, ok := payload["review_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("dedupe payload review_context = %#v, want object", payload["review_context"])
+	}
+	if _, ok := reviewContext["toolchain_versions"]; ok {
+		t.Fatalf("dedupe review_context kept toolchain_versions: %#v", reviewContext["toolchain_versions"])
+	}
+}
+
 // A partially-off block leaves every unset section in place.
 func TestDedupeStepContextIncludePartialKeepsRest(t *testing.T) {
 	off := false

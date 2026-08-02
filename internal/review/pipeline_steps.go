@@ -918,6 +918,13 @@ type stepPromptContext struct {
 // resolveStepPromptContext applies a dedupe/merge step's context-include flags
 // to the pipeline state's prepared context. Everything is included unless the
 // step's config turns a section off.
+//
+// `toolchain: false` is a prompt-content switch, not a resolution switch: the
+// detected toolchain still picks the styleguide version, because selection
+// reads the enriched context (via stepStyleGuides) rather than the trimmed
+// payload. Excluding the versions must not silently downgrade a step from the
+// Go 1.25 guide to the generic one — resolve styleguides from st, never from
+// the filtered payload.
 func (e *Engine) resolveStepPromptContext(st *PipelineState, override *workflow.StepOverride) (stepPromptContext, error) {
 	include := override.ContextInclude()
 	out := stepPromptContext{hasToolchain: st.hasToolchain && include.Toolchain}

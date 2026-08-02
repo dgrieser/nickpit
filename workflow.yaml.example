@@ -83,6 +83,9 @@
 #   commits       the commit summaries
 #   comments      the MR/PR discussion comments
 #   toolchain     toolchain_versions, and the instruction to consult it
+# `toolchain: false` only trims the prompt: the detected toolchain still picks
+# the styleguide version, so a Go 1.25 change keeps the Go 1.25 guide instead of
+# falling back to the generic one.
 # The changed-file list and the context agent's supplemental files are always
 # sent: they are small and identify what the findings are about. The key is
 # accepted on `dedupe`, `dedupe:<vector>`, and `merge` only — every other stage
