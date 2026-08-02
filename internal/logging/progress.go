@@ -124,9 +124,10 @@ const (
 
 // allStages exists for the column-width guard test.
 var allStages = []Stage{
-	StageNickPit, StageModel, StageAgent, StageReview, StageModelCheck, StageRequest,
-	StageResponse, StageReasoning, StageTool, StageResult, StagePublish,
-	StageCategorize, StageVerify, StageFinalize, StageVerdict, StageSummarize,
+	StageNickPit, StageModel, StageAgent, StageReview, StageChat, StageModelCheck,
+	StageRequest, StageResponse, StageReasoning, StageTool, StageResult,
+	StagePublish, StageCategorize, StageVerify, StageFinalize, StageVerdict,
+	StageSummarize,
 }
 
 // stageColumnWidth is the width of the stage column: len(StageModelCheck) and

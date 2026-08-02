@@ -250,6 +250,36 @@ FROM node:20-bookworm
 	}
 }
 
+func TestScanDockerfileKeepsBuildStageAliases(t *testing.T) {
+	body := `FROM golang:1.22 AS builder
+FROM node:18
+`
+	fsys := fstest.MapFS{"Dockerfile": &fstest.MapFile{Data: []byte(body)}}
+	got := scanDockerfile(fsys)
+	if findVersion(got, "Dockerfile", "FROM golang") != "1.22" {
+		t.Errorf("golang missing: %#v", got)
+	}
+	if findVersion(got, "Dockerfile", "FROM node") != "18" {
+		t.Errorf("node missing: %#v", got)
+	}
+}
+
+func TestScanDockerfileIgnoresImageNamePrefixes(t *testing.T) {
+	body := `FROM golangci/golangci-lint:v1.55 AS lint
+FROM nodesource/distributions
+FROM pythonista:latest
+FROM golang:1.22-alpine AS build
+`
+	fsys := fstest.MapFS{"Dockerfile": &fstest.MapFile{Data: []byte(body)}}
+	got := scanDockerfile(fsys)
+	if len(got) != 1 {
+		t.Fatalf("expected only the exact golang image, got %#v", got)
+	}
+	if got[0].Field != "FROM golang" || got[0].Version != "1.22-alpine" {
+		t.Errorf("entry = %#v", got[0])
+	}
+}
+
 func TestScanGitlabCI(t *testing.T) {
 	body := `image: golang:1.22
 stages:
@@ -264,6 +294,23 @@ test:
 	}
 	if findVersion(got, ".gitlab-ci.yml", "image python") != "3.11" {
 		t.Errorf("python image missing: %#v", got)
+	}
+}
+
+func TestScanGitlabCIIgnoresImageNamePrefixes(t *testing.T) {
+	body := `image: golangci/golangci-lint:v1.55
+lint:
+  image: "nodesource/distributions"
+build:
+  image: 'golang:1.22'
+`
+	fsys := fstest.MapFS{".gitlab-ci.yml": &fstest.MapFile{Data: []byte(body)}}
+	got := scanGitlabCI(fsys)
+	if len(got) != 1 {
+		t.Fatalf("expected only the exact golang image, got %#v", got)
+	}
+	if got[0].Field != "image golang" || got[0].Version != "1.22" {
+		t.Errorf("entry = %#v", got[0])
 	}
 }
 
