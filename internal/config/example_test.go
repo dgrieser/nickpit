@@ -107,7 +107,7 @@ func yamlTagNames(t *testing.T, typ reflect.Type) []string {
 // appear in the example profile mapping.
 func TestExampleProfileNodeCoversAllProfileKeys(t *testing.T) {
 	keys := mappingKeys(t, exampleProfileNode(Profile{}))
-	for _, name := range yamlTagNames(t, reflect.TypeOf(Profile{})) {
+	for _, name := range yamlTagNames(t, reflect.TypeFor[Profile]()) {
 		if !keys[name] {
 			t.Errorf("example profile omits yaml key %q", name)
 		}
@@ -128,7 +128,7 @@ func TestSupportedModelsNodeCoversAllCapabilityKeys(t *testing.T) {
 		t.Fatalf("supported models node = %+v, want one-entry sequence", seq)
 	}
 	keys := mappingKeys(t, seq.Content[0])
-	for _, name := range yamlTagNames(t, reflect.TypeOf(ModelCapabilities{})) {
+	for _, name := range yamlTagNames(t, reflect.TypeFor[ModelCapabilities]()) {
 		if !keys[name] {
 			t.Errorf("supported_models entry omits yaml key %q", name)
 		}

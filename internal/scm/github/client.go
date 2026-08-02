@@ -106,7 +106,7 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	first := true
 	for nextPath != "" {
 		if _, seen := visited[nextPath]; seen {
-			break
+			return fmt.Errorf("github: pagination cycle for %s at %s", path, nextPath)
 		}
 		if len(visited) >= maxPaginatedPages {
 			return fmt.Errorf("github: pagination for %s exceeded %d pages", path, maxPaginatedPages)

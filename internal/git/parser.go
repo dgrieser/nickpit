@@ -41,7 +41,7 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 			}
 			currentFile = parseDiffGitPath(line)
 			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
-		case strings.HasPrefix(line, "diff --cc "):
+		case strings.HasPrefix(line, "diff --cc "), strings.HasPrefix(line, "diff --combined "):
 			// Combined-diff ("merge state") file boundary. Without it the
 			// section's header lines (index, ---/+++ file headers) would bleed
 			// into the previous file's open hunk as content. The entry is
@@ -224,15 +224,17 @@ func parseDiffGitPath(line string) string {
 }
 
 // parseDiffCCPath extracts the path from a combined-diff header line
-// ("diff --cc <path>"; no a/-b/ prefixes, but git C-quotes paths containing
-// special or non-ASCII characters just like on "diff --git" lines).
+// ("diff --cc <path>" or "diff --combined <path>"; no a/-b/ prefixes, but git
+// C-quotes paths containing special or non-ASCII characters just like on
+// "diff --git" lines).
 func parseDiffCCPath(line string) string {
-	const prefix = "diff --cc "
 	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, prefix) {
-		return ""
+	for _, prefix := range []string{"diff --cc ", "diff --combined "} {
+		if strings.HasPrefix(line, prefix) {
+			return unquoteGitPath(line[len(prefix):])
+		}
 	}
-	return unquoteGitPath(line[len(prefix):])
+	return ""
 }
 
 // unquoteGitPath decodes value when git C-quoted it (leading '"'); other

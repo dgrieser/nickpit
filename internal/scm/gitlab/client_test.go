@@ -125,7 +125,7 @@ func TestFetchMRCheckout(t *testing.T) {
 	}
 }
 
-func TestGetPaginatedBreaksPageCycles(t *testing.T) {
+func TestGetPaginatedRejectsPageCycles(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -140,18 +140,16 @@ func TestGetPaginatedBreaksPageCycles(t *testing.T) {
 
 	client := NewClient(server.URL, "")
 	var out []int
-	if err := client.GetPaginated(context.Background(), "/items", &out); err != nil {
-		t.Fatal(err)
+	err := client.GetPaginated(context.Background(), "/items", &out)
+	if err == nil || !strings.Contains(err.Error(), "pagination cycle") {
+		t.Fatalf("err = %v, want pagination cycle error", err)
 	}
 	if requests != 2 {
-		t.Fatalf("requests = %d, want 2 (cycle broken after revisiting page 1)", requests)
-	}
-	if len(out) != 2 {
-		t.Fatalf("items = %d, want 2", len(out))
+		t.Fatalf("requests = %d, want 2 (cycle detected when revisiting page 1)", requests)
 	}
 }
 
-func TestGetPaginatedStopsSelfLoop(t *testing.T) {
+func TestGetPaginatedRejectsSelfLoop(t *testing.T) {
 	var requests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -163,11 +161,12 @@ func TestGetPaginatedStopsSelfLoop(t *testing.T) {
 
 	client := NewClient(server.URL, "")
 	var out []int
-	if err := client.GetPaginated(context.Background(), "/items", &out); err != nil {
-		t.Fatal(err)
+	err := client.GetPaginated(context.Background(), "/items", &out)
+	if err == nil || !strings.Contains(err.Error(), "pagination cycle") {
+		t.Fatalf("err = %v, want pagination cycle error", err)
 	}
-	if requests != 1 || len(out) != 1 {
-		t.Fatalf("requests/items = %d/%d, want 1/1", requests, len(out))
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1 (self-loop detected before refetching)", requests)
 	}
 }
 

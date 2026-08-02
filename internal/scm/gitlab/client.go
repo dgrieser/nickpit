@@ -111,7 +111,7 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	page := 1
 	for {
 		if _, seen := visited[page]; seen {
-			break
+			return fmt.Errorf("gitlab: pagination cycle for %s at page %d", path, page)
 		}
 		if len(visited) >= maxPaginatedPages {
 			return fmt.Errorf("gitlab: pagination for %s exceeded %d pages", path, maxPaginatedPages)
