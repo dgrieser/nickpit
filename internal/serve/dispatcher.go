@@ -175,29 +175,41 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 				case key := <-d.queue:
 					// The select above picks randomly when both cases are
 					// ready; don't start a job picked after cancellation
-					// (Shutdown may not have marked the dispatcher closed
-					// yet — the HTTP drain runs first).
+					// (CloseIntake may not have run yet if the daemon is
+					// stopping because the listener failed).
 					if ctx.Err() != nil {
 						return
 					}
 					event, jobCtx, ok := d.take(key)
-					if !ok {
-						continue
+					// A pending event parked behind the running review was
+					// already acknowledged with a 2xx, so it must not depend
+					// on a free queue slot: finish hands it straight back to
+					// this worker instead of re-queueing.
+					for ok {
+						d.process(jobCtx, event)
+						event, jobCtx, ok = d.finish(key)
 					}
-					d.process(jobCtx, event)
-					d.finish(key)
 				}
 			}
 		})
 	}
 }
 
-// Shutdown waits for running reviews up to grace, then cancels their context
-// (children receive SIGTERM). Call after the Start context is cancelled.
-func (d *Dispatcher) Shutdown(grace time.Duration) {
+// CloseIntake marks the dispatcher closed so Enqueue rejects every further
+// event. Call it before draining in-flight HTTP handlers: the workers stop
+// with the intake context, so an event accepted by a still-draining handler
+// after that point would be acknowledged with a 2xx and never processed.
+func (d *Dispatcher) CloseIntake() {
 	d.mu.Lock()
 	d.closed = true
 	d.mu.Unlock()
+}
+
+// Shutdown waits for running reviews up to grace, then cancels their context
+// (children receive SIGTERM). Call after the Start context is cancelled;
+// idempotent with an earlier CloseIntake.
+func (d *Dispatcher) Shutdown(grace time.Duration) {
+	d.CloseIntake()
 
 	done := make(chan struct{})
 	go func() {
@@ -265,34 +277,41 @@ func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	return state.latest, ctx, true
 }
 
-// finish completes a job; a pending event received mid-run re-queues the MR.
-func (d *Dispatcher) finish(key jobKey) {
+// finish completes a job. A pending event received mid-run is handed back to
+// the same worker for immediate execution rather than re-queued: it was
+// already acknowledged with a 2xx at enqueue time, so a full queue must not
+// be able to drop it. Only shutdown ends the chain early — the event cannot
+// run then, and that loss is logged.
+func (d *Dispatcher) finish(key jobKey) (Event, context.Context, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.running--
 	state, ok := d.states[key]
 	if !ok {
-		return
+		return Event{}, nil, false
 	}
 	if state.cancel != nil {
 		state.cancel()
 		state.cancel = nil
 	}
 	state.startedAt = time.Time{}
-	if state.pending == nil || d.closed {
+	if state.pending == nil {
 		delete(d.states, key)
-		return
+		return Event{}, nil, false
+	}
+	if d.closed {
+		d.dropped++
+		d.log.Warn("shutdown: dropping pending re-run", "project", state.pending.ProjectPath, "iid", state.pending.IID)
+		delete(d.states, key)
+		return Event{}, nil, false
 	}
 	state.latest = *state.pending
 	state.pending = nil
-	state.status = stateQueued
-	select {
-	case d.queue <- key:
-	default:
-		d.dropped++
-		delete(d.states, key)
-		d.log.Error("job queue full, dropping pending re-run", "project", state.latest.ProjectPath, "iid", state.latest.IID)
-	}
+	ctx, cancel := context.WithCancel(d.jobCtx)
+	state.cancel = cancel
+	state.startedAt = time.Now()
+	d.running++
+	return state.latest, ctx, true
 }
 
 // Abort cancels the MR's review: a queued job is removed (its stale queue key

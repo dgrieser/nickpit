@@ -526,6 +526,52 @@ func TestEnqueueRejectsAfterShutdown(t *testing.T) {
 	}
 }
 
+// CloseIntake runs before the HTTP drain: handlers still in flight during the
+// drain must have their events rejected (503 → GitLab redelivers), because
+// the workers have already stopped and would never process them.
+func TestEnqueueRejectsAfterCloseIntake(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.CloseIntake()
+	if dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("dispatcher with closed intake must reject the event")
+	}
+	dispatcher.Shutdown(0) // idempotent after CloseIntake
+	if dispatcher.Enqueue(autoEvent(7, "sha-2", group)) {
+		t.Fatal("closed dispatcher must reject the event")
+	}
+}
+
+// A pending re-run was acknowledged with a 2xx at enqueue time, so it must
+// not be dropped when the queue happens to be full at finish time: the worker
+// that ran the review executes it directly instead of re-queueing.
+func TestDispatcherPendingRerunSurvivesFullQueue(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true)
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+
+	// New head arrives while MR 7 is being reviewed → pending re-run.
+	env.gitlab.mu.Lock()
+	env.gitlab.headSHA = "sha-2"
+	env.gitlab.mu.Unlock()
+	env.dispatcher.Enqueue(autoEvent(7, "sha-2", env.group))
+
+	// Fill the queue channel completely while the single worker is busy, so a
+	// re-queue of the pending event would be impossible.
+	env.dispatcher.mu.Lock()
+	for len(env.dispatcher.queue) < cap(env.dispatcher.queue) {
+		env.dispatcher.queue <- jobKey{ProjectID: -1, IID: len(env.dispatcher.queue)}
+	}
+	env.dispatcher.mu.Unlock()
+
+	close(env.runner.gate)
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) >= 2 })
+	second := env.runner.ran()[1]
+	if second.IID != 7 || second.HeadSHA != "sha-2" {
+		t.Fatalf("second run = IID %d sha %q, want the pending re-run of MR 7 at sha-2", second.IID, second.HeadSHA)
+	}
+}
+
 func TestSHALRUEviction(t *testing.T) {
 	lru := newSHALRU(2)
 	lru.Add("a")
