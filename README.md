@@ -326,7 +326,7 @@ The same filters can be set per run with repeatable flags such as `--include-pat
 
 ### Additional Styleguides
 
-Beyond the built-in language styleguides (selected automatically from the languages in the diff), profiles can list additional styleguides that every agent receives — review, verification, finalization, verdict, and merge. Each entry is a local file path or an HTTP(S) URL:
+Beyond the built-in language styleguides (selected automatically from the languages in the diff), profiles can list additional styleguides that every agent receives — review, verification, dedupe, merge, finalization, and verdict. Each entry is a local file path or an HTTP(S) URL:
 
 ```yaml
 profiles:

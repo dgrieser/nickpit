@@ -454,8 +454,12 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) < 2 {
 			return nil
 		}
+		styleGuides, err := sc.Engine.stepStyleGuides(st)
+		if err != nil {
+			return err
+		}
 		before := len(vr.resp.Findings)
-		resp, run := sc.Engine.runDedupeAgent(ctx, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req)
+		resp, run := sc.Engine.runDedupeAgent(ctx, stepReviewContextJSON(st), st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, styleGuides, st.hasToolchain)
 		if resp != nil {
 			st.setVectorResponse(vectorID, resp)
 		}
@@ -486,8 +490,12 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
 			return err
 		}
+		styleGuides, err := sc.Engine.stepStyleGuides(st)
+		if err != nil {
+			return err
+		}
 		vr := st.vectorResults()
-		runs := sc.Engine.runDedupeAgents(ctx, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req)
+		runs := sc.Engine.runDedupeAgents(ctx, stepReviewContextJSON(st), st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, styleGuides, st.hasToolchain)
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.dedupeRuns = append(st.dedupeRuns, runs...)
@@ -526,20 +534,11 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 			warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
 			mergeResult = emptyVerifiedMergeResult()
 		default:
-			// review_context is embedded as raw JSON in the merge prompt; a
-			// source-less workflow (e.g. --step merge --findings a.json b.json)
-			// has no enriched prompt yet, so fall back to an empty JSON object so
-			// the merge agent actually runs instead of failing JSON rendering and
-			// degrading to a plain concatenation.
-			userPrompt := st.enrichedPrompt
-			if strings.TrimSpace(userPrompt) == "" {
-				userPrompt = "{}"
-			}
-			mergeStyleGuides, err := sc.Engine.mergeStyleGuides(st)
+			mergeStyleGuides, err := sc.Engine.stepStyleGuides(st)
 			if err != nil {
 				return err
 			}
-			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgentsWithStyleGuides(ctx, userPrompt, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, mergeStyleGuides, st.hasToolchain)
+			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgents(ctx, stepReviewContextJSON(st), st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, mergeStyleGuides, st.hasToolchain)
 		}
 		if mergeResult.resp != nil {
 			mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
@@ -671,11 +670,8 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		}
 
 		mergeConstraints, mergeSchema := mergeSchemaForStep(mergeSC.Req)
-		userPrompt := st.enrichedPrompt
-		if strings.TrimSpace(userPrompt) == "" {
-			userPrompt = "{}"
-		}
-		mergeStyleGuides, err := mergeSC.Engine.mergeStyleGuides(st)
+		userPrompt := stepReviewContextJSON(st)
+		mergeStyleGuides, err := mergeSC.Engine.stepStyleGuides(st)
 		if err != nil {
 			return err
 		}
@@ -706,7 +702,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				defer mergeWG.Done()
 				mergeCtx, mergeCancel := mergeBudget.startOrCanceled()
 				defer mergeCancel()
-				merged, run := mergeSC.Engine.runClusterMergeAgentWithStyleGuides(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergeStyleGuides, st.hasToolchain, fmt.Sprintf("#%d", ci+1))
+				merged, run := mergeSC.Engine.runClusterMergeAgent(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergeStyleGuides, st.hasToolchain, fmt.Sprintf("#%d", ci+1))
 				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
 			}(ci, reduced)
 		}
@@ -903,6 +899,18 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		st.mu.Unlock()
 		return nil
 	}
+}
+
+// stepReviewContextJSON returns the enriched review payload that dedupe and
+// merge prompts embed as raw JSON under `review_context`. A source-less
+// workflow (e.g. --step merge --findings a.json b.json) has no enriched prompt
+// yet, so fall back to an empty JSON object: the agent then still runs instead
+// of failing JSON rendering and degrading to a plain concatenation.
+func stepReviewContextJSON(st *PipelineState) string {
+	if strings.TrimSpace(st.enrichedPrompt) == "" {
+		return "{}"
+	}
+	return st.enrichedPrompt
 }
 
 func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byte) {

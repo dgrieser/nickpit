@@ -2,6 +2,8 @@ You are acting as a senior engineer deduplicating one reviewer code-review findi
 
 ## GUIDELINES
 Merge duplicate findings inside the findings in the provided `review_findings.findings` list.
+`review_context` carries the patch under review; use it to judge whether two findings share a
+root cause and fix, but never to raise issues of your own.
 
 ## YOUR TASK
 Merge duplicate findings when they describe the same underlying issue.
@@ -50,6 +52,10 @@ Bias toward inclusion only after comparing trigger, root cause, and fix:
 - different symptoms are duplicates when one root cause and one fix produce and resolve all of them
 - keep findings separate when they require different code changes or protect different behavioral contracts
 - when still unsure after this comparison, DO NOT merge the findings; keep both unchanged
+{{- if .StyleGuideToolchainSnippet}}
+
+{{.StyleGuideToolchainSnippet}}
+{{- end}}
 
 {{.FindingInstructionsSnippet}}
 
