@@ -23,20 +23,24 @@ type reviewComment struct {
 }
 
 // inlineComment anchors a finding to its diff line(s) on the new side. When both
-// endpoints of the range are part of the diff and start < end it becomes a
-// multi-line comment (start_line..line); otherwise the first line in [Start,End]
-// that is part of the diff is used as a single-line comment. It returns false
+// endpoints of the range are part of the diff, sit in the SAME hunk, and
+// start < end it becomes a multi-line comment (start_line..line); otherwise the
+// first line in [Start,End] that is part of the diff is used as a single-line
+// comment. GitHub rejects (422) a multi-line comment whose endpoints span
+// hunks, and the create-review call is atomic — one bad range would reject the
+// whole review — so cross-hunk ranges degrade to single-line. It returns false
 // when no line in the range maps, so the caller can fall back to a general PR
-// comment — GitHub's create-review call is atomic, so an out-of-diff line would
-// otherwise reject the whole review.
+// comment for the same reason.
 func inlineComment(hunks []model.DiffHunk, path string, lr model.LineRange, body string) (reviewComment, bool) {
 	if len(hunks) == 0 {
 		return reviewComment{}, false
 	}
 	if lr.End > lr.Start {
-		_, startOK := reviewmd.LocateLine(hunks, lr.Start)
-		_, endOK := reviewmd.LocateLine(hunks, lr.End)
-		if startOK && endOK {
+		_, startHunk, startOK := reviewmd.LocateLineHunk(hunks, lr.Start)
+		_, endHunk, endOK := reviewmd.LocateLineHunk(hunks, lr.End)
+		// Same hunk implies the whole range maps: a hunk covers a contiguous
+		// run of new-side lines, so every line between the endpoints is in it.
+		if startOK && endOK && startHunk == endHunk {
 			return reviewComment{
 				Path:      path,
 				Body:      body,

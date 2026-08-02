@@ -282,7 +282,6 @@ type ChangedFile struct {
 	Status    FileStatus `json:"status"`
 	Additions int        `json:"additions"`
 	Deletions int        `json:"deletions"`
-	PatchURL  string     `json:"patch_url,omitempty"`
 	Generated bool       `json:"generated,omitempty"`
 }
 
@@ -984,10 +983,6 @@ func (r *ReviewResult) Clone() (*ReviewResult, error) {
 		return nil, fmt.Errorf("model: Clone unmarshal: %w", err)
 	}
 	return &out, nil
-}
-
-func PromptPayloadFromContext(src *ReviewContext) *ReviewPromptPayload {
-	return PromptPayloadFromContextWithDiffFormat(src, DiffFormatGit)
 }
 
 func PromptPayloadFromContextWithDiffFormat(src *ReviewContext, format DiffFormat) *ReviewPromptPayload {
