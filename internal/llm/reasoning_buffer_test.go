@@ -6,16 +6,12 @@ import (
 	"testing"
 )
 
-func TestBufferedReasoningSinkAppendStringReset(t *testing.T) {
+func TestBufferedReasoningSinkAppendString(t *testing.T) {
 	var sink BufferedReasoningSink
 	sink.Append("first")
 	sink.Append(" second")
 	if got, want := sink.String(), "first second"; got != want {
 		t.Fatalf("String() = %q, want %q", got, want)
-	}
-	sink.Reset()
-	if got := sink.String(); got != "" {
-		t.Fatalf("String() after Reset() = %q, want empty", got)
 	}
 }
 

@@ -25,14 +25,19 @@ func LenientUnmarshal(content string, v any) error {
 	if trimmed == "" {
 		return errors.New("empty content")
 	}
-	strictErr := json.Unmarshal([]byte(trimmed), v)
+	// Every attempt decodes into a fresh value and copies into v only on
+	// success (see unmarshalFresh): an attempt that fails mid-decode (e.g.
+	// with an UnmarshalTypeError) partially populates its target, and those
+	// stray fields must not leak into the result of a later successful
+	// attempt.
+	strictErr := unmarshalFresh([]byte(trimmed), v)
 	if strictErr == nil {
 		return nil
 	}
 
 	stripped := StripCodeFences(trimmed)
 	if stripped != trimmed {
-		if err := json.Unmarshal([]byte(stripped), v); err == nil {
+		if err := unmarshalFresh([]byte(stripped), v); err == nil {
 			return nil
 		}
 	}
@@ -40,11 +45,11 @@ func LenientUnmarshal(content string, v any) error {
 	candidates := extractJSONCandidates(stripped)
 	candidateErrs := make([]error, 0, len(candidates))
 	for _, extracted := range candidates {
-		if err := json.Unmarshal([]byte(extracted), v); err == nil {
+		if err := unmarshalFresh([]byte(extracted), v); err == nil {
 			return nil
 		}
 		repaired := RepairJSON([]byte(extracted))
-		err := json.Unmarshal(repaired, v)
+		err := unmarshalFresh(repaired, v)
 		if err == nil {
 			return nil
 		}
@@ -52,7 +57,7 @@ func LenientUnmarshal(content string, v any) error {
 	}
 
 	repaired := RepairJSON([]byte(stripped))
-	repairedErr := json.Unmarshal(repaired, v)
+	repairedErr := unmarshalFresh(repaired, v)
 	if repairedErr == nil {
 		return nil
 	}
@@ -63,6 +68,24 @@ func LenientUnmarshal(content string, v any) error {
 		repairedErr:    repairedErr,
 		candidateCount: len(candidates),
 	}
+}
+
+// unmarshalFresh decodes data into a brand-new value of v's pointed-to type
+// and copies the result into v only when decoding succeeds. A failed decode
+// therefore never mutates v, so successive recovery attempts in
+// LenientUnmarshal cannot contaminate each other. Non-pointer or nil v falls
+// back to plain json.Unmarshal, which reports the appropriate error.
+func unmarshalFresh(data []byte, v any) error {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return json.Unmarshal(data, v)
+	}
+	fresh := reflect.New(rv.Elem().Type())
+	if err := json.Unmarshal(data, fresh.Interface()); err != nil {
+		return err
+	}
+	rv.Elem().Set(fresh.Elem())
+	return nil
 }
 
 type jsonRecoveryError struct {
@@ -360,31 +383,11 @@ func isLanguageTag(s string) bool {
 	return true
 }
 
-// ExtractJSONObject locates the first balanced JSON object or array in content
-// and returns it as a substring. Braces inside string literals are ignored,
-// honoring the standard JSON escape sequences. If the first opening bracket
-// does not yield a balanced structure (e.g. it appears in surrounding prose),
-// subsequent candidates are tried. Returns false if no balanced object or
-// array is found.
-func ExtractJSONObject(content string) (string, bool) {
-	for pos := 0; pos < len(content); pos++ {
-		c := content[pos]
-		if c != '{' && c != '[' {
-			continue
-		}
-		var close byte
-		if c == '{' {
-			close = '}'
-		} else {
-			close = ']'
-		}
-		if extracted, _, ok := scanBalanced(content, pos, c, close); ok {
-			return extracted, true
-		}
-	}
-	return "", false
-}
-
+// extractJSONCandidates locates every balanced JSON object or array in
+// content, in order. Braces inside string literals are ignored, honoring the
+// standard JSON escape sequences. An opening bracket that does not yield a
+// balanced structure (e.g. one appearing in surrounding prose) is skipped and
+// later candidates are still found.
 func extractJSONCandidates(content string) []string {
 	var candidates []string
 	for pos := 0; pos < len(content); pos++ {

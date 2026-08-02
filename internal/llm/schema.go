@@ -92,11 +92,6 @@ var FindingsSchema = mustMarshalCleanSchema(findingsSchemaDefinition)
 
 var FindingsSchemaWithoutSuggestions = mustMarshalCleanSchema(findingsWithoutSuggestionsSchemaDefinition)
 
-// FindingsSchemaWithConstraints returns a findings schema narrowed by the given constraints.
-func FindingsSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
-	return FindingsSchemaWithConstraintsFor(c, false)
-}
-
 // FindingsSchemaWithConstraintsFor returns a findings schema narrowed by the given constraints.
 func FindingsSchemaWithConstraintsFor(c ResponseConstraints, disableSuggestions bool) json.RawMessage {
 	min, max := 0, 3
@@ -212,33 +207,4 @@ func exampleFromSchema(schema map[string]any) any {
 	default:
 		return nil
 	}
-}
-
-func schemaContainsKey(data []byte, key string) bool {
-	var decoded any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return false
-	}
-	return containsMapKey(decoded, key)
-}
-
-func containsMapKey(v any, key string) bool {
-	switch typed := v.(type) {
-	case map[string]any:
-		if _, ok := typed[key]; ok {
-			return true
-		}
-		for _, value := range typed {
-			if containsMapKey(value, key) {
-				return true
-			}
-		}
-	case []any:
-		for _, value := range typed {
-			if containsMapKey(value, key) {
-				return true
-			}
-		}
-	}
-	return false
 }

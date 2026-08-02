@@ -30,15 +30,6 @@ func (b *BufferedReasoningSink) String() string {
 	return b.buf.String()
 }
 
-func (b *BufferedReasoningSink) Reset() {
-	if b == nil {
-		return
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf.Reset()
-}
-
 type teeReasoningSink struct {
 	sinks []ReasoningSink
 }

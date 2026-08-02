@@ -222,14 +222,6 @@ var rateLimitResetTimeLayouts = []string{
 	"2006-01-02T15:04:05.999999999Z07:00",
 }
 
-func parseRateLimitResetTime(message string) (time.Time, bool) {
-	times := parseRateLimitResetTimes(message)
-	if len(times) == 0 {
-		return time.Time{}, false
-	}
-	return times[0], true
-}
-
 func parseRateLimitResetTimes(message string) []time.Time {
 	message = strings.TrimSpace(message)
 	if message == "" {

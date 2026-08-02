@@ -30,30 +30,27 @@ func TestStripCodeFences(t *testing.T) {
 	}
 }
 
-func TestExtractJSONObject(t *testing.T) {
+func TestExtractJSONCandidates(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
-		want string
-		ok   bool
+		want []string
 	}{
-		{"prose before", "Sure! Here it is: {\"a\":1} hope it helps", `{"a":1}`, true},
-		{"prose after", `{"a":1}\n\nLet me know.`, `{"a":1}`, true},
-		{"nested braces", `prefix {"a":{"b":2}} suffix`, `{"a":{"b":2}}`, true},
-		{"array", `Result:\n[1,2,3]\nDone`, `[1,2,3]`, true},
-		{"braces in string", `{"a":"}{"} `, `{"a":"}{"}`, true},
-		{"escaped quote", `{"a":"\"}"}`, `{"a":"\"}"}`, true},
-		{"brace in prose before json", `Here is the configuration { as requested: {"key": "value"}`, `{"key": "value"}`, true},
-		{"unbalanced first then balanced", `prefix { unbalanced [1,2,3]`, `[1,2,3]`, true},
-		{"none", "no json here", "", false},
+		{"prose before", "Sure! Here it is: {\"a\":1} hope it helps", []string{`{"a":1}`}},
+		{"prose after", `{"a":1}\n\nLet me know.`, []string{`{"a":1}`}},
+		{"nested braces", `prefix {"a":{"b":2}} suffix`, []string{`{"a":{"b":2}}`}},
+		{"array", `Result:\n[1,2,3]\nDone`, []string{`[1,2,3]`}},
+		{"braces in string", `{"a":"}{"} `, []string{`{"a":"}{"}`}},
+		{"escaped quote", `{"a":"\"}"}`, []string{`{"a":"\"}"}`}},
+		{"brace in prose before json", `Here is the configuration { as requested: {"key": "value"}`, []string{`{"key": "value"}`}},
+		{"unbalanced first then balanced", `prefix { unbalanced [1,2,3]`, []string{`[1,2,3]`}},
+		{"multiple candidates in order", `{"a":1} and then [2,3]`, []string{`{"a":1}`, `[2,3]`}},
+		{"none", "no json here", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := ExtractJSONObject(tt.in)
-			if ok != tt.ok {
-				t.Fatalf("ok = %v, want %v (got=%q)", ok, tt.ok, got)
-			}
-			if ok && got != tt.want {
+			got := extractJSONCandidates(tt.in)
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %q, want %q", got, tt.want)
 			}
 		})
@@ -565,5 +562,23 @@ func TestLenientUnmarshalMergeFallbackReturnsFalseFallsThrough(t *testing.T) {
 	}
 	if len(got.Items) != 1 || got.Items[0].Detail != "a" {
 		t.Fatalf("expected second fallback to claim, got %+v", got)
+	}
+}
+
+func TestLenientUnmarshalFailedCandidateDoesNotContaminateResult(t *testing.T) {
+	type payload struct {
+		A string `json:"a"`
+		B int    `json:"b"`
+	}
+	// Candidate 1 is syntactically valid but fails mid-decode with an
+	// UnmarshalTypeError after already populating A; candidate 2 succeeds.
+	// The stray A from the failed attempt must not survive into the result.
+	content := `{"a":"x","b":"notint"} {}`
+	var got payload
+	if err := LenientUnmarshal(content, &got); err != nil {
+		t.Fatalf("LenientUnmarshal: %v", err)
+	}
+	if got.A != "" || got.B != 0 {
+		t.Fatalf("result = %+v, want zero value (no contamination from failed candidate)", got)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/logging"
@@ -37,6 +38,15 @@ func stripPriorityPrefix(title string) string {
 }
 
 const reasoningBudgetExhaustedMessage = "llm: model exhausted token budget during reasoning without producing a response; try increasing max_tokens or switching to a non-reasoning model"
+
+// defaultIdleStreamTimeout bounds how long collectStream waits between stream
+// chunks. ResponseHeaderTimeout only covers the response headers, and the
+// reasoning-timeout controller only starts on the first reasoning delta (and
+// only when a reasoning budget is set), so a provider that returns 200 and
+// then goes silent — or a non-reasoning model stalling mid-generation — would
+// otherwise hang forever. Deliberately generous: it only needs to catch dead
+// streams, not slow ones. Expiry surfaces as a retryable stream read error.
+const defaultIdleStreamTimeout = 5 * time.Minute
 
 var reasoningEffortFallbackOrder = []string{"max", "xhigh", "high", "medium", "low", "minimal", "none", "off"}
 
@@ -79,17 +89,18 @@ type Client interface {
 }
 
 type OpenAIClient struct {
-	baseURL            string
-	apiKey             string
-	model              string
-	emptyMessagesLimit uint
-	httpClient         *http.Client
-	sdkClient          *openai.Client
-	retrier            *Retrier
-	logger             *logging.Logger
-	transport          *capturingTransport
-	allowedEfforts     map[string]struct{}
-	maxRequestBytes    int
+	baseURL         string
+	model           string
+	httpClient      *http.Client
+	sdkClient       *openai.Client
+	retrier         *Retrier
+	logger          *logging.Logger
+	transport       *capturingTransport
+	allowedEfforts  map[string]struct{}
+	maxRequestBytes int
+	// idleStreamTimeout overrides defaultIdleStreamTimeout when > 0; tests use
+	// it to exercise the idle-stream watchdog without waiting minutes.
+	idleStreamTimeout time.Duration
 }
 
 type SchemaKind string
@@ -380,9 +391,13 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	// Clone the default transport and bound the time to receive response
 	// headers. The default already bounds dial (30s) and TLS handshake (10s),
 	// but leaves ResponseHeaderTimeout unset, so a server that accepts the
-	// connection and never sends the first byte would hang indefinitely (the
-	// reasoning-timeout controller only starts once streaming begins). The body
-	// itself stays unbounded so legitimate long completion streams are fine.
+	// connection and never sends response headers would hang indefinitely.
+	// After the headers, the body stays unbounded here so legitimate long
+	// completion streams are fine; a stalled body is caught instead by the
+	// idle-stream watchdog in collectStream, which aborts when no chunk
+	// arrives for defaultIdleStreamTimeout. (The reasoning-timeout controller
+	// is no help there: it only starts on the first reasoning delta, and only
+	// when a reasoning budget is configured.)
 	base := http.DefaultTransport
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 		clone := dt.Clone()
@@ -400,14 +415,12 @@ func NewOpenAIClient(baseURL, apiKey, model string) *OpenAIClient {
 	config.EmptyMessagesLimit = 100000
 
 	return &OpenAIClient{
-		baseURL:            strings.TrimRight(baseURL, "/"),
-		apiKey:             apiKey,
-		model:              model,
-		emptyMessagesLimit: config.EmptyMessagesLimit,
-		httpClient:         httpClient,
-		sdkClient:          openai.NewClientWithConfig(config),
-		retrier:            NewRetrier(),
-		transport:          transport,
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		model:      model,
+		httpClient: httpClient,
+		sdkClient:  openai.NewClientWithConfig(config),
+		retrier:    NewRetrier(),
+		transport:  transport,
 	}
 }
 
@@ -1352,7 +1365,12 @@ func (c *OpenAIClient) reviewOnce(ctx context.Context, req *ReviewRequest) (*Rev
 			JSONSchema: &openai.ChatCompletionResponseFormatJSONSchema{
 				Name:   responseFormatName(req.SchemaKind),
 				Schema: json.RawMessage(req.Schema),
-				Strict: true,
+				// Strict is intentionally false: our schemas use optional
+				// properties, which OpenAI strict mode forbids (it requires
+				// every property in `required` and additionalProperties:false
+				// on every object). Claiming strict would make any endpoint
+				// that actually validates it reject every request.
+				Strict: false,
 			},
 		}
 	}
@@ -1504,7 +1522,9 @@ func buildTools(tools []ToolDefinition) []openai.Tool {
 				Name:        tool.Name,
 				Description: tool.Description,
 				Parameters:  tool.Parameters,
-				Strict:      true,
+				// Strict is intentionally not set: tool parameter schemas use
+				// optional properties, which OpenAI strict mode forbids, so a
+				// strict-validating endpoint would 400 every request.
 			},
 		})
 	}
@@ -1690,7 +1710,7 @@ func (c *OpenAIClient) reviewStream(ctx context.Context, payload openai.ChatComp
 			continue
 		}
 
-		resp, streamErr := c.collectStream(ctx, stream, sink, detector, timeout)
+		resp, streamErr := c.collectStream(ctx, stream, sink, detector, timeout, streamCancel)
 		closeErr := stream.Close()
 		timeout.Stop()
 		streamCancel()
@@ -1810,7 +1830,7 @@ func (c *OpenAIClient) logRetryHTTPStatus(ctx context.Context, status, currentAt
 	c.logProgress(ctx, logging.StageModel, logging.StateRetry, fmt.Sprintf("status=%d, retrying in %s", status, waitFor))
 }
 
-func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController) (*streamedResponse, error) {
+func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCompletionStream, sink ReasoningSink, detector *reasoningLoopDetector, timeout *reasoningTimeoutController, cancel context.CancelFunc) (*streamedResponse, error) {
 	var (
 		contentBuilder   strings.Builder
 		toolCalls        []*toolCallBuilder
@@ -1852,6 +1872,24 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 	}
 	c.logf(ctx, "LLM waiting for first stream chunk")
 
+	// Idle-stream watchdog: nothing else bounds the gap between chunks once
+	// the response headers arrived (ResponseHeaderTimeout stops there, and the
+	// reasoning-timeout controller only starts on the first reasoning delta).
+	// Abort the stream when no chunk arrives for the idle window; the
+	// resulting error is retryable, like any other transport failure.
+	idleLimit := c.idleStreamTimeout
+	if idleLimit <= 0 {
+		idleLimit = defaultIdleStreamTimeout
+	}
+	var idleExpired atomic.Bool
+	idleTimer := time.AfterFunc(idleLimit, func() {
+		idleExpired.Store(true)
+		if cancel != nil {
+			cancel()
+		}
+	})
+	defer idleTimer.Stop()
+
 	for {
 		chunk, err := stream.Recv()
 		if err != nil {
@@ -1878,12 +1916,23 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 			if detector != nil && detector.detectRepeatedChunkError(err) {
 				return nil, detector.MakeError()
 			}
+			if idleExpired.Load() {
+				return nil, &streamReadError{
+					err:       fmt.Errorf("llm: reading stream: no data received for %s; aborting stalled stream", idleLimit),
+					retryable: true,
+					partial:   partialResponse(),
+				}
+			}
 			return nil, &streamReadError{
 				err:       fmt.Errorf("llm: reading stream: %w", err),
 				retryable: isRetryableNetworkError(err),
 				partial:   partialResponse(),
 			}
 		}
+
+		// Every received chunk (including keep-alive/empty ones) proves the
+		// stream is alive; push the idle deadline out again.
+		idleTimer.Reset(idleLimit)
 
 		if chunk.Usage != nil {
 			sawUsage = true
@@ -1933,17 +1982,35 @@ func (c *OpenAIClient) collectStream(ctx context.Context, stream *openai.ChatCom
 
 func mergeToolCallDeltas(builders *[]*toolCallBuilder, deltas []openai.ToolCall) {
 	for _, delta := range deltas {
-		index := 0
+		var builder *toolCallBuilder
 		if delta.Index != nil && *delta.Index >= 0 {
-			index = *delta.Index
+			index := *delta.Index
+			for len(*builders) <= index {
+				*builders = append(*builders, nil)
+			}
+			if (*builders)[index] == nil {
+				(*builders)[index] = &toolCallBuilder{}
+			}
+			builder = (*builders)[index]
+		} else {
+			// No index: some providers stream several complete parallel calls
+			// without one. A delta carrying a new, different ID starts a new
+			// call rather than corrupting the current one; ID-less deltas are
+			// argument continuations of the most recent call.
+			if len(*builders) == 0 {
+				*builders = append(*builders, &toolCallBuilder{})
+			}
+			last := (*builders)[len(*builders)-1]
+			if last == nil {
+				last = &toolCallBuilder{}
+				(*builders)[len(*builders)-1] = last
+			}
+			if delta.ID != "" && last.id != "" && delta.ID != last.id {
+				last = &toolCallBuilder{}
+				*builders = append(*builders, last)
+			}
+			builder = last
 		}
-		for len(*builders) <= index {
-			*builders = append(*builders, nil)
-		}
-		if (*builders)[index] == nil {
-			(*builders)[index] = &toolCallBuilder{}
-		}
-		builder := (*builders)[index]
 		if delta.ID != "" {
 			builder.id = delta.ID
 		}
@@ -2427,11 +2494,6 @@ func canonicalToolCallKey(call ToolCall) string {
 	return call.Name + "\x00" + string(normalized)
 }
 
-func parseReviewResponse(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, error) {
-	resp, _, err := parseReviewResponseWithIDBackfill(content, kind, constraints)
-	return resp, err
-}
-
 func parseReviewResponseWithIDBackfill(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, int, error) {
 	if kind == SchemaKindText {
 		return &ReviewResponse{}, 0, nil
@@ -2895,11 +2957,17 @@ func missingVerdictFields(parsed *ReviewResponse, constraints ResponseConstraint
 // as additional raw findings when they match the parsed fallback predicate.
 // Bare Suggestion candidates are ignored — they have no anchor in the raw
 // view, matching the parsed-side fallback that requires a preceding Finding.
-func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, findings []json.RawMessage) {
+//
+// hasFindingsKey reports whether any candidate object carried a "findings"
+// key at all. The key is removed from top before copying (its items land in
+// findings instead), so callers cannot recover presence from top — without
+// this bool a `{"findings": null}` response would be indistinguishable from
+// one that omitted the key entirely.
+func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, findings []json.RawMessage, hasFindingsKey bool) {
 	top = make(map[string]json.RawMessage)
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
-		return top, findings
+		return top, findings, false
 	}
 	candidates := extractJSONCandidates(trimmed)
 	if len(candidates) == 0 {
@@ -2910,6 +2978,7 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 			asMap := *parsed.(*map[string]json.RawMessage)
 			_, hasFindings := asMap["findings"]
 			if hasFindings {
+				hasFindingsKey = true
 				var items []json.RawMessage
 				if json.Unmarshal(asMap["findings"], &items) == nil {
 					findings = append(findings, items...)
@@ -2930,7 +2999,7 @@ func mergedRawReviewBlocks(content string) (top map[string]json.RawMessage, find
 			findings = append(findings, asArr...)
 		}
 	}
-	return top, findings
+	return top, findings, hasFindingsKey
 }
 
 func rawCandidateIsBareFinding(decoded []byte) bool {
@@ -2945,9 +3014,8 @@ func rawCandidateIsBareFinding(decoded []byte) bool {
 }
 
 func missingResponseFields(parsed *ReviewResponse, content string, kind SchemaKind, constraints ResponseConstraints) []string {
-	raw, rawFindings := mergedRawReviewBlocks(content)
+	raw, rawFindings, hasFindingsKey := mergedRawReviewBlocks(content)
 	var missing []string
-	_, hasFindingsKey := raw["findings"]
 	if !hasFindingsKey && len(rawFindings) == 0 && parsed.Findings == nil {
 		missing = append(missing, "findings")
 	}
