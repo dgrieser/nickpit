@@ -239,7 +239,7 @@ func (e *Engine) reviewerInitial(ctx context.Context, s *reviewerSession, req mo
 	s.totalDuplicates = loopResult.duplicateToolCalls
 	s.latestResp = loopResult.resp
 	s.latestReasoning = loopResult.reasoningEffort
-	s.nudgeMessages = reviewerNudgeBaseMessages(messagesWithFinalResponse(loopResult.messages, loopResult.resp))
+	s.nudgeMessages = reviewerNudgeBaseMessages(loopResult.messages)
 	s.contentMessages = append([]string(nil), loopResult.contentMessages...)
 	s.toolMessages = append([]llm.Message(nil), loopResult.toolMessages...)
 	s.toolCallHistory = append([]toolCallHistoryEntry(nil), loopResult.toolCallHistory...)

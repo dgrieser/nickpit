@@ -49,14 +49,6 @@ type categorizeResult struct {
 	Categorization *model.FindingCategorization
 }
 
-func (e *Engine) Categorize(ctx context.Context, req CategorizeRequest) (*model.FindingCategorization, model.TokenUsage, error) {
-	result, usage, err := e.categorizeFinding(ctx, req)
-	if result == nil {
-		return nil, usage, err
-	}
-	return result.Categorization, usage, err
-}
-
 func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (*categorizeResult, model.TokenUsage, error) {
 	usage := model.TokenUsage{}
 	if req.ReviewCtx == nil {
@@ -146,6 +138,10 @@ func (e *Engine) categorizeFinding(ctx context.Context, req CategorizeRequest) (
 			},
 		})
 		if err != nil {
+			// Preserve the tokens the failed loop already burned (runAgentLoop
+			// returns its partial result on every error path) for telemetry
+			// parity with the finalizer/summarizer failure handling.
+			usage = addTokenUsage(usage, loopResult.tokensUsed)
 			return nil, usage, err
 		}
 		usage = addTokenUsage(usage, loopResult.tokensUsed)
@@ -209,15 +205,6 @@ func buildCategorizeUserPrompt(reviewCtx *model.ReviewContext, finding model.Fin
 		return "", fmt.Errorf("categorize: encoding input: %w", err)
 	}
 	return string(encoded), nil
-}
-
-func (e *Engine) CategorizeAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts CategorizeOptions) ([]*model.FindingCategorization, model.TokenUsage, []string, error) {
-	results, usage, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
-	categorizations := make([]*model.FindingCategorization, len(results))
-	for i := range results {
-		categorizations[i] = results[i].Categorization
-	}
-	return categorizations, usage, warnings, err
 }
 
 func (e *Engine) categorizeAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts CategorizeOptions) ([]categorizeResult, model.TokenUsage, []string, error) {

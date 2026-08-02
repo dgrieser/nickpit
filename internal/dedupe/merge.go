@@ -102,20 +102,27 @@ func mostCriticalPriority(a, b *int) *int {
 	return &out
 }
 
-// extendRange widens to the union of both ranges, ignoring unknown (zero)
-// ranges so they cannot drag Start to 0.
+// extendRange widens to the union of both ranges, ignoring any implausible
+// range (zero, unset or inverted bounds — see plausibleRange) so a malformed
+// side such as {Start:0, End:5} cannot drag Start to 0 and produce an
+// unanchored union that downstream diff-scope filtering would drop. With one
+// plausible side, that side is kept as-is; with none, the base side is kept,
+// preserving the previous zero-value semantics.
 func extendRange(a, b model.LineRange) model.LineRange {
-	if (a == model.LineRange{}) {
+	aOK, bOK := plausibleRange(a), plausibleRange(b)
+	switch {
+	case aOK && bOK:
+		return lineRangeWithEffectiveCount(model.LineRange{
+			Start: min(a.Start, b.Start),
+			End:   max(a.End, b.End),
+		})
+	case aOK:
+		return lineRangeWithEffectiveCount(a)
+	case bOK:
 		return lineRangeWithEffectiveCount(b)
-	}
-	if (b == model.LineRange{}) {
+	default:
 		return lineRangeWithEffectiveCount(a)
 	}
-	out := model.LineRange{
-		Start: min(a.Start, b.Start),
-		End:   max(a.End, b.End),
-	}
-	return lineRangeWithEffectiveCount(out)
 }
 
 func lineRangeWithEffectiveCount(r model.LineRange) model.LineRange {

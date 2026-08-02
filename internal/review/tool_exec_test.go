@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -777,5 +779,113 @@ func TestExecuteSearchDedupesAcrossRounds(t *testing.T) {
 	}
 	if _, isErr := decodeToolPayload(t, second[1].Content)["error"]; isErr {
 		t.Fatalf("search with different params errored: %s", second[1].Content)
+	}
+}
+
+// TestCallHierarchyDedupKeyAlignsWithSearchRewrite guards the dedup-key
+// contract between the two ways a structural lookup can be requested: a
+// `search` call rewritten into find_callers normalizes the repo-root alias "."
+// to "", so a direct find_callers on "." must produce the same key — otherwise
+// identical lookups get different concurrency/seen keys and execute twice.
+func TestCallHierarchyDedupKeyAlignsWithSearchRewrite(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "demo.go", "package demo\n\nfunc Run() int { return 1 }\n")
+	engine := NewEngine(stubSource{}, &capturingLLM{}, &countingRetrieval{}, config.Profile{Model: "test"})
+
+	searchCall := llm.ToolCall{ID: "s1", Name: "search", Arguments: `{"path":".","query":"Run()"}`}
+	directCall := llm.ToolCall{ID: "d1", Name: "find_callers", Arguments: `{"path":".","symbol":"Run"}`}
+
+	searchKey := engine.toolCallConcurrencyKey(searchCall, 0, repoRoot)
+	directKey := engine.toolCallConcurrencyKey(directCall, 1, repoRoot)
+	if want := callHierarchyDedupKey("find_callers", "", "Run", defaultCallHierarchyDepth); searchKey != want {
+		t.Fatalf("search rewrite key = %q, want %q (rewrite with repo-root path normalized to empty)", searchKey, want)
+	}
+	if searchKey != directKey {
+		t.Fatalf("dedup keys differ: search rewrite %q vs direct find_callers %q", searchKey, directKey)
+	}
+
+	// Execution level: the rewritten search stores the seen key, so the direct
+	// structural lookup on the same target dedupes instead of running again.
+	state := freshToolRoundState()
+	first := engine.executeToolCall(context.Background(), repoRoot, searchCall, state)
+	if strings.Contains(first, "already_requested") {
+		t.Fatalf("first (rewritten search) call unexpectedly deduped: %s", first)
+	}
+	second := engine.executeToolCall(context.Background(), repoRoot, directCall, state)
+	if !strings.Contains(second, "already_requested") {
+		t.Fatalf("direct find_callers after rewritten search executed twice: %s", second)
+	}
+}
+
+// truncatedSearchRetrieval reports files clipped at the retrieval read cap so
+// the truncated_files passthrough can be asserted at the tool-result boundary.
+type truncatedSearchRetrieval struct {
+	stubRetrieval
+	literalTruncated []string
+	regexTruncated   []string
+}
+
+func (r truncatedSearchRetrieval) Search(_ context.Context, _ string, path, query string, contextLines, maxResults int, caseSensitive bool) (*retrieval.SearchResults, error) {
+	return &retrieval.SearchResults{
+		Path:           path,
+		Query:          query,
+		ContextLines:   contextLines,
+		MaxResults:     maxResults,
+		CaseSensitive:  caseSensitive,
+		ResultCount:    0,
+		Results:        []retrieval.SearchResult{},
+		TruncatedFiles: r.literalTruncated,
+	}, nil
+}
+
+func (r truncatedSearchRetrieval) SearchRegex(_ context.Context, _ string, path string, pattern *regexp.Regexp, contextLines, maxResults int) (*retrieval.SearchResults, error) {
+	return &retrieval.SearchResults{
+		Path:           path,
+		Query:          pattern.String(),
+		ContextLines:   contextLines,
+		MaxResults:     maxResults,
+		ResultCount:    0,
+		Results:        []retrieval.SearchResult{},
+		TruncatedFiles: r.regexTruncated,
+	}, nil
+}
+
+// TestExecuteSearchReportsTruncatedFiles asserts the retrieval layer's
+// truncated-file list reaches the model in the hand-built search tool result,
+// merged across the literal and regex passes and omitted when empty.
+func TestExecuteSearchReportsTruncatedFiles(t *testing.T) {
+	repoRoot := t.TempDir()
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, truncatedSearchRetrieval{
+		literalTruncated: []string{"big.txt"},
+		regexTruncated:   []string{"other.txt", "big.txt"},
+	}, config.Profile{Model: "test"})
+	// The regex metachar in the query triggers both the literal and regex pass,
+	// so the payload must carry the deduplicated union of both lists.
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"path":"src","query":"needle.*"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	raw, ok := payload["truncated_files"].([]any)
+	if !ok {
+		t.Fatalf("truncated_files missing from search payload: %#v", payload)
+	}
+	got := make([]string, 0, len(raw))
+	for _, v := range raw {
+		got = append(got, v.(string))
+	}
+	if want := []string{"big.txt", "other.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("truncated_files = %#v, want %#v", got, want)
+	}
+
+	// No clipped files: the field is omitted entirely, matching the
+	// retrieval-side omitempty JSON shape.
+	engine = NewEngine(stubSource{}, &capturingLLM{}, truncatedSearchRetrieval{}, config.Profile{Model: "test"})
+	results = engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c2", Name: "search", Arguments: `{"path":"src","query":"plain needle"}`},
+	}, freshToolRoundState())
+	payload = decodeToolPayload(t, results[0].Content)
+	if _, present := payload["truncated_files"]; present {
+		t.Fatalf("truncated_files should be omitted when empty: %#v", payload)
 	}
 }

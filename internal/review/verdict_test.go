@@ -480,3 +480,43 @@ func TestVerdictConstraintsForDemotesRefutedNonFinding(t *testing.T) {
 		t.Fatalf("confirmed-P0 constraints = %v, want [patch is incorrect]", got)
 	}
 }
+
+// TestVerdictConstraintsForNonFindingNeverBlocksAtStrictThresholds proves the
+// "a verifier-refuted non-finding can never force a blocking verdict" contract
+// holds at --priority-threshold=p0 and p1: the demote target is capped at P2
+// (see nonFindingPriorityFloor), so the non-finding never reads as a P0/P1
+// floor that would hard-constrain the verdict schema to "patch is incorrect".
+func TestVerdictConstraintsForNonFindingNeverBlocksAtStrictThresholds(t *testing.T) {
+	nonFinding := model.Finding{
+		Priority:     intPtr(0),
+		Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, Remarks: "no issue: intentional change"},
+	}
+	for _, threshold := range []string{"p0", "p1"} {
+		t.Run(threshold, func(t *testing.T) {
+			rank := model.PriorityThresholdRank(threshold)
+			got := verdictConstraintsFor([]model.Finding{nonFinding}, rank).AllowedCorrectness
+			if len(got) != 1 || got[0] != "patch is correct" {
+				t.Fatalf("threshold %s: non-finding constraints = %v, want [patch is correct]", threshold, got)
+			}
+
+			// The fallback path coerces to the same constraint and must not turn the
+			// refuted non-finding into a blocking verdict either.
+			res := &model.ReviewResult{
+				Findings:           []model.Finding{nonFinding},
+				OverallCorrectness: "patch is incorrect",
+				OverallExplanation: "stale blocking rationale",
+			}
+			applyVerdictFallback(res, rank)
+			if res.OverallCorrectness != "patch is correct" {
+				t.Fatalf("threshold %s: fallback correctness = %q, want patch is correct", threshold, res.OverallCorrectness)
+			}
+
+			// A genuine confirmed P0 still blocks at the same thresholds.
+			confirmed := model.Finding{Priority: intPtr(0), Verification: &model.FindingVerification{Verdict: model.VerdictConfirmed, Priority: 0}}
+			got = verdictConstraintsFor([]model.Finding{confirmed}, rank).AllowedCorrectness
+			if len(got) != 1 || got[0] != "patch is incorrect" {
+				t.Fatalf("threshold %s: confirmed-P0 constraints = %v, want [patch is incorrect]", threshold, got)
+			}
+		})
+	}
+}

@@ -211,3 +211,85 @@ func TestFoldCluster(t *testing.T) {
 		t.Fatalf("confidence = %v, want folded noisy-or %v", out.ConfidenceScore, want)
 	}
 }
+
+// TestExtendRangeIgnoresImplausibleRanges guards the merge against malformed
+// (not just fully-zero) line ranges from unvalidated LLM output: an
+// implausible side such as {Start:0, End:5} must not drag the union's Start
+// to 0 and produce an unanchored range that diff-scope filtering would drop.
+func TestExtendRangeIgnoresImplausibleRanges(t *testing.T) {
+	tests := []struct {
+		name string
+		a    model.LineRange
+		b    model.LineRange
+		want model.LineRange
+	}{
+		{
+			name: "both plausible union",
+			a:    model.LineRange{Start: 10, End: 12},
+			b:    model.LineRange{Start: 8, End: 11},
+			want: model.LineRange{Start: 8, End: 12, Count: 5},
+		},
+		{
+			name: "zero-start other ignored",
+			a:    model.LineRange{Start: 10, End: 12},
+			b:    model.LineRange{Start: 0, End: 5},
+			want: model.LineRange{Start: 10, End: 12, Count: 3},
+		},
+		{
+			name: "zero-start base ignored",
+			a:    model.LineRange{Start: 0, End: 5},
+			b:    model.LineRange{Start: 10, End: 12},
+			want: model.LineRange{Start: 10, End: 12, Count: 3},
+		},
+		{
+			name: "inverted other ignored",
+			a:    model.LineRange{Start: 10, End: 12},
+			b:    model.LineRange{Start: 9, End: 4},
+			want: model.LineRange{Start: 10, End: 12, Count: 3},
+		},
+		{
+			name: "fully zero other ignored",
+			a:    model.LineRange{Start: 10, End: 12},
+			b:    model.LineRange{},
+			want: model.LineRange{Start: 10, End: 12, Count: 3},
+		},
+		{
+			name: "fully zero base ignored",
+			a:    model.LineRange{},
+			b:    model.LineRange{Start: 10, End: 12},
+			want: model.LineRange{Start: 10, End: 12, Count: 3},
+		},
+		{
+			name: "both zero stays zero",
+			a:    model.LineRange{},
+			b:    model.LineRange{},
+			want: model.LineRange{},
+		},
+		{
+			name: "both implausible keeps base without union",
+			a:    model.LineRange{Start: 0, End: 5},
+			b:    model.LineRange{Start: 0, End: 3},
+			want: model.LineRange{Start: 0, End: 5},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extendRange(tt.a, tt.b); got != tt.want {
+				t.Fatalf("extendRange(%+v, %+v) = %+v, want %+v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMergeFindingsIgnoresMalformedRange is the merge-level regression for the
+// {0,5}+{10,12} case: the malformed side must not unanchor the merged range.
+func TestMergeFindingsIgnoresMalformedRange(t *testing.T) {
+	a := finding("A", "longer body", "a.sh", 10, 12)
+	a.ConfidenceScore = 0.8
+	b := finding("B", "short", "a.sh", 0, 5)
+	b.ConfidenceScore = 0.5
+
+	if got := MergeFindings(a, b).CodeLocation.LineRange; got != (model.LineRange{Start: 10, End: 12, Count: 3}) {
+		t.Fatalf("range = %+v, want base range kept, not dragged to start 0", got)
+	}
+}

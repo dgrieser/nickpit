@@ -24,8 +24,9 @@ type VerdictOptions struct {
 	DiffFormat                model.DiffFormat
 	// PriorityThreshold is the configured "lowest currently allowed priority"
 	// (p0..p3). It anchors the priority floor so a verifier-refuted non-finding is
-	// classified at the threshold (not blocking) and never forces the overall
-	// verdict to "patch is incorrect". Empty defaults to p3.
+	// classified at the threshold — but never below P2 (see priorityFloor), so even
+	// at p0/p1 it stays non-blocking and never forces the overall verdict to
+	// "patch is incorrect". Empty defaults to p3.
 	PriorityThreshold string
 	// ConfidenceThreshold removes low-confidence findings before verdict
 	// reasoning. It uses finalized/display confidence; <=0 disables the filter.
@@ -330,7 +331,8 @@ func (e *Engine) buildVerdictUserPrompt(reviewCtx *model.ReviewContext, in *mode
 // verified finding priority floor (see priorityFloor). P0 blocks the patch, no
 // P0/P1 cannot block it, and P1 remains prompt-judged because justification
 // quality cannot be expressed in JSON schema. A verifier-refuted non-finding is
-// demoted to the threshold floor, so it cannot force a blocking verdict.
+// demoted to max(threshold, P2) by priorityFloor, so it can never surface here
+// as a P0/P1 floor and cannot force a blocking verdict at any threshold.
 func verdictConstraintsFor(in []model.Finding, thresholdRank int) llm.ResponseConstraints {
 	hasP0, hasP1 := false, false
 	for _, f := range in {

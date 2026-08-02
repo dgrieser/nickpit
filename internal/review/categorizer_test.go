@@ -62,6 +62,26 @@ func sampleFinding(title, path string, start int) model.Finding {
 	}
 }
 
+// testCategorize and testCategorizeAll adapt the unexported categorize entry
+// points to the shape of the removed exported wrappers, so the tests keep
+// exercising the real logic without a production wrapper layer.
+func testCategorize(e *Engine, ctx context.Context, req CategorizeRequest) (*model.FindingCategorization, model.TokenUsage, error) {
+	result, usage, err := e.categorizeFinding(ctx, req)
+	if result == nil {
+		return nil, usage, err
+	}
+	return result.Categorization, usage, err
+}
+
+func testCategorizeAll(e *Engine, ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts CategorizeOptions) ([]*model.FindingCategorization, model.TokenUsage, []string, error) {
+	results, usage, warnings, err := e.categorizeAll(ctx, reviewCtx, findings, opts)
+	categorizations := make([]*model.FindingCategorization, len(results))
+	for i := range results {
+		categorizations[i] = results[i].Categorization
+	}
+	return categorizations, usage, warnings, err
+}
+
 func TestCategorizeIsBlindAndToolFree(t *testing.T) {
 	client := &scriptedCategorizeLLM{}
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
@@ -73,7 +93,7 @@ func TestCategorizeIsBlindAndToolFree(t *testing.T) {
 	finding.Verification = &model.FindingVerification{Verdict: model.VerdictRefuted}
 	finding.Finalization = &model.FindingFinalization{Remarks: "downstream outcome"}
 	finding.MergedFrom = []string{"prior-id"}
-	_, _, err := engine.Categorize(context.Background(), CategorizeRequest{
+	_, _, err := testCategorize(engine, context.Background(), CategorizeRequest{
 		ReviewCtx: reviewCtx,
 		Finding:   finding,
 	})
@@ -131,7 +151,7 @@ func TestCategorizeAllAttachesByIndex(t *testing.T) {
 		sampleFinding("b", "b.go", 2),
 		sampleFinding("c", "c.go", 3),
 	}
-	got, usage, warnings, err := engine.CategorizeAll(context.Background(), sampleReviewCtx(), findings, CategorizeOptions{Limiter: NewLimiter(1)})
+	got, usage, warnings, err := testCategorizeAll(engine, context.Background(), sampleReviewCtx(), findings, CategorizeOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +182,7 @@ func TestCategorizeAllAggregatesVariableConcurrentUsage(t *testing.T) {
 		sampleFinding("c", "c.go", 3),
 	}
 
-	_, usage, warnings, err := engine.CategorizeAll(context.Background(), sampleReviewCtx(), findings, CategorizeOptions{Limiter: NewLimiter(3)})
+	_, usage, warnings, err := testCategorizeAll(engine, context.Background(), sampleReviewCtx(), findings, CategorizeOptions{Limiter: NewLimiter(3)})
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("err=%v warnings=%v", err, warnings)
 	}
@@ -186,7 +206,7 @@ func TestCategorizePromptUsesLanguageSpecificUnusedIdentifierMapping(t *testing.
 			engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
 			finding := sampleFinding("unused local", "file.ts", 1)
 			finding.CodeLocation.Language = tt.language
-			if _, _, err := engine.Categorize(context.Background(), CategorizeRequest{
+			if _, _, err := testCategorize(engine, context.Background(), CategorizeRequest{
 				ReviewCtx: sampleReviewCtx(),
 				Finding:   finding,
 			}); err != nil {
@@ -252,7 +272,7 @@ func TestCategorizeRetriesMissingCategorization(t *testing.T) {
 		categorized(model.CategoryConfirmation),
 	}}
 	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
-	got, usage, err := engine.Categorize(context.Background(), CategorizeRequest{
+	got, usage, err := testCategorize(engine, context.Background(), CategorizeRequest{
 		ReviewCtx:        sampleReviewCtx(),
 		Finding:          sampleFinding("x", "main.go", 1),
 		MaxOutputRetries: 1,
@@ -265,5 +285,30 @@ func TestCategorizeRetriesMissingCategorization(t *testing.T) {
 	}
 	if client.calls != 2 || usage.TotalTokens != 4 {
 		t.Fatalf("calls=%d usage=%+v", client.calls, usage)
+	}
+}
+
+// TestCategorizeFailedLoopStillReportsTokenUsage guards the telemetry parity
+// fix: tokens burned by a categorize agent loop that ultimately fails must
+// still be accumulated into the returned usage instead of being dropped with
+// the error, matching the finalizer/summarizer failure handling.
+func TestCategorizeFailedLoopStillReportsTokenUsage(t *testing.T) {
+	client := &scriptedCategorizeLLM{err: &llm.InvalidResponseError{
+		Reason:     "response is not valid JSON",
+		TokensUsed: model.TokenUsage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7},
+	}}
+	engine := NewEngine(stubSource{}, client, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, usage, err := testCategorize(engine, context.Background(), CategorizeRequest{
+		ReviewCtx:        sampleReviewCtx(),
+		Finding:          sampleFinding("runtime bug", "main.go", 1),
+		MaxOutputRetries: 1,
+	})
+	if err == nil {
+		t.Fatal("want error from exhausted invalid responses")
+	}
+	// Two attempts (initial + one retry), 7 total tokens each.
+	if usage.TotalTokens != 14 || usage.PromptTokens != 6 || usage.CompletionTokens != 8 {
+		t.Fatalf("usage = %+v, want tokens of both failed attempts accumulated", usage)
 	}
 }

@@ -2983,8 +2983,8 @@ func TestClusterMergeDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{DisableSuggestions: true}, nil, false)
@@ -3079,8 +3079,8 @@ func TestClusterMergeReturnedRunMatchesPartialStepStatus(t *testing.T) {
 		},
 	}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
@@ -3112,8 +3112,8 @@ func TestClusterMergeErrorMarksRunFailedAndKeepsFindings(t *testing.T) {
 		mergeFailErr: errors.New("merge upstream fail"),
 	}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{clusterTestFinding("Fix alpha issue", 1)}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{clusterTestFinding("Fix beta issue", 13)}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{clusterTestFinding("Fix alpha issue", 1)}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{clusterTestFinding("Fix beta issue", 13)}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3138,8 +3138,8 @@ func TestClusterMergeFoldsMechanicalDuplicatesWithoutLLM(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3162,8 +3162,8 @@ func TestClusterMergeDistinctFindingsPassThroughWithoutLLM(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3188,8 +3188,8 @@ func TestClusterMergeVerdictlessInputsWithFindingsReportIncorrect(t *testing.T) 
 	b.CodeLocation.FilePath = "other.go"
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "a.json", role: "merge_input", response: &llm.ReviewResponse{Findings: []model.Finding{a}}},
-		{name: "b.json", role: "merge_input", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
+		{name: "a.json", response: &llm.ReviewResponse{Findings: []model.Finding{a}}},
+		{name: "b.json", response: &llm.ReviewResponse{Findings: []model.Finding{b}}},
 	}
 
 	result, _ := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3219,8 +3219,8 @@ func TestClusterMergeCrossFileTitleTwinsRouteToLLM(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3252,8 +3252,8 @@ func TestClusterMergeCrossFileRelatedTitleAndBodyRouteToLLM(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3285,8 +3285,8 @@ func TestClusterMergeCrossFileRootCauseRouteToLLM(t *testing.T) {
 	llmClient := &multiAgentLLM{}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3346,7 +3346,6 @@ func TestClusterMergeSingleInputSkipsMergeAndReturnsReviewerFindings(t *testing.
 	engine := NewEngine(stubSource{}, &multiAgentLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{{
 		name:     "Reviewer A",
-		role:     "review",
 		response: &llm.ReviewResponse{Findings: []model.Finding{finding}, OverallConfidenceScore: 0.9},
 	}}
 
@@ -3662,8 +3661,8 @@ func TestClusterMergeStripsMergedFromOnAccept(t *testing.T) {
 		}},
 	}, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{}, nil, false)
@@ -3698,8 +3697,8 @@ func TestClusterMergeRepairsMissingMergedFromWithoutRetry(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 	inputs := []pairwiseMergeInput{
-		{name: "Reviewer A", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
-		{name: "Reviewer B", role: "review", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer A", response: &llm.ReviewResponse{Findings: []model.Finding{a}, OverallConfidenceScore: 0.9}},
+		{name: "Reviewer B", response: &llm.ReviewResponse{Findings: []model.Finding{b}, OverallConfidenceScore: 0.9}},
 	}
 
 	result, runs := engine.runClusterMergeAgents(context.Background(), "{}", "", inputs, nil, llm.ResponseConstraints{}, model.ReviewRequest{MaxOutputRetries: 1}, nil, false)
@@ -4945,5 +4944,107 @@ func TestShouldDropCategories(t *testing.T) {
 				t.Fatalf("shouldDropCategories(%v, %q) = %v, want %v", tc.content, tc.policy, drop, tc.wantDrop)
 			}
 		})
+	}
+}
+
+// TestReviewWithoutToolsSalvagesPartialResponseOnRetryExhaustion guards the
+// no-tools retry loop against dropping a salvageable partial response: when
+// the final attempt still returns an InvalidResponseError carrying a
+// PartialResponse, the partial is used exactly like in the main agent loop
+// instead of returning nil plus the error.
+func TestReviewWithoutToolsSalvagesPartialResponseOnRetryExhaustion(t *testing.T) {
+	partial := nudgeReviewResponse("partial", 1, nudgeFinding("Salvaged", 1))
+	invalid := func() error {
+		return &llm.InvalidResponseError{
+			RawContent:      "malformed",
+			Reason:          "response is missing required fields",
+			MissingFields:   []string{"findings"},
+			PartialResponse: partial,
+		}
+	}
+	llmClient := &scriptedLLM{results: []scriptedLLMResult{{err: invalid()}, {err: invalid()}}}
+	engine := nudgeTestEngine(llmClient)
+
+	llmReq := &llm.ReviewRequest{Model: "test-model", SchemaKind: llm.SchemaKindReview}
+	messages := []llm.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "task"},
+	}
+	loopReq := agentLoopRequest{
+		AgentName:        "Test Reviewer",
+		AgentKind:        "review",
+		MaxOutputRetries: 1,
+		NoToolsMessages: func(m []llm.Message) ([]llm.Message, error) {
+			return append([]llm.Message(nil), m...), nil
+		},
+	}
+	resp, err := engine.reviewWithoutTools(context.Background(), llmReq, "review", "", messages, "", "", false, 1, nil, loopReq, newAgentLoopState(), nil)
+	if err != nil {
+		t.Fatalf("reviewWithoutTools returned err: %v, want salvaged partial response", err)
+	}
+	if resp != partial {
+		t.Fatalf("resp = %#v, want the error's partial response", resp)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want initial plus one retry", len(llmClient.reqs))
+	}
+}
+
+// TestReviewWithoutToolsRetryKeepsRolesAlternatingOnEmptyRawContent guards the
+// strict-role-provider hazard in the no-tools retry path: the duplicate-tool-
+// call-limit entry arrives with a trailing user turn (the rewritten tool
+// results), so an invalid response without raw content must still append an
+// "[invalid response]" assistant placeholder before the user feedback message —
+// otherwise the retry request carries two consecutive user turns.
+func TestReviewWithoutToolsRetryKeepsRolesAlternatingOnEmptyRawContent(t *testing.T) {
+	valid := nudgeReviewResponse("recovered", 1, nudgeFinding("Recovered", 1))
+	llmClient := &scriptedLLM{results: []scriptedLLMResult{
+		{err: &llm.InvalidResponseError{Reason: "empty response"}}, // no RawContent
+		{resp: valid},
+	}}
+	engine := nudgeTestEngine(llmClient)
+
+	llmReq := &llm.ReviewRequest{Model: "test-model", SchemaKind: llm.SchemaKindReview}
+	// Mimic the duplicate-tool-call-limit arrival: the transcript ends with the
+	// user-rewritten tool results.
+	messages := []llm.Message{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "task"},
+		{Role: "assistant", Content: "requesting tools"},
+		{Role: "user", Content: "rewritten tool results"},
+	}
+	loopReq := agentLoopRequest{
+		AgentName:        "Test Reviewer",
+		AgentKind:        "review",
+		MaxOutputRetries: 1,
+		NoToolsMessages: func(m []llm.Message) ([]llm.Message, error) {
+			return append([]llm.Message(nil), m...), nil
+		},
+	}
+	resp, err := engine.reviewWithoutTools(context.Background(), llmReq, "review", "", messages, "", "", false, 1, nil, loopReq, newAgentLoopState(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp != valid {
+		t.Fatalf("resp = %#v, want the recovered response", resp)
+	}
+	if len(llmClient.reqs) != 2 {
+		t.Fatalf("llm calls = %d, want initial plus one retry", len(llmClient.reqs))
+	}
+	retryMessages := llmClient.reqs[1].Messages
+	if got, want := len(retryMessages), len(messages)+2; got != want {
+		t.Fatalf("retry messages = %d, want %d (placeholder assistant + user feedback)", got, want)
+	}
+	placeholder := retryMessages[len(retryMessages)-2]
+	if placeholder.Role != "assistant" || placeholder.Content != "[invalid response]" {
+		t.Fatalf("placeholder = %#v, want assistant \"[invalid response]\"", placeholder)
+	}
+	if last := retryMessages[len(retryMessages)-1]; last.Role != "user" {
+		t.Fatalf("last retry message role = %q, want user feedback", last.Role)
+	}
+	for i := 1; i < len(retryMessages); i++ {
+		if retryMessages[i].Role == "user" && retryMessages[i-1].Role == "user" {
+			t.Fatalf("retry transcript has consecutive user turns at %d: %#v", i, retryMessages)
+		}
 	}
 }

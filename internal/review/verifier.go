@@ -57,14 +57,6 @@ type verifyResult struct {
 	Verification *model.FindingVerification
 }
 
-func (e *Engine) Verify(ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {
-	result, usage, _, err := e.verifyFinding(ctx, req)
-	if result == nil {
-		return nil, usage, err
-	}
-	return result.Verification, usage, err
-}
-
 func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyResult, model.TokenUsage, int, error) {
 	usage := model.TokenUsage{}
 	if req.ReviewCtx == nil {
@@ -180,6 +172,10 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			},
 		})
 		if err != nil {
+			// Preserve the tokens the failed loop already burned (runAgentLoop
+			// returns its partial result on every error path) for telemetry
+			// parity with the finalizer/summarizer failure handling.
+			usage = addTokenUsage(usage, loopResult.tokensUsed)
 			return nil, usage, state.toolCalls, err
 		}
 		usage = addTokenUsage(usage, loopResult.tokensUsed)
@@ -196,15 +192,6 @@ func (e *Engine) verifyFinding(ctx context.Context, req VerifyRequest) (*verifyR
 			messages = loopResult.messages
 		}
 	}
-}
-
-func (e *Engine) VerifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, []string, error) {
-	results, usage, _, warnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
-	verifications := make([]*model.FindingVerification, len(results))
-	for i := range results {
-		verifications[i] = results[i].Verification
-	}
-	return verifications, usage, warnings, err
 }
 
 func (e *Engine) verifyAll(ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]verifyResult, model.TokenUsage, int, []string, error) {

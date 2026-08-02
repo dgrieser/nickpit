@@ -57,13 +57,33 @@ func (s *scriptedVerifyLLM) Review(_ context.Context, req *llm.ReviewRequest) (*
 	return resp, nil
 }
 
+// testVerify and testVerifyAll adapt the unexported verify entry points to the
+// shape of the removed exported wrappers, so the tests keep exercising the real
+// logic without a production wrapper layer.
+func testVerify(e *Engine, ctx context.Context, req VerifyRequest) (*model.FindingVerification, model.TokenUsage, error) {
+	result, usage, _, err := e.verifyFinding(ctx, req)
+	if result == nil {
+		return nil, usage, err
+	}
+	return result.Verification, usage, err
+}
+
+func testVerifyAll(e *Engine, ctx context.Context, reviewCtx *model.ReviewContext, findings []model.Finding, opts VerifyOptions) ([]*model.FindingVerification, model.TokenUsage, []string, error) {
+	results, usage, _, warnings, err := e.verifyAll(ctx, reviewCtx, findings, opts)
+	verifications := make([]*model.FindingVerification, len(results))
+	for i := range results {
+		verifications[i] = results[i].Verification
+	}
+	return verifications, usage, warnings, err
+}
+
 func TestVerifyAddsInlineExampleForBothJSONResponseModes(t *testing.T) {
 	for _, disableJSONResponseFormat := range []bool{false, true} {
 		llmClient := &scriptedVerifyLLM{}
 		engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 		reviewCtx := sampleReviewCtx()
 		reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
-		_, _, err := engine.Verify(context.Background(), VerifyRequest{
+		_, _, err := testVerify(engine, context.Background(), VerifyRequest{
 			ReviewCtx:                 reviewCtx,
 			Finding:                   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 			DisableJSONResponseFormat: disableJSONResponseFormat,
@@ -99,7 +119,7 @@ func TestVerifyPromptDropsEligibilityGates(t *testing.T) {
 		if withHunks {
 			reviewCtx.DiffScopeHunks = []model.DiffHunk{{FilePath: "main.go", OldStart: 1, OldLines: 1, NewStart: 1, NewLines: 1}}
 		}
-		_, _, err := engine.Verify(context.Background(), VerifyRequest{
+		_, _, err := testVerify(engine, context.Background(), VerifyRequest{
 			ReviewCtx: reviewCtx,
 			Finding:   model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "other.go", LineRange: model.LineRange{Start: 9, End: 9}}},
 		})
@@ -201,7 +221,7 @@ func TestVerifyAllAttachesByIndex(t *testing.T) {
 		{Title: "first", Body: "b1", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		{Title: "second", Body: "b2", Priority: intPtr(2), CodeLocation: model.CodeLocation{FilePath: "b.go", LineRange: model.LineRange{Start: 2, End: 2}}},
 	}
-	verifications, usage, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
+	verifications, usage, warnings, err := testVerifyAll(engine, context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +249,7 @@ func TestVerifyAllErrorsBecomeFallbackVerifications(t *testing.T) {
 	findings := []model.Finding{
 		{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
-	verifications, _, warnings, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
+	verifications, _, warnings, err := testVerifyAll(engine, context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
@@ -256,7 +276,7 @@ func TestVerifyAllCancelledContextWarnsOnceAndStops(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	verifications, _, warnings, err := engine.VerifyAll(ctx, sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
+	verifications, _, warnings, err := testVerifyAll(engine, ctx, sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
@@ -281,7 +301,7 @@ func TestVerifyAllDoesNotMutateInputFindings(t *testing.T) {
 	findings := []model.Finding{
 		{ID: "not-a-uuid", Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "a.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 	}
-	_, _, _, err := engine.VerifyAll(context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
+	_, _, _, err := testVerifyAll(engine, context.Background(), sampleReviewCtx(), findings, VerifyOptions{Limiter: NewLimiter(1)})
 	if err != nil {
 		t.Fatalf("VerifyAll returned err: %v", err)
 	}
@@ -439,7 +459,7 @@ func TestVerifyExecutesToolCallsThroughAgentLoop(t *testing.T) {
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 
-	verification, usage, err := engine.Verify(context.Background(), VerifyRequest{
+	verification, usage, err := testVerify(engine, context.Background(), VerifyRequest{
 		ReviewCtx:    sampleReviewCtx(),
 		Finding:      finding,
 		MaxToolCalls: 2,
@@ -503,7 +523,7 @@ func TestVerifyRetriesMissingVerification(t *testing.T) {
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
 
-	verification, usage, err := engine.Verify(context.Background(), VerifyRequest{
+	verification, usage, err := testVerify(engine, context.Background(), VerifyRequest{
 		ReviewCtx:        sampleReviewCtx(),
 		Finding:          finding,
 		MaxOutputRetries: defaultMaxOutputRetries,
@@ -547,7 +567,7 @@ func TestVerifyOuterRetryReusesToolDedupState(t *testing.T) {
 	counting := &countingRetrieval{}
 	engine := NewEngine(stubSource{}, llmClient, counting, config.Profile{Model: "test"})
 
-	verification, _, err := engine.Verify(context.Background(), VerifyRequest{
+	verification, _, err := testVerify(engine, context.Background(), VerifyRequest{
 		ReviewCtx:        sampleReviewCtx(),
 		Finding:          model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
 		MaxToolCalls:     4,
@@ -595,7 +615,7 @@ func TestVerifyIncludesStyleGuides(t *testing.T) {
 		Priority:     intPtr(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
@@ -641,7 +661,7 @@ func TestVerifyIncludesKubernetesStyleGuide(t *testing.T) {
 		Priority:     intPtr(1),
 		CodeLocation: model.CodeLocation{FilePath: "k8s/deployment.yaml", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
+	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
@@ -671,7 +691,7 @@ func TestVerifyIncludesToolchainReminder(t *testing.T) {
 		Priority:     intPtr(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
+	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: reviewCtx, Finding: finding})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
@@ -699,7 +719,7 @@ func TestVerifyFallsBackVerificationIDToFindingID(t *testing.T) {
 		Priority:     intPtr(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
-	verification, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	verification, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
@@ -724,7 +744,7 @@ func TestVerifyPreservesValidVerificationIDFromLLM(t *testing.T) {
 		Priority:     intPtr(1),
 		CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}},
 	}
-	verification, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	verification, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
@@ -748,7 +768,7 @@ func TestVerifyIncludesSuggestions(t *testing.T) {
 			{Body: "replacement two", LineRange: model.LineRange{Start: 2, End: 3}},
 		},
 	}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
+	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
@@ -784,7 +804,7 @@ func TestVerifyDisableSuggestionsOmitsSuggestions(t *testing.T) {
 			{Body: "replacement one", LineRange: model.LineRange{Start: 1, End: 1}},
 		},
 	}
-	_, _, err := engine.Verify(context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding, DisableSuggestions: true})
+	_, _, err := testVerify(engine, context.Background(), VerifyRequest{ReviewCtx: sampleReviewCtx(), Finding: finding, DisableSuggestions: true})
 	if err != nil {
 		t.Fatalf("Verify returned err: %v", err)
 	}
@@ -809,5 +829,30 @@ func TestVerifyProgressNameIncludesVerify(t *testing.T) {
 	}
 	if got := verifyProgressName("", 2); got != "Verify #3" {
 		t.Fatalf("unscoped verify name = %q, want %q", got, "Verify #3")
+	}
+}
+
+// TestVerifyFailedLoopStillReportsTokenUsage guards the telemetry parity fix:
+// tokens burned by a verify agent loop that ultimately fails must still be
+// accumulated into the returned usage instead of being dropped with the error,
+// matching the finalizer/summarizer failure handling.
+func TestVerifyFailedLoopStillReportsTokenUsage(t *testing.T) {
+	llmClient := &scriptedVerifyLLM{err: &llm.InvalidResponseError{
+		Reason:     "response is not valid JSON",
+		TokensUsed: model.TokenUsage{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7},
+	}}
+	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
+
+	_, usage, err := testVerify(engine, context.Background(), VerifyRequest{
+		ReviewCtx:        sampleReviewCtx(),
+		Finding:          model.Finding{Title: "x", Body: "x", Priority: intPtr(1), CodeLocation: model.CodeLocation{FilePath: "main.go", LineRange: model.LineRange{Start: 1, End: 1}}},
+		MaxOutputRetries: 1,
+	})
+	if err == nil {
+		t.Fatal("want error from exhausted invalid responses")
+	}
+	// Two attempts (initial + one retry), 7 total tokens each.
+	if usage.TotalTokens != 14 || usage.PromptTokens != 6 || usage.CompletionTokens != 8 {
+		t.Fatalf("usage = %+v, want tokens of both failed attempts accumulated", usage)
 	}
 }
