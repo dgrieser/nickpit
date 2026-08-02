@@ -231,6 +231,83 @@ type StepOverride struct {
 	// verification share the verify step's budget as one unit, so a per-agent
 	// budget would be a silent no-op.
 	Categorize *AgentOverride `yaml:"categorize"`
+
+	// Dedupe/merge-only prompt trimming, accepted only under config on
+	// dedupe / dedupe:<vector> / merge steps — the two stages that judge
+	// findings against each other and carry the review context to do it.
+	Context *ContextInclude `yaml:"context"`
+}
+
+// ContextIncludeKey is the dedupe/merge step's context-include subconfig key.
+const ContextIncludeKey = "context"
+
+// ContextInclude selects which parts of the review context a dedupe or merge
+// prompt carries. Every field defaults to included, so an unset (or absent)
+// block is the full context; set a field to false to drop that section and buy
+// back its tokens. The changed-file list and the context agent's supplemental
+// files are always sent: they are small and identify what the findings are
+// about.
+type ContextInclude struct {
+	// StyleGuides drops the styleguide rules from the system prompt. They are
+	// the largest single part of the prompt and the reason a finding may be
+	// styleguide-derived rather than a plain bug.
+	StyleGuides *bool `yaml:"styleguides"`
+	// Diff drops the patch itself (diff_files / diff_hunks).
+	Diff *bool `yaml:"diff"`
+	// Commits drops the commit summaries.
+	Commits *bool `yaml:"commits"`
+	// Comments drops the MR/PR discussion comments.
+	Comments *bool `yaml:"comments"`
+	// Toolchain drops toolchain_versions from the payload and the instruction
+	// to consult it from the system prompt.
+	Toolchain *bool `yaml:"toolchain"`
+}
+
+var contextIncludeKeys = []string{"styleguides", "diff", "commits", "comments", "toolchain"}
+
+// ContextIncludeSet is a ContextInclude resolved against the all-included
+// default, so consumers read plain bools instead of nil-checking pointers.
+type ContextIncludeSet struct {
+	StyleGuides bool
+	Diff        bool
+	Commits     bool
+	Comments    bool
+	Toolchain   bool
+}
+
+// AllContextIncluded is the default every dedupe and merge step starts from.
+func AllContextIncluded() ContextIncludeSet {
+	return ContextIncludeSet{StyleGuides: true, Diff: true, Commits: true, Comments: true, Toolchain: true}
+}
+
+// All reports whether nothing is excluded, letting callers keep the prebuilt
+// full payload instead of re-rendering a filtered one.
+func (s ContextIncludeSet) All() bool {
+	return s == AllContextIncluded()
+}
+
+// ContextInclude resolves the step's context-include flags. A nil override, or
+// one without a context block, includes everything.
+func (o *StepOverride) ContextInclude() ContextIncludeSet {
+	out := AllContextIncluded()
+	if o == nil || o.Context == nil {
+		return out
+	}
+	for _, field := range []struct {
+		set *bool
+		out *bool
+	}{
+		{o.Context.StyleGuides, &out.StyleGuides},
+		{o.Context.Diff, &out.Diff},
+		{o.Context.Commits, &out.Commits},
+		{o.Context.Comments, &out.Comments},
+		{o.Context.Toolchain, &out.Toolchain},
+	} {
+		if field.set != nil {
+			*field.out = *field.set
+		}
+	}
+	return out
 }
 
 var stepOverrideKeys = []string{
@@ -771,6 +848,9 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 		if err := checkInternalOverrides(entry.Type, cfg); err != nil {
 			return StepEntry{}, fmt.Errorf("config: %w", err)
 		}
+		if err := checkContextInclude(entry.Type, cfg); err != nil {
+			return StepEntry{}, fmt.Errorf("config: %w", err)
+		}
 		var override StepOverride
 		if err := cfg.Decode(&override); err != nil {
 			return StepEntry{}, fmt.Errorf("config: %w", err)
@@ -785,7 +865,19 @@ func decodePlainStep(node *yaml.Node) (StepEntry, error) {
 
 func allowedStepOverrideKeys(stepType string) []string {
 	allowed := slices.Clone(stepOverrideKeys)
-	return append(allowed, internalOverrideKeys(stepType)...)
+	allowed = append(allowed, internalOverrideKeys(stepType)...)
+	if stepAcceptsContextInclude(stepType) {
+		allowed = append(allowed, ContextIncludeKey)
+	}
+	return allowed
+}
+
+// stepAcceptsContextInclude reports whether a step type honors the `context:`
+// include block. Only dedupe and merge build a prompt out of the review
+// context AND findings; every other stage either needs the whole context by
+// construction (review, verify) or never receives it (categorize, summarize).
+func stepAcceptsContextInclude(stepType string) bool {
+	return stepType == StepMerge || stepType == StepDedupe || strings.HasPrefix(stepType, StepDedupePrefix)
 }
 
 // internalOverrideKeys returns the internal-agent subconfig keys a step type
@@ -809,6 +901,26 @@ func internalAgentOverrideKeys(agentKey string) []string {
 		return categorizeOverrideKeys
 	}
 	return agentOverrideKeys
+}
+
+// checkContextInclude validates the shape of a `context:` block. A step type
+// that does not accept one at all is already rejected by the unknown-key check
+// in decodePlainStep, so this only guards the nested keys.
+func checkContextInclude(stepType string, cfg *yaml.Node) error {
+	if !stepAcceptsContextInclude(stepType) {
+		return nil
+	}
+	node := mappingValue(cfg, ContextIncludeKey)
+	if node == nil {
+		return nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: must be a mapping", ContextIncludeKey)
+	}
+	if err := checkAllowedKeys(node, contextIncludeKeys...); err != nil {
+		return fmt.Errorf("%s: %w", ContextIncludeKey, err)
+	}
+	return nil
 }
 
 func checkInternalOverrides(stepType string, cfg *yaml.Node) error {

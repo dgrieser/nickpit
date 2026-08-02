@@ -22,6 +22,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/prompts"
 	"github.com/google/uuid"
 )
@@ -2773,10 +2774,29 @@ func TestDedupeAgentDisableSuggestionsOmitsSuggestions(t *testing.T) {
 	}
 }
 
-// The dedupe agent judges whether two findings share a root cause and fix, so
-// it needs the same patch and styleguides the merge agent gets; without them it
-// can only compare wording.
-func TestDedupeStepSendsReviewContextAndStyleGuides(t *testing.T) {
+// contextIncludeReviewCtx carries one section per `context:` include flag so a
+// dropped section is observable by its absence from the rendered payload.
+func contextIncludeReviewCtx() *model.ReviewContext {
+	return &model.ReviewContext{
+		Repository:   model.RepositoryInfo{FullName: "repo"},
+		Title:        "title",
+		ChangedFiles: []model.ChangedFile{{Path: "main.go", Status: model.FileModified, Additions: 1}},
+		DiffFiles: []model.DiffFile{{
+			FilePath: "main.go",
+			Language: "go",
+			Content:  "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+dedupeDiffMarker\n",
+		}},
+		Commits:           []model.CommitSummary{{SHA: "abc123", Message: "dedupeCommitMarker", Author: "dev"}},
+		Comments:          []model.Comment{{Author: "reviewer", Body: "dedupeCommentMarker"}},
+		ToolchainVersions: []model.ToolchainVersion{{Language: "go", Source: "go.mod", Version: "1.25"}},
+	}
+}
+
+// runDedupeStepForContextTest drives the real dedupe step over two findings and
+// returns the captured request, so the tests below assert on what the agent
+// actually received.
+func runDedupeStepForContextTest(t *testing.T, override *workflow.StepOverride) *llm.ReviewRequest {
+	t.Helper()
 	a := clusterTestFinding("Fix alpha issue", 1)
 	b := clusterTestFinding("Fix beta issue", 13)
 	llmClient := &multiAgentLLM{
@@ -2789,17 +2809,7 @@ func TestDedupeStepSendsReviewContextAndStyleGuides(t *testing.T) {
 	}
 	engine := NewEngine(stubSource{}, llmClient, stubRetrieval{}, config.Profile{Model: "test"})
 
-	reviewCtx := &model.ReviewContext{
-		Repository:   model.RepositoryInfo{FullName: "repo"},
-		Title:        "title",
-		ChangedFiles: []model.ChangedFile{{Path: "main.go", Status: model.FileModified, Additions: 1}},
-		DiffFiles: []model.DiffFile{{
-			FilePath: "main.go",
-			Language: "go",
-			Content:  "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+dedupeDiffMarker\n",
-		}},
-	}
-	st := newPipelineState(reviewCtx, []string{"security"})
+	st := newPipelineState(contextIncludeReviewCtx(), []string{"security"})
 	if err := engine.ensurePrompts(st); err != nil {
 		t.Fatalf("ensurePrompts returned err: %v", err)
 	}
@@ -2809,24 +2819,87 @@ func TestDedupeStepSendsReviewContextAndStyleGuides(t *testing.T) {
 	}, nil)
 
 	step := engine.dedupeVectorStepFunc("security")
-	if err := step(context.Background(), &stepContext{Engine: engine, Req: model.ReviewRequest{}}, st); err != nil {
+	sc := &stepContext{Engine: engine, Req: model.ReviewRequest{}, Override: override}
+	if err := step(context.Background(), sc, st); err != nil {
 		t.Fatalf("dedupe step returned err: %v", err)
 	}
-
 	if len(llmClient.mergeRequests) != 1 {
 		t.Fatalf("dedupe requests = %d, want 1", len(llmClient.mergeRequests))
 	}
-	req := llmClient.mergeRequests[0]
+	return llmClient.mergeRequests[0]
+}
+
+// The dedupe agent judges whether two findings share a root cause and fix, so
+// it needs the same patch and styleguides the merge agent gets; without them it
+// can only compare wording.
+func TestDedupeStepSendsReviewContextAndStyleGuides(t *testing.T) {
+	req := runDedupeStepForContextTest(t, nil)
+
 	system := req.Messages[0].Content
 	if !strings.Contains(system, "## STYLEGUIDES") {
 		t.Fatalf("dedupe system prompt missing styleguide section: %q", system)
 	}
-	if !strings.Contains(system, "# Go — Common Developer Guideline") {
+	// The toolchain version in the context selects the version-specific guide,
+	// the same selection the reviewers and the merge agent get.
+	if !strings.Contains(system, "Go 1.25 — Complete Developer Guideline") {
 		t.Fatalf("dedupe system prompt missing styleguide content: %q", system)
 	}
+	if !strings.Contains(system, "Check the provided `toolchain_versions`") {
+		t.Fatalf("dedupe system prompt missing toolchain instruction: %q", system)
+	}
 	userPrompt := taskMessageContent(req)
-	if !strings.Contains(userPrompt, "dedupeDiffMarker") {
-		t.Fatalf("dedupe user prompt missing diff content:\n%s", userPrompt)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(userPrompt), &payload); err != nil {
+		t.Fatalf("unmarshal dedupe user prompt: %v", err)
+	}
+	reviewContext, ok := payload["review_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("dedupe payload review_context = %#v, want object", payload["review_context"])
+	}
+	for _, key := range []string{"changed_files", "diff_files", "commits", "comments", "toolchain_versions"} {
+		if _, ok := reviewContext[key]; !ok {
+			t.Fatalf("dedupe review_context missing %q by default: %#v", key, reviewContext)
+		}
+	}
+	for _, marker := range []string{"dedupeDiffMarker", "dedupeCommitMarker", "dedupeCommentMarker"} {
+		if !strings.Contains(userPrompt, marker) {
+			t.Fatalf("dedupe user prompt missing %s:\n%s", marker, userPrompt)
+		}
+	}
+	// Styleguides ride in the system prompt only; duplicating them into the
+	// payload would double their (large) token cost.
+	if _, ok := reviewContext["style_guides"]; ok {
+		t.Fatalf("dedupe review_context should not include style_guides: %#v", reviewContext["style_guides"])
+	}
+	if _, ok := payload["review_findings"]; !ok {
+		t.Fatalf("dedupe payload missing review_findings: %#v", payload)
+	}
+}
+
+// Every `context:` key turned off strips its section from the dedupe prompt,
+// while the changed-file list — never gated — survives.
+func TestDedupeStepContextIncludeDropsExcludedSections(t *testing.T) {
+	off := false
+	req := runDedupeStepForContextTest(t, &workflow.StepOverride{Context: &workflow.ContextInclude{
+		StyleGuides: &off,
+		Diff:        &off,
+		Commits:     &off,
+		Comments:    &off,
+		Toolchain:   &off,
+	}})
+
+	system := req.Messages[0].Content
+	if strings.Contains(system, "## STYLEGUIDES") || strings.Contains(system, "Developer Guideline") {
+		t.Fatalf("dedupe system prompt kept styleguides after context.styleguides=false: %q", system)
+	}
+	if strings.Contains(system, "Check the provided `toolchain_versions`") {
+		t.Fatalf("dedupe system prompt kept toolchain instruction after context.toolchain=false: %q", system)
+	}
+	userPrompt := taskMessageContent(req)
+	for _, marker := range []string{"dedupeDiffMarker", "dedupeCommitMarker", "dedupeCommentMarker"} {
+		if strings.Contains(userPrompt, marker) {
+			t.Fatalf("dedupe user prompt kept %s after it was excluded:\n%s", marker, userPrompt)
+		}
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(userPrompt), &payload); err != nil {
@@ -2836,13 +2909,38 @@ func TestDedupeStepSendsReviewContextAndStyleGuides(t *testing.T) {
 	if !ok {
 		t.Fatalf("dedupe payload review_context = %#v, want object", payload["review_context"])
 	}
-	// Styleguides ride in the system prompt only; duplicating them into the
-	// payload would double their (large) token cost.
-	if _, ok := reviewContext["style_guides"]; ok {
-		t.Fatalf("dedupe review_context should not include style_guides: %#v", reviewContext["style_guides"])
+	for _, key := range []string{"diff_files", "diff_hunks", "commits", "comments", "toolchain_versions"} {
+		if _, ok := reviewContext[key]; ok {
+			t.Fatalf("dedupe review_context kept excluded %q: %#v", key, reviewContext[key])
+		}
 	}
+	// Never gated: the findings are meaningless without knowing which files the
+	// change touched.
+	if _, ok := reviewContext["changed_files"]; !ok {
+		t.Fatalf("dedupe review_context dropped changed_files: %#v", reviewContext)
+	}
+	// Trimming the context must not touch the findings under judgment.
 	if _, ok := payload["review_findings"]; !ok {
 		t.Fatalf("dedupe payload missing review_findings: %#v", payload)
+	}
+}
+
+// A partially-off block leaves every unset section in place.
+func TestDedupeStepContextIncludePartialKeepsRest(t *testing.T) {
+	off := false
+	req := runDedupeStepForContextTest(t, &workflow.StepOverride{Context: &workflow.ContextInclude{Commits: &off}})
+
+	if system := req.Messages[0].Content; !strings.Contains(system, "## STYLEGUIDES") {
+		t.Fatalf("dedupe system prompt dropped styleguides for a commits-only exclusion: %q", system)
+	}
+	userPrompt := taskMessageContent(req)
+	if strings.Contains(userPrompt, "dedupeCommitMarker") {
+		t.Fatalf("dedupe user prompt kept commits after context.commits=false:\n%s", userPrompt)
+	}
+	for _, marker := range []string{"dedupeDiffMarker", "dedupeCommentMarker"} {
+		if !strings.Contains(userPrompt, marker) {
+			t.Fatalf("dedupe user prompt dropped %s for a commits-only exclusion:\n%s", marker, userPrompt)
+		}
 	}
 }
 

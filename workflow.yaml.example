@@ -75,6 +75,19 @@
 # this policy: deterministic repair drops findings that cannot be anchored to
 # the patch, even under `none`. The only switch is --disable-diff-scope.
 #
+# `context:` trims what a dedupe or merge prompt carries. Those two stages judge
+# findings against each other and get the review context to ground that call, so
+# every key defaults to true; set one to false only to buy its tokens back:
+#   styleguides   the styleguide rules in the system prompt (the largest part)
+#   diff          the patch itself (diff_files / diff_hunks)
+#   commits       the commit summaries
+#   comments      the MR/PR discussion comments
+#   toolchain     toolchain_versions, and the instruction to consult it
+# The changed-file list and the context agent's supplemental files are always
+# sent: they are small and identify what the findings are about. The key is
+# accepted on `dedupe`, `dedupe:<vector>`, and `merge` only — every other stage
+# either needs the whole context by construction or never receives it.
+#
 # LLM concurrency is run-level only (--concurrency, default 10, 0 = unlimited):
 # one shared cap across every agent loop in the run. It is intentionally not in
 # the spec — the same workflow runs on different machines with different caps.
@@ -108,6 +121,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Code quality
         config:
           time_budget:
@@ -131,6 +150,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Security
         config:
           time_budget:
@@ -154,6 +179,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Architecture
         config:
           time_budget:
@@ -177,6 +208,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Performance
         config:
           time_budget:
@@ -200,6 +237,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Testing
         config:
           time_budget:
@@ -223,6 +266,12 @@ steps:
               scope: reviewer
               time_budget:
                 weight: 15
+              context:
+                styleguides: true
+                diff: true
+                commits: true
+                comments: true
+                toolchain: true
         name: Best practices
         config:
           time_budget:
@@ -234,6 +283,12 @@ steps:
           scope: cluster
           time_budget:
             weight: 30
+          context:
+            styleguides: true
+            diff: true
+            commits: true
+            comments: true
+            toolchain: true
       - type: finalize
         config:
           model: "@small"
@@ -309,6 +364,9 @@ steps:
 #               scope: reviewer
 #               time_budget:
 #                 weight: 10
+#               context:
+#                 commits: false
+#                 comments: false
 #         name: Security review
 #         config:
 #           time_budget:
@@ -325,6 +383,12 @@ steps:
 #           reasoning_effort: max
 #           time_budget:
 #             weight: 35
+#           context:
+#             styleguides: true
+#             diff: true
+#             commits: true
+#             comments: true
+#             toolchain: true
 #       - type: finalize
 #         config:
 #           scope: cluster

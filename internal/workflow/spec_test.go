@@ -65,20 +65,24 @@ func TestDefaultSpecMatchesConstants(t *testing.T) {
 			CompileFindings: &AgentOverride{Model: &small},
 		}
 	}
+	on := true
+	fullContext := func() *ContextInclude {
+		return &ContextInclude{StyleGuides: &on, Diff: &on, Commits: &on, Comments: &on, Toolchain: &on}
+	}
 	parallel := make([]StepEntry, len(ReviewVectorIDs))
 	laneNames := []string{"Code quality", "Security", "Architecture", "Performance", "Testing", "Best practices"}
 	for i, id := range ReviewVectorIDs {
 		parallel[i] = StepEntry{Name: laneNames[i], Lane: []StepEntry{
 			{Type: StepReviewPrefix + id, Config: reviewConfig()},
 			{Type: StepVerifyPrefix + id, Config: &StepOverride{Scope: &finding, TimeBudget: &TimeBudget{Weight: &weight55}, Categorize: &AgentOverride{Model: &small}}},
-			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}}},
+			{Type: StepDedupePrefix + id, Config: &StepOverride{Scope: &reviewer, TimeBudget: &TimeBudget{Weight: &weight15}, Context: fullContext()}},
 		}, Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max1500}}}
 	}
 	want := Spec{Version: SpecVersion, Name: "Standard review", Steps: []StepEntry{
 		{Type: StepCollectContext, Name: "Context", Config: &StepOverride{TimeBudget: &TimeBudget{MaxSeconds: &max180}}},
 		{Name: "Review", Parallel: parallel},
 		{Name: "Finalize", Pipeline: []StepEntry{
-			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}}},
+			{Type: StepMerge, Config: &StepOverride{Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight30}, Context: fullContext()}},
 			{Type: StepFinalize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight40}}},
 			{Type: StepVerdict, Config: &StepOverride{Model: &small, Scope: &all, TimeBudget: &TimeBudget{Weight: &weight20}}},
 			{Type: StepSummarize, Config: &StepOverride{Model: &small, Scope: &cluster, TimeBudget: &TimeBudget{Weight: &weight10}}},
@@ -340,6 +344,12 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 		"non-mapping categorize":          "version: 1\nsteps:\n  - type: verify\n    config:\n      categorize: small\n",
 		"scalar step":                     "version: 1\nsteps:\n  - merge\n",
 		"nested parallel":                 "version: 1\nsteps:\n  - parallel:\n      - parallel:\n          - type: merge\n",
+		"context on review step":          "version: 1\nsteps:\n  - type: review:security\n    config:\n      context:\n        diff: false\n",
+		"context on verify step":          "version: 1\nsteps:\n  - type: verify\n    config:\n      context:\n        diff: false\n",
+		"context on finalize step":        "version: 1\nsteps:\n  - type: finalize\n    config:\n      context:\n        diff: false\n",
+		"unknown context key":             "version: 1\nsteps:\n  - type: merge\n    config:\n      context:\n        bogus: false\n",
+		"non-mapping context":             "version: 1\nsteps:\n  - type: merge\n    config:\n      context: false\n",
+		"non-bool context value":          "version: 1\nsteps:\n  - type: merge\n    config:\n      context:\n        diff: sometimes\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1123,5 +1133,81 @@ func TestCategorizeWorkflowStepsAreRejected(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%q unexpectedly accepted", stepType)
 		}
+	}
+}
+
+func TestContextIncludeDefaultsToEverything(t *testing.T) {
+	all := AllContextIncluded()
+	if !all.All() {
+		t.Fatalf("AllContextIncluded().All() = false, want true: %+v", all)
+	}
+	// A nil override, an override without a context block, and an empty block
+	// must all mean "send everything" — the documented inheritance contract.
+	empty := &ContextInclude{}
+	for name, override := range map[string]*StepOverride{
+		"nil override":  nil,
+		"no context":    {},
+		"empty context": {Context: empty},
+	} {
+		if got := override.ContextInclude(); got != all {
+			t.Fatalf("%s: ContextInclude() = %+v, want %+v", name, got, all)
+		}
+	}
+}
+
+func TestContextIncludePartialOverrideKeepsUnsetOn(t *testing.T) {
+	off := false
+	on := true
+	override := &StepOverride{Context: &ContextInclude{StyleGuides: &off, Commits: &on}}
+	got := override.ContextInclude()
+	want := ContextIncludeSet{StyleGuides: false, Diff: true, Commits: true, Comments: true, Toolchain: true}
+	if got != want {
+		t.Fatalf("ContextInclude() = %+v, want %+v", got, want)
+	}
+	if got.All() {
+		t.Fatal("All() = true with styleguides off")
+	}
+}
+
+func TestLoadParsesContextIncludeOnDedupeAndMerge(t *testing.T) {
+	path := writeSpec(t, `
+version: 1
+steps:
+  - type: review:security
+  - type: dedupe:security
+    config:
+      context:
+        styleguides: false
+        diff: false
+  - type: dedupe
+    config:
+      context:
+        comments: false
+  - type: merge
+    config:
+      context:
+        styleguides: true
+        diff: true
+        commits: true
+        comments: true
+        toolchain: true
+`)
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	vectorDedupe := spec.Steps[1].Config.ContextInclude()
+	if vectorDedupe != (ContextIncludeSet{Commits: true, Comments: true, Toolchain: true}) {
+		t.Fatalf("dedupe:security context = %+v", vectorDedupe)
+	}
+	globalDedupe := spec.Steps[2].Config.ContextInclude()
+	if globalDedupe != (ContextIncludeSet{StyleGuides: true, Diff: true, Commits: true, Toolchain: true}) {
+		t.Fatalf("dedupe context = %+v", globalDedupe)
+	}
+	if merge := spec.Steps[3].Config.ContextInclude(); !merge.All() {
+		t.Fatalf("merge context = %+v, want everything", merge)
 	}
 }

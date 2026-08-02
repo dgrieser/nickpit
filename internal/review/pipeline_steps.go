@@ -454,12 +454,12 @@ func (e *Engine) dedupeVectorStepFunc(vectorID string) stepFunc {
 		if vr.run.Status == model.AgentRunStatusFailed || vr.resp == nil || len(vr.resp.Findings) < 2 {
 			return nil
 		}
-		styleGuides, err := sc.Engine.stepStyleGuides(st)
+		promptCtx, err := sc.Engine.resolveStepPromptContext(st, sc.Override)
 		if err != nil {
 			return err
 		}
 		before := len(vr.resp.Findings)
-		resp, run := sc.Engine.runDedupeAgent(ctx, stepReviewContextJSON(st), st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, styleGuides, st.hasToolchain)
+		resp, run := sc.Engine.runDedupeAgent(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain)
 		if resp != nil {
 			st.setVectorResponse(vectorID, resp)
 		}
@@ -490,12 +490,12 @@ func (e *Engine) dedupeStepFunc(findingsFrom []string) stepFunc {
 		if err := injectGroups(st, findingsFrom, sc.Req.DisableSuggestions); err != nil {
 			return err
 		}
-		styleGuides, err := sc.Engine.stepStyleGuides(st)
+		promptCtx, err := sc.Engine.resolveStepPromptContext(st, sc.Override)
 		if err != nil {
 			return err
 		}
 		vr := st.vectorResults()
-		runs := sc.Engine.runDedupeAgents(ctx, stepReviewContextJSON(st), st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, styleGuides, st.hasToolchain)
+		runs := sc.Engine.runDedupeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, vr, mergeSchemaForDedupe(sc.Req), mergeConstraintsForDedupe(sc.Req), sc.Req, promptCtx.styleGuides, promptCtx.hasToolchain)
 		st.writeBackVectorResults(vr)
 		st.mu.Lock()
 		st.dedupeRuns = append(st.dedupeRuns, runs...)
@@ -534,11 +534,11 @@ func (e *Engine) mergeStepFunc(findingsFrom []string) stepFunc {
 			warnings = append(warnings, "No verified findings remained; skipped merge agent and returning empty findings")
 			mergeResult = emptyVerifiedMergeResult()
 		default:
-			mergeStyleGuides, err := sc.Engine.stepStyleGuides(st)
+			promptCtx, err := sc.Engine.resolveStepPromptContext(st, sc.Override)
 			if err != nil {
 				return err
 			}
-			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgents(ctx, stepReviewContextJSON(st), st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, mergeStyleGuides, st.hasToolchain)
+			mergeResult, mergeRuns = sc.Engine.runClusterMergeAgents(ctx, promptCtx.reviewContextJSON, st.contextNotes, mergeInputs, mergeSchema, mergeConstraints, req, promptCtx.styleGuides, promptCtx.hasToolchain)
 		}
 		if mergeResult.resp != nil {
 			mergeInputVerification(mergeResult.resp.Findings, verifiedMergeInputs)
@@ -670,8 +670,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 		}
 
 		mergeConstraints, mergeSchema := mergeSchemaForStep(mergeSC.Req)
-		userPrompt := stepReviewContextJSON(st)
-		mergeStyleGuides, err := mergeSC.Engine.stepStyleGuides(st)
+		mergePromptCtx, err := mergeSC.Engine.resolveStepPromptContext(st, mergeSC.Override)
 		if err != nil {
 			return err
 		}
@@ -702,7 +701,7 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 				defer mergeWG.Done()
 				mergeCtx, mergeCancel := mergeBudget.startOrCanceled()
 				defer mergeCancel()
-				merged, run := mergeSC.Engine.runClusterMergeAgent(mergeCtx, userPrompt, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergeStyleGuides, st.hasToolchain, fmt.Sprintf("#%d", ci+1))
+				merged, run := mergeSC.Engine.runClusterMergeAgent(mergeCtx, mergePromptCtx.reviewContextJSON, st.contextNotes, reduced, reviewerByID, mergeSchema, mergeConstraints, mergeSC.Req, mergePromptCtx.styleGuides, mergePromptCtx.hasToolchain, fmt.Sprintf("#%d", ci+1))
 				outcomes <- clusterMergeOutcome{index: ci, findings: merged, run: run, hasRun: run.Name != ""}
 			}(ci, reduced)
 		}
@@ -901,16 +900,77 @@ func (e *Engine) postMergeFusedStepFunc(fused postMergeFusedSpec) stepFunc {
 	}
 }
 
-// stepReviewContextJSON returns the enriched review payload that dedupe and
-// merge prompts embed as raw JSON under `review_context`. A source-less
-// workflow (e.g. --step merge --findings a.json b.json) has no enriched prompt
-// yet, so fall back to an empty JSON object: the agent then still runs instead
-// of failing JSON rendering and degrading to a plain concatenation.
-func stepReviewContextJSON(st *PipelineState) string {
-	if strings.TrimSpace(st.enrichedPrompt) == "" {
-		return "{}"
+// emptyReviewContextJSON keeps a source-less workflow (e.g. --step merge
+// --findings a.json b.json) running: it has no enriched prompt yet, and an
+// empty object lets the agent work off the findings alone instead of failing
+// JSON rendering and degrading to a plain concatenation.
+const emptyReviewContextJSON = "{}"
+
+// stepPromptContext is the grounding one dedupe or merge step sends: the
+// `review_context` payload plus the two system-prompt inputs (styleguides and
+// the toolchain flag), each already filtered by the step's `context:` block.
+type stepPromptContext struct {
+	reviewContextJSON string
+	styleGuides       []model.StyleGuide
+	hasToolchain      bool
+}
+
+// resolveStepPromptContext applies a dedupe/merge step's context-include flags
+// to the pipeline state's prepared context. Everything is included unless the
+// step's config turns a section off.
+func (e *Engine) resolveStepPromptContext(st *PipelineState, override *workflow.StepOverride) (stepPromptContext, error) {
+	include := override.ContextInclude()
+	out := stepPromptContext{hasToolchain: st.hasToolchain && include.Toolchain}
+	if include.StyleGuides {
+		guides, err := e.stepStyleGuides(st)
+		if err != nil {
+			return stepPromptContext{}, err
+		}
+		out.styleGuides = guides
 	}
-	return st.enrichedPrompt
+	reviewContext, err := stepReviewContextJSON(st, include)
+	if err != nil {
+		return stepPromptContext{}, err
+	}
+	out.reviewContextJSON = reviewContext
+	return out, nil
+}
+
+// stepReviewContextJSON renders the enriched review payload that dedupe and
+// merge prompts embed as raw JSON under `review_context`, dropping the
+// sections the step excluded. Filtering is strictly subtractive: when the
+// prepared prompt is missing (no collect step ran) there is nothing to trim,
+// so the fallback is used rather than rebuilding a payload the unfiltered path
+// would not have sent either.
+func stepReviewContextJSON(st *PipelineState, include workflow.ContextIncludeSet) (string, error) {
+	if strings.TrimSpace(st.enrichedPrompt) == "" {
+		return emptyReviewContextJSON, nil
+	}
+	if include.All() || st.Enriched == nil {
+		return st.enrichedPrompt, nil
+	}
+	payload := model.PromptPayloadFromContextWithDiffFormat(st.Enriched, st.diffFormat)
+	if payload == nil {
+		return emptyReviewContextJSON, nil
+	}
+	if !include.Diff {
+		payload.DiffFiles = nil
+		payload.DiffHunks = nil
+	}
+	if !include.Commits {
+		payload.Commits = nil
+	}
+	if !include.Comments {
+		payload.Comments = nil
+	}
+	if !include.Toolchain {
+		payload.ToolchainVersions = nil
+	}
+	rendered, err := llm.RenderJSON(payload)
+	if err != nil {
+		return "", fmt.Errorf("review: rendering filtered review context json: %w", err)
+	}
+	return rendered, nil
 }
 
 func mergeSchemaForStep(req model.ReviewRequest) (llm.ResponseConstraints, []byte) {
