@@ -2066,3 +2066,30 @@ func TestHunkLineRangeIsInclusive(t *testing.T) {
 		})
 	}
 }
+
+// inspect log/show read git, not an LLM, so they must work on an installation
+// that has no model configured — like the other inspect subcommands, which load
+// no profile at all.
+func TestInspectHistoryWorksWithoutAnLLMProfile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, key := range []string{"NICKPIT_MODEL", "NICKPIT_BASE_URL", "NICKPIT_PROFILE", "NICKPIT_CONFIG"} {
+		t.Setenv(key, "")
+	}
+
+	a := &app{}
+	repoRoot, profile, history, err := a.inspectHistory()
+	if err != nil {
+		t.Fatalf("inspectHistory without a model: %v", err)
+	}
+	if repoRoot == "" || history == nil {
+		t.Fatalf("repoRoot = %q, history = %#v", repoRoot, history)
+	}
+	if profile.Model != "" {
+		t.Fatalf("profile unexpectedly carries a model: %q", profile.Model)
+	}
+	// The diff format still comes from the normalized profile, so `inspect show`
+	// keeps returning the configured shape.
+	if profile.DiffFormat != model.DiffFormatGit {
+		t.Fatalf("diff format = %q, want the git default", profile.DiffFormat)
+	}
+}

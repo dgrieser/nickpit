@@ -418,6 +418,22 @@ func cloneValue(value any) any {
 	}
 }
 
+// ErrNoModel and ErrNoBaseURL report a profile that cannot drive an LLM. They
+// are returned together with an otherwise fully normalized profile, so a
+// command that never calls an LLM (nickpit inspect log/show, which only needs
+// the SCM credentials and the diff format) can tolerate them via errors.Is
+// while every genuine configuration error still fails the run.
+var (
+	ErrNoModel   = errors.New("config: no model specified; set model in profile or pass --model")
+	ErrNoBaseURL = errors.New("config: no base URL specified; set base URL in profile or pass --base-url")
+)
+
+// IsMissingLLMEndpoint reports whether err only says that no LLM endpoint is
+// configured, leaving the rest of the profile usable.
+func IsMissingLLMEndpoint(err error) bool {
+	return errors.Is(err, ErrNoModel) || errors.Is(err, ErrNoBaseURL)
+}
+
 func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	cfg := DefaultConfig()
 	// An empty path means the implicit default lookup: a missing
@@ -467,12 +483,14 @@ func Load(path string, overrides Overrides) (*Config, Profile, error) {
 		return nil, Profile{}, err
 	}
 	profile, err = applyOverrides(profile, overrides)
-	if err != nil {
+	if err != nil && !IsMissingLLMEndpoint(err) {
 		return nil, Profile{}, err
 	}
 	cfg.ActiveProfile = activeProfile
 	cfg.Profiles[activeProfile] = profile
-	return cfg, profile, nil
+	// err is nil or endpoint-only here; a caller that needs an LLM still aborts
+	// on it, one that does not can keep the normalized profile.
+	return cfg, profile, err
 }
 
 func resolveProfileName(cfg *Config, name string) string {
@@ -880,12 +898,6 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	profile.GitHubToken = expandEnvReference(profile.GitHubToken)
 	profile.GitLabToken = expandEnvReference(profile.GitLabToken)
 	profile.GitLabBaseURL = expandEnvReference(profile.GitLabBaseURL)
-	if profile.Model == "" {
-		return Profile{}, fmt.Errorf("config: no model specified; set model in profile or pass --model")
-	}
-	if profile.BaseURL == "" {
-		return Profile{}, fmt.Errorf("config: no base URL specified; set base URL in profile or pass --base-url")
-	}
 	profile = applyProfileDefaults(profile)
 	if profile.MaxOutputRetries < 0 {
 		return Profile{}, fmt.Errorf("config: max_output_retries must be non-negative")
@@ -939,6 +951,16 @@ func normalizeProfile(profile Profile) (Profile, error) {
 		return Profile{}, err
 	}
 	profile.DisableStyleGuides = disabledStyleGuides
+	// The LLM endpoint is validated last, and unlike every check above it
+	// returns the normalized profile alongside the error: a command that never
+	// reaches an LLM still gets usable SCM credentials and a diff format, while
+	// anything that does need a model aborts on the error as before.
+	if profile.Model == "" {
+		return profile, ErrNoModel
+	}
+	if profile.BaseURL == "" {
+		return profile, ErrNoBaseURL
+	}
 	return profile, nil
 }
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1927,5 +1928,63 @@ func TestLoadConfigRejectsUnknownProfileName(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), `profile "nope" not found`) {
 			t.Fatalf("err = %v, want unknown profile error", err)
 		}
+	}
+}
+
+// A profile without a model is not usable for a review, but everything else in
+// it is still normalized so commands that never call an LLM (nickpit inspect
+// log/show) can run on a machine that has no LLM configured.
+func TestLoadWithoutModelReturnsSentinelAndNormalizedProfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nickpit.yaml")
+	contents := strings.Join([]string{
+		"profiles:",
+		"  default:",
+		"    gitlab_token: glpat-configured",
+		"    gitlab_base_url: https://gitlab.example.com/api/v4",
+		"    diff_format: git-json",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if !errors.Is(err, ErrNoModel) {
+		t.Fatalf("error = %v, want ErrNoModel", err)
+	}
+	if !IsMissingLLMEndpoint(err) {
+		t.Fatalf("IsMissingLLMEndpoint(%v) = false", err)
+	}
+	if err.Error() != "config: no model specified; set model in profile or pass --model" {
+		t.Fatalf("error message changed: %q", err.Error())
+	}
+	if profile.GitLabToken != "glpat-configured" {
+		t.Fatalf("gitlab token = %q", profile.GitLabToken)
+	}
+	if profile.GitLabBaseURL != "https://gitlab.example.com/api/v4" {
+		t.Fatalf("gitlab base url = %q", profile.GitLabBaseURL)
+	}
+	if profile.DiffFormat != model.DiffFormatGitJson {
+		t.Fatalf("diff format = %q", profile.DiffFormat)
+	}
+
+	// A model without a base URL is the same class of error, and it too keeps
+	// the normalized profile.
+	bare, err := normalizeProfile(Profile{Model: "some-model", GitHubToken: "ghp-configured"})
+	if !errors.Is(err, ErrNoBaseURL) {
+		t.Fatalf("error = %v, want ErrNoBaseURL", err)
+	}
+	if bare.GitHubToken != "ghp-configured" || bare.DiffFormat != model.DiffFormatGit {
+		t.Fatalf("profile not normalized: %+v", bare)
+	}
+
+	// A genuine configuration error still fails without a usable profile.
+	contents = strings.Join([]string{"profiles:", "  default:", "    diff_format: bogus"}, "\n")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = Load(path, Overrides{})
+	if err == nil || IsMissingLLMEndpoint(err) {
+		t.Fatalf("error = %v, want a diff_format validation error", err)
 	}
 }

@@ -635,10 +635,12 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		GitLabToken:               a.gitlabToken,
 		GitLabBaseURL:             a.gitlabBaseURL,
 	})
-	if err != nil {
+	if err != nil && !config.IsMissingLLMEndpoint(err) {
 		return "", config.Profile{}, err
 	}
-	return cfg.ActiveProfile, profile, nil
+	// A missing model/base URL is returned with the normalized profile so a
+	// caller that needs no LLM can proceed; every other caller checks err.
+	return cfg.ActiveProfile, profile, err
 }
 
 func parseExtraBodyFlag(name, raw string) (map[string]any, error) {
@@ -1353,8 +1355,12 @@ func (a *app) inspectHistory() (string, config.Profile, git.History, error) {
 	if err != nil {
 		return "", config.Profile{}, nil, err
 	}
+	// Reading history needs no LLM: the profile only supplies the diff format
+	// and the optional SCM token for deepening a private shallow checkout, so an
+	// installation without a model still inspects local and public history —
+	// matching `inspect file|list|search`, which load no profile at all.
 	_, profile, err := a.loadProfile()
-	if err != nil {
+	if err != nil && !config.IsMissingLLMEndpoint(err) {
 		return "", config.Profile{}, nil, err
 	}
 	return repoRoot, profile, git.NewExecHistory(git.HistoryAuth{
