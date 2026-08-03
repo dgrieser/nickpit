@@ -87,7 +87,7 @@ type CommitEntry struct {
 	// the Since/Until filters select on. They differ for rebased, amended and
 	// cherry-picked commits.
 	Date       time.Time    `json:"date"`
-	CommitDate time.Time    `json:"commit_date,omitempty"`
+	CommitDate time.Time    `json:"commit_date,omitzero"`
 	Subject    string       `json:"subject"`
 	Body       string       `json:"body,omitempty"`
 	Parents    []string     `json:"parents,omitempty"`
@@ -382,7 +382,7 @@ func (h *ExecHistory) commitList(ctx context.Context, runner Runner, revision st
 		return nil, false, err
 	}
 	shas := make([]string, 0, maxCommits)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			shas = append(shas, line)
@@ -576,7 +576,7 @@ func (h *ExecHistory) resolveRevision(ctx context.Context, runner Runner, rev st
 	}
 	prefix := strings.ToLower(rev)
 	var matches []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		sha := strings.TrimSpace(line)
 		if sha != "" && strings.HasPrefix(sha, prefix) {
 			matches = append(matches, sha)

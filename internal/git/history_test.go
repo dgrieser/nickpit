@@ -66,10 +66,8 @@ func showRevision(args []string) string {
 
 func findCall(calls [][]string, name string) []string {
 	for _, call := range calls {
-		for _, arg := range call {
-			if arg == name {
-				return call
-			}
+		if slices.Contains(call, name) {
+			return call
 		}
 	}
 	return nil
@@ -179,7 +177,7 @@ func TestLogAppliesFiltersAndLimit(t *testing.T) {
 		}
 		logArgs = append([]string(nil), args...)
 		records := make([]string, 0, 3)
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			records = append(records, logRecord(fmt.Sprintf("sha%d", i), fmt.Sprintf("sha%d", i), "Ada", "ada@example.com",
 				"2026-08-01T10:00:00Z", "", "parent", "subject", "", ""))
 		}
@@ -593,11 +591,8 @@ func TestShallowCheckoutIsDeepenedOnceForConcurrentCalls(t *testing.T) {
 	calls := runner.recordedCalls()
 	deepens := 0
 	for _, call := range calls {
-		for _, arg := range call {
-			if arg == "fetch" {
-				deepens++
-				break
-			}
+		if slices.Contains(call, "fetch") {
+			deepens++
 		}
 	}
 	// One plain deepen plus at most one explicit deepen by SHA, from the single
