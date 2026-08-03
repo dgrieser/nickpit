@@ -155,19 +155,20 @@ const (
 	// error lists.
 	maxAmbiguousCandidates = 5
 
-	recordSeparator = "\x1e"
-	fieldSeparator  = "\x1f"
+	// nulSeparator delimits every field and file entry git writes in its
+	// machine-readable -z output. It is the one byte that cannot appear in a
+	// commit message, an author name or a path, which is what makes the framing
+	// unambiguous.
+	nulSeparator = "\x00"
 	// commitFields is the number of %-placeholders in commitFormat.
 	commitFields = 9
 )
 
-// commitFormat renders one commit's metadata as fieldSeparator-delimited
-// fields. The trailing separator terminates the body so whatever git appends
-// next (the -z file blocks of `git log`, the patch of `git show`) starts at a
-// deterministic offset.
-const commitFormat = "%H" + fieldSeparator + "%h" + fieldSeparator + "%an" + fieldSeparator +
-	"%ae" + fieldSeparator + "%aI" + fieldSeparator + "%cI" + fieldSeparator + "%P" + fieldSeparator +
-	"%s" + fieldSeparator + "%b" + fieldSeparator
+// commitFormat renders one commit's metadata as NUL-delimited fields. Under -z
+// git terminates the record with a NUL of its own, so the file entries of
+// `git log` and the patch of `git show` start at a deterministic offset without
+// a separator that could also occur inside a message or a path.
+const commitFormat = "%H%x00%h%x00%an%x00%ae%x00%aI%x00%cI%x00%P%x00%s%x00%b"
 
 // ErrNotAGitRepo reports that the checkout has no git metadata, so no history
 // can be read from it.
@@ -176,7 +177,10 @@ var ErrNotAGitRepo = errors.New("git: not a git repository")
 // numstatEntry matches one `--numstat -z` record: added and deleted line
 // counts ("-" for binary files) followed by the path, which is empty for a
 // rename/copy whose old and new paths follow as separate NUL-terminated tokens.
-var numstatEntry = regexp.MustCompile(`^(\d+|-)\t(\d+|-)\t(.*)$`)
+// (?s) is required because -z does not quote paths and a path may contain a
+// newline, which would otherwise make the entry unrecognizable and desync the
+// surrounding record scan.
+var numstatEntry = regexp.MustCompile(`(?s)^(\d+|-)\t(\d+|-)\t(.*)$`)
 
 var hexRevision = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 
@@ -254,7 +258,7 @@ func (h *ExecHistory) Log(ctx context.Context, repoRoot string, opts LogOptions)
 
 	// Ask for one commit more than requested so Truncated reports whether the
 	// limit actually cut the result instead of guessing from a full page.
-	args := []string{"log", "--no-color", fmt.Sprintf("--max-count=%d", limit+1), "--format=" + recordSeparator + commitFormat,
+	args := []string{"log", "--no-color", fmt.Sprintf("--max-count=%d", limit+1), "--format=" + commitFormat,
 		"--raw", "--numstat", "-z", "--find-renames"}
 	// --diff-merges=first-parent gives merge commits a changed-file list
 	// without restricting traversal the way --first-parent would (which would
@@ -482,7 +486,7 @@ func (h *ExecHistory) attachFileMetadata(ctx context.Context, runner Runner, sha
 		diff.Note = joinNotes(diff.Note, "changed-file list unavailable: "+err.Error())
 		return
 	}
-	diff.Files = parseFileBlocks(out)
+	diff.Files, _ = parseFileEntries(strings.Split(out, nulSeparator))
 	diff.Additions, diff.Deletions = totalChanges(diff.Files)
 }
 
@@ -754,24 +758,29 @@ func ensureGitRepo(ctx context.Context, runner Runner) error {
 	return nil
 }
 
-// parseLogRecords parses `git log --format=<recordSeparator><commitFormat>
-// --raw --numstat -z` output into commit entries.
+// parseLogRecords parses `git log -z --format=<commitFormat> --raw --numstat`
+// output into commit entries.
+//
+// Framing is positional over the NUL-delimited stream, never a marker byte in
+// the payload: a commit message and a path may both contain any byte except
+// NUL, so a printable or control-character record separator (0x1e/0x1f) would
+// let a crafted or merely unusual commit desync the parse and drop or invent
+// records. Each commit contributes exactly commitFields NUL-terminated metadata
+// fields; whatever file entries follow are consumed structurally, and the next
+// non-entry token starts the next commit.
 func parseLogRecords(out string) []CommitEntry {
-	records := strings.Split(out, recordSeparator)
-	commits := make([]CommitEntry, 0, len(records))
-	for _, record := range records {
-		if strings.TrimSpace(record) == "" {
+	tokens := strings.Split(out, nulSeparator)
+	commits := make([]CommitEntry, 0, len(tokens)/commitFields+1)
+	for i := 0; i+commitFields <= len(tokens); {
+		entry := commitEntryFromFields(tokens[i : i+commitFields])
+		i += commitFields
+		files, consumed := parseFileEntries(tokens[i:])
+		i += consumed
+		if entry.SHA == "" {
 			continue
 		}
-		fields := strings.SplitN(record, fieldSeparator, commitFields+1)
-		if len(fields) < commitFields {
-			continue
-		}
-		entry := commitEntryFromFields(fields)
-		if len(fields) > commitFields {
-			entry.Files = parseFileBlocks(fields[commitFields])
-			entry.Additions, entry.Deletions = totalChanges(entry.Files)
-		}
+		entry.Files = files
+		entry.Additions, entry.Deletions = totalChanges(files)
 		commits = append(commits, entry)
 	}
 	return commits
@@ -779,11 +788,11 @@ func parseLogRecords(out string) []CommitEntry {
 
 // parseCommitRecord parses one commitFormat record into a commit entry.
 func parseCommitRecord(out string) (CommitEntry, error) {
-	fields := strings.SplitN(out, fieldSeparator, commitFields+1)
+	fields := strings.Split(out, nulSeparator)
 	if len(fields) < commitFields {
 		return CommitEntry{}, fmt.Errorf("git: unexpected commit metadata output: %q", truncateForError(out))
 	}
-	return commitEntryFromFields(fields), nil
+	return commitEntryFromFields(fields[:commitFields]), nil
 }
 
 // truncateForError keeps an unexpected-output error message readable.
@@ -815,11 +824,13 @@ func commitEntryFromFields(fields []string) CommitEntry {
 	}
 }
 
-// parseFileBlocks parses the `--raw --numstat -z` blocks git appends to a log
-// record: raw entries carry the status letter, numstat entries the line counts.
-// Both are NUL-terminated and keyed by the (new) path.
-func parseFileBlocks(block string) []CommitFile {
-	tokens := strings.Split(block, "\x00")
+// parseFileEntries consumes the `--raw --numstat -z` entries at the front of a
+// NUL-token stream and reports how many tokens belonged to them, so a caller
+// walking a multi-commit stream knows where the next commit begins. Raw entries
+// carry the status letter, numstat entries the line counts; both are keyed by
+// the (new) path. A token that is neither ends the block: it is the first
+// metadata field of the next commit.
+func parseFileEntries(tokens []string) ([]CommitFile, int) {
 	files := make([]CommitFile, 0, len(tokens)/2)
 	index := make(map[string]int, len(tokens)/2)
 	upsert := func(path string) *CommitFile {
@@ -831,44 +842,48 @@ func parseFileBlocks(block string) []CommitFile {
 		return &files[len(files)-1]
 	}
 
-	for i := 0; i < len(tokens); i++ {
-		// git separates the raw block from the numstat block with a newline;
-		// the leading NUL of the first block leaves an empty token behind.
+	i := 0
+	for i < len(tokens) {
+		// git separates the raw block from the numstat block with a newline, and
+		// the stream ends with an empty token; neither is an entry, and neither
+		// can be the start of a commit (%H is never empty), so both are skipped.
 		token := strings.TrimLeft(tokens[i], "\n")
 		if token == "" {
+			i++
 			continue
 		}
 		switch {
 		case strings.HasPrefix(token, ":"):
 			status := rawEntryStatus(token)
 			if status == "" {
-				continue
+				return files, i
 			}
 			paths := 1
 			if strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C") {
 				paths = 2
 			}
 			if i+paths >= len(tokens) {
-				return files
+				return files, len(tokens)
 			}
 			file := upsert(tokens[i+paths])
 			file.Status = fileStatusFromRawStatus(status)
 			if paths == 2 {
 				file.OldPath = tokens[i+1]
 			}
-			i += paths
+			i += paths + 1
 		case numstatEntry.MatchString(token):
 			matches := numstatEntry.FindStringSubmatch(token)
 			path := matches[3]
 			oldPath := ""
+			consumed := 1
 			if path == "" {
 				// Rename/copy: the old and new paths follow as separate tokens.
 				if i+2 >= len(tokens) {
-					return files
+					return files, len(tokens)
 				}
 				oldPath = tokens[i+1]
 				path = tokens[i+2]
-				i += 2
+				consumed = 3
 			}
 			file := upsert(path)
 			if oldPath != "" {
@@ -879,13 +894,17 @@ func parseFileBlocks(block string) []CommitFile {
 			deletions, deletionsErr := strconv.Atoi(matches[2])
 			if additionsErr != nil || deletionsErr != nil {
 				file.Binary = true
-				continue
+			} else {
+				file.Additions = additions
+				file.Deletions = deletions
 			}
-			file.Additions = additions
-			file.Deletions = deletions
+			i += consumed
+		default:
+			// Start of the next commit's metadata.
+			return files, i
 		}
 	}
-	return files
+	return files, i
 }
 
 // rawEntryStatus extracts the status letter from a raw entry such as

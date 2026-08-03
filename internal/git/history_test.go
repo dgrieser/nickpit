@@ -38,19 +38,21 @@ func resolved(runner *stubGitRunner, rev, sha string) {
 	runner.outputs[joinArgs([]string{"rev-parse", "--verify", "--end-of-options", rev + "^{commit}"})] = sha + "\n"
 }
 
-// logRecord renders one commitFormat record; commitDate defaults to date when
-// empty, matching the common case where a commit was never rewritten.
+// logRecord renders one commitFormat record exactly as `git log -z` frames it:
+// commitFields NUL-terminated fields followed by the file entries. commitDate
+// defaults to date when empty, matching the common case where a commit was
+// never rewritten.
 func logRecord(sha, short, author, email, date, commitDate, parents, subject, body, files string) string {
 	if commitDate == "" {
 		commitDate = date
 	}
-	return recordSeparator + strings.Join([]string{sha, short, author, email, date, commitDate, parents, subject, body}, fieldSeparator) +
-		fieldSeparator + files
+	return strings.Join([]string{sha, short, author, email, date, commitDate, parents, subject, body}, nulSeparator) +
+		nulSeparator + files
 }
 
 // metadataRecord renders the `git show --no-patch` answer for one commit.
 func metadataRecord(sha, short, author, email, date, parents, subject string) string {
-	return strings.Join([]string{sha, short, author, email, date, date, parents, subject, ""}, fieldSeparator) + fieldSeparator
+	return strings.Join([]string{sha, short, author, email, date, date, parents, subject, ""}, nulSeparator) + "\n"
 }
 
 // showRevision extracts the revision a `git show` invocation targets: the last
@@ -907,5 +909,89 @@ func TestShowKeepsChangedFilesWhenPatchIsOmitted(t *testing.T) {
 	}
 	if commit.Additions != 900 || commit.Deletions != 120 {
 		t.Fatalf("totals = +%d -%d", commit.Additions, commit.Deletions)
+	}
+}
+
+// Commit messages, author names and paths may contain any byte except NUL, so a
+// marker-byte framing (0x1e/0x1f) let an ordinary commit desync the parse and
+// disappear from the listing. Framing is positional over the NUL stream, and
+// separator bytes in the payload must be preserved verbatim.
+func TestLogFramingSurvivesSeparatorBytesInMetadata(t *testing.T) {
+	const (
+		rs = "\x1e"
+		us = "\x1f"
+	)
+	hostileSubject := "subject with " + rs + " RS and " + us + " US"
+	hostileBody := "body line" + "\n" + rs + " looks like a record start\nend"
+	hostilePath := "weird" + rs + "name.txt"
+	newlinePath := "line\nbreak.txt"
+
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	history := newTestHistory(runner)
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "log" {
+			return "", false
+		}
+		hostileFiles := "\x00\n:100644 100644 1111111 2222222 M\x00" + hostilePath + "\x00" +
+			":100644 100644 3333333 4444444 M\x00" + newlinePath + "\x00" +
+			"\n7\t2\t" + hostilePath + "\x001\t0\t" + newlinePath + "\x00"
+		return logRecord("aaa111", "aaa111", "Ada"+us+"Lovelace", "ada@example.com",
+			"2026-08-01T10:00:00Z", "", "bbb222", hostileSubject, hostileBody, hostileFiles) +
+			logRecord("bbb222", "bbb222", "Grace", "grace@example.com",
+				"2026-07-01T10:00:00Z", "", "", "plain subject", "", "\x00\n3\t1\tnormal.txt\x00"), true
+	}
+
+	result, err := history.Log(context.Background(), t.TempDir(), LogOptions{Limit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CommitCount != 2 || result.Truncated {
+		t.Fatalf("commit count = %d, truncated = %t; separator bytes must not split or drop records: %+v",
+			result.CommitCount, result.Truncated, result.Commits)
+	}
+	first := result.Commits[0]
+	if first.SHA != "aaa111" || first.Subject != hostileSubject {
+		t.Fatalf("subject = %q, want %q", first.Subject, hostileSubject)
+	}
+	if first.Body != hostileBody {
+		t.Fatalf("body = %q, want %q", first.Body, hostileBody)
+	}
+	if first.Author != "Ada"+us+"Lovelace" {
+		t.Fatalf("author = %q", first.Author)
+	}
+	gotPaths := []string{first.Files[0].Path, first.Files[1].Path}
+	if len(first.Files) != 2 || gotPaths[0] != hostilePath || gotPaths[1] != newlinePath {
+		t.Fatalf("files = %#v, want %q and %q", first.Files, hostilePath, newlinePath)
+	}
+	if first.Files[0].Additions != 7 || first.Files[0].Deletions != 2 || first.Files[1].Additions != 1 {
+		t.Fatalf("counts lost for hostile paths: %#v", first.Files)
+	}
+	second := result.Commits[1]
+	if second.SHA != "bbb222" || second.Subject != "plain subject" || len(second.Files) != 1 {
+		t.Fatalf("second commit = %+v", second)
+	}
+}
+
+func TestShowMetadataSurvivesSeparatorBytesInMessage(t *testing.T) {
+	hostileSubject := "fix: drop \x1e and \x1f handling"
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "aaa", "aaa111")
+	history := newTestHistory(runner)
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		if args[1] == "--no-patch" {
+			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", hostileSubject), true
+		}
+		return "", true
+	}
+
+	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "aaa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Commits[0].Subject; got != hostileSubject {
+		t.Fatalf("subject = %q, want %q", got, hostileSubject)
 	}
 }
