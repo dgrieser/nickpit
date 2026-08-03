@@ -160,3 +160,32 @@ func TestExecRunnerRunLimitedReportsFailures(t *testing.T) {
 		t.Fatalf("error lacks git output: %v", err)
 	}
 }
+
+func TestTopLevelResolvesTheWorkingTreeRoot(t *testing.T) {
+	root := newRealRepo(t, 1024)
+	sub := filepath.Join(root, "internal", "config")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := TopLevel(context.Background(), sub)
+	if !ok {
+		t.Fatal("TopLevel reported no working tree for a subdirectory of a repository")
+	}
+	// macOS temp dirs are symlinked, and git reports the resolved path.
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRoot, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("TopLevel = %q, want %q", gotRoot, wantRoot)
+	}
+
+	if _, ok := TopLevel(context.Background(), t.TempDir()); ok {
+		t.Fatal("TopLevel reported a working tree outside any repository")
+	}
+}

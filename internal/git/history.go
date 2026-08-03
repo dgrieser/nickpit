@@ -846,6 +846,23 @@ func reachableCommits(ctx context.Context, runner Runner) int {
 	return count
 }
 
+// TopLevel returns the working-tree root of the repository containing dir. Path
+// filters are documented as repository-relative, so a caller invoked from a
+// subdirectory must anchor git there instead of at the current directory. A
+// repository without a working tree (bare) has no top level; the caller keeps
+// its own directory in that case.
+func TopLevel(ctx context.Context, dir string) (string, bool) {
+	out, err := ExecRunner{RepoRoot: dir}.Run(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", false
+	}
+	root := strings.TrimSpace(out)
+	if root == "" {
+		return "", false
+	}
+	return root, true
+}
+
 func ensureGitRepo(ctx context.Context, runner Runner) error {
 	if _, err := runner.Run(ctx, "rev-parse", "--git-dir"); err != nil {
 		return fmt.Errorf("%w: %v", ErrNotAGitRepo, err)

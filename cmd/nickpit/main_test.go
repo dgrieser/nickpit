@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -2077,7 +2078,7 @@ func TestInspectHistoryWorksWithoutAnLLMProfile(t *testing.T) {
 	}
 
 	a := &app{}
-	repoRoot, profile, history, err := a.inspectHistory()
+	repoRoot, profile, history, err := a.inspectHistory(context.Background())
 	if err != nil {
 		t.Fatalf("inspectHistory without a model: %v", err)
 	}
@@ -2091,5 +2092,70 @@ func TestInspectHistoryWorksWithoutAnLLMProfile(t *testing.T) {
 	// keeps returning the configured shape.
 	if profile.DiffFormat != model.DiffFormatGit {
 		t.Fatalf("diff format = %q, want the git default", profile.DiffFormat)
+	}
+}
+
+// inspect log/show document --paths as repository-relative, so running them from
+// a subdirectory must still anchor git at the repository root.
+func TestInspectHistoryAnchorsAtTheRepositoryRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "--quiet", "."},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	sub := filepath.Join(root, "internal", "config")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+	for _, key := range []string{"NICKPIT_MODEL", "NICKPIT_BASE_URL", "NICKPIT_PROFILE", "NICKPIT_CONFIG"} {
+		t.Setenv(key, "")
+	}
+
+	a := &app{}
+	repoRoot, _, _, err := a.inspectHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("repo root = %q, want the repository root %q", gotRoot, wantRoot)
+	}
+
+	// Outside any repository the current directory is kept, so the provider
+	// reports the missing repository itself.
+	outside := t.TempDir()
+	t.Chdir(outside)
+	repoRoot, _, _, err = a.inspectHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOutside, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotOutside, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOutside != wantOutside {
+		t.Fatalf("repo root = %q, want the current directory %q", gotOutside, wantOutside)
 	}
 }

@@ -1278,7 +1278,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 		Short:   "List commits with their changed files",
 		Long:    "List commits with message, author, date and changed files, without diff content.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			repoRoot, _, history, err := a.inspectHistory()
+			repoRoot, _, history, err := a.inspectHistory(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -1319,7 +1319,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 		Short:   "Retrieve the diff of a commit or commit range",
 		Long:    "Retrieve commit metadata and one diff per commit, in the configured diff format.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			repoRoot, profile, history, err := a.inspectHistory()
+			repoRoot, profile, history, err := a.inspectHistory(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -1350,10 +1350,18 @@ func (a *app) newInspectCmd() *cobra.Command {
 // inspectHistory builds the history provider for the `inspect log|show`
 // commands. The profile supplies the SCM tokens the provider needs to deepen a
 // shallow checkout of a private repository.
-func (a *app) inspectHistory() (string, config.Profile, git.History, error) {
-	repoRoot, err := os.Getwd()
+func (a *app) inspectHistory(ctx context.Context) (string, config.Profile, git.History, error) {
+	workdir, err := os.Getwd()
 	if err != nil {
 		return "", config.Profile{}, nil, err
+	}
+	// --paths values are repository-relative, so git must run at the repository
+	// root: from a subdirectory it would resolve them against that subdirectory
+	// and silently report no matching commits. A repository with no working tree
+	// keeps the current directory.
+	repoRoot := workdir
+	if root, ok := git.TopLevel(ctx, workdir); ok {
+		repoRoot = root
 	}
 	// Reading history needs no LLM: the profile only supplies the diff format
 	// and the optional SCM token for deepening a private shallow checkout, so an
