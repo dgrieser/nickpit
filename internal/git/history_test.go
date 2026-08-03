@@ -995,3 +995,87 @@ func TestShowMetadataSurvivesSeparatorBytesInMessage(t *testing.T) {
 		t.Fatalf("subject = %q, want %q", got, hostileSubject)
 	}
 }
+
+// A bounded call must also be bounded in what it reads from git: patches are
+// streamed under a cap, every byte read counts against the call's budget, and
+// once that budget is gone no further patch is generated at all.
+func TestShowBoundsPatchBytesReadFromGit(t *testing.T) {
+	const oversized = maxCommitPatchBytes + 4096
+	shas := []string{"aaa111", "bbb222", "ccc333", "ddd444", "eee555", "fff666"}
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "old", "aaa111")
+	resolved(runner, "new", "fff666")
+	runner.outputs[joinArgs([]string{"rev-list", "--max-count=11", "aaa111..fff666"})] = strings.Join(shas, "\n") + "\n"
+	history := newTestHistory(runner)
+	patchCalls := 0
+	rawCalls := 0
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case args[1] == "--no-patch":
+			sha := showRevision(args)
+			return metadataRecord(sha, sha[:3], "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject "+sha), true
+		case strings.Contains(joined, "--raw"):
+			rawCalls++
+			return "\n:100644 100644 1111111 2222222 M\x00big.go\x00\n900\t120\tbig.go\x00", true
+		default:
+			patchCalls++
+			return "diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", oversized/6), true
+		}
+	}
+
+	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "old..new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CommitCount != len(shas) {
+		t.Fatalf("commit count = %d, want %d", result.CommitCount, len(shas))
+	}
+
+	// Four oversized patches consume the 2 MiB call budget; the remaining
+	// commits must not ask git for a patch at all.
+	wantPatchCalls := maxShowPatchBytes / maxCommitPatchBytes
+	if patchCalls != wantPatchCalls {
+		t.Fatalf("patch invocations = %d, want %d (generation must stop once the budget is spent)", patchCalls, wantPatchCalls)
+	}
+	if rawCalls != len(shas) {
+		t.Fatalf("changed-file lookups = %d, want one per commit", rawCalls)
+	}
+
+	// Every read was capped, and no cap exceeded what the budget still allowed.
+	limits := runner.recordedLimits()
+	if len(limits) != wantPatchCalls {
+		t.Fatalf("recorded caps = %#v, want %d", limits, wantPatchCalls)
+	}
+	remaining := maxShowPatchBytes
+	for i, limit := range limits {
+		if limit > maxCommitPatchBytes || limit > remaining {
+			t.Fatalf("cap[%d] = %d, want <= min(%d, %d)", i, limit, maxCommitPatchBytes, remaining)
+		}
+		remaining -= limit
+	}
+
+	for i, commit := range result.Commits {
+		if !commit.Truncated || len(commit.DiffFiles) != 0 {
+			t.Fatalf("commit[%d] should have no patch: %+v", i, commit)
+		}
+		// The changed-file list survives for every commit, whether its patch was
+		// read and dropped or never generated.
+		if len(commit.Files) != 1 || commit.Files[0].Path != "big.go" {
+			t.Fatalf("commit[%d] files = %#v", i, commit.Files)
+		}
+		if i < wantPatchCalls {
+			if !strings.Contains(commit.Note, "per-commit limit") {
+				t.Fatalf("commit[%d] note = %q, want the per-commit limit", i, commit.Note)
+			}
+		} else if !strings.Contains(commit.Note, "total patch size limit") {
+			t.Fatalf("commit[%d] note = %q, want the total limit", i, commit.Note)
+		}
+	}
+	if !result.Truncated {
+		t.Fatal("result should report truncation")
+	}
+}

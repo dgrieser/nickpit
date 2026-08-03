@@ -149,7 +149,8 @@ const (
 	// maxCommitPatchBytes drops an individual commit's patch bodies once it
 	// grows past this; metadata and the changed-file list are kept.
 	maxCommitPatchBytes = 512 << 10
-	// maxShowPatchBytes bounds the total patch bytes of one git_show call.
+	// maxShowPatchBytes bounds the total patch bytes one git_show call reads from
+	// git, dropped patches included.
 	maxShowPatchBytes = 2 << 20
 	// maxAmbiguousCandidates bounds how many candidates an ambiguous-prefix
 	// error lists.
@@ -410,24 +411,56 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	if err != nil {
 		return nil, err
 	}
-	patch, err := h.commitPatch(ctx, runner, sha, paths, false)
-	if err != nil {
-		return nil, err
-	}
 	diff := &CommitDiff{CommitEntry: entry, DiffMode: "single"}
 	if entry.IsMerge {
 		diff.DiffMode = "combined"
-		if strings.TrimSpace(patch) == "" {
-			firstParent, err := h.commitPatch(ctx, runner, sha, paths, true)
-			if err != nil {
-				return nil, err
-			}
-			if strings.TrimSpace(firstParent) != "" {
-				patch = firstParent
-				diff.DiffMode = "first-parent"
-				diff.Note = "combined diff was empty (every hunk matches a parent); diffed against the first parent instead"
-			}
+	}
+
+	// Once earlier commits used up the call's budget, no patch of this commit can
+	// be returned, so none is generated: asking git for diffs whose only
+	// destination is a size check would burn the rest of a large range for
+	// nothing.
+	if *budget <= 0 {
+		diff.Truncated = true
+		diff.Note = joinNotes(diff.Note, "patch omitted: the total patch size limit for this call was reached")
+		h.attachFileMetadata(ctx, runner, sha, paths, diff)
+		return diff, nil
+	}
+
+	// Read at most what this commit could still contribute. Whichever cap is
+	// lower decides, and hitting it means the patch is dropped either way, so
+	// git is stopped at that point instead of after emitting the whole diff.
+	limit := min(maxCommitPatchBytes, *budget)
+	patch, overLimit, err := h.commitPatch(ctx, runner, sha, paths, false, limit)
+	if err != nil {
+		return nil, err
+	}
+	if !overLimit && entry.IsMerge && strings.TrimSpace(patch) == "" {
+		firstParent, firstParentOverLimit, err := h.commitPatch(ctx, runner, sha, paths, true, limit)
+		if err != nil {
+			return nil, err
 		}
+		if firstParentOverLimit || strings.TrimSpace(firstParent) != "" {
+			patch, overLimit = firstParent, firstParentOverLimit
+			diff.DiffMode = "first-parent"
+			diff.Note = "combined diff was empty (every hunk matches a parent); diffed against the first parent instead"
+		}
+	}
+
+	// Every byte read counts against the call's budget, dropped patches
+	// included: that is what makes the total output of one git_show call
+	// bounded by maxShowPatchBytes instead of by the size of the range.
+	*budget -= len(patch)
+
+	if overLimit {
+		diff.Truncated = true
+		if limit == maxCommitPatchBytes {
+			diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: it exceeds the %d byte per-commit limit", maxCommitPatchBytes))
+		} else {
+			diff.Note = joinNotes(diff.Note, "patch omitted: the total patch size limit for this call was reached")
+		}
+		h.attachFileMetadata(ctx, runner, sha, paths, diff)
+		return diff, nil
 	}
 	if strings.TrimSpace(patch) == "" {
 		if len(paths) > 0 {
@@ -435,20 +468,6 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 		}
 		return diff, nil
 	}
-
-	switch {
-	case len(patch) > maxCommitPatchBytes:
-		diff.Truncated = true
-		diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: %d bytes exceeds the %d byte per-commit limit", len(patch), maxCommitPatchBytes))
-		h.attachFileMetadata(ctx, runner, sha, paths, diff)
-		return diff, nil
-	case len(patch) > *budget:
-		diff.Truncated = true
-		diff.Note = joinNotes(diff.Note, "patch omitted: the total patch size limit for this call was reached")
-		h.attachFileMetadata(ctx, runner, sha, paths, diff)
-		return diff, nil
-	}
-	*budget -= len(patch)
 
 	diffFiles, diffHunks, changed, err := ParseUnifiedDiffFormats(patch)
 	if err != nil {
@@ -466,12 +485,6 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	return diff, nil
 }
 
-// attachFileMetadata fills in the changed-file list of a commit whose patch was
-// dropped for size. The patch is the usual source of that list, so without this
-// an oversized commit would arrive with no indication of what it touched. It
-// reads the compact `--raw --numstat` blocks instead of parsing a patch that is
-// large by definition; a failure only costs the file list, so it is noted
-// rather than propagated.
 func (h *ExecHistory) attachFileMetadata(ctx context.Context, runner Runner, sha string, paths []string, diff *CommitDiff) {
 	args := []string{"show", "--no-color", "--find-renames", "--raw", "--numstat", "-z", "--format="}
 	if diff.DiffMode == "first-parent" {
@@ -500,8 +513,9 @@ func (h *ExecHistory) commitMetadata(ctx context.Context, runner Runner, sha str
 
 // commitPatch renders a commit's patch alone (an empty --format suppresses the
 // metadata header). Merges are rendered as a combined diff unless firstParent
-// asks for the diff against parent one.
-func (h *ExecHistory) commitPatch(ctx context.Context, runner Runner, sha string, paths []string, firstParent bool) (string, error) {
+// asks for the diff against parent one. Reading stops at limit bytes; the second
+// return value reports that the patch is larger than the caller can accept.
+func (h *ExecHistory) commitPatch(ctx context.Context, runner Runner, sha string, paths []string, firstParent bool, limit int) (string, bool, error) {
 	args := []string{"show", "--no-color", "--find-renames", "--patch", "--format="}
 	if firstParent {
 		args = append(args, "-m", "--first-parent")
@@ -510,11 +524,11 @@ func (h *ExecHistory) commitPatch(ctx context.Context, runner Runner, sha string
 	}
 	args = append(args, sha)
 	args = appendPathArgs(args, paths)
-	out, err := runner.Run(ctx, args...)
+	out, truncated, err := runLimited(ctx, runner, limit, args...)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return strings.TrimLeft(out, "\n"), nil
+	return strings.TrimLeft(out, "\n"), truncated, nil
 }
 
 // resolveRevisionArg turns user input (single revision, abbreviated SHA, or
