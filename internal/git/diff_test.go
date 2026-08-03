@@ -71,8 +71,10 @@ type stubGitRunner struct {
 	// does not know.
 	matchErr func(args []string) error
 	calls    [][]string
-	// limits records the byte cap of every RunLimited call, in order.
+	// limits records the byte cap of every RunLimited call, in order, and reads
+	// the number of bytes each of those calls actually returned.
 	limits []int
+	reads  []int
 }
 
 // RunLimited mirrors ExecRunner's streaming cap: the stub cannot stop git early,
@@ -85,10 +87,21 @@ func (r *stubGitRunner) RunLimited(ctx context.Context, limit int, args ...strin
 	if err != nil {
 		return "", false, err
 	}
-	if limit > 0 && len(out) > limit {
-		return out[:limit], true, nil
+	truncated := limit > 0 && len(out) > limit
+	if truncated {
+		out = out[:limit]
 	}
-	return out, false, nil
+	r.mu.Lock()
+	r.reads = append(r.reads, len(out))
+	r.mu.Unlock()
+	return out, truncated, nil
+}
+
+// recordedReads returns the byte count each RunLimited call returned.
+func (r *stubGitRunner) recordedReads() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]int(nil), r.reads...)
 }
 
 // recordedLimits returns a snapshot of the RunLimited caps seen so far.

@@ -684,6 +684,26 @@ func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
 			origin: "git@github.com:acme/repo.git",
 			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
 		},
+		{
+			// Plaintext http would put the token on the wire in clear, even on
+			// the right host.
+			name:   "plaintext http github",
+			origin: "http://github.com/acme/repo.git",
+			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+		},
+		{
+			name:   "plaintext http on the configured gitlab host",
+			origin: "http://gitlab.example.com/acme/repo.git",
+			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://gitlab.example.com/api/v4"},
+		},
+		{
+			// An http base URL only names the instance to trust; an https remote
+			// on that host still gets the token.
+			name:    "https remote with an http configured base url",
+			origin:  "https://gitlab.example.com/acme/repo.git",
+			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "http://gitlab.example.com/api/v4"},
+			wantSet: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1266,5 +1286,102 @@ func TestDeepenWithoutOriginCarriesNoCredentials(t *testing.T) {
 	}
 	if !result.Shallow {
 		t.Fatalf("shallow = %t", result.Shallow)
+	}
+}
+
+// A merge whose combined diff is empty must not read the remaining budget twice:
+// the combined read already spent bytes on its raw/numstat entries, so the
+// first-parent fallback is capped by what is left.
+func TestShowFirstParentFallbackRespectsRemainingBudget(t *testing.T) {
+	shas := []string{"aaa111", "bbb222", "ccc333", "ddd444", "eee555"}
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "old", "aaa111")
+	resolved(runner, "new", "eee555")
+	runner.outputs[joinArgs([]string{"rev-list", "--max-count=11", "aaa111..eee555"})] = strings.Join(shas, "\n") + "\n"
+	history := newTestHistory(runner)
+
+	// Entry blocks large enough that skipping their cost would visibly break the
+	// bound: a merge's combined read pays for them before the fallback runs.
+	entryTokens := make([]string, 0, 3000)
+	for i := range 1000 {
+		path := fmt.Sprintf("pkg/file%04d.go", i)
+		entryTokens = append(entryTokens, ":100644 100644 1111111 2222222 M", path)
+	}
+	for i := range 1000 {
+		entryTokens = append(entryTokens, fmt.Sprintf("9\t1\tpkg/file%04d.go", i))
+	}
+	entries := showEntries(entryTokens...)
+	firstParentCalls := 0
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		switch {
+		case args[1] == "--no-patch":
+			sha := showRevision(args)
+			// Two parents: every commit is a merge.
+			return metadataRecord(sha, sha[:3], "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "p1 p2", "Merge "+sha), true
+		case !isPatchCall(args):
+			return entries, true
+		case slices.Contains(args, "--first-parent"):
+			firstParentCalls++
+			return entries + "diff --git a/pkg/file0000.go b/pkg/file0000.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6), true
+		default:
+			// Combined diff is empty, but its entries still cost bytes.
+			return entries, true
+		}
+	}
+
+	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "old..new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstParentCalls == 0 {
+		t.Fatal("expected at least one first-parent fallback")
+	}
+
+	// Each cap must fit the budget that was still unspent when it was issued,
+	// where "spent" is the bytes previous reads actually returned — exactly the
+	// accounting the implementation does.
+	limits := runner.recordedLimits()
+	reads := runner.recordedReads()
+	if len(limits) != len(reads) {
+		t.Fatalf("caps = %d, reads = %d", len(limits), len(reads))
+	}
+	remaining := maxShowPatchBytes
+	for i, limit := range limits {
+		if limit <= 0 {
+			t.Fatalf("cap[%d] = %d, a read was issued without budget", i, limit)
+		}
+		if limit > maxCommitPatchBytes {
+			t.Fatalf("cap[%d] = %d exceeds the per-commit cap", i, limit)
+		}
+		if limit > remaining {
+			t.Fatalf("cap[%d] = %d exceeds the %d bytes still unspent", i, limit, remaining)
+		}
+		remaining -= reads[i]
+	}
+	total := 0
+	for _, read := range reads {
+		total += read
+	}
+	if total > maxShowPatchBytes {
+		t.Fatalf("reads total %d bytes, want at most %d", total, maxShowPatchBytes)
+	}
+
+	// Once the budget is gone, the merge reports it instead of reading the
+	// fallback anyway, and still lists its files.
+	last := result.Commits[len(result.Commits)-1]
+	if !last.Truncated || len(last.DiffFiles) != 0 {
+		t.Fatalf("last commit = %+v", last)
+	}
+	if !strings.Contains(last.Note, "total patch size limit") {
+		t.Fatalf("last note = %q", last.Note)
+	}
+	if len(last.Files) == 0 {
+		t.Fatalf("last commit lost its file list: %+v", last)
+	}
+	if !result.Truncated {
+		t.Fatal("result should report truncation")
 	}
 }

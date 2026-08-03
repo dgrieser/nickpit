@@ -440,7 +440,21 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	// by maxShowPatchBytes instead of by the size of the range.
 	*budget -= res.ReadBytes
 	if !res.Truncated && entry.IsMerge && strings.TrimSpace(res.Patch) == "" {
-		firstParent, err := h.commitPatch(ctx, runner, sha, paths, true, limit)
+		// The combined read already spent part of the budget (its raw/numstat
+		// entries), so the fallback gets a freshly computed cap. Reusing the
+		// pre-combined limit would let one merge read the remaining budget twice.
+		fallbackLimit := min(maxCommitPatchBytes, *budget)
+		if fallbackLimit <= 0 {
+			diff.Truncated = true
+			diff.Note = joinNotes(diff.Note, "combined diff was empty and the total patch size limit for this call was reached before the first-parent diff could be read")
+			diff.Files = res.Files
+			diff.Additions, diff.Deletions = totalChanges(res.Files)
+			if len(diff.Files) == 0 {
+				h.attachFileMetadata(ctx, runner, sha, paths, diff)
+			}
+			return diff, nil
+		}
+		firstParent, err := h.commitPatch(ctx, runner, sha, paths, true, fallbackLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -727,7 +741,7 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 // caller must fetch from exactly this URL (or the origin remote that carries
 // it), never from whatever remote git would pick by itself.
 func (h *ExecHistory) authArgsForRepo(originURL string) []string {
-	host, ok := httpHost(originURL)
+	host, ok := credentialHost(originURL)
 	if !ok {
 		return nil
 	}
@@ -741,28 +755,35 @@ func (h *ExecHistory) authArgsForRepo(originURL string) []string {
 	}
 }
 
-// httpHost extracts the host of an http(s) remote URL. Other transports (ssh,
-// git, scp-like "git@host:path") authenticate through their own mechanisms and
-// never receive an Authorization header from us.
-func httpHost(remote string) (string, bool) {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return "", false
-	}
-	parsed, err := url.Parse(remote)
-	if err != nil {
-		return "", false
-	}
-	switch strings.ToLower(parsed.Scheme) {
-	case "http", "https":
-	default:
-		return "", false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "" {
+// credentialHost extracts the host a credential header may be sent to. Only
+// https qualifies: plaintext http would put the token on the wire in clear, and
+// other transports (ssh, git, scp-like "git@host:path") authenticate through
+// their own mechanisms. An http remote is still fetched, just without our
+// credentials.
+func credentialHost(remote string) (string, bool) {
+	scheme, host := urlSchemeHost(remote)
+	if scheme != "https" || host == "" {
 		return "", false
 	}
 	return host, true
+}
+
+// urlSchemeHost lowercases the scheme and host of an http(s) URL, returning
+// empty strings for anything else.
+func urlSchemeHost(raw string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", ""
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", ""
+	}
+	return scheme, strings.ToLower(parsed.Hostname())
 }
 
 // hostMatches accepts the trusted host itself and its subdomains, and nothing
@@ -775,9 +796,12 @@ func hostMatches(host, trusted string) bool {
 	return host == trusted || strings.HasSuffix(host, "."+trusted)
 }
 
-// gitLabHost is the host of the configured GitLab API base URL.
+// gitLabHost is the host of the configured GitLab API base URL. The scheme of
+// that URL is irrelevant here — it only names the instance to trust; whether a
+// credential may travel is decided by the remote's own scheme in
+// credentialHost.
 func gitLabHost(baseURL string) string {
-	if host, ok := httpHost(baseURL); ok {
+	if _, host := urlSchemeHost(baseURL); host != "" {
 		return host
 	}
 	return defaultGitLabHost
