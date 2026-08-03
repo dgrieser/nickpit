@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +24,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/workflow"
+	"github.com/spf13/cobra"
 )
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
@@ -650,6 +653,55 @@ func TestGitLocalChangeCommandsPresent(t *testing.T) {
 		if found.Short != tt.wantShort {
 			t.Fatalf("%s short = %q, want %q", strings.Join(tt.args, " "), found.Short, tt.wantShort)
 		}
+	}
+}
+
+func TestInspectHistoryCommandsPresent(t *testing.T) {
+	cmd := newRootCmd()
+	tests := []struct {
+		args      []string
+		alias     string
+		wantFlags []string
+	}{
+		{
+			args:      []string{"inspect", "log"},
+			alias:     "commits",
+			wantFlags: []string{"commit", "since", "until", "author", "paths", "message", "message-regex", "case-sensitive", "limit"},
+		},
+		{
+			args:      []string{"inspect", "show"},
+			alias:     "commit",
+			wantFlags: []string{"commit", "to", "paths", "max-commits"},
+		},
+	}
+
+	for _, tt := range tests {
+		found, _, err := cmd.Find(tt.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := strings.Join(tt.args, " ")
+		if found == nil || found.Use != tt.args[len(tt.args)-1] {
+			t.Fatalf("%s command missing: %#v", name, found)
+		}
+		if !slices.Contains(found.Aliases, tt.alias) {
+			t.Fatalf("%s aliases = %#v, want %q", name, found.Aliases, tt.alias)
+		}
+		for _, flag := range tt.wantFlags {
+			if found.Flags().Lookup(flag) == nil {
+				t.Fatalf("%s flag %q missing", name, flag)
+			}
+		}
+	}
+
+	// git_show cannot run without a revision, so the mirror command requires it.
+	show, _, err := cmd.Find([]string{"inspect", "show"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotations := show.Flags().Lookup("commit").Annotations[cobra.BashCompOneRequiredFlag]
+	if !slices.Contains(annotations, "true") {
+		t.Fatalf("inspect show commit flag should be required: %#v", annotations)
 	}
 }
 
@@ -1994,5 +2046,116 @@ func TestApplyEnvDefaultsRejectsInvalidConfidenceThreshold(t *testing.T) {
 	err := (&app{}).applyEnvDefaults(func(string) bool { return false })
 	if err == nil || !strings.Contains(err.Error(), "NICKPIT_CONFIDENCE_THRESHOLD") {
 		t.Fatalf("err = %v, want NICKPIT_CONFIDENCE_THRESHOLD parse error", err)
+	}
+}
+
+func TestHunkLineRangeIsInclusive(t *testing.T) {
+	tests := []struct {
+		name string
+		hunk model.DiffHunk
+		want string
+	}{
+		{name: "multi line", hunk: model.DiffHunk{NewStart: 10, NewLines: 3}, want: "10-12"},
+		{name: "single line", hunk: model.DiffHunk{NewStart: 10, NewLines: 1}, want: "10-10"},
+		{name: "pure deletion", hunk: model.DiffHunk{NewStart: 10, NewLines: 0}, want: "10"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hunkLineRange(tt.hunk); got != tt.want {
+				t.Fatalf("hunkLineRange(%d,%d) = %q, want %q", tt.hunk.NewStart, tt.hunk.NewLines, got, tt.want)
+			}
+		})
+	}
+}
+
+// inspect log/show read git, not an LLM, so they must work on an installation
+// that has no model configured — like the other inspect subcommands, which load
+// no profile at all.
+func TestInspectHistoryWorksWithoutAnLLMProfile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, key := range []string{"NICKPIT_MODEL", "NICKPIT_BASE_URL", "NICKPIT_PROFILE", "NICKPIT_CONFIG"} {
+		t.Setenv(key, "")
+	}
+
+	a := &app{}
+	repoRoot, profile, history, err := a.inspectHistory(context.Background())
+	if err != nil {
+		t.Fatalf("inspectHistory without a model: %v", err)
+	}
+	if repoRoot == "" || history == nil {
+		t.Fatalf("repoRoot = %q, history = %#v", repoRoot, history)
+	}
+	if profile.Model != "" {
+		t.Fatalf("profile unexpectedly carries a model: %q", profile.Model)
+	}
+	// The diff format still comes from the normalized profile, so `inspect show`
+	// keeps returning the configured shape.
+	if profile.DiffFormat != model.DiffFormatGit {
+		t.Fatalf("diff format = %q, want the git default", profile.DiffFormat)
+	}
+}
+
+// inspect log/show document --paths as repository-relative, so running them from
+// a subdirectory must still anchor git at the repository root.
+func TestInspectHistoryAnchorsAtTheRepositoryRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "--quiet", "."},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "Test"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	sub := filepath.Join(root, "internal", "config")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+	for _, key := range []string{"NICKPIT_MODEL", "NICKPIT_BASE_URL", "NICKPIT_PROFILE", "NICKPIT_CONFIG"} {
+		t.Setenv(key, "")
+	}
+
+	a := &app{}
+	repoRoot, _, _, err := a.inspectHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != wantRoot {
+		t.Fatalf("repo root = %q, want the repository root %q", gotRoot, wantRoot)
+	}
+
+	// Outside any repository the current directory is kept, so the provider
+	// reports the missing repository itself.
+	outside := t.TempDir()
+	t.Chdir(outside)
+	repoRoot, _, _, err = a.inspectHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOutside, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotOutside, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOutside != wantOutside {
+		t.Fatalf("repo root = %q, want the current directory %q", gotOutside, wantOutside)
 	}
 }

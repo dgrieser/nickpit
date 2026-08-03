@@ -182,6 +182,50 @@ func TestParseUnifiedDiffFormatsSkipsCombinedDiffHunks(t *testing.T) {
 	}
 }
 
+// A combined-diff section must still produce a DiffFile: its hunks cannot be
+// represented two-way, so the raw patch text is the only representation left,
+// and dropping it would hand a merge diff to an agent as "no changes".
+func TestDiffFilesFromUnifiedDiffKeepsCombinedSections(t *testing.T) {
+	for _, marker := range []string{"diff --cc", "diff --combined"} {
+		t.Run(strings.TrimPrefix(marker, "diff --"), func(t *testing.T) {
+			diff := strings.Join([]string{
+				"diff --git a/normal.go b/normal.go",
+				"index 1111111..2222222 100644",
+				"--- a/normal.go",
+				"+++ b/normal.go",
+				"@@ -1,2 +1,3 @@",
+				" keep",
+				"+added",
+				marker + " conflicted.go",
+				"index 3333333,4444444..5555555",
+				"--- a/conflicted.go",
+				"+++ b/conflicted.go",
+				"@@@ -1,3 -1,3 +1,3 @@@",
+				"  ctx",
+				"++merged",
+				"",
+			}, "\n")
+
+			diffFiles := DiffFilesFromUnifiedDiff(diff)
+			if len(diffFiles) != 2 {
+				t.Fatalf("diff files = %#v, want normal.go and conflicted.go", diffFiles)
+			}
+			if diffFiles[1].FilePath != "conflicted.go" {
+				t.Fatalf("combined diff file path = %q", diffFiles[1].FilePath)
+			}
+			if !strings.HasPrefix(diffFiles[1].Content, marker+" conflicted.go\n") {
+				t.Fatalf("combined diff file content = %.80q", diffFiles[1].Content)
+			}
+			if !strings.Contains(diffFiles[1].Content, "++merged") {
+				t.Fatalf("combined diff file content missing body: %.120q", diffFiles[1].Content)
+			}
+			if strings.Contains(diffFiles[0].Content, marker) {
+				t.Fatalf("combined section bled into the previous diff file: %.120q", diffFiles[0].Content)
+			}
+		})
+	}
+}
+
 // Hunk-body lines whose content itself starts with "++" or "--" (rendering as
 // "+++..."/"---..." in the diff) are real added/deleted lines and must be
 // counted; file headers can never appear inside a hunk body.

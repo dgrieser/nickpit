@@ -635,10 +635,12 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		GitLabToken:               a.gitlabToken,
 		GitLabBaseURL:             a.gitlabBaseURL,
 	})
-	if err != nil {
+	if err != nil && !config.IsMissingLLMEndpoint(err) {
 		return "", config.Profile{}, err
 	}
-	return cfg.ActiveProfile, profile, nil
+	// A missing model/base URL is returned with the normalized profile so a
+	// caller that needs no LLM can proceed; every other caller checks err.
+	return cfg.ActiveProfile, profile, err
 }
 
 func parseExtraBodyFlag(name, raw string) (map[string]any, error) {
@@ -1266,8 +1268,114 @@ func (a *app) newInspectCmd() *cobra.Command {
 	_ = calleesCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(calleesCmd, "path", a, false)
 
-	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd)
+	var logCommit, logSince, logUntil, logAuthor, logMessage string
+	var logPaths []string
+	var logMessageRegex, logCaseSensitive bool
+	var logLimit int
+	logCmd := &cobra.Command{
+		Use:     "log",
+		Aliases: []string{"commits"},
+		Short:   "List commits with their changed files",
+		Long:    "List commits with message, author, date and changed files, without diff content.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repoRoot, _, history, err := a.inspectHistory(cmd.Context())
+			if err != nil {
+				return err
+			}
+			result, err := history.Log(cmd.Context(), repoRoot, git.LogOptions{
+				Commit:        logCommit,
+				Since:         logSince,
+				Until:         logUntil,
+				Author:        logAuthor,
+				Paths:         logPaths,
+				Message:       logMessage,
+				MessageRegex:  logMessageRegex,
+				CaseSensitive: logCaseSensitive,
+				Limit:         logLimit,
+			})
+			if err != nil {
+				return err
+			}
+			return a.writeInspectOutput(result)
+		},
+	}
+	logCmd.Flags().StringVar(&logCommit, "commit", "", "Commit SHA (any length), ref, or range (a..b); defaults to HEAD")
+	logCmd.Flags().StringVar(&logSince, "since", "", "Only commits committed after this date (e.g. 2026-01-02 or \"2 weeks ago\"); matches git, which filters on the commit date")
+	logCmd.Flags().StringVar(&logUntil, "until", "", "Only commits committed before this date")
+	logCmd.Flags().StringVar(&logAuthor, "author", "", "Only commits whose author name or email matches")
+	logCmd.Flags().StringSliceVar(&logPaths, "paths", nil, "Only commits touching these repo-relative paths")
+	logCmd.Flags().StringVar(&logMessage, "message", "", "Only commits whose message matches")
+	logCmd.Flags().BoolVar(&logMessageRegex, "message-regex", false, "Treat --message and --author as regular expressions")
+	logCmd.Flags().BoolVar(&logCaseSensitive, "case-sensitive", false, "Use case-sensitive matching for --message and --author")
+	logCmd.Flags().IntVar(&logLimit, "limit", 0, "Maximum number of commits to list; 0 uses the default")
+	registerRepoPathCompletion(logCmd, "paths", a, false)
+
+	var showCommit, showTo string
+	var showPaths []string
+	var showMaxCommits int
+	showCmd := &cobra.Command{
+		Use:     "show",
+		Aliases: []string{"commit"},
+		Short:   "Retrieve the diff of a commit or commit range",
+		Long:    "Retrieve commit metadata and one diff per commit, in the configured diff format.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repoRoot, profile, history, err := a.inspectHistory(cmd.Context())
+			if err != nil {
+				return err
+			}
+			result, err := history.Show(cmd.Context(), repoRoot, git.ShowOptions{
+				Commit:     showCommit,
+				To:         showTo,
+				Paths:      showPaths,
+				MaxCommits: showMaxCommits,
+				Format:     profile.DiffFormat,
+			})
+			if err != nil {
+				return err
+			}
+			return a.writeInspectOutput(result)
+		},
+	}
+	showCmd.Flags().StringVar(&showCommit, "commit", "", "Commit SHA (any length), ref, or range (a..b)")
+	showCmd.Flags().StringVar(&showTo, "to", "", "End revision; forms a range with --commit")
+	showCmd.Flags().StringSliceVar(&showPaths, "paths", nil, "Limit each diff to these repo-relative paths; commits that changed none of them are still listed with a note")
+	showCmd.Flags().IntVar(&showMaxCommits, "max-commits", 0, "Maximum number of commits of a range to return; 0 uses the default")
+	_ = showCmd.MarkFlagRequired("commit")
+	registerRepoPathCompletion(showCmd, "paths", a, false)
+
+	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd, logCmd, showCmd)
 	return cmd
+}
+
+// inspectHistory builds the history provider for the `inspect log|show`
+// commands. The profile supplies the SCM tokens the provider needs to deepen a
+// shallow checkout of a private repository.
+func (a *app) inspectHistory(ctx context.Context) (string, config.Profile, git.History, error) {
+	workdir, err := os.Getwd()
+	if err != nil {
+		return "", config.Profile{}, nil, err
+	}
+	// --paths values are repository-relative, so git must run at the repository
+	// root: from a subdirectory it would resolve them against that subdirectory
+	// and silently report no matching commits. A repository with no working tree
+	// keeps the current directory.
+	repoRoot := workdir
+	if root, ok := git.TopLevel(ctx, workdir); ok {
+		repoRoot = root
+	}
+	// Reading history needs no LLM: the profile only supplies the diff format
+	// and the optional SCM token for deepening a private shallow checkout, so an
+	// installation without a model still inspects local and public history —
+	// matching `inspect file|list|search`, which load no profile at all.
+	_, profile, err := a.loadProfile()
+	if err != nil && !config.IsMissingLLMEndpoint(err) {
+		return "", config.Profile{}, nil, err
+	}
+	return repoRoot, profile, git.NewExecHistory(git.HistoryAuth{
+		GitHubToken:   profile.GitHubToken,
+		GitLabToken:   profile.GitLabToken,
+		GitLabBaseURL: profile.GitLabBaseURL,
+	}), nil
 }
 
 func (a *app) newCheckCmd() *cobra.Command {
@@ -2456,6 +2564,10 @@ func (a *app) writeInspectOutput(value any) error {
 	case *retrieval.CallHierarchy:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err
+	case *git.LogResult:
+		return writeCommitLog(typed)
+	case *git.ShowResult:
+		return writeCommitDiffs(typed)
 	case *retrieval.SearchResults:
 		for i, result := range typed.Results {
 			if i > 0 {
@@ -2485,6 +2597,122 @@ func (a *app) writeInspectOutput(value any) error {
 	default:
 		return writeJSON(value)
 	}
+}
+
+// writeCommitLog renders a commit listing: one header line per commit followed
+// by its changed files.
+func writeCommitLog(result *git.LogResult) error {
+	if err := writeHistoryNotes(result.Note, result.Shallow, result.Truncated); err != nil {
+		return err
+	}
+	for i, commit := range result.Commits {
+		if i > 0 {
+			if _, err := fmt.Fprintln(os.Stdout); err != nil {
+				return err
+			}
+		}
+		if err := writeCommitHeader(commit, ""); err != nil {
+			return err
+		}
+		for _, file := range commit.Files {
+			path := file.Path
+			if file.OldPath != "" {
+				path = file.OldPath + " -> " + file.Path
+			}
+			counts := fmt.Sprintf("+%d -%d", file.Additions, file.Deletions)
+			if file.Binary {
+				counts = "binary"
+			}
+			if _, err := fmt.Fprintf(os.Stdout, "  %-8s %s (%s)\n", file.Status, path, counts); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// writeCommitDiffs renders one commit metadata block plus its patch per commit.
+func writeCommitDiffs(result *git.ShowResult) error {
+	if err := writeHistoryNotes(result.Note, result.Shallow, result.Truncated); err != nil {
+		return err
+	}
+	for i, commit := range result.Commits {
+		if i > 0 {
+			if _, err := fmt.Fprintln(os.Stdout); err != nil {
+				return err
+			}
+		}
+		if err := writeCommitHeader(commit.CommitEntry, commit.DiffMode); err != nil {
+			return err
+		}
+		if commit.Note != "" {
+			if _, err := fmt.Fprintf(os.Stdout, "  note: %s\n", commit.Note); err != nil {
+				return err
+			}
+		}
+		for _, file := range commit.DiffFiles {
+			if _, err := fmt.Fprintf(os.Stdout, "\n%s\n", strings.TrimRight(file.Content, "\n")); err != nil {
+				return err
+			}
+		}
+		for _, hunk := range commit.DiffHunks {
+			if _, err := fmt.Fprintf(os.Stdout, "\n%s:%s\n%s\n", hunk.FilePath, hunkLineRange(hunk), strings.TrimRight(hunk.Content, "\n")); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// hunkLineRange renders a hunk's new-side line range inclusively: a hunk
+// starting at line 10 with three lines covers 10-12. A hunk with no new lines
+// is a pure deletion, whose new_start is the line it was removed after, so only
+// that anchor is shown.
+func hunkLineRange(hunk model.DiffHunk) string {
+	if hunk.NewLines <= 0 {
+		return fmt.Sprintf("%d", hunk.NewStart)
+	}
+	return fmt.Sprintf("%d-%d", hunk.NewStart, hunk.NewStart+hunk.NewLines-1)
+}
+
+func writeCommitHeader(commit git.CommitEntry, diffMode string) error {
+	suffix := ""
+	if diffMode != "" {
+		suffix = fmt.Sprintf(" [%s]", diffMode)
+	}
+	author := commit.Author
+	if commit.AuthorEmail != "" {
+		author = fmt.Sprintf("%s <%s>", commit.Author, commit.AuthorEmail)
+	}
+	date := commit.Date.Format(time.RFC3339)
+	// --since/--until filter on the commit date, so show it whenever a rebase,
+	// amend or cherry-pick made it differ from the author date.
+	if !commit.CommitDate.IsZero() && !commit.CommitDate.Equal(commit.Date) {
+		date = fmt.Sprintf("%s (committed %s)", date, commit.CommitDate.Format(time.RFC3339))
+	}
+	_, err := fmt.Fprintf(os.Stdout, "%s %s %s %s (+%d -%d)%s\n",
+		commit.ShortSHA, date, author, commit.Subject,
+		commit.Additions, commit.Deletions, suffix)
+	return err
+}
+
+func writeHistoryNotes(note string, shallow, truncated bool) error {
+	if note != "" {
+		if _, err := fmt.Fprintf(os.Stdout, "note: %s\n", note); err != nil {
+			return err
+		}
+	}
+	if shallow && note == "" {
+		if _, err := fmt.Fprintln(os.Stdout, "note: repository checkout is shallow; history may be incomplete"); err != nil {
+			return err
+		}
+	}
+	if truncated {
+		if _, err := fmt.Fprintln(os.Stdout, "note: result truncated"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func inferRepo() string {

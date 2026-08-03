@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/config"
+	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
@@ -887,5 +889,237 @@ func TestExecuteSearchReportsTruncatedFiles(t *testing.T) {
 	payload = decodeToolPayload(t, results[0].Content)
 	if _, present := payload["truncated_files"]; present {
 		t.Fatalf("truncated_files should be omitted when empty: %#v", payload)
+	}
+}
+
+// stubHistory records the options the history tools resolve and returns canned
+// results, so the tool layer can be tested without running git.
+type stubHistory struct {
+	mu         sync.Mutex
+	logOpts    []git.LogOptions
+	showOpts   []git.ShowOptions
+	logResult  *git.LogResult
+	showResult *git.ShowResult
+	err        error
+}
+
+func (h *stubHistory) Log(_ context.Context, _ string, opts git.LogOptions) (*git.LogResult, error) {
+	h.mu.Lock()
+	h.logOpts = append(h.logOpts, opts)
+	h.mu.Unlock()
+	if h.err != nil {
+		return nil, h.err
+	}
+	if h.logResult != nil {
+		return h.logResult, nil
+	}
+	return &git.LogResult{Range: "HEAD"}, nil
+}
+
+func (h *stubHistory) Show(_ context.Context, _ string, opts git.ShowOptions) (*git.ShowResult, error) {
+	h.mu.Lock()
+	h.showOpts = append(h.showOpts, opts)
+	h.mu.Unlock()
+	if h.err != nil {
+		return nil, h.err
+	}
+	if h.showResult != nil {
+		return h.showResult, nil
+	}
+	return &git.ShowResult{Range: opts.Commit, DiffFormat: string(opts.Format)}, nil
+}
+
+func newHistoryEngine(t *testing.T, history git.History, profile config.Profile) *Engine {
+	t.Helper()
+	engine := NewEngine(stubSource{}, &capturingLLM{}, stubRetrieval{}, profile)
+	engine.SetHistory(history)
+	return engine
+}
+
+func TestExecuteGitLogPassesFiltersAndReturnsCommits(t *testing.T) {
+	history := &stubHistory{logResult: &git.LogResult{
+		Range:       "HEAD",
+		CommitCount: 2,
+		Commits: []git.CommitEntry{
+			{SHA: "aaa111", Subject: "fix(a): one", Files: []git.CommitFile{{Path: "a.go"}, {Path: "b.go"}}},
+			{SHA: "bbb222", Subject: "fix(b): two", Files: []git.CommitFile{{Path: "b.go"}}},
+		},
+	}}
+	engine := newHistoryEngine(t, history, config.Profile{Model: "test"})
+
+	results := engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{{
+		ID:   "c1",
+		Name: "git_log",
+		Arguments: `{"commit":" HEAD ","since":"2026-01-01","author":"Ada","paths":"internal/serve, ./cmd",` +
+			`"message":"fix(","message_regex":true,"case_sensitive":true,"limit":5}`,
+	}}, freshToolRoundState())
+
+	if len(history.logOpts) != 1 {
+		t.Fatalf("log calls = %d", len(history.logOpts))
+	}
+	opts := history.logOpts[0]
+	want := git.LogOptions{
+		Commit: "HEAD", Since: "2026-01-01", Author: "Ada", Message: "fix(",
+		MessageRegex: true, CaseSensitive: true, Limit: 5,
+		Paths: []string{"internal/serve", "cmd"},
+	}
+	if !reflect.DeepEqual(opts, want) {
+		t.Fatalf("log options = %#v, want %#v", opts, want)
+	}
+	payload := decodeToolPayload(t, results[0].Content)
+	commits, ok := payload["commits"].([]any)
+	if !ok || len(commits) != 2 {
+		t.Fatalf("commits missing from payload: %#v", payload)
+	}
+	// The progress/telemetry summary reads commit-shaped payloads.
+	summary := parseToolResultSummary(results[0].Content)
+	if !summary.HasResultCount || summary.ResultCount != 2 || summary.Files != 2 {
+		t.Fatalf("summary = %+v, want 2 commits across 2 distinct files", summary)
+	}
+}
+
+func TestExecuteGitLogDeduplicatesIdenticalCalls(t *testing.T) {
+	history := &stubHistory{}
+	engine := newHistoryEngine(t, history, config.Profile{Model: "test"})
+
+	results := engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{
+		{ID: "c1", Name: "git_log", Arguments: `{"commit":"HEAD","limit":3}`},
+		{ID: "c2", Name: "git_log", Arguments: `{"commit":"HEAD","limit":3}`},
+	}, freshToolRoundState())
+
+	if len(history.logOpts) != 1 {
+		t.Fatalf("log calls = %d, want 1 (duplicate collapsed)", len(history.logOpts))
+	}
+	duplicate := decodeToolPayload(t, results[1].Content)
+	errPayload, ok := duplicate["error"].(map[string]any)
+	if !ok || errPayload["code"] != "already_requested" {
+		t.Fatalf("duplicate payload = %#v", duplicate)
+	}
+	if got := countDuplicateToolCalls(results); got != 1 {
+		t.Fatalf("duplicate tool calls counted = %d, want 1", got)
+	}
+}
+
+func TestExecuteGitShowUsesConfiguredDiffFormat(t *testing.T) {
+	history := &stubHistory{}
+	engine := newHistoryEngine(t, history, config.Profile{Model: "test", DiffFormat: model.DiffFormatGitJson})
+
+	results := engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{{
+		ID: "c1", Name: "git_show", Arguments: `{"commit":"dc80d0c","to":"a44f11c","paths":"internal/serve","max_commits":4}`,
+	}}, freshToolRoundState())
+
+	if len(history.showOpts) != 1 {
+		t.Fatalf("show calls = %d", len(history.showOpts))
+	}
+	opts := history.showOpts[0]
+	want := git.ShowOptions{Commit: "dc80d0c", To: "a44f11c", Paths: []string{"internal/serve"}, MaxCommits: 4, Format: model.DiffFormatGitJson}
+	if !reflect.DeepEqual(opts, want) {
+		t.Fatalf("show options = %#v, want %#v", opts, want)
+	}
+	payload := decodeToolPayload(t, results[0].Content)
+	if payload["diff_format"] != "git-json" {
+		t.Fatalf("diff_format = %#v", payload["diff_format"])
+	}
+
+	// An unset profile format falls back to the default git shape.
+	history = &stubHistory{}
+	engine = newHistoryEngine(t, history, config.Profile{Model: "test"})
+	engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{{
+		ID: "c2", Name: "git_show", Arguments: `{"commit":"dc80d0c"}`,
+	}}, freshToolRoundState())
+	if history.showOpts[0].Format != model.DiffFormatGit {
+		t.Fatalf("default diff format = %q", history.showOpts[0].Format)
+	}
+}
+
+func TestExecuteGitShowRequiresCommit(t *testing.T) {
+	history := &stubHistory{}
+	engine := newHistoryEngine(t, history, config.Profile{Model: "test"})
+
+	results := engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{
+		{ID: "c1", Name: "git_show", Arguments: `{"paths":"internal"}`},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	errPayload, ok := payload["error"].(map[string]any)
+	if !ok || errPayload["code"] != "missing_argument" {
+		t.Fatalf("payload = %#v", payload)
+	}
+	message, _ := errPayload["message"].(string)
+	if !strings.Contains(message, `"commit"`) {
+		t.Fatalf("missing-argument message should name the schema: %q", message)
+	}
+	if len(history.showOpts) != 0 {
+		t.Fatalf("show should not run without a commit: %#v", history.showOpts)
+	}
+}
+
+func TestExecuteHistoryToolsReportProviderErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "not a repository", err: fmt.Errorf("%w: no .git", git.ErrNotAGitRepo), want: "history_unavailable"},
+		{name: "git failed", err: errors.New("git: log: exit status 128"), want: "history_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine := newHistoryEngine(t, &stubHistory{err: tt.err}, config.Profile{Model: "test"})
+			results := engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{
+				{ID: "c1", Name: "git_log", Arguments: `{}`},
+				{ID: "c2", Name: "git_show", Arguments: `{"commit":"aaa"}`},
+			}, freshToolRoundState())
+			for i, result := range results {
+				payload := decodeToolPayload(t, result.Content)
+				errPayload, ok := payload["error"].(map[string]any)
+				if !ok || errPayload["code"] != tt.want {
+					t.Fatalf("result[%d] payload = %#v, want code %q", i, payload, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestExecuteHistoryToolsWithoutProvider(t *testing.T) {
+	engine := NewEngine(stubSource{}, &capturingLLM{}, stubRetrieval{}, config.Profile{Model: "test"})
+	engine.SetHistory(nil)
+
+	results := engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{
+		{ID: "c1", Name: "git_log", Arguments: `{}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	errPayload, _ := payload["error"].(map[string]any)
+	if errPayload["code"] != "history_unavailable" {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestHistoryToolCallDisplayRendersFilters(t *testing.T) {
+	got := toolCallDisplay(llm.ToolCall{Name: "git_log", Arguments: `{"author":"Ada","paths":"internal","limit":5}`})
+	want := `git_log(commit="HEAD", author="Ada", paths="internal", limit=5)`
+	if got != want {
+		t.Fatalf("display = %q, want %q", got, want)
+	}
+	got = toolCallDisplay(llm.ToolCall{Name: "git_show", Arguments: `{"commit":"aaa111","max_commits":2}`})
+	want = `git_show(commit="aaa111", max_commits=2)`
+	if got != want {
+		t.Fatalf("display = %q, want %q", got, want)
+	}
+}
+
+func TestSupplementalContextLabelsHistoryResultsByRange(t *testing.T) {
+	history := &stubHistory{showResult: &git.ShowResult{Range: "aaa111..bbb222", DiffFormat: "git"}}
+	engine := newHistoryEngine(t, history, config.Profile{Model: "test"})
+
+	results := engine.executeToolCalls(context.Background(), t.TempDir(), []llm.ToolCall{
+		{ID: "c1", Name: "git_show", Arguments: `{"commit":"aaa111..bbb222"}`},
+	}, freshToolRoundState())
+	supplemental := supplementalFromContextAgent(results)
+	if len(supplemental) != 1 {
+		t.Fatalf("supplemental files = %#v", supplemental)
+	}
+	if supplemental[0].Path != "git/aaa111..bbb222" {
+		t.Fatalf("supplemental path = %q", supplemental[0].Path)
 	}
 }

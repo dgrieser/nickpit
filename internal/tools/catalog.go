@@ -87,6 +87,35 @@ var catalogDefinition = []catalogEntry{
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls",
 		Parameters:         callHierarchyParameters(),
 	},
+	{
+		Name:               "git_log",
+		APIDescription:     "List commits, newest first, with subject, body, author, author and commit dates, parents and the files each commit changed including added/deleted line counts, but without diff content",
+		ListingDescription: "with optional `commit` (SHA of any length, ref, or range like `a..b`), `since`, `until`, `author`, `paths`, `message` filters to list commits with their metadata and changed files, without diff content",
+		Note:               "History is limited to the reviewed checkout and may be truncated; a `shallow` flag and `note` in the result say so. Use `git_show` when you need the actual changes of a commit",
+		Parameters: []CatalogParameter{
+			{Name: "commit", Type: "string", Description: "Optional revision to list history from (SHA of any length, ref) or a range like \"a..b\"; defaults to HEAD", Example: `"<sha|ref|a..b>"`},
+			{Name: "since", Type: "string", Description: "Optional lower bound on the commit date, e.g. \"2026-01-02\" or \"2 weeks ago\"; rebased or cherry-picked commits are selected by when they were rewritten, not authored", Example: `"<date>"`},
+			{Name: "until", Type: "string", Description: "Optional upper bound on the commit date", Example: `"<date>"`},
+			{Name: "author", Type: "string", Description: "Optional author name or email to match", Example: `"<author>"`},
+			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; only commits touching them are listed", Example: `"<repo-relative paths>"`},
+			{Name: "message", Type: "string", Description: "Optional text the commit message must contain", Example: `"<message text>"`},
+			{Name: "message_regex", Type: "boolean", Description: "Optional flag to treat message and author as extended regular expressions instead of literal text; defaults to false", Example: "bool"},
+			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive matching for message and author; defaults to false", Example: "bool"},
+			{Name: "limit", Type: "integer", Description: "Optional maximum number of commits to list; defaults to 20", Example: "int", Minimum: intPtr(1), Maximum: intPtr(200)},
+		},
+	},
+	{
+		Name:               "git_show",
+		APIDescription:     "Retrieve the full diff of one commit or a commit range as one diff per commit, each with its commit message, author and date",
+		ListingDescription: "with a `commit` (SHA of any length, ref, or range like `a..b`) and optional `paths` to retrieve each commit's message, author and full diff, one diff per commit",
+		Note:               "Merge commits are shown as a combined diff, or against their first parent when the combined diff is empty; `diff_mode` per commit says which. Use `git_log` first when you do not know the commit yet",
+		Parameters: []CatalogParameter{
+			{Name: "commit", Type: "string", Description: "Revision to show (SHA of any length, ref) or a range like \"a..b\"", Example: `"<sha|ref|a..b>"`, Required: true},
+			{Name: "to", Type: "string", Description: "Optional end revision; forms a range together with commit", Example: `"<sha|ref>"`},
+			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; each diff is limited to them, and a commit that changed none of them is still returned with an empty diff and a note", Example: `"<repo-relative paths>"`},
+			{Name: "max_commits", Type: "integer", Description: "Optional maximum number of commits of a range to return; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(50)},
+		},
+	},
 }
 
 var errorDefinitions = map[string]errorDefinition{

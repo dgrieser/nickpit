@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1927,5 +1928,94 @@ func TestLoadConfigRejectsUnknownProfileName(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), `profile "nope" not found`) {
 			t.Fatalf("err = %v, want unknown profile error", err)
 		}
+	}
+}
+
+// A profile without a model is not usable for a review, but everything else in
+// it is still normalized so commands that never call an LLM (nickpit inspect
+// log/show) can run on a machine that has no LLM configured.
+func TestLoadWithoutModelReturnsSentinelAndNormalizedProfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nickpit.yaml")
+	contents := strings.Join([]string{
+		"profiles:",
+		"  default:",
+		"    gitlab_token: glpat-configured",
+		"    gitlab_base_url: https://gitlab.example.com/api/v4",
+		"    diff_format: git-json",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, profile, err := Load(path, Overrides{})
+	if !errors.Is(err, ErrNoModel) {
+		t.Fatalf("error = %v, want ErrNoModel", err)
+	}
+	if !IsMissingLLMEndpoint(err) {
+		t.Fatalf("IsMissingLLMEndpoint(%v) = false", err)
+	}
+	if err.Error() != "config: no model specified; set model in profile or pass --model" {
+		t.Fatalf("error message changed: %q", err.Error())
+	}
+	if profile.GitLabToken != "glpat-configured" {
+		t.Fatalf("gitlab token = %q", profile.GitLabToken)
+	}
+	if profile.GitLabBaseURL != "https://gitlab.example.com/api/v4" {
+		t.Fatalf("gitlab base url = %q", profile.GitLabBaseURL)
+	}
+	if profile.DiffFormat != model.DiffFormatGitJson {
+		t.Fatalf("diff format = %q", profile.DiffFormat)
+	}
+
+	// A model without a base URL is the same class of error, and it too keeps
+	// the normalized profile.
+	bare, err := normalizeProfile(Profile{Model: "some-model", GitHubToken: "ghp-configured"})
+	if !errors.Is(err, ErrNoBaseURL) {
+		t.Fatalf("error = %v, want ErrNoBaseURL", err)
+	}
+	if bare.GitHubToken != "ghp-configured" || bare.DiffFormat != model.DiffFormatGit {
+		t.Fatalf("profile not normalized: %+v", bare)
+	}
+
+	// A genuine configuration error still fails without a usable profile.
+	contents = strings.Join([]string{"profiles:", "  default:", "    diff_format: bogus"}, "\n")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = Load(path, Overrides{})
+	if err == nil || IsMissingLLMEndpoint(err) {
+		t.Fatalf("error = %v, want a diff_format validation error", err)
+	}
+}
+
+// gitlab_base_url is canonicalized once on load: every consumer (API client,
+// session host check, the host the history provider may send a token to) must
+// see the same URL instead of normalizing a user-written value again.
+func TestLoadCanonicalizesGitLabBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		set  string
+		want string
+	}{
+		{name: "empty falls back to gitlab.com", set: "", want: "https://gitlab.com/api/v4"},
+		{name: "scheme-less host", set: "gitlab.internal", want: "https://gitlab.internal/api/v4"},
+		{name: "scheme-less host with port", set: "gitlab.internal:8443", want: "https://gitlab.internal:8443/api/v4"},
+		{name: "missing api path", set: "https://gitlab.internal", want: "https://gitlab.internal/api/v4"},
+		{name: "trailing slash", set: "https://gitlab.internal/api/v4/", want: "https://gitlab.internal/api/v4"},
+		{name: "already canonical", set: "https://gitlab.internal/api/v4", want: "https://gitlab.internal/api/v4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NICKPIT_MODEL", "test-model")
+			t.Setenv("NICKPIT_GITLAB_BASE_URL", tt.set)
+			_, profile, err := Load("", Overrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile.GitLabBaseURL != tt.want {
+				t.Fatalf("gitlab base url = %q, want %q", profile.GitLabBaseURL, tt.want)
+			}
+		})
 	}
 }

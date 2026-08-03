@@ -48,8 +48,10 @@ NickPit gives the model special retrieval tools:
 - exact line number lookups
 - language detection
 - versions of the toolchain
+- **commit history**: filtered commit listings and per-commit diffs
 
 When a reviewer wonders "who calls this function?", it not only gets the call stack, but all fucntion bodies on that stack.  
+When it wonders "why was this written like that?", it reads the commit that introduced the line — message, author and full diff.  
 
 Duplicate tool-call detection and per-agent call limits stop any LLM from doom-scrolling your repo.  
 
@@ -169,7 +171,7 @@ Findings are structured JSON with `p0`–`p3` priorities, confidence scores, opt
 - **Rendered terminal, raw Markdown, and JSON output**, live progress with progress bars, `--show-progress` for running progress, `--verbose`/`--debug` down to raw LLM payloads.
 - **Global concurrency cap** (`--concurrency`, default 10) shared across every agent loop in the run.
 - **Rootless, distroless, Docker image.**
-- **`nickpit inspect`**: the retrieval toolbox (files, search, callers, callees) as a standalone command tree — no review required.
+- **`nickpit inspect`**: the retrieval toolbox (files, search, callers, callees, commit log and commit diffs) as a standalone command tree — no review required.
 
 ## Installation
 
@@ -624,7 +626,15 @@ nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2
 nickpit inspect callees --path internal/review/engine.go --symbol Run --depth 3
 nickpit inspect search --path internal/review --query inspect_file --context-lines 3 --max-results 5 --output json
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2 --output json
+nickpit inspect log --limit 5
+nickpit inspect log --author Ada --since "2 weeks ago" --paths internal/review,cmd/nickpit
+nickpit inspect log --message '^feat\(.*serve' --message-regex --limit 3
+nickpit inspect show --commit dc80d0c
+nickpit inspect show --commit dc80d0c..a44f11c --max-commits 5 --output json
+nickpit inspect show --commit a44f11c --paths internal/serve --diff-format git-json
 ```
+
+`inspect log` mirrors the `git_log` tool and `inspect show` mirrors `git_show` (aliases: `commits` and `commit`). Both accept a commit SHA abbreviated to any length, a ref, or a range (`a..b`); `inspect log` lists commit metadata plus each commit's changed files without diff content, while `inspect show` returns one diff per commit in the configured `diff_format`. `--since`/`--until` filter on the **commit** date, matching git — a rebased or cherry-picked commit is selected by when it was rewritten, not authored; results carry both `date` (author) and `commit_date`. `--paths` narrows each diff, never which commits are returned: a commit that touched none of the paths still appears with an empty diff and a note. Path filters are always repository-relative, so both commands work the same from any subdirectory. Merge commits are shown as a combined diff, falling back to the diff against the first parent when the combined diff is empty (`diff_mode` reports which). A shallow checkout — what remote PR/MR reviews clone — is deepened once on first use; when that is refused, the result reports `shallow` with a note instead of silently listing a single commit.
 
 Retrieval supports `go`, `python`, `nodejs` (including `.jsx`/`.tsx`), and `rust` source files. `inspect file`, `inspect list`, and `inspect search` work generically across text files, while `inspect callers` and `inspect callees` use language-aware symbol and call-hierarchy analysis: Go is resolved with the type checker (`go/packages`), TypeScript/JavaScript with esbuild's parser, and Python/Rust with a pure-Go tree-sitter runtime — all CGo-free, so the single static binary stays self-contained.
 
