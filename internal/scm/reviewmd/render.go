@@ -232,20 +232,14 @@ type FindingEnvelope struct {
 	Ref      bool          `json:"ref,omitempty"`
 }
 
-// ReviewMarker renders the hidden summary-note carrier for result. It returns ""
-// when result has no review id (nothing to group by). gzip keeps large payloads
-// inside the platform note-size limits; base64.StdEncoding keeps the payload free
-// of "-->" and the MarkerOpen token, so it can neither close the marker early nor
-// be forged from untrusted text.
-func ReviewMarker(result *model.ReviewResult) string {
-	marker, _ := reviewMarkerWithSize(result, nil)
-	return marker
-}
-
-// reviewMarkerWithSize is ReviewMarker plus the payload's decoded (raw JSON)
-// size, for the carrier chunking budget. contextOpts, when non-nil, rides in
-// the envelope so MR/PR-reassembled chats rebuild the review's filtered
-// context.
+// reviewMarkerWithSize renders the hidden summary-note carrier for result plus
+// the payload's decoded (raw JSON) size, for the carrier chunking budget. It
+// returns "" when result has no review id (nothing to group by). gzip keeps
+// large payloads inside the platform note-size limits; base64.StdEncoding keeps
+// the payload free of "-->" and the MarkerOpen token, so it can neither close
+// the marker early nor be forged from untrusted text. contextOpts, when
+// non-nil, rides in the envelope so MR/PR-reassembled chats rebuild the
+// review's filtered context.
 func reviewMarkerWithSize(result *model.ReviewResult, contextOpts *model.ContextOptions) (string, int) {
 	if result == nil || result.ReviewID == "" {
 		return "", 0
@@ -898,8 +892,9 @@ type Renderer struct {
 	// assetBaseURL is the badge SVG host, always normalized to a trailing "/".
 	assetBaseURL string
 	// reviewID, when set (see ForReview), is embedded as a hidden per-finding
-	// carrier marker so findings can later be regrouped by review run. SummaryBody
-	// reads the id from the result directly and does not need this.
+	// carrier marker so findings can later be regrouped by review run.
+	// SummaryBodyCarried reads the id from the result directly and does not
+	// need this.
 	reviewID string
 	// contextOpts, when set (see WithContextOptions), rides in the review
 	// envelope so MR/PR-reassembled chats rebuild the review's FILTERED context
@@ -907,9 +902,9 @@ type Renderer struct {
 	contextOpts *model.ContextOptions
 }
 
-// ForReview returns a copy of the renderer bound to reviewID, so FindingBody
-// emits the hidden per-finding carrier marker for that run. Renderer is a value
-// type, so this never mutates the shared renderer.
+// ForReview returns a copy of the renderer bound to reviewID, so
+// FindingBodyCarried emits the hidden per-finding carrier marker for that run.
+// Renderer is a value type, so this never mutates the shared renderer.
 func (r Renderer) ForReview(reviewID string) Renderer {
 	r.reviewID = reviewID
 	return r
@@ -954,17 +949,12 @@ func (r Renderer) PriorityBadge(rank int) string {
 	return fmt.Sprintf("![P%d](%sp%d.svg)", rank, r.assetBaseURL, rank)
 }
 
-// SummaryBody renders the overall verdict comment, tagged with SummaryMarker.
-func (r Renderer) SummaryBody(result *model.ReviewResult) string {
-	body, _ := r.SummaryBodyCarried(result)
-	return body
-}
-
-// SummaryBodyCarried is SummaryBody plus whether the review envelope actually
-// rode along. Like finding carriers, the envelope is omitted when it would push
-// the visible summary past the platform size limit — a long overall explanation
-// must still publish; publishers use carried=false to externalize the envelope
-// into the fallback carrier notes instead.
+// SummaryBodyCarried renders the overall verdict comment, tagged with
+// SummaryMarker, plus whether the review envelope actually rode along. Like
+// finding carriers, the envelope is omitted when it would push the visible
+// summary past the platform size limit — a long overall explanation must still
+// publish; publishers use carried=false to externalize the envelope into the
+// fallback carrier notes instead.
 func (r Renderer) SummaryBodyCarried(result *model.ReviewResult) (string, bool) {
 	var b strings.Builder
 	b.WriteString(SummaryMarker)
@@ -1068,21 +1058,16 @@ func (r Renderer) CarrierNotes(result *model.ReviewResult, findings []model.Find
 	return notes
 }
 
-// FindingBody renders a finding as markdown, tagged with its FingerprintMarker. When
-// locationPrefix is non-empty (the general-comment fallback used when a finding
-// cannot be anchored inline) it is shown after the badge/confidence block so the
-// location is still visible without an inline anchor.
-func (r Renderer) FindingBody(finding model.Finding, locationPrefix string) string {
-	body, _ := r.FindingBodyCarried(finding, locationPrefix)
-	return body
-}
-
-// FindingBodyCarried is FindingBody plus whether the full-finding carrier
-// marker actually rode along. The carrier is omitted when it would push the
-// comment past the platform size limit — an unusually long (e.g. imported)
-// finding must still publish its visible text; carrier metadata is never worth
-// losing the comment over. Publishers use carried=false to route the finding
-// into the chunked fallback carrier notes instead.
+// FindingBodyCarried renders a finding as markdown, tagged with its
+// FingerprintMarker, plus whether the full-finding carrier marker actually rode
+// along. When locationPrefix is non-empty (the general-comment fallback used
+// when a finding cannot be anchored inline) it is shown after the
+// badge/confidence block so the location is still visible without an inline
+// anchor. The carrier is omitted when it would push the comment past the
+// platform size limit — an unusually long (e.g. imported) finding must still
+// publish its visible text; carrier metadata is never worth losing the comment
+// over. Publishers use carried=false to route the finding into the chunked
+// fallback carrier notes instead.
 func (r Renderer) FindingBodyCarried(finding model.Finding, locationPrefix string) (string, bool) {
 	title, body, rank, confidence := FindingDisplay(finding)
 	fingerprint := FingerprintMarker(finding, title)
@@ -1198,7 +1183,16 @@ type LineLoc struct {
 // LocateLine walks the hunks to find the new-side line newLine, returning its
 // location, or false when the line is not part of the diff.
 func LocateLine(hunks []model.DiffHunk, newLine int) (LineLoc, bool) {
-	for _, hunk := range hunks {
+	loc, _, ok := LocateLineHunk(hunks, newLine)
+	return loc, ok
+}
+
+// LocateLineHunk is LocateLine plus the index (into hunks) of the hunk that
+// contains the line, so callers can tell whether two lines share a hunk —
+// GitHub, for one, rejects a multi-line review comment whose start_line and
+// line fall in different hunks.
+func LocateLineHunk(hunks []model.DiffHunk, newLine int) (LineLoc, int, bool) {
+	for i, hunk := range hunks {
 		oldCursor := hunk.OldStart
 		newCursor := hunk.NewStart
 		// TrimRight (not TrimSuffix) drops the trailing blank produced by the
@@ -1215,7 +1209,7 @@ func LocateLine(hunks []model.DiffHunk, newLine int) (LineLoc, bool) {
 			switch marker {
 			case '+':
 				if newCursor == newLine {
-					return LineLoc{OldLine: oldCursor, NewLine: newCursor, Added: true}, true
+					return LineLoc{OldLine: oldCursor, NewLine: newCursor, Added: true}, i, true
 				}
 				newCursor++
 			case '-':
@@ -1224,12 +1218,12 @@ func LocateLine(hunks []model.DiffHunk, newLine int) (LineLoc, bool) {
 				// "\ No newline at end of file": no line on either side.
 			default: // ' ' context, an empty line, or any unexpected prefix
 				if newCursor == newLine {
-					return LineLoc{OldLine: oldCursor, NewLine: newCursor}, true
+					return LineLoc{OldLine: oldCursor, NewLine: newCursor}, i, true
 				}
 				oldCursor++
 				newCursor++
 			}
 		}
 	}
-	return LineLoc{}, false
+	return LineLoc{}, 0, false
 }

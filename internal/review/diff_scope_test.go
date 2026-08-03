@@ -86,11 +86,12 @@ func TestCodeLocationOverlapsDiffAcceptsAnyOldOrNewSideIntersection(t *testing.T
 		{name: "outside after hunks", path: "f.go", start: 40, end: 50, want: false},
 		{name: "wrong file", path: "other.go", start: 10, end: 10, want: false},
 	}
+	allowed := allowedDiffCodeLocations(hunks)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			loc := model.CodeLocation{FilePath: tt.path, LineRange: model.LineRange{Start: tt.start, End: tt.end}}
-			if got := codeLocationOverlapsDiff(loc, hunks); got != tt.want {
-				t.Fatalf("codeLocationOverlapsDiff() = %v, want %v", got, tt.want)
+			if got := codeLocationOverlapsAllowed(loc, allowed); got != tt.want {
+				t.Fatalf("codeLocationOverlapsAllowed() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -103,9 +104,10 @@ func TestCodeLocationOverlapsLegacyContentOnlyHunk(t *testing.T) {
 		NewStart: 5,
 		Content:  " old\n-removed\n+added\n context\n",
 	}}
+	allowed := allowedDiffCodeLocations(hunks)
 	for _, line := range []int{5, 6, 7} {
 		loc := model.CodeLocation{FilePath: "f.go", LineRange: model.LineRange{Start: line, End: line}}
-		if !codeLocationOverlapsDiff(loc, hunks) {
+		if !codeLocationOverlapsAllowed(loc, allowed) {
 			t.Fatalf("line %d should overlap legacy hunk", line)
 		}
 	}

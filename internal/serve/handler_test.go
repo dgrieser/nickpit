@@ -19,6 +19,13 @@ import (
 	"github.com/dgrieser/nickpit/internal/testutil"
 )
 
+// reviewFindingBody renders a discussion-root finding body for review "rev-x"
+// via the production reviewmd.FindingBodyCarried surface.
+func reviewFindingBody(f model.Finding) string {
+	body, _ := reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBodyCarried(f, "")
+	return body
+}
+
 type handlerEnv struct {
 	handler    *Handler
 	dispatcher *Dispatcher
@@ -389,7 +396,7 @@ func TestHandlerChatSpawnsChild(t *testing.T) {
 	// A resolved bot id is required (loop guard) and the thread must be a nickpit
 	// thread (its root note carries a review marker).
 	env.group.BotUserID = 5
-	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1", Title: "Bug"}, "")
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
 	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"chat"`) {
 		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -430,7 +437,7 @@ func TestHandlerChatSkipsForeignThread(t *testing.T) {
 func TestHandlerChatRejectsSpoofedMarkerRoot(t *testing.T) {
 	env := newHandlerEnv(t)
 	env.group.BotUserID = 7 // fake GitLab serves the root note with author id 5
-	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1", Title: "Bug"}, "")
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1", Title: "Bug"})
 	recorder := postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
@@ -446,7 +453,7 @@ func TestHandlerChatRejectsSpoofedMarkerRoot(t *testing.T) {
 func TestHandlerChatSkipsWhenBotUnresolved(t *testing.T) {
 	env := newHandlerEnv(t)
 	env.group.BotUserID = 0
-	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
 	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
 	select {
 	case <-env.chat.calls:
@@ -462,7 +469,7 @@ func TestHandlerChatRetriesFailedChild(t *testing.T) {
 	env := newHandlerEnv(t)
 	env.handler.chatRetryDelay = time.Millisecond
 	env.group.BotUserID = 5
-	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
 	env.chat.exitCodes = []int{1, 0} // first attempt fails, retry succeeds
 
 	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
@@ -483,7 +490,7 @@ func TestHandlerChatPostsFailureNoteAfterExhaustedRetries(t *testing.T) {
 	env := newHandlerEnv(t)
 	env.handler.chatRetryDelay = time.Millisecond
 	env.group.BotUserID = 5
-	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
 	env.chat.exitCodes = []int{1} // every attempt fails (last value repeats)
 
 	postWebhook(t, env.handler, "note_plain.json", "legacy-secret")
@@ -578,7 +585,7 @@ func TestHandlerChatBacklogFullDrops(t *testing.T) {
 func TestHandlerShutdownChatsCancelsInFlight(t *testing.T) {
 	env := newHandlerEnv(t)
 	env.group.BotUserID = 5
-	env.gitlab.discussionRoot = reviewmd.NewRenderer("https://host/").ForReview("rev-x").FindingBody(model.Finding{ID: "f1"}, "")
+	env.gitlab.discussionRoot = reviewFindingBody(model.Finding{ID: "f1"})
 	started := make(chan struct{})
 	env.handler.chatRunner = chatRunnerFunc(func(ctx context.Context, spec ChatSpec) (int, string, error) {
 		close(started)
@@ -697,5 +704,69 @@ func TestNoteDedupForgetRemovesQueuedEntry(t *testing.T) {
 	d.markNew(8)
 	if d.markNew(7) {
 		t.Fatal("live mark for note 7 was lost — stale FIFO entry evicted it")
+	}
+}
+
+// fillDispatcherQueue stuffs the dispatcher's queue channel so the next
+// enqueue of a new MR cannot be accepted.
+func fillDispatcherQueue(d *Dispatcher) {
+	for len(d.queue) < cap(d.queue) {
+		d.queue <- jobKey{ProjectID: -1, IID: len(d.queue)}
+	}
+}
+
+// When the dispatcher cannot accept the event (queue full or shutting down),
+// the webhook must NOT be answered with 200 {"status":"queued"} — GitLab would
+// mark it delivered and never redeliver. A 503 makes GitLab retry.
+func TestHandlerQueueFullReturns503(t *testing.T) {
+	env := newHandlerEnv(t)
+	fillDispatcherQueue(env.dispatcher)
+	recorder := postWebhook(t, env.handler, "mr_open.json", "hook-secret")
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 when the queue is full", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"rejected"`) {
+		t.Fatalf("body = %s, want a truthful rejected status", recorder.Body.String())
+	}
+}
+
+// During graceful shutdown the dispatcher is closed; new triggers must be
+// rejected with 503 so GitLab redelivers them to the restarted daemon.
+func TestHandlerShutdownReturns503(t *testing.T) {
+	env := newHandlerEnv(t)
+	env.dispatcher.Shutdown(0) // no workers started: returns immediately, marks closed
+	recorder := postWebhook(t, env.handler, "mr_open.json", "hook-secret")
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 during shutdown", recorder.Code)
+	}
+}
+
+// A review command whose enqueue is rejected must not be acknowledged with the
+// ack emoji (the emoji would claim the request was taken), and the webhook
+// must be answered with 503 so GitLab redelivers the note event.
+func TestHandlerCommandReviewQueueFullSkipsAck(t *testing.T) {
+	env := newHandlerEnv(t)
+	fillDispatcherQueue(env.dispatcher)
+	recorder := postWebhook(t, env.handler, "note_command_review.json", "legacy-secret")
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 when the review cannot be queued", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"rejected"`) {
+		t.Fatalf("body = %s, want a truthful rejected status", recorder.Body.String())
+	}
+	time.Sleep(50 * time.Millisecond)
+	if posts := env.gitlab.posted(); len(posts) != 0 {
+		t.Fatalf("posts = %v, want no ack emoji for a rejected review command", posts)
+	}
+}
+
+// Non-review commands (status, help, ...) do not need queue capacity and keep
+// working while the queue is full.
+func TestHandlerCommandStatusWorksWithFullQueue(t *testing.T) {
+	env := newHandlerEnv(t)
+	fillDispatcherQueue(env.dispatcher)
+	recorder := postWebhook(t, env.handler, "note_command_status.json", "legacy-secret")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"command":"status"`) {
+		t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

@@ -663,6 +663,57 @@ func TestLocalEngineSearchRegexSkipsBinaryAndIgnored(t *testing.T) {
 	}
 }
 
+func TestLocalEngineSearchAndFindLinesReportTruncatedFiles(t *testing.T) {
+	repoRoot := t.TempDir()
+	// A file larger than the per-file cap whose only match sits past the cap:
+	// the match cannot be found, but the truncation must be surfaced.
+	var big strings.Builder
+	line := strings.Repeat("a", 1023) + "\n"
+	for big.Len() <= maxRetrievedFileBytes {
+		big.WriteString(line)
+	}
+	big.WriteString("needle\n")
+	if err := os.WriteFile(filepath.Join(repoRoot, "big.txt"), []byte(big.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "small.txt"), []byte("no match here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewLocalEngine()
+
+	search, err := engine.Search(context.Background(), repoRoot, "", "needle", 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if search.ResultCount != 0 {
+		t.Fatalf("ResultCount = %d, want 0", search.ResultCount)
+	}
+	if !reflect.DeepEqual(search.TruncatedFiles, []string{"big.txt"}) {
+		t.Fatalf("search TruncatedFiles = %#v, want [big.txt]", search.TruncatedFiles)
+	}
+
+	findLines, err := engine.FindLines(context.Background(), repoRoot, "", "needle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findLines.MatchCount != 0 {
+		t.Fatalf("MatchCount = %d, want 0", findLines.MatchCount)
+	}
+	if !reflect.DeepEqual(findLines.TruncatedFiles, []string{"big.txt"}) {
+		t.Fatalf("find_lines TruncatedFiles = %#v, want [big.txt]", findLines.TruncatedFiles)
+	}
+
+	// A repo without oversized files reports no truncation.
+	untruncated, err := engine.Search(context.Background(), repoRoot, "small.txt", "match", 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(untruncated.TruncatedFiles) != 0 {
+		t.Fatalf("TruncatedFiles = %#v, want empty", untruncated.TruncatedFiles)
+	}
+}
+
 func TestLocalEngineGetFileCapsLargeFiles(t *testing.T) {
 	repoRoot := t.TempDir()
 	engine := NewLocalEngine()

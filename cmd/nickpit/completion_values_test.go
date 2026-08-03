@@ -25,6 +25,13 @@ func TestRootEnumCompletions(t *testing.T) {
 		{flag: "priority-threshold", prefix: "2", want: []string{"2"}},
 		{flag: "disable-styleguide", prefix: "sec", want: nil},
 		{flag: "step", prefix: "review:sec", want: []string{"review:security"}},
+		// Per-vector verify:/dedupe:/nudge:/reasoning-extract: steps need a
+		// preceding review:<vector> step, so a single-step --step spec can
+		// never run them and they must not be completed.
+		{flag: "step", prefix: "verify", want: []string{"verify"}},
+		{flag: "step", prefix: "dedupe", want: []string{"dedupe"}},
+		{flag: "step", prefix: "nudge:", want: nil},
+		{flag: "step", prefix: "reasoning-extract:", want: nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.flag, func(t *testing.T) {

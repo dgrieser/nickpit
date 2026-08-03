@@ -478,6 +478,126 @@ func TestTakeRefusesJobsAfterShutdown(t *testing.T) {
 	}
 }
 
+// Enqueue reports acceptance: queued, coalesced, and deliberate dedup drops
+// are accepted; a full queue and a closed dispatcher are rejections the
+// handler turns into a 503 so GitLab redelivers.
+func TestEnqueueReportsAcceptance(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+
+	if !dispatcher.Enqueue(autoEvent(1, "sha-1", group)) {
+		t.Fatal("fresh enqueue must be accepted")
+	}
+	if !dispatcher.Enqueue(autoEvent(1, "sha-2", group)) {
+		t.Fatal("coalescing onto a queued job must be accepted")
+	}
+	// An already-reviewed head is dropped on purpose; a redelivery would only
+	// be dropped again, so it counts as accepted (no 503, no GitLab retry).
+	dispatcher.markReviewed(42, 2, "sha-x")
+	if !dispatcher.Enqueue(autoEvent(2, "sha-x", group)) {
+		t.Fatal("dedup drop must be accepted")
+	}
+}
+
+func TestEnqueueRejectsWhenQueueFull(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	// Fill the queue channel directly (no workers are draining it).
+	for len(dispatcher.queue) < cap(dispatcher.queue) {
+		dispatcher.queue <- jobKey{ProjectID: -1, IID: len(dispatcher.queue)}
+	}
+	if dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("full queue must reject the event")
+	}
+	dispatcher.mu.Lock()
+	dropped := dispatcher.dropped
+	dispatcher.mu.Unlock()
+	if dropped != 1 {
+		t.Fatalf("dropped = %d, want 1", dropped)
+	}
+}
+
+func TestEnqueueRejectsAfterShutdown(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.Shutdown(0) // no workers started: returns immediately, marks closed
+	if dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("closed dispatcher must reject the event")
+	}
+}
+
+// CloseIntake runs before the HTTP drain: handlers still in flight during the
+// drain must have their events rejected (503 → GitLab redelivers), because
+// the workers have already stopped and would never process them.
+func TestEnqueueRejectsAfterCloseIntake(t *testing.T) {
+	fake := &fakeGitLab{topics: []string{"nickpit"}, state: "opened", headSHA: "sha-1"}
+	dispatcher, _, group := newWorkerEnv(t, fake, workerCfg())
+	dispatcher.CloseIntake()
+	if dispatcher.Enqueue(autoEvent(7, "sha-1", group)) {
+		t.Fatal("dispatcher with closed intake must reject the event")
+	}
+	dispatcher.Shutdown(0) // idempotent after CloseIntake
+	if dispatcher.Enqueue(autoEvent(7, "sha-2", group)) {
+		t.Fatal("closed dispatcher must reject the event")
+	}
+}
+
+// A pending re-run re-queues at the back, behind other waiting MRs: a busy MR
+// must not monopolize a worker by having its re-runs jump the queue.
+func TestDispatcherPendingRerunDoesNotStarveQueuedMRs(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true)
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+
+	// While MR 7 runs: MR 8 queues up, then a new head for MR 7 parks as its
+	// pending re-run.
+	env.dispatcher.Enqueue(autoEvent(8, "sha-1", env.group))
+	env.gitlab.mu.Lock()
+	env.gitlab.headSHA = "sha-2"
+	env.gitlab.mu.Unlock()
+	env.dispatcher.Enqueue(autoEvent(7, "sha-2", env.group))
+
+	close(env.runner.gate)
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 3 })
+	var iids []int
+	for _, spec := range env.runner.ran() {
+		iids = append(iids, spec.IID)
+	}
+	if iids[0] != 7 || iids[1] != 8 || iids[2] != 7 {
+		t.Fatalf("run order = %v, want [7 8 7] (re-run behind queued MR 8)", iids)
+	}
+}
+
+// A pending re-run was acknowledged with a 2xx at enqueue time, so it must
+// not be dropped when the queue happens to be full at finish time: it parks
+// in the overflow and re-enters the queue as slots free up.
+func TestDispatcherPendingRerunSurvivesFullQueue(t *testing.T) {
+	env := newDispatcherEnv(t, 1, true)
+	env.dispatcher.Enqueue(autoEvent(7, "sha-1", env.group))
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) == 1 })
+
+	// New head arrives while MR 7 is being reviewed → pending re-run.
+	env.gitlab.mu.Lock()
+	env.gitlab.headSHA = "sha-2"
+	env.gitlab.mu.Unlock()
+	env.dispatcher.Enqueue(autoEvent(7, "sha-2", env.group))
+
+	// Fill the queue channel completely while the single worker is busy, so a
+	// re-queue of the pending event would be impossible.
+	env.dispatcher.mu.Lock()
+	for len(env.dispatcher.queue) < cap(env.dispatcher.queue) {
+		env.dispatcher.queue <- jobKey{ProjectID: -1, IID: len(env.dispatcher.queue)}
+	}
+	env.dispatcher.mu.Unlock()
+
+	close(env.runner.gate)
+	waitFor(t, 3*time.Second, func() bool { return len(env.runner.ran()) >= 2 })
+	second := env.runner.ran()[1]
+	if second.IID != 7 || second.HeadSHA != "sha-2" {
+		t.Fatalf("second run = IID %d sha %q, want the pending re-run of MR 7 at sha-2", second.IID, second.HeadSHA)
+	}
+}
+
 func TestSHALRUEviction(t *testing.T) {
 	lru := newSHALRU(2)
 	lru.Add("a")

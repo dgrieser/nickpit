@@ -105,7 +105,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 		if args.Depth <= 0 {
 			args.Depth = defaultCallHierarchyDepth
 		}
-		return callHierarchyDedupKey(toolCall.Name, normalizeToolPath(args.Path), strings.TrimSpace(args.Symbol), args.Depth)
+		return callHierarchyDedupKey(toolCall.Name, normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol), args.Depth)
 	case "search":
 		var args searchToolArgs
 		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
@@ -290,8 +290,11 @@ func resolveSearchContextLines(contextLines *int, query string) int {
 	return *contextLines
 }
 
-// normalizeSearchPath canonicalizes the optional search path: "." is the same
-// scope as an omitted path (the repo root), so both dedupe to one key.
+// normalizeSearchPath canonicalizes an optional scope path: "." is the same
+// scope as an omitted path (the repo root), so both dedupe to one key. It is
+// shared by the search tool and the call-hierarchy tools (find_callers /
+// find_callees) so a `search` call rewritten into a find_callers lookup and a
+// direct find_callers call on the same target produce the same dedup key.
 func normalizeSearchPath(path string) string {
 	normalized := normalizeToolPath(strings.TrimSpace(path))
 	if normalized == "." {
@@ -371,6 +374,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			merged := mergeSearchResults(results.Results, regexResults.Results, args.MaxResults)
 			results.Results = merged
 			results.ResultCount = len(merged)
+			results.TruncatedFiles = mergeTruncatedFiles(results.TruncatedFiles, regexResults.TruncatedFiles)
 		} else {
 			e.logf(ctx, "Skipping regex search: name=%s path=%s pattern=%q error=%v", toolCall.Name, normalizedPath, regexPattern, compileErr)
 		}
@@ -379,7 +383,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	state.mu.Lock()
 	state.seenToolCalls[key] = struct{}{}
 	state.mu.Unlock()
-	return mustToolResultJSON(map[string]any{
+	return mustToolResultJSON(withTruncatedFiles(map[string]any{
 		"path":           results.Path,
 		"query":          results.Query,
 		"context_lines":  results.ContextLines,
@@ -387,7 +391,38 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 		"case_sensitive": results.CaseSensitive,
 		"result_count":   results.ResultCount,
 		"results":        results.Results,
-	})
+	}, results.TruncatedFiles))
+}
+
+// withTruncatedFiles adds the truncated_files field to a hand-built tool
+// result payload only when the retrieval layer actually clipped files at its
+// read cap, mirroring the omitempty behavior of retrieval.SearchResults so
+// the model learns that matches may be missing from those files.
+func withTruncatedFiles(payload map[string]any, truncatedFiles []string) map[string]any {
+	if len(truncatedFiles) > 0 {
+		payload["truncated_files"] = truncatedFiles
+	}
+	return payload
+}
+
+// mergeTruncatedFiles unions the truncated-file lists of the literal and regex
+// search passes, preserving order and dropping duplicates.
+func mergeTruncatedFiles(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]struct{}, len(a)+len(b))
+	merged := make([]string, 0, len(a)+len(b))
+	for _, lists := range [][]string{a, b} {
+		for _, file := range lists {
+			if _, dup := seen[file]; dup {
+				continue
+			}
+			seen[file] = struct{}{}
+			merged = append(merged, file)
+		}
+	}
+	return merged
 }
 
 func hasRegexMetachar(query string) bool {
@@ -435,12 +470,16 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 	args.Symbol = strings.TrimSpace(args.Symbol)
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Symbol == "" {
-		return toolError(normalizeToolPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
+		return toolError(normalizeSearchPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
 	}
 	if args.Depth <= 0 {
 		args.Depth = defaultCallHierarchyDepth
 	}
-	normalizedPath := normalizeToolPath(args.Path)
+	// normalizeSearchPath (not normalizeToolPath) keeps the key and execution
+	// aligned with search calls rewritten into call-hierarchy lookups, which
+	// normalize "." to "" — otherwise identical structural lookups would get
+	// different concurrency/seen keys and execute twice.
+	normalizedPath := normalizeSearchPath(args.Path)
 	key := callHierarchyDedupKey(toolCall.Name, normalizedPath, args.Symbol, args.Depth)
 	unlock := state.toolLocks.lock(key)
 	defer unlock()
@@ -515,7 +554,7 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, norm
 	state.mu.Lock()
 	state.seenToolCalls[key] = struct{}{}
 	state.mu.Unlock()
-	return mustToolResultJSON(map[string]any{
+	return mustToolResultJSON(withTruncatedFiles(map[string]any{
 		"symbol":       symbol,
 		"path":         normalizedPath,
 		"mode":         mode,
@@ -524,7 +563,7 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, norm
 		"query":        results.Query,
 		"result_count": results.ResultCount,
 		"results":      results.Results,
-	})
+	}, results.TruncatedFiles))
 }
 
 func callHierarchyDedupKey(name, path, symbol string, depth int) string {

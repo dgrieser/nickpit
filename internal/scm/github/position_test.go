@@ -34,6 +34,32 @@ func TestInlineCommentMultiLine(t *testing.T) {
 	}
 }
 
+func TestInlineCommentCrossHunkRangeDegradesToSingleLine(t *testing.T) {
+	// Two hunks of the same file: lines 1-3 and lines 40-42 (new side). A range
+	// whose endpoints map but sit in different hunks must NOT become a
+	// multi-line comment — GitHub 422s start_line/line pairs spanning hunks and
+	// the atomic create-review POST would drop every inline comment.
+	hunks := []model.DiffHunk{
+		{FilePath: "main.go", OldStart: 1, NewStart: 1, Content: " a\n+b\n+c\n"},
+		{FilePath: "main.go", OldStart: 39, NewStart: 40, Content: " x\n+y\n z\n"},
+	}
+	c, ok := inlineComment(hunks, "main.go", model.LineRange{Start: 2, End: 41}, "body")
+	if !ok {
+		t.Fatal("cross-hunk range should still anchor a single-line comment")
+	}
+	if c.StartLine != 0 || c.StartSide != "" {
+		t.Fatalf("cross-hunk range must not emit multi-line comment: %+v", c)
+	}
+	if c.Line != 2 || c.Side != sideRight {
+		t.Fatalf("expected single-line comment at first mappable line 2, got %+v", c)
+	}
+	// Sanity: the same endpoints inside one hunk still yield multi-line.
+	c, ok = inlineComment(hunks, "main.go", model.LineRange{Start: 40, End: 42}, "body")
+	if !ok || c.StartLine != 40 || c.Line != 42 {
+		t.Fatalf("same-hunk range should stay multi-line: %+v ok=%v", c, ok)
+	}
+}
+
 func TestInlineCommentPartialRangeUsesFirstMappable(t *testing.T) {
 	// End is outside the diff: no multi-line; the first mappable line (2) is
 	// used as a single-line comment.

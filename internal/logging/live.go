@@ -281,10 +281,21 @@ func (r *LiveRenderer) AgentStart(info ProgressInfo, scope WorkflowScope, deadli
 		r.agents[key] = a
 	}
 	now := r.now()
+	restart := !a.lastStarted.IsZero()
 	a.info, a.scope, a.phaseStart, a.deadline = info, scope, now, deadline
 	a.visible, a.lastStarted = true, now
 	a.done, a.doneAt = false, time.Time{}
 	a.animAt = now // reset the animation clock; a new agent keeps shown at 0
+	if restart {
+		// Nudge rounds reuse the agent key, so this is a restart of an existing
+		// anim. The previous round's done branch pinned shown at 1 and the
+		// forward-only clamp in animateFraction would keep it there for every
+		// later round. Re-derive the confirmed fraction under the new round's
+		// nudge-aware denominator and let the bar drop to it — at most once,
+		// here at round start — so progress displays correctly again.
+		reached, _ := a.roundFractions()
+		a.shown = min(a.shown, reached)
+	}
 	r.mu.Unlock()
 	r.signal()
 }
@@ -857,6 +868,22 @@ const (
 	liveBarSnapSeconds   = 0.5
 )
 
+// roundFractions returns the confirmed bar fraction for the agent's completed
+// turns and the fraction the upcoming turn would confirm, both under the
+// nudge-aware denominator: future nudge rounds count as pending work so the bar
+// only reaches 1 once every round is done.
+func (a *liveAgent) roundFractions() (reached, next float64) {
+	future := max(a.info.NudgeTotal-a.info.NudgeIndex, 0)
+	denom := a.doneTurns + future
+	if a.activeTurn {
+		denom++
+	}
+	if denom <= 0 {
+		return 0, 0
+	}
+	return float64(a.doneTurns) / float64(denom), float64(a.doneTurns+1) / float64(denom)
+}
+
 // animateFraction returns the bar's displayed fraction, easing it toward the
 // upcoming step while a turn runs and snapping it up once a step is reached. It
 // mutates the agent's animation state and so must be called once per redraw
@@ -866,18 +893,9 @@ func (a *liveAgent) animateFraction(now time.Time) float64 {
 		a.shown = 1
 		return 1
 	}
-	future := max(a.info.NudgeTotal-a.info.NudgeIndex, 0)
-	denom := a.doneTurns + future
-	if a.activeTurn {
-		denom++
-	}
-	reached := 0.0
-	if denom > 0 {
-		reached = float64(a.doneTurns) / float64(denom)
-	}
+	reached, next := a.roundFractions()
 	goal := reached
-	if a.activeTurn && denom > 0 {
-		next := float64(a.doneTurns+1) / float64(denom)
+	if a.activeTurn {
 		goal = reached + (next-reached)*liveBarCreepFraction
 	}
 	// First observation (e.g. a freshly constructed agent in tests): show the

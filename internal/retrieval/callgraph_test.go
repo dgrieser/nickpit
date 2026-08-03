@@ -45,26 +45,6 @@ func TestCallHierarchyRenderIncludesSource(t *testing.T) {
 	}
 }
 
-func TestCallHierarchyRenderJSONIncludesCodeLocation(t *testing.T) {
-	hierarchy := &CallHierarchy{
-		Root: CallNode{
-			Name:         "Run",
-			CodeLocation: callNodeLocation("b/b.go", 3, 5, "func Run() {}"),
-		},
-	}
-
-	got := hierarchy.RenderJSON()
-	if !strings.Contains(got, "\"content\": \"func Run() {}\"") {
-		t.Fatalf("json output missing code_location content field:\n%s", got)
-	}
-	if !strings.Contains(got, "\"file_path\": \"b/b.go\"") {
-		t.Fatalf("json output missing code_location file_path field:\n%s", got)
-	}
-	if !strings.Contains(got, "\"count\": 3") {
-		t.Fatalf("json output missing code_location line_range count field:\n%s", got)
-	}
-}
-
 func TestCallNodeLocationDerivesLanguageAndCount(t *testing.T) {
 	loc := callNodeLocation("pkg/a.go", 10, 12, "func A() {}")
 	if loc.Language != "go" {

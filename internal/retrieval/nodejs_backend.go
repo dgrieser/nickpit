@@ -60,8 +60,6 @@ var nodeSupportedExts = map[string]struct{}{
 	".tsx": {},
 }
 
-func (nodejsBackend) language() string { return "nodejs" }
-
 func (nodejsBackend) supportsExt(ext string) bool {
 	_, ok := nodeSupportedExts[ext]
 	return ok
@@ -251,17 +249,30 @@ func resolveNodeModulePath(repoRoot, currentPath, spec string) (string, bool) {
 	joined := filepath.Clean(filepath.Join(base, spec))
 	candidates := []string{
 		filepath.ToSlash(joined),
-		filepath.ToSlash(joined) + ".js",
-		filepath.ToSlash(joined) + ".mjs",
-		filepath.ToSlash(joined) + ".cjs",
-		filepath.ToSlash(joined) + ".jsx",
-		filepath.ToSlash(joined) + ".ts",
-		filepath.ToSlash(joined) + ".mts",
-		filepath.ToSlash(joined) + ".cts",
-		filepath.ToSlash(joined) + ".tsx",
+	}
+	// TS NodeNext/ESM code imports the emitted .js/.mjs/.cjs name even when
+	// the source on disk is the TS counterpart; try those next.
+	switch strings.ToLower(filepath.Ext(joined)) {
+	case ".js":
+		stem := filepath.ToSlash(strings.TrimSuffix(joined, filepath.Ext(joined)))
+		candidates = append(candidates, stem+".ts", stem+".tsx")
+	case ".mjs":
+		candidates = append(candidates, filepath.ToSlash(strings.TrimSuffix(joined, filepath.Ext(joined)))+".mts")
+	case ".cjs":
+		candidates = append(candidates, filepath.ToSlash(strings.TrimSuffix(joined, filepath.Ext(joined)))+".cts")
+	}
+	candidates = append(candidates,
+		filepath.ToSlash(joined)+".js",
+		filepath.ToSlash(joined)+".mjs",
+		filepath.ToSlash(joined)+".cjs",
+		filepath.ToSlash(joined)+".jsx",
+		filepath.ToSlash(joined)+".ts",
+		filepath.ToSlash(joined)+".mts",
+		filepath.ToSlash(joined)+".cts",
+		filepath.ToSlash(joined)+".tsx",
 		filepath.ToSlash(filepath.Join(joined, "index.js")),
 		filepath.ToSlash(filepath.Join(joined, "index.ts")),
-	}
+	)
 	for _, candidate := range candidates {
 		if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(candidate))); err == nil {
 			if _, ok := nodeSupportedExts[filepath.Ext(candidate)]; ok {

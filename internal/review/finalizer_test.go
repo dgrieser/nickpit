@@ -1526,3 +1526,19 @@ func TestFinalizePreservesInputIDWhenLLMDropsIt(t *testing.T) {
 		t.Fatalf("id = %q, want %q", got, findingID)
 	}
 }
+
+// TestPriorityFloorNonFindingCappedAtNonBlocking pins the demote target across
+// every threshold: a refuted non-finding lands on the threshold at p2/p3
+// (current behavior preserved) but is capped at P2 for p0/p1, where the raw
+// threshold rank would be a blocking priority.
+func TestPriorityFloorNonFindingCappedAtNonBlocking(t *testing.T) {
+	nonFinding := model.Finding{
+		Priority:     intPtr(0),
+		Verification: &model.FindingVerification{Verdict: model.VerdictRefuted, Priority: 0, ConfidenceScore: 0, Remarks: "no issue: code is sound"},
+	}
+	for threshold, want := range map[string]int{"p0": 2, "p1": 2, "p2": 2, "p3": 3} {
+		if got := priorityFloor(nonFinding, model.PriorityThresholdRank(threshold)); got != want {
+			t.Fatalf("threshold %s: non-finding floor = %d, want %d", threshold, got, want)
+		}
+	}
+}

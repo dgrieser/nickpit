@@ -328,16 +328,26 @@ func (c *ServeConfig) Validate() error {
 	if len(c.Groups) == 0 {
 		errs = append(errs, errors.New("at least one group must be configured"))
 	}
-	seen := make(map[string]bool, len(c.Groups))
+	// Duplicates are detected on the slash-trimmed form because the daemon
+	// normalizes paths the same way (serve.NewGroupSet): "platform" and
+	// "platform/" are the same group, and letting both pass would silently
+	// shadow one of them at match time.
+	seen := make(map[string]string, len(c.Groups))
 	for i, group := range c.Groups {
-		if group.Path == "" {
+		path := strings.Trim(group.Path, "/")
+		if path == "" {
 			errs = append(errs, fmt.Errorf("groups[%d]: path must not be empty", i))
 			continue
 		}
-		if seen[group.Path] {
-			errs = append(errs, fmt.Errorf("groups[%d]: duplicate path %q", i, group.Path))
+		if first, dup := seen[path]; dup {
+			if first == group.Path {
+				errs = append(errs, fmt.Errorf("groups[%d]: duplicate path %q", i, group.Path))
+			} else {
+				errs = append(errs, fmt.Errorf("groups[%d]: duplicate path %q (same group as %q after trimming '/')", i, group.Path, first))
+			}
+		} else {
+			seen[path] = group.Path
 		}
-		seen[group.Path] = true
 		if group.Token == "" {
 			errs = append(errs, fmt.Errorf("groups[%d] (%s): token must not be empty", i, group.Path))
 		}

@@ -59,6 +59,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("top_k", optionalIntNode(profile.TopK)),
 		yamlEntry("presence_penalty", optionalFloatNode(profile.PresencePenalty)),
 		yamlEntry("extra_body", mapNode(profile.ExtraBody)),
+		yamlEntry("disable_json_response_format", yamlBool(profile.DisableJSONResponseFormat)),
 		yamlEntry("include_paths", stringSliceNode(profile.IncludePaths)),
 		yamlEntry("exclude_paths", stringSliceNode(profile.ExcludePaths)),
 		yamlEntry("include_content", stringSliceNode(profile.IncludeContent)),
@@ -80,6 +81,7 @@ func exampleProfileNode(profile Profile) *yaml.Node {
 		yamlEntry("disable_suggestions", yamlBool(profile.DisableSuggestions)),
 		yamlEntry("disable_workflow_time_budget", yamlBool(profile.DisableWorkflowTimeBudget)),
 		yamlEntry("reasoning_effort", yamlScalar(profile.ReasoningEffort)),
+		yamlEntry("workdir", yamlScalar(profile.Workdir)),
 		yamlEntry("github_token", yamlScalar(profile.GitHubToken)),
 		yamlEntry("gitlab_token", yamlScalar(profile.GitLabToken)),
 		yamlEntry("gitlab_base_url", yamlScalar(profile.GitLabBaseURL)),
@@ -115,6 +117,9 @@ func supportedModelsNode(models []ModelCapabilities) *yaml.Node {
 		}
 		if model.JSONSchema != nil {
 			entries = append(entries, yamlEntry("json_schema", yamlBool(*model.JSONSchema)))
+		}
+		if model.ToolsJSONSchema != nil {
+			entries = append(entries, yamlEntry("tools_json_schema", yamlBool(*model.ToolsJSONSchema)))
 		}
 		entries = append(entries, yamlEntry("reasoning", yamlMapping(
 			yamlEntry("traces", yamlBool(model.Reasoning.Traces)),

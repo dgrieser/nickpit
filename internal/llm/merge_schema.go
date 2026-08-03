@@ -48,12 +48,6 @@ var MergeSchema = mustMarshalCleanSchema(mergeSchemaDefinition)
 
 var MergeSchemaWithoutSuggestions = mustMarshalCleanSchema(mergeWithoutSuggestionsSchemaDefinition)
 
-// MergeSchemaWithConstraints returns the merge schema narrowed by the given
-// constraints (priority bounds + allowed overall_correctness values).
-func MergeSchemaWithConstraints(c ResponseConstraints) json.RawMessage {
-	return MergeSchemaWithConstraintsFor(c, false)
-}
-
 // MergeSchemaWithConstraintsFor returns the merge schema narrowed by the given
 // constraints (priority bounds + allowed overall_correctness values).
 func MergeSchemaWithConstraintsFor(c ResponseConstraints, disableSuggestions bool) json.RawMessage {

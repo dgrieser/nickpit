@@ -358,6 +358,10 @@ func (r ignoreRule) matchesSingle(rel string) bool {
 		return false
 	}
 	if r.matchBase {
+		// A bare "**" (or "**/", "/**") pattern matches everything.
+		if r.patternParts[0].globstar {
+			return true
+		}
 		if r.anchored {
 			return matchCompiledComponent(r.patternParts[0], pathBase(rel)) && pathDir(rel) == "."
 		}
@@ -486,8 +490,17 @@ func compileComponentPattern(pattern string) (*regexp.Regexp, error) {
 				regex.WriteString(`\[`)
 				continue
 			}
-			class := pattern[i : end+1]
-			regex.WriteString(class)
+			// Translate the fnmatch character class to Go regex syntax:
+			// git accepts both "[!...]" and "[^...]" as negation, while Go
+			// regex only understands "^".
+			inner := pattern[i+1 : end]
+			regex.WriteByte('[')
+			if strings.HasPrefix(inner, "!") || strings.HasPrefix(inner, "^") {
+				regex.WriteByte('^')
+				inner = inner[1:]
+			}
+			regex.WriteString(inner)
+			regex.WriteByte(']')
 			i = end
 		case '.', '+', '^', '$', '{', '}', '(', ')', '|', '\\':
 			regex.WriteByte('\\')

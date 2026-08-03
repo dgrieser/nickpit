@@ -102,6 +102,9 @@ func BuildGraph(ctx context.Context, repoRoot string) (*Graph, error) {
 			packages.NeedTypes |
 			packages.NeedTypesInfo |
 			packages.NeedModule,
+		// Include _test.go files so symbols defined in tests resolve in the
+		// call graph, matching FindSymbols, which parses them.
+		Tests: true,
 	}
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
@@ -133,6 +136,14 @@ func BuildGraph(ctx context.Context, repoRoot string) (*Graph, error) {
 				}
 				node, id, ok := buildNode(repoRoot, pkg.Fset, fn, obj)
 				if !ok {
+					return false
+				}
+				// With Tests enabled, packages.Load returns the base package
+				// and its test variant (pkg and "pkg [pkg.test]"), which both
+				// contain the non-test files. Node IDs are position-based, so
+				// skipping already-registered IDs keeps the name indexes free
+				// of duplicates.
+				if _, exists := graph.nodes[id]; exists {
 					return false
 				}
 				graph.nodes[id] = node
@@ -352,6 +363,12 @@ func buildNode(repoRoot string, fset *token.FileSet, fn *ast.FuncDecl, obj *type
 	}
 	rel, err := filepath.Rel(repoRoot, start.Filename)
 	if err != nil {
+		return Node{}, "", false
+	}
+	// Loading with Tests also yields generated test-main packages whose
+	// source lives outside the repository (in the build cache); keep the
+	// graph limited to repo files.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return Node{}, "", false
 	}
 	node := Node{

@@ -116,10 +116,6 @@ var FinalizeSchema = mustMarshalCleanSchema(finalizeSchemaDefinition)
 
 var FinalizeSchemaWithoutSuggestions = mustMarshalCleanSchema(finalizeWithoutSuggestionsSchemaDefinition)
 
-func FinalizeExamplePromptSnippet() string {
-	return FinalizeExamplePromptSnippetFor(false)
-}
-
 func FinalizeExamplePromptSnippetFor(disableSuggestions bool) string {
 	if disableSuggestions {
 		return mustIndentJSON(mustMarshalJSON(exampleFromSchema(finalizeWithoutSuggestionsSchemaDefinition)))

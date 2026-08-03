@@ -54,7 +54,7 @@ func (w *pyWalker) walkChildren(n *sitter.Node, class string, cur *Symbol) {
 func (w *pyWalker) walk(n *sitter.Node, class string, cur *Symbol) {
 	switch w.bt.NodeType(n) {
 	case "class_definition":
-		w.class(n, cur, n)
+		w.class(n, cur)
 	case "decorated_definition":
 		def := field(w.bt, n, "definition")
 		if def == nil {
@@ -65,7 +65,7 @@ func (w *pyWalker) walk(n *sitter.Node, class string, cur *Symbol) {
 		case "function_definition":
 			w.function(def, n, class, cur)
 		case "class_definition":
-			w.class(def, cur, n)
+			w.class(def, cur)
 		default:
 			w.walkChildren(n, class, cur)
 		}
@@ -86,11 +86,8 @@ func (w *pyWalker) walk(n *sitter.Node, class string, cur *Symbol) {
 	}
 }
 
-// class indexes the direct methods of a class body; span is the node whose
-// range covers the whole definition (the decorated_definition for decorated
-// classes).
-func (w *pyWalker) class(n *sitter.Node, cur *Symbol, span *sitter.Node) {
-	_ = span
+// class indexes the direct methods of a class body.
+func (w *pyWalker) class(n *sitter.Node, cur *Symbol) {
 	name := w.text(field(w.bt, n, "name"))
 	body := field(w.bt, n, "body")
 	if body == nil {

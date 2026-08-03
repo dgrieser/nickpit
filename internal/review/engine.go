@@ -367,7 +367,16 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 				return partialResp, nil
 			}
 		}
-		if !errors.As(err, &invalidResp) || !outputRetriesRemaining(attempt, maxOutputRetries) {
+		if !errors.As(err, &invalidResp) {
+			return nil, err
+		}
+		if !outputRetriesRemaining(attempt, maxOutputRetries) {
+			// Retry budget exhausted: salvage a partial parsed response the same
+			// way the main agent loop does instead of discarding it with the error.
+			if invalidResp.PartialResponse != nil {
+				e.logf(ctx, "Invalid JSON response after retries exhausted; using partial parsed response: reason=%q missing=%v", invalidResp.Reason, invalidResp.MissingFields)
+				return invalidResp.PartialResponse, nil
+			}
 			return nil, err
 		}
 		if invalidResp.ReasoningEffort != "" {
@@ -377,6 +386,13 @@ func (e *Engine) reviewWithoutTools(ctx context.Context, llmReq *llm.ReviewReque
 		e.logProgress(logging.StageModel, logging.StateRetry, fmt.Sprintf("invalid JSON, attempt=%d", attempt+1))
 		if strings.TrimSpace(invalidResp.RawContent) != "" {
 			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: invalidResp.RawContent})
+		} else {
+			// Keep the history alternating for strict-role providers when the
+			// invalid response carried no appendable content — the duplicate-tool-
+			// call-limit path arrives here with a trailing user turn (the rewritten
+			// tool results), so skipping the assistant turn entirely would produce
+			// two consecutive user messages.
+			llmReq.Messages = append(llmReq.Messages, llm.Message{Role: "assistant", Content: "[invalid response]"})
 		}
 		feedback, err := e.renderJSONRetryFeedback(invalidResp, exampleSnippet)
 		if err != nil {
@@ -430,12 +446,10 @@ type agentResult struct {
 }
 
 type contextAgentResult struct {
-	run                model.AgentRun
-	reasoningEffort    string
-	contentMessages    []string
-	toolMessages       []llm.Message
-	toolCallHistory    []toolCallHistoryEntry
-	duplicateToolCalls int
+	run             model.AgentRun
+	reasoningEffort string
+	contentMessages []string
+	toolMessages    []llm.Message
 }
 
 type reviewVector struct {
@@ -937,7 +951,6 @@ func appendAgentRunWarnings(warnings []string, runs []model.AgentRun, contextErr
 
 type pairwiseMergeInput struct {
 	name     string
-	role     string
 	index    int
 	response *llm.ReviewResponse
 }
@@ -1374,7 +1387,6 @@ func pairwiseMergeInputs(vectorResults []agentResult) []pairwiseMergeInput {
 		}
 		inputs = append(inputs, pairwiseMergeInput{
 			name:     result.run.Name,
-			role:     result.run.Role,
 			index:    i,
 			response: result.resp,
 		})
@@ -1898,12 +1910,10 @@ func (e *Engine) runContextAgent(ctx context.Context, agent agentSpec, req model
 	// preserve accumulated tokens, tool calls, and partial content for
 	// telemetry / degraded-fallback flows.
 	return contextAgentResult{
-		run:                result.run,
-		reasoningEffort:    result.reasoningEffort,
-		contentMessages:    result.contentMessages,
-		toolMessages:       result.toolMessages,
-		toolCallHistory:    result.toolCallHistory,
-		duplicateToolCalls: result.duplicateToolCalls,
+		run:             result.run,
+		reasoningEffort: result.reasoningEffort,
+		contentMessages: result.contentMessages,
+		toolMessages:    result.toolMessages,
 	}, err
 }
 
@@ -2383,20 +2393,6 @@ func appendResponseContent(contentMessages []string, resp *llm.ReviewResponse) [
 		contentMessages = append(contentMessages, content)
 	}
 	return contentMessages
-}
-
-func messagesWithFinalResponse(messages []llm.Message, resp *llm.ReviewResponse) []llm.Message {
-	out := append([]llm.Message(nil), messages...)
-	if resp == nil || strings.TrimSpace(resp.RawResponse) == "" {
-		return out
-	}
-	if len(out) > 0 {
-		last := out[len(out)-1]
-		if last.Role == "assistant" && last.Content == resp.RawResponse {
-			return out
-		}
-	}
-	return append(out, llm.Message{Role: "assistant", Content: resp.RawResponse})
 }
 
 func contextAgentMarkdownMessages(contentMessages []string) []llm.Message {

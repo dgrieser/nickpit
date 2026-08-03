@@ -2,7 +2,6 @@ package retrieval
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -81,14 +80,6 @@ func callNodeLocation(path string, startLine, endLine int, source string) CodeLo
 		Language: detectLanguage(path),
 		Content:  source,
 	}
-}
-
-func (h *CallHierarchy) RenderJSON() string {
-	b, err := json.MarshalIndent(h, "", "  ")
-	if err != nil {
-		return h.Render()
-	}
-	return string(b)
 }
 
 func (h *CallHierarchy) Render() string {

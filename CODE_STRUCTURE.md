@@ -122,7 +122,6 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `internal/output/terminal.go`: Human terminal output.
 - `internal/output/json.go`: JSON output.
-- `internal/output/sarif.go`: Unused SARIF formatter stub; `FormatFindings` returns "not yet implemented".
 - `internal/output/badge.go`: Badge/status formatting helpers.
 - `internal/logging/logger.go`: Base logger, reasoning sections, JSON rendering, and raw output.
 - `internal/logging/progress.go`: Progress-line data model, formatting, coloring, and workflow labels.

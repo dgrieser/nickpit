@@ -9,6 +9,38 @@ import (
 	"testing"
 )
 
+// schemaContainsKey is a test helper: it reports whether key appears anywhere
+// (recursively) in the given JSON document. Shared by the schema tests in
+// this package.
+func schemaContainsKey(data []byte, key string) bool {
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return false
+	}
+	return containsMapKey(decoded, key)
+}
+
+func containsMapKey(v any, key string) bool {
+	switch typed := v.(type) {
+	case map[string]any:
+		if _, ok := typed[key]; ok {
+			return true
+		}
+		for _, value := range typed {
+			if containsMapKey(value, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, value := range typed {
+			if containsMapKey(value, key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestFindingsSchemaOmitsFollowUpRequests(t *testing.T) {
 	var schema map[string]any
 	if err := json.Unmarshal(FindingsSchema, &schema); err != nil {
@@ -298,7 +330,7 @@ func findingProperties(t *testing.T, schema map[string]any) map[string]any {
 }
 
 func TestFinalizeExamplePromptSnippetIncludesFinalization(t *testing.T) {
-	snippet := FinalizeExamplePromptSnippet()
+	snippet := FinalizeExamplePromptSnippetFor(false)
 	for _, required := range []string{`"id"`, `"verification"`, `"finalization"`, `"title"`, `"body"`, `"confidence_score"`, `"remarks"`, `"suggestions"`} {
 		if !strings.Contains(snippet, required) {
 			t.Fatalf("snippet missing %q: %s", required, snippet)

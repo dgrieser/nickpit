@@ -133,7 +133,7 @@ func (w *jsWalker) topStmt(stmt js_ast.Stmt) {
 	case *js_ast.SFunction:
 		w.declareFn(nameOrEmpty(w, s.Fn.Name), stmt.Loc, s.Fn, s.IsExport)
 	case *js_ast.SClass:
-		w.declareClass(s.Class, stmt.Loc, s.IsExport)
+		w.declareClass(s.Class)
 	case *js_ast.SLocal:
 		w.local(s)
 	case *js_ast.SImport:
@@ -186,10 +186,8 @@ func (w *jsWalker) declareFn(name string, loc logger.Loc, fn js_ast.Fn, exported
 
 // declareClass registers method symbols for a class declaration. The class
 // itself is not a call-graph node.
-func (w *jsWalker) declareClass(class js_ast.Class, loc logger.Loc, exported bool) {
+func (w *jsWalker) declareClass(class js_ast.Class) {
 	className := nameOrEmpty(w, class.Name)
-	_ = loc
-	_ = exported
 	for _, property := range class.Properties {
 		w.classProperty(className, property)
 	}
@@ -367,7 +365,7 @@ func (w *jsWalker) exportDefault(s *js_ast.SExportDefault) {
 			w.ir.Exports = append(w.ir.Exports, Export{ExportedName: "default", LocalName: name})
 		}
 	case *js_ast.SClass:
-		w.declareClass(value.Class, s.Value.Loc, true)
+		w.declareClass(value.Class)
 	case *js_ast.SExpr:
 		w.walkExpr(value.Value)
 	}
@@ -463,7 +461,7 @@ func (w *jsWalker) walkStmt(stmt js_ast.Stmt) {
 	case *js_ast.SFunction:
 		w.declareFn(nameOrEmpty(w, s.Fn.Name), stmt.Loc, s.Fn, false)
 	case *js_ast.SClass:
-		w.declareClass(s.Class, stmt.Loc, false)
+		w.declareClass(s.Class)
 	case *js_ast.SReturn:
 		w.walkExpr(s.ValueOrNil)
 	case *js_ast.SThrow:
@@ -553,7 +551,7 @@ func (w *jsWalker) walkExpr(expr js_ast.Expr) {
 	case *js_ast.EFunction:
 		w.walkFnParts(e.Fn.Args, e.Fn.Body)
 	case *js_ast.EClass:
-		w.declareClass(e.Class, expr.Loc, false)
+		w.declareClass(e.Class)
 	case *js_ast.EBinary:
 		w.walkExpr(e.Left)
 		w.walkExpr(e.Right)

@@ -420,12 +420,21 @@ func cloneValue(value any) any {
 
 func Load(path string, overrides Overrides) (*Config, Profile, error) {
 	cfg := DefaultConfig()
-	if path == "" {
+	// An empty path means the implicit default lookup: a missing
+	// DefaultConfigPath is fine and the run proceeds on built-in defaults. A
+	// non-empty path was requested explicitly (--config / NICKPIT_CONFIG), so
+	// a missing file must fail loudly instead of silently running on defaults.
+	explicit := path != ""
+	if !explicit {
 		path = DefaultConfigPath
 	}
 
-	if _, err := loadFile(cfg, path); err != nil {
+	found, err := loadFile(cfg, path)
+	if err != nil {
 		return nil, Profile{}, err
+	}
+	if explicit && !found {
+		return nil, Profile{}, fmt.Errorf("config: file not found: %s", path)
 	}
 
 	activeProfile := cfg.ActiveProfile

@@ -41,8 +41,6 @@ var rustSupportedExts = map[string]struct{}{
 	".rs": {},
 }
 
-func (rustBackend) language() string { return "rust" }
-
 func (rustBackend) supportsExt(ext string) bool { return ext == ".rs" }
 
 func (rustBackend) findSymbols(_ context.Context, repoRoot, name string, scope lookupScope) ([]*SymbolInfo, error) {
@@ -160,7 +158,7 @@ func parseRustFiles(repoRoot string, files []string) (map[string]*rustFile, erro
 				source:    irSymbol.Source,
 				calls:     irSymbol.Calls,
 				dynamic:   irSymbol.Dynamic,
-				hasError:  irSymbol.HasError,
+				hasError:  irSymbol.HasError || ir.HasError,
 				nested:    irSymbol.Nested,
 			}
 			module.symbols[symbol.id] = symbol

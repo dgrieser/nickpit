@@ -49,8 +49,6 @@ type pythonFile struct {
 
 var pythonSupportedExts = map[string]struct{}{".py": {}}
 
-func (pythonBackend) language() string { return "python" }
-
 func (pythonBackend) supportsExt(ext string) bool { return ext == ".py" }
 
 func (pythonBackend) findSymbols(_ context.Context, repoRoot, name string, scope lookupScope) ([]*SymbolInfo, error) {
@@ -179,7 +177,7 @@ func parsePythonFiles(repoRoot string, files []string) (map[string]*pythonFile, 
 				className: irSymbol.Container,
 				calls:     irSymbol.Calls,
 				dynamic:   irSymbol.Dynamic,
-				hasError:  irSymbol.HasError,
+				hasError:  irSymbol.HasError || ir.HasError,
 				nested:    irSymbol.Nested,
 			}
 			if symbol.className != "" {

@@ -341,17 +341,6 @@ func TestNewOpenAIClientDisablesHTTPClientTimeoutForStreaming(t *testing.T) {
 	}
 }
 
-func TestNewOpenAIClientRaisesEmptyMessageLimitForStreaming(t *testing.T) {
-	client := NewOpenAIClient("https://example.com", "token", "model")
-	config := openai.DefaultConfig("token")
-	if client.emptyMessagesLimit != 100000 {
-		t.Fatalf("empty message limit = %d", client.emptyMessagesLimit)
-	}
-	if config.EmptyMessagesLimit >= 100000 {
-		t.Fatalf("default empty message limit unexpectedly high: %d", config.EmptyMessagesLimit)
-	}
-}
-
 func TestClientReviewRetries429WithProgressLoggingUntilSuccess(t *testing.T) {
 	var attempts int
 
@@ -920,12 +909,12 @@ func TestParseRateLimitResetTimeSupportsCommonLayouts(t *testing.T) {
 		"Rate limit exceeded. Try again at 2026-05-18T18:18:30.000000000Z.",
 		"Rate limit exceeded. Try again at Mon, 18 May 2026 18:18:30 GMT.",
 	} {
-		got, ok := parseRateLimitResetTime(message)
-		if !ok {
+		times := parseRateLimitResetTimes(message)
+		if len(times) == 0 {
 			t.Fatalf("failed to parse reset time from %q", message)
 		}
-		if !got.Equal(want) {
-			t.Fatalf("reset time = %v, want %v for %q", got, want, message)
+		if !times[0].Equal(want) {
+			t.Fatalf("reset time = %v, want %v for %q", times[0], want, message)
 		}
 	}
 }
@@ -991,8 +980,11 @@ func TestClientReviewUsesJSONSchemaWhenProvided(t *testing.T) {
 	if jsonSchema["name"] != "review_response" {
 		t.Fatalf("json_schema.name = %v", jsonSchema["name"])
 	}
-	if jsonSchema["strict"] != true {
-		t.Fatalf("json_schema.strict = %v", jsonSchema["strict"])
+	// Strict must not be claimed: the schemas use optional properties, which
+	// OpenAI strict mode forbids, so strict-validating endpoints would reject
+	// every request.
+	if jsonSchema["strict"] == true {
+		t.Fatalf("json_schema.strict = %v, want false or absent", jsonSchema["strict"])
 	}
 }
 
@@ -4185,6 +4177,77 @@ func TestStripPriorityPrefix(t *testing.T) {
 	}
 }
 
+// parseReviewResponse is a test-only convenience wrapper around the
+// production entry point parseReviewResponseWithIDBackfill, discarding the
+// overwritten-ID count the parse tests do not care about.
+func parseReviewResponse(content string, kind SchemaKind, constraints ResponseConstraints) (*ReviewResponse, error) {
+	resp, _, err := parseReviewResponseWithIDBackfill(content, kind, constraints)
+	return resp, err
+}
+
+func TestParseReviewResponseNullFindingsNotReportedMissing(t *testing.T) {
+	// {"findings": null} carries the findings key; it must not be reported as
+	// "findings" missing (mergedRawReviewBlocks strips the key from its raw
+	// top-level view, so presence is tracked separately).
+	content := `{"findings":null,"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	if err != nil {
+		t.Fatalf("parseReviewResponse: %v", err)
+	}
+	if len(resp.Findings) != 0 {
+		t.Fatalf("findings = %#v, want empty", resp.Findings)
+	}
+}
+
+func TestParseReviewResponseOmittedFindingsReportedMissing(t *testing.T) {
+	content := `{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	if !slices.Contains(invalid.MissingFields, "findings") {
+		t.Fatalf("missing fields = %v, want to contain findings", invalid.MissingFields)
+	}
+}
+
+// A findings value that is neither an array nor null lost that block's
+// findings during lenient merging; it must trigger a retry (keeping the rest
+// of the extraction as the partial response) instead of silently passing as
+// an empty findings list.
+func TestParseReviewResponseMalformedFindingsValueReportsInvalid(t *testing.T) {
+	content := `{"findings":"invalid"}
+{"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	if !slices.Contains(invalid.MissingFields, "findings (must be an array)") {
+		t.Fatalf("missing fields = %v, want to contain findings (must be an array)", invalid.MissingFields)
+	}
+	// The extracted remainder is returned alongside the error; the client
+	// stamps it as the PartialResponse for the retry-exhausted salvage path.
+	if resp == nil || resp.OverallCorrectness != "patch is correct" {
+		t.Fatalf("partial = %+v, want extracted overall fields kept", resp)
+	}
+}
+
+// A malformed findings value in one block is not excused by a valid array in
+// another: content was lost, so the model is asked again.
+func TestParseReviewResponseMalformedFindingsBesideValidArrayStillInvalid(t *testing.T) {
+	content := `{"findings":"invalid"}
+{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
+	_, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
+	var invalid *InvalidResponseError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidResponseError", err)
+	}
+	if !slices.Contains(invalid.MissingFields, "findings (must be an array)") {
+		t.Fatalf("missing fields = %v, want to contain findings (must be an array)", invalid.MissingFields)
+	}
+}
+
 func TestParseReviewResponseStripsLegacyPriorityPrefixes(t *testing.T) {
 	content := `{"findings":[{"title":"[P1] Fix nil pointer","body":"b","confidence_score":0.5,"priority":1,"code_location":{"file_path":"f.go","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct","overall_explanation":"e","overall_confidence_score":0.5}`
 	resp, err := parseReviewResponse(content, SchemaKindReview, ResponseConstraints{})
@@ -5043,5 +5106,150 @@ func TestRequestPayloadForLogRedactsSensitiveExtraBodyValues(t *testing.T) {
 	}
 	if extraBody["headers"].(map[string]any)["x-api-key"] != "nested-secret" {
 		t.Fatalf("nested extra body mutated: %v", extraBody["headers"])
+	}
+}
+
+func TestMergeToolCallDeltas(t *testing.T) {
+	idx := func(i int) *int { return &i }
+	delta := func(index *int, id, name, arguments string) openai.ToolCall {
+		return openai.ToolCall{
+			Index:    index,
+			ID:       id,
+			Function: openai.FunctionCall{Name: name, Arguments: arguments},
+		}
+	}
+	tests := []struct {
+		name   string
+		deltas []openai.ToolCall
+		want   []ToolCall
+	}{
+		{
+			name: "indexed deltas keep positional merge",
+			deltas: []openai.ToolCall{
+				delta(idx(0), "call_1", "inspect_file", `{"path":"a`),
+				delta(idx(1), "call_2", "list_dir", `{"dir":"x"}`),
+				delta(idx(0), "", "", `.go"}`),
+			},
+			want: []ToolCall{
+				{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+				{ID: "call_2", Name: "list_dir", Arguments: `{"dir":"x"}`},
+			},
+		},
+		{
+			name: "no-index complete parallel calls stay separate",
+			deltas: []openai.ToolCall{
+				delta(nil, "call_1", "inspect_file", `{"path":"a.go"}`),
+				delta(nil, "call_2", "inspect_file", `{"path":"b.go"}`),
+				delta(nil, "call_3", "list_dir", `{"dir":"x"}`),
+			},
+			want: []ToolCall{
+				{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+				{ID: "call_2", Name: "inspect_file", Arguments: `{"path":"b.go"}`},
+				{ID: "call_3", Name: "list_dir", Arguments: `{"dir":"x"}`},
+			},
+		},
+		{
+			name: "no-index continuation chunks extend the latest call",
+			deltas: []openai.ToolCall{
+				delta(nil, "call_1", "inspect_file", `{"path":"ex`),
+				delta(nil, "", "", `tra.go"}`),
+				delta(nil, "call_2", "list_dir", `{"dir":"s`),
+				delta(nil, "", "", `rc"}`),
+			},
+			want: []ToolCall{
+				{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"extra.go"}`},
+				{ID: "call_2", Name: "list_dir", Arguments: `{"dir":"src"}`},
+			},
+		},
+		{
+			name: "no-index repeated same id continues the same call",
+			deltas: []openai.ToolCall{
+				delta(nil, "call_1", "inspect_file", `{"path":"a`),
+				delta(nil, "call_1", "", `.go"}`),
+			},
+			want: []ToolCall{
+				{ID: "call_1", Name: "inspect_file", Arguments: `{"path":"a.go"}`},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var builders []*toolCallBuilder
+			for _, d := range tc.deltas {
+				mergeToolCallDeltas(&builders, []openai.ToolCall{d})
+			}
+			got := finalizeToolCalls(builders)
+			if len(got) != len(tc.want) {
+				t.Fatalf("tool calls = %#v, want %#v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("tool call %d = %#v, want %#v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestClientReviewAbortsAndRetriesStalledStream(t *testing.T) {
+	var attempts int
+	release := make(chan struct{})
+	defer close(release)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		// Send response headers and a single chunk, then stall forever: the
+		// idle-stream watchdog, not any header timeout, must abort the stream.
+		writeSSEChunk(t, w, map[string]any{
+			"id":      "chunk-1",
+			"object":  "chat.completion.chunk",
+			"created": 1,
+			"model":   "model",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"delta": map[string]any{"content": `{"findings":`},
+				},
+			},
+		})
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "token", "model")
+	client.idleStreamTimeout = 50 * time.Millisecond
+	client.retrier.MaxRetries = 1
+	client.retrier.InitialBackoff = time.Millisecond
+	client.retrier.MaxBackoff = time.Millisecond
+
+	start := time.Now()
+	_, err := client.Review(context.Background(), &ReviewRequest{
+		SystemPrompt: "system",
+		UserContent:  "user",
+	})
+	if err == nil {
+		t.Fatal("expected error for stalled stream")
+	}
+	if !strings.Contains(err.Error(), "no data received") {
+		t.Fatalf("err = %v, want idle-stream watchdog error", err)
+	}
+	// The stall is classified as a retryable transport error, so the request
+	// must have been attempted again before surfacing.
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2 (stalled stream must be retried)", attempts)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("review took %s, watchdog did not fire", elapsed)
+	}
+
+	var readErr *streamReadError
+	if !errors.As(err, &readErr) {
+		t.Fatalf("err = %T, want *streamReadError", err)
+	}
+	if !retryableStreamReadError(readErr) {
+		t.Fatalf("stalled-stream error must classify as retryable: %v", err)
 	}
 }

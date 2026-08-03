@@ -529,17 +529,28 @@ func isUnverifiedVerification(v *model.FindingVerification) bool {
 	return v != nil && v.Verdict == model.VerdictUnverified
 }
 
+// nonFindingPriorityFloor is the most critical (lowest) rank a verifier-refuted
+// non-finding may ever be demoted to: P2, the highest non-blocking priority. At
+// --priority-threshold=p2/p3 the threshold itself is already >= P2, so the
+// non-finding lands exactly on the threshold as before. At p0/p1 the raw
+// threshold rank would be a blocking rank (0 or 1) and would let the demoted
+// non-finding hard-constrain the verdict schema to "patch is incorrect"
+// (verdictConstraintsFor / applyVerdictFallback) — inverting the guarantee that
+// a non-finding can never force a blocking verdict.
+const nonFindingPriorityFloor = 2
+
 // priorityFloor computes a finding's priority floor: the most-critical (lowest) integer it is
 // allowed to take. A non-finding (a verifier-refuted affirmation carrying the "no issue"
-// sentinel; see isNonFindingVerification) is demoted to thresholdRank — the lowest currently
-// allowed priority — so it never renders blocking, ignoring the reviewer's (often template)
-// priority. A missing priority also defaults to thresholdRank rather than the hardcoded floor
-// of model.PriorityRank. Otherwise the floor is the most critical of the reviewer and verifier
+// sentinel; see isNonFindingVerification) is demoted to the lowest currently allowed priority,
+// but never below nonFindingPriorityFloor (P2) — so it never renders or constrains as blocking,
+// ignoring the reviewer's (often template) priority, at every threshold including p0/p1. A
+// missing priority also defaults to thresholdRank rather than the hardcoded floor of
+// model.PriorityRank. Otherwise the floor is the most critical of the reviewer and verifier
 // priorities, as before — so a genuine refutation kept for review keeps its severity. An
 // unverified verifier result is non-authoritative and cannot change priority.
 func priorityFloor(f model.Finding, thresholdRank int) int {
 	if isNonFindingVerification(f.Verification) {
-		return thresholdRank
+		return max(thresholdRank, nonFindingPriorityFloor)
 	}
 	floor := priorityRankOrThreshold(f.Priority, thresholdRank)
 	if f.Verification != nil && !isUnverifiedVerification(f.Verification) && f.Verification.Priority < floor {

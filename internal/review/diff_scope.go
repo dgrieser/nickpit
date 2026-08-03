@@ -104,14 +104,11 @@ func splitDiffHunkSides(content string) (oldContent, newContent string, oldCount
 	return strings.Join(oldLines, "\n"), strings.Join(newLines, "\n"), len(oldLines), len(newLines)
 }
 
-// codeLocationOverlapsDiff reports whether any line in loc overlaps any
-// old-side or new-side line represented by the matching file's diff hunks.
-// Ranges are intentionally accepted as-is when only part overlaps or when they
-// span gaps between hunks.
-func codeLocationOverlapsDiff(loc model.CodeLocation, hunks []model.DiffHunk) bool {
-	return codeLocationOverlapsAllowed(loc, allowedDiffCodeLocations(hunks))
-}
-
+// codeLocationOverlapsAllowed reports whether any line in loc overlaps any of
+// the allowed code locations (for diff scoping: the old-side or new-side line
+// ranges of the diff hunks, see allowedDiffCodeLocations). Ranges are
+// intentionally accepted as-is when only part overlaps or when they span gaps
+// between hunks.
 func codeLocationOverlapsAllowed(loc model.CodeLocation, allowed []model.CodeLocation) bool {
 	path := normalizeReviewPath(loc.FilePath)
 	start := loc.LineRange.Start

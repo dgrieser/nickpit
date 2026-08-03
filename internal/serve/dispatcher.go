@@ -63,13 +63,18 @@ type WorkerConfig struct {
 // Dispatcher owns the coalescing queue and the worker pool. All mutable state
 // sits behind one mutex; the daemon is concurrent by construction.
 type Dispatcher struct {
-	mu      sync.Mutex
-	states  map[jobKey]*jobState
-	queue   chan jobKey
-	recent  *shaLRU
-	closed  bool
-	running int
-	dropped int
+	mu     sync.Mutex
+	states map[jobKey]*jobState
+	queue  chan jobKey
+	// overflow parks pending re-run keys when the queue channel is full at
+	// finish time. Those events were already acknowledged with a 2xx, so they
+	// must not be dropped; take moves them into freed queue slots. Only
+	// re-runs land here — new events still get backpressure via Enqueue.
+	overflow []jobKey
+	recent   *shaLRU
+	closed   bool
+	running  int
+	dropped  int
 
 	runner ReviewRunner
 	topics *topicCache
@@ -98,22 +103,26 @@ func NewDispatcher(runner ReviewRunner, lookup TopicLookup, cfg WorkerConfig, lo
 	}
 }
 
-// Enqueue accepts an event from the webhook handler. Never blocks: when the
-// queue is full the event is dropped and counted, keeping the handler's
-// fast-ack guarantee.
-func (d *Dispatcher) Enqueue(event Event) {
+// Enqueue accepts an event from the webhook handler. Never blocks, keeping the
+// handler's fast-ack guarantee. It reports whether the event was accepted:
+// queued, coalesced onto an existing job, or deliberately dropped as an
+// already-reviewed duplicate all count as accepted. False means the event was
+// LOST — the dispatcher is closed (shutdown) or the queue is full — and the
+// webhook must be answered with a non-2xx status so GitLab redelivers it.
+func (d *Dispatcher) Enqueue(event Event) bool {
 	key := jobKey{ProjectID: event.ProjectID, IID: event.IID}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.closed {
-		return
+		return false
 	}
 	// Duplicate auto-trigger for an already-reviewed head (GitLab webhook
 	// retries): drop before it occupies a queue slot. Manual triggers always
-	// pass — the user asked.
+	// pass — the user asked. The drop is intentional, so it counts as
+	// accepted: a redelivery would only be dropped again.
 	if event.Kind == TriggerAuto && event.HeadSHA != "" && d.recent.Contains(shaKey(event.ProjectID, event.IID, event.HeadSHA)) {
 		d.log.Debug("dropping already-reviewed head", "project", event.ProjectPath, "iid", event.IID, "sha", event.HeadSHA)
-		return
+		return true
 	}
 	if state, ok := d.states[key]; ok {
 		switch state.status {
@@ -126,14 +135,16 @@ func (d *Dispatcher) Enqueue(event Event) {
 		default:
 			state.latest = mergeEvents(state.latest, event)
 		}
-		return
+		return true
 	}
 	select {
 	case d.queue <- key:
 		d.states[key] = &jobState{status: stateQueued, latest: event}
+		return true
 	default:
 		d.dropped++
 		d.log.Error("job queue full, dropping event", "project", event.ProjectPath, "iid", event.IID, "dropped_total", d.dropped)
+		return false
 	}
 }
 
@@ -169,8 +180,8 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 				case key := <-d.queue:
 					// The select above picks randomly when both cases are
 					// ready; don't start a job picked after cancellation
-					// (Shutdown may not have marked the dispatcher closed
-					// yet — the HTTP drain runs first).
+					// (CloseIntake may not have run yet if the daemon is
+					// stopping because the listener failed).
 					if ctx.Err() != nil {
 						return
 					}
@@ -186,12 +197,21 @@ func (d *Dispatcher) Start(ctx context.Context, workers int) {
 	}
 }
 
-// Shutdown waits for running reviews up to grace, then cancels their context
-// (children receive SIGTERM). Call after the Start context is cancelled.
-func (d *Dispatcher) Shutdown(grace time.Duration) {
+// CloseIntake marks the dispatcher closed so Enqueue rejects every further
+// event. Call it before draining in-flight HTTP handlers: the workers stop
+// with the intake context, so an event accepted by a still-draining handler
+// after that point would be acknowledged with a 2xx and never processed.
+func (d *Dispatcher) CloseIntake() {
 	d.mu.Lock()
 	d.closed = true
 	d.mu.Unlock()
+}
+
+// Shutdown waits for running reviews up to grace, then cancels their context
+// (children receive SIGTERM). Call after the Start context is cancelled;
+// idempotent with an earlier CloseIntake.
+func (d *Dispatcher) Shutdown(grace time.Duration) {
+	d.CloseIntake()
 
 	done := make(chan struct{})
 	go func() {
@@ -241,6 +261,9 @@ func (d *Dispatcher) Stats() (queued, running int) {
 func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// The receive that delivered key freed a queue slot; move parked re-run
+	// keys into freed slots so the overflow drains as workers cycle.
+	d.drainOverflowLocked()
 	// Once shutdown began, no new review may start: only already-running
 	// reviews get the grace period. The worker loop's cancellation checks
 	// alone can lose the select race against a non-empty queue.
@@ -259,7 +282,12 @@ func (d *Dispatcher) take(key jobKey) (Event, context.Context, bool) {
 	return state.latest, ctx, true
 }
 
-// finish completes a job; a pending event received mid-run re-queues the MR.
+// finish completes a job. A pending event received mid-run re-queues the MR
+// at the back of the queue — behind other waiting MRs, so a busy MR cannot
+// monopolize a worker. The re-run was already acknowledged with a 2xx at
+// enqueue time, so a full queue must not drop it: it parks in the overflow
+// and take moves it into the next freed slot. Only shutdown loses it — the
+// event cannot run then, and that loss is logged.
 func (d *Dispatcher) finish(key jobKey) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -273,7 +301,13 @@ func (d *Dispatcher) finish(key jobKey) {
 		state.cancel = nil
 	}
 	state.startedAt = time.Time{}
-	if state.pending == nil || d.closed {
+	if state.pending == nil {
+		delete(d.states, key)
+		return
+	}
+	if d.closed {
+		d.dropped++
+		d.log.Warn("shutdown: dropping pending re-run", "project", state.pending.ProjectPath, "iid", state.pending.IID)
 		delete(d.states, key)
 		return
 	}
@@ -283,9 +317,20 @@ func (d *Dispatcher) finish(key jobKey) {
 	select {
 	case d.queue <- key:
 	default:
-		d.dropped++
-		delete(d.states, key)
-		d.log.Error("job queue full, dropping pending re-run", "project", state.latest.ProjectPath, "iid", state.latest.IID)
+		d.overflow = append(d.overflow, key)
+	}
+}
+
+// drainOverflowLocked moves parked re-run keys into free queue slots,
+// preserving their order. Callers hold d.mu.
+func (d *Dispatcher) drainOverflowLocked() {
+	for len(d.overflow) > 0 {
+		select {
+		case d.queue <- d.overflow[0]:
+			d.overflow = d.overflow[1:]
+		default:
+			return
+		}
 	}
 }
 

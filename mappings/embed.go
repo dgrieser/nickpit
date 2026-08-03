@@ -3,7 +3,6 @@ package mappings
 import (
 	"embed"
 	"fmt"
-	"maps"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -362,17 +361,6 @@ func StyleGuideDetectorLanguages(path, content string) []string {
 		out = append(out, detector.language)
 	}
 	return out
-}
-
-func Context() StyleGuideMappings {
-	m := mustLoadMappings()
-	return StyleGuideMappings{
-		StyleGuides:                  cloneStyleGuideEntries(m.styleGuides.StyleGuides),
-		VersionSourcePriority:        cloneStringSliceMap(m.styleGuides.VersionSourcePriority),
-		StyleGuideOrder:              append([]string(nil), m.styleGuides.StyleGuideOrder...),
-		StyleGuideExtensionOverrides: cloneStringSliceMap(m.styleGuides.StyleGuideExtensionOverrides),
-		Detectors:                    cloneStyleGuideDetectors(m.styleGuides.Detectors),
-	}
 }
 
 func mustLoadMappings() loadedMappings {
@@ -965,56 +953,4 @@ func matchesAnyRegex(content string, expressions []*regexp.Regexp) bool {
 		}
 	}
 	return false
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	maps.Copy(out, in)
-	return out
-}
-
-func cloneStringSliceMap(in map[string][]string) map[string][]string {
-	out := make(map[string][]string, len(in))
-	for key, value := range in {
-		out[key] = append([]string(nil), value...)
-	}
-	return out
-}
-
-func cloneStyleGuideEntries(in map[string]StyleGuideEntry) map[string]StyleGuideEntry {
-	out := make(map[string]StyleGuideEntry, len(in))
-	for key, entry := range in {
-		out[key] = StyleGuideEntry{
-			Default:  entry.Default,
-			Versions: cloneStringMap(entry.Versions),
-		}
-	}
-	return out
-}
-
-func cloneStyleGuideDetectors(in []StyleGuideDetector) []StyleGuideDetector {
-	out := make([]StyleGuideDetector, len(in))
-	for i, detector := range in {
-		out[i] = StyleGuideDetector{
-			Language:   detector.Language,
-			ProbePaths: clonePatternSet(detector.ProbePaths),
-			MatchAny:   clonePatternSet(detector.MatchAny),
-			MatchAll:   clonePatternSet(detector.MatchAll),
-		}
-	}
-	return out
-}
-
-func clonePatternSet(in PatternSet) PatternSet {
-	return PatternSet{
-		Extensions:       append([]string(nil), in.Extensions...),
-		Basenames:        append([]string(nil), in.Basenames...),
-		BasenamePrefixes: append([]string(nil), in.BasenamePrefixes...),
-		BasenameSuffixes: append([]string(nil), in.BasenameSuffixes...),
-		PathSegments:     append([]string(nil), in.PathSegments...),
-		PathPrefixes:     append([]string(nil), in.PathPrefixes...),
-		PathContains:     append([]string(nil), in.PathContains...),
-		ContentContains:  append([]string(nil), in.ContentContains...),
-		ContentRegex:     append([]string(nil), in.ContentRegex...),
-	}
 }

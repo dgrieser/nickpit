@@ -94,16 +94,30 @@ func (c *Client) Delete(ctx context.Context, path string) error {
 	return err
 }
 
+// maxPaginatedPages bounds how many pages GetPaginated will fetch; a real MR
+// never comes close, so hitting it indicates a broken or malicious endpoint.
+const maxPaginatedPages = 1000
+
 func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 	target := reflect.ValueOf(out)
 	if target.Kind() != reflect.Pointer || target.Elem().Kind() != reflect.Slice {
 		return fmt.Errorf("gitlab: paginated output must be pointer to slice")
 	}
 	sliceValue := target.Elem()
-	nextPath := path
+	// visited defends against a server/proxy whose X-Next-Page values cycle
+	// (a page pointing at itself as well as longer A→B→A cycles), which would
+	// loop forever.
+	visited := make(map[int]struct{})
 	page := 1
-	for nextPath != "" {
-		body, resp, err := c.do(ctx, withPage(nextPath, page))
+	for {
+		if _, seen := visited[page]; seen {
+			return fmt.Errorf("gitlab: pagination cycle for %s at page %d", path, page)
+		}
+		if len(visited) >= maxPaginatedPages {
+			return fmt.Errorf("gitlab: pagination for %s exceeded %d pages", path, maxPaginatedPages)
+		}
+		visited[page] = struct{}{}
+		body, resp, err := c.do(ctx, withPage(path, page))
 		if err != nil {
 			return err
 		}
@@ -114,13 +128,11 @@ func (c *Client) GetPaginated(ctx context.Context, path string, out any) error {
 		sliceValue.Set(reflect.AppendSlice(sliceValue, tmp.Elem()))
 		next := resp.Header.Get("X-Next-Page")
 		if next == "" {
-			nextPath = ""
-			continue
+			break
 		}
 		nextPage, err := strconv.Atoi(next)
 		if err != nil || nextPage == 0 {
-			nextPath = ""
-			continue
+			break
 		}
 		page = nextPage
 	}

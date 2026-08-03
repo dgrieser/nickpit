@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -121,6 +122,72 @@ func TestFetchMRCheckout(t *testing.T) {
 	}
 	if spec.HeadSHA != "abc123" {
 		t.Fatalf("head sha = %q", spec.HeadSHA)
+	}
+}
+
+func TestGetPaginatedRejectsPageCycles(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		next := "2"
+		if r.URL.Query().Get("page") == "2" {
+			next = "1" // 1 -> 2 -> 1 cycle (page 1 carries no page param)
+		}
+		w.Header().Set("X-Next-Page", next)
+		_, _ = w.Write([]byte(`[1]`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	var out []int
+	err := client.GetPaginated(context.Background(), "/items", &out)
+	if err == nil || !strings.Contains(err.Error(), "pagination cycle") {
+		t.Fatalf("err = %v, want pagination cycle error", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2 (cycle detected when revisiting page 1)", requests)
+	}
+}
+
+func TestGetPaginatedRejectsSelfLoop(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		// X-Next-Page never advances past the first page.
+		w.Header().Set("X-Next-Page", "1")
+		_, _ = w.Write([]byte(`[1]`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	var out []int
+	err := client.GetPaginated(context.Background(), "/items", &out)
+	if err == nil || !strings.Contains(err.Error(), "pagination cycle") {
+		t.Fatalf("err = %v, want pagination cycle error", err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1 (self-loop detected before refetching)", requests)
+	}
+}
+
+func TestGetPaginatedEnforcesPageCap(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		// Always advance to a fresh page so only the cap can stop the loop.
+		w.Header().Set("X-Next-Page", strconv.Itoa(requests+1))
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	var out []int
+	err := client.GetPaginated(context.Background(), "/items", &out)
+	if err == nil {
+		t.Fatal("expected page-cap error for endless pagination")
+	}
+	if requests != maxPaginatedPages {
+		t.Fatalf("requests = %d, want %d", requests, maxPaginatedPages)
 	}
 }
 

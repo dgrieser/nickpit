@@ -50,7 +50,6 @@ type fileResponse struct {
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
 	Patch     string `json:"patch"`
-	Contents  string `json:"contents_url"`
 }
 
 type reviewResponse struct {
@@ -176,7 +175,6 @@ func (c *Client) FetchPR(ctx context.Context, repo string, number int, includeCo
 			Status:    status,
 			Additions: file.Additions,
 			Deletions: file.Deletions,
-			PatchURL:  file.Contents,
 		})
 	}
 	diff := framedDiff(files)

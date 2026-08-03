@@ -41,6 +41,21 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 			}
 			currentFile = parseDiffGitPath(line)
 			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
+		case strings.HasPrefix(line, "diff --cc "), strings.HasPrefix(line, "diff --combined "):
+			// Combined-diff ("merge state") file boundary. Without it the
+			// section's header lines (index, ---/+++ file headers) would bleed
+			// into the previous file's open hunk as content. The entry is
+			// tracked like the `diff --git` case; its `@@@` hunks are skipped
+			// below, so it survives without hunk or line-count data.
+			if currentHunk != nil {
+				hunks = append(hunks, *currentHunk)
+				currentHunk = nil
+			}
+			if currentEntry != nil {
+				files = append(files, *currentEntry)
+			}
+			currentFile = parseDiffCCPath(line)
+			currentEntry = &model.ChangedFile{Path: currentFile, Status: model.FileModified}
 		case strings.HasPrefix(line, "new file mode "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileAdded
@@ -52,7 +67,10 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 		case strings.HasPrefix(line, "rename to "):
 			if currentEntry != nil {
 				currentEntry.Status = model.FileRenamed
-				currentEntry.Path = strings.TrimPrefix(line, "rename to ")
+				// Git C-quotes special/non-ASCII paths here just like on the
+				// "diff --git" line; decode so the correct path from that line
+				// is not overwritten with an escaped string.
+				currentEntry.Path = unquoteGitPath(strings.TrimPrefix(line, "rename to "))
 				currentFile = currentEntry.Path
 			}
 		case strings.HasPrefix(line, "@@@"):
@@ -79,10 +97,16 @@ func ParseUnifiedDiffFormats(diff string) ([]model.DiffFile, []model.DiffHunk, [
 			if currentHunk != nil {
 				currentHunk.Content += line + "\n"
 				if currentEntry != nil {
+					// Every +/- line inside a hunk body is real content: file
+					// headers (`+++ b/...`/`--- a/...`) only appear between the
+					// file boundary and the first `@@`, where currentHunk is
+					// nil. Excluding `+++`/`---` prefixes here would miscount
+					// added lines starting with `++` or deleted lines starting
+					// with `--`.
 					switch {
-					case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++"):
+					case strings.HasPrefix(line, "+"):
 						currentEntry.Additions++
-					case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---"):
+					case strings.HasPrefix(line, "-"):
 						currentEntry.Deletions++
 					}
 				}
@@ -196,6 +220,31 @@ func parseDiffGitPath(line string) string {
 	value := fields[len(fields)-1]
 	value = strings.TrimPrefix(value, "b/")
 	value = strings.TrimPrefix(value, "a/")
+	return value
+}
+
+// parseDiffCCPath extracts the path from a combined-diff header line
+// ("diff --cc <path>" or "diff --combined <path>"; no a/-b/ prefixes, but git
+// C-quotes paths containing special or non-ASCII characters just like on
+// "diff --git" lines).
+func parseDiffCCPath(line string) string {
+	line = strings.TrimSpace(line)
+	for _, prefix := range []string{"diff --cc ", "diff --combined "} {
+		if strings.HasPrefix(line, prefix) {
+			return unquoteGitPath(line[len(prefix):])
+		}
+	}
+	return ""
+}
+
+// unquoteGitPath decodes value when git C-quoted it (leading '"'); other
+// values are returned verbatim.
+func unquoteGitPath(value string) string {
+	if strings.HasPrefix(value, `"`) {
+		if decoded, _, ok := unquoteCStyle(value); ok {
+			return decoded
+		}
+	}
 	return value
 }
 

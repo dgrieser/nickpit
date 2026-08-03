@@ -67,6 +67,11 @@ func (s *Server) Run(ctx context.Context, workers int) error {
 	}
 
 	s.log.Info("shutting down", "grace", s.grace.String())
+	// Close intake before draining HTTP: the workers stop with ctx, so a
+	// handler still in flight during the drain could otherwise enqueue an
+	// event that is acknowledged with a 2xx but never processed. Rejected
+	// events get a 503 and GitLab redelivers them.
+	s.dispatcher.CloseIntake()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {

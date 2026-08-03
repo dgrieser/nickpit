@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -524,6 +525,52 @@ func TestAnimateFractionNeverGoesBackward(t *testing.T) {
 	}
 	if got := a.animateFraction(start.Add(2 * time.Second)); got < 0.8 {
 		t.Fatalf("bar ran backwards: 0.800 → %.3f", got)
+	}
+}
+
+func TestLiveBarUnpinsAfterNudgeRoundRestart(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	r := testLiveRenderer(now)
+	scope := WorkflowScope{Lane: "Security", Step: "review:security"}
+	info := ProgressInfo{AgentRole: "review", AgentName: "Security", Group: "Security", NudgeTotal: 2, NudgeIndex: 0}
+	deadline := now.Add(10 * time.Minute)
+
+	r.AgentStart(info, scope, deadline)
+	// Two completed turns in the initial pass.
+	for range 2 {
+		r.Progress(info, scope, StageRequest, StateSent, "", deadline)
+		r.Progress(info, scope, StageResponse, StateDone, "", deadline)
+	}
+	r.AgentDone(info)
+
+	a := r.agents[liveAgentKey(info)]
+	if a == nil {
+		t.Fatal("agent not registered under its group key")
+	}
+	if got := a.animateFraction(now.Add(time.Second)); got != 1 {
+		t.Fatalf("finished initial pass should show a full bar, got %.3f", got)
+	}
+
+	// Nudge round 1 reuses the key, so AgentStart restarts the existing anim.
+	// With 2 turns done and 1 future round pending the confirmed fraction is
+	// 2/3; the bar must come off 100% instead of staying pinned there by the
+	// forward-only clamp.
+	nudge := info
+	nudge.AgentName, nudge.NudgeIndex = "Security · Nudge 1/2", 1
+	r.AgentStart(nudge, scope, deadline)
+	got := a.animateFraction(now.Add(2 * time.Second))
+	if got == 1 {
+		t.Fatalf("bar stayed pinned at 100%% after the nudge restart")
+	}
+	if want := 2.0 / 3.0; math.Abs(got-want) > 0.05 {
+		t.Fatalf("bar after nudge restart = %.3f, want ~%.3f", got, want)
+	}
+
+	// Within the round the bar never moves backwards: a new active turn grows
+	// the denominator (reached drops to 0.5) but the shown fraction holds.
+	r.Progress(nudge, scope, StageRequest, StateSent, "", deadline)
+	if held := a.animateFraction(now.Add(3 * time.Second)); held < got {
+		t.Fatalf("bar ran backwards during the nudge round: %.3f -> %.3f", got, held)
 	}
 }
 

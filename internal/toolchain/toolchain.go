@@ -356,7 +356,11 @@ func scanPnpmLock(fsys fs.FS) []model.ToolchainVersion {
 	return []model.ToolchainVersion{{Language: langTypeScript, Source: "pnpm-lock.yaml", Field: "typescript", Version: match[1]}}
 }
 
-var dockerfileFromRe = regexp.MustCompile(`(?im)^\s*FROM\s+(?:--platform=\S+\s+)?(golang|python|node|nodejs)(?::([^\s]+))?`)
+// dockerfileFromRe captures the whole image token after FROM. Go's regexp has
+// no lookahead, so the image name cannot be validated in the pattern without
+// also matching prefixes (e.g. "golangci/golangci-lint" starts with "golang");
+// splitImageToken plus imageLanguage do the exact-name check in code instead.
+var dockerfileFromRe = regexp.MustCompile(`(?im)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)`)
 
 func scanDockerfile(fsys fs.FS) []model.ToolchainVersion {
 	data, err := readFile(fsys, "Dockerfile")
@@ -365,21 +369,19 @@ func scanDockerfile(fsys fs.FS) []model.ToolchainVersion {
 	}
 	var out []model.ToolchainVersion
 	for _, match := range dockerfileFromRe.FindAllStringSubmatch(string(data), -1) {
-		image := strings.ToLower(match[1])
+		image, version := splitImageToken(match[1])
 		language := imageLanguage(image)
 		if language == "" {
 			continue
-		}
-		version := match[2]
-		if version == "" {
-			version = "latest"
 		}
 		out = append(out, model.ToolchainVersion{Language: language, Source: "Dockerfile", Field: "FROM " + image, Version: version})
 	}
 	return out
 }
 
-var gitlabImageRe = regexp.MustCompile(`(?im)^\s*image:\s*["']?(golang|python|node|nodejs)(?::([^\s"'\r\n]+))?`)
+// gitlabImageRe captures the whole (optionally quoted) image token; the exact
+// image-name check happens in code, see dockerfileFromRe.
+var gitlabImageRe = regexp.MustCompile(`(?im)^\s*image:\s*["']?([^\s"'\r\n]+)`)
 
 func scanGitlabCI(fsys fs.FS) []model.ToolchainVersion {
 	data, err := readFile(fsys, ".gitlab-ci.yml")
@@ -388,18 +390,27 @@ func scanGitlabCI(fsys fs.FS) []model.ToolchainVersion {
 	}
 	var out []model.ToolchainVersion
 	for _, match := range gitlabImageRe.FindAllStringSubmatch(string(data), -1) {
-		image := strings.ToLower(match[1])
+		image, version := splitImageToken(match[1])
 		language := imageLanguage(image)
 		if language == "" {
 			continue
 		}
-		version := match[2]
-		if version == "" {
-			version = "latest"
-		}
 		out = append(out, model.ToolchainVersion{Language: language, Source: ".gitlab-ci.yml", Field: "image " + image, Version: version})
 	}
 	return out
+}
+
+// splitImageToken splits an image reference token into its lower-cased name and
+// tag (defaulting to "latest" when no tag is present). The name is everything
+// up to the first ":", so tokens where a known image name is only a prefix
+// ("golangci/golangci-lint", "nodesource/distributions", "golang@sha256:...")
+// keep their full name and are rejected by imageLanguage.
+func splitImageToken(token string) (name, tag string) {
+	name, tag, _ = strings.Cut(token, ":")
+	if tag == "" {
+		tag = "latest"
+	}
+	return strings.ToLower(name), tag
 }
 
 var (

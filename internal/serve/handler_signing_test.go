@@ -61,6 +61,34 @@ func TestHandlerSigningTokenRejectsBadSignature(t *testing.T) {
 	}
 }
 
+// A group built (defensively, bypassing config validation) from an
+// unparseable signing token with no webhook_secret fallback has no usable
+// credential and must reject every request — in particular one without any
+// X-Gitlab-Token header, which previously slipped through via "" == "".
+func TestHandlerUnparseableSigningTokenFailsClosed(t *testing.T) {
+	set, warnings := NewGroupSet(context.Background(), []config.ServeGroup{
+		{Path: "platform", Token: "t1", SigningToken: "whsec_not!!base64"},
+	}, "https://gitlab.example.com", nil)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want the unparseable-token warning", warnings)
+	}
+	dispatcher := NewDispatcher(&fakeRunner{}, (&countingTopicLookup{}).fn(), WorkerConfig{Topic: "nickpit"}, discardLogger())
+	handler := NewHandler(set, dispatcher, HandlerConfig{TriggerEmoji: "nickpit", CommandKeyword: "nickpit"}, nil, ChatConfig{}, discardLogger())
+
+	body := testutil.LoadFixture(t, filepath.Join("testdata", "mr_open.json"))
+	for name, header := range map[string]string{"no token": "", "empty-ish token": "anything"} {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/gitlab", bytes.NewReader(body))
+		if header != "" {
+			req.Header.Set("X-Gitlab-Token", header)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: code = %d, want 401 (group without usable credential must fail closed)", name, rec.Code)
+		}
+	}
+}
+
 // A signing group must reject the legacy X-Gitlab-Token path entirely.
 func TestHandlerSigningTokenIgnoresPlaintextToken(t *testing.T) {
 	handler := newSigningHandler(t)

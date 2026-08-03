@@ -114,24 +114,87 @@ func TestParseUnifiedDiffFormatsClassifiesWithContent(t *testing.T) {
 // A combined-diff ("@@@") hunk from a merge state must not be swallowed as
 // content of the preceding file's hunk; its lines are skipped instead.
 func TestParseUnifiedDiffFormatsSkipsCombinedDiffHunks(t *testing.T) {
+	// Combined diffs appear with either marker: "diff --cc" (git diff during a
+	// merge) and "diff --combined" (git diff-tree -c and friends). Both must
+	// act as a file boundary.
+	for _, marker := range []string{"diff --cc", "diff --combined"} {
+		t.Run(strings.TrimPrefix(marker, "diff --"), func(t *testing.T) {
+			diff := strings.Join([]string{
+				"diff --git a/normal.go b/normal.go",
+				"index 1111111..2222222 100644",
+				"--- a/normal.go",
+				"+++ b/normal.go",
+				"@@ -1,2 +1,3 @@",
+				" keep",
+				"+added",
+				" tail",
+				marker + " conflicted.go",
+				"index 3333333,4444444..5555555",
+				"--- a/conflicted.go",
+				"+++ b/conflicted.go",
+				"@@@ -1,3 -1,3 +1,3 @@@",
+				"  ctx",
+				"- left",
+				" -right",
+				"++merged",
+				"",
+			}, "\n")
+
+			_, hunks, files, err := ParseUnifiedDiffFormats(diff)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(hunks) != 1 {
+				t.Fatalf("hunks = %d, want 1 (combined hunk skipped)", len(hunks))
+			}
+			if hunks[0].FilePath != "normal.go" {
+				t.Fatalf("hunk path = %q", hunks[0].FilePath)
+			}
+			if strings.Contains(hunks[0].Content, "@@@") || strings.Contains(hunks[0].Content, "merged") {
+				t.Fatalf("combined-diff lines bled into previous hunk: %q", hunks[0].Content)
+			}
+			// The combined-diff section's header lines must not bleed into the
+			// previous file's hunk either: the marker is a file boundary that
+			// flushes it.
+			for _, header := range []string{
+				marker + " conflicted.go",
+				"index 3333333,4444444..5555555",
+				"--- a/conflicted.go",
+				"+++ b/conflicted.go",
+			} {
+				if strings.Contains(hunks[0].Content, header) {
+					t.Fatalf("combined-diff header %q bled into previous hunk: %q", header, hunks[0].Content)
+				}
+			}
+			if want := " keep\n+added\n tail\n"; hunks[0].Content != want {
+				t.Fatalf("previous hunk content = %q, want %q", hunks[0].Content, want)
+			}
+			if len(files) != 2 || files[0].Path != "normal.go" || files[1].Path != "conflicted.go" {
+				t.Fatalf("files = %#v, want normal.go and conflicted.go", files)
+			}
+			if files[0].Additions != 1 || files[0].Deletions != 0 {
+				t.Fatalf("normal.go additions/deletions = %d/%d, want 1/0", files[0].Additions, files[0].Deletions)
+			}
+			if files[1].Additions != 0 || files[1].Deletions != 0 {
+				t.Fatalf("conflicted.go additions/deletions = %d/%d, want 0/0 (combined body skipped)", files[1].Additions, files[1].Deletions)
+			}
+		})
+	}
+}
+
+// Hunk-body lines whose content itself starts with "++" or "--" (rendering as
+// "+++..."/"---..." in the diff) are real added/deleted lines and must be
+// counted; file headers can never appear inside a hunk body.
+func TestParseUnifiedDiffFormatsCountsPlusPlusAndMinusMinusLines(t *testing.T) {
 	diff := strings.Join([]string{
-		"diff --git a/normal.go b/normal.go",
+		"diff --git a/counter.c b/counter.c",
 		"index 1111111..2222222 100644",
-		"--- a/normal.go",
-		"+++ b/normal.go",
-		"@@ -1,2 +1,3 @@",
+		"--- a/counter.c",
+		"+++ b/counter.c",
+		"@@ -1,3 +1,3 @@",
 		" keep",
-		"+added",
-		" tail",
-		"diff --cc conflicted.go",
-		"index 3333333,4444444..5555555",
-		"--- a/conflicted.go",
-		"+++ b/conflicted.go",
-		"@@@ -1,3 -1,3 +1,3 @@@",
-		"  ctx",
-		"- left",
-		" -right",
-		"++merged",
+		"---counter;",
+		"+++counter;",
 		"",
 	}, "\n")
 
@@ -139,20 +202,59 @@ func TestParseUnifiedDiffFormatsSkipsCombinedDiffHunks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hunks) != 1 {
-		t.Fatalf("hunks = %d, want 1 (combined hunk skipped)", len(hunks))
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
 	}
-	if hunks[0].FilePath != "normal.go" {
-		t.Fatalf("hunk path = %q", hunks[0].FilePath)
+	if files[0].Additions != 1 || files[0].Deletions != 1 {
+		t.Fatalf("additions/deletions = %d/%d, want 1/1 (++/-- content lines counted)", files[0].Additions, files[0].Deletions)
 	}
-	if strings.Contains(hunks[0].Content, "@@@") || strings.Contains(hunks[0].Content, "merged") {
-		t.Fatalf("combined-diff lines bled into previous hunk: %q", hunks[0].Content)
+	if len(hunks) != 1 || !strings.Contains(hunks[0].Content, "+++counter;") {
+		t.Fatalf("hunk content missing ++ line: %#v", hunks)
 	}
-	if len(files) != 1 || files[0].Path != "normal.go" {
-		t.Fatalf("files = %#v, want only normal.go", files)
+}
+
+// "rename to" values are C-quoted by git for special/non-ASCII paths; the
+// decoded path must win over the raw quoted string.
+func TestParseUnifiedDiffFormatsUnquotesRenameTo(t *testing.T) {
+	diff := strings.Join([]string{
+		`diff --git "a/sch\303\266n old.txt" "b/sch\303\266n.txt"`,
+		"similarity index 90%",
+		`rename from "sch\303\266n old.txt"`,
+		`rename to "sch\303\266n.txt"`,
+		"",
+	}, "\n")
+
+	_, _, files, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if files[0].Additions != 1 || files[0].Deletions != 0 {
-		t.Fatalf("normal.go additions/deletions = %d/%d, want 1/0", files[0].Additions, files[0].Deletions)
+	if len(files) != 1 {
+		t.Fatalf("files = %d, want 1", len(files))
+	}
+	if files[0].Path != "schön.txt" {
+		t.Fatalf("renamed path = %q, want %q", files[0].Path, "schön.txt")
+	}
+	if files[0].Status != "renamed" {
+		t.Fatalf("status = %q, want renamed", files[0].Status)
+	}
+}
+
+// An unquoted "rename to" path passes through verbatim.
+func TestParseUnifiedDiffFormatsPlainRenameTo(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/old.txt b/new.txt",
+		"similarity index 90%",
+		"rename from old.txt",
+		"rename to new.txt",
+		"",
+	}, "\n")
+
+	_, _, files, err := ParseUnifiedDiffFormats(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Path != "new.txt" {
+		t.Fatalf("files = %#v, want new.txt", files)
 	}
 }
 

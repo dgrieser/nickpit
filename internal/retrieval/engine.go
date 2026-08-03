@@ -48,6 +48,10 @@ type FindLinesResult struct {
 	Code       string           `json:"code"`
 	MatchCount int              `json:"match_count"`
 	Matches    []FindLinesMatch `json:"matches"`
+	// TruncatedFiles lists scanned files whose content was clipped at the
+	// per-file byte cap, so matches past the cap may be missing (mirrors
+	// FileContent.Truncated for whole-file reads).
+	TruncatedFiles []string `json:"truncated_files,omitempty"`
 }
 
 type FindLinesMatch struct {
@@ -80,6 +84,10 @@ type SearchResults struct {
 	CaseSensitive bool           `json:"case_sensitive,omitempty"`
 	ResultCount   int            `json:"result_count"`
 	Results       []SearchResult `json:"results"`
+	// TruncatedFiles lists scanned files whose content was clipped at the
+	// per-file byte cap, so matches past the cap may be missing (mirrors
+	// FileContent.Truncated for whole-file reads).
+	TruncatedFiles []string `json:"truncated_files,omitempty"`
 }
 
 // SearchResult locates one match: CodeLocation spans exactly the matched
