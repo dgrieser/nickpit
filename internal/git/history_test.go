@@ -55,6 +55,18 @@ func metadataRecord(sha, short, author, email, date, parents, subject string) st
 	return strings.Join([]string{sha, short, author, email, date, date, parents, subject, ""}, nulSeparator) + "\n"
 }
 
+// showEntries renders the `--raw --numstat -z` blocks git writes before the
+// patch of a `git show`, ending with the NUL that separates them from it.
+func showEntries(entries ...string) string {
+	return strings.Join(entries, nulSeparator) + nulSeparator + nulSeparator
+}
+
+// isPatchCall reports whether a `git show` invocation asks for a patch, as
+// opposed to the metadata-only fallback.
+func isPatchCall(args []string) bool {
+	return slices.Contains(args, "--patch")
+}
+
 // showRevision extracts the revision a `git show` invocation targets: the last
 // argument before the "--" pathspec separator, or simply the last one.
 func showRevision(args []string) string {
@@ -870,25 +882,27 @@ func TestShowRangeKeepsCommitsThatMissThePathFilter(t *testing.T) {
 }
 
 // An oversized patch is dropped, but what the commit changed must still be
-// reported or an agent cannot tell whether the commit matters.
+// reported or an agent cannot tell whether the commit matters. The raw/numstat
+// entries precede the patch in the same invocation, so they survive the cut and
+// no extra git call is needed.
 func TestShowKeepsChangedFilesWhenPatchIsOmitted(t *testing.T) {
 	runner := &stubGitRunner{outputs: map[string]string{}}
 	resolved(runner, "aaa", "aaa111")
 	history := newTestHistory(runner)
-	rawCalls := 0
+	metadataOnlyCalls := 0
+	entries := showEntries(":100644 100644 1111111 2222222 M", "big.go", "900\t120\tbig.go")
 	runner.match = func(args []string) (string, bool) {
 		if args[0] != "show" {
 			return "", false
 		}
-		joined := strings.Join(args, " ")
 		switch {
 		case args[1] == "--no-patch":
 			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
-		case strings.Contains(joined, "--raw"):
-			rawCalls++
-			return "\n:100644 100644 1111111 2222222 M\x00big.go\x00\n900\t120\tbig.go\x00", true
+		case !isPatchCall(args):
+			metadataOnlyCalls++
+			return entries, true
 		default:
-			return "diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6+10), true
+			return entries + "diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6+10), true
 		}
 	}
 
@@ -900,22 +914,127 @@ func TestShowKeepsChangedFilesWhenPatchIsOmitted(t *testing.T) {
 	if !commit.Truncated || len(commit.DiffFiles) != 0 {
 		t.Fatalf("oversized patch should be dropped: %+v", commit)
 	}
-	if rawCalls != 1 {
-		t.Fatalf("raw metadata calls = %d, want 1", rawCalls)
+	if metadataOnlyCalls != 0 {
+		t.Fatalf("metadata-only lookups = %d; the entries ride along with the patch", metadataOnlyCalls)
 	}
-	want := []CommitFile{{Path: "big.go", Status: model.FileModified, Additions: 900, Deletions: 120}}
-	if len(commit.Files) != 1 || commit.Files[0] != want[0] {
+	want := CommitFile{Path: "big.go", Status: model.FileModified, Additions: 900, Deletions: 120}
+	if len(commit.Files) != 1 || commit.Files[0] != want {
 		t.Fatalf("files = %#v, want %#v", commit.Files, want)
 	}
 	if commit.Additions != 900 || commit.Deletions != 120 {
 		t.Fatalf("totals = +%d -%d", commit.Additions, commit.Deletions)
 	}
+	if !strings.Contains(commit.Note, "exceeds") {
+		t.Fatalf("note = %q", commit.Note)
+	}
 }
 
-// Commit messages, author names and paths may contain any byte except NUL, so a
-// marker-byte framing (0x1e/0x1f) let an ordinary commit desync the parse and
-// disappear from the listing. Framing is positional over the NUL stream, and
-// separator bytes in the payload must be preserved verbatim.
+// When the cut lands before the entry blocks are complete, the changed-file list
+// is fetched separately rather than lost.
+func TestShowFallsBackToMetadataLookupWhenEntriesAreCut(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "aaa", "aaa111")
+	history := newTestHistory(runner)
+	metadataOnlyCalls := 0
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		switch {
+		case args[1] == "--no-patch":
+			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
+		case !isPatchCall(args):
+			metadataOnlyCalls++
+			return showEntries(":100644 100644 1111111 2222222 M", "big.go", "900\t120\tbig.go"), true
+		default:
+			// A single entry token larger than the cap: the read stops inside it.
+			return strings.Repeat("x", maxCommitPatchBytes+16), true
+		}
+	}
+
+	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "aaa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := result.Commits[0]
+	if !commit.Truncated {
+		t.Fatalf("commit should be truncated: %+v", commit)
+	}
+	if metadataOnlyCalls != 1 {
+		t.Fatalf("metadata-only lookups = %d, want 1", metadataOnlyCalls)
+	}
+	if len(commit.Files) != 1 || commit.Files[0].Path != "big.go" {
+		t.Fatalf("files = %#v", commit.Files)
+	}
+}
+
+// A unified patch cannot express a rename's old path or mark a binary file, so
+// even an under-cap patch takes its file list from the raw/numstat entries.
+func TestShowPreservesRenameAndBinaryMetadata(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "aaa", "aaa111")
+	history := newTestHistory(runner)
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		if args[1] == "--no-patch" {
+			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "rename and binary"), true
+		}
+		entries := showEntries(
+			":000000 100644 0000000 587be6b A", "added.txt",
+			":100644 100644 b43761b cd32123 M", "logo.bin",
+			":100644 100644 814f4a4 4cb29ea R057", "old.txt", "new.txt",
+			"1\t0\tadded.txt",
+			"-\t-\tlogo.bin",
+			"1\t0\t", "old.txt", "new.txt",
+		)
+		return entries + strings.Join([]string{
+			"diff --git a/added.txt b/added.txt",
+			"new file mode 100644",
+			"--- /dev/null",
+			"+++ b/added.txt",
+			"@@ -0,0 +1 @@",
+			"+x",
+			"diff --git a/logo.bin b/logo.bin",
+			"Binary files a/logo.bin and b/logo.bin differ",
+			"diff --git a/old.txt b/new.txt",
+			"similarity index 57%",
+			"rename from old.txt",
+			"rename to new.txt",
+			"--- a/old.txt",
+			"+++ b/new.txt",
+			"@@ -1,2 +1,3 @@",
+			" one",
+			" two",
+			"+three",
+			"",
+		}, "\n"), true
+	}
+
+	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "aaa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := result.Commits[0]
+	if commit.Truncated || len(commit.DiffFiles) != 3 {
+		t.Fatalf("patch should be returned in full: truncated = %t, diff files = %d", commit.Truncated, len(commit.DiffFiles))
+	}
+	want := []CommitFile{
+		{Path: "added.txt", Status: model.FileAdded, Additions: 1},
+		{Path: "logo.bin", Status: model.FileModified, Binary: true},
+		{Path: "new.txt", OldPath: "old.txt", Status: model.FileRenamed, Additions: 1},
+	}
+	if len(commit.Files) != len(want) {
+		t.Fatalf("files = %#v", commit.Files)
+	}
+	for i, file := range want {
+		if commit.Files[i] != file {
+			t.Fatalf("file[%d] = %+v, want %+v", i, commit.Files[i], file)
+		}
+	}
+}
+
 func TestLogFramingSurvivesSeparatorBytesInMetadata(t *testing.T) {
 	const (
 		rs = "\x1e"
@@ -1013,17 +1132,17 @@ func TestShowBoundsPatchBytesReadFromGit(t *testing.T) {
 		if args[0] != "show" {
 			return "", false
 		}
-		joined := strings.Join(args, " ")
 		switch {
 		case args[1] == "--no-patch":
 			sha := showRevision(args)
 			return metadataRecord(sha, sha[:3], "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject "+sha), true
-		case strings.Contains(joined, "--raw"):
+		case !isPatchCall(args):
 			rawCalls++
-			return "\n:100644 100644 1111111 2222222 M\x00big.go\x00\n900\t120\tbig.go\x00", true
+			return showEntries(":100644 100644 1111111 2222222 M", "big.go", "900\t120\tbig.go"), true
 		default:
 			patchCalls++
-			return "diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", oversized/6), true
+			return showEntries(":100644 100644 1111111 2222222 M", "big.go", "900\t120\tbig.go") +
+				"diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", oversized/6), true
 		}
 	}
 
@@ -1041,8 +1160,9 @@ func TestShowBoundsPatchBytesReadFromGit(t *testing.T) {
 	if patchCalls != wantPatchCalls {
 		t.Fatalf("patch invocations = %d, want %d (generation must stop once the budget is spent)", patchCalls, wantPatchCalls)
 	}
-	if rawCalls != len(shas) {
-		t.Fatalf("changed-file lookups = %d, want one per commit", rawCalls)
+	// Only the commits whose patch was never generated need a separate lookup.
+	if wantMetadataOnly := len(shas) - wantPatchCalls; rawCalls != wantMetadataOnly {
+		t.Fatalf("metadata-only lookups = %d, want %d", rawCalls, wantMetadataOnly)
 	}
 
 	// Every read was capped, and no cap exceeded what the budget still allowed.
@@ -1077,5 +1197,74 @@ func TestShowBoundsPatchBytesReadFromGit(t *testing.T) {
 	}
 	if !result.Truncated {
 		t.Fatal("result should report truncation")
+	}
+}
+
+// A bare `git fetch` follows branch.<name>.remote, which need not be origin, so
+// an authenticated deepen must name the remote it derived the credentials from.
+func TestDeepenFetchesOriginExplicitly(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{
+		joinArgs([]string{"rev-parse", "--git-dir"}):               ".git\n",
+		joinArgs([]string{"rev-parse", "--is-shallow-repository"}): "true\n",
+		joinArgs([]string{"rev-list", "--count", "HEAD"}):          "1\n",
+		joinArgs([]string{"config", "--get", "remote.origin.url"}): "https://github.com/acme/repo.git\n",
+		joinArgs([]string{"rev-parse", "HEAD"}):                    "aaa111\n",
+	}}
+	resolved(runner, "HEAD", "aaa111")
+	history := NewExecHistory(HistoryAuth{GitHubToken: "ghp-secret"})
+	history.newRunner = func(string) Runner { return runner }
+	runner.match = func(args []string) (string, bool) {
+		return "", args[0] == "log"
+	}
+
+	if _, err := history.Log(context.Background(), t.TempDir(), LogOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	fetches := 0
+	for _, call := range runner.recordedCalls() {
+		if !slices.Contains(call, "fetch") {
+			continue
+		}
+		fetches++
+		if !slices.Contains(call, "origin") && !slices.Contains(call, "https://github.com/acme/repo.git") {
+			t.Fatalf("deepen fetch does not name origin: %#v", call)
+		}
+	}
+	if fetches == 0 {
+		t.Fatalf("expected a deepen fetch: %v", runner.recordedCalls())
+	}
+}
+
+// Without an origin remote there is no host the credentials belong to, so the
+// fetch git resolves on its own must carry no credential header.
+func TestDeepenWithoutOriginCarriesNoCredentials(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{
+		joinArgs([]string{"rev-parse", "--git-dir"}):               ".git\n",
+		joinArgs([]string{"rev-parse", "--is-shallow-repository"}): "true\n",
+		joinArgs([]string{"rev-list", "--count", "HEAD"}):          "1\n",
+	}}
+	runner.errors = map[string]error{
+		joinArgs([]string{"config", "--get", "remote.origin.url"}): errors.New("exit status 1"),
+	}
+	resolved(runner, "HEAD", "aaa111")
+	history := NewExecHistory(HistoryAuth{GitHubToken: "ghp-secret", GitLabToken: "glpat-secret"})
+	history.newRunner = func(string) Runner { return runner }
+	runner.match = func(args []string) (string, bool) {
+		return "", args[0] == "log"
+	}
+
+	result, err := history.Log(context.Background(), t.TempDir(), LogOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := findCall(runner.recordedCalls(), "fetch")
+	if call == nil {
+		t.Fatalf("expected a deepen fetch: %v", runner.recordedCalls())
+	}
+	if call[0] != "fetch" {
+		t.Fatalf("fetch without origin must carry no credential header: %#v", call)
+	}
+	if !result.Shallow {
+		t.Fatalf("shallow = %t", result.Shallow)
 	}
 }

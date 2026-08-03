@@ -431,35 +431,42 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	// lower decides, and hitting it means the patch is dropped either way, so
 	// git is stopped at that point instead of after emitting the whole diff.
 	limit := min(maxCommitPatchBytes, *budget)
-	patch, overLimit, err := h.commitPatch(ctx, runner, sha, paths, false, limit)
+	res, err := h.commitPatch(ctx, runner, sha, paths, false, limit)
 	if err != nil {
 		return nil, err
 	}
-	if !overLimit && entry.IsMerge && strings.TrimSpace(patch) == "" {
-		firstParent, firstParentOverLimit, err := h.commitPatch(ctx, runner, sha, paths, true, limit)
+	// Every byte read counts against the call's budget, dropped patches
+	// included: that is what makes the total output of one git_show call bounded
+	// by maxShowPatchBytes instead of by the size of the range.
+	*budget -= res.ReadBytes
+	if !res.Truncated && entry.IsMerge && strings.TrimSpace(res.Patch) == "" {
+		firstParent, err := h.commitPatch(ctx, runner, sha, paths, true, limit)
 		if err != nil {
 			return nil, err
 		}
-		if firstParentOverLimit || strings.TrimSpace(firstParent) != "" {
-			patch, overLimit = firstParent, firstParentOverLimit
+		*budget -= firstParent.ReadBytes
+		if firstParent.Truncated || strings.TrimSpace(firstParent.Patch) != "" {
+			res = firstParent
 			diff.DiffMode = "first-parent"
 			diff.Note = "combined diff was empty (every hunk matches a parent); diffed against the first parent instead"
 		}
 	}
+	patch := res.Patch
+	diff.Files = res.Files
+	diff.Additions, diff.Deletions = totalChanges(res.Files)
 
-	// Every byte read counts against the call's budget, dropped patches
-	// included: that is what makes the total output of one git_show call
-	// bounded by maxShowPatchBytes instead of by the size of the range.
-	*budget -= len(patch)
-
-	if overLimit {
+	if res.Truncated {
 		diff.Truncated = true
 		if limit == maxCommitPatchBytes {
 			diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: it exceeds the %d byte per-commit limit", maxCommitPatchBytes))
 		} else {
 			diff.Note = joinNotes(diff.Note, "patch omitted: the total patch size limit for this call was reached")
 		}
-		h.attachFileMetadata(ctx, runner, sha, paths, diff)
+		if len(diff.Files) == 0 {
+			// The read was cut before the file entries were complete, so ask git
+			// for just that metadata.
+			h.attachFileMetadata(ctx, runner, sha, paths, diff)
+		}
 		return diff, nil
 	}
 	if strings.TrimSpace(patch) == "" {
@@ -473,8 +480,14 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	if err != nil {
 		return nil, err
 	}
-	diff.Files = commitFilesFromChanged(changed)
-	diff.Additions, diff.Deletions = totalChanges(diff.Files)
+	if len(diff.Files) == 0 {
+		// A merge rendered with --cc emits no raw entries, so the patch is the
+		// only source left. It cannot express a rename's old path or mark a
+		// binary file, which is exactly why the raw/numstat entries above are
+		// preferred whenever git provides them.
+		diff.Files = commitFilesFromChanged(changed)
+		diff.Additions, diff.Deletions = totalChanges(diff.Files)
+	}
 	diff.DiffFiles, diff.DiffHunks = model.SelectDiffPayload(diffFiles, diffHunks, format)
 	if format == model.DiffFormatGitJson && len(diff.DiffHunks) == 0 && len(diffFiles) > 0 {
 		// Combined ("@@@") hunks cannot be represented as two-way hunks, so
@@ -511,12 +524,15 @@ func (h *ExecHistory) commitMetadata(ctx context.Context, runner Runner, sha str
 	return parseCommitRecord(out)
 }
 
-// commitPatch renders a commit's patch alone (an empty --format suppresses the
-// metadata header). Merges are rendered as a combined diff unless firstParent
-// asks for the diff against parent one. Reading stops at limit bytes; the second
-// return value reports that the patch is larger than the caller can accept.
-func (h *ExecHistory) commitPatch(ctx context.Context, runner Runner, sha string, paths []string, firstParent bool, limit int) (string, bool, error) {
-	args := []string{"show", "--no-color", "--find-renames", "--patch", "--format="}
+// commitPatch renders a commit's changed-file entries and its patch (an empty
+// --format suppresses the metadata header). The `--raw --numstat -z` entries ride
+// along in the same invocation and precede the patch, so a rename keeps its old
+// path and a binary file is marked as such — neither of which a unified patch can
+// express. Merges are rendered as a combined diff unless firstParent asks for the
+// diff against parent one. Reading stops at limit bytes; the third return value
+// reports that the output is larger than the caller can accept.
+func (h *ExecHistory) commitPatch(ctx context.Context, runner Runner, sha string, paths []string, firstParent bool, limit int) (commitPatchResult, error) {
+	args := []string{"show", "--no-color", "--find-renames", "--raw", "--numstat", "-z", "--patch", "--format="}
 	if firstParent {
 		args = append(args, "-m", "--first-parent")
 	} else {
@@ -526,9 +542,26 @@ func (h *ExecHistory) commitPatch(ctx context.Context, runner Runner, sha string
 	args = appendPathArgs(args, paths)
 	out, truncated, err := runLimited(ctx, runner, limit, args...)
 	if err != nil {
-		return "", false, err
+		return commitPatchResult{}, err
 	}
-	return strings.TrimLeft(out, "\n"), truncated, nil
+	tokens := strings.Split(out, nulSeparator)
+	files, consumed := parseFileEntries(tokens)
+	patch := strings.Join(tokens[consumed:], nulSeparator)
+	return commitPatchResult{
+		Files:     files,
+		Patch:     strings.TrimLeft(patch, "\n"),
+		ReadBytes: len(out),
+		Truncated: truncated,
+	}, nil
+}
+
+// commitPatchResult is one `git show` read. ReadBytes counts everything the read
+// consumed, entries included, because that is what the call's budget pays for.
+type commitPatchResult struct {
+	Files     []CommitFile
+	Patch     string
+	ReadBytes int
+	Truncated bool
 }
 
 // resolveRevisionArg turns user input (single revision, abbreviated SHA, or
@@ -646,19 +679,30 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 		return deepenState{}
 	}
 	before := reachableCommits(ctx, runner)
-	auth := h.authArgsForRepo(ctx, runner)
+	origin := remoteURL(ctx, runner)
+	auth := h.authArgsForRepo(origin)
 
 	fetchCtx, cancel := context.WithTimeout(ctx, deepenTimeout)
 	defer cancel()
-	args := append(append([]string(nil), auth...), "fetch", "--deepen="+strconv.Itoa(deepenCommits))
+	// The remote is named explicitly whenever credentials are attached. A bare
+	// `git fetch` follows branch.<name>.remote, which need not be origin, so it
+	// could send the header derived from remote.origin.url to an unrelated host
+	// — and in a fork PR/MR that host is attacker controlled.
+	args := append([]string(nil), auth...)
+	args = append(args, "fetch", "--deepen="+strconv.Itoa(deepenCommits))
+	if origin != "" {
+		args = append(args, "origin")
+	}
+	// No origin means auth is empty too (it is derived from the origin URL), so
+	// the bare fetch git resolves on its own cannot carry a credential.
 	_, err := runner.Run(fetchCtx, args...)
 	if err == nil && reachableCommits(fetchCtx, runner) <= before {
 		// A plain --deepen extends the refs origin advertises. A remote review
-		// checkout instead holds a bare commit fetched by SHA, so ask for that
-		// commit's history explicitly before giving up.
-		if remote := remoteURL(fetchCtx, runner); remote != "" {
+		// checkout instead holds a bare commit fetched by SHA, so ask origin for
+		// that commit's history explicitly before giving up.
+		if origin != "" {
 			if head, headErr := runner.Run(fetchCtx, "rev-parse", "HEAD"); headErr == nil {
-				explicit := append(append([]string(nil), auth...), "fetch", "--deepen="+strconv.Itoa(deepenCommits), "--", remote, strings.TrimSpace(head))
+				explicit := append(append([]string(nil), auth...), "fetch", "--deepen="+strconv.Itoa(deepenCommits), "--", origin, strings.TrimSpace(head))
 				_, err = runner.Run(fetchCtx, explicit...)
 			}
 		}
@@ -679,9 +723,11 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 // authArgsForRepo builds the credential header for the origin remote so a
 // private repository can be deepened, reusing the header format the checkout
 // manager clones with. A token travels only to its provider's configured host
-// and only over http(s), where the header is what git would send anyway.
-func (h *ExecHistory) authArgsForRepo(ctx context.Context, runner Runner) []string {
-	host, ok := httpHost(remoteURL(ctx, runner))
+// and only over http(s), where the header is what git would send anyway. The
+// caller must fetch from exactly this URL (or the origin remote that carries
+// it), never from whatever remote git would pick by itself.
+func (h *ExecHistory) authArgsForRepo(originURL string) []string {
+	host, ok := httpHost(originURL)
 	if !ok {
 		return nil
 	}
