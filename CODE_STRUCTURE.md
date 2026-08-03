@@ -90,6 +90,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/git/git.go`: Git command wrapper and repository helpers.
 - `internal/git/diff.go`: Diff loading and changed-file extraction.
 - `internal/git/parser.go`: Git diff parser and hunk model.
+- `internal/git/history.go`: Commit history provider for the git_log/git_show tools and `nickpit inspect log|show`.
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers.
 - `internal/scm/github/adapter.go`: GitHub adapter wiring.
 - `internal/scm/github/client.go`: GitHub API client.

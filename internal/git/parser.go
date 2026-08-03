@@ -183,10 +183,19 @@ func splitUnifiedDiff(diff string) []diffSection {
 			line = remaining[:idx+1]
 			remaining = remaining[idx+1:]
 		}
-		if strings.HasPrefix(line, "diff --git ") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
 			flush()
 			inSection = true
 			currentPath = parseDiffGitPath(line)
+		case strings.HasPrefix(line, "diff --cc "), strings.HasPrefix(line, "diff --combined "):
+			// Combined-diff ("merge state") sections carry no "diff --git"
+			// header. Without this boundary a combined patch produced no
+			// DiffFile at all, so the raw per-file text of a merge diff was
+			// dropped from prompt payloads and tool results alike.
+			flush()
+			inSection = true
+			currentPath = parseDiffCCPath(line)
 		}
 		if inSection {
 			current.WriteString(line)

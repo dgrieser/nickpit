@@ -1001,15 +1001,21 @@ func PromptPayloadFromContextWithDiffFormat(src *ReviewContext, format DiffForma
 		SupplementalContext: src.SupplementalContext,
 		OmittedSections:     src.OmittedSections,
 	}
-	switch format {
-	case DiffFormatGitJson:
-		payload.DiffHunks = src.DiffHunks
-	default:
-		if len(src.DiffFiles) > 0 {
-			payload.DiffFiles = src.DiffFiles
-		} else {
-			payload.DiffHunks = src.DiffHunks
-		}
-	}
+	payload.DiffFiles, payload.DiffHunks = SelectDiffPayload(src.DiffFiles, src.DiffHunks, format)
 	return payload
+}
+
+// SelectDiffPayload picks which diff representation a prompt payload carries:
+// DiffFormatGitJson asks for structured hunks, every other format for the raw
+// per-file patches with a hunk fallback when a diff produced no per-file
+// sections. Shared by the review prompt payload and the git_show tool so both
+// honor one rule.
+func SelectDiffPayload(files []DiffFile, hunks []DiffHunk, format DiffFormat) ([]DiffFile, []DiffHunk) {
+	if format == DiffFormatGitJson {
+		return nil, hunks
+	}
+	if len(files) > 0 {
+		return files, nil
+	}
+	return nil, hunks
 }

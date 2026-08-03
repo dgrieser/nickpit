@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,18 +60,47 @@ func TestParseUnifiedDiffFormatsBuildsDiffFiles(t *testing.T) {
 }
 
 type stubGitRunner struct {
+	mu      sync.Mutex
 	outputs map[string]string
 	errors  map[string]error
-	calls   [][]string
+	// match answers invocations whose argument list is too variable to key on
+	// (a filtered `git log`, a `git show` per commit). Returning false falls
+	// through to outputs.
+	match func(args []string) (string, bool)
+	// matchErr fails such an invocation, e.g. to emulate an option an older git
+	// does not know.
+	matchErr func(args []string) error
+	calls    [][]string
 }
 
 func (r *stubGitRunner) Run(_ context.Context, args ...string) (string, error) {
+	r.mu.Lock()
 	r.calls = append(r.calls, append([]string(nil), args...))
+	match, matchErr := r.match, r.matchErr
 	key := joinArgs(args)
-	if err := r.errors[key]; err != nil {
+	err, output := r.errors[key], r.outputs[key]
+	r.mu.Unlock()
+	if err != nil {
 		return "", err
 	}
-	return r.outputs[key], nil
+	if matchErr != nil {
+		if err := matchErr(args); err != nil {
+			return "", err
+		}
+	}
+	if match != nil {
+		if out, ok := match(args); ok {
+			return out, nil
+		}
+	}
+	return output, nil
+}
+
+// recordedCalls returns a snapshot of the invocations seen so far.
+func (r *stubGitRunner) recordedCalls() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]string(nil), r.calls...)
 }
 
 func joinArgs(args []string) string {

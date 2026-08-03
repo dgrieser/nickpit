@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/session"
 	"github.com/dgrieser/nickpit/internal/workflow"
+	"github.com/spf13/cobra"
 )
 
 func TestLoadProfileRespectsExplicitZeroToolCallOverrides(t *testing.T) {
@@ -650,6 +652,55 @@ func TestGitLocalChangeCommandsPresent(t *testing.T) {
 		if found.Short != tt.wantShort {
 			t.Fatalf("%s short = %q, want %q", strings.Join(tt.args, " "), found.Short, tt.wantShort)
 		}
+	}
+}
+
+func TestInspectHistoryCommandsPresent(t *testing.T) {
+	cmd := newRootCmd()
+	tests := []struct {
+		args      []string
+		alias     string
+		wantFlags []string
+	}{
+		{
+			args:      []string{"inspect", "log"},
+			alias:     "commits",
+			wantFlags: []string{"commit", "since", "until", "author", "paths", "message", "message-regex", "case-sensitive", "limit"},
+		},
+		{
+			args:      []string{"inspect", "show"},
+			alias:     "commit",
+			wantFlags: []string{"commit", "to", "paths", "max-commits"},
+		},
+	}
+
+	for _, tt := range tests {
+		found, _, err := cmd.Find(tt.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := strings.Join(tt.args, " ")
+		if found == nil || found.Use != tt.args[len(tt.args)-1] {
+			t.Fatalf("%s command missing: %#v", name, found)
+		}
+		if !slices.Contains(found.Aliases, tt.alias) {
+			t.Fatalf("%s aliases = %#v, want %q", name, found.Aliases, tt.alias)
+		}
+		for _, flag := range tt.wantFlags {
+			if found.Flags().Lookup(flag) == nil {
+				t.Fatalf("%s flag %q missing", name, flag)
+			}
+		}
+	}
+
+	// git_show cannot run without a revision, so the mirror command requires it.
+	show, _, err := cmd.Find([]string{"inspect", "show"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotations := show.Flags().Lookup("commit").Annotations[cobra.BashCompOneRequiredFlag]
+	if !slices.Contains(annotations, "true") {
+		t.Fatalf("inspect show commit flag should be required: %#v", annotations)
 	}
 }
 

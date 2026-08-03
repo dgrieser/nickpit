@@ -17,6 +17,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/dedupe"
 	"github.com/dgrieser/nickpit/internal/filetype"
+	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -34,6 +35,7 @@ type Engine struct {
 	source                 model.ReviewSource
 	llm                    llm.Client
 	retrieval              retrieval.Engine
+	history                git.History
 	config                 config.Profile
 	trimmer                *Trimmer
 	logger                 *logging.Logger
@@ -99,14 +101,27 @@ type toolRoundState struct {
 
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {
 	return &Engine{
-		source:                 source,
-		llm:                    llmClient,
-		retrieval:              retrievalEngine,
+		source:    source,
+		llm:       llmClient,
+		retrieval: retrievalEngine,
+		// The history tools read the same checkout the retrieval engine reads,
+		// but through git; the profile tokens let a shallow remote checkout be
+		// deepened on first use.
+		history: git.NewExecHistory(git.HistoryAuth{
+			GitHubToken: profile.GitHubToken,
+			GitLabToken: profile.GitLabToken,
+		}),
 		config:                 profile,
 		searchToolOptimization: true,
 		toolchainCapture:       toolchain.Capture,
 		structuralSupport:      &sync.Map{},
 	}
+}
+
+// SetHistory overrides the commit-history provider. Intended for tests;
+// production code uses the git-backed provider built in NewEngine.
+func (e *Engine) SetHistory(history git.History) {
+	e.history = history
 }
 
 // SetToolchainCapture overrides the toolchain version detector. Intended for
@@ -2435,6 +2450,11 @@ func contextToolPath(content string) string {
 	if path, _ := payload["path"].(string); path != "" {
 		return path
 	}
+	// History results are keyed by a revision range rather than a file path, so
+	// label them with it instead of falling back to a bare call index.
+	if revisions, _ := payload["range"].(string); revisions != "" {
+		return "git/" + revisions
+	}
 	if results, ok := payload["results"].([]any); ok && len(results) > 0 {
 		if first, ok := results[0].(map[string]any); ok {
 			path, _ := first["path"].(string)
@@ -3071,6 +3091,33 @@ func parseToolResultSummary(content string) toolResultSummary {
 		}
 		summary.Files = len(distinct)
 	}
+	if commits, ok := payload["commits"].([]any); ok {
+		// git_log/git_show results are commit-shaped: report how many commits
+		// came back and across how many distinct files they changed.
+		summary.HasResultCount = true
+		summary.ResultCount = len(commits)
+		distinct := make(map[string]struct{})
+		for _, item := range commits {
+			commit, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			files, ok := commit["files"].([]any)
+			if !ok {
+				continue
+			}
+			for _, file := range files {
+				entry, ok := file.(map[string]any)
+				if !ok {
+					continue
+				}
+				if path, _ := entry["path"].(string); path != "" {
+					distinct[path] = struct{}{}
+				}
+			}
+		}
+		summary.Files = len(distinct)
+	}
 	if resultCount, ok := payload["result_count"].(float64); ok {
 		summary.HasResultCount = true
 		summary.ResultCount = int(resultCount)
@@ -3135,8 +3182,8 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 	}
 }
 
-// toolCallArgs is the union of arguments across the retrieval tools
-// (inspect_file, list_files, search, find_callers, find_callees). A single
+// toolCallArgs is the union of arguments across the agent tools (inspect_file,
+// list_files, search, find_callers, find_callees, git_log, git_show). A single
 // named type replaces the anonymous struct that was previously re-declared
 // verbatim at several call sites. ContextLines is a pointer so an omitted
 // search value renders as its query-dependent default.
@@ -3150,6 +3197,16 @@ type toolCallArgs struct {
 	ContextLines  *int   `json:"context_lines"`
 	MaxResults    int    `json:"max_results"`
 	CaseSensitive bool   `json:"case_sensitive"`
+	Commit        string `json:"commit"`
+	To            string `json:"to"`
+	Since         string `json:"since"`
+	Until         string `json:"until"`
+	Author        string `json:"author"`
+	Paths         string `json:"paths"`
+	Message       string `json:"message"`
+	MessageRegex  bool   `json:"message_regex"`
+	Limit         int    `json:"limit"`
+	MaxCommits    int    `json:"max_commits"`
 }
 
 func syntheticToolArguments(toolName string, args toolCallArgs) string {
@@ -3186,6 +3243,33 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 			args.Depth = defaultCallHierarchyDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
+	case "git_log":
+		parts = append(parts, fmt.Sprintf("commit=%q", syntheticPathValue(args.Commit, "HEAD")))
+		parts = appendOptionalToolArgs(parts, [][2]string{
+			{"since", args.Since},
+			{"until", args.Until},
+			{"author", args.Author},
+			{"paths", args.Paths},
+			{"message", args.Message},
+		})
+		if args.MessageRegex {
+			parts = append(parts, "message_regex=true")
+		}
+		if args.CaseSensitive {
+			parts = append(parts, "case_sensitive=true")
+		}
+		if args.Limit > 0 {
+			parts = append(parts, fmt.Sprintf("limit=%d", args.Limit))
+		}
+	case "git_show":
+		parts = append(parts, fmt.Sprintf("commit=%q", syntheticPathValue(args.Commit, "<commit>")))
+		parts = appendOptionalToolArgs(parts, [][2]string{
+			{"to", args.To},
+			{"paths", args.Paths},
+		})
+		if args.MaxCommits > 0 {
+			parts = append(parts, fmt.Sprintf("max_commits=%d", args.MaxCommits))
+		}
 	default:
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, "<path>")))
 	}
@@ -3214,6 +3298,19 @@ func syntheticToolOutcome(toolName string, result toolResultSummary) string {
 		parts = append(parts, "ok")
 	}
 	return fmt.Sprintf("result=[%s]", strings.Join(parts, ", "))
+}
+
+// appendOptionalToolArgs renders only the filter arguments an agent actually
+// passed, in a fixed order so log lines and synthetic tool histories stay
+// stable across calls.
+func appendOptionalToolArgs(parts []string, values [][2]string) []string {
+	for _, value := range values {
+		if strings.TrimSpace(value[1]) == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%q", value[0], value[1]))
+	}
+	return parts
 }
 
 func syntheticPathValue(path, empty string) string {

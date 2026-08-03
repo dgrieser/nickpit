@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dgrieser/nickpit/internal/git"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
@@ -128,6 +129,22 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 			}
 		}
 		return searchDedupKey(normalizedPath, query, resolveSearchContextLines(args.ContextLines, query), args.MaxResults, args.CaseSensitive)
+	case "git_log":
+		var args gitLogToolArgs
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
+			return uniqueKey
+		}
+		return gitLogDedupKey(args.options())
+	case "git_show":
+		var args gitShowToolArgs
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
+			return uniqueKey
+		}
+		if strings.TrimSpace(args.Commit) == "" {
+			// Executes as a missing_argument error without dedup state.
+			return uniqueKey
+		}
+		return gitShowDedupKey(args.options(e.diffFormat()))
 	default:
 		return uniqueKey
 	}
@@ -148,6 +165,10 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 		return e.executeCallHierarchy(ctx, repoRoot, toolCall, true, state)
 	case "find_callees":
 		return e.executeCallHierarchy(ctx, repoRoot, toolCall, false, state)
+	case "git_log":
+		return e.executeGitLog(ctx, repoRoot, toolCall, state)
+	case "git_show":
+		return e.executeGitShow(ctx, repoRoot, toolCall, state)
 	default:
 		return toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
 	}
@@ -634,4 +655,167 @@ func toolError(path, code, message string) string {
 		payload["path"] = path
 	}
 	return mustToolResultJSON(payload)
+}
+
+// gitLogToolArgs are the LLM-supplied arguments of the git_log tool. Multi-path
+// filters arrive as one comma-separated string because a tool schema only
+// carries scalar parameters.
+type gitLogToolArgs struct {
+	Commit        string `json:"commit"`
+	Since         string `json:"since"`
+	Until         string `json:"until"`
+	Author        string `json:"author"`
+	Paths         string `json:"paths"`
+	Message       string `json:"message"`
+	MessageRegex  bool   `json:"message_regex"`
+	CaseSensitive bool   `json:"case_sensitive"`
+	Limit         int    `json:"limit"`
+}
+
+// options normalizes the arguments once, so the dedup key is computed from the
+// exact values the provider runs with.
+func (a gitLogToolArgs) options() git.LogOptions {
+	return git.LogOptions{
+		Commit:        strings.TrimSpace(a.Commit),
+		Since:         strings.TrimSpace(a.Since),
+		Until:         strings.TrimSpace(a.Until),
+		Author:        strings.TrimSpace(a.Author),
+		Paths:         splitToolPathList(a.Paths),
+		Message:       strings.TrimSpace(a.Message),
+		MessageRegex:  a.MessageRegex,
+		CaseSensitive: a.CaseSensitive,
+		Limit:         a.Limit,
+	}
+}
+
+// gitShowToolArgs are the LLM-supplied arguments of the git_show tool.
+type gitShowToolArgs struct {
+	Commit     string `json:"commit"`
+	To         string `json:"to"`
+	Paths      string `json:"paths"`
+	MaxCommits int    `json:"max_commits"`
+}
+
+func (a gitShowToolArgs) options(format model.DiffFormat) git.ShowOptions {
+	return git.ShowOptions{
+		Commit:     strings.TrimSpace(a.Commit),
+		To:         strings.TrimSpace(a.To),
+		Paths:      splitToolPathList(a.Paths),
+		MaxCommits: a.MaxCommits,
+		Format:     format,
+	}
+}
+
+// splitToolPathList turns a comma- or newline-separated path list into
+// repo-relative paths, normalized like every other tool path.
+func splitToolPathList(paths string) []string {
+	fields := strings.FieldsFunc(paths, func(r rune) bool {
+		return r == ',' || r == '\n' || r == ';'
+	})
+	cleaned := make([]string, 0, len(fields))
+	for _, field := range fields {
+		path := normalizeToolPath(strings.TrimSpace(field))
+		if path == "" || path == "." {
+			continue
+		}
+		cleaned = append(cleaned, path)
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
+func gitLogDedupKey(opts git.LogOptions) string {
+	return fmt.Sprintf("git_log\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%t\x00%t\x00%d",
+		opts.Commit, opts.Since, opts.Until, opts.Author, strings.Join(opts.Paths, ","),
+		opts.Message, opts.MessageRegex, opts.CaseSensitive, opts.Limit)
+}
+
+func gitShowDedupKey(opts git.ShowOptions) string {
+	return fmt.Sprintf("git_show\x00%s\x00%s\x00%s\x00%d\x00%s",
+		opts.Commit, opts.To, strings.Join(opts.Paths, ","), opts.MaxCommits, opts.Format)
+}
+
+// diffFormat is the diff shape the history tools return, matching the shape the
+// agent already sees in its prompt payload.
+func (e *Engine) diffFormat() model.DiffFormat {
+	if e.config.DiffFormat == "" {
+		return model.DiffFormatGit
+	}
+	return e.config.DiffFormat
+}
+
+func (e *Engine) executeGitLog(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
+	var args gitLogToolArgs
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
+	}
+	if e.history == nil {
+		return toolError("", "history_unavailable", "commit history is unavailable for this review")
+	}
+	opts := args.options()
+	key := gitLogDedupKey(opts)
+	unlock := state.toolLocks.lock(key)
+	defer unlock()
+	state.mu.Lock()
+	_, seen := state.seenToolCalls[key]
+	state.mu.Unlock()
+	if seen {
+		e.logf(ctx, "Skipping duplicate tool call: name=%s commit=%q", toolCall.Name, opts.Commit)
+		return toolError("", "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
+	}
+	e.logf(ctx, "Executing tool call: name=%s commit=%q since=%q until=%q author=%q paths=%q message=%q message_regex=%t case_sensitive=%t limit=%d",
+		toolCall.Name, opts.Commit, opts.Since, opts.Until, opts.Author, strings.Join(opts.Paths, ","), opts.Message, opts.MessageRegex, opts.CaseSensitive, opts.Limit)
+	result, err := e.history.Log(ctx, repoRoot, opts)
+	if err != nil {
+		return historyToolError(err)
+	}
+	state.mu.Lock()
+	state.seenToolCalls[key] = struct{}{}
+	state.mu.Unlock()
+	return mustToolResultJSON(result)
+}
+
+func (e *Engine) executeGitShow(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
+	var args gitShowToolArgs
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
+	}
+	if e.history == nil {
+		return toolError("", "history_unavailable", "commit history is unavailable for this review")
+	}
+	opts := args.options(e.diffFormat())
+	if opts.Commit == "" {
+		return toolError("", "missing_argument", missingToolArgumentMessage(toolCall.Name, "commit"))
+	}
+	key := gitShowDedupKey(opts)
+	unlock := state.toolLocks.lock(key)
+	defer unlock()
+	state.mu.Lock()
+	_, seen := state.seenToolCalls[key]
+	state.mu.Unlock()
+	if seen {
+		e.logf(ctx, "Skipping duplicate tool call: name=%s commit=%q", toolCall.Name, opts.Commit)
+		return toolError("", "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
+	}
+	e.logf(ctx, "Executing tool call: name=%s commit=%q to=%q paths=%q max_commits=%d diff_format=%s",
+		toolCall.Name, opts.Commit, opts.To, strings.Join(opts.Paths, ","), opts.MaxCommits, opts.Format)
+	result, err := e.history.Show(ctx, repoRoot, opts)
+	if err != nil {
+		return historyToolError(err)
+	}
+	state.mu.Lock()
+	state.seenToolCalls[key] = struct{}{}
+	state.mu.Unlock()
+	return mustToolResultJSON(result)
+}
+
+// historyToolError distinguishes a checkout without git metadata (nothing the
+// agent can do about it) from a failed or rejected git command.
+func historyToolError(err error) string {
+	if errors.Is(err, git.ErrNotAGitRepo) {
+		return toolError("", "history_unavailable", "the reviewed checkout has no git history")
+	}
+	return toolError("", "history_failed", err.Error())
 }

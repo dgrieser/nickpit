@@ -2280,7 +2280,7 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
-	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees"}
+	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees", "git_log", "git_show"}
 	if len(definitions) != len(wantNames) {
 		t.Fatalf("tool definitions = %d", len(definitions))
 	}
@@ -2301,6 +2301,7 @@ func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 		"search":       {"query"},
 		"find_callers": {"symbol"},
 		"find_callees": {"symbol"},
+		"git_show":     {"commit"},
 	}
 	for _, definition := range definitions {
 		var schema map[string]any

@@ -173,6 +173,14 @@ func (m *CheckoutManager) checkoutTarget(spec model.CheckoutSpec) string {
 }
 
 func (m *CheckoutManager) authArgs(provider model.ReviewMode, token string) []string {
+	return authHeaderArgs(provider, token)
+}
+
+// authHeaderArgs renders a provider token as the per-invocation credential
+// header git clones and fetches with. Keeping it out of the repository config
+// keeps the token off disk. Shared with the history provider, which needs the
+// same credentials to deepen a shallow checkout of a private repository.
+func authHeaderArgs(provider model.ReviewMode, token string) []string {
 	if token == "" {
 		return nil
 	}
