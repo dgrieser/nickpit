@@ -638,9 +638,41 @@ func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
 			wantSet: true,
 		},
 		{
-			name:    "github subdomain",
-			origin:  "https://api.github.com/acme/repo.git",
-			auth:    HistoryAuth{GitHubToken: "ghp-secret"},
+			// Only the exact configured host is trusted. Clone URLs live on
+			// github.com itself, so no legitimate origin loses its token here,
+			// while a broad configured host cannot be widened by a subdomain.
+			name:   "github subdomain",
+			origin: "https://api.github.com/acme/repo.git",
+			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+		},
+		{
+			name:   "subdomain of a broad configured gitlab host",
+			origin: "https://attacker.example.com/acme/repo.git",
+			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://example.com/api/v4"},
+		},
+		{
+			name:    "broad configured gitlab host itself",
+			origin:  "https://example.com/acme/repo.git",
+			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://example.com/api/v4"},
+			wantSet: true,
+		},
+		{
+			// A scheme-less base URL is accepted configuration; it must not
+			// silently resolve to gitlab.com.
+			name:   "gitlab.com origin with a scheme-less self-hosted base url",
+			origin: "https://gitlab.com/acme/repo.git",
+			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "gitlab.internal"},
+		},
+		{
+			name:    "scheme-less self-hosted base url matches its own host",
+			origin:  "https://gitlab.internal/acme/repo.git",
+			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "gitlab.internal"},
+			wantSet: true,
+		},
+		{
+			name:    "scheme-less self-hosted base url with a port",
+			origin:  "https://gitlab.internal/acme/repo.git",
+			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "gitlab.internal:8443/api/v4"},
 			wantSet: true,
 		},
 		{

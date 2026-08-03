@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
 	"github.com/dgrieser/nickpit/mappings"
 	"gopkg.in/yaml.v3"
 )
@@ -926,9 +927,11 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.Workdir != "" {
 		profile.Workdir = expandPath(profile.Workdir)
 	}
-	if profile.GitLabBaseURL == "" {
-		profile.GitLabBaseURL = "https://gitlab.com/api/v4"
-	}
+	// Canonicalize once, here: a user may write a scheme-less or path-less value
+	// ("gitlab.internal", "gitlab.internal:8443"), and every consumer — the API
+	// client, the session host check, the credential host the history provider
+	// deepens with — must see the same URL rather than each normalizing it again.
+	profile.GitLabBaseURL = glscm.NormalizeBaseURL(profile.GitLabBaseURL)
 	if err := validateRegexList("include_paths", profile.IncludePaths); err != nil {
 		return Profile{}, err
 	}

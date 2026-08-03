@@ -786,25 +786,36 @@ func urlSchemeHost(raw string) (string, string) {
 	return scheme, strings.ToLower(parsed.Hostname())
 }
 
-// hostMatches accepts the trusted host itself and its subdomains, and nothing
-// else — "github.attacker.example" and "notgithub.com" both fail.
+// hostMatches requires the exact configured host. Subdomains are deliberately
+// not accepted: a self-hosted instance may be configured under a broad host such
+// as example.com, and an origin URL is attacker controlled in a fork PR/MR, so
+// trusting "*.example.com" would hand the token to attacker.example.com.
 func hostMatches(host, trusted string) bool {
 	trusted = strings.ToLower(strings.TrimSpace(trusted))
-	if trusted == "" {
-		return false
-	}
-	return host == trusted || strings.HasSuffix(host, "."+trusted)
+	return trusted != "" && host == trusted
 }
 
 // gitLabHost is the host of the configured GitLab API base URL. The scheme of
 // that URL is irrelevant here — it only names the instance to trust; whether a
 // credential may travel is decided by the remote's own scheme in
-// credentialHost.
+// credentialHost. Only genuinely empty configuration falls back to gitlab.com:
+// resolving a self-hosted instance to the public host would send its token to
+// gitlab.com origins.
 func gitLabHost(baseURL string) string {
-	if _, host := urlSchemeHost(baseURL); host != "" {
-		return host
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return defaultGitLabHost
 	}
-	return defaultGitLabHost
+	// config canonicalizes gitlab_base_url on load, so a scheme is normally
+	// present. This repeats the prepend for callers that construct HistoryAuth
+	// themselves: without a scheme url.Parse reads "gitlab.internal:8443" as a
+	// scheme, and silently yielding no host would fall back to gitlab.com — the
+	// one outcome a self-hosted token must never have.
+	if !strings.Contains(baseURL, "://") {
+		baseURL = "https://" + baseURL
+	}
+	_, host := urlSchemeHost(baseURL)
+	return host
 }
 
 func remoteURL(ctx context.Context, runner Runner) string {

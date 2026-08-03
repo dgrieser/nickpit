@@ -1988,3 +1988,34 @@ func TestLoadWithoutModelReturnsSentinelAndNormalizedProfile(t *testing.T) {
 		t.Fatalf("error = %v, want a diff_format validation error", err)
 	}
 }
+
+// gitlab_base_url is canonicalized once on load: every consumer (API client,
+// session host check, the host the history provider may send a token to) must
+// see the same URL instead of normalizing a user-written value again.
+func TestLoadCanonicalizesGitLabBaseURL(t *testing.T) {
+	tests := []struct {
+		name string
+		set  string
+		want string
+	}{
+		{name: "empty falls back to gitlab.com", set: "", want: "https://gitlab.com/api/v4"},
+		{name: "scheme-less host", set: "gitlab.internal", want: "https://gitlab.internal/api/v4"},
+		{name: "scheme-less host with port", set: "gitlab.internal:8443", want: "https://gitlab.internal:8443/api/v4"},
+		{name: "missing api path", set: "https://gitlab.internal", want: "https://gitlab.internal/api/v4"},
+		{name: "trailing slash", set: "https://gitlab.internal/api/v4/", want: "https://gitlab.internal/api/v4"},
+		{name: "already canonical", set: "https://gitlab.internal/api/v4", want: "https://gitlab.internal/api/v4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("NICKPIT_MODEL", "test-model")
+			t.Setenv("NICKPIT_GITLAB_BASE_URL", tt.set)
+			_, profile, err := Load("", Overrides{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile.GitLabBaseURL != tt.want {
+				t.Fatalf("gitlab base url = %q, want %q", profile.GitLabBaseURL, tt.want)
+			}
+		})
+	}
+}
