@@ -108,8 +108,9 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		// but through git; the profile tokens let a shallow remote checkout be
 		// deepened on first use.
 		history: git.NewExecHistory(git.HistoryAuth{
-			GitHubToken: profile.GitHubToken,
-			GitLabToken: profile.GitLabToken,
+			GitHubToken:   profile.GitHubToken,
+			GitLabToken:   profile.GitLabToken,
+			GitLabBaseURL: profile.GitLabBaseURL,
 		}),
 		config:                 profile,
 		searchToolOptimization: true,

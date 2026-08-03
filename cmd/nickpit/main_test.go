@@ -2047,3 +2047,22 @@ func TestApplyEnvDefaultsRejectsInvalidConfidenceThreshold(t *testing.T) {
 		t.Fatalf("err = %v, want NICKPIT_CONFIDENCE_THRESHOLD parse error", err)
 	}
 }
+
+func TestHunkLineRangeIsInclusive(t *testing.T) {
+	tests := []struct {
+		name string
+		hunk model.DiffHunk
+		want string
+	}{
+		{name: "multi line", hunk: model.DiffHunk{NewStart: 10, NewLines: 3}, want: "10-12"},
+		{name: "single line", hunk: model.DiffHunk{NewStart: 10, NewLines: 1}, want: "10-10"},
+		{name: "pure deletion", hunk: model.DiffHunk{NewStart: 10, NewLines: 0}, want: "10"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hunkLineRange(tt.hunk); got != tt.want {
+				t.Fatalf("hunkLineRange(%d,%d) = %q, want %q", tt.hunk.NewStart, tt.hunk.NewLines, got, tt.want)
+			}
+		})
+	}
+}

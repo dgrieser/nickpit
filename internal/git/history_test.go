@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
 )
@@ -36,9 +38,30 @@ func resolved(runner *stubGitRunner, rev, sha string) {
 	runner.outputs[joinArgs([]string{"rev-parse", "--verify", "--end-of-options", rev + "^{commit}"})] = sha + "\n"
 }
 
-func logRecord(sha, short, author, email, date, parents, subject, body, files string) string {
-	return recordSeparator + strings.Join([]string{sha, short, author, email, date, parents, subject, body}, fieldSeparator) +
+// logRecord renders one commitFormat record; commitDate defaults to date when
+// empty, matching the common case where a commit was never rewritten.
+func logRecord(sha, short, author, email, date, commitDate, parents, subject, body, files string) string {
+	if commitDate == "" {
+		commitDate = date
+	}
+	return recordSeparator + strings.Join([]string{sha, short, author, email, date, commitDate, parents, subject, body}, fieldSeparator) +
 		fieldSeparator + files
+}
+
+// metadataRecord renders the `git show --no-patch` answer for one commit.
+func metadataRecord(sha, short, author, email, date, parents, subject string) string {
+	return strings.Join([]string{sha, short, author, email, date, date, parents, subject, ""}, fieldSeparator) + fieldSeparator
+}
+
+// showRevision extracts the revision a `git show` invocation targets: the last
+// argument before the "--" pathspec separator, or simply the last one.
+func showRevision(args []string) string {
+	for i, arg := range args {
+		if arg == "--" && i > 0 {
+			return args[i-1]
+		}
+	}
+	return args[len(args)-1]
 }
 
 func findCall(calls [][]string, name string) []string {
@@ -72,7 +95,7 @@ func TestLogParsesCommitsWithChangedFiles(t *testing.T) {
 		if args[0] != "log" {
 			return "", false
 		}
-		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "bbb222",
+		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "2026-08-02T11:00:00Z", "bbb222",
 			"feat(a): add thing", "body line\n", files), true
 	}
 
@@ -123,7 +146,7 @@ func TestLogParsesRenamesDeletionsAndBinaries(t *testing.T) {
 		if args[0] != "log" {
 			return "", false
 		}
-		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "bbb222",
+		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "", "bbb222",
 			"chore: move", "", files), true
 	}
 
@@ -158,7 +181,7 @@ func TestLogAppliesFiltersAndLimit(t *testing.T) {
 		records := make([]string, 0, 3)
 		for i := 0; i < 3; i++ {
 			records = append(records, logRecord(fmt.Sprintf("sha%d", i), fmt.Sprintf("sha%d", i), "Ada", "ada@example.com",
-				"2026-08-01T10:00:00Z", "parent", "subject", "", ""))
+				"2026-08-01T10:00:00Z", "", "parent", "subject", "", ""))
 		}
 		return strings.Join(records, ""), true
 	}
@@ -227,7 +250,7 @@ func TestLogRetriesWithoutDiffMergesOnOldGit(t *testing.T) {
 		if args[0] != "log" {
 			return "", false
 		}
-		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "bbb222", "subject", "", ""), true
+		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "", "bbb222", "subject", "", ""), true
 	}
 	runner.matchErr = func(args []string) error {
 		if args[0] == "log" && strings.Contains(strings.Join(args, " "), "--diff-merges=first-parent") {
@@ -273,7 +296,7 @@ func TestShowReturnsOneDiffPerCommitInRange(t *testing.T) {
 		}
 		sha := args[len(args)-1]
 		if args[1] == "--no-patch" {
-			return strings.Join([]string{sha, sha[:3], "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent111", "subject " + sha, ""}, fieldSeparator) + fieldSeparator, true
+			return metadataRecord(sha, sha[:3], "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent111", "subject "+sha), true
 		}
 		return patch("internal/" + sha + ".go"), true
 	}
@@ -310,7 +333,7 @@ func TestShowSingleCommitIgnoresPathspecForCommitSelection(t *testing.T) {
 			return "", false
 		}
 		if args[1] == "--no-patch" {
-			return strings.Join([]string{"aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject", ""}, fieldSeparator) + fieldSeparator, true
+			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
 		}
 		return "", true // pathspec matches nothing
 	}
@@ -342,7 +365,7 @@ func TestShowFallsBackToFirstParentWhenCombinedDiffIsEmpty(t *testing.T) {
 		joined := strings.Join(args, " ")
 		switch {
 		case args[1] == "--no-patch":
-			return strings.Join([]string{"mmm111", "mmm111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "p1 p2", "Merge branch", ""}, fieldSeparator) + fieldSeparator, true
+			return metadataRecord("mmm111", "mmm111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "p1 p2", "Merge branch"), true
 		case strings.Contains(joined, "--cc"):
 			return "", true
 		default:
@@ -391,7 +414,7 @@ func TestShowKeepsCombinedPatchWhenGitJSONHasNoHunks(t *testing.T) {
 			return "", false
 		}
 		if args[1] == "--no-patch" {
-			return strings.Join([]string{"mmm111", "mmm111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "p1 p2", "Merge branch", ""}, fieldSeparator) + fieldSeparator, true
+			return metadataRecord("mmm111", "mmm111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "p1 p2", "Merge branch"), true
 		}
 		return strings.Join([]string{
 			"diff --cc a.go",
@@ -430,7 +453,7 @@ func TestShowTruncatesOversizedPatch(t *testing.T) {
 			return "", false
 		}
 		if args[1] == "--no-patch" {
-			return strings.Join([]string{"aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject", ""}, fieldSeparator) + fieldSeparator, true
+			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
 		}
 		return "diff --git a/a.go b/a.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6+10), true
 	}
@@ -547,7 +570,7 @@ func TestShallowCheckoutIsDeepenedOnceForConcurrentCalls(t *testing.T) {
 		if args[0] != "log" {
 			return "", false
 		}
-		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "", "subject", "", ""), true
+		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "", "", "subject", "", ""), true
 	}
 
 	repoRoot := t.TempDir()
@@ -592,34 +615,302 @@ func TestShallowCheckoutIsDeepenedOnceForConcurrentCalls(t *testing.T) {
 	}
 }
 
-func TestDeepenUsesProviderTokenForOriginHost(t *testing.T) {
-	runner := &stubGitRunner{outputs: map[string]string{
-		joinArgs([]string{"rev-parse", "--git-dir"}):               ".git\n",
-		joinArgs([]string{"rev-parse", "--is-shallow-repository"}): "true\n",
-		joinArgs([]string{"rev-list", "--count", "HEAD"}):          "1\n",
-		joinArgs([]string{"config", "--get", "remote.origin.url"}): "https://gitlab.example.com/acme/repo.git\n",
-	}}
-	resolved(runner, "HEAD", "aaa111")
-	history := NewExecHistory(HistoryAuth{GitLabToken: "glpat-secret"})
-	history.newRunner = func(string) Runner { return runner }
-	runner.match = func(args []string) (string, bool) {
-		if args[0] == "log" {
-			return "", true
-		}
-		return "", false
+func TestDeepenSendsTokenOnlyToConfiguredProviderHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		origin  string
+		auth    HistoryAuth
+		wantSet bool
+	}{
+		{
+			name:    "github.com",
+			origin:  "https://github.com/acme/repo.git",
+			auth:    HistoryAuth{GitHubToken: "ghp-secret"},
+			wantSet: true,
+		},
+		{
+			name:    "github subdomain",
+			origin:  "https://api.github.com/acme/repo.git",
+			auth:    HistoryAuth{GitHubToken: "ghp-secret"},
+			wantSet: true,
+		},
+		{
+			// The origin URL of a fork PR/MR is attacker controlled, so a host
+			// that merely contains "github" must never receive the token.
+			name:   "lookalike github host",
+			origin: "https://github.attacker.example/acme/repo.git",
+			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+		},
+		{
+			name:   "host with github as a prefix",
+			origin: "https://github.com.attacker.example/acme/repo.git",
+			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+		},
+		{
+			name:   "unconfigured github enterprise host",
+			origin: "https://github.enterprise.internal/acme/repo.git",
+			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+		},
+		{
+			name:    "configured self-hosted gitlab",
+			origin:  "https://gitlab.example.com/acme/repo.git",
+			auth:    HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://gitlab.example.com/api/v4"},
+			wantSet: true,
+		},
+		{
+			name:   "gitlab host other than the configured one",
+			origin: "https://gitlab.other.example/acme/repo.git",
+			auth:   HistoryAuth{GitLabToken: "glpat-secret", GitLabBaseURL: "https://gitlab.example.com/api/v4"},
+		},
+		{
+			name:    "gitlab.com without a configured base url",
+			origin:  "https://gitlab.com/acme/repo.git",
+			auth:    HistoryAuth{GitLabToken: "glpat-secret"},
+			wantSet: true,
+		},
+		{
+			// ssh remotes authenticate with keys; an Authorization header would
+			// only leak the token into the command line for no benefit.
+			name:   "ssh remote",
+			origin: "git@github.com:acme/repo.git",
+			auth:   HistoryAuth{GitHubToken: "ghp-secret"},
+		},
 	}
 
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &stubGitRunner{outputs: map[string]string{
+				joinArgs([]string{"rev-parse", "--git-dir"}):               ".git\n",
+				joinArgs([]string{"rev-parse", "--is-shallow-repository"}): "true\n",
+				joinArgs([]string{"rev-list", "--count", "HEAD"}):          "1\n",
+				joinArgs([]string{"config", "--get", "remote.origin.url"}): tt.origin + "\n",
+				joinArgs([]string{"rev-parse", "HEAD"}):                    "aaa111\n",
+			}}
+			resolved(runner, "HEAD", "aaa111")
+			history := NewExecHistory(tt.auth)
+			history.newRunner = func(string) Runner { return runner }
+			runner.match = func(args []string) (string, bool) {
+				return "", args[0] == "log"
+			}
+
+			if _, err := history.Log(context.Background(), t.TempDir(), LogOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			call := findCall(runner.recordedCalls(), "fetch")
+			if call == nil {
+				t.Fatalf("expected a deepen fetch: %v", runner.recordedCalls())
+			}
+			hasHeader := len(call) > 1 && call[0] == "-c" && strings.HasPrefix(call[1], "http.extraHeader=Authorization: Basic ")
+			if hasHeader != tt.wantSet {
+				t.Fatalf("credential header present = %t, want %t: %#v", hasHeader, tt.wantSet, call)
+			}
+			joined := strings.Join(call, " ")
+			for _, token := range []string{"ghp-secret", "glpat-secret"} {
+				if strings.Contains(joined, token) {
+					t.Fatalf("token must travel base64-encoded in the header: %#v", call)
+				}
+			}
+		})
+	}
+}
+
+func TestLogAppliesMatchModeToAuthorOnlyFilters(t *testing.T) {
+	tests := []struct {
+		name     string
+		opts     LogOptions
+		want     string
+		unwanted string
+	}{
+		{
+			// git's default is basic-regex matching, under which a literal
+			// "Grie[s]er" silently becomes a character class.
+			name:     "literal author",
+			opts:     LogOptions{Author: "Grie[s]er"},
+			want:     "--fixed-strings",
+			unwanted: "--extended-regexp",
+		},
+		{
+			name:     "regex author",
+			opts:     LogOptions{Author: "Grie(s)er", MessageRegex: true},
+			want:     "--extended-regexp",
+			unwanted: "--fixed-strings",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &stubGitRunner{outputs: map[string]string{}}
+			history := newTestHistory(runner)
+			var logArgs []string
+			runner.match = func(args []string) (string, bool) {
+				if args[0] != "log" {
+					return "", false
+				}
+				logArgs = append([]string(nil), args...)
+				return "", true
+			}
+
+			if _, err := history.Log(context.Background(), t.TempDir(), tt.opts); err != nil {
+				t.Fatal(err)
+			}
+			joined := strings.Join(logArgs, " ")
+			if !strings.Contains(joined, tt.want) {
+				t.Fatalf("log args missing %q: %v", tt.want, logArgs)
+			}
+			if strings.Contains(joined, tt.unwanted) {
+				t.Fatalf("log args should not contain %q: %v", tt.unwanted, logArgs)
+			}
+			if !strings.Contains(joined, "--regexp-ignore-case") {
+				t.Fatalf("case-insensitive default missing: %v", logArgs)
+			}
+		})
+	}
+
+	// With no pattern at all there is nothing to select a match mode for.
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	history := newTestHistory(runner)
+	var logArgs []string
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "log" {
+			return "", false
+		}
+		logArgs = append([]string(nil), args...)
+		return "", true
+	}
 	if _, err := history.Log(context.Background(), t.TempDir(), LogOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	call := findCall(runner.recordedCalls(), "fetch")
-	if call == nil {
-		t.Fatalf("expected a deepen fetch: %v", runner.recordedCalls())
+	joined := strings.Join(logArgs, " ")
+	for _, flag := range []string{"--fixed-strings", "--extended-regexp", "--regexp-ignore-case"} {
+		if strings.Contains(joined, flag) {
+			t.Fatalf("unfiltered log should not pass %q: %v", flag, logArgs)
+		}
 	}
-	if call[0] != "-c" || !strings.HasPrefix(call[1], "http.extraHeader=Authorization: Basic ") {
-		t.Fatalf("fetch args = %#v, want a credential header prefix", call)
+}
+
+// The author date is what agents read; the commit date is what --since/--until
+// select on, so both must reach the result.
+func TestLogReportsAuthorAndCommitDates(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	history := newTestHistory(runner)
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "log" {
+			return "", false
+		}
+		return logRecord("aaa111", "aaa111", "Ada", "ada@example.com",
+			"2026-07-29T20:22:35Z", "2026-07-31T13:38:06Z", "bbb222", "subject", "", ""), true
 	}
-	if strings.Contains(strings.Join(call, " "), "glpat-secret") {
-		t.Fatalf("token must travel base64-encoded in the header: %#v", call)
+
+	result, err := history.Log(context.Background(), t.TempDir(), LogOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := result.Commits[0]
+	if got := commit.Date.Format(time.RFC3339); got != "2026-07-29T20:22:35Z" {
+		t.Fatalf("author date = %q", got)
+	}
+	if got := commit.CommitDate.Format(time.RFC3339); got != "2026-07-31T13:38:06Z" {
+		t.Fatalf("commit date = %q", got)
+	}
+}
+
+// Path filters narrow each diff; they must not decide which commits of a range
+// are returned, or a range would silently skip commits.
+func TestShowRangeKeepsCommitsThatMissThePathFilter(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "aaa", "aaa111")
+	resolved(runner, "bbb", "bbb222")
+	runner.outputs[joinArgs([]string{"rev-list", "--max-count=11", "aaa111..bbb222"})] = "bbb222\nccc333\n"
+	history := newTestHistory(runner)
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		sha := showRevision(args)
+		if len(args) > 1 && args[1] == "--no-patch" {
+			return metadataRecord(sha, sha[:3], "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject "+sha), true
+		}
+		if sha != "bbb222" {
+			return "", true // ccc333 touched none of the requested paths
+		}
+		return strings.Join([]string{
+			"diff --git a/internal/serve/server.go b/internal/serve/server.go",
+			"index 111..222 100644",
+			"--- a/internal/serve/server.go",
+			"+++ b/internal/serve/server.go",
+			"@@ -1 +1,2 @@",
+			" keep",
+			"+added",
+			"",
+		}, "\n"), true
+	}
+
+	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{
+		Commit: "aaa..bbb",
+		Paths:  []string{"internal/serve"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range runner.recordedCalls() {
+		if call[0] == "rev-list" && slices.Contains(call, "--") {
+			t.Fatalf("rev-list must not receive the pathspec: %#v", call)
+		}
+	}
+	if result.CommitCount != 2 {
+		t.Fatalf("commit count = %d, want both range commits", result.CommitCount)
+	}
+	if len(result.Commits[0].DiffFiles) != 1 {
+		t.Fatalf("matching commit lost its diff: %#v", result.Commits[0])
+	}
+	empty := result.Commits[1]
+	if len(empty.DiffFiles) != 0 || !strings.Contains(empty.Note, "no changes in the requested paths") {
+		t.Fatalf("non-matching commit = %+v", empty)
+	}
+	if empty.SHA != "ccc333" {
+		t.Fatalf("second commit = %q", empty.SHA)
+	}
+}
+
+// An oversized patch is dropped, but what the commit changed must still be
+// reported or an agent cannot tell whether the commit matters.
+func TestShowKeepsChangedFilesWhenPatchIsOmitted(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "aaa", "aaa111")
+	history := newTestHistory(runner)
+	rawCalls := 0
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case args[1] == "--no-patch":
+			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
+		case strings.Contains(joined, "--raw"):
+			rawCalls++
+			return "\n:100644 100644 1111111 2222222 M\x00big.go\x00\n900\t120\tbig.go\x00", true
+		default:
+			return "diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6+10), true
+		}
+	}
+
+	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "aaa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := result.Commits[0]
+	if !commit.Truncated || len(commit.DiffFiles) != 0 {
+		t.Fatalf("oversized patch should be dropped: %+v", commit)
+	}
+	if rawCalls != 1 {
+		t.Fatalf("raw metadata calls = %d, want 1", rawCalls)
+	}
+	want := []CommitFile{{Path: "big.go", Status: model.FileModified, Additions: 900, Deletions: 120}}
+	if len(commit.Files) != 1 || commit.Files[0] != want[0] {
+		t.Fatalf("files = %#v, want %#v", commit.Files, want)
+	}
+	if commit.Additions != 900 || commit.Deletions != 120 {
+		t.Fatalf("totals = +%d -%d", commit.Additions, commit.Deletions)
 	}
 }

@@ -29,8 +29,10 @@ type LogOptions struct {
 	// Commit is a revision to list history from (default HEAD) or a range
 	// ("a..b"/"a...b"). SHAs may be abbreviated to any length.
 	Commit string
-	// Since and Until bound the author date. Any value git understands works
-	// (RFC3339, "2026-01-02", "2 weeks ago").
+	// Since and Until bound the commit date (git's committer timestamp, which
+	// is what --since/--until filter on — a rebased or cherry-picked commit is
+	// selected by when it was last rewritten, not when it was authored). Any
+	// value git understands works (RFC3339, "2026-01-02", "2 weeks ago").
 	Since string
 	Until string
 	// Author matches the author name/email.
@@ -77,18 +79,22 @@ type CommitFile struct {
 // CommitEntry is a commit's metadata plus its changed files, without any patch
 // content.
 type CommitEntry struct {
-	SHA         string       `json:"sha"`
-	ShortSHA    string       `json:"short_sha"`
-	Author      string       `json:"author"`
-	AuthorEmail string       `json:"author_email,omitempty"`
-	Date        time.Time    `json:"date"`
-	Subject     string       `json:"subject"`
-	Body        string       `json:"body,omitempty"`
-	Parents     []string     `json:"parents,omitempty"`
-	IsMerge     bool         `json:"is_merge,omitempty"`
-	Additions   int          `json:"additions"`
-	Deletions   int          `json:"deletions"`
-	Files       []CommitFile `json:"files"`
+	SHA         string `json:"sha"`
+	ShortSHA    string `json:"short_sha"`
+	Author      string `json:"author"`
+	AuthorEmail string `json:"author_email,omitempty"`
+	// Date is the author date; CommitDate is the committer date, which is what
+	// the Since/Until filters select on. They differ for rebased, amended and
+	// cherry-picked commits.
+	Date       time.Time    `json:"date"`
+	CommitDate time.Time    `json:"commit_date,omitempty"`
+	Subject    string       `json:"subject"`
+	Body       string       `json:"body,omitempty"`
+	Parents    []string     `json:"parents,omitempty"`
+	IsMerge    bool         `json:"is_merge,omitempty"`
+	Additions  int          `json:"additions"`
+	Deletions  int          `json:"deletions"`
+	Files      []CommitFile `json:"files"`
 }
 
 // LogResult is a commit listing. Truncated reports that more commits matched
@@ -152,7 +158,7 @@ const (
 	recordSeparator = "\x1e"
 	fieldSeparator  = "\x1f"
 	// commitFields is the number of %-placeholders in commitFormat.
-	commitFields = 8
+	commitFields = 9
 )
 
 // commitFormat renders one commit's metadata as fieldSeparator-delimited
@@ -160,7 +166,7 @@ const (
 // next (the -z file blocks of `git log`, the patch of `git show`) starts at a
 // deterministic offset.
 const commitFormat = "%H" + fieldSeparator + "%h" + fieldSeparator + "%an" + fieldSeparator +
-	"%ae" + fieldSeparator + "%aI" + fieldSeparator + "%P" + fieldSeparator +
+	"%ae" + fieldSeparator + "%aI" + fieldSeparator + "%cI" + fieldSeparator + "%P" + fieldSeparator +
 	"%s" + fieldSeparator + "%b" + fieldSeparator
 
 // ErrNotAGitRepo reports that the checkout has no git metadata, so no history
@@ -174,12 +180,26 @@ var numstatEntry = regexp.MustCompile(`^(\d+|-)\t(\d+|-)\t(.*)$`)
 
 var hexRevision = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 
-// HistoryAuth carries the tokens used to deepen a shallow checkout of a
-// private repository. The provider picks one by the origin remote's host.
+// HistoryAuth carries the credentials used to deepen a shallow checkout of a
+// private repository, together with the hosts they belong to. A token is only
+// ever sent to its own provider's configured host: an origin URL is attacker
+// controlled in a fork PR/MR, so matching it loosely (any host merely
+// containing "github") would hand the token to https://github.attacker.example.
 type HistoryAuth struct {
 	GitHubToken string
 	GitLabToken string
+	// GitLabBaseURL is the configured GitLab API base URL; its host is the only
+	// one the GitLab token is sent to. Empty means gitlab.com.
+	GitLabBaseURL string
 }
+
+// defaultGitHubHost is the only host the GitHub token is sent to. GitHub
+// Enterprise hosts are not configurable anywhere in nickpit today, so there is
+// no other trusted host to derive.
+const defaultGitHubHost = "github.com"
+
+// defaultGitLabHost is used when no GitLab base URL is configured.
+const defaultGitLabHost = "gitlab.com"
 
 // ExecHistory reads history by running git. It is safe for concurrent use:
 // tool calls execute in parallel, and the one-time deepen of a shallow
@@ -251,6 +271,12 @@ func (h *ExecHistory) Log(ctx context.Context, repoRoot string, opts LogOptions)
 	}
 	if opts.Message != "" {
 		args = append(args, "--grep="+opts.Message)
+	}
+	// The match mode applies to every limiting pattern git received, so it must
+	// be selected whenever one is set — an author-only filter would otherwise
+	// fall through to git's default basic-regex matching, where "Grie[s]er"
+	// silently behaves as a character class instead of literal text.
+	if opts.Message != "" || opts.Author != "" {
 		if opts.MessageRegex {
 			// git greps with basic regular expressions by default, where "(" is
 			// a literal and "\(" opens a group — the opposite of what a caller
@@ -260,9 +286,9 @@ func (h *ExecHistory) Log(ctx context.Context, repoRoot string, opts LogOptions)
 		} else {
 			args = append(args, "--fixed-strings")
 		}
-	}
-	if !opts.CaseSensitive {
-		args = append(args, "--regexp-ignore-case")
+		if !opts.CaseSensitive {
+			args = append(args, "--regexp-ignore-case")
+		}
 	}
 	args = append(args, revision)
 	args = appendPathArgs(args, paths)
@@ -309,7 +335,7 @@ func (h *ExecHistory) Show(ctx context.Context, repoRoot string, opts ShowOption
 		return nil, err
 	}
 
-	shas, truncated, err := h.commitList(ctx, runner, revision, paths, maxCommits)
+	shas, truncated, err := h.commitList(ctx, runner, revision, maxCommits)
 	if err != nil {
 		return nil, err
 	}
@@ -341,17 +367,16 @@ func (h *ExecHistory) Show(ctx context.Context, repoRoot string, opts ShowOption
 }
 
 // commitList resolves a revision (single commit or range) into the SHAs whose
-// diffs are returned, newest first.
-func (h *ExecHistory) commitList(ctx context.Context, runner Runner, revision string, paths []string, maxCommits int) ([]string, bool, error) {
+// diffs are returned, newest first. Path filters never reach it: they narrow
+// each commit's diff, so a commit that touches none of them is still returned
+// (with a note) instead of silently dropping out of the range — and a single
+// revision always means exactly that commit, which a pathspec would otherwise
+// turn into "the nearest ancestor touching these paths".
+func (h *ExecHistory) commitList(ctx context.Context, runner Runner, revision string, maxCommits int) ([]string, bool, error) {
 	if !isRevRange(revision) {
-		// A single revision means exactly that commit. It is already a full
-		// SHA, and running it through rev-list with a pathspec would walk back
-		// to an ancestor that happens to touch those paths instead: the path
-		// filter must narrow the diff, never change which commit is shown.
 		return []string{revision}, false, nil
 	}
 	args := []string{"rev-list", fmt.Sprintf("--max-count=%d", maxCommits+1), revision}
-	args = appendPathArgs(args, paths)
 	out, err := runner.Run(ctx, args...)
 	if err != nil {
 		return nil, false, err
@@ -411,10 +436,12 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	case len(patch) > maxCommitPatchBytes:
 		diff.Truncated = true
 		diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: %d bytes exceeds the %d byte per-commit limit", len(patch), maxCommitPatchBytes))
+		h.attachFileMetadata(ctx, runner, sha, paths, diff)
 		return diff, nil
 	case len(patch) > *budget:
 		diff.Truncated = true
 		diff.Note = joinNotes(diff.Note, "patch omitted: the total patch size limit for this call was reached")
+		h.attachFileMetadata(ctx, runner, sha, paths, diff)
 		return diff, nil
 	}
 	*budget -= len(patch)
@@ -433,6 +460,30 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 		diff.Note = joinNotes(diff.Note, "combined hunks cannot be represented as git-json hunks; returning raw per-file patches")
 	}
 	return diff, nil
+}
+
+// attachFileMetadata fills in the changed-file list of a commit whose patch was
+// dropped for size. The patch is the usual source of that list, so without this
+// an oversized commit would arrive with no indication of what it touched. It
+// reads the compact `--raw --numstat` blocks instead of parsing a patch that is
+// large by definition; a failure only costs the file list, so it is noted
+// rather than propagated.
+func (h *ExecHistory) attachFileMetadata(ctx context.Context, runner Runner, sha string, paths []string, diff *CommitDiff) {
+	args := []string{"show", "--no-color", "--find-renames", "--raw", "--numstat", "-z", "--format="}
+	if diff.DiffMode == "first-parent" {
+		args = append(args, "-m", "--first-parent")
+	} else {
+		args = append(args, "--cc")
+	}
+	args = append(args, sha)
+	args = appendPathArgs(args, paths)
+	out, err := runner.Run(ctx, args...)
+	if err != nil {
+		diff.Note = joinNotes(diff.Note, "changed-file list unavailable: "+err.Error())
+		return
+	}
+	diff.Files = parseFileBlocks(out)
+	diff.Additions, diff.Deletions = totalChanges(diff.Files)
 }
 
 func (h *ExecHistory) commitMetadata(ctx context.Context, runner Runner, sha string) (CommitEntry, error) {
@@ -607,27 +658,65 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 	return state
 }
 
-// authArgsForRepo builds the credential header for the origin remote's host so
-// a private repository can be deepened, reusing the header format the checkout
-// manager clones with.
+// authArgsForRepo builds the credential header for the origin remote so a
+// private repository can be deepened, reusing the header format the checkout
+// manager clones with. A token travels only to its provider's configured host
+// and only over http(s), where the header is what git would send anyway.
 func (h *ExecHistory) authArgsForRepo(ctx context.Context, runner Runner) []string {
-	remote := remoteURL(ctx, runner)
-	if remote == "" {
+	host, ok := httpHost(remoteURL(ctx, runner))
+	if !ok {
 		return nil
 	}
-	parsed, err := url.Parse(remote)
-	if err != nil {
-		return nil
-	}
-	host := strings.ToLower(parsed.Hostname())
 	switch {
-	case strings.Contains(host, "github"):
+	case hostMatches(host, defaultGitHubHost):
 		return authHeaderArgs(model.ModeGitHub, h.auth.GitHubToken)
-	case strings.Contains(host, "gitlab"):
+	case hostMatches(host, gitLabHost(h.auth.GitLabBaseURL)):
 		return authHeaderArgs(model.ModeGitLab, h.auth.GitLabToken)
 	default:
 		return nil
 	}
+}
+
+// httpHost extracts the host of an http(s) remote URL. Other transports (ssh,
+// git, scp-like "git@host:path") authenticate through their own mechanisms and
+// never receive an Authorization header from us.
+func httpHost(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil {
+		return "", false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return "", false
+	}
+	return host, true
+}
+
+// hostMatches accepts the trusted host itself and its subdomains, and nothing
+// else — "github.attacker.example" and "notgithub.com" both fail.
+func hostMatches(host, trusted string) bool {
+	trusted = strings.ToLower(strings.TrimSpace(trusted))
+	if trusted == "" {
+		return false
+	}
+	return host == trusted || strings.HasSuffix(host, "."+trusted)
+}
+
+// gitLabHost is the host of the configured GitLab API base URL.
+func gitLabHost(baseURL string) string {
+	if host, ok := httpHost(baseURL); ok {
+		return host
+	}
+	return defaultGitLabHost
 }
 
 func remoteURL(ctx context.Context, runner Runner) string {
@@ -708,16 +797,18 @@ func truncateForError(out string) string {
 }
 
 func commitEntryFromFields(fields []string) CommitEntry {
-	date, _ := time.Parse(time.RFC3339, strings.TrimSpace(fields[4]))
-	parents := strings.Fields(fields[5])
+	authorDate, _ := time.Parse(time.RFC3339, strings.TrimSpace(fields[4]))
+	commitDate, _ := time.Parse(time.RFC3339, strings.TrimSpace(fields[5]))
+	parents := strings.Fields(fields[6])
 	return CommitEntry{
 		SHA:         strings.TrimSpace(fields[0]),
 		ShortSHA:    strings.TrimSpace(fields[1]),
 		Author:      fields[2],
 		AuthorEmail: fields[3],
-		Date:        date,
-		Subject:     fields[6],
-		Body:        strings.TrimRight(fields[7], "\n"),
+		Date:        authorDate,
+		CommitDate:  commitDate,
+		Subject:     fields[7],
+		Body:        strings.TrimRight(fields[8], "\n"),
 		Parents:     parents,
 		IsMerge:     len(parents) > 1,
 		Files:       []CommitFile{},

@@ -89,13 +89,13 @@ var catalogDefinition = []catalogEntry{
 	},
 	{
 		Name:               "git_log",
-		APIDescription:     "List commits, newest first, with subject, body, author, date, parents and the files each commit changed including added/deleted line counts, but without diff content",
+		APIDescription:     "List commits, newest first, with subject, body, author, author and commit dates, parents and the files each commit changed including added/deleted line counts, but without diff content",
 		ListingDescription: "with optional `commit` (SHA of any length, ref, or range like `a..b`), `since`, `until`, `author`, `paths`, `message` filters to list commits with their metadata and changed files, without diff content",
 		Note:               "History is limited to the reviewed checkout and may be truncated; a `shallow` flag and `note` in the result say so. Use `git_show` when you need the actual changes of a commit",
 		Parameters: []CatalogParameter{
 			{Name: "commit", Type: "string", Description: "Optional revision to list history from (SHA of any length, ref) or a range like \"a..b\"; defaults to HEAD", Example: `"<sha|ref|a..b>"`},
-			{Name: "since", Type: "string", Description: "Optional lower bound on the author date, e.g. \"2026-01-02\" or \"2 weeks ago\"", Example: `"<date>"`},
-			{Name: "until", Type: "string", Description: "Optional upper bound on the author date", Example: `"<date>"`},
+			{Name: "since", Type: "string", Description: "Optional lower bound on the commit date, e.g. \"2026-01-02\" or \"2 weeks ago\"; rebased or cherry-picked commits are selected by when they were rewritten, not authored", Example: `"<date>"`},
+			{Name: "until", Type: "string", Description: "Optional upper bound on the commit date", Example: `"<date>"`},
 			{Name: "author", Type: "string", Description: "Optional author name or email to match", Example: `"<author>"`},
 			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; only commits touching them are listed", Example: `"<repo-relative paths>"`},
 			{Name: "message", Type: "string", Description: "Optional text the commit message must contain", Example: `"<message text>"`},
@@ -112,7 +112,7 @@ var catalogDefinition = []catalogEntry{
 		Parameters: []CatalogParameter{
 			{Name: "commit", Type: "string", Description: "Revision to show (SHA of any length, ref) or a range like \"a..b\"", Example: `"<sha|ref|a..b>"`, Required: true},
 			{Name: "to", Type: "string", Description: "Optional end revision; forms a range together with commit", Example: `"<sha|ref>"`},
-			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; each diff is limited to them", Example: `"<repo-relative paths>"`},
+			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; each diff is limited to them, and a commit that changed none of them is still returned with an empty diff and a note", Example: `"<repo-relative paths>"`},
 			{Name: "max_commits", Type: "integer", Description: "Optional maximum number of commits of a range to return; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(50)},
 		},
 	},

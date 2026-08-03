@@ -1298,8 +1298,8 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	logCmd.Flags().StringVar(&logCommit, "commit", "", "Commit SHA (any length), ref, or range (a..b); defaults to HEAD")
-	logCmd.Flags().StringVar(&logSince, "since", "", "Only commits authored after this date (e.g. 2026-01-02 or \"2 weeks ago\")")
-	logCmd.Flags().StringVar(&logUntil, "until", "", "Only commits authored before this date")
+	logCmd.Flags().StringVar(&logSince, "since", "", "Only commits committed after this date (e.g. 2026-01-02 or \"2 weeks ago\"); matches git, which filters on the commit date")
+	logCmd.Flags().StringVar(&logUntil, "until", "", "Only commits committed before this date")
 	logCmd.Flags().StringVar(&logAuthor, "author", "", "Only commits whose author name or email matches")
 	logCmd.Flags().StringSliceVar(&logPaths, "paths", nil, "Only commits touching these repo-relative paths")
 	logCmd.Flags().StringVar(&logMessage, "message", "", "Only commits whose message matches")
@@ -1336,7 +1336,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	showCmd.Flags().StringVar(&showCommit, "commit", "", "Commit SHA (any length), ref, or range (a..b)")
 	showCmd.Flags().StringVar(&showTo, "to", "", "End revision; forms a range with --commit")
-	showCmd.Flags().StringSliceVar(&showPaths, "paths", nil, "Limit each diff to these repo-relative paths")
+	showCmd.Flags().StringSliceVar(&showPaths, "paths", nil, "Limit each diff to these repo-relative paths; commits that changed none of them are still listed with a note")
 	showCmd.Flags().IntVar(&showMaxCommits, "max-commits", 0, "Maximum number of commits of a range to return; 0 uses the default")
 	_ = showCmd.MarkFlagRequired("commit")
 	registerRepoPathCompletion(showCmd, "paths", a, false)
@@ -1358,8 +1358,9 @@ func (a *app) inspectHistory() (string, config.Profile, git.History, error) {
 		return "", config.Profile{}, nil, err
 	}
 	return repoRoot, profile, git.NewExecHistory(git.HistoryAuth{
-		GitHubToken: profile.GitHubToken,
-		GitLabToken: profile.GitLabToken,
+		GitHubToken:   profile.GitHubToken,
+		GitLabToken:   profile.GitLabToken,
+		GitLabBaseURL: profile.GitLabBaseURL,
 	}), nil
 }
 
@@ -2641,12 +2642,23 @@ func writeCommitDiffs(result *git.ShowResult) error {
 			}
 		}
 		for _, hunk := range commit.DiffHunks {
-			if _, err := fmt.Fprintf(os.Stdout, "\n%s:%d-%d\n%s\n", hunk.FilePath, hunk.NewStart, hunk.NewStart+hunk.NewLines, strings.TrimRight(hunk.Content, "\n")); err != nil {
+			if _, err := fmt.Fprintf(os.Stdout, "\n%s:%s\n%s\n", hunk.FilePath, hunkLineRange(hunk), strings.TrimRight(hunk.Content, "\n")); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// hunkLineRange renders a hunk's new-side line range inclusively: a hunk
+// starting at line 10 with three lines covers 10-12. A hunk with no new lines
+// is a pure deletion, whose new_start is the line it was removed after, so only
+// that anchor is shown.
+func hunkLineRange(hunk model.DiffHunk) string {
+	if hunk.NewLines <= 0 {
+		return fmt.Sprintf("%d", hunk.NewStart)
+	}
+	return fmt.Sprintf("%d-%d", hunk.NewStart, hunk.NewStart+hunk.NewLines-1)
 }
 
 func writeCommitHeader(commit git.CommitEntry, diffMode string) error {
@@ -2658,8 +2670,14 @@ func writeCommitHeader(commit git.CommitEntry, diffMode string) error {
 	if commit.AuthorEmail != "" {
 		author = fmt.Sprintf("%s <%s>", commit.Author, commit.AuthorEmail)
 	}
+	date := commit.Date.Format(time.RFC3339)
+	// --since/--until filter on the commit date, so show it whenever a rebase,
+	// amend or cherry-pick made it differ from the author date.
+	if !commit.CommitDate.IsZero() && !commit.CommitDate.Equal(commit.Date) {
+		date = fmt.Sprintf("%s (committed %s)", date, commit.CommitDate.Format(time.RFC3339))
+	}
 	_, err := fmt.Fprintf(os.Stdout, "%s %s %s %s (+%d -%d)%s\n",
-		commit.ShortSHA, commit.Date.Format(time.RFC3339), author, commit.Subject,
+		commit.ShortSHA, date, author, commit.Subject,
 		commit.Additions, commit.Deletions, suffix)
 	return err
 }
