@@ -705,6 +705,27 @@ func TestInspectHistoryCommandsPresent(t *testing.T) {
 	}
 }
 
+func TestInspectReferencesCommandPresent(t *testing.T) {
+	cmd := newRootCmd()
+	references, _, err := cmd.Find([]string{"inspect", "references"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if references == nil || references.Use != "references" {
+		t.Fatalf("inspect references command missing: %#v", references)
+	}
+	if references.Flags().Lookup("path") == nil || references.Flags().Lookup("symbol") == nil {
+		t.Fatalf("inspect references flags missing")
+	}
+	annotations := references.Flags().Lookup("symbol").Annotations[cobra.BashCompOneRequiredFlag]
+	if !slices.Contains(annotations, "true") {
+		t.Fatalf("inspect references symbol flag should be required: %#v", annotations)
+	}
+	if pathAnnotations := references.Flags().Lookup("path").Annotations[cobra.BashCompOneRequiredFlag]; slices.Contains(pathAnnotations, "true") {
+		t.Fatalf("inspect references path flag should be optional: %#v", pathAnnotations)
+	}
+}
+
 func TestPRAndMRCommandsHaveURLFlag(t *testing.T) {
 	cmd := newRootCmd()
 	for _, args := range [][]string{{"github", "pr"}, {"gitlab", "mr"}} {

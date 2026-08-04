@@ -13,6 +13,7 @@ type Engine interface {
 	Search(ctx context.Context, repoRoot, path, query string, contextLines, maxResults int, caseSensitive bool) (*SearchResults, error)
 	SearchRegex(ctx context.Context, repoRoot, path string, pattern *regexp.Regexp, contextLines, maxResults int) (*SearchResults, error)
 	GetSymbol(ctx context.Context, repoRoot string, symbol SymbolRef) (*SymbolInfo, error)
+	FindReferences(ctx context.Context, repoRoot string, symbol SymbolRef) (*ReferenceResult, error)
 	FindCallers(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
 	FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
 }
@@ -117,6 +118,39 @@ type SymbolInfo struct {
 type SymbolRef struct {
 	Name string `json:"name"`
 	Path string `json:"path,omitempty"`
+}
+
+// ReferenceResult is a flat, declaration-centered view of a symbol. References
+// inside functions are grouped so source is returned once even when a function
+// mentions the symbol many times; package/module/class-level references are
+// grouped by their containing statement or declaration.
+type ReferenceResult struct {
+	Target                 ReferenceTarget    `json:"target"`
+	Functions              []ReferenceContext `json:"functions"`
+	OutsideFunctions       []ReferenceContext `json:"outside_functions"`
+	ExactReferenceCount    int                `json:"exact_reference_count"`
+	PossibleReferenceCount int                `json:"possible_reference_count"`
+	Complete               bool               `json:"complete"`
+	Notes                  []string           `json:"notes,omitempty"`
+}
+
+type ReferenceTarget struct {
+	Name       string       `json:"name"`
+	Kind       string       `json:"kind"`
+	Definition CodeLocation `json:"definition"`
+}
+
+type ReferenceContext struct {
+	Name         string                `json:"name,omitempty"`
+	CodeLocation CodeLocation          `json:"code_location"`
+	References   []ReferenceOccurrence `json:"references"`
+}
+
+type ReferenceOccurrence struct {
+	Role         string       `json:"role"`
+	Confidence   string       `json:"confidence"`
+	Column       int          `json:"column,omitempty"`
+	CodeLocation CodeLocation `json:"code_location"`
 }
 
 type CallHierarchy struct {

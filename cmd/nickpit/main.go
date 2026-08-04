@@ -1222,6 +1222,27 @@ func (a *app) newInspectCmd() *cobra.Command {
 	_ = searchCmd.MarkFlagRequired("query")
 	registerRepoPathCompletion(searchCmd, "path", a, false)
 
+	var referencesSymbol, referencesPath string
+	referencesCmd := &cobra.Command{
+		Use:   "references",
+		Short: "Retrieve a symbol definition and all references",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repoRoot, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			result, err := engine.FindReferences(cmd.Context(), repoRoot, retrieval.SymbolRef{Name: referencesSymbol, Path: referencesPath})
+			if err != nil {
+				return err
+			}
+			return a.writeInspectOutput(result)
+		},
+	}
+	referencesCmd.Flags().StringVar(&referencesSymbol, "symbol", "", "Symbol name")
+	referencesCmd.Flags().StringVar(&referencesPath, "path", "", "Optional relative file or folder containing the declaration; references are collected repo-wide")
+	_ = referencesCmd.MarkFlagRequired("symbol")
+	registerRepoPathCompletion(referencesCmd, "path", a, false)
+
 	var callersSymbol, callersPath string
 	var callersDepth int
 	callersCmd := &cobra.Command{
@@ -1343,7 +1364,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	_ = showCmd.MarkFlagRequired("commit")
 	registerRepoPathCompletion(showCmd, "paths", a, false)
 
-	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, callersCmd, calleesCmd, logCmd, showCmd)
+	cmd.AddCommand(fileCmd, listFilesCmd, searchCmd, referencesCmd, callersCmd, calleesCmd, logCmd, showCmd)
 	return cmd
 }
 
@@ -2562,6 +2583,9 @@ func (a *app) writeInspectOutput(value any) error {
 		_, err := fmt.Fprintln(os.Stdout, typed.Content)
 		return err
 	case *retrieval.CallHierarchy:
+		_, err := fmt.Fprintln(os.Stdout, typed.Render())
+		return err
+	case *retrieval.ReferenceResult:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err
 	case *git.LogResult:

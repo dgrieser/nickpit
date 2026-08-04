@@ -564,7 +564,7 @@ func validAgentToolCall(toolCall llm.ToolCall, knownTools map[string]struct{}) b
 		return nonEmptyStringArg(args, "path")
 	case "search":
 		return nonEmptyStringArg(args, "query")
-	case "find_callers", "find_callees":
+	case "find_callers", "find_callees", "find_references":
 		return nonEmptyStringArg(args, "symbol")
 	case "git_show":
 		return nonEmptyStringArg(args, "commit")

@@ -2205,6 +2205,20 @@ func (*countingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef
 	return nil, errors.New("unexpected GetSymbol call")
 }
 
+func (r *countingRetrieval) FindReferences(_ context.Context, _ string, symbol retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	r.mu.Lock()
+	r.paths = append(r.paths, fmt.Sprintf("references:%s:%s", symbol.Path, symbol.Name))
+	r.mu.Unlock()
+	return &retrieval.ReferenceResult{
+		Target: retrieval.ReferenceTarget{
+			Name:       symbol.Name,
+			Kind:       "variable",
+			Definition: testCallNodeLocation(pathOrDefault(symbol.Path, "pkg/root.go"), 3, 3, "var "+symbol.Name+" = 1"),
+		},
+		Functions: []retrieval.ReferenceContext{}, OutsideFunctions: []retrieval.ReferenceContext{}, Complete: true,
+	}, nil
+}
+
 func (r *countingRetrieval) FindCallers(_ context.Context, _ string, symbol retrieval.SymbolRef, depth int) (*retrieval.CallHierarchy, error) {
 	r.mu.Lock()
 	r.paths = append(r.paths, fmt.Sprintf("callers:%s:%s:%d", symbol.Path, symbol.Name, depth))
@@ -2270,6 +2284,10 @@ func (stubRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*r
 	return nil, errors.New("unexpected GetSymbol call")
 }
 
+func (stubRetrieval) FindReferences(context.Context, string, retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	return nil, errors.New("unexpected FindReferences call")
+}
+
 func (stubRetrieval) FindCallers(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {
 	return nil, errors.New("unexpected FindCallers call")
 }
@@ -2280,7 +2298,7 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
-	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees", "git_log", "git_show"}
+	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_references", "find_callees", "git_log", "git_show"}
 	if len(definitions) != len(wantNames) {
 		t.Fatalf("tool definitions = %d", len(definitions))
 	}
@@ -2297,11 +2315,12 @@ func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 func TestReviewerToolDefinitionsContainValidCatalogSchemas(t *testing.T) {
 	definitions := reviewerToolDefinitions()
 	requiredByTool := map[string][]string{
-		"inspect_file": {"path"},
-		"search":       {"query"},
-		"find_callers": {"symbol"},
-		"find_callees": {"symbol"},
-		"git_show":     {"commit"},
+		"inspect_file":    {"path"},
+		"search":          {"query"},
+		"find_callers":    {"symbol"},
+		"find_references": {"symbol"},
+		"find_callees":    {"symbol"},
+		"git_show":        {"commit"},
 	}
 	for _, definition := range definitions {
 		var schema map[string]any
@@ -4506,6 +4525,17 @@ func TestParseToolResultSummaryCountsSearchResultFiles(t *testing.T) {
 	}
 }
 
+func TestParseToolResultSummaryCountsReferenceContexts(t *testing.T) {
+	result := `{"target":{"definition":{"file_path":"a.go","content":"var X int"}},` +
+		`"functions":[{"code_location":{"file_path":"b.go","content":"func use() {\n X++\n}"}}],` +
+		`"outside_functions":[{"code_location":{"file_path":"a.go","content":"var Y = X"}}],` +
+		`"exact_reference_count":2,"possible_reference_count":1}`
+	summary := parseToolResultSummary(result)
+	if !summary.HasResultCount || summary.ResultCount != 3 || summary.Files != 2 || summary.Lines != 5 {
+		t.Fatalf("summary = %#v", summary)
+	}
+}
+
 type blockingRetrieval struct {
 	started chan string
 	release chan struct{}
@@ -4539,6 +4569,10 @@ func (blockingRetrieval) GetFileSlice(context.Context, string, string, int, int)
 
 func (blockingRetrieval) GetSymbol(context.Context, string, retrieval.SymbolRef) (*retrieval.SymbolInfo, error) {
 	return nil, errors.New("unexpected GetSymbol call")
+}
+
+func (blockingRetrieval) FindReferences(context.Context, string, retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	return nil, errors.New("unexpected FindReferences call")
 }
 
 func (blockingRetrieval) FindCallers(context.Context, string, retrieval.SymbolRef, int) (*retrieval.CallHierarchy, error) {

@@ -3127,6 +3127,36 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.Files = countCallHierarchyFiles(root)
 		summary.Lines = countCallHierarchyLines(root)
 	}
+	if target, ok := payload["target"].(map[string]any); ok {
+		distinct := map[string]struct{}{}
+		if definition, ok := target["definition"].(map[string]any); ok {
+			if path, _ := definition["file_path"].(string); path != "" {
+				distinct[path] = struct{}{}
+			}
+			if content, _ := definition["content"].(string); content != "" {
+				summary.Lines += lineCount(content)
+			}
+		}
+		for _, field := range []string{"functions", "outside_functions"} {
+			contexts, _ := payload[field].([]any)
+			for _, item := range contexts {
+				context, _ := item.(map[string]any)
+				if path := nodeCodeLocationString(context, "file_path"); path != "" {
+					distinct[path] = struct{}{}
+				}
+				summary.Lines += lineCount(nodeCodeLocationString(context, "content"))
+			}
+		}
+		summary.Files = len(distinct)
+		if exact, ok := payload["exact_reference_count"].(float64); ok {
+			summary.ResultCount += int(exact)
+			summary.HasResultCount = true
+		}
+		if possible, ok := payload["possible_reference_count"].(float64); ok {
+			summary.ResultCount += int(possible)
+			summary.HasResultCount = true
+		}
+	}
 	return summary
 }
 
@@ -3184,7 +3214,8 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 }
 
 // toolCallArgs is the union of arguments across the agent tools (inspect_file,
-// list_files, search, find_callers, find_callees, git_log, git_show). A single
+// list_files, search, find_callers, find_callees, find_references, git_log,
+// git_show). A single
 // named type replaces the anonymous struct that was previously re-declared
 // verbatim at several call sites. ContextLines is a pointer so an omitted
 // search value renders as its query-dependent default.
@@ -3244,6 +3275,9 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 			args.Depth = defaultCallHierarchyDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
+	case "find_references":
+		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
+		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
 	case "git_log":
 		parts = append(parts, fmt.Sprintf("commit=%q", syntheticPathValue(args.Commit, "HEAD")))
 		parts = appendOptionalToolArgs(parts, [][2]string{

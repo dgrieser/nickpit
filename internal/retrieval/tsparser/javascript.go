@@ -145,6 +145,8 @@ func (w *jsWalker) topStmt(stmt js_ast.Stmt) {
 				LocalName:    w.nameOf(item.Name.Ref),
 			})
 		}
+	case *js_ast.SExportFrom:
+		w.reExportStmt(s)
 	case *js_ast.SExportDefault:
 		w.exportDefault(s)
 	case *js_ast.SNamespace:
@@ -247,25 +249,35 @@ func (w *jsWalker) local(s *js_ast.SLocal) {
 		binding, isIdent := decl.Binding.Data.(*js_ast.BIdentifier)
 		if isIdent && decl.ValueOrNil.Data != nil {
 			name := w.nameOf(binding.Ref)
+			if s.IsExport && len(w.stack) == 0 {
+				w.ir.Exports = append(w.ir.Exports, Export{ExportedName: name, LocalName: name})
+			}
 			switch value := decl.ValueOrNil.Data.(type) {
 			case *js_ast.EArrow:
 				symbol := w.addSymbol(name, "", int(decl.Binding.Loc.Start), w.fnEndLoc(value.Body), s.IsExport)
-				if s.IsExport && !symbol.Nested {
-					w.ir.Exports = append(w.ir.Exports, Export{ExportedName: name, LocalName: name})
-				}
 				w.under(symbol, func() { w.walkFnParts(value.Args, value.Body) })
 				continue
 			case *js_ast.EFunction:
 				symbol := w.addSymbol(name, "", int(decl.Binding.Loc.Start), w.fnEndLoc(value.Fn.Body), s.IsExport)
-				if s.IsExport && !symbol.Nested {
-					w.ir.Exports = append(w.ir.Exports, Export{ExportedName: name, LocalName: name})
-				}
 				w.under(symbol, func() { w.walkFnParts(value.Fn.Args, value.Fn.Body) })
 				continue
 			}
 		}
 		w.walkBinding(decl.Binding)
 		w.walkExpr(decl.ValueOrNil)
+	}
+}
+
+func (w *jsWalker) reExportStmt(s *js_ast.SExportFrom) {
+	if int(s.ImportRecordIndex) >= len(w.tree.ImportRecords) {
+		return
+	}
+	spec := w.tree.ImportRecords[s.ImportRecordIndex].Path.Text
+	for _, item := range s.Items {
+		w.ir.Imports = append(w.ir.Imports, Import{
+			Alias: item.Alias, SymbolName: item.OriginalName, ModuleSpec: spec, Kind: "symbol",
+		})
+		w.ir.Exports = append(w.ir.Exports, Export{ExportedName: item.Alias, LocalName: item.Alias})
 	}
 }
 

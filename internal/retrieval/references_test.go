@@ -1,0 +1,175 @@
+package retrieval
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func TestFindGoReferencesGroupsFunctionsAndTopLevelUses(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/refs\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "state.go", `package refs
+
+var Shared = 1
+
+func Use() int {
+	Shared++
+	return Shared
+}
+`)
+	writeRetrievalFile(t, repoRoot, "defaults.go", `package refs
+
+var Default = Shared
+`)
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Shared", Path: "state.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "variable" || result.Target.Definition.LineRange.Start != 3 {
+		t.Fatalf("target = %#v", result.Target)
+	}
+	if !result.Complete || result.ExactReferenceCount != 3 || result.PossibleReferenceCount != 0 {
+		t.Fatalf("counts/complete = %d/%d/%t", result.ExactReferenceCount, result.PossibleReferenceCount, result.Complete)
+	}
+	if len(result.Functions) != 1 || result.Functions[0].Name != "Use" || !strings.Contains(result.Functions[0].CodeLocation.Content, "func Use() int") {
+		t.Fatalf("functions = %#v", result.Functions)
+	}
+	if len(result.Functions[0].References) != 2 || result.Functions[0].References[0].Role != "read_write" {
+		t.Fatalf("function references = %#v", result.Functions[0].References)
+	}
+	if len(result.OutsideFunctions) != 1 || result.OutsideFunctions[0].CodeLocation.FilePath != "defaults.go" {
+		t.Fatalf("outside functions = %#v", result.OutsideFunctions)
+	}
+}
+
+func TestFindGoReferencesWithoutPathFindsGroupedConstant(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/grouped\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "main.go", `package grouped
+
+const (
+	Limit = 3
+)
+
+func Read() int { return Limit }
+`)
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Limit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "constant" || result.Target.Definition.LineRange.Start != 4 || result.ExactReferenceCount != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestFindGoReferencesAcrossPackages(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/crossrefs\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "state/state.go", "package state\n\nvar Shared = 1\n")
+	writeRetrievalFile(t, repoRoot, "use/use.go", `package use
+
+import "example.com/crossrefs/state"
+
+func Read() int { return state.Shared }
+`)
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Shared", Path: "state/state.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExactReferenceCount != 1 || len(result.Functions) != 1 || result.Functions[0].CodeLocation.FilePath != "use/use.go" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestFindPythonReferencesFollowsAliasAndReturnsGlobalWrite(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "config.py", "LIMIT = 1\nLIMIT = 2\n")
+	writeRetrievalFile(t, repoRoot, "service.py", `from config import LIMIT as cap
+
+def run():
+    return cap + cap
+`)
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT", Path: "config.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Complete || result.ExactReferenceCount < 3 || result.PossibleReferenceCount == 0 {
+		t.Fatalf("counts/complete = %d/%d/%t", result.ExactReferenceCount, result.PossibleReferenceCount, result.Complete)
+	}
+	if len(result.Functions) != 1 || result.Functions[0].Name != "run" || len(result.Functions[0].References) != 2 {
+		t.Fatalf("functions = %#v", result.Functions)
+	}
+	foundWrite := false
+	for _, context := range result.OutsideFunctions {
+		for _, reference := range context.References {
+			if reference.CodeLocation.FilePath == "config.py" && reference.CodeLocation.LineRange.Start == 2 && reference.Role == "write" {
+				foundWrite = true
+			}
+		}
+	}
+	if !foundWrite {
+		t.Fatalf("global reassignment missing: %#v", result.OutsideFunctions)
+	}
+}
+
+func TestFindReferencesSupportsNodeAndRustBindings(t *testing.T) {
+	tests := []struct {
+		name, definitionPath, definition, usePath, use, symbol, function string
+	}{
+		{
+			name: "node", definitionPath: "config.ts", definition: "export const LIMIT = 3\n",
+			usePath: "bridge.ts", use: "export { LIMIT as CAP } from \"./config\"\n",
+			symbol: "LIMIT", function: "run",
+		},
+		{
+			name: "rust", definitionPath: "src/config.rs", definition: "const LIMIT: i32 = 3;\n",
+			usePath: "src/lib.rs", use: "use crate::config::LIMIT as cap;\nfn run() -> i32 { cap }\n",
+			symbol: "LIMIT", function: "run",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeRetrievalFile(t, repoRoot, tt.definitionPath, tt.definition)
+			if tt.usePath != "" {
+				writeRetrievalFile(t, repoRoot, tt.usePath, tt.use)
+			}
+			if tt.name == "node" {
+				writeRetrievalFile(t, repoRoot, "service.ts", "import { CAP as cap } from \"./bridge\"\nexport function run() { return cap }\n")
+			}
+			result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: tt.symbol, Path: tt.definitionPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Target.Name != tt.symbol || len(result.Functions) != 1 || result.Functions[0].Name != tt.function {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestFindReferencesReportsAmbiguousDeclarations(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "a.py", "VALUE = 1\n")
+	writeRetrievalFile(t, repoRoot, "b.py", "VALUE = 2\n")
+
+	_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE"})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "a.py:1") || !strings.Contains(err.Error(), "b.py:1") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestFindReferencesIgnoresCommentsAndStrings(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "config.py", "VALUE = 1\n# VALUE\ntext = 'VALUE'\n")
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE", Path: "config.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExactReferenceCount != 0 || result.PossibleReferenceCount != 0 {
+		t.Fatalf("unexpected references: %#v", result)
+	}
+}

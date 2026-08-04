@@ -82,6 +82,16 @@ var catalogDefinition = []catalogEntry{
 		Parameters:         callHierarchyParameters(),
 	},
 	{
+		Name:               "find_references",
+		APIDescription:     "Resolve a named code symbol and return its definition, every enclosing function that references it, and references or reassignments outside functions",
+		ListingDescription: "with a `symbol` and optional repo-relative `path` to retrieve its definition and all repository-wide references, grouping in-function usages by whole function body",
+		Note:               "Use this for variables, constants, parameters, fields, imports, types, functions, and other named bindings; uncertain dynamic-language matches are explicitly marked as possible",
+		Parameters: []CatalogParameter{
+			{Name: "symbol", Type: "string", Description: "Symbol name to inspect", Example: `"<symbol name>"`, Required: true},
+			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the declaration; references are still collected repo-wide", Example: `"<repo-relative path>"`},
+		},
+	},
+	{
 		Name:               "find_callees",
 		APIDescription:     "Resolve function by symbol name and return its callee hierarchy including method bodies",
 		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls",

@@ -104,6 +104,39 @@ func TestExecuteCallHierarchyFallsBackToSearchForUnsupportedLanguage(t *testing.
 	}
 }
 
+func TestExecuteFindReferencesReturnsResultAndDeduplicates(t *testing.T) {
+	retrievalEngine := &countingRetrieval{}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrievalEngine, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	call := llm.ToolCall{ID: "refs-1", Name: "find_references", Arguments: `{"symbol":"Shared","path":"pkg/state.go"}`}
+
+	first := decodeToolPayload(t, engine.executeToolCall(context.Background(), "", call, state))
+	if target, ok := first["target"].(map[string]any); !ok || target["name"] != "Shared" {
+		t.Fatalf("reference result = %#v", first)
+	}
+	second := decodeToolPayload(t, engine.executeToolCall(context.Background(), "", call, state))
+	if got := nestedString(second, "error", "code"); got != "already_requested" {
+		t.Fatalf("duplicate result = %#v", second)
+	}
+	if len(retrievalEngine.paths) != 1 || retrievalEngine.paths[0] != "references:pkg/state.go:Shared" {
+		t.Fatalf("retrieval calls = %v", retrievalEngine.paths)
+	}
+}
+
+func TestExecuteFindReferencesFallsBackForUnsupportedLanguage(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "src/state.rb", "VALUE = 1\n")
+	writeRepoFile(t, repoRoot, "src/use.rb", "puts VALUE\n")
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{{
+		ID: "refs-1", Name: "find_references", Arguments: `{"symbol":"VALUE","path":"src/state.rb"}`,
+	}}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	if payload["fallback"] != "search" || intFromJSON(payload["result_count"]) != 2 {
+		t.Fatalf("fallback = %#v", payload)
+	}
+}
+
 // TestExecuteSearchStillRewritesForSupportedLanguage guards against regressing
 // the optimization for languages that DO have a structural backend.
 func TestExecuteSearchStillRewritesForSupportedLanguage(t *testing.T) {
@@ -544,6 +577,11 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 			name: "find_callees explicit depth",
 			call: llm.ToolCall{ID: "e", Name: "find_callees", Arguments: `{"path":"src/demo.go","symbol":"Run","depth":4}`},
 			want: callHierarchyDedupKey("find_callees", goPath, "Run", 4),
+		},
+		{
+			name: "find_references",
+			call: llm.ToolCall{ID: "refs", Name: "find_references", Arguments: `{"path":"src/demo.go","symbol":"Run"}`},
+			want: referenceDedupKey(goPath, "Run"),
 		},
 		{
 			name: "search go function name rewrites",

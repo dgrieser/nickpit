@@ -94,7 +94,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 			args.Depth = 1
 		}
 		return fmt.Sprintf("list_files\x00%s\x00%d", normalizeToolPath(args.Path), args.Depth)
-	case "find_callers", "find_callees":
+	case "find_callers", "find_callees", "find_references":
 		var args struct {
 			Path   string `json:"path"`
 			Symbol string `json:"symbol"`
@@ -103,8 +103,11 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
 		}
-		if args.Depth <= 0 {
+		if toolCall.Name != "find_references" && args.Depth <= 0 {
 			args.Depth = defaultCallHierarchyDepth
+		}
+		if toolCall.Name == "find_references" {
+			return referenceDedupKey(normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol))
 		}
 		return callHierarchyDedupKey(toolCall.Name, normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol), args.Depth)
 	case "search":
@@ -163,6 +166,8 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 		return e.executeSearch(ctx, repoRoot, toolCall, state)
 	case "find_callers":
 		return e.executeCallHierarchy(ctx, repoRoot, toolCall, true, state)
+	case "find_references":
+		return e.executeFindReferences(ctx, repoRoot, toolCall, state)
 	case "find_callees":
 		return e.executeCallHierarchy(ctx, repoRoot, toolCall, false, state)
 	case "git_log":
@@ -172,6 +177,64 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	default:
 		return toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
 	}
+}
+
+func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
+	var args struct {
+		Symbol string `json:"symbol"`
+		Path   string `json:"path"`
+	}
+	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
+		return toolError("", "invalid_arguments", err.Error())
+	}
+	args.Symbol = strings.TrimSpace(args.Symbol)
+	normalizedPath := normalizeSearchPath(args.Path)
+	if args.Symbol == "" {
+		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
+	}
+	key := referenceDedupKey(normalizedPath, args.Symbol)
+	unlock := state.toolLocks.lock(key)
+	defer unlock()
+	state.mu.Lock()
+	_, seen := state.seenToolCalls[key]
+	state.mu.Unlock()
+	if seen {
+		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s symbol=%q", toolCall.Name, normalizedPath, args.Symbol)
+		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
+	}
+	e.logf(ctx, "Executing tool call: name=%s path=%s symbol=%q", toolCall.Name, normalizedPath, args.Symbol)
+	result, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{Name: args.Symbol, Path: normalizedPath})
+	if err != nil {
+		var unsupported *retrieval.UnsupportedLanguageError
+		if errors.As(err, &unsupported) {
+			searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
+			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, defaultSearchContextLines, 0, true)
+			if searchErr != nil {
+				return toolError(normalizedPath, "retrieval_failed", searchErr.Error())
+			}
+			state.mu.Lock()
+			state.seenToolCalls[key] = struct{}{}
+			state.mu.Unlock()
+			return mustToolResultJSON(withTruncatedFiles(map[string]any{
+				"symbol": args.Symbol, "path": normalizedPath, "fallback": "search",
+				"note":         "structural reference analysis is unavailable for this file type; showing case-sensitive literal matches instead",
+				"result_count": matches.ResultCount, "results": matches.Results,
+			}, matches.TruncatedFiles))
+		}
+		var ambiguous *retrieval.AmbiguousSymbolError
+		if errors.As(err, &ambiguous) {
+			return toolError(normalizedPath, "ambiguous_symbol", err.Error())
+		}
+		return toolError(normalizedPath, "retrieval_failed", err.Error())
+	}
+	state.mu.Lock()
+	state.seenToolCalls[key] = struct{}{}
+	state.mu.Unlock()
+	return mustToolResultJSON(result)
+}
+
+func referenceDedupKey(path, symbol string) string {
+	return fmt.Sprintf("find_references\x00%s\x00%s", path, symbol)
 }
 
 func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {

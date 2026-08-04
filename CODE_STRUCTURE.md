@@ -71,6 +71,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/retrieval/backend_files.go`: Backend file discovery and filtering.
 - `internal/retrieval/file.go`: File, slice, and directory retrieval.
 - `internal/retrieval/findlines.go`: Exact code-to-line-number matching backing multi-line `search` queries and code-location repair.
+- `internal/retrieval/references.go`: Definition-centered symbol reference analysis, whole-function grouping, top-level writes, alias following, confidence marking, and human rendering.
 - `internal/retrieval/callgraph.go`: Call hierarchy API and orchestration.
 - `internal/retrieval/static_graph.go`: Static call graph storage and lookup.
 - `internal/retrieval/symbols.go`: Symbol references and symbol lookup helpers.
