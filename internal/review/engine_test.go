@@ -2298,7 +2298,7 @@ func (stubRetrieval) FindCallees(context.Context, string, retrieval.SymbolRef, i
 
 func TestReviewerToolDefinitionsComeFromCatalogInStableOrder(t *testing.T) {
 	definitions := reviewerToolDefinitions()
-	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_references", "find_callees", "git_log", "git_show"}
+	wantNames := []string{"inspect_file", "list_files", "search", "find_callers", "find_callees", "find_references", "git_log", "git_show"}
 	if len(definitions) != len(wantNames) {
 		t.Fatalf("tool definitions = %d", len(definitions))
 	}

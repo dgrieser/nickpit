@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -83,6 +84,34 @@ func Read() int { return state.Shared }
 	}
 }
 
+func TestFindGoReferencesRejectsUseSiteAsDeclarationPath(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/multifile\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "a_use.go", "package multifile\n\nfunc read() int { return Shared }\n")
+	writeRetrievalFile(t, repoRoot, "z_decl.go", "package multifile\n\nvar Shared = 1\n")
+
+	_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Shared", Path: "a_use.go"})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestFindGoReferencesUsesDefinitionIdentifiersOwnFile(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/multifilelocation\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "a_use.go", "package multifilelocation\n\nfunc read() int { return Shared }\n")
+	writeRetrievalFile(t, repoRoot, "z_decl.go", "package multifilelocation\n\nvar Shared = 1\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := result.Target.Definition
+	if definition.FilePath != "z_decl.go" || definition.LineRange.Start > definition.LineRange.End || definition.LineRange.Count != definition.LineRange.End-definition.LineRange.Start+1 || !strings.Contains(definition.Content, "var Shared = 1") {
+		t.Fatalf("definition = %#v", definition)
+	}
+}
+
 func TestFindPythonReferencesFollowsAliasAndReturnsGlobalWrite(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "config.py", "LIMIT = 1\nLIMIT = 2\n")
@@ -151,6 +180,28 @@ func TestFindReferencesSupportsNodeAndRustBindings(t *testing.T) {
 	}
 }
 
+func TestFindRustReferencesDoesNotMaskLifetimeLine(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "src/config.rs", "pub const LIMIT: i32 = 3;\n")
+	writeRetrievalFile(t, repoRoot, "src/lib.rs", "use crate::config::LIMIT;\nfn get() -> &'static i32 { &LIMIT }\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT", Path: "src/config.rs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, function := range result.Functions {
+		for _, reference := range function.References {
+			if reference.CodeLocation.FilePath == "src/lib.rs" && reference.CodeLocation.LineRange.Start == 2 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("lifetime-line reference missing: %#v", result.Functions)
+	}
+}
+
 func TestFindReferencesReportsAmbiguousDeclarations(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "a.py", "VALUE = 1\n")
@@ -159,6 +210,24 @@ func TestFindReferencesReportsAmbiguousDeclarations(t *testing.T) {
 	_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE"})
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "a.py:1") || !strings.Contains(err.Error(), "b.py:1") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestAmbiguousSymbolErrorCapsCandidateList(t *testing.T) {
+	candidates := make([]ReferenceTarget, 15)
+	for i := range candidates {
+		candidates[i] = ReferenceTarget{Kind: "variable", Definition: CodeLocation{FilePath: fmt.Sprintf("file-%02d.go", i), LineRange: LineRange{Start: i + 1}}}
+	}
+	message := (&AmbiguousSymbolError{Name: "value", Candidates: candidates}).Error()
+	if !strings.Contains(message, "and 5 more") || strings.Contains(message, "file-10.go") {
+		t.Fatalf("message = %q", message)
+	}
+}
+
+func TestRangeLocationAlwaysReturnsConsistentRange(t *testing.T) {
+	location := rangeLocation("short.go", "go", []string{"package short", ""}, 910, 885)
+	if location.LineRange.Start > location.LineRange.End || location.LineRange.Count != location.LineRange.End-location.LineRange.Start+1 {
+		t.Fatalf("location = %#v", location)
 	}
 }
 

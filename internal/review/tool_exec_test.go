@@ -123,6 +123,27 @@ func TestExecuteFindReferencesReturnsResultAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestBoundedReferenceResultCapsFunctionsAndBytes(t *testing.T) {
+	result := &retrieval.ReferenceResult{
+		Target: retrieval.ReferenceTarget{Name: "Shared", Kind: "variable", Definition: retrieval.CodeLocation{Content: "var Shared = 1"}},
+	}
+	for i := 0; i < 40; i++ {
+		result.Functions = append(result.Functions, retrieval.ReferenceContext{
+			Name:         fmt.Sprintf("use%d", i),
+			CodeLocation: retrieval.CodeLocation{FilePath: fmt.Sprintf("use%d.go", i), Content: strings.Repeat("x", 8<<10)},
+		})
+	}
+
+	bounded := boundedReferenceResult(result)
+	data, err := json.Marshal(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bounded.Truncated || bounded.OmittedContexts == 0 || len(bounded.Functions) > maxReferenceFunctions || len(data) > maxReferenceResultBytes {
+		t.Fatalf("bounded result: truncated=%t omitted=%d functions=%d bytes=%d", bounded.Truncated, bounded.OmittedContexts, len(bounded.Functions), len(data))
+	}
+}
+
 func TestExecuteFindReferencesFallsBackForUnsupportedLanguage(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "src/state.rb", "VALUE = 1\n")

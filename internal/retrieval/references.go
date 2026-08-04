@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 	"github.com/dgrieser/nickpit/internal/retrieval/tsparser"
@@ -23,10 +24,15 @@ type AmbiguousSymbolError struct {
 }
 
 func (e *AmbiguousSymbolError) Error() string {
-	locations := make([]string, 0, len(e.Candidates))
-	for _, candidate := range e.Candidates {
+	const maxCandidates = 10
+	count := min(len(e.Candidates), maxCandidates)
+	locations := make([]string, 0, count+1)
+	for _, candidate := range e.Candidates[:count] {
 		loc := candidate.Definition
 		locations = append(locations, fmt.Sprintf("%s at %s:%d", candidate.Kind, loc.FilePath, loc.LineRange.Start))
+	}
+	if omitted := len(e.Candidates) - count; omitted > 0 {
+		locations = append(locations, fmt.Sprintf("and %d more", omitted))
 	}
 	return fmt.Sprintf("symbol %q is ambiguous: %s", e.Name, strings.Join(locations, ", "))
 }
@@ -214,6 +220,7 @@ func pathInLookupScope(path string, scope lookupScope) bool {
 func findDefinitionCandidates(file *parsedReferenceFile, name string) []definitionCandidate {
 	quoted := regexp.QuoteMeta(name)
 	patterns := definitionPatterns(file.language, quoted)
+	goGroupedDefinition := regexp.MustCompile(`^\s*` + quoted + `\b`)
 	seenScope := map[string]struct{}{}
 	var out []definitionCandidate
 	goGroupKind := ""
@@ -231,7 +238,7 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string) []definiti
 			case ")":
 				goGroupKind = ""
 			default:
-				if goGroupKind != "" && regexp.MustCompile(`^\s*`+quoted+`\b`).MatchString(line) {
+				if goGroupKind != "" && goGroupedDefinition.MatchString(line) {
 					loc := lineLocation(file.path, file.language, file.lines, lineNo)
 					out = append(out, definitionCandidate{target: ReferenceTarget{Name: name, Kind: goGroupKind, Definition: loc}, file: file})
 					continue
@@ -456,7 +463,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 						}
 					}
 					role := referenceRole(line, column-1, name)
-					if name != selected.target.Name && strings.Contains(line, "import") {
+					if name != selected.target.Name && isImportReferenceLine(file.language, line) {
 						role = "import"
 					}
 					occurrence := ReferenceOccurrence{
@@ -523,13 +530,29 @@ func isIdentifierByte(b byte) bool {
 
 func referenceRole(line string, zeroColumn int, name string) string {
 	after := strings.TrimSpace(line[zeroColumn+len(name):])
-	if strings.HasPrefix(after, "++") || strings.HasPrefix(after, "--") || regexp.MustCompile(`^(?:\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=)`).MatchString(after) {
+	if strings.HasPrefix(after, "++") || strings.HasPrefix(after, "--") || compoundAssignmentPattern.MatchString(after) {
 		return "read_write"
 	}
 	if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") && !strings.HasPrefix(after, "=>") {
 		return "write"
 	}
 	return "read"
+}
+
+var compoundAssignmentPattern = regexp.MustCompile(`^(?:\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=)`)
+
+func isImportReferenceLine(language, line string) bool {
+	trimmed := strings.TrimSpace(line)
+	switch language {
+	case "python":
+		return strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "from ") && strings.Contains(trimmed, " import ")
+	case "rust":
+		return strings.HasPrefix(trimmed, "use ")
+	case "nodejs":
+		return strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "export ") && strings.Contains(trimmed, " from ")
+	default:
+		return false
+	}
 }
 
 func enclosingParsedFunction(functions []parsedFunction, line int) *parsedFunction {
@@ -608,6 +631,9 @@ func maskReferenceSource(lines []string, language string) []string {
 				inBlockComment = true
 				continue
 			}
+			if buf[j] == '\'' && language == "rust" && rustCharLiteralEnd(buf, j) < 0 {
+				continue
+			}
 			if buf[j] == '\'' || buf[j] == '"' || language == "nodejs" && buf[j] == '`' {
 				quote = buf[j]
 				masked[j] = ' '
@@ -618,6 +644,47 @@ func maskReferenceSource(lines []string, language string) []string {
 	return out
 }
 
+// rustCharLiteralEnd distinguishes character literals from lifetimes. A Rust
+// lifetime starts with the same apostrophe but has no closing apostrophe after
+// exactly one character or one escape sequence.
+func rustCharLiteralEnd(line []byte, start int) int {
+	i := start + 1
+	if i >= len(line) {
+		return -1
+	}
+	if line[i] == '\\' {
+		i++
+		if i >= len(line) {
+			return -1
+		}
+		switch line[i] {
+		case 'x':
+			i += 3
+		case 'u':
+			i++
+			if i >= len(line) || line[i] != '{' {
+				return -1
+			}
+			for i < len(line) && line[i] != '}' {
+				i++
+			}
+			i++
+		default:
+			i++
+		}
+	} else {
+		_, size := utf8.DecodeRune(line[i:])
+		if size == 0 {
+			return -1
+		}
+		i += size
+	}
+	if i < len(line) && line[i] == '\'' {
+		return i
+	}
+	return -1
+}
+
 func lineLocation(path, language string, lines []string, line int) CodeLocation {
 	return rangeLocation(path, language, lines, line, line)
 }
@@ -626,8 +693,14 @@ func rangeLocation(path, language string, lines []string, start, end int) CodeLo
 	if start < 1 {
 		start = 1
 	}
+	if start > len(lines) {
+		start = len(lines)
+	}
 	if end > len(lines) {
 		end = len(lines)
+	}
+	if end < start {
+		end = start
 	}
 	content := ""
 	if start <= end && start <= len(lines) {
@@ -745,23 +818,30 @@ func findGoReferences(ctx context.Context, repoRoot string, symbol SymbolRef, sc
 		if len(pkg.Errors) > 0 {
 			complete = false
 		}
-		for _, file := range pkg.Syntax {
-			path := goFilePath(repoRoot, pkg.Fset, file)
+		parentCache := map[*ast.File]map[ast.Node]ast.Node{}
+		for ident, obj := range pkg.TypesInfo.Defs {
+			if ident == nil || obj == nil || ident.Name != symbol.Name {
+				continue
+			}
+			file := goSyntaxFileAt(pkg, ident.Pos())
+			if file == nil {
+				continue
+			}
+			path := goPositionPath(repoRoot, pkg.Fset, ident.Pos())
 			if path == "" || !pathInLookupScope(path, scope) {
 				continue
 			}
-			parents := goParentMap(file)
-			for ident, obj := range pkg.TypesInfo.Defs {
-				if ident == nil || obj == nil || ident.Name != symbol.Name {
-					continue
-				}
-				key := goObjectKey(pkg.Fset, obj)
-				if _, ok := seenCandidates[key]; ok {
-					continue
-				}
-				seenCandidates[key] = struct{}{}
-				candidates = append(candidates, goReferenceCandidate{key: key, obj: obj, pkg: pkg, ident: ident, path: path, parent: parents})
+			key := goObjectKey(pkg.Fset, obj)
+			if _, ok := seenCandidates[key]; ok {
+				continue
 			}
+			seenCandidates[key] = struct{}{}
+			parents := parentCache[file]
+			if parents == nil {
+				parents = goParentMap(file)
+				parentCache[file] = parents
+			}
+			candidates = append(candidates, goReferenceCandidate{key: key, obj: obj, pkg: pkg, ident: ident, path: path, parent: parents})
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -793,59 +873,68 @@ func findGoReferences(ctx context.Context, repoRoot string, symbol SymbolRef, sc
 	functionContexts := map[string]*ReferenceContext{}
 	outsideContexts := map[string]*ReferenceContext{}
 	seenOccurrences := map[string]struct{}{}
+	linesCache := map[string][]string{}
 	for _, pkg := range pkgs {
 		if pkg == nil || pkg.TypesInfo == nil || pkg.Fset == nil {
 			continue
 		}
-		for _, file := range pkg.Syntax {
-			path := goFilePath(repoRoot, pkg.Fset, file)
+		parentCache := map[*ast.File]map[ast.Node]ast.Node{}
+		for ident, obj := range pkg.TypesInfo.Uses {
+			if ident == nil || obj == nil || !sameGoObject(pkg.Fset, obj, selected) {
+				continue
+			}
+			file := goSyntaxFileAt(pkg, ident.Pos())
+			if file == nil {
+				continue
+			}
+			path := goPositionPath(repoRoot, pkg.Fset, ident.Pos())
 			if path == "" {
 				continue
 			}
-			parents := goParentMap(file)
-			for ident, obj := range pkg.TypesInfo.Uses {
-				if ident == nil || obj == nil || !sameGoObject(pkg.Fset, obj, selected) {
-					continue
-				}
-				pos := pkg.Fset.Position(ident.Pos())
-				usePath, pathErr := repofs.RelPath(repoRoot, pos.Filename)
-				if pathErr != nil || usePath != path {
-					continue
-				}
-				occKey := fmt.Sprintf("%s:%d:%d", path, pos.Line, pos.Column)
-				if _, ok := seenOccurrences[occKey]; ok {
-					continue
-				}
-				seenOccurrences[occKey] = struct{}{}
-				lines, readErr := readReferenceLines(repoRoot, path)
+			pos := pkg.Fset.Position(ident.Pos())
+			occKey := fmt.Sprintf("%s:%d:%d", path, pos.Line, pos.Column)
+			if _, ok := seenOccurrences[occKey]; ok {
+				continue
+			}
+			seenOccurrences[occKey] = struct{}{}
+			lines := linesCache[path]
+			if lines == nil {
+				var readErr error
+				lines, readErr = readReferenceLines(repoRoot, path)
 				if readErr != nil {
 					continue
 				}
-				occurrence := ReferenceOccurrence{Role: goReferenceRole(ident, parents), Confidence: "exact", Column: pos.Column, CodeLocation: lineLocation(path, "go", lines, pos.Line)}
-				result.ExactReferenceCount++
-				if fn := enclosingGoFunction(ident, parents); fn != nil {
-					start, end := pkg.Fset.Position(fn.Pos()).Line, pkg.Fset.Position(fn.End()).Line
-					key := fmt.Sprintf("%s:%d:%d", path, start, end)
-					ctx := functionContexts[key]
-					if ctx == nil {
-						ctx = &ReferenceContext{Name: goFunctionName(fn), CodeLocation: rangeLocation(path, "go", lines, start, end), References: []ReferenceOccurrence{}}
-						functionContexts[key] = ctx
-					}
-					ctx.References = appendUniqueOccurrence(ctx.References, occurrence)
-				} else {
-					node := enclosingGoTopLevel(ident, parents)
-					start, end := pos.Line, pos.Line
-					if node != nil {
-						start, end = pkg.Fset.Position(node.Pos()).Line, pkg.Fset.Position(node.End()).Line
-					}
-					key := fmt.Sprintf("%s:%d:%d", path, start, end)
-					ctx := outsideContexts[key]
-					if ctx == nil {
-						ctx = &ReferenceContext{CodeLocation: rangeLocation(path, "go", lines, start, end), References: []ReferenceOccurrence{}}
-						outsideContexts[key] = ctx
-					}
-					ctx.References = appendUniqueOccurrence(ctx.References, occurrence)
+				linesCache[path] = lines
+			}
+			parents := parentCache[file]
+			if parents == nil {
+				parents = goParentMap(file)
+				parentCache[file] = parents
+			}
+			occurrence := ReferenceOccurrence{Role: goReferenceRole(ident, parents), Confidence: "exact", Column: pos.Column, CodeLocation: lineLocation(path, "go", lines, pos.Line)}
+			result.ExactReferenceCount++
+			if fn := enclosingGoFunction(ident, parents); fn != nil {
+				start, end := pkg.Fset.Position(fn.Pos()).Line, pkg.Fset.Position(fn.End()).Line
+				key := fmt.Sprintf("%s:%d:%d", path, start, end)
+				ctx := functionContexts[key]
+				if ctx == nil {
+					ctx = &ReferenceContext{Name: goFunctionName(fn), CodeLocation: rangeLocation(path, "go", lines, start, end), References: []ReferenceOccurrence{}}
+					functionContexts[key] = ctx
 				}
+				ctx.References = appendUniqueOccurrence(ctx.References, occurrence)
+			} else {
+				node := enclosingGoTopLevel(ident, parents)
+				start, end := pos.Line, pos.Line
+				if node != nil {
+					start, end = pkg.Fset.Position(node.Pos()).Line, pkg.Fset.Position(node.End()).Line
+				}
+				key := fmt.Sprintf("%s:%d:%d", path, start, end)
+				ctx := outsideContexts[key]
+				if ctx == nil {
+					ctx = &ReferenceContext{CodeLocation: rangeLocation(path, "go", lines, start, end), References: []ReferenceOccurrence{}}
+					outsideContexts[key] = ctx
+				}
+				ctx.References = appendUniqueOccurrence(ctx.References, occurrence)
 			}
 		}
 	}
@@ -943,8 +1032,8 @@ func goObjectKey(fset *token.FileSet, obj types.Object) string {
 	return fmt.Sprintf("%s:%s:%d:%d:%T:%s", pkgPath, filepath.Clean(pos.Filename), pos.Line, pos.Column, obj, obj.Name())
 }
 
-func goFilePath(repoRoot string, fset *token.FileSet, file *ast.File) string {
-	filename := fset.Position(file.Pos()).Filename
+func goPositionPath(repoRoot string, fset *token.FileSet, pos token.Pos) string {
+	filename := fset.Position(pos).Filename
 	if filename == "" {
 		return ""
 	}
@@ -953,6 +1042,15 @@ func goFilePath(repoRoot string, fset *token.FileSet, file *ast.File) string {
 		return ""
 	}
 	return rel
+}
+
+func goSyntaxFileAt(pkg *packages.Package, pos token.Pos) *ast.File {
+	for _, file := range pkg.Syntax {
+		if file != nil && pos >= file.Pos() && pos <= file.End() {
+			return file
+		}
+	}
+	return nil
 }
 
 func goParentMap(root ast.Node) map[ast.Node]ast.Node {

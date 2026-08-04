@@ -3214,9 +3214,8 @@ func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {
 }
 
 // toolCallArgs is the union of arguments across the agent tools (inspect_file,
-// list_files, search, find_callers, find_callees, find_references, git_log,
-// git_show). A single
-// named type replaces the anonymous struct that was previously re-declared
+// list_files, search, find_callers, find_callees, find_references, git_log, and
+// git_show). A single named type replaces the anonymous struct previously re-declared
 // verbatim at several call sites. ContextLines is a pointer so an omitted
 // search value renders as its query-dependent default.
 type toolCallArgs struct {

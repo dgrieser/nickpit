@@ -208,6 +208,8 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 		var unsupported *retrieval.UnsupportedLanguageError
 		if errors.As(err, &unsupported) {
 			searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
+			// Identifier spelling is case-sensitive even when the fallback cannot
+			// provide structural binding identity.
 			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, defaultSearchContextLines, 0, true)
 			if searchErr != nil {
 				return toolError(normalizedPath, "retrieval_failed", searchErr.Error())
@@ -230,7 +232,53 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 	state.mu.Lock()
 	state.seenToolCalls[key] = struct{}{}
 	state.mu.Unlock()
-	return mustToolResultJSON(result)
+	return mustToolResultJSON(boundedReferenceResult(result))
+}
+
+const (
+	maxReferenceFunctions   = 25
+	maxReferenceResultBytes = 64 << 10
+)
+
+func boundedReferenceResult(result *retrieval.ReferenceResult) *retrieval.ReferenceResult {
+	bounded := *result
+	bounded.Functions = append([]retrieval.ReferenceContext(nil), result.Functions...)
+	bounded.OutsideFunctions = append([]retrieval.ReferenceContext(nil), result.OutsideFunctions...)
+	if len(bounded.Functions) > maxReferenceFunctions {
+		bounded.OmittedContexts += len(bounded.Functions) - maxReferenceFunctions
+		bounded.Functions = bounded.Functions[:maxReferenceFunctions]
+		markReferenceResultTruncated(&bounded)
+	}
+	for referenceResultJSONSize(&bounded) > maxReferenceResultBytes {
+		markReferenceResultTruncated(&bounded)
+		switch {
+		case len(bounded.Functions) > 0:
+			bounded.Functions = bounded.Functions[:len(bounded.Functions)-1]
+			bounded.OmittedContexts++
+		case len(bounded.OutsideFunctions) > 0:
+			bounded.OutsideFunctions = bounded.OutsideFunctions[:len(bounded.OutsideFunctions)-1]
+			bounded.OmittedContexts++
+		case bounded.Target.Definition.Content != "":
+			content := bounded.Target.Definition.Content
+			bounded.Target.Definition.Content = content[:len(content)/2]
+		default:
+			return &bounded
+		}
+	}
+	return &bounded
+}
+
+func markReferenceResultTruncated(result *retrieval.ReferenceResult) {
+	result.Truncated = true
+	result.TruncatedNote = "reference contexts were omitted to keep the tool result within its function and byte limits; narrow the declaration path to retrieve a smaller result"
+}
+
+func referenceResultJSONSize(result *retrieval.ReferenceResult) int {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return maxReferenceResultBytes + 1
+	}
+	return len(data)
 }
 
 func referenceDedupKey(path, symbol string) string {
