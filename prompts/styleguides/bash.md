@@ -1539,10 +1539,14 @@ deploy() { kubectl apply -f "$@"; }
 
 #### 24. Performance
 
-##### Avoid forks in loops
+##### Avoid forks in loop bodies
+
+Commands executed inside a loop body run once per iteration. Repeated
+subprocesses can become expensive; prefer builtins, parameter expansion, or
+batching when practical.
 
 ```bash
-# SLOW — spawns a subprocess per iteration
+# SLOW — wc and cut run once for every file
 for f in *.txt; do
   count=$(wc -l < "$f")     # fork for every file
   ext=$(echo "$f" | cut -d. -f2)  # two forks
@@ -1557,6 +1561,22 @@ done
 
 # FAST — batch external commands
 wc -l *.txt                  # one wc invocation for all files
+```
+
+A command substitution used to construct the loop input runs once before the
+loop starts, not once per iteration:
+
+```bash
+# FINE — seq runs once before this bounded loop
+# seq is an external utility, so availability is independent of the Bash version
+for _ in $(seq 1 30); do
+  poll_service
+done
+
+# ALSO FINE — arithmetic for is a builtin in every supported Bash version (3.2–5.2)
+for ((i = 1; i <= 30; i++)); do
+  poll_service
+done
 ```
 
 ##### String operations — builtins beat subprocesses
@@ -1923,4 +1943,3 @@ main "$@"
 11. [3.3. Preventing Weird Behavior in a Here-Document - bash ... - O'Reilly](https://www.oreilly.com/library/view/bash-cookbook/0596526784/ch03s03.html) - Preventing Weird Behavior in a Here-DocumentProblemYour here-document is behaving weirdly. You tried...
 
 12. [Mapfile/Readarray | Poop Sheet](https://poopsheet.co.za/bash/builtins/mapfile-readarray/)
-
