@@ -65,7 +65,7 @@ var catalogDefinition = []catalogEntry{
 		Name:               "search",
 		APIDescription:     "Search recursively inside repo-relative file or folder for text or an exact line or block of code, returning each match as a `code_location` with exact line numbers",
 		ListingDescription: "with a `query` (search text, or an exact line or block of code) and an optional repo-relative `path` to search recursively; every match is returned as a `code_location` with exact line numbers, the matching code and language",
-		Note:               "Use this whenever you need to return a `code_location` in findings or suggestions: pass the exact line or block of code as `query` and copy a returned `code_location`. Prefer `find_callers` over `search` when locating a function by name",
+		Note:               "Use this whenever you need to return a `code_location` in findings or suggestions: pass the exact line or block of code as `query` and copy a returned `code_location`. For symbols, prefer `find_callers` for upstream call paths, `find_callees` for downstream call paths, or `find_references` for all usage kinds",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
 			{Name: "query", Type: "string", Description: "Text or code to find: a single line matches as a substring; a multi-line block of code matches exactly, ignoring indentation and surrounding whitespace", Example: `"<text, or line(s) of code>"`, Required: true},
@@ -76,25 +76,26 @@ var catalogDefinition = []catalogEntry{
 	},
 	{
 		Name:               "find_callers",
-		APIDescription:     "Resolve function by symbol name and return caller hierarchy including method bodies",
-		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions call a target function",
-		Note:               "Prefer this over `search` when locating a function by name; for file types without structural analysis it automatically falls back to a literal search for the symbol",
+		APIDescription:     "Return functions that directly or recursively call a target function, organized as an upstream call hierarchy with function bodies",
+		ListingDescription: "with a function `symbol`, optional declaration `path`, and optional `depth` to trace which functions invoke it",
+		Note:               "Use for upstream execution and impact tracing. Only call relationships count; imports, assignments, and passing the function as a value are excluded. File types without structural analysis fall back to literal symbol search",
 		Parameters:         callHierarchyParameters(),
 	},
 	{
 		Name:               "find_callees",
-		APIDescription:     "Resolve function by symbol name and return its callee hierarchy including method bodies",
-		ListingDescription: "with a `symbol`, optional repo-relative `path`, and optional `depth` to inspect which functions a target function calls",
+		APIDescription:     "Return functions directly or recursively called by a target function, organized as a downstream call hierarchy with function bodies",
+		ListingDescription: "with a function `symbol`, optional declaration `path`, and optional `depth` to trace what it invokes",
+		Note:               "Use for understanding implementation flow and downstream dependencies. File types without structural analysis fall back to literal symbol search",
 		Parameters:         callHierarchyParameters(),
 	},
 	{
 		Name:               "find_references",
-		APIDescription:     "Resolve a named code symbol and return its definition, every enclosing function that references it, and references or reassignments outside functions",
-		ListingDescription: "with a `symbol` and optional repo-relative `path` to retrieve its definition and repository-wide references, grouping in-function usages by whole function body",
-		Note:               "Use this for variables, constants, parameters, fields, imports, types, functions, and other named bindings",
+		APIDescription:     "Return a symbol definition and its repository-wide reads, writes, imports, aliases, calls, and other usages, grouped by enclosing function or top-level statement",
+		ListingDescription: "with a `symbol` and optional declaration `path` to inspect all usage kinds; referenced functions are returned with their bodies",
+		Note:               "Use for variables, constants, parameters, fields, imports, types, functions, and other named bindings. Results are flat usage contexts, not a recursive call hierarchy. Dynamic-language matches may be marked possible; large results may be truncated",
 		Parameters: []CatalogParameter{
 			{Name: "symbol", Type: "string", Description: "Symbol name to inspect", Example: `"<symbol name>"`, Required: true},
-			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the declaration; references are still collected repo-wide", Example: `"<repo-relative path>"`},
+			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the declaration; does not limit where references are collected", Example: `"<repo-relative path>"`},
 		},
 	},
 	{
@@ -144,7 +145,7 @@ func intPtr(value int) *int {
 func callHierarchyParameters() []CatalogParameter {
 	return []CatalogParameter{
 		{Name: "symbol", Type: "string", Description: "Function name to inspect", Example: `"<function name>"`, Required: true},
-		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder path containing the function; omit or pass an empty string to search from the repo root", Example: `"<repo-relative path>"`},
+		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the function declaration; does not limit where calls are collected", Example: `"<repo-relative path>"`},
 		{Name: "depth", Type: "integer", Description: "Optional traversal depth for the call hierarchy; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(goparser.MaxCallHierarchyDepth)},
 	}
 }
