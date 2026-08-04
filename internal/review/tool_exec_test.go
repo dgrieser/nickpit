@@ -127,7 +127,7 @@ func TestBoundedReferenceResultCapsFunctionsAndBytes(t *testing.T) {
 	result := &retrieval.ReferenceResult{
 		Target: retrieval.ReferenceTarget{Name: "Shared", Kind: "variable", Definition: retrieval.CodeLocation{Content: "var Shared = 1"}},
 	}
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		result.Functions = append(result.Functions, retrieval.ReferenceContext{
 			Name:         fmt.Sprintf("use%d", i),
 			CodeLocation: retrieval.CodeLocation{FilePath: fmt.Sprintf("use%d.go", i), Content: strings.Repeat("x", 8<<10)},

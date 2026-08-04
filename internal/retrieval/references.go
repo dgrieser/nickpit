@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -448,9 +449,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 		if selected.file.language == "go" && file.path == selected.file.path {
 			names[selected.target.Name] = "exact"
 		}
-		for alias, confidence := range aliases[file.path] {
-			names[alias] = confidence
-		}
+		maps.Copy(names, aliases[file.path])
 		for lineIndex, line := range file.masked {
 			lineNo := lineIndex + 1
 			for name, confidence := range names {
