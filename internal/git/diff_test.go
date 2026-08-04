@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -149,6 +150,40 @@ func stringJoin(parts []string, sep string) string {
 	return strings.Join(parts, sep)
 }
 
+// TestPatchArgsPinsContextAndNeutralizesConfiguration asserts the flag set
+// itself, not just that callers pass it along: every entry stops one git
+// configuration setting from reaching the diff parser, so dropping any of them
+// must fail here rather than silently make a review depend on the machine it
+// runs on.
+func TestPatchArgsPinsContextAndNeutralizesConfiguration(t *testing.T) {
+	args := patchArgs("show", "--patch")
+	if args[0] != "show" || args[len(args)-1] != "--patch" {
+		t.Fatalf("patchArgs = %#v, want subcommand first and caller args last", args)
+	}
+	for _, want := range []string{"-U3", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"} {
+		if !slices.Contains(args, want) {
+			t.Fatalf("patchArgs missing %q: %#v", want, args)
+		}
+	}
+	if stableDiffContextLines != 3 {
+		t.Fatalf("stableDiffContextLines = %d, want 3 to match the GitHub and GitLab diff APIs", stableDiffContextLines)
+	}
+}
+
+// TestPatchArgsDoesNotShareBacking guards the builder against the aliasing bug
+// its shape invites: two invocations must not write their caller arguments into
+// one shared array.
+func TestPatchArgsDoesNotShareBacking(t *testing.T) {
+	first := patchArgs("diff", "HEAD")
+	second := patchArgs("diff", "--cached")
+	if got := first[len(first)-1]; got != "HEAD" {
+		t.Fatalf("first invocation was overwritten: %q", got)
+	}
+	if got := second[len(second)-1]; got != "--cached" {
+		t.Fatalf("second invocation = %q", got)
+	}
+}
+
 func TestLocalSourceDiffForLocalChangeSubmodes(t *testing.T) {
 	diff := string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff")))
 	tests := []struct {
@@ -159,17 +194,17 @@ func TestLocalSourceDiffForLocalChangeSubmodes(t *testing.T) {
 		{
 			name:    "uncommitted",
 			submode: "uncommitted",
-			args:    []string{"diff", "HEAD"},
+			args:    patchArgs("diff", "HEAD"),
 		},
 		{
 			name:    "staged",
 			submode: "staged",
-			args:    []string{"diff", "--cached"},
+			args:    patchArgs("diff", "--cached"),
 		},
 		{
 			name:    "unstaged",
 			submode: "unstaged",
-			args:    []string{"diff"},
+			args:    patchArgs("diff"),
 		},
 	}
 
@@ -212,17 +247,17 @@ func TestLocalSourceResolveContextDefaultsLocalChangeRefs(t *testing.T) {
 		{
 			name:    "uncommitted",
 			submode: "uncommitted",
-			args:    []string{"diff", "HEAD"},
+			args:    patchArgs("diff", "HEAD"),
 		},
 		{
 			name:    "staged",
 			submode: "staged",
-			args:    []string{"diff", "--cached"},
+			args:    patchArgs("diff", "--cached"),
 		},
 		{
 			name:    "unstaged",
 			submode: "unstaged",
-			args:    []string{"diff"},
+			args:    patchArgs("diff"),
 		},
 	}
 
@@ -264,7 +299,7 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 		outputs: map[string]string{
 			joinArgs([]string{"symbolic-ref", "--short", "refs/remotes/origin/HEAD"}): "origin/main\n",
 			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}):                     "fix/memleak\n",
-			joinArgs([]string{"diff", "origin/main...fix/memleak"}):                   string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
+			joinArgs(patchArgs("diff", "origin/main...fix/memleak")):                  string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
 		},
 	}
 	source := &LocalSource{
@@ -299,8 +334,8 @@ func TestLocalSourceResolveContextDefaultsBranchBaseFromOriginHEAD(t *testing.T)
 	if got := runner.calls[1]; len(got) != 3 || got[0] != "symbolic-ref" || got[2] != "HEAD" {
 		t.Fatalf("head symbolic-ref args = %#v", got)
 	}
-	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "origin/main...fix/memleak" {
-		t.Fatalf("diff args = %#v", got)
+	if got, want := joinArgs(runner.calls[2]), joinArgs(patchArgs("diff", "origin/main...fix/memleak")); got != want {
+		t.Fatalf("diff args = %q, want %q", got, want)
 	}
 }
 
@@ -309,7 +344,7 @@ func TestLocalSourceResolveContextPrefersOriginForExplicitBranchBase(t *testing.
 		outputs: map[string]string{
 			joinArgs([]string{"show-ref", "--verify", "--quiet", "refs/remotes/origin/main"}): "",
 			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}):                             "fix/memleak\n",
-			joinArgs([]string{"diff", "origin/main...fix/memleak"}):                           string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
+			joinArgs(patchArgs("diff", "origin/main...fix/memleak")):                          string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
 		},
 	}
 	source := &LocalSource{
@@ -333,8 +368,8 @@ func TestLocalSourceResolveContextPrefersOriginForExplicitBranchBase(t *testing.
 	if got := runner.calls[0]; len(got) != 4 || got[0] != "show-ref" || got[3] != "refs/remotes/origin/main" {
 		t.Fatalf("show-ref args = %#v", got)
 	}
-	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "origin/main...fix/memleak" {
-		t.Fatalf("diff args = %#v", got)
+	if got, want := joinArgs(runner.calls[2]), joinArgs(patchArgs("diff", "origin/main...fix/memleak")); got != want {
+		t.Fatalf("diff args = %q, want %q", got, want)
 	}
 }
 
@@ -342,7 +377,7 @@ func TestLocalSourceResolveContextKeepsExplicitBranchBaseWhenOriginMissing(t *te
 	runner := &stubGitRunner{
 		outputs: map[string]string{
 			joinArgs([]string{"symbolic-ref", "--short", "HEAD"}): "fix/memleak\n",
-			joinArgs([]string{"diff", "main...fix/memleak"}):      string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
+			joinArgs(patchArgs("diff", "main...fix/memleak")):     string(testutil.LoadFixture(t, filepath.Join("..", "..", "testdata", "diffs", "simple_add.diff"))),
 		},
 		errors: map[string]error{
 			joinArgs([]string{"show-ref", "--verify", "--quiet", "refs/remotes/origin/main"}): errors.New("missing ref"),
@@ -366,8 +401,8 @@ func TestLocalSourceResolveContextKeepsExplicitBranchBaseWhenOriginMissing(t *te
 	if ctx.Repository.BaseRef != "main" {
 		t.Fatalf("base ref = %q", ctx.Repository.BaseRef)
 	}
-	if got := runner.calls[2]; len(got) != 2 || got[0] != "diff" || got[1] != "main...fix/memleak" {
-		t.Fatalf("diff args = %#v", got)
+	if got, want := joinArgs(runner.calls[2]), joinArgs(patchArgs("diff", "main...fix/memleak")); got != want {
+		t.Fatalf("diff args = %q, want %q", got, want)
 	}
 }
 

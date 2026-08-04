@@ -543,10 +543,12 @@ func (h *ExecHistory) commitMetadata(ctx context.Context, runner Runner, sha str
 // along in the same invocation and precede the patch, so a rename keeps its old
 // path and a binary file is marked as such — neither of which a unified patch can
 // express. Merges are rendered as a combined diff unless firstParent asks for the
-// diff against parent one. Reading stops at limit bytes; the third return value
-// reports that the output is larger than the caller can accept.
+// diff against parent one. The patch itself is requested through patchArgs, so its
+// context window is pinned instead of inherited from configuration. Reading stops
+// at limit bytes; the third return value reports that the output is larger than
+// the caller can accept.
 func (h *ExecHistory) commitPatch(ctx context.Context, runner Runner, sha string, paths []string, firstParent bool, limit int) (commitPatchResult, error) {
-	args := []string{"show", "--no-color", "--find-renames", "--raw", "--numstat", "-z", "--patch", "--format="}
+	args := patchArgs("show", "--find-renames", "--raw", "--numstat", "-z", "--patch", "--format=")
 	if firstParent {
 		args = append(args, "-m", "--first-parent")
 	} else {

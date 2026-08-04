@@ -88,7 +88,7 @@ This document maps the production Go code. Test files live beside the code they 
 ## Git and SCM Integrations
 
 - `internal/git/git.go`: Git command wrapper and repository helpers.
-- `internal/git/diff.go`: Diff loading and changed-file extraction.
+- `internal/git/diff.go`: Diff loading and changed-file extraction. Owns `patchArgs`/`stableDiffArgs`, the pinned `-U3` plus configuration-neutralizing flags every patch-emitting git invocation must use.
 - `internal/git/parser.go`: Git diff parser and hunk model.
 - `internal/git/history.go`: Commit history provider for the git_log/git_show tools and `nickpit inspect log|show`.
 - `internal/git/checkout.go`: Temporary checkout/worktree helpers.

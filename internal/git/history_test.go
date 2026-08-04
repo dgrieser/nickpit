@@ -336,6 +336,62 @@ func TestShowReturnsOneDiffPerCommitInRange(t *testing.T) {
 	}
 }
 
+// TestShowPinsPatchContextOnlyOnPatchCalls checks both halves of the rule the
+// flag set is documented by: the invocation that emits a patch carries the
+// configuration-independence flags, and the raw-only invocations do not need
+// them — their output has no content for a textconv filter or a color setting to
+// reach.
+func TestShowPinsPatchContextOnlyOnPatchCalls(t *testing.T) {
+	runner := &stubGitRunner{outputs: map[string]string{}}
+	resolved(runner, "aaa", "aaa111")
+	history := newTestHistory(runner)
+	runner.match = func(args []string) (string, bool) {
+		if args[0] != "show" {
+			return "", false
+		}
+		if slices.Contains(args, "--no-patch") {
+			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
+		}
+		return showEntries(":100644 100644 aaa bbb M", "file.go", "1\t0\tfile.go") +
+			strings.Join([]string{
+				"diff --git a/file.go b/file.go",
+				"--- a/file.go",
+				"+++ b/file.go",
+				"@@ -1,2 +1,3 @@",
+				" keep",
+				"+added",
+				" keep",
+				"",
+			}, "\n"), true
+	}
+
+	if _, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "aaa"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var patchCall, metadataCall []string
+	for _, call := range runner.recordedCalls() {
+		switch {
+		case len(call) > 0 && call[0] != "show":
+		case isPatchCall(call):
+			patchCall = call
+		case slices.Contains(call, "--no-patch"):
+			metadataCall = call
+		}
+	}
+	if patchCall == nil || metadataCall == nil {
+		t.Fatalf("expected both a patch and a metadata show call: %v", runner.recordedCalls())
+	}
+	for _, want := range stableDiffArgs {
+		if !slices.Contains(patchCall, want) {
+			t.Fatalf("patch call missing %q: %v", want, patchCall)
+		}
+	}
+	if slices.Contains(metadataCall, "-U3") {
+		t.Fatalf("metadata call should not pin diff context: %v", metadataCall)
+	}
+}
+
 func TestShowSingleCommitIgnoresPathspecForCommitSelection(t *testing.T) {
 	runner := &stubGitRunner{outputs: map[string]string{}}
 	resolved(runner, "aaa", "aaa111")
