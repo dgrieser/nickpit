@@ -10,6 +10,51 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
+// stableDiffContextLines pins how many context lines every patch nickpit reads
+// carries. git's own default is 3, but `diff.context` in the user's global
+// configuration or in the reviewed repository silently overrides it — and the
+// hunk windows of that patch are what the diff-scope gate, the finding
+// fingerprints and the SCM comment positions are all derived from, so a
+// machine-local setting would decide which findings survive a review. 3 is also
+// exactly what the GitHub and GitLab diff APIs serve, which are not
+// configurable at all; pinning it here is what keeps a local review and a
+// remote review of the same change comparable.
+const stableDiffContextLines = 3
+
+// stableDiffArgs make a patch independent of configuration. Every flag
+// neutralizes one setting that would otherwise reach ParseUnifiedDiffFormats:
+//
+//   - -U pins the context window against `diff.context`.
+//   - --no-color: `color.ui = always` emits ANSI escapes even when stdout is a
+//     pipe, which the parser would read as part of the content.
+//   - --no-ext-diff: `diff.external` replaces the patch with a foreign tool's
+//     output, which need not be a unified diff at all.
+//   - --no-textconv: a gitattributes textconv filter rewrites file content
+//     before it is diffed.
+//   - --src-prefix/--dst-prefix: `diff.noprefix` and `diff.mnemonicPrefix`
+//     change the "diff --git a/x b/x" framing the parser attributes hunks by.
+//
+// They belong on every command that emits a patch, and only on those: the
+// `--raw --numstat` listings carry plain paths and no content, so none of these
+// settings can reach them.
+var stableDiffArgs = []string{
+	fmt.Sprintf("-U%d", stableDiffContextLines),
+	"--no-color",
+	"--no-ext-diff",
+	"--no-textconv",
+	"--src-prefix=a/",
+	"--dst-prefix=b/",
+}
+
+// patchArgs builds a patch-emitting git invocation: the subcommand, the
+// configuration-independence flags, then the caller's own arguments.
+func patchArgs(subcommand string, rest ...string) []string {
+	args := make([]string, 0, 1+len(stableDiffArgs)+len(rest))
+	args = append(args, subcommand)
+	args = append(args, stableDiffArgs...)
+	return append(args, rest...)
+}
+
 type LocalSource struct {
 	repoRoot string
 	git      Runner
@@ -121,21 +166,21 @@ func (s *LocalSource) currentBranch(ctx context.Context) (string, error) {
 func (s *LocalSource) diffForRequest(ctx context.Context, req model.ReviewRequest) (string, error) {
 	switch req.Submode {
 	case "uncommitted":
-		return s.git.Run(ctx, "diff", "HEAD")
+		return s.git.Run(ctx, patchArgs("diff", "HEAD")...)
 	case "staged":
-		return s.git.Run(ctx, "diff", "--cached")
+		return s.git.Run(ctx, patchArgs("diff", "--cached")...)
 	case "unstaged":
-		return s.git.Run(ctx, "diff")
+		return s.git.Run(ctx, patchArgs("diff")...)
 	case "commits":
 		if req.BaseRef == "" || req.HeadRef == "" {
 			return "", fmt.Errorf("git: commits mode requires --from and --to")
 		}
-		return s.git.Run(ctx, "diff", req.BaseRef+".."+req.HeadRef)
+		return s.git.Run(ctx, patchArgs("diff", req.BaseRef+".."+req.HeadRef)...)
 	case "branch":
 		if req.BaseRef == "" || req.HeadRef == "" {
 			return "", fmt.Errorf("git: branch mode requires --base and --head")
 		}
-		return s.git.Run(ctx, "diff", req.BaseRef+"..."+req.HeadRef)
+		return s.git.Run(ctx, patchArgs("diff", req.BaseRef+"..."+req.HeadRef)...)
 	default:
 		return "", fmt.Errorf("git: unknown submode %q", req.Submode)
 	}
