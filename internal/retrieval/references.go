@@ -216,7 +216,7 @@ func referenceSourceSnapshot(ctx context.Context, repoRoot string, files []strin
 		if err != nil {
 			return [sha256.Size]byte{}, nil, err
 		}
-		fmt.Fprintf(hash, "%d:%s:%d:", len(rel), rel, len(data))
+		_, _ = fmt.Fprintf(hash, "%d:%s:%d:", len(rel), rel, len(data))
 		_, _ = hash.Write(data)
 		sources = append(sources, referenceSource{path: rel, data: data})
 	}
