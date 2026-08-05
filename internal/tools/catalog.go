@@ -16,6 +16,7 @@ import (
 const (
 	DefaultListFilesDepth          = 1
 	DefaultSearchContextLines      = 5
+	MaxSearchStructuralLookups     = 20
 	MaxFindLinesMatches            = 100
 	DefaultCallHierarchyDepth      = 10
 	MaxCallHierarchyDepth          = 50

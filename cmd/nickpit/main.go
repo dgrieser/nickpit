@@ -379,7 +379,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&cli.showReasoning, "show-reasoning", false, "Print streamed model reasoning to stderr")
 	root.PersistentFlags().BoolVar(&cli.showProgress, "show-progress", false, "Print review progress to stderr")
 	root.PersistentFlags().BoolVar(&cli.disableLiveProgress, "disable-live-progress", false, "Disable the live progress dashboard (quiet stderr; findings still print to stdout)")
-	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable rewriting search tool calls like FunctionName( into find_callers")
+	root.PersistentFlags().BoolVar(&cli.disableSearchToolOptimization, "disable-search-tool-optimization", false, "Disable replacing identifier search results with structural callers or references")
 	root.PersistentFlags().BoolVar(&cli.disableDiffScope, "disable-diff-scope", false, "Allow findings whose code location does not overlap the diff")
 	root.PersistentFlags().BoolVar(&cli.disableParallelToolCalls, "disable-parallel-tool-calls", false, "Disable parallel tool calls and the prompt guidance that encourages batching")
 	root.PersistentFlags().BoolVar(&cli.disableReasoningExtract, "disable-reasoning-extract", false, "Disable the reasoning-extractor agent that augments nudge prompts with issues the reviewer only reasoned about")
@@ -1216,7 +1216,15 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			results, err := engine.Search(cmd.Context(), repoRoot, path, query, contextLines, maxResults, caseSensitive)
+			searchEngine := review.NewEngine(nil, nil, engine, config.Profile{})
+			searchEngine.SetSearchToolOptimization(!a.disableSearchToolOptimization)
+			results, err := searchEngine.ExecuteSearch(cmd.Context(), repoRoot, review.SearchOptions{
+				Path:          path,
+				Query:         query,
+				ContextLines:  contextLines,
+				MaxResults:    maxResults,
+				CaseSensitive: caseSensitive,
+			})
 			if err != nil {
 				return err
 			}
@@ -2597,39 +2605,103 @@ func (a *app) writeInspectOutput(value any) error {
 	case *retrieval.ReferenceResult:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err
-	case *git.LogResult:
-		return writeCommitLog(typed)
-	case *git.ShowResult:
-		return writeCommitDiffs(typed)
-	case *retrieval.SearchResults:
-		for i, result := range typed.Results {
+	case *review.MixedSearchResult:
+		if typed.Callers != nil {
+			if _, err := fmt.Fprintln(os.Stdout, typed.Callers.Render()); err != nil {
+				return err
+			}
+		} else if typed.References != nil {
+			if _, err := fmt.Fprintln(os.Stdout, typed.References.Render()); err != nil {
+				return err
+			}
+		}
+		if err := writeInspectTruncatedFiles(typed.TruncatedFiles); err != nil {
+			return err
+		}
+		if len(typed.LiteralResults) == 0 {
+			return nil
+		}
+		if _, err := fmt.Fprintln(os.Stdout, "\nUnclassified literal matches:"); err != nil {
+			return err
+		}
+		return writeInspectSearchResults(typed.LiteralResults)
+	case *review.GroupedSearchResult:
+		for i, hierarchy := range typed.CallHierarchies {
 			if i > 0 {
 				if _, err := fmt.Fprintln(os.Stdout); err != nil {
 					return err
 				}
 			}
-			loc := result.CodeLocation
-			if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", loc.FilePath, loc.LineRange.Start, loc.LineRange.End, loc.Language); err != nil {
+			if _, err := fmt.Fprintln(os.Stdout, hierarchy.Render()); err != nil {
 				return err
-			}
-			if result.ContextBefore != nil {
-				if _, err := fmt.Fprintln(os.Stdout, result.ContextBefore.Content); err != nil {
-					return err
-				}
-			}
-			if _, err := fmt.Fprintln(os.Stdout, loc.Content); err != nil {
-				return err
-			}
-			if result.ContextAfter != nil {
-				if _, err := fmt.Fprintln(os.Stdout, result.ContextAfter.Content); err != nil {
-					return err
-				}
 			}
 		}
-		return nil
+		for _, references := range typed.ReferenceResults {
+			if _, err := fmt.Fprintln(os.Stdout); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(os.Stdout, references.Render()); err != nil {
+				return err
+			}
+		}
+		if err := writeInspectTruncatedFiles(typed.TruncatedFiles); err != nil {
+			return err
+		}
+		if len(typed.LiteralResults) == 0 {
+			return nil
+		}
+		if _, err := fmt.Fprintln(os.Stdout, "\nUnclassified literal matches:"); err != nil {
+			return err
+		}
+		return writeInspectSearchResults(typed.LiteralResults)
+	case *git.LogResult:
+		return writeCommitLog(typed)
+	case *git.ShowResult:
+		return writeCommitDiffs(typed)
+	case *retrieval.SearchResults:
+		if err := writeInspectTruncatedFiles(typed.TruncatedFiles); err != nil {
+			return err
+		}
+		return writeInspectSearchResults(typed.Results)
 	default:
 		return writeJSON(value)
 	}
+}
+
+func writeInspectTruncatedFiles(files []string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(os.Stdout, "Warning: search clipped files before matching completed: %s\n", strings.Join(files, ", "))
+	return err
+}
+
+func writeInspectSearchResults(results []retrieval.SearchResult) error {
+	for i, result := range results {
+		if i > 0 {
+			if _, err := fmt.Fprintln(os.Stdout); err != nil {
+				return err
+			}
+		}
+		loc := result.CodeLocation
+		if _, err := fmt.Fprintf(os.Stdout, "%s:%d-%d (%s)\n", loc.FilePath, loc.LineRange.Start, loc.LineRange.End, loc.Language); err != nil {
+			return err
+		}
+		if result.ContextBefore != nil {
+			if _, err := fmt.Fprintln(os.Stdout, result.ContextBefore.Content); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(os.Stdout, loc.Content); err != nil {
+			return err
+		}
+		if result.ContextAfter != nil {
+			if _, err := fmt.Fprintln(os.Stdout, result.ContextAfter.Content); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // writeCommitLog renders a commit listing: one header line per commit followed

@@ -53,17 +53,12 @@ type Engine struct {
 	// disabledStyleGuides holds built-in styleguide languages the user turned
 	// off. Same write-once-before-pipeline contract as additionalStyleGuides.
 	disabledStyleGuides map[string]struct{}
-	// structuralSupport memoizes retrieval.SupportsStructuralAnalysis per
-	// (repoRoot, path). The result is deterministic over a review's fixed
-	// checkout, so caching it avoids a redundant os.Stat on every search call
-	// (the check runs in both toolCallConcurrencyKey and executeSearch). It is a
-	// pointer so withConfig's shallow clones share one cache (and so the Engine
-	// stays copyable — a sync.Map value must not be copied). Its values are bools,
-	// so it is trivially small and intentionally left uncapped.
-	structuralSupport *sync.Map // repoRoot\x00path -> bool
 }
 
-var searchFunctionQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\((?:\))?$`)
+var (
+	searchIdentifierQueryPattern = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)(?:\((?:\))?)?$`)
+	searchIdentifierPattern      = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+)
 
 // ErrEmptyDiff is returned when the resolved review context has no changed files
 // and no diff content, meaning there is nothing meaningful to review.
@@ -116,7 +111,6 @@ func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine 
 		config:                 profile,
 		searchToolOptimization: true,
 		toolchainCapture:       toolchain.Capture,
-		structuralSupport:      &sync.Map{},
 	}
 }
 
@@ -3015,7 +3009,7 @@ type toolResultSummary struct {
 type toolCallHistoryEntry struct {
 	ToolCall    llm.ToolCall
 	Result      toolResultSummary
-	OptimizedTo string // non-empty when the tool call was rewritten, e.g. "search" → "find_callers"
+	OptimizedTo string // non-empty when the result was structurally replaced, e.g. "search" → "find_callers"
 }
 
 func collectToolCallHistory(toolCalls []llm.ToolCall, toolMessages []llm.Message) []toolCallHistoryEntry {
@@ -3032,21 +3026,36 @@ func collectToolCallHistory(toolCalls []llm.ToolCall, toolMessages []llm.Message
 			ToolCall: toolCall,
 			Result:   results[toolCall.ID],
 		}
-		if toolCall.Name == "search" && isCallHierarchyResult(rawContents[toolCall.ID]) {
-			entry.OptimizedTo = "find_callers"
+		if toolCall.Name == "search" {
+			entry.OptimizedTo = optimizedSearchResultTool(rawContents[toolCall.ID])
 		}
 		history = append(history, entry)
 	}
 	return history
 }
 
-func isCallHierarchyResult(content string) bool {
+func optimizedSearchResultTool(content string) string {
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(content), &payload); err != nil {
-		return false
+		return ""
 	}
-	_, hasRoot := payload["root"]
-	return hasRoot
+	if _, hasRoot := payload["root"]; hasRoot {
+		return "find_callers"
+	}
+	if _, hasTarget := payload["target"]; hasTarget {
+		return "find_references"
+	}
+	_, hasCallers := payload["call_hierarchies"]
+	_, hasReferences := payload["reference_results"]
+	switch {
+	case hasCallers && hasReferences:
+		return "find_callers/find_references"
+	case hasCallers:
+		return "find_callers"
+	case hasReferences:
+		return "find_references"
+	}
+	return ""
 }
 
 func parseToolResultSummary(content string) toolResultSummary {
@@ -3514,9 +3523,6 @@ func syntheticToolArgumentsForCall(toolCall llm.ToolCall) string {
 }
 
 func toolCallDisplay(toolCall llm.ToolCall) string {
-	if optimized, ok := optimizedSearchToolCallDisplay(toolCall); ok {
-		return optimized
-	}
 	return fmt.Sprintf("%s(%s)", toolCall.Name, syntheticToolArgumentsForCall(toolCall))
 }
 
@@ -3539,34 +3545,6 @@ func reviewTargetSummary(ctx *model.ReviewContext) string {
 	}
 	return fmt.Sprintf("%s @ %s → %s",
 		ctx.Repository.FullName, ctx.Repository.HeadRef, ctx.Repository.BaseRef)
-}
-
-func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {
-	if toolCall.Name != "search" {
-		return "", false
-	}
-	var args struct {
-		Path          string `json:"path"`
-		Query         string `json:"query"`
-		ContextLines  int    `json:"context_lines"`
-		MaxResults    int    `json:"max_results"`
-		CaseSensitive bool   `json:"case_sensitive"`
-	}
-	if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
-		return "", false
-	}
-	normalizedPath := normalizeToolPath(strings.TrimSpace(args.Path))
-	query := strings.TrimSpace(args.Query)
-	matches := searchFunctionQueryPattern.FindStringSubmatch(query)
-	if len(matches) != 2 {
-		return "", false
-	}
-	findArgs := syntheticToolArguments("find_callers", toolCallArgs{
-		Path:   normalizedPath,
-		Symbol: matches[1],
-		Depth:  toolcatalog.DefaultCallHierarchyDepth,
-	})
-	return fmt.Sprintf(`find_callers(instead_of="search", %s)`, findArgs), true
 }
 
 func lineCount(text string) int {

@@ -99,8 +99,8 @@ func candidateBackends(scope lookupScope) ([]languageBackend, error) {
 // file in an unsupported language returns false; a directory or the empty
 // (repo-wide) scope returns true, since at least one backend can attempt a
 // repo-wide lookup. It mirrors the resolution candidateBackends performs, so the
-// search-tool optimization only rewrites a function-name search into a call-graph
-// lookup when that lookup can actually resolve the target language.
+// callers can use it to avoid structural lookups that cannot resolve the target
+// language.
 func SupportsStructuralAnalysis(repoRoot, path string) bool {
 	scope, err := resolveLookupScope(repoRoot, path)
 	if err != nil {

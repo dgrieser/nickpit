@@ -755,6 +755,53 @@ func TestInspectReferencesCommandPresent(t *testing.T) {
 	}
 }
 
+func TestInspectSearchUsesStructuralOptimizationAndDisableFlag(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module example.com/inspectsearch\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "sample.go"), []byte("package sample\n\nfunc Run() {}\n\nfunc Start() { Run() }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "run.sh"), []byte("Run()\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repoRoot)
+
+	run := func(t *testing.T, disabled bool) map[string]any {
+		t.Helper()
+		cmd := newRootCmd()
+		args := []string{"--json"}
+		if disabled {
+			args = append(args, "--disable-search-tool-optimization")
+		}
+		args = append(args, "inspect", "search", "--query", "Run()")
+		cmd.SetArgs(args)
+		output := captureStdout(t, func() {
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(output), &payload); err != nil {
+			t.Fatalf("decode inspect search output: %v (%s)", err, output)
+		}
+		return payload
+	}
+
+	optimized := run(t, false)
+	if _, ok := optimized["root"]; !ok {
+		t.Fatalf("optimized inspect search = %#v, want caller hierarchy", optimized)
+	}
+	if literals, _ := optimized["literal_results"].([]any); len(literals) != 1 {
+		t.Fatalf("optimized inspect search = %#v, want preserved shell match", optimized)
+	}
+	literal := run(t, true)
+	if _, ok := literal["results"]; !ok {
+		t.Fatalf("disabled inspect search = %#v, want literal matches", literal)
+	}
+}
+
 func TestPRAndMRCommandsHaveURLFlag(t *testing.T) {
 	cmd := newRootCmd()
 	for _, args := range [][]string{{"github", "pr"}, {"gitlab", "mr"}} {

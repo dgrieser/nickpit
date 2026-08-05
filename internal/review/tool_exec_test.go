@@ -181,33 +181,204 @@ func TestExecuteFindReferencesFallsBackForDirectoryAndRepoScopes(t *testing.T) {
 	}
 }
 
-// TestExecuteSearchStillRewritesForSupportedLanguage guards against regressing
-// the optimization for languages that DO have a structural backend.
-func TestExecuteSearchStillRewritesForSupportedLanguage(t *testing.T) {
+// TestExecuteSearchReplacesFunctionMatchesForSupportedLanguage guards the
+// post-search optimization for languages with a structural backend.
+func TestExecuteSearchReplacesFunctionMatchesForSupportedLanguage(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "src/demo.go", "package demo\n\nfunc Run() int { return 1 }\n")
 
 	counting := &countingRetrieval{}
 	engine := NewEngine(stubSource{}, &capturingLLM{}, counting, config.Profile{Model: "test"})
-	engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
 		{ID: "c1", Name: "search", Arguments: `{"path":"src/demo.go","query":"Run()"}`},
 	}, freshToolRoundState())
 
-	rewritten := false
-	for _, p := range counting.paths {
+	searchIndex, callersIndex := -1, -1
+	for i, p := range counting.paths {
+		if strings.HasPrefix(p, "search:") && searchIndex < 0 {
+			searchIndex = i
+		}
 		if strings.HasPrefix(p, "callers:") && strings.Contains(p, "Run") {
-			rewritten = true
+			callersIndex = i
 		}
 	}
-	if !rewritten {
-		t.Fatalf("expected a .go function-name search to rewrite to find_callers, recorded paths = %v", counting.paths)
+	if searchIndex < 0 || callersIndex <= searchIndex {
+		t.Fatalf("expected literal search before find_callers replacement, recorded paths = %v", counting.paths)
+	}
+	if payload := decodeToolPayload(t, results[0].Content); payload["mode"] != "callers" {
+		t.Fatalf("optimized payload = %#v, want callers hierarchy", payload)
 	}
 }
 
-// TestExecuteSearchRewritesForRustLanguage guards the optimization for Rust,
-// which is supported by rustBackend: a `.rs` function-name search must rewrite to
-// find_callers, the same as Go/Python/TypeScript.
-func TestExecuteSearchRewritesForRustLanguage(t *testing.T) {
+func TestExecuteSearchReplacesIdentifierMatchesWithReferences(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/searchrefs\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "src/demo.go", "package demo\n\nvar Shared = 1\n\nfunc Read() int { return Shared }\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"path":"src","query":"Shared"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	target, _ := payload["target"].(map[string]any)
+	if target["name"] != "Shared" || target["kind"] != "variable" {
+		t.Fatalf("optimized payload = %#v, want variable references", payload)
+	}
+	if _, literal := payload["results"]; literal {
+		t.Fatalf("literal snippets were not replaced: %#v", payload)
+	}
+}
+
+func TestExecuteSearchPreservesUnclassifiedLiteralMatches(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/mixedsearch\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "version.go", "package mixedsearch\n\nvar VERSION = 1\n")
+	writeRepoFile(t, repoRoot, "release.sh", "echo $VERSION\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"VERSION"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	target, _ := payload["target"].(map[string]any)
+	if target["name"] != "VERSION" || target["kind"] != "variable" {
+		t.Fatalf("mixed payload target = %#v", payload)
+	}
+	literals, _ := payload["literal_results"].([]any)
+	if len(literals) != 1 || intFromJSON(payload["literal_result_count"]) != 1 {
+		t.Fatalf("mixed payload literals = %#v", payload)
+	}
+	literal, _ := literals[0].(map[string]any)
+	location, _ := literal["code_location"].(map[string]any)
+	if location["file_path"] != "release.sh" {
+		t.Fatalf("preserved literal location = %#v", location)
+	}
+}
+
+func TestExecuteSearchClassifiesIndividualOccurrences(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/occurrences\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "version.go", "package occurrences\n\nvar VERSION = 1\n// VERSION documentation\nvar banner = \"VERSION\"\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"VERSION"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	if target, _ := payload["target"].(map[string]any); target["name"] != "VERSION" {
+		t.Fatalf("occurrence payload target = %#v", payload)
+	}
+	literals, _ := payload["literal_results"].([]any)
+	if len(literals) != 2 || intFromJSON(payload["literal_result_count"]) != 2 {
+		t.Fatalf("occurrence literals = %#v, want comment and string", payload)
+	}
+	lines := make([]int, 0, len(literals))
+	for _, raw := range literals {
+		literal, _ := raw.(map[string]any)
+		location, _ := literal["code_location"].(map[string]any)
+		rangePayload, _ := location["line_range"].(map[string]any)
+		lines = append(lines, intFromJSON(rangePayload["start"]))
+	}
+	if !reflect.DeepEqual(lines, []int{4, 5}) {
+		t.Fatalf("literal lines = %v, want [4 5]", lines)
+	}
+}
+
+func TestExecuteSearchRetainsTruncatedFilesWhenOptimized(t *testing.T) {
+	counting := &countingRetrieval{truncatedFiles: []string{"large.sh"}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, counting, config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"path":"pkg","query":"Run()"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	if _, optimized := payload["root"]; !optimized {
+		t.Fatalf("search was not optimized: %#v", payload)
+	}
+	truncated, _ := payload["truncated_files"].([]any)
+	if len(truncated) != 1 || truncated[0] != "large.sh" {
+		t.Fatalf("optimized truncated_files = %#v", payload)
+	}
+}
+
+func TestExecuteSearchGroupsMatchesByDeclaration(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "a.py", "VALUE = 1\n")
+	writeRepoFile(t, repoRoot, "b.py", "VALUE = 2\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"VALUE"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	references, _ := payload["reference_results"].([]any)
+	if len(references) != 2 || intFromJSON(payload["structural_result_count"]) != 2 {
+		t.Fatalf("grouped search payload = %#v, want two reference targets", payload)
+	}
+	if literals, _ := payload["literal_results"].([]any); len(literals) != 0 {
+		t.Fatalf("grouped search retained classified literals: %#v", payload)
+	}
+}
+
+func TestStandaloneSearchReturnsGroupedStructuralResults(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "a.py", "VALUE = 1\n")
+	writeRepoFile(t, repoRoot, "b.py", "VALUE = 2\n")
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	result, err := engine.ExecuteSearch(context.Background(), repoRoot, SearchOptions{Query: "VALUE", ContextLines: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grouped, ok := result.(*GroupedSearchResult)
+	if !ok || grouped.StructuralResultCount != 2 || len(grouped.ReferenceResults) != 2 || len(grouped.LiteralResults) != 0 {
+		t.Fatalf("standalone grouped result = %#v", result)
+	}
+}
+
+func TestExecuteSearchOptimizesReturnedCappedMatch(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "a.py", "VALUE = 1\n")
+	writeRepoFile(t, repoRoot, "b.py", "VALUE = 2\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"VALUE","max_results":1}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	target, _ := payload["target"].(map[string]any)
+	if target["name"] != "VALUE" || target["kind"] != "variable" {
+		t.Fatalf("capped search payload = %#v, want returned match enriched", payload)
+	}
+}
+
+func TestExecuteSearchBoundsStructuralLookupsForBroadIdentifiers(t *testing.T) {
+	results := make([]retrieval.SearchResult, toolcatalog.MaxSearchStructuralLookups+1)
+	for i := range results {
+		results[i] = retrieval.SearchResult{CodeLocation: retrieval.CodeLocation{
+			FilePath: fmt.Sprintf("pkg/file-%02d.go", i),
+			Content:  "if Shared != nil {}",
+		}}
+	}
+	counting := &countingRetrieval{literalResults: results, hasCustomResults: true}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, counting, config.Profile{Model: "test"})
+	toolResults := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, toolResults[0].Content)
+	if got := intFromJSON(payload["result_count"]); got != len(results) {
+		t.Fatalf("broad search result_count = %d, want %d", got, len(results))
+	}
+	for _, call := range counting.paths {
+		if strings.HasPrefix(call, "references:") {
+			t.Fatalf("broad search performed structural lookup: %v", counting.paths)
+		}
+	}
+}
+
+// TestExecuteSearchReplacesRustFunctionMatches guards the post-search
+// optimization for Rust, which is supported by rustBackend.
+func TestExecuteSearchReplacesRustFunctionMatches(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "src/demo.rs", "pub fn Run() -> i32 { 1 }\n")
 
@@ -573,8 +744,8 @@ func intFromJSON(value any) int {
 }
 
 // TestToolCallConcurrencyKey directly exercises the dedup-key generator across
-// every tool and the language-aware search rewrite. The search branch hits the
-// filesystem via SupportsStructuralAnalysis, so real fixture files are written.
+// every tool. Search always receives its literal-search key; structural result
+// replacement happens only after execution.
 func TestToolCallConcurrencyKey(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "src/demo.go", "package demo\n\nfunc Run() int { return 1 }\n")
@@ -587,10 +758,6 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 	engine := NewEngine(stubSource{}, &capturingLLM{}, &countingRetrieval{}, config.Profile{Model: "test"})
 
 	goPath := normalizeToolPath("src/demo.go")
-	searchRewriteKey := func(path string) string {
-		return callHierarchyDedupKey("find_callers", normalizeToolPath(path), "Run", toolcatalog.DefaultCallHierarchyDepth)
-	}
-
 	tests := []struct {
 		name   string
 		call   llm.ToolCall
@@ -628,24 +795,24 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 			want: referenceDedupKey(goPath, "Run"),
 		},
 		{
-			name: "search go function name rewrites",
+			name: "search go function name starts as literal search",
 			call: llm.ToolCall{ID: "f", Name: "search", Arguments: `{"path":"src/demo.go","query":"Run()"}`},
-			want: searchRewriteKey("src/demo.go"),
+			want: searchDedupKey("src/demo.go", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
-			name: "search python function name rewrites",
+			name: "search python function name starts as literal search",
 			call: llm.ToolCall{ID: "g", Name: "search", Arguments: `{"path":"src/demo.py","query":"Run()"}`},
-			want: searchRewriteKey("src/demo.py"),
+			want: searchDedupKey("src/demo.py", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
-			name: "search typescript function name rewrites",
+			name: "search typescript function name starts as literal search",
 			call: llm.ToolCall{ID: "h", Name: "search", Arguments: `{"path":"src/demo.ts","query":"Run()"}`},
-			want: searchRewriteKey("src/demo.ts"),
+			want: searchDedupKey("src/demo.ts", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
-			name: "search rust function name rewrites",
+			name: "search rust function name starts as literal search",
 			call: llm.ToolCall{ID: "i", Name: "search", Arguments: `{"path":"src/demo.rs","query":"Run()"}`},
-			want: searchRewriteKey("src/demo.rs"),
+			want: searchDedupKey("src/demo.rs", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search ruby function name keys as literal search",
@@ -691,7 +858,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := engine.toolCallConcurrencyKey(tt.call, i, repoRoot)
+			got := engine.toolCallConcurrencyKey(tt.call, i)
 			if tt.unique {
 				if !strings.HasPrefix(got, "unique\x00") {
 					t.Fatalf("key = %q, want a unique\\x00 key", got)
@@ -866,34 +1033,27 @@ func TestExecuteSearchDedupesAcrossRounds(t *testing.T) {
 	}
 }
 
-// TestCallHierarchyDedupKeyAlignsWithSearchRewrite guards the dedup-key
-// contract between the two ways a structural lookup can be requested: a
-// `search` call rewritten into find_callers normalizes the repo-root alias "."
-// to "", so a direct find_callers on "." must produce the same key — otherwise
-// identical lookups get different concurrency/seen keys and execute twice.
-func TestCallHierarchyDedupKeyAlignsWithSearchRewrite(t *testing.T) {
+// TestPostSearchCallHierarchyDedupesDirectLookup verifies that search keeps its
+// own concurrency key while its post-search structural replacement still uses
+// the regular find_callers seen-key.
+func TestPostSearchCallHierarchyDedupesDirectLookup(t *testing.T) {
 	repoRoot := t.TempDir()
-	writeRepoFile(t, repoRoot, "demo.go", "package demo\n\nfunc Run() int { return 1 }\n")
+	writeRepoFile(t, repoRoot, "pkg/demo.go", "package demo\n\nfunc Run() int { return 1 }\n")
 	engine := NewEngine(stubSource{}, &capturingLLM{}, &countingRetrieval{}, config.Profile{Model: "test"})
 
-	searchCall := llm.ToolCall{ID: "s1", Name: "search", Arguments: `{"path":".","query":"Run()"}`}
-	directCall := llm.ToolCall{ID: "d1", Name: "find_callers", Arguments: `{"path":".","symbol":"Run"}`}
+	searchCall := llm.ToolCall{ID: "s1", Name: "search", Arguments: `{"path":"pkg","query":"Run()"}`}
+	directCall := llm.ToolCall{ID: "d1", Name: "find_callers", Arguments: `{"path":"pkg/a.go/root.go","symbol":"Run"}`}
 
-	searchKey := engine.toolCallConcurrencyKey(searchCall, 0, repoRoot)
-	directKey := engine.toolCallConcurrencyKey(directCall, 1, repoRoot)
-	if want := callHierarchyDedupKey("find_callers", "", "Run", toolcatalog.DefaultCallHierarchyDepth); searchKey != want {
-		t.Fatalf("search rewrite key = %q, want %q (rewrite with repo-root path normalized to empty)", searchKey, want)
-	}
-	if searchKey != directKey {
-		t.Fatalf("dedup keys differ: search rewrite %q vs direct find_callers %q", searchKey, directKey)
+	searchKey := engine.toolCallConcurrencyKey(searchCall, 0)
+	directKey := engine.toolCallConcurrencyKey(directCall, 1)
+	if searchKey == directKey {
+		t.Fatalf("search key = direct structural key %q; search must run before classification", searchKey)
 	}
 
-	// Execution level: the rewritten search stores the seen key, so the direct
-	// structural lookup on the same target dedupes instead of running again.
 	state := freshToolRoundState()
 	first := engine.executeToolCall(context.Background(), repoRoot, searchCall, state)
 	if strings.Contains(first, "already_requested") {
-		t.Fatalf("first (rewritten search) call unexpectedly deduped: %s", first)
+		t.Fatalf("first optimized search unexpectedly deduped: %s", first)
 	}
 	second := engine.executeToolCall(context.Background(), repoRoot, directCall, state)
 	if !strings.Contains(second, "already_requested") {

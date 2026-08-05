@@ -2108,6 +2108,7 @@ type countingRetrieval struct {
 	paths            []string
 	literalResults   []retrieval.SearchResult
 	regexResults     []retrieval.SearchResult
+	truncatedFiles   []string
 	hasCustomResults bool
 }
 
@@ -2163,13 +2164,14 @@ func (r *countingRetrieval) Search(_ context.Context, _ string, path, query stri
 		}
 	}
 	return &retrieval.SearchResults{
-		Path:          path,
-		Query:         query,
-		ContextLines:  contextLines,
-		MaxResults:    maxResults,
-		CaseSensitive: caseSensitive,
-		ResultCount:   len(results),
-		Results:       results,
+		Path:           path,
+		Query:          query,
+		ContextLines:   contextLines,
+		MaxResults:     maxResults,
+		CaseSensitive:  caseSensitive,
+		ResultCount:    len(results),
+		Results:        results,
+		TruncatedFiles: r.truncatedFiles,
 	}, nil
 }
 
@@ -2209,11 +2211,17 @@ func (r *countingRetrieval) FindReferences(_ context.Context, _ string, symbol r
 	r.mu.Lock()
 	r.paths = append(r.paths, fmt.Sprintf("references:%s:%s", symbol.Path, symbol.Name))
 	r.mu.Unlock()
+	kind := "variable"
+	definition := "var " + symbol.Name + " = 1"
+	if symbol.Name == "Run" {
+		kind = "function"
+		definition = "func Run() {}"
+	}
 	return &retrieval.ReferenceResult{
 		Target: retrieval.ReferenceTarget{
 			Name:       symbol.Name,
-			Kind:       "variable",
-			Definition: testCallNodeLocation(pathOrDefault(symbol.Path, "pkg/root.go"), 3, 3, "var "+symbol.Name+" = 1"),
+			Kind:       kind,
+			Definition: testCallNodeLocation(pathOrDefault(symbol.Path, "pkg/root.go"), 3, 3, definition),
 		},
 		Functions: []retrieval.ReferenceContext{}, OutsideFunctions: []retrieval.ReferenceContext{}, Complete: true,
 	}, nil
