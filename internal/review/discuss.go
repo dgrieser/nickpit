@@ -13,6 +13,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/scm/reviewmd"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
 // DiscussRequest drives a single turn of the discussion agent: a free-form,
@@ -133,7 +134,7 @@ func (e *Engine) Discuss(ctx context.Context, req DiscussRequest) (DiscussResult
 	if maxTokens <= 0 {
 		maxTokens = config.DefaultMaxContextToken
 	}
-	estimator := model.SimpleEstimator{}
+	estimator := tokenestimate.SimpleEstimator{}
 	fixedOverhead := discussFixedOverheadTokens(req.Result, req.DisableSuggestions, styleGuideToolchainSnippet, estimator)
 	messages := boundDiscussTranscript(req.Messages, discussTranscriptBudget(maxTokens, fixedOverhead), estimator)
 	reviewCtx, err := e.trimForDiscuss(req.ReviewCtx, req.Result, messages, styleGuideToolchainSnippet, req.DisableSuggestions, format)
@@ -326,7 +327,7 @@ const discussPromptHeadroomTokens = 2000
 // discussion prompt: the fixed template/tool text, the styleguide snippet, and
 // the complete review JSON (the discussion's substance, injected verbatim). The
 // transcript and the review context must share whatever the window has left.
-func discussFixedOverheadTokens(result *model.ReviewResult, disableSuggestions bool, styleGuideSnippet string, estimator model.TokenEstimator) int {
+func discussFixedOverheadTokens(result *model.ReviewResult, disableSuggestions bool, styleGuideSnippet string, estimator tokenestimate.Estimator) int {
 	overhead := discussPromptHeadroomTokens
 	overhead += estimator.Estimate(styleGuideSnippet)
 	// Indented, matching how buildDiscussContext actually embeds the review
@@ -362,7 +363,7 @@ const discussOmittedTurnsNote = "[Earlier conversation turns were omitted to fit
 // user message is always kept even when it alone exceeds the budget. When turns
 // were dropped, a short note is prepended to the oldest kept user message. The
 // input slice is never mutated.
-func boundDiscussTranscript(messages []llm.Message, budget int, estimator model.TokenEstimator) []llm.Message {
+func boundDiscussTranscript(messages []llm.Message, budget int, estimator tokenestimate.Estimator) []llm.Message {
 	if budget <= 0 || len(messages) == 0 {
 		return messages
 	}
@@ -418,7 +419,7 @@ func (e *Engine) trimForDiscuss(reviewCtx *model.ReviewContext, result *model.Re
 	if maxTokens <= 0 {
 		maxTokens = config.DefaultMaxContextToken
 	}
-	estimator := model.SimpleEstimator{}
+	estimator := tokenestimate.SimpleEstimator{}
 	overhead := discussFixedOverheadTokens(result, disableSuggestions, styleGuideSnippet, estimator)
 	for _, msg := range messages {
 		overhead += estimator.Estimate(msg.Content)
@@ -445,7 +446,7 @@ func (e *Engine) trimForDiscuss(reviewCtx *model.ReviewContext, result *model.Re
 // rejected outright. All diff representations shrink together because
 // renderContextText counts ctx.Diff when set while the prompt payload renders
 // DiffFiles/DiffHunks.
-func enforceDiscussBudget(ctx *model.ReviewContext, budget int, estimator model.TokenEstimator) {
+func enforceDiscussBudget(ctx *model.ReviewContext, budget int, estimator tokenestimate.Estimator) {
 	if ctx == nil {
 		return
 	}

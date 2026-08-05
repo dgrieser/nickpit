@@ -9,13 +9,14 @@ import (
 	"github.com/dgrieser/nickpit/internal/filetype"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
 type Trimmer struct {
 	maxTokens int
 	headroom  int
-	estimator model.TokenEstimator
-	lenEst    model.LengthEstimator
+	estimator tokenestimate.Estimator
+	lenEst    tokenestimate.LengthEstimator
 	less      func(a, b evictionCandidate) bool
 }
 
@@ -40,15 +41,15 @@ func WithHeadroomTokens(tokens int) TrimmerOption {
 	}
 }
 
-func NewTrimmer(maxTokens int, estimator model.TokenEstimator, opts ...TrimmerOption) *Trimmer {
+func NewTrimmer(maxTokens int, estimator tokenestimate.Estimator, opts ...TrimmerOption) *Trimmer {
 	if estimator == nil {
-		estimator = model.SimpleEstimator{}
+		estimator = tokenestimate.SimpleEstimator{}
 	}
 	if maxTokens <= 0 {
 		maxTokens = config.DefaultMaxContextToken
 	}
 	t := &Trimmer{maxTokens: maxTokens, estimator: estimator, less: defaultEvictionLess}
-	t.lenEst, _ = estimator.(model.LengthEstimator)
+	t.lenEst, _ = estimator.(tokenestimate.LengthEstimator)
 	for _, opt := range opts {
 		opt(t)
 	}
@@ -426,7 +427,7 @@ func appendEvictionOmission(ctx *model.ReviewContext, label string, droppedBytes
 // on top of the raw context text, so the trimmer can reserve headroom for it.
 // The payload is rendered with the diff format the review will actually use —
 // git-json carries per-hunk metadata the default format does not.
-func promptOverheadTokens(estimator model.TokenEstimator, ctx *model.ReviewContext, format model.DiffFormat, maxTokens int) int {
+func promptOverheadTokens(estimator tokenestimate.Estimator, ctx *model.ReviewContext, format model.DiffFormat, maxTokens int) int {
 	if ctx == nil || estimator == nil {
 		return 0
 	}

@@ -58,6 +58,7 @@ This document maps the production Go code. Test files live beside the code they 
 
 - `internal/model/types.go`: Shared domain types for requests, results, findings, verification, finalization, SCM data, toolchain data, and token usage.
 - `internal/model/format.go`: Human-readable formatting helpers for model values.
+- `internal/tokenestimate/tokenestimate.go`: Central prompt-token estimation API and current four-bytes-per-token heuristic.
 - `internal/workflow/spec.go`: Workflow YAML schema, parsing, default workflow construction, aliases, step config, and validation.
 
 ## Deduplication

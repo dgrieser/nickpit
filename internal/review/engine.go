@@ -23,6 +23,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/textsan"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 	"github.com/dgrieser/nickpit/internal/toolchain"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/versionmatch"
@@ -282,7 +283,7 @@ func (e *Engine) resolveAndTrimContextAs(ctx context.Context, req model.ReviewRe
 		if maxTokens <= 0 {
 			maxTokens = config.DefaultMaxContextToken
 		}
-		estimator := model.SimpleEstimator{}
+		estimator := tokenestimate.SimpleEstimator{}
 		headroom := promptOverheadTokens(estimator, reviewCtx, req.DiffFormat, maxTokens)
 		trimmer = NewTrimmer(maxTokens, estimator, WithHeadroomTokens(headroom))
 	}
