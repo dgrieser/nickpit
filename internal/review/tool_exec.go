@@ -155,28 +155,30 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 
 func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
 	if e.retrieval == nil {
-		return toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"}))
+		return limitToolResultJSON(toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"})), e.config.MaxToolResultKiB)
 	}
+	var result string
 	switch toolCall.Name {
 	case "inspect_file":
-		return e.executeInspectFile(ctx, repoRoot, toolCall, state)
+		result = e.executeInspectFile(ctx, repoRoot, toolCall, state)
 	case "list_files":
-		return e.executeListFiles(ctx, repoRoot, toolCall, state)
+		result = e.executeListFiles(ctx, repoRoot, toolCall, state)
 	case "search":
-		return e.executeSearch(ctx, repoRoot, toolCall, state)
+		result = e.executeSearch(ctx, repoRoot, toolCall, state)
 	case "find_callers":
-		return e.executeCallHierarchy(ctx, repoRoot, toolCall, true, state)
+		result = e.executeCallHierarchy(ctx, repoRoot, toolCall, true, state)
 	case "find_references":
-		return e.executeFindReferences(ctx, repoRoot, toolCall, state)
+		result = e.executeFindReferences(ctx, repoRoot, toolCall, state)
 	case "find_callees":
-		return e.executeCallHierarchy(ctx, repoRoot, toolCall, false, state)
+		result = e.executeCallHierarchy(ctx, repoRoot, toolCall, false, state)
 	case "git_log":
-		return e.executeGitLog(ctx, repoRoot, toolCall, state)
+		result = e.executeGitLog(ctx, repoRoot, toolCall, state)
 	case "git_show":
-		return e.executeGitShow(ctx, repoRoot, toolCall, state)
+		result = e.executeGitShow(ctx, repoRoot, toolCall, state)
 	default:
-		return toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
+		result = toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
 	}
+	return limitToolResultJSON(result, e.config.MaxToolResultKiB)
 }
 
 func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
@@ -232,53 +234,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 	state.mu.Lock()
 	state.seenToolCalls[key] = struct{}{}
 	state.mu.Unlock()
-	return mustToolResultJSON(boundedReferenceResult(result))
-}
-
-const (
-	maxReferenceFunctions   = 25
-	maxReferenceResultBytes = 64 << 10
-)
-
-func boundedReferenceResult(result *retrieval.ReferenceResult) *retrieval.ReferenceResult {
-	bounded := *result
-	bounded.Functions = append([]retrieval.ReferenceContext(nil), result.Functions...)
-	bounded.OutsideFunctions = append([]retrieval.ReferenceContext(nil), result.OutsideFunctions...)
-	if len(bounded.Functions) > maxReferenceFunctions {
-		bounded.OmittedContexts += len(bounded.Functions) - maxReferenceFunctions
-		bounded.Functions = bounded.Functions[:maxReferenceFunctions]
-		markReferenceResultTruncated(&bounded)
-	}
-	for referenceResultJSONSize(&bounded) > maxReferenceResultBytes {
-		markReferenceResultTruncated(&bounded)
-		switch {
-		case len(bounded.Functions) > 0:
-			bounded.Functions = bounded.Functions[:len(bounded.Functions)-1]
-			bounded.OmittedContexts++
-		case len(bounded.OutsideFunctions) > 0:
-			bounded.OutsideFunctions = bounded.OutsideFunctions[:len(bounded.OutsideFunctions)-1]
-			bounded.OmittedContexts++
-		case bounded.Target.Definition.Content != "":
-			content := bounded.Target.Definition.Content
-			bounded.Target.Definition.Content = content[:len(content)/2]
-		default:
-			return &bounded
-		}
-	}
-	return &bounded
-}
-
-func markReferenceResultTruncated(result *retrieval.ReferenceResult) {
-	result.Truncated = true
-	result.TruncatedNote = "reference contexts were omitted to keep the tool result within its function and byte limits; narrow the declaration path to retrieve a smaller result"
-}
-
-func referenceResultJSONSize(result *retrieval.ReferenceResult) int {
-	data, err := json.Marshal(result)
-	if err != nil {
-		return maxReferenceResultBytes + 1
-	}
-	return len(data)
+	return mustToolResultJSON(result)
 }
 
 func referenceDedupKey(path, symbol string) string {

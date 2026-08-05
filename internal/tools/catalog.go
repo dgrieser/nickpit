@@ -176,6 +176,7 @@ func InstructionsListing(names ...string) (string, error) {
 		builder.WriteString(entry.listingLine())
 		builder.WriteByte('\n')
 	}
+	builder.WriteString("Tool results may be truncated to the configured size limit; when `truncated` is true, narrow the path, range, depth, or result count and retry.\n")
 	return strings.TrimRight(builder.String(), "\n"), nil
 }
 

@@ -123,7 +123,7 @@ func TestExecuteFindReferencesReturnsResultAndDeduplicates(t *testing.T) {
 	}
 }
 
-func TestBoundedReferenceResultCapsFunctionsAndBytes(t *testing.T) {
+func TestToolResultLimiterCapsReferenceFunctionsAndBytes(t *testing.T) {
 	result := &retrieval.ReferenceResult{
 		Target: retrieval.ReferenceTarget{Name: "Shared", Kind: "variable", Definition: retrieval.CodeLocation{Content: "var Shared = 1"}},
 	}
@@ -134,13 +134,16 @@ func TestBoundedReferenceResultCapsFunctionsAndBytes(t *testing.T) {
 		})
 	}
 
-	bounded := boundedReferenceResult(result)
-	data, err := json.Marshal(bounded)
+	raw := mustToolResultJSON(result)
+	limited := limitToolResultJSON(raw, 32)
+	var bounded map[string]any
+	err := json.Unmarshal([]byte(limited), &bounded)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bounded.Truncated || bounded.OmittedContexts == 0 || len(bounded.Functions) > maxReferenceFunctions || len(data) > maxReferenceResultBytes {
-		t.Fatalf("bounded result: truncated=%t omitted=%d functions=%d bytes=%d", bounded.Truncated, bounded.OmittedContexts, len(bounded.Functions), len(data))
+	functions, _ := bounded["functions"].([]any)
+	if bounded["truncated"] != true || intFromJSON(bounded["omitted_contexts"]) == 0 || len(functions) > maxReferenceFunctions || len(limited) > 32<<10 {
+		t.Fatalf("bounded result: truncated=%v omitted=%v functions=%d bytes=%d", bounded["truncated"], bounded["omitted_contexts"], len(functions), len(limited))
 	}
 }
 

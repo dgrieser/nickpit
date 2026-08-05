@@ -147,6 +147,34 @@ profiles:
 	}
 }
 
+func TestLoadProfileAppliesMaxToolResultKiBOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	err := os.WriteFile(path, []byte(`
+profiles:
+  default:
+    model: test-model
+    max_tool_result_kib: 128
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := &app{
+		profile:             "default",
+		configPath:          path,
+		maxToolResultKiB:    0,
+		maxToolResultKiBSet: true,
+	}
+	_, profile, err := app.loadProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.MaxToolResultKiB != 0 {
+		t.Fatalf("max tool result KiB = %d, want explicit zero", profile.MaxToolResultKiB)
+	}
+}
+
 func TestLoadProfileAppliesSmallModelCLIOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -579,6 +607,7 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 		"presence-penalty",
 		"max-output-tokens",
 		"max-request-bytes",
+		"max-tool-result-kib",
 		"small-max-output-tokens",
 		"small-max-tokens",
 		"small-temperature",

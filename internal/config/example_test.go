@@ -43,6 +43,9 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.MaxContextTokens != DefaultMaxContextToken {
 			t.Fatalf("%s max context tokens = %d", entry.name, profile.MaxContextTokens)
 		}
+		if profile.MaxToolResultKiB != DefaultMaxToolResultKiB {
+			t.Fatalf("%s max tool result KiB = %d", entry.name, profile.MaxToolResultKiB)
+		}
 		if profile.MaxToolCalls != DefaultMaxToolCalls {
 			t.Fatalf("%s max tool calls = %d", entry.name, profile.MaxToolCalls)
 		}

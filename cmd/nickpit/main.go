@@ -171,6 +171,8 @@ type app struct {
 	maxContextTokensSet     bool
 	maxRequestBytes         int
 	maxRequestBytesSet      bool
+	maxToolResultKiB        int
+	maxToolResultKiBSet     bool
 	includeFullFiles        bool
 	includeComments         bool
 	includeCommits          bool
@@ -340,6 +342,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().StringVar(&cli.smallExtraBody, "small-extra-body", "", "Additional JSON object fields for workflow steps using model: \"@small\"")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxContextTokens, &cli.maxContextTokensSet), "max-context-tokens", "Context token budget")
 	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxRequestBytes, &cli.maxRequestBytesSet), "max-request-bytes", "Maximum serialized LLM request size in bytes (0 disables)")
+	root.PersistentFlags().Var(newTrackedIntValue(&cli.maxToolResultKiB, &cli.maxToolResultKiBSet), "max-tool-result-kib", "Maximum encoded size of each model tool result in KiB (0 disables byte capping)")
 	root.PersistentFlags().BoolVar(&cli.includeFullFiles, "include-full-files", false, "Include full changed files")
 	root.PersistentFlags().BoolVar(&cli.includeComments, "include-comments", true, "Include existing comments")
 	root.PersistentFlags().BoolVar(&cli.includeCommits, "include-commits", true, "Include commit summaries")
@@ -475,6 +478,10 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 	var maxRequestBytes *int
 	if a.maxRequestBytesSet {
 		maxRequestBytes = &a.maxRequestBytes
+	}
+	var maxToolResultKiB *int
+	if a.maxToolResultKiBSet {
+		maxToolResultKiB = &a.maxToolResultKiB
 	}
 	var toolCalls *int
 	if a.maxToolCallsSet {
@@ -619,6 +626,7 @@ func (a *app) loadProfile() (string, config.Profile, error) {
 		DiffFormat:                model.DiffFormat(a.diffFormat),
 		MaxContextTokens:          maxContextTokens,
 		MaxRequestBytes:           maxRequestBytes,
+		MaxToolResultKiB:          maxToolResultKiB,
 		ToolCalls:                 toolCalls,
 		DuplicateToolCalls:        duplicateToolCalls,
 		OutputRetries:             outputRetries,

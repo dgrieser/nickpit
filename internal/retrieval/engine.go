@@ -132,9 +132,6 @@ type ReferenceResult struct {
 	PossibleReferenceCount int                `json:"possible_reference_count"`
 	Complete               bool               `json:"complete"`
 	Notes                  []string           `json:"notes,omitempty"`
-	Truncated              bool               `json:"truncated,omitempty"`
-	TruncatedNote          string             `json:"truncated_note,omitempty"`
-	OmittedContexts        int                `json:"omitted_contexts,omitempty"`
 }
 
 type ReferenceTarget struct {
