@@ -47,7 +47,7 @@ func limitToolResultJSON(raw string, maxKiB int) string {
 	}
 
 	markToolResultTruncated(root)
-	for attempts := 0; attempts < 10_000; attempts++ {
+	for range 10_000 {
 		encoded, err = json.Marshal(root)
 		if err != nil {
 			return raw
