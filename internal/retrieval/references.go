@@ -18,6 +18,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 	"github.com/dgrieser/nickpit/internal/retrieval/tsparser"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -27,8 +28,7 @@ type AmbiguousSymbolError struct {
 }
 
 func (e *AmbiguousSymbolError) Error() string {
-	const maxCandidates = 10
-	count := min(len(e.Candidates), maxCandidates)
+	count := min(len(e.Candidates), toolcatalog.MaxAmbiguousReferenceTargets)
 	locations := make([]string, 0, count+1)
 	for _, candidate := range e.Candidates[:count] {
 		loc := candidate.Definition

@@ -904,14 +904,6 @@ func shouldDropFinding(v *model.FindingVerification, policy string) (bool, strin
 	return shouldDropVerdict(v.Verdict, policy)
 }
 
-// Default tool-call arguments. defaultCallHierarchyDepth in particular must be
-// used both where the find_callers/find_callees dedup key is computed and where
-// the call is executed, otherwise the key would not match the executed depth.
-const (
-	defaultCallHierarchyDepth = 10
-	defaultSearchContextLines = 5
-)
-
 func verifyOptionsFromReviewRequest(req model.ReviewRequest) VerifyOptions {
 	return VerifyOptions{
 		DisableJSONResponseFormat: req.DisableJSONResponseFormat,
@@ -3272,7 +3264,7 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
 		if args.Depth <= 0 {
-			args.Depth = defaultCallHierarchyDepth
+			args.Depth = toolcatalog.DefaultCallHierarchyDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	case "find_references":
@@ -3572,7 +3564,7 @@ func optimizedSearchToolCallDisplay(toolCall llm.ToolCall) (string, bool) {
 	findArgs := syntheticToolArguments("find_callers", toolCallArgs{
 		Path:   normalizedPath,
 		Symbol: matches[1],
-		Depth:  defaultCallHierarchyDepth,
+		Depth:  toolcatalog.DefaultCallHierarchyDepth,
 	})
 	return fmt.Sprintf(`find_callers(instead_of="search", %s)`, findArgs), true
 }

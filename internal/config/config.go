@@ -14,18 +14,16 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/model"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/mappings"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	DefaultProfileName          = "default"
-	DefaultFallbackProfileName  = "openrouter"
-	DefaultMaxContextToken      = 240000
-	DefaultMaxToolResultPercent = 10
-	// DefaultMaxToolCalls is 0, meaning unlimited tool calls per agent.
-	DefaultMaxToolCalls             = 0
-	DefaultMaxDuplicateToolCalls    = 5
+	DefaultProfileName              = "default"
+	DefaultFallbackProfileName      = "openrouter"
+	DefaultMaxContextToken          = 240000
+	DefaultMaxToolResultPercent     = 10
 	DefaultMaxOutputRetries         = 5
 	DefaultMaxReasoningSeconds      = 300
 	DefaultMaxRateLimitDelaySeconds = 300
@@ -877,10 +875,10 @@ func applyProfileDefaults(profile Profile) Profile {
 		profile.MaxToolResultPercent = DefaultMaxToolResultPercent
 	}
 	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
-		profile.MaxToolCalls = DefaultMaxToolCalls
+		profile.MaxToolCalls = toolcatalog.DefaultMaxToolCalls
 	}
 	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
-		profile.MaxDuplicateToolCalls = DefaultMaxDuplicateToolCalls
+		profile.MaxDuplicateToolCalls = toolcatalog.DefaultMaxDuplicateToolCalls
 	}
 	if profile.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
 		profile.MaxOutputRetries = DefaultMaxOutputRetries

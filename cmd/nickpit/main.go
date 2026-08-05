@@ -37,6 +37,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve/loki"
 	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/textsan"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
@@ -277,7 +278,7 @@ func isUserAbort(ctx context.Context, err error) bool {
 func newRootCmd() *cobra.Command {
 	cli := &app{
 		maxContextTokens:         config.DefaultMaxContextToken,
-		maxDuplicateToolCalls:    config.DefaultMaxDuplicateToolCalls,
+		maxDuplicateToolCalls:    toolcatalog.DefaultMaxDuplicateToolCalls,
 		maxOutputRetries:         config.DefaultMaxOutputRetries,
 		maxReasoningSeconds:      config.DefaultMaxReasoningSeconds,
 		maxRateLimitDelaySeconds: config.DefaultMaxRateLimitDelaySeconds,

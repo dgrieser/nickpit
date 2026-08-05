@@ -12,6 +12,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 func limitedPayload(t *testing.T, value any, maxTokens int) (string, map[string]any) {
@@ -56,7 +57,7 @@ func TestToolResultLimiterZeroDisablesTokensButKeepsReferenceCountLimit(t *testi
 	_, payload := limitedPayload(t, map[string]any{
 		"target": map[string]any{"name": "Shared"}, "functions": functions, "outside_functions": []any{},
 	}, 0)
-	if got := len(payload["functions"].([]any)); got != maxReferenceFunctions {
+	if got := len(payload["functions"].([]any)); got != toolcatalog.MaxReferenceFunctions {
 		t.Fatalf("functions = %d", got)
 	}
 	if payload["truncated"] != true || intFromJSON(payload["omitted_contexts"]) != 5 {

@@ -8,9 +8,8 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
-
-const maxReferenceFunctions = 25
 
 const toolResultTruncatedNote = "tool result exceeded configured item or size limits; narrow path, range, depth, or result count for more detail"
 
@@ -116,11 +115,11 @@ func applyToolItemLimits(root map[string]any) bool {
 		return false
 	}
 	functions := arrayField(root, "functions")
-	if len(functions) <= maxReferenceFunctions {
+	if len(functions) <= toolcatalog.MaxReferenceFunctions {
 		return false
 	}
-	omitted := len(functions) - maxReferenceFunctions
-	root["functions"] = functions[:maxReferenceFunctions]
+	omitted := len(functions) - toolcatalog.MaxReferenceFunctions
+	root["functions"] = functions[:toolcatalog.MaxReferenceFunctions]
 	addIntField(root, "omitted_contexts", omitted)
 	return true
 }

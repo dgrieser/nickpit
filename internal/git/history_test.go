@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 // newTestHistory wires an ExecHistory to a stub runner and pre-answers the
@@ -523,7 +524,7 @@ func TestShowTruncatesOversizedPatch(t *testing.T) {
 		if args[1] == "--no-patch" {
 			return metadataRecord("aaa111", "aaa111", "Ada", "ada@example.com", "2026-08-01T10:00:00Z", "parent", "subject"), true
 		}
-		return "diff --git a/a.go b/a.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6+10), true
+		return "diff --git a/a.go b/a.go\n" + strings.Repeat("+line\n", toolcatalog.MaxGitCommitPatchBytes/6+10), true
 	}
 
 	result, err := history.Show(context.Background(), t.TempDir(), ShowOptions{Commit: "aaa"})
@@ -1010,7 +1011,7 @@ func TestShowKeepsChangedFilesWhenPatchIsOmitted(t *testing.T) {
 			metadataOnlyCalls++
 			return entries, true
 		default:
-			return entries + "diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6+10), true
+			return entries + "diff --git a/big.go b/big.go\n" + strings.Repeat("+line\n", toolcatalog.MaxGitCommitPatchBytes/6+10), true
 		}
 	}
 
@@ -1056,7 +1057,7 @@ func TestShowFallsBackToMetadataLookupWhenEntriesAreCut(t *testing.T) {
 			return showEntries(":100644 100644 1111111 2222222 M", "big.go", "900\t120\tbig.go"), true
 		default:
 			// A single entry token larger than the cap: the read stops inside it.
-			return strings.Repeat("x", maxCommitPatchBytes+16), true
+			return strings.Repeat("x", toolcatalog.MaxGitCommitPatchBytes+16), true
 		}
 	}
 
@@ -1227,7 +1228,7 @@ func TestShowMetadataSurvivesSeparatorBytesInMessage(t *testing.T) {
 // streamed under a cap, every byte read counts against the call's budget, and
 // once that budget is gone no further patch is generated at all.
 func TestShowBoundsPatchBytesReadFromGit(t *testing.T) {
-	const oversized = maxCommitPatchBytes + 4096
+	const oversized = toolcatalog.MaxGitCommitPatchBytes + 4096
 	shas := []string{"aaa111", "bbb222", "ccc333", "ddd444", "eee555", "fff666"}
 	runner := &stubGitRunner{outputs: map[string]string{}}
 	resolved(runner, "old", "aaa111")
@@ -1264,7 +1265,7 @@ func TestShowBoundsPatchBytesReadFromGit(t *testing.T) {
 
 	// Four oversized patches consume the 2 MiB call budget; the remaining
 	// commits must not ask git for a patch at all.
-	wantPatchCalls := maxShowPatchBytes / maxCommitPatchBytes
+	wantPatchCalls := toolcatalog.MaxGitShowPatchBytes / toolcatalog.MaxGitCommitPatchBytes
 	if patchCalls != wantPatchCalls {
 		t.Fatalf("patch invocations = %d, want %d (generation must stop once the budget is spent)", patchCalls, wantPatchCalls)
 	}
@@ -1278,10 +1279,10 @@ func TestShowBoundsPatchBytesReadFromGit(t *testing.T) {
 	if len(limits) != wantPatchCalls {
 		t.Fatalf("recorded caps = %#v, want %d", limits, wantPatchCalls)
 	}
-	remaining := maxShowPatchBytes
+	remaining := toolcatalog.MaxGitShowPatchBytes
 	for i, limit := range limits {
-		if limit > maxCommitPatchBytes || limit > remaining {
-			t.Fatalf("cap[%d] = %d, want <= min(%d, %d)", i, limit, maxCommitPatchBytes, remaining)
+		if limit > toolcatalog.MaxGitCommitPatchBytes || limit > remaining {
+			t.Fatalf("cap[%d] = %d, want <= min(%d, %d)", i, limit, toolcatalog.MaxGitCommitPatchBytes, remaining)
 		}
 		remaining -= limit
 	}
@@ -1413,7 +1414,7 @@ func TestShowFirstParentFallbackRespectsRemainingBudget(t *testing.T) {
 			return entries, true
 		case slices.Contains(args, "--first-parent"):
 			firstParentCalls++
-			return entries + "diff --git a/pkg/file0000.go b/pkg/file0000.go\n" + strings.Repeat("+line\n", maxCommitPatchBytes/6), true
+			return entries + "diff --git a/pkg/file0000.go b/pkg/file0000.go\n" + strings.Repeat("+line\n", toolcatalog.MaxGitCommitPatchBytes/6), true
 		default:
 			// Combined diff is empty, but its entries still cost bytes.
 			return entries, true
@@ -1436,12 +1437,12 @@ func TestShowFirstParentFallbackRespectsRemainingBudget(t *testing.T) {
 	if len(limits) != len(reads) {
 		t.Fatalf("caps = %d, reads = %d", len(limits), len(reads))
 	}
-	remaining := maxShowPatchBytes
+	remaining := toolcatalog.MaxGitShowPatchBytes
 	for i, limit := range limits {
 		if limit <= 0 {
 			t.Fatalf("cap[%d] = %d, a read was issued without budget", i, limit)
 		}
-		if limit > maxCommitPatchBytes {
+		if limit > toolcatalog.MaxGitCommitPatchBytes {
 			t.Fatalf("cap[%d] = %d exceeds the per-commit cap", i, limit)
 		}
 		if limit > remaining {
@@ -1453,8 +1454,8 @@ func TestShowFirstParentFallbackRespectsRemainingBudget(t *testing.T) {
 	for _, read := range reads {
 		total += read
 	}
-	if total > maxShowPatchBytes {
-		t.Fatalf("reads total %d bytes, want at most %d", total, maxShowPatchBytes)
+	if total > toolcatalog.MaxGitShowPatchBytes {
+		t.Fatalf("reads total %d bytes, want at most %d", total, toolcatalog.MaxGitShowPatchBytes)
 	}
 
 	// Once the budget is gone, the merge reports it instead of reading the

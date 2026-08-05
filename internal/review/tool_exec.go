@@ -104,7 +104,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 			return uniqueKey
 		}
 		if toolCall.Name != "find_references" && args.Depth <= 0 {
-			args.Depth = defaultCallHierarchyDepth
+			args.Depth = toolcatalog.DefaultCallHierarchyDepth
 		}
 		if toolCall.Name == "find_references" {
 			return referenceDedupKey(normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol))
@@ -128,7 +128,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 		// its normalized arguments.
 		if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizedPath) {
 			if matches := searchFunctionQueryPattern.FindStringSubmatch(query); len(matches) == 2 {
-				return callHierarchyDedupKey("find_callers", normalizedPath, matches[1], defaultCallHierarchyDepth)
+				return callHierarchyDedupKey("find_callers", normalizedPath, matches[1], toolcatalog.DefaultCallHierarchyDepth)
 			}
 		}
 		return searchDedupKey(normalizedPath, query, resolveSearchContextLines(args.ContextLines, query), args.MaxResults, args.CaseSensitive)
@@ -215,7 +215,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 			searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
 			// Identifier spelling is case-sensitive even when the fallback cannot
 			// provide structural binding identity.
-			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, defaultSearchContextLines, 0, true)
+			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, toolcatalog.DefaultSearchContextLines, 0, true)
 			if searchErr != nil {
 				return toolError(normalizedPath, "retrieval_failed", searchErr.Error())
 			}
@@ -413,22 +413,22 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	if e.searchToolOptimization && e.supportsStructuralAnalysis(repoRoot, normalizedPath) {
 		if matches := searchFunctionQueryPattern.FindStringSubmatch(args.Query); len(matches) == 2 {
 			symbol := matches[1]
-			key := callHierarchyDedupKey("find_callers", normalizedPath, symbol, defaultCallHierarchyDepth)
+			key := callHierarchyDedupKey("find_callers", normalizedPath, symbol, toolcatalog.DefaultCallHierarchyDepth)
 			state.mu.Lock()
 			_, ok := state.seenToolCalls[key]
 			state.mu.Unlock()
 			if ok {
-				e.logf(ctx, "Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
+				e.logf(ctx, "Skipping duplicate optimized tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, toolcatalog.DefaultCallHierarchyDepth)
 				return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 			}
-			e.logf(ctx, "Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, defaultCallHierarchyDepth)
+			e.logf(ctx, "Rewriting tool call: name=%s path=%s query=%q rewritten=find_callers symbol=%q depth=%d", toolCall.Name, normalizedPath, args.Query, symbol, toolcatalog.DefaultCallHierarchyDepth)
 			return e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
 				ID:   toolCall.ID,
 				Name: "find_callers",
 				Arguments: mustToolResultJSON(map[string]any{
 					"path":   normalizedPath,
 					"symbol": symbol,
-					"depth":  defaultCallHierarchyDepth,
+					"depth":  toolcatalog.DefaultCallHierarchyDepth,
 				}),
 			}, true, state)
 		}
@@ -564,7 +564,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		return toolError(normalizeSearchPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
 	}
 	if args.Depth <= 0 {
-		args.Depth = defaultCallHierarchyDepth
+		args.Depth = toolcatalog.DefaultCallHierarchyDepth
 	}
 	// normalizeSearchPath (not normalizeToolPath) keeps the key and execution
 	// aligned with search calls rewritten into call-hierarchy lookups, which
@@ -638,7 +638,7 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, norm
 	}
 	searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
 	e.logf(ctx, "Falling back to literal search for unsupported call hierarchy: mode=%s path=%s symbol=%q search_scope=%q", mode, normalizedPath, symbol, searchScope)
-	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, defaultSearchContextLines, 0, false)
+	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, toolcatalog.DefaultSearchContextLines, 0, false)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 // History exposes commit history of a checkout: a filtered commit listing
@@ -24,7 +25,7 @@ type History interface {
 }
 
 // LogOptions filters a commit listing. Every field is optional; the zero value
-// lists the newest defaultLogLimit commits reachable from HEAD.
+// lists the newest toolcatalog.DefaultGitLogLimit commits reachable from HEAD.
 type LogOptions struct {
 	// Commit is a revision to list history from (default HEAD) or a range
 	// ("a..b"/"a...b"). SHAs may be abbreviated to any length.
@@ -44,8 +45,7 @@ type LogOptions struct {
 	Message       string
 	MessageRegex  bool
 	CaseSensitive bool
-	// Limit caps the number of commits returned (default defaultLogLimit,
-	// clamped to maxLogLimit).
+	// Limit caps the number of commits returned (catalog default and maximum).
 	Limit int
 }
 
@@ -58,8 +58,8 @@ type ShowOptions struct {
 	To string
 	// Paths limits each diff to the given repo-relative paths.
 	Paths []string
-	// MaxCommits caps how many commits of a range are returned (default
-	// defaultShowCommits, clamped to maxShowCommits).
+	// MaxCommits caps how many commits of a range are returned (catalog default
+	// and maximum).
 	MaxCommits int
 	// Format selects the diff shape, exactly like the review prompt payload:
 	// DiffFormatGit yields DiffFiles, DiffFormatGitJson yields DiffHunks.
@@ -133,29 +133,6 @@ type ShowResult struct {
 }
 
 const (
-	// defaultLogLimit/maxLogLimit bound a commit listing so a broad filter
-	// cannot flood an agent's context.
-	defaultLogLimit = 20
-	maxLogLimit     = 200
-	// defaultShowCommits/maxShowCommits bound how many patches one git_show
-	// call returns.
-	defaultShowCommits = 10
-	maxShowCommits     = 50
-	// deepenCommits is how far a shallow checkout is deepened on first use.
-	deepenCommits = 200
-	// deepenTimeout bounds the network fetch so a slow remote cannot stall an
-	// agent loop.
-	deepenTimeout = 60 * time.Second
-	// maxCommitPatchBytes drops an individual commit's patch bodies once it
-	// grows past this; metadata and the changed-file list are kept.
-	maxCommitPatchBytes = 512 << 10
-	// maxShowPatchBytes bounds the total patch bytes one git_show call reads from
-	// git, dropped patches included.
-	maxShowPatchBytes = 2 << 20
-	// maxAmbiguousCandidates bounds how many candidates an ambiguous-prefix
-	// error lists.
-	maxAmbiguousCandidates = 5
-
 	// nulSeparator delimits every field and file entry git writes in its
 	// machine-readable -z output. It is the one byte that cannot appear in a
 	// commit message, an author name or a path, which is what makes the framing
@@ -242,7 +219,7 @@ func (h *ExecHistory) Log(ctx context.Context, repoRoot string, opts LogOptions)
 	}
 	state := h.ensureHistory(ctx, repoRoot, runner)
 
-	limit := clampLimit(opts.Limit, defaultLogLimit, maxLogLimit)
+	limit := clampLimit(opts.Limit, toolcatalog.DefaultGitLogLimit, toolcatalog.MaxGitLogLimit)
 	revision, err := h.resolveRevisionArg(ctx, runner, opts.Commit, "")
 	if err != nil {
 		return nil, err
@@ -330,7 +307,7 @@ func (h *ExecHistory) Show(ctx context.Context, repoRoot string, opts ShowOption
 	}
 	state := h.ensureHistory(ctx, repoRoot, runner)
 
-	maxCommits := clampLimit(opts.MaxCommits, defaultShowCommits, maxShowCommits)
+	maxCommits := clampLimit(opts.MaxCommits, toolcatalog.DefaultGitShowCommits, toolcatalog.MaxGitShowCommits)
 	revision, err := h.resolveRevisionArg(ctx, runner, opts.Commit, opts.To)
 	if err != nil {
 		return nil, err
@@ -356,7 +333,7 @@ func (h *ExecHistory) Show(ctx context.Context, repoRoot string, opts ShowOption
 		Shallow:    state.shallow,
 		Note:       state.note,
 	}
-	budget := maxShowPatchBytes
+	budget := toolcatalog.MaxGitShowPatchBytes
 	for _, sha := range shas {
 		diff, err := h.commitDiff(ctx, runner, sha, paths, format, &budget)
 		if err != nil {
@@ -430,20 +407,20 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	// Read at most what this commit could still contribute. Whichever cap is
 	// lower decides, and hitting it means the patch is dropped either way, so
 	// git is stopped at that point instead of after emitting the whole diff.
-	limit := min(maxCommitPatchBytes, *budget)
+	limit := min(toolcatalog.MaxGitCommitPatchBytes, *budget)
 	res, err := h.commitPatch(ctx, runner, sha, paths, false, limit)
 	if err != nil {
 		return nil, err
 	}
 	// Every byte read counts against the call's budget, dropped patches
 	// included: that is what makes the total output of one git_show call bounded
-	// by maxShowPatchBytes instead of by the size of the range.
+	// by the catalog's total patch-byte limit instead of by range size.
 	*budget -= res.ReadBytes
 	if !res.Truncated && entry.IsMerge && strings.TrimSpace(res.Patch) == "" {
 		// The combined read already spent part of the budget (its raw/numstat
 		// entries), so the fallback gets a freshly computed cap. Reusing the
 		// pre-combined limit would let one merge read the remaining budget twice.
-		fallbackLimit := min(maxCommitPatchBytes, *budget)
+		fallbackLimit := min(toolcatalog.MaxGitCommitPatchBytes, *budget)
 		if fallbackLimit <= 0 {
 			diff.Truncated = true
 			diff.Note = joinNotes(diff.Note, "combined diff was empty and the total patch size limit for this call was reached before the first-parent diff could be read")
@@ -471,8 +448,8 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 
 	if res.Truncated {
 		diff.Truncated = true
-		if limit == maxCommitPatchBytes {
-			diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: it exceeds the %d byte per-commit limit", maxCommitPatchBytes))
+		if limit == toolcatalog.MaxGitCommitPatchBytes {
+			diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: it exceeds the %d byte per-commit limit", toolcatalog.MaxGitCommitPatchBytes))
 		} else {
 			diff.Note = joinNotes(diff.Note, "patch omitted: the total patch size limit for this call was reached")
 		}
@@ -654,8 +631,8 @@ func (h *ExecHistory) resolveRevision(ctx context.Context, runner Runner, rev st
 		return matches[0], nil
 	case len(matches) > 1:
 		candidates := matches
-		if len(candidates) > maxAmbiguousCandidates {
-			candidates = candidates[:maxAmbiguousCandidates]
+		if len(candidates) > toolcatalog.MaxGitAmbiguousCandidates {
+			candidates = candidates[:toolcatalog.MaxGitAmbiguousCandidates]
 		}
 		return "", fmt.Errorf("git: ambiguous revision %q matches %d commits (%s); pass a longer prefix", rev, len(matches), strings.Join(candidates, ", "))
 	default:
@@ -698,14 +675,14 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 	origin := remoteURL(ctx, runner)
 	auth := h.authArgsForRepo(origin)
 
-	fetchCtx, cancel := context.WithTimeout(ctx, deepenTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, toolcatalog.GitHistoryDeepenTimeout)
 	defer cancel()
 	// The remote is named explicitly whenever credentials are attached. A bare
 	// `git fetch` follows branch.<name>.remote, which need not be origin, so it
 	// could send the header derived from remote.origin.url to an unrelated host
 	// — and in a fork PR/MR that host is attacker controlled.
 	args := append([]string(nil), auth...)
-	args = append(args, "fetch", "--deepen="+strconv.Itoa(deepenCommits))
+	args = append(args, "fetch", "--deepen="+strconv.Itoa(toolcatalog.GitHistoryDeepenCommits))
 	if origin != "" {
 		args = append(args, "origin")
 	}
@@ -718,7 +695,7 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 		// that commit's history explicitly before giving up.
 		if origin != "" {
 			if head, headErr := runner.Run(fetchCtx, "rev-parse", "HEAD"); headErr == nil {
-				explicit := append(append([]string(nil), auth...), "fetch", "--deepen="+strconv.Itoa(deepenCommits), "--", origin, strings.TrimSpace(head))
+				explicit := append(append([]string(nil), auth...), "fetch", "--deepen="+strconv.Itoa(toolcatalog.GitHistoryDeepenCommits), "--", origin, strings.TrimSpace(head))
 				_, err = runner.Run(fetchCtx, explicit...)
 			}
 		}
@@ -731,7 +708,7 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 	case state.shallow && reachableCommits(ctx, runner) <= before:
 		state.note = "repository is a shallow checkout; deepening returned no additional commits, so only the commits present locally are listed"
 	case state.shallow:
-		state.note = fmt.Sprintf("repository is a shallow checkout deepened by %d commits; older history is unavailable", deepenCommits)
+		state.note = fmt.Sprintf("repository is a shallow checkout deepened by %d commits; older history is unavailable", toolcatalog.GitHistoryDeepenCommits)
 	}
 	return state
 }

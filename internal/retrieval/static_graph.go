@@ -10,8 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 type staticNode struct {
@@ -51,7 +51,7 @@ type staticGraphCacheEntry struct {
 	graph *staticGraph
 }
 
-// defaultMaxStaticGraphCacheEntries bounds how many distinct (language, repoRoot,
+// DefaultStaticGraphCacheEntries bounds how many distinct (language, repoRoot,
 // scope) graphs staticGraphCache will memoize within a single run. Of the three
 // key dimensions, language (python/nodejs/rust — Go uses goparser.BuildGraphCached)
 // and repoRoot (one repo per CLI run) are bounded by code; only the scope is not.
@@ -59,8 +59,6 @@ type staticGraphCacheEntry struct {
 // and directory paths come solely from find_callers/find_callees tool arguments,
 // so a pathological agent could query arbitrarily many distinct directories. This
 // cap turns that one unbounded axis into a hard bound.
-const defaultMaxStaticGraphCacheEntries = 64
-
 // staticGraphCacheCap resolves the admission cap on each cache miss. Misses are
 // rare, so reading the env at point of use is cheap and mirrors modelcheck/cache.go;
 // NICKPIT_GRAPH_CACHE_MAX_ENTRIES lets large monorepos tune it, and a value <= 0
@@ -68,11 +66,11 @@ const defaultMaxStaticGraphCacheEntries = 64
 func staticGraphCacheCap() int {
 	raw := strings.TrimSpace(os.Getenv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES"))
 	if raw == "" {
-		return defaultMaxStaticGraphCacheEntries
+		return toolcatalog.DefaultStaticGraphCacheEntries
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return defaultMaxStaticGraphCacheEntries
+		return toolcatalog.DefaultStaticGraphCacheEntries
 	}
 	return n
 }
@@ -180,8 +178,8 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 	if depth <= 0 {
 		depth = 1
 	}
-	if depth > goparser.MaxCallHierarchyDepth {
-		depth = goparser.MaxCallHierarchyDepth
+	if depth > toolcatalog.MaxCallHierarchyDepth {
+		depth = toolcatalog.MaxCallHierarchyDepth
 	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 func TestSupportsStructuralAnalysis(t *testing.T) {
@@ -180,8 +182,8 @@ func TestStaticGraphCacheCap(t *testing.T) {
 		env  string
 		want int
 	}{
-		{"empty falls back to default", "", defaultMaxStaticGraphCacheEntries},
-		{"garbage falls back to default", "abc", defaultMaxStaticGraphCacheEntries},
+		{"empty falls back to default", "", toolcatalog.DefaultStaticGraphCacheEntries},
+		{"garbage falls back to default", "abc", toolcatalog.DefaultStaticGraphCacheEntries},
 		{"custom value", "10", 10},
 		{"surrounding whitespace", "  32  ", 32},
 		{"zero disables the cap", "0", 0},

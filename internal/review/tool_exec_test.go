@@ -19,6 +19,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
 func writeRepoFile(t *testing.T, root, rel, content string) {
@@ -143,7 +144,7 @@ func TestToolResultLimiterCapsReferenceFunctionsAndBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	functions, _ := bounded["functions"].([]any)
-	if bounded["truncated"] != true || intFromJSON(bounded["omitted_contexts"]) == 0 || len(functions) > maxReferenceFunctions || tokenestimate.Estimate(limited) > 8192 {
+	if bounded["truncated"] != true || intFromJSON(bounded["omitted_contexts"]) == 0 || len(functions) > toolcatalog.MaxReferenceFunctions || tokenestimate.Estimate(limited) > 8192 {
 		t.Fatalf("bounded result: truncated=%v omitted=%v functions=%d bytes=%d", bounded["truncated"], bounded["omitted_contexts"], len(functions), len(limited))
 	}
 }
@@ -587,7 +588,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 
 	goPath := normalizeToolPath("src/demo.go")
 	searchRewriteKey := func(path string) string {
-		return callHierarchyDedupKey("find_callers", normalizeToolPath(path), "Run", defaultCallHierarchyDepth)
+		return callHierarchyDedupKey("find_callers", normalizeToolPath(path), "Run", toolcatalog.DefaultCallHierarchyDepth)
 	}
 
 	tests := []struct {
@@ -614,7 +615,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "find_callers default depth",
 			call: llm.ToolCall{ID: "d", Name: "find_callers", Arguments: `{"path":"src/demo.go","symbol":"Run"}`},
-			want: callHierarchyDedupKey("find_callers", goPath, "Run", defaultCallHierarchyDepth),
+			want: callHierarchyDedupKey("find_callers", goPath, "Run", toolcatalog.DefaultCallHierarchyDepth),
 		},
 		{
 			name: "find_callees explicit depth",
@@ -649,22 +650,22 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "search ruby function name keys as literal search",
 			call: llm.ToolCall{ID: "j", Name: "search", Arguments: `{"path":"src/demo.rb","query":"Run()"}`},
-			want: searchDedupKey("src/demo.rb", "Run()", defaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.rb", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search java function name keys as literal search",
 			call: llm.ToolCall{ID: "k", Name: "search", Arguments: `{"path":"src/Demo.java","query":"Run()"}`},
-			want: searchDedupKey("src/Demo.java", "Run()", defaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/Demo.java", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search non-function query keys as literal search",
 			call: llm.ToolCall{ID: "l", Name: "search", Arguments: `{"path":"src/demo.go","query":"return x"}`},
-			want: searchDedupKey("src/demo.go", "return x", defaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.go", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search normalizes path and query for the dedup key",
 			call: llm.ToolCall{ID: "m", Name: "search", Arguments: `{"path":"./src/demo.go","query":"  return x ","context_lines":-1}`},
-			want: searchDedupKey("src/demo.go", "return x", defaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.go", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name:   "search empty query stays unique",
@@ -674,7 +675,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "search omitted context_lines defaults per single-line query",
 			call: llm.ToolCall{ID: "o", Name: "search", Arguments: `{"path":"src/demo.go","query":"return x"}`},
-			want: searchDedupKey("src/demo.go", "return x", defaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.go", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search multi-line block keys with zero default context",
@@ -684,7 +685,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "search repo-root alias keys as empty path",
 			call: llm.ToolCall{ID: "q", Name: "search", Arguments: `{"path":".","query":"return x"}`},
-			want: searchDedupKey("", "return x", defaultSearchContextLines, 0, false),
+			want: searchDedupKey("", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
 		},
 	}
 
@@ -880,7 +881,7 @@ func TestCallHierarchyDedupKeyAlignsWithSearchRewrite(t *testing.T) {
 
 	searchKey := engine.toolCallConcurrencyKey(searchCall, 0, repoRoot)
 	directKey := engine.toolCallConcurrencyKey(directCall, 1, repoRoot)
-	if want := callHierarchyDedupKey("find_callers", "", "Run", defaultCallHierarchyDepth); searchKey != want {
+	if want := callHierarchyDedupKey("find_callers", "", "Run", toolcatalog.DefaultCallHierarchyDepth); searchKey != want {
 		t.Fatalf("search rewrite key = %q, want %q (rewrite with repo-root path normalized to empty)", searchKey, want)
 	}
 	if searchKey != directKey {

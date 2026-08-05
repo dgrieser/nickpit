@@ -5,9 +5,38 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
-	"github.com/dgrieser/nickpit/internal/retrieval/goparser"
+)
+
+// Tool limits and defaults live with the catalog so schemas, execution, and
+// result pruning share one source of truth. Token limits are context-dependent
+// and intentionally remain in the review/config layers.
+const (
+	DefaultListFilesDepth          = 1
+	DefaultSearchContextLines      = 5
+	MaxFindLinesMatches            = 100
+	DefaultCallHierarchyDepth      = 10
+	MaxCallHierarchyDepth          = 50
+	MaxReferenceFunctions          = 25
+	MaxAmbiguousReferenceTargets   = 10
+	MaxRetrievedFileBytes          = 5 << 20
+	DefaultStaticGraphCacheEntries = 64
+
+	DefaultGitLogLimit        = 20
+	MaxGitLogLimit            = 200
+	DefaultGitShowCommits     = 10
+	MaxGitShowCommits         = 50
+	GitHistoryDeepenCommits   = 200
+	GitHistoryDeepenTimeout   = 60 * time.Second
+	MaxGitCommitPatchBytes    = 512 << 10
+	MaxGitShowPatchBytes      = 2 << 20
+	MaxGitAmbiguousCandidates = 5
+
+	// DefaultMaxToolCalls is 0, meaning unlimited calls per agent.
+	DefaultMaxToolCalls          = 0
+	DefaultMaxDuplicateToolCalls = 5
 )
 
 type catalogEntry struct {
@@ -58,7 +87,7 @@ var catalogDefinition = []catalogEntry{
 		ListingDescription: "with a repo-relative `path` to list all files in a folder (recursively)",
 		Parameters: []CatalogParameter{
 			{Name: "path", Type: "string", Description: "Repo-relative folder path; omit or pass an empty string to list the repo root", Example: `"<repo-relative folder>"`},
-			{Name: "depth", Type: "integer", Description: "Optional traversal depth for nested folders; defaults to 1", Example: "int", Minimum: intPtr(1)},
+			{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for nested folders; defaults to %d", DefaultListFilesDepth), Example: "int", Minimum: intPtr(1)},
 		},
 	},
 	{
@@ -112,7 +141,7 @@ var catalogDefinition = []catalogEntry{
 			{Name: "message", Type: "string", Description: "Optional text the commit message must contain", Example: `"<message text>"`},
 			{Name: "message_regex", Type: "boolean", Description: "Optional flag to treat message and author as extended regular expressions instead of literal text; defaults to false", Example: "bool"},
 			{Name: "case_sensitive", Type: "boolean", Description: "Optional case-sensitive matching for message and author; defaults to false", Example: "bool"},
-			{Name: "limit", Type: "integer", Description: "Optional maximum number of commits to list; defaults to 20", Example: "int", Minimum: intPtr(1), Maximum: intPtr(200)},
+			{Name: "limit", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits to list; defaults to %d", DefaultGitLogLimit), Example: "int", Minimum: intPtr(1), Maximum: intPtr(MaxGitLogLimit)},
 		},
 	},
 	{
@@ -124,7 +153,7 @@ var catalogDefinition = []catalogEntry{
 			{Name: "commit", Type: "string", Description: "Revision to show (SHA of any length, ref) or a range like \"a..b\"", Example: `"<sha|ref|a..b>"`, Required: true},
 			{Name: "to", Type: "string", Description: "Optional end revision; forms a range together with commit", Example: `"<sha|ref>"`},
 			{Name: "paths", Type: "string", Description: "Optional comma-separated repo-relative paths; each diff is limited to them, and a commit that changed none of them is still returned with an empty diff and a note", Example: `"<repo-relative paths>"`},
-			{Name: "max_commits", Type: "integer", Description: "Optional maximum number of commits of a range to return; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(50)},
+			{Name: "max_commits", Type: "integer", Description: fmt.Sprintf("Optional maximum number of commits of a range to return; defaults to %d", DefaultGitShowCommits), Example: "int", Minimum: intPtr(1), Maximum: intPtr(MaxGitShowCommits)},
 		},
 	},
 }
@@ -146,7 +175,7 @@ func callHierarchyParameters() []CatalogParameter {
 	return []CatalogParameter{
 		{Name: "symbol", Type: "string", Description: "Function name to inspect", Example: `"<function name>"`, Required: true},
 		{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the function declaration; does not limit where calls are collected", Example: `"<repo-relative path>"`},
-		{Name: "depth", Type: "integer", Description: "Optional traversal depth for the call hierarchy; defaults to 10", Example: "int", Minimum: intPtr(1), Maximum: intPtr(goparser.MaxCallHierarchyDepth)},
+		{Name: "depth", Type: "integer", Description: fmt.Sprintf("Optional traversal depth for the call hierarchy; defaults to %d", DefaultCallHierarchyDepth), Example: "int", Minimum: intPtr(1), Maximum: intPtr(MaxCallHierarchyDepth)},
 	}
 }
 
