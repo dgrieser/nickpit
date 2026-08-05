@@ -96,8 +96,8 @@ func TestLoadConfigUsesOpenRouterAPIKeyEnv(t *testing.T) {
 	if profile.MaxRateLimitDelaySeconds != DefaultMaxRateLimitDelaySeconds {
 		t.Fatalf("max rate limit delay seconds = %d", profile.MaxRateLimitDelaySeconds)
 	}
-	if profile.MaxToolResultKiB != DefaultMaxToolResultKiB {
-		t.Fatalf("max tool result KiB = %d", profile.MaxToolResultKiB)
+	if profile.MaxToolResultPercent != DefaultMaxToolResultPercent {
+		t.Fatalf("max tool result percent = %d", profile.MaxToolResultPercent)
 	}
 	if profile.NudgeCount != DefaultNudgeCount {
 		t.Fatalf("nudge count = %d", profile.NudgeCount)
@@ -1524,33 +1524,39 @@ profiles:
 	}
 }
 
-func TestLoadConfigRejectsNegativeMaxToolResultKiB(t *testing.T) {
+func TestLoadConfigRejectsInvalidMaxToolResultPercent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
     model: test-model
-    max_tool_result_kib: -1
+    max_tool_result_percent: -1
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	_, _, err = Load(path, Overrides{})
-	if err == nil || !strings.Contains(err.Error(), "max_tool_result_kib must be non-negative") {
+	if err == nil || !strings.Contains(err.Error(), "max_tool_result_percent must be between 0 and 100") {
+		t.Fatalf("error = %v", err)
+	}
+
+	tooLarge := 101
+	_, _, err = Load(path, Overrides{MaxToolResultPercent: &tooLarge})
+	if err == nil || !strings.Contains(err.Error(), "max_tool_result_percent must be between 0 and 100") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestLoadConfigPreservesExplicitZeroMaxToolResultKiB(t *testing.T) {
+func TestLoadConfigPreservesExplicitZeroMaxToolResultPercent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
     model: test-model
-    max_tool_result_kib: 0
+    max_tool_result_percent: 0
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
@@ -1560,8 +1566,8 @@ profiles:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.MaxToolResultKiB != 0 || !profile.MaxToolResultKiBConfigured {
-		t.Fatalf("max tool result KiB = %d, configured = %t", profile.MaxToolResultKiB, profile.MaxToolResultKiBConfigured)
+	if profile.MaxToolResultPercent != 0 || !profile.MaxToolResultPercentConfigured {
+		t.Fatalf("max tool result percent = %d, configured = %t", profile.MaxToolResultPercent, profile.MaxToolResultPercentConfigured)
 	}
 }
 
@@ -1829,7 +1835,7 @@ func TestLoadConfigUsesBudgetEnv(t *testing.T) {
 	t.Setenv("NICKPIT_MODEL", "primary-model")
 	t.Setenv("NICKPIT_MAX_CONTEXT_TOKENS", "12345")
 	t.Setenv("NICKPIT_MAX_REQUEST_BYTES", "4096")
-	t.Setenv("NICKPIT_MAX_TOOL_RESULT_KIB", "96")
+	t.Setenv("NICKPIT_MAX_TOOL_RESULT_PERCENT", "12")
 	t.Setenv("NICKPIT_MAX_TOOL_CALLS", "7")
 	t.Setenv("NICKPIT_MAX_DUPLICATE_TOOL_CALLS", "2")
 	t.Setenv("NICKPIT_MAX_OUTPUT_RETRIES", "1")
@@ -1853,7 +1859,7 @@ func TestLoadConfigUsesBudgetEnv(t *testing.T) {
 	}{
 		{"max_context_tokens", profile.MaxContextTokens, 12345},
 		{"max_request_bytes", profile.MaxRequestBytes, 4096},
-		{"max_tool_result_kib", profile.MaxToolResultKiB, 96},
+		{"max_tool_result_percent", profile.MaxToolResultPercent, 12},
 		{"max_tool_calls", profile.MaxToolCalls, 7},
 		{"max_duplicate_tool_calls", profile.MaxDuplicateToolCalls, 2},
 		{"max_output_retries", profile.MaxOutputRetries, 1},

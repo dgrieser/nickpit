@@ -87,11 +87,11 @@ func mergeProfiles(base, override Profile) Profile {
 	} else if override.MaxRequestBytes != 0 {
 		base.MaxRequestBytes = override.MaxRequestBytes
 	}
-	if override.MaxToolResultKiBConfigured {
-		base.MaxToolResultKiBConfigured = true
-		base.MaxToolResultKiB = override.MaxToolResultKiB
-	} else if override.MaxToolResultKiB != 0 {
-		base.MaxToolResultKiB = override.MaxToolResultKiB
+	if override.MaxToolResultPercentConfigured {
+		base.MaxToolResultPercentConfigured = true
+		base.MaxToolResultPercent = override.MaxToolResultPercent
+	} else if override.MaxToolResultPercent != 0 {
+		base.MaxToolResultPercent = override.MaxToolResultPercent
 	}
 	if override.MaxToolCallsConfigured {
 		base.MaxToolCallsConfigured = true

@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	DefaultProfileName         = "default"
-	DefaultFallbackProfileName = "openrouter"
-	DefaultMaxContextToken     = 240000
-	DefaultMaxToolResultKiB    = 128
+	DefaultProfileName          = "default"
+	DefaultFallbackProfileName  = "openrouter"
+	DefaultMaxContextToken      = 240000
+	DefaultMaxToolResultPercent = 10
 	// DefaultMaxToolCalls is 0, meaning unlimited tool calls per agent.
 	DefaultMaxToolCalls             = 0
 	DefaultMaxDuplicateToolCalls    = 5
@@ -69,7 +69,7 @@ type Profile struct {
 	DiffFormat                         model.DiffFormat       `yaml:"diff_format"`
 	MaxContextTokens                   int                    `yaml:"max_context_tokens"`
 	MaxRequestBytes                    int                    `yaml:"max_request_bytes"`
-	MaxToolResultKiB                   int                    `yaml:"max_tool_result_kib"`
+	MaxToolResultPercent               int                    `yaml:"max_tool_result_percent"`
 	MaxToolCalls                       int                    `yaml:"max_tool_calls"`
 	MaxDuplicateToolCalls              int                    `yaml:"max_duplicate_tool_calls"`
 	MaxOutputRetries                   int                    `yaml:"max_output_retries"`
@@ -89,7 +89,7 @@ type Profile struct {
 	AssetBaseURL                       string                 `yaml:"asset_base_url"`
 	MaxContextTokensConfigured         bool                   `yaml:"-"`
 	MaxRequestBytesConfigured          bool                   `yaml:"-"`
-	MaxToolResultKiBConfigured         bool                   `yaml:"-"`
+	MaxToolResultPercentConfigured     bool                   `yaml:"-"`
 	APIKeyConfigured                   bool                   `yaml:"-"`
 	MaxToolCallsConfigured             bool                   `yaml:"-"`
 	MaxDuplicateToolCallsConfigured    bool                   `yaml:"-"`
@@ -155,7 +155,7 @@ type Overrides struct {
 	DiffFormat                model.DiffFormat
 	MaxContextTokens          *int
 	MaxRequestBytes           *int
-	MaxToolResultKiB          *int
+	MaxToolResultPercent      *int
 	ToolCalls                 *int
 	DuplicateToolCalls        *int
 	OutputRetries             *int
@@ -661,7 +661,7 @@ func applyEnv(cfg *Config, profileName string) error {
 	}{
 		{"NICKPIT_MAX_CONTEXT_TOKENS", &profile.MaxContextTokens, &profile.MaxContextTokensConfigured},
 		{"NICKPIT_MAX_REQUEST_BYTES", &profile.MaxRequestBytes, &profile.MaxRequestBytesConfigured},
-		{"NICKPIT_MAX_TOOL_RESULT_KIB", &profile.MaxToolResultKiB, &profile.MaxToolResultKiBConfigured},
+		{"NICKPIT_MAX_TOOL_RESULT_PERCENT", &profile.MaxToolResultPercent, &profile.MaxToolResultPercentConfigured},
 		{"NICKPIT_MAX_TOOL_CALLS", &profile.MaxToolCalls, &profile.MaxToolCallsConfigured},
 		{"NICKPIT_MAX_DUPLICATE_TOOL_CALLS", &profile.MaxDuplicateToolCalls, &profile.MaxDuplicateToolCallsConfigured},
 		{"NICKPIT_MAX_OUTPUT_RETRIES", &profile.MaxOutputRetries, &profile.MaxOutputRetriesConfigured},
@@ -775,9 +775,9 @@ func applyOverrides(profile Profile, overrides Overrides) (Profile, error) {
 		profile.MaxRequestBytes = *overrides.MaxRequestBytes
 		profile.MaxRequestBytesConfigured = true
 	}
-	if overrides.MaxToolResultKiB != nil {
-		profile.MaxToolResultKiB = *overrides.MaxToolResultKiB
-		profile.MaxToolResultKiBConfigured = true
+	if overrides.MaxToolResultPercent != nil {
+		profile.MaxToolResultPercent = *overrides.MaxToolResultPercent
+		profile.MaxToolResultPercentConfigured = true
 	}
 	if overrides.ToolCalls != nil {
 		profile.MaxToolCalls = *overrides.ToolCalls
@@ -873,8 +873,8 @@ func applyProfileDefaults(profile Profile) Profile {
 	if profile.MaxContextTokens == 0 && !profile.MaxContextTokensConfigured {
 		profile.MaxContextTokens = DefaultMaxContextToken
 	}
-	if profile.MaxToolResultKiB == 0 && !profile.MaxToolResultKiBConfigured {
-		profile.MaxToolResultKiB = DefaultMaxToolResultKiB
+	if profile.MaxToolResultPercent == 0 && !profile.MaxToolResultPercentConfigured {
+		profile.MaxToolResultPercent = DefaultMaxToolResultPercent
 	}
 	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
 		profile.MaxToolCalls = DefaultMaxToolCalls
@@ -918,8 +918,8 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	if profile.MaxRequestBytes < 0 {
 		return Profile{}, fmt.Errorf("config: max_request_bytes must be non-negative")
 	}
-	if profile.MaxToolResultKiB < 0 {
-		return Profile{}, fmt.Errorf("config: max_tool_result_kib must be non-negative")
+	if profile.MaxToolResultPercent < 0 || profile.MaxToolResultPercent > 100 {
+		return Profile{}, fmt.Errorf("config: max_tool_result_percent must be between 0 and 100")
 	}
 	if profile.MaxReasoningSeconds < 0 {
 		return Profile{}, fmt.Errorf("config: max_reasoning_seconds must be non-negative")
@@ -1131,7 +1131,7 @@ func markConfiguredFields(root *yaml.Node, cfg *Config) error {
 		profile := cfg.Profiles[name]
 		profile.MaxContextTokensConfigured = mappingValue(profileNode, "max_context_tokens") != nil
 		profile.MaxRequestBytesConfigured = mappingValue(profileNode, "max_request_bytes") != nil
-		profile.MaxToolResultKiBConfigured = mappingValue(profileNode, "max_tool_result_kib") != nil
+		profile.MaxToolResultPercentConfigured = mappingValue(profileNode, "max_tool_result_percent") != nil
 		profile.APIKeyConfigured = mappingValue(profileNode, "api_key") != nil
 		profile.MaxToolCallsConfigured = mappingValue(profileNode, "max_tool_calls") != nil
 		profile.MaxDuplicateToolCallsConfigured = mappingValue(profileNode, "max_duplicate_tool_calls") != nil

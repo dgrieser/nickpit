@@ -18,6 +18,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
 func writeRepoFile(t *testing.T, root, rel, content string) {
@@ -135,14 +136,14 @@ func TestToolResultLimiterCapsReferenceFunctionsAndBytes(t *testing.T) {
 	}
 
 	raw := mustToolResultJSON(result)
-	limited := limitToolResultJSON(raw, 32)
+	limited := limitToolResultJSON(raw, 8192)
 	var bounded map[string]any
 	err := json.Unmarshal([]byte(limited), &bounded)
 	if err != nil {
 		t.Fatal(err)
 	}
 	functions, _ := bounded["functions"].([]any)
-	if bounded["truncated"] != true || intFromJSON(bounded["omitted_contexts"]) == 0 || len(functions) > maxReferenceFunctions || len(limited) > 32<<10 {
+	if bounded["truncated"] != true || intFromJSON(bounded["omitted_contexts"]) == 0 || len(functions) > maxReferenceFunctions || tokenestimate.Estimate(limited) > 8192 {
 		t.Fatalf("bounded result: truncated=%v omitted=%v functions=%d bytes=%d", bounded["truncated"], bounded["omitted_contexts"], len(functions), len(limited))
 	}
 }

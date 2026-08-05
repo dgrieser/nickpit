@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/logging"
 	"github.com/dgrieser/nickpit/internal/model"
@@ -318,6 +319,11 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		e.logf(loopCtx, "Executing tool batch: used=%d requested=%d", state.toolCalls, pendingToolCalls)
 		messages = append(messages, llm.Message{Role: "assistant", Content: resp.RawResponse, ToolCalls: resp.ToolCalls})
 		batch := e.executeToolCalls(loopCtx, req.RepoRoot, resp.ToolCalls, state.toolState)
+		maxContextTokens := e.config.MaxContextTokens
+		if maxContextTokens <= 0 {
+			maxContextTokens = config.DefaultMaxContextToken
+		}
+		batch = limitToolResultBatch(messages, llmReq.Tools, llmReq.Schema, batch, maxContextTokens, e.config.MaxToolResultPercent)
 		messages = append(messages, batch...)
 		result.toolMessages = append(result.toolMessages, batch...)
 		result.toolCallHistory = append(result.toolCallHistory, collectToolCallHistory(resp.ToolCalls, batch)...)

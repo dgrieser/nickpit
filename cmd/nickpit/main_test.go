@@ -147,31 +147,31 @@ profiles:
 	}
 }
 
-func TestLoadProfileAppliesMaxToolResultKiBOverride(t *testing.T) {
+func TestLoadProfileAppliesMaxToolResultPercentOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	err := os.WriteFile(path, []byte(`
 profiles:
   default:
     model: test-model
-    max_tool_result_kib: 128
+    max_tool_result_percent: 10
 `), 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	app := &app{
-		profile:             "default",
-		configPath:          path,
-		maxToolResultKiB:    0,
-		maxToolResultKiBSet: true,
+		profile:                 "default",
+		configPath:              path,
+		maxToolResultPercent:    0,
+		maxToolResultPercentSet: true,
 	}
 	_, profile, err := app.loadProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.MaxToolResultKiB != 0 {
-		t.Fatalf("max tool result KiB = %d, want explicit zero", profile.MaxToolResultKiB)
+	if profile.MaxToolResultPercent != 0 {
+		t.Fatalf("max tool result percent = %d, want explicit zero", profile.MaxToolResultPercent)
 	}
 }
 
@@ -607,7 +607,7 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 		"presence-penalty",
 		"max-output-tokens",
 		"max-request-bytes",
-		"max-tool-result-kib",
+		"max-tool-result-percent",
 		"small-max-output-tokens",
 		"small-max-tokens",
 		"small-temperature",

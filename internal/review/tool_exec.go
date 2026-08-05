@@ -155,7 +155,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int, repoRo
 
 func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
 	if e.retrieval == nil {
-		return limitToolResultJSON(toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"})), e.config.MaxToolResultKiB)
+		return limitToolResultJSON(toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"})), 0)
 	}
 	var result string
 	switch toolCall.Name {
@@ -178,7 +178,10 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	default:
 		result = toolError("", "unsupported_tool", toolErrorMessage(toolErrorData{Code: "unsupported_tool", ToolName: toolCall.Name}))
 	}
-	return limitToolResultJSON(result, e.config.MaxToolResultKiB)
+	// Apply tool-specific item limits here. Context-aware token capping happens
+	// after the parallel batch completes, when the agent loop knows current
+	// prompt usage and can allocate results against one shared remainder.
+	return limitToolResultJSON(result, 0)
 }
 
 func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {

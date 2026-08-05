@@ -34,7 +34,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/review/limiter.go`: Global concurrency limiter used around agent calls.
 - `internal/review/time_budget.go`: Hierarchical time budgets, local caps, weights, speedup thresholds, and context deadlines.
 - `internal/review/tool_exec.go`: Tool-call dispatcher for retrieval tools exposed to review agents.
-- `internal/review/tool_result_limit.go`: Central JSON tool-result size enforcement with payload-specific pruning and truncation metadata.
+- `internal/review/tool_result_limit.go`: Context-aware JSON tool-result token limits with payload-specific pruning and truncation metadata.
 - `internal/review/trimmer.go`: Prompt/context size reduction helpers.
 - `internal/review/review_file_unix.go`, `internal/review/review_file_nonunix.go`: Platform-specific file reading helpers used for review context.
 

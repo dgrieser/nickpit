@@ -11,14 +11,15 @@ import (
 	"github.com/dgrieser/nickpit/internal/config"
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
-func limitedPayload(t *testing.T, value any, maxKiB int) (string, map[string]any) {
+func limitedPayload(t *testing.T, value any, maxTokens int) (string, map[string]any) {
 	t.Helper()
 	raw := mustToolResultJSON(value)
-	limited := limitToolResultJSON(raw, maxKiB)
-	if maxKiB > 0 && len(limited) > maxKiB<<10 {
-		t.Fatalf("limited payload = %d bytes, cap = %d", len(limited), maxKiB<<10)
+	limited := limitToolResultJSON(raw, maxTokens)
+	if maxTokens > 0 && tokenestimate.Estimate(limited) > maxTokens {
+		t.Fatalf("limited payload = %d tokens, cap = %d", tokenestimate.Estimate(limited), maxTokens)
 	}
 	if !utf8.ValidString(limited) {
 		t.Fatal("limited payload is not valid UTF-8")
@@ -37,7 +38,17 @@ func TestToolResultLimiterLeavesSmallPayloadUnchanged(t *testing.T) {
 	}
 }
 
-func TestToolResultLimiterZeroDisablesBytesButKeepsReferenceCountLimit(t *testing.T) {
+func TestToolResultLimiterHonorsTinyTokenLimit(t *testing.T) {
+	got := limitToolResultJSON(`{"path":"a.go","content":"too large"}`, 1)
+	if estimated := tokenestimate.Estimate(got); estimated > 1 {
+		t.Fatalf("result = %d tokens, cap = 1: %s", estimated, got)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("result is not valid JSON: %s", got)
+	}
+}
+
+func TestToolResultLimiterZeroDisablesTokensButKeepsReferenceCountLimit(t *testing.T) {
 	functions := make([]map[string]any, 30)
 	for i := range functions {
 		functions[i] = map[string]any{"name": fmt.Sprintf("f%d", i)}
@@ -163,7 +174,7 @@ func TestToolResultLimiterReducesToolPayloadShapes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, payload := limitedPayload(t, tt.value, 4)
+			_, payload := limitedPayload(t, tt.value, 1024)
 			if payload["truncated"] != true || payload["truncated_note"] == "" {
 				t.Fatalf("missing truncation metadata: %#v", payload)
 			}
@@ -176,25 +187,49 @@ func TestToolResultLimiterPreservesExistingTruncationNote(t *testing.T) {
 	_, payload := limitedPayload(t, map[string]any{
 		"path": "large.go", "content": strings.Repeat("x", 8<<10),
 		"truncated": true, "truncated_note": "retrieval clipped source file",
-	}, 2)
+	}, 512)
 	note, _ := payload["truncated_note"].(string)
 	if !strings.Contains(note, "retrieval clipped source file") || !strings.Contains(note, toolResultTruncatedNote) {
 		t.Fatalf("note = %q", note)
 	}
 }
 
-func TestExecuteToolCallAppliesConfiguredToolResultLimit(t *testing.T) {
+func TestToolResultBatchUsesPercentageOfRemainingContext(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "large.txt", strings.Repeat("content\n", 4<<10))
-	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test", MaxToolResultKiB: 2})
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
 	result := engine.executeToolCall(context.Background(), repoRoot, llm.ToolCall{
 		ID: "inspect", Name: "inspect_file", Arguments: `{"path":"large.txt"}`,
 	}, freshToolRoundState())
-	if len(result) > 2<<10 {
-		t.Fatalf("result = %d bytes", len(result))
+	messages := []llm.Message{{Role: "system", Content: strings.Repeat("x", 2000)}}
+	tools := []llm.ToolDefinition{{Name: "inspect_file", Description: strings.Repeat("tool", 50)}}
+	schema := []byte(`{"type":"object"}`)
+	used := estimateToolContextTokens(messages, tools, schema)
+	remaining := 10000 - used
+	batch := limitToolResultBatch(messages, tools, schema, []llm.Message{
+		{Role: "tool", Content: result},
+		{Role: "tool", Content: result},
+	}, 10000, 10)
+	firstLimit := max(remaining*10/100, 1)
+	if got := tokenestimate.Estimate(batch[0].Content); got > firstLimit {
+		t.Fatalf("first result = %d tokens, cap = %d", got, firstLimit)
 	}
-	payload := decodeToolPayload(t, result)
+	secondRemaining := 10000 - estimateToolContextTokens(append(messages, batch[0]), tools, schema)
+	secondLimit := max(secondRemaining*10/100, 1)
+	if got := tokenestimate.Estimate(batch[1].Content); got > secondLimit {
+		t.Fatalf("second result = %d tokens, cap = %d", got, secondLimit)
+	}
+	payload := decodeToolPayload(t, batch[0].Content)
 	if payload["truncated"] != true || payload["path"] != "large.txt" {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestToolResultBatchZeroPercentDisablesContextCap(t *testing.T) {
+	raw := `{"path":"large.go","content":"unchanged"}`
+	batch := []llm.Message{{Role: "tool", Content: raw}}
+	got := limitToolResultBatch(nil, nil, nil, batch, 100, 0)
+	if got[0].Content != raw {
+		t.Fatalf("result changed: %s", got[0].Content)
 	}
 }

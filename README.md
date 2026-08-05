@@ -560,7 +560,7 @@ Use `--disable-json-response-format` to force the prompt-embedded schema instead
 
 NickPit lets the model request additional file context during review. Control the maximum number of tool-call iterations with `--max-tool-calls` or `max_tool_calls` in config. `0` means unlimited, which is the default. You can also stop tool use after too many duplicate requests with `--max-duplicate-tool-calls` or `max_duplicate_tool_calls`; the default is `5`. Invalid model output is retried with `--max-output-retries` or `max_output_retries`; the default is `5`, and `0` means unlimited.
 
-Each JSON tool result sent to the model is capped at `128` KiB by default. Configure this with `--max-tool-result-kib`, `max_tool_result_kib`, or `NICKPIT_MAX_TOOL_RESULT_KIB`; `0` disables only the byte cap, while tool-specific limits such as hierarchy depth and commit/result counts remain. Capped payloads stay valid JSON and report `truncated: true` plus a `truncated_note`; narrow the request when more detail is needed. Human-facing `nickpit inspect` output is not capped by this setting.
+Each JSON tool result sent to the model is capped at `10%` of the context tokens remaining when that result is appended. Parallel results share the remainder in order, so later results cannot each claim the original allowance. Configure this with `--max-tool-result-percent`, `max_tool_result_percent`, or `NICKPIT_MAX_TOOL_RESULT_PERCENT`; `0` disables only the context cap, while tool-specific limits such as hierarchy depth and commit/result counts remain. Capped payloads stay valid JSON and report `truncated: true` plus a `truncated_note`; narrow the request when more detail is needed. Human-facing `nickpit inspect` output is not capped by this setting.
 
 ### Finding Caps
 

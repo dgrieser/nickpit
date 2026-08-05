@@ -5,17 +5,55 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/tokenestimate"
 )
 
 const maxReferenceFunctions = 25
 
 const toolResultTruncatedNote = "tool result exceeded configured item or size limits; narrow path, range, depth, or result count for more detail"
 
+// limitToolResultBatch caps each result at a percentage of the context tokens
+// still available when that result is appended. Processing the batch in order
+// makes parallel results share the remaining window instead of each claiming
+// the same allowance.
+func limitToolResultBatch(messages []llm.Message, tools []llm.ToolDefinition, schema []byte, batch []llm.Message, maxContextTokens, percent int) []llm.Message {
+	if percent <= 0 || maxContextTokens <= 0 {
+		return batch
+	}
+	limited := append([]llm.Message(nil), batch...)
+	current := append([]llm.Message(nil), messages...)
+	for i := range limited {
+		used := estimateToolContextTokens(current, tools, schema)
+		remaining := max(maxContextTokens-used, 0)
+		allowance := max(remaining*percent/100, 1)
+		limited[i].Content = limitToolResultJSON(limited[i].Content, allowance)
+		current = append(current, limited[i])
+	}
+	return limited
+}
+
+func estimateToolContextTokens(messages []llm.Message, tools []llm.ToolDefinition, schema []byte) int {
+	payload := struct {
+		Messages []llm.Message        `json:"messages"`
+		Tools    []llm.ToolDefinition `json:"tools,omitempty"`
+		Schema   json.RawMessage      `json:"schema,omitempty"`
+	}{
+		Messages: messages,
+		Tools:    tools,
+		Schema:   schema,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return 0
+	}
+	return tokenestimate.Estimate(string(encoded))
+}
+
 // limitToolResultJSON applies tool-specific item limits and the profile-wide
-// encoded-size limit to the final JSON sent back to the model. Keeping this at
-// the dispatch boundary covers fallbacks, rewritten calls, errors, and future
-// tools without coupling retrieval APIs to an LLM context budget.
-func limitToolResultJSON(raw string, maxKiB int) string {
+// token limit to the final JSON sent back to the model.
+func limitToolResultJSON(raw string, maxTokens int) string {
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.UseNumber()
 	var value any
@@ -28,11 +66,7 @@ func limitToolResultJSON(raw string, maxKiB int) string {
 	}
 
 	changed := applyToolItemLimits(root)
-	if maxKiB > int(^uint(0)>>1)/1024 {
-		maxKiB = 0
-	}
-	limit := int64(maxKiB) * 1024
-	if !changed && (maxKiB <= 0 || int64(len(raw)) <= limit) {
+	if !changed && (maxTokens <= 0 || tokenestimate.Estimate(raw) <= maxTokens) {
 		return raw
 	}
 	if changed {
@@ -42,7 +76,7 @@ func limitToolResultJSON(raw string, maxKiB int) string {
 	if err != nil {
 		return raw
 	}
-	if maxKiB <= 0 || int64(len(encoded)) <= limit {
+	if maxTokens <= 0 || tokenestimate.Estimate(string(encoded)) <= maxTokens {
 		return string(encoded)
 	}
 
@@ -52,10 +86,11 @@ func limitToolResultJSON(raw string, maxKiB int) string {
 		if err != nil {
 			return raw
 		}
-		if int64(len(encoded)) <= limit {
+		estimated := tokenestimate.Estimate(string(encoded))
+		if estimated <= maxTokens {
 			return string(encoded)
 		}
-		over := len(encoded) - int(limit)
+		over := max(1, len(encoded)*(estimated-maxTokens)/max(estimated, 1))
 		if !reduceToolResult(root, over, len(encoded)) {
 			break
 		}
@@ -63,13 +98,17 @@ func limitToolResultJSON(raw string, maxKiB int) string {
 
 	fallback := map[string]any{
 		"truncated":      true,
-		"truncated_note": "tool result exceeded max_tool_result_kib and could not retain its original structure; rerun with narrower arguments",
+		"truncated_note": "tool result exceeded its remaining-context token allowance and could not retain its original structure; rerun with narrower arguments",
 	}
 	encoded, _ = json.Marshal(fallback)
-	if int64(len(encoded)) <= limit {
+	if tokenestimate.Estimate(string(encoded)) <= maxTokens {
 		return string(encoded)
 	}
-	return `{"truncated":true}`
+	minimal := `{"truncated":true}`
+	if tokenestimate.Estimate(minimal) <= maxTokens {
+		return minimal
+	}
+	return `{}`
 }
 
 func applyToolItemLimits(root map[string]any) bool {
