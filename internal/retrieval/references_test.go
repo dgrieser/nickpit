@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -141,6 +142,68 @@ def run():
 	}
 	if !foundWrite {
 		t.Fatalf("global reassignment missing: %#v", result.OutsideFunctions)
+	}
+}
+
+func TestFindParsedReferencesInvalidatesCacheAfterEdit(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "config.py", "VALUE = 1\n")
+	writeRetrievalFile(t, repoRoot, "use.py", "def read():\n    return VALUE\n")
+	engine := NewLocalEngine()
+
+	first, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE", Path: "config.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := first.ExactReferenceCount + first.PossibleReferenceCount; got != 1 {
+		t.Fatalf("first references = %d, want 1", got)
+	}
+
+	writeRetrievalFile(t, repoRoot, "use.py", "def read():\n    return VALUE + VALUE\n")
+	second, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE", Path: "config.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.ExactReferenceCount + second.PossibleReferenceCount; got != 2 {
+		t.Fatalf("second references = %d, want 2", got)
+	}
+}
+
+func TestFindGoReferencesInvalidatesCacheAfterEdit(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/cache\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "state.go", "package cache\n\nvar Shared = 1\n")
+	writeRetrievalFile(t, repoRoot, "use.go", "package cache\n\nfunc read() int { return Shared }\n")
+	engine := NewLocalEngine()
+
+	first, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Shared", Path: "state.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ExactReferenceCount != 1 {
+		t.Fatalf("first exact references = %d, want 1", first.ExactReferenceCount)
+	}
+
+	writeRetrievalFile(t, repoRoot, "use.go", "package cache\n\nfunc read() int { return Shared + Shared }\n")
+	second, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Shared", Path: "state.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ExactReferenceCount != 2 {
+		t.Fatalf("second exact references = %d, want 2", second.ExactReferenceCount)
+	}
+}
+
+func TestFindReferencesDirectoryWithoutSupportedDeclarationRequestsFallback(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "legacy/state.rb", "VALUE = 1\n")
+
+	for _, path := range []string{"", "legacy"} {
+		_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE", Path: path})
+		var unsupported *UnsupportedLanguageError
+		if !errors.As(err, &unsupported) {
+			t.Fatalf("path %q error = %v, want *UnsupportedLanguageError", path, err)
+		}
 	}
 }
 

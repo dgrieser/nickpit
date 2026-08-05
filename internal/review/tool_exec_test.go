@@ -162,6 +162,24 @@ func TestExecuteFindReferencesFallsBackForUnsupportedLanguage(t *testing.T) {
 	}
 }
 
+func TestExecuteFindReferencesFallsBackForDirectoryAndRepoScopes(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "src/state.rb", "VALUE = 1\n")
+	writeRepoFile(t, repoRoot, "src/use.rb", "puts VALUE\n")
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	for i, path := range []string{"src", ""} {
+		arguments := fmt.Sprintf(`{"symbol":"VALUE","path":%q}`, path)
+		results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{{
+			ID: fmt.Sprintf("refs-%d", i), Name: "find_references", Arguments: arguments,
+		}}, freshToolRoundState())
+		payload := decodeToolPayload(t, results[0].Content)
+		if payload["fallback"] != "search" || intFromJSON(payload["result_count"]) != 2 {
+			t.Fatalf("path %q fallback = %#v", path, payload)
+		}
+	}
+}
+
 // TestExecuteSearchStillRewritesForSupportedLanguage guards against regressing
 // the optimization for languages that DO have a structural backend.
 func TestExecuteSearchStillRewritesForSupportedLanguage(t *testing.T) {

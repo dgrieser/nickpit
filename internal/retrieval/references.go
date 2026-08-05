@@ -2,11 +2,13 @@ package retrieval
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
 	"maps"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -103,8 +105,10 @@ type definitionCandidate struct {
 }
 
 type parsedReferenceCacheEntry struct {
-	mu    sync.Mutex
-	files []*parsedReferenceFile
+	mu          sync.Mutex
+	fingerprint [sha256.Size]byte
+	initialized bool
+	files       []*parsedReferenceFile
 }
 
 var parsedReferenceCache sync.Map // absolute repo root -> *parsedReferenceCacheEntry
@@ -123,6 +127,12 @@ func findParsedReferences(ctx context.Context, repoRoot string, symbol SymbolRef
 		candidates = append(candidates, findDefinitionCandidates(file, symbol.Name)...)
 	}
 	if len(candidates) == 0 {
+		if !scope.IsFile {
+			// Directory/repository scopes may contain languages this structural
+			// pass does not parse. Let callers perform their literal-search
+			// fallback instead of incorrectly concluding the symbol is absent.
+			return nil, &UnsupportedLanguageError{Path: scope.Path}
+		}
 		if scope.Path != "" {
 			return nil, fmt.Errorf("symbol %q not found in %q", symbol.Name, scope.Path)
 		}
@@ -162,9 +172,6 @@ func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedRe
 	entry := actual.(*parsedReferenceCacheEntry)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
-	if entry.files != nil {
-		return entry.files, nil
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -172,23 +179,48 @@ func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedRe
 	if err != nil {
 		return nil, err
 	}
+	fingerprint, sources, err := referenceSourceSnapshot(ctx, repoRoot, files)
+	if err != nil {
+		return nil, err
+	}
+	if entry.initialized && entry.fingerprint == fingerprint {
+		return entry.files, nil
+	}
 	parsed := make([]*parsedReferenceFile, 0, len(files))
+	for _, source := range sources {
+		parsed = append(parsed, parseReferenceFile(source.path, string(source.data)))
+	}
+	entry.fingerprint = fingerprint
+	entry.initialized = true
+	entry.files = parsed
+	return parsed, nil
+}
+
+type referenceSource struct {
+	path string
+	data []byte
+}
+
+func referenceSourceSnapshot(ctx context.Context, repoRoot string, files []string) ([sha256.Size]byte, []referenceSource, error) {
+	hash := sha256.New()
+	sources := make([]referenceSource, 0, len(files))
 	for _, fullPath := range files {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return [sha256.Size]byte{}, nil, err
 		}
 		rel, err := repofs.RelPath(repoRoot, fullPath)
 		if err != nil {
-			return nil, err
+			return [sha256.Size]byte{}, nil, err
 		}
 		data, err := repofs.ReadFile(repoRoot, fullPath)
 		if err != nil {
-			return nil, err
+			return [sha256.Size]byte{}, nil, err
 		}
-		parsed = append(parsed, parseReferenceFile(rel, string(data)))
+		fmt.Fprintf(hash, "%d:%s:%d:", len(rel), rel, len(data))
+		_, _ = hash.Write(data)
+		sources = append(sources, referenceSource{path: rel, data: data})
 	}
-	entry.files = parsed
-	return parsed, nil
+	return [sha256.Size]byte(hash.Sum(nil)), sources, nil
 }
 
 func parseReferenceFile(path, source string) *parsedReferenceFile {
@@ -796,8 +828,10 @@ type goReferenceCandidate struct {
 }
 
 type goReferenceCacheEntry struct {
-	mu   sync.Mutex
-	pkgs []*packages.Package
+	mu          sync.Mutex
+	fingerprint [sha256.Size]byte
+	initialized bool
+	pkgs        []*packages.Package
 }
 
 var goReferenceCache sync.Map // absolute repo root -> *goReferenceCacheEntry
@@ -956,19 +990,46 @@ func loadGoReferencePackages(ctx context.Context, repoRoot string) ([]*packages.
 	entry := actual.(*goReferenceCacheEntry)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
-	if entry.pkgs != nil {
-		return entry.pkgs, nil
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	fingerprint, err := goReferenceSourceFingerprint(ctx, repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	if entry.initialized && entry.fingerprint == fingerprint {
+		return entry.pkgs, nil
 	}
 	cfg := &packages.Config{Context: ctx, Dir: repoRoot, Tests: true, Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedModule}
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("finding Go references: %w", err)
 	}
+	entry.fingerprint = fingerprint
+	entry.initialized = true
 	entry.pkgs = pkgs
 	return pkgs, nil
+}
+
+func goReferenceSourceFingerprint(ctx context.Context, repoRoot string) ([sha256.Size]byte, error) {
+	files, err := collectFilesByExt(repoRoot, lookupScope{}, map[string]struct{}{".go": {}})
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	for _, name := range []string{"go.mod", "go.sum", "go.work", "go.work.sum"} {
+		_, fullPath, resolveErr := repofs.ResolvePath(repoRoot, name)
+		if resolveErr != nil {
+			return [sha256.Size]byte{}, resolveErr
+		}
+		if _, statErr := os.Stat(fullPath); statErr == nil {
+			files = append(files, fullPath)
+		} else if !os.IsNotExist(statErr) {
+			return [sha256.Size]byte{}, statErr
+		}
+	}
+	sort.Strings(files)
+	fingerprint, _, err := referenceSourceSnapshot(ctx, repoRoot, files)
+	return fingerprint, err
 }
 
 func sameGoObject(fset *token.FileSet, obj types.Object, selected goReferenceCandidate) bool {
