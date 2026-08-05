@@ -46,6 +46,46 @@ func (e *AmbiguousSymbolError) Error() string {
 // plus a conservative identifier index; uncertain matches are returned as
 // possible instead of silently omitted.
 func (e *LocalEngine) FindReferences(ctx context.Context, repoRoot string, symbol SymbolRef) (*ReferenceResult, error) {
+	return findReferencesWithLoader(ctx, repoRoot, symbol, &referenceLoader{})
+}
+
+// FindReferencesBatch resolves all symbols against shared parsed and Go
+// snapshots. Results preserve input order.
+func (e *LocalEngine) FindReferencesBatch(ctx context.Context, repoRoot string, symbols []SymbolRef) []ReferenceBatchResult {
+	loader := &referenceLoader{}
+	results := make([]ReferenceBatchResult, len(symbols))
+	for i, symbol := range symbols {
+		results[i].Result, results[i].Err = findReferencesWithLoader(ctx, repoRoot, symbol, loader)
+	}
+	return results
+}
+
+type referenceLoader struct {
+	parsedLoaded bool
+	parsed       []*parsedReferenceFile
+	parsedErr    error
+	goLoaded     bool
+	goPackages   []*packages.Package
+	goErr        error
+}
+
+func (l *referenceLoader) loadParsed(ctx context.Context, repoRoot string) ([]*parsedReferenceFile, error) {
+	if !l.parsedLoaded {
+		l.parsed, l.parsedErr = loadParsedReferenceFiles(ctx, repoRoot)
+		l.parsedLoaded = true
+	}
+	return l.parsed, l.parsedErr
+}
+
+func (l *referenceLoader) loadGo(ctx context.Context, repoRoot string) ([]*packages.Package, error) {
+	if !l.goLoaded {
+		l.goPackages, l.goErr = loadGoReferencePackages(ctx, repoRoot)
+		l.goLoaded = true
+	}
+	return l.goPackages, l.goErr
+}
+
+func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol SymbolRef, loader *referenceLoader) (*ReferenceResult, error) {
 	symbol.Name = strings.TrimSpace(symbol.Name)
 	if symbol.Name == "" {
 		return nil, fmt.Errorf("finding references: symbol name is empty")
@@ -57,23 +97,39 @@ func (e *LocalEngine) FindReferences(ctx context.Context, repoRoot string, symbo
 	if scope.IsFile {
 		ext := strings.ToLower(filepath.Ext(scope.Path))
 		if ext == ".go" {
-			return findGoReferences(ctx, repoRoot, symbol, scope)
+			pkgs, loadErr := loader.loadGo(ctx, repoRoot)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			return findGoReferencesWithPackages(repoRoot, symbol, scope, pkgs)
 		}
 		if _, ok := referenceExtensions[ext]; !ok {
 			return nil, &UnsupportedLanguageError{Path: scope.Path}
 		}
-		return findParsedReferences(ctx, repoRoot, symbol, scope)
+		parsed, loadErr := loader.loadParsed(ctx, repoRoot)
+		if loadErr != nil {
+			return nil, fmt.Errorf("finding references for %q: %w", symbol.Name, loadErr)
+		}
+		return findParsedReferencesInFiles(repoRoot, symbol, scope, parsed)
 	}
 
 	// A directory/repo lookup can span parser families. Resolve declarations
 	// conservatively first; a selected Go declaration is then re-run through
 	// go/types for exact references.
-	result, err := findParsedReferences(ctx, repoRoot, symbol, scope)
+	parsed, err := loader.loadParsed(ctx, repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("finding references for %q: %w", symbol.Name, err)
+	}
+	result, err := findParsedReferencesInFiles(repoRoot, symbol, scope, parsed)
 	if err != nil {
 		return nil, err
 	}
 	if strings.EqualFold(filepath.Ext(result.Target.Definition.FilePath), ".go") {
-		return findGoReferences(ctx, repoRoot, SymbolRef{Name: symbol.Name, Path: result.Target.Definition.FilePath}, lookupScope{Path: result.Target.Definition.FilePath, IsFile: true})
+		pkgs, loadErr := loader.loadGo(ctx, repoRoot)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		return findGoReferencesWithPackages(repoRoot, SymbolRef{Name: symbol.Name, Path: result.Target.Definition.FilePath}, lookupScope{Path: result.Target.Definition.FilePath, IsFile: true}, pkgs)
 	}
 	return result, nil
 }
@@ -113,12 +169,7 @@ type parsedReferenceCacheEntry struct {
 
 var parsedReferenceCache sync.Map // absolute repo root -> *parsedReferenceCacheEntry
 
-func findParsedReferences(ctx context.Context, repoRoot string, symbol SymbolRef, scope lookupScope) (*ReferenceResult, error) {
-	parsed, err := loadParsedReferenceFiles(ctx, repoRoot)
-	if err != nil {
-		return nil, fmt.Errorf("finding references for %q: %w", symbol.Name, err)
-	}
-
+func findParsedReferencesInFiles(repoRoot string, symbol SymbolRef, scope lookupScope, parsed []*parsedReferenceFile) (*ReferenceResult, error) {
 	var candidates []definitionCandidate
 	for _, file := range parsed {
 		if !pathInLookupScope(file.path, scope) {
@@ -836,11 +887,7 @@ type goReferenceCacheEntry struct {
 
 var goReferenceCache sync.Map // absolute repo root -> *goReferenceCacheEntry
 
-func findGoReferences(ctx context.Context, repoRoot string, symbol SymbolRef, scope lookupScope) (*ReferenceResult, error) {
-	pkgs, err := loadGoReferencePackages(ctx, repoRoot)
-	if err != nil {
-		return nil, err
-	}
+func findGoReferencesWithPackages(repoRoot string, symbol SymbolRef, scope lookupScope, pkgs []*packages.Package) (*ReferenceResult, error) {
 	var candidates []goReferenceCandidate
 	seenCandidates := map[string]struct{}{}
 	complete := true

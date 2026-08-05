@@ -18,6 +18,17 @@ type Engine interface {
 	FindCallees(ctx context.Context, repoRoot string, symbol SymbolRef, depth int) (*CallHierarchy, error)
 }
 
+// ReferenceBatchEngine resolves several symbols against one repository
+// snapshot. Callers can use it to avoid repeated fingerprint/index scans.
+type ReferenceBatchEngine interface {
+	FindReferencesBatch(ctx context.Context, repoRoot string, symbols []SymbolRef) []ReferenceBatchResult
+}
+
+type ReferenceBatchResult struct {
+	Result *ReferenceResult
+	Err    error
+}
+
 type FileContent struct {
 	Path      string `json:"path"`
 	Content   string `json:"content"`

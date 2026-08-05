@@ -8,6 +8,23 @@ import (
 	"testing"
 )
 
+func TestFindReferencesBatchPreservesInputOrder(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "a.py", "FIRST = 1\n")
+	writeRetrievalFile(t, repoRoot, "b.py", "SECOND = 2\n")
+
+	results := NewLocalEngine().FindReferencesBatch(context.Background(), repoRoot, []SymbolRef{
+		{Name: "SECOND", Path: "b.py"},
+		{Name: "FIRST", Path: "a.py"},
+	})
+	if len(results) != 2 || results[0].Err != nil || results[1].Err != nil {
+		t.Fatalf("batch results = %#v", results)
+	}
+	if results[0].Result.Target.Name != "SECOND" || results[1].Result.Target.Name != "FIRST" {
+		t.Fatalf("batch order = %q, %q", results[0].Result.Target.Name, results[1].Result.Target.Name)
+	}
+}
+
 func TestFindGoReferencesGroupsFunctionsAndTopLevelUses(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/refs\n\ngo 1.25\n")

@@ -612,12 +612,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 
 	resolved := make(map[string]*classifiedSearchSymbol)
 	lookupCount := 0
-	resolve := func(candidate lookup) {
-		if lookupCount >= toolcatalog.MaxSearchStructuralLookups {
-			return
-		}
-		lookupCount++
-		result, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{Name: candidate.name, Path: candidate.path})
+	recordResolution := func(candidate lookup, result *retrieval.ReferenceResult, err error) {
 		if err != nil || result == nil {
 			return
 		}
@@ -639,15 +634,42 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			}
 		}
 	}
-	for _, candidate := range lookups {
-		resolve(candidate)
+	resolveBatch := func(candidates []lookup) {
+		remaining := toolcatalog.MaxSearchStructuralLookups - lookupCount
+		if remaining <= 0 || len(candidates) == 0 {
+			return
+		}
+		candidates = candidates[:min(len(candidates), remaining)]
+		lookupCount += len(candidates)
+		if batchEngine, ok := e.retrieval.(retrieval.ReferenceBatchEngine); ok {
+			symbols := make([]retrieval.SymbolRef, len(candidates))
+			for i, candidate := range candidates {
+				symbols[i] = retrieval.SymbolRef{Name: candidate.name, Path: candidate.path}
+			}
+			batchResults := batchEngine.FindReferencesBatch(ctx, repoRoot, symbols)
+			for i, candidate := range candidates {
+				if i >= len(batchResults) {
+					break
+				}
+				recordResolution(candidate, batchResults[i].Result, batchResults[i].Err)
+			}
+			return
+		}
+		for _, candidate := range candidates {
+			result, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{Name: candidate.name, Path: candidate.path})
+			recordResolution(candidate, result, err)
+		}
 	}
+	resolveBatch(lookups)
 	// A path-scoped search may contain only usages. Fall back to repo-wide
 	// declaration resolution after every returned match has been tried.
 	if len(resolved) == 0 {
+		fallbacks := make([]lookup, 0, len(names))
 		for name := range names {
-			resolve(lookup{name: name})
+			fallbacks = append(fallbacks, lookup{name: name})
 		}
+		sort.Slice(fallbacks, func(i, j int) bool { return fallbacks[i].name < fallbacks[j].name })
+		resolveBatch(fallbacks)
 	}
 	if len(resolved) == 0 {
 		return "", false
@@ -680,7 +702,16 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			if toolResultIsError(optimized) {
 				continue
 			}
+			var hierarchy retrieval.CallHierarchy
+			if err := json.Unmarshal([]byte(optimized), &hierarchy); err != nil {
+				continue
+			}
 			callHierarchies = append(callHierarchies, json.RawMessage(optimized))
+			for resultIndex, result := range results {
+				if callHierarchyCoversLocation(hierarchy.Root, result.CodeLocation) {
+					classifiedMatches[resultIndex] = struct{}{}
+				}
+			}
 		} else {
 			if !e.reserveSearchReferenceResult(selected, state) {
 				continue
@@ -688,9 +719,9 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			e.logf(ctx, "Replacing search matches with find_references: query=%q symbol=%q path=%s kind=%s", query, selected.name, selected.path, selected.references.Target.Kind)
 			optimized = limitToolResultJSON(mustToolResultJSON(selected.references), 0)
 			referenceResults = append(referenceResults, json.RawMessage(optimized))
-		}
-		for resultIndex := range selected.matches {
-			classifiedMatches[resultIndex] = struct{}{}
+			for resultIndex := range selected.matches {
+				classifiedMatches[resultIndex] = struct{}{}
+			}
 		}
 	}
 	structuralCount := len(callHierarchies) + len(referenceResults)
@@ -734,6 +765,18 @@ func referenceResultCoversLocation(result *retrieval.ReferenceResult, location r
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func callHierarchyCoversLocation(node retrieval.CallNode, location retrieval.CodeLocation) bool {
+	if codeLocationsOverlap(node.CodeLocation, location) {
+		return true
+	}
+	for _, child := range node.Children {
+		if callHierarchyCoversLocation(child, location) {
+			return true
 		}
 	}
 	return false

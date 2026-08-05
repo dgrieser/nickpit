@@ -284,6 +284,31 @@ func TestExecuteSearchClassifiesIndividualOccurrences(t *testing.T) {
 	}
 }
 
+func TestExecuteSearchPreservesFunctionValueReferences(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/functionrefs\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "run.go", "package functionrefs\n\nfunc Run() {}\nvar Callback = Run\nfunc Start() { Run() }\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Run"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	if _, optimized := payload["root"]; !optimized {
+		t.Fatalf("function search was not optimized: %#v", payload)
+	}
+	literals, _ := payload["literal_results"].([]any)
+	if len(literals) != 1 {
+		t.Fatalf("function literal results = %#v, want callback assignment", payload)
+	}
+	literal, _ := literals[0].(map[string]any)
+	location, _ := literal["code_location"].(map[string]any)
+	lineRange, _ := location["line_range"].(map[string]any)
+	if intFromJSON(lineRange["start"]) != 4 {
+		t.Fatalf("function literal location = %#v, want line 4", location)
+	}
+}
+
 func TestExecuteSearchRetainsTruncatedFilesWhenOptimized(t *testing.T) {
 	counting := &countingRetrieval{truncatedFiles: []string{"large.sh"}}
 	engine := NewEngine(stubSource{}, &capturingLLM{}, counting, config.Profile{Model: "test"})
@@ -374,6 +399,63 @@ func TestExecuteSearchBoundsStructuralLookupsForBroadIdentifiers(t *testing.T) {
 			t.Fatalf("broad search performed structural lookup: %v", counting.paths)
 		}
 	}
+}
+
+func TestExecuteSearchUsesBatchReferenceResolution(t *testing.T) {
+	literalResults := make([]retrieval.SearchResult, 3)
+	for i := range literalResults {
+		literalResults[i] = retrieval.SearchResult{CodeLocation: retrieval.CodeLocation{
+			FilePath:  fmt.Sprintf("pkg/file-%d.go", i),
+			LineRange: retrieval.LineRange{Start: 5, End: 5, Count: 1},
+			Content:   "var Shared = 1",
+		}}
+	}
+	backend := &batchSearchRetrieval{countingRetrieval: &countingRetrieval{
+		literalResults: literalResults, hasCustomResults: true,
+	}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`},
+	}, freshToolRoundState())
+	if payload := decodeToolPayload(t, results[0].Content); intFromJSON(payload["structural_result_count"]) != 3 {
+		t.Fatalf("batched search payload = %#v", payload)
+	}
+	if backend.batchCalls != 1 || backend.batchSymbols != 3 || backend.individualCalls != 0 {
+		t.Fatalf("reference calls: batches=%d symbols=%d individual=%d", backend.batchCalls, backend.batchSymbols, backend.individualCalls)
+	}
+}
+
+type batchSearchRetrieval struct {
+	*countingRetrieval
+	batchCalls      int
+	batchSymbols    int
+	individualCalls int
+}
+
+func (r *batchSearchRetrieval) FindReferences(context.Context, string, retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	r.individualCalls++
+	return nil, errors.New("unexpected individual reference lookup")
+}
+
+func (r *batchSearchRetrieval) FindReferencesBatch(_ context.Context, _ string, symbols []retrieval.SymbolRef) []retrieval.ReferenceBatchResult {
+	r.batchCalls++
+	r.batchSymbols += len(symbols)
+	results := make([]retrieval.ReferenceBatchResult, len(symbols))
+	for i, symbol := range symbols {
+		results[i].Result = &retrieval.ReferenceResult{
+			Target: retrieval.ReferenceTarget{
+				Name: symbol.Name,
+				Kind: "variable",
+				Definition: retrieval.CodeLocation{
+					FilePath:  symbol.Path,
+					LineRange: retrieval.LineRange{Start: 5, End: 5, Count: 1},
+					Content:   "var Shared = 1",
+				},
+			},
+			Complete: true,
+		}
+	}
+	return results
 }
 
 // TestExecuteSearchReplacesRustFunctionMatches guards the post-search
