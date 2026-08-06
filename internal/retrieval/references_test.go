@@ -1011,3 +1011,170 @@ func TestParsedReferenceSnapshotSkipsUnreadableFiles(t *testing.T) {
 		t.Fatalf("target = %#v", result.Target)
 	}
 }
+
+// A parser span starts at the decorator above the declaration, and a decorator
+// can name the symbol itself: `@value.setter` refers to the property the setter
+// extends. Skipping the span's first occurrence dropped that reference and left
+// the `def` line reported as a use of itself.
+func TestFindReferencesKeepsDecoratorUseAboveDeclaration(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "config.py", strings.Join([]string{
+		"class Config:",
+		"    @property",
+		"    def value(self):",
+		"        return self._v",
+		"",
+		"    @value.setter",
+		"    def value(self, v):",
+		"        self._v = v",
+		"",
+	}, "\n"))
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "value", Path: "config.py", Line: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := map[int]bool{}
+	for _, contexts := range [][]ReferenceContext{result.Functions, result.OutsideFunctions} {
+		for _, context := range contexts {
+			for _, occurrence := range context.References {
+				lines[occurrence.CodeLocation.LineRange.Start] = true
+			}
+		}
+	}
+	if !lines[6] {
+		t.Fatalf("decorator reference on line 6 was consumed by the declaration skip: %v", lines)
+	}
+	if lines[7] {
+		t.Fatalf("the declaration on line 7 is reported as a reference to itself: %v", lines)
+	}
+}
+
+// Python spells keyword arguments and parameter defaults with a bare `=`.
+// Reporting those as writes told a reviewer the symbol is mutated at call sites
+// that only pass it by name.
+func TestFindReferencesDoesNotReportKeywordArgumentAsWrite(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "calls.py", strings.Join([]string{
+		"def process(count=1):",
+		"    return count",
+		"",
+		"def run():",
+		"    return process(count=2)",
+		"",
+	}, "\n"))
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "count", Path: "calls.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[int]string{}
+	for _, contexts := range [][]ReferenceContext{result.Functions, result.OutsideFunctions} {
+		for _, context := range contexts {
+			for _, occurrence := range context.References {
+				roles[occurrence.CodeLocation.LineRange.Start] = occurrence.Role
+			}
+		}
+	}
+	if roles[2] != "read" {
+		t.Fatalf("parameter use role = %q, want read (%v)", roles[2], roles)
+	}
+	if roles[5] != "read" {
+		t.Fatalf("keyword argument role = %q, want read (%v)", roles[5], roles)
+	}
+}
+
+// A Python assignment that rebinds the name it declares still reads it, so only
+// the first occurrence on the declaration line is the declaration.
+func TestFindReferencesKeepsSelfReferenceOnDeclarationLine(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "counter.py", "total = 0\ntotal = total + 1\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "total", Path: "counter.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, context := range result.OutsideFunctions {
+		found += len(context.References)
+	}
+	if found == 0 {
+		t.Fatalf("rebinding on line 2 produced no reference: %#v", result.OutsideFunctions)
+	}
+}
+
+// The ambiguity message names ten declarations and counts the rest, so building
+// a target for every rival is wasted work on a common identifier.
+func TestAmbiguousSymbolErrorCountsUnbuiltCandidates(t *testing.T) {
+	repoRoot := t.TempDir()
+	for i := range 15 {
+		writeRetrievalFile(t, repoRoot, fmt.Sprintf("mod%02d.py", i), "VALUE = 1\n")
+	}
+
+	_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "VALUE"})
+	var ambiguous *AmbiguousSymbolError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("error = %v, want ambiguous", err)
+	}
+	if len(ambiguous.Candidates) != 10 || ambiguous.Total != 15 {
+		t.Fatalf("candidates = %d, total = %d, want 10 of 15", len(ambiguous.Candidates), ambiguous.Total)
+	}
+	if !strings.Contains(err.Error(), "and 5 more") {
+		t.Fatalf("message = %q", err.Error())
+	}
+}
+
+// Declaration resolution visits every file in scope but builds a location only
+// for the few that declare the symbol. Reading each file's display text up
+// front put a second full copy of the repository's source next to the masked
+// snapshot, which is what the masked form exists to avoid.
+func TestFindDefinitionCandidatesReadsOnlyMatchingFiles(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "decl.py", "TARGET = 1\n")
+	writeRetrievalFile(t, repoRoot, "other.py", "UNRELATED = 2\n")
+
+	parsed, err := loadParsedReferenceFiles(context.Background(), repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := newReferenceLineCache(repoRoot)
+	compiled := compileDeclarationPatterns("python", "TARGET")
+	for _, file := range parsed {
+		findDefinitionCandidates(file, "TARGET", compiled, cache)
+	}
+	if _, read := cache.lines["other.py"]; read {
+		t.Fatalf("a file with no candidate was read back: %v", cache.lines)
+	}
+	if _, read := cache.lines["decl.py"]; !read {
+		t.Fatalf("the declaring file was not read: %v", cache.lines)
+	}
+}
+
+// The rule holds for TypeScript decorators too, where the declaration line is
+// a class method the regex declaration patterns do not match.
+func TestFindReferencesKeepsDecoratorUseAboveTypeScriptMethod(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "svc.ts", strings.Join([]string{
+		"const cache = { handler: 1 }",
+		"class Service {",
+		"  @Reflect.metadata('k', cache)",
+		"  handler() { return 1 }",
+		"}",
+		"new Service().handler()",
+		"",
+	}, "\n"))
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "handler", Path: "svc.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, contexts := range [][]ReferenceContext{result.Functions, result.OutsideFunctions} {
+		for _, context := range contexts {
+			for _, occurrence := range context.References {
+				if occurrence.CodeLocation.LineRange.Start == 4 {
+					t.Fatalf("the declaration on line 4 is reported as a reference to itself: %#v", occurrence)
+				}
+			}
+		}
+	}
+}

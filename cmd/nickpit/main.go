@@ -2605,6 +2605,9 @@ func (a *app) writeInspectOutput(value any) error {
 	case *retrieval.CallHierarchy:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err
+	case *review.CallHierarchyResult:
+		_, err := fmt.Fprintln(os.Stdout, typed.Render())
+		return err
 	case *retrieval.ReferenceResult:
 		_, err := fmt.Fprintln(os.Stdout, typed.Render())
 		return err

@@ -220,9 +220,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 			if searchErr != nil {
 				return toolError(normalizedPath, "retrieval_failed", searchErr.Error())
 			}
-			state.mu.Lock()
-			state.seenToolCalls[key] = struct{}{}
-			state.mu.Unlock()
+			state.markToolCallSeen(toolCall.ID, key)
 			return mustToolResultJSON(withTruncatedFiles(map[string]any{
 				"symbol": args.Symbol, "path": normalizedPath, "fallback": "search",
 				"note":         note,
@@ -234,16 +232,12 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 			// Recorded like a success: repeating the identical call is
 			// deterministic and would otherwise never trip the duplicate limit.
 			// A retry pinned to one declaration carries a different key.
-			state.mu.Lock()
-			state.seenToolCalls[key] = struct{}{}
-			state.mu.Unlock()
+			state.markToolCallSeen(toolCall.ID, key)
 			return toolError(normalizedPath, "ambiguous_symbol", err.Error())
 		}
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
+	state.markToolCallSeen(toolCall.ID, key)
 	return mustToolResultJSON(result)
 }
 
@@ -359,9 +353,7 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
+	state.markToolCallSeen(toolCall.ID, key)
 	return mustToolResultJSON(map[string]any{
 		"path":  listing.Path,
 		"depth": args.Depth,
@@ -391,24 +383,48 @@ type SearchOptions struct {
 	CaseSensitive bool
 }
 
+// CallHierarchyResult is one call-hierarchy answer in the single shape both the
+// model and the CLI receive: the hierarchy plus the lookup that produced it.
+// The symbol and path are not part of retrieval.CallHierarchy, and hand-building
+// them into the model's payload while handing the CLI the bare hierarchy gave
+// one answer two encodings that had to be kept in step by hand.
+type CallHierarchyResult struct {
+	Symbol string `json:"symbol"`
+	Path   string `json:"path"`
+	*retrieval.CallHierarchy
+}
+
 // MixedSearchResult combines one resolved structural result with literal
 // matches that the structural backends could not classify.
 type MixedSearchResult struct {
-	Callers        *retrieval.CallHierarchy
+	Callers        *CallHierarchyResult
 	References     *retrieval.ReferenceResult
 	LiteralResults []retrieval.SearchResult
 	TruncatedFiles []string
+	// Truncated marks a structural analysis an item limit cut down, so the
+	// envelope says so even though the analysis itself only carries the
+	// omitted counts.
+	Truncated bool
 }
 
 // GroupedSearchResult contains structural enrichments for multiple distinct
 // declarations found among one search's returned matches.
 type GroupedSearchResult struct {
 	StructuralResultCount int                          `json:"structural_result_count"`
-	CallHierarchies       []*retrieval.CallHierarchy   `json:"call_hierarchies,omitempty"`
+	CallHierarchies       []*CallHierarchyResult       `json:"call_hierarchies,omitempty"`
 	ReferenceResults      []*retrieval.ReferenceResult `json:"reference_results,omitempty"`
 	LiteralResultCount    int                          `json:"literal_result_count"`
 	LiteralResults        []retrieval.SearchResult     `json:"literal_results"`
 	TruncatedFiles        []string                     `json:"truncated_files,omitempty"`
+	Truncated             bool                         `json:"truncated,omitempty"`
+	TruncatedNote         string                       `json:"truncated_note,omitempty"`
+}
+
+// markTruncated records that an item limit cut one of the grouped analyses
+// down. The flag and its note are set together so the envelope reads the same
+// as every other capped tool result.
+func (r *GroupedSearchResult) markTruncated() {
+	r.Truncated, r.TruncatedNote = true, toolResultTruncatedNote
 }
 
 // MarshalJSON keeps the structural result's normal top-level shape and adds
@@ -435,6 +451,9 @@ func (r MixedSearchResult) MarshalJSON() ([]byte, error) {
 	payload["literal_results"] = r.LiteralResults
 	if len(r.TruncatedFiles) > 0 {
 		payload["truncated_files"] = r.TruncatedFiles
+	}
+	if r.Truncated {
+		markToolResultTruncated(payload)
 	}
 	return json.Marshal(payload)
 }
@@ -569,16 +588,12 @@ func (e *Engine) searchToolResult(ctx context.Context, repoRoot string, toolCall
 
 	if e.searchToolOptimization {
 		if optimized, ok := e.optimizeSearchResults(ctx, repoRoot, toolCall.ID, args.Query, args.CaseSensitive, results.Results, results.TruncatedFiles, state); ok {
-			state.mu.Lock()
-			state.seenToolCalls[key] = struct{}{}
-			state.mu.Unlock()
+			state.markToolCallSeen(toolCall.ID, key)
 			return optimized
 		}
 	}
 
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
+	state.markToolCallSeen(toolCall.ID, key)
 	return searchToolResult{
 		payload: mustToolResultJSON(withTruncatedFiles(map[string]any{
 			"path":           results.Path,
@@ -730,19 +745,18 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 	for _, key := range keys {
 		declarationsPerName[resolved[key].name]++
 	}
-	var callHierarchyPayloads, referencePayloads []json.RawMessage
-	var callHierarchies []*retrieval.CallHierarchy
+	var callHierarchies []*CallHierarchyResult
 	var referenceResults []*retrieval.ReferenceResult
+	truncated := false
 	classifiedMatches := make(map[int]struct{})
 	for _, key := range keys {
 		selected := resolved[key]
 		if selected.name == "" || selected.path == "" {
 			continue
 		}
-		var optimized string
 		if selected.kind == "function" {
 			e.logf(ctx, "Replacing search matches with find_callers: query=%q symbol=%q path=%s depth=%d", query, selected.name, selected.path, toollimits.DefaultCallHierarchyDepth)
-			optimized = e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
+			optimized := e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
 				ID:   toolCallID,
 				Name: "find_callers",
 				Arguments: mustToolResultJSON(map[string]any{
@@ -754,11 +768,10 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			if toolResultIsError(optimized) {
 				continue
 			}
-			hierarchy := &retrieval.CallHierarchy{}
-			if err := json.Unmarshal([]byte(optimized), hierarchy); err != nil {
+			hierarchy := decodeCallHierarchyResult(optimized)
+			if hierarchy == nil {
 				continue
 			}
-			callHierarchyPayloads = append(callHierarchyPayloads, json.RawMessage(optimized))
 			callHierarchies = append(callHierarchies, hierarchy)
 			for resultIndex, result := range results {
 				if callHierarchyCoversLocation(hierarchy.Root, result.CodeLocation) {
@@ -769,7 +782,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			// Reserve only once the analysis exists: reserving before it could
 			// fail would leave the key taken and block the model from ever
 			// calling find_references for this symbol.
-			if selected.references == nil || !e.reserveSearchReferenceResult(selected, declarationsPerName[selected.name] == 1, state) {
+			if selected.references == nil || !e.reserveSearchReferenceResult(toolCallID, selected, declarationsPerName[selected.name] == 1, state) {
 				continue
 			}
 			e.logf(ctx, "Replacing search matches with find_references: query=%q symbol=%q path=%s kind=%s", query, selected.name, selected.path, selected.references.Target.Kind)
@@ -777,12 +790,8 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			// one it was cut from: a match the item limit dropped is still a match
 			// the search found, and treating it as covered removed it from the
 			// literal results as well, so it left the answer entirely.
-			visible := limitReferenceContexts(selected.references)
-			optimized = mustToolResultJSON(visible)
-			if visible != selected.references {
-				optimized = withToolResultTruncationMarkers(optimized)
-			}
-			referencePayloads = append(referencePayloads, json.RawMessage(optimized))
+			visible, cut := limitedReferenceResult(selected.references)
+			truncated = truncated || cut
 			referenceResults = append(referenceResults, visible)
 			// Classify against every literal match, not just the ones whose
 			// lookup produced this declaration: the repo-wide fallback resolves
@@ -794,7 +803,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			}
 		}
 	}
-	structuralCount := len(callHierarchyPayloads) + len(referencePayloads)
+	structuralCount := len(callHierarchies) + len(referenceResults)
 	if structuralCount == 0 {
 		return searchToolResult{}, false
 	}
@@ -804,96 +813,87 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			literalResults = append(literalResults, result)
 		}
 	}
+	// One typed value serves both consumers: it is what the CLI renders and
+	// what is marshaled for the model, so neither can describe an answer the
+	// other does not have.
+	var value any
 	if structuralCount == 1 {
-		mixed := &MixedSearchResult{LiteralResults: literalResults, TruncatedFiles: truncatedFiles}
-		structural := ""
-		if len(callHierarchyPayloads) == 1 {
-			mixed.Callers, structural = callHierarchies[0], string(callHierarchyPayloads[0])
+		mixed := &MixedSearchResult{LiteralResults: literalResults, TruncatedFiles: truncatedFiles, Truncated: truncated}
+		if len(callHierarchies) == 1 {
+			mixed.Callers = callHierarchies[0]
 		} else {
-			mixed.References, structural = referenceResults[0], string(referencePayloads[0])
+			mixed.References = referenceResults[0]
 		}
-		return searchToolResult{
-			payload: withLiteralSearchResults(structural, literalResults, truncatedFiles),
-			value:   mixed.structuralOrMixed(),
-		}, true
-	}
-	payload := map[string]any{
-		"structural_result_count": structuralCount,
-		"literal_result_count":    len(literalResults),
-		"literal_results":         literalResults,
-	}
-	if len(callHierarchyPayloads) > 0 {
-		payload["call_hierarchies"] = callHierarchyPayloads
-	}
-	if len(referencePayloads) > 0 {
-		payload["reference_results"] = referencePayloads
-	}
-	return searchToolResult{
-		payload: mustToolResultJSON(withTruncatedFiles(payload, truncatedFiles)),
-		value: &GroupedSearchResult{
+		value = mixed.structuralOrMixed()
+	} else {
+		grouped := &GroupedSearchResult{
 			StructuralResultCount: structuralCount,
 			CallHierarchies:       callHierarchies,
 			ReferenceResults:      referenceResults,
 			LiteralResultCount:    len(literalResults),
 			LiteralResults:        literalResults,
 			TruncatedFiles:        truncatedFiles,
-		},
-	}, true
-}
-
-// structuralOrMixed returns the structural result on its own unless literal
-// matches were preserved next to it.
-func (r *MixedSearchResult) structuralOrMixed() any {
-	if len(r.LiteralResults) == 0 && len(r.TruncatedFiles) == 0 {
-		if r.Callers != nil {
-			return r.Callers
 		}
-		return r.References
+		if truncated {
+			grouped.markTruncated()
+		}
+		value = grouped
 	}
-	return r
+	return searchToolResult{payload: mustToolResultJSON(value), value: value}, true
 }
 
-// limitReferenceContexts returns the analysis as the model will see it: the
-// per-result context limit applied to the typed value, so the payload and every
-// decision made from it describe the same set of contexts. The original is
-// returned untouched when nothing has to be dropped.
-func limitReferenceContexts(result *retrieval.ReferenceResult) *retrieval.ReferenceResult {
-	if len(result.Functions) <= toollimits.MaxReferenceFunctions && len(result.OutsideFunctions) <= toollimits.MaxReferenceFunctions {
-		return result
+// decodeCallHierarchyResult reads back the payload executeCallHierarchy just
+// produced, or nil when that payload is not a hierarchy. The unsupported-language
+// fallback answers with literal matches and no `root`, and it decodes into an
+// empty retrieval.CallHierarchy without error — taking that as a hierarchy
+// rendered a call graph with no definition and dropped the matches it did find.
+func decodeCallHierarchyResult(payload string) *CallHierarchyResult {
+	var decoded struct {
+		Symbol string              `json:"symbol"`
+		Path   string              `json:"path"`
+		Root   *retrieval.CallNode `json:"root"`
+		Mode   string              `json:"mode"`
+		Depth  int                 `json:"depth"`
 	}
-	limited := *result
-	omitted := 0
-	if extra := len(limited.Functions) - toollimits.MaxReferenceFunctions; extra > 0 {
-		limited.Functions = limited.Functions[:toollimits.MaxReferenceFunctions]
-		omitted += extra
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil || decoded.Root == nil {
+		return nil
 	}
-	if extra := len(limited.OutsideFunctions) - toollimits.MaxReferenceFunctions; extra > 0 {
-		limited.OutsideFunctions = limited.OutsideFunctions[:toollimits.MaxReferenceFunctions]
-		omitted += extra
+	return &CallHierarchyResult{
+		Symbol:        decoded.Symbol,
+		Path:          decoded.Path,
+		CallHierarchy: &retrieval.CallHierarchy{Root: *decoded.Root, Mode: decoded.Mode, Depth: decoded.Depth},
 	}
-	limited.OmittedContexts += omitted
-	// The counts still describe the whole analysis, so leaving `complete` set
-	// beside a shortened context list would read as "these are all the uses".
-	limited.Complete = false
-	return &limited
 }
 
-// withToolResultTruncationMarkers adds the envelope fields that tell the model
-// its result was cut down. Only a payload that was actually shortened pays the
-// re-encoding.
-func withToolResultTruncationMarkers(raw string) string {
-	var root map[string]any
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.UseNumber()
-	if err := decoder.Decode(&root); err != nil {
-		return raw
+// structuralOrMixed returns the structural result on its own unless something
+// has to be reported next to it.
+func (r *MixedSearchResult) structuralOrMixed() any {
+	if len(r.LiteralResults) > 0 || len(r.TruncatedFiles) > 0 || r.Truncated {
+		return r
 	}
-	markToolResultTruncated(root)
-	encoded, err := json.Marshal(root)
-	if err != nil {
-		return raw
+	if r.Callers != nil {
+		return r.Callers
 	}
-	return string(encoded)
+	return r.References
+}
+
+// limitedReferenceResult returns the analysis as the model will see it, so the
+// payload and every decision made from it describe the same set of contexts.
+// The item limit lives in one place — the JSON limiter every tool result already
+// runs through — and the capped document is decoded back rather than expressed a
+// second time over the typed value. The second result reports whether anything
+// was dropped; the original is returned untouched when nothing was.
+func limitedReferenceResult(result *retrieval.ReferenceResult) (*retrieval.ReferenceResult, bool) {
+	raw := mustToolResultJSON(result)
+	limited := limitToolResultJSON(raw, 0)
+	if limited == raw {
+		return result, false
+	}
+	visible := &retrieval.ReferenceResult{}
+	if err := json.Unmarshal([]byte(limited), visible); err != nil {
+		return result, false
+	}
+	return visible, true
 }
 
 func referenceResultCoversLocation(result *retrieval.ReferenceResult, location retrieval.CodeLocation) bool {
@@ -968,7 +968,7 @@ func (e *Engine) collectDeferredReferences(ctx context.Context, repoRoot string,
 	}
 }
 
-func (e *Engine) reserveSearchReferenceResult(selected *classifiedSearchSymbol, uniqueName bool, state *toolRoundState) bool {
+func (e *Engine) reserveSearchReferenceResult(toolCallID string, selected *classifiedSearchSymbol, uniqueName bool, state *toolRoundState) bool {
 	// A model that wants this symbol's references again can ask for it with the
 	// declaring file as path, pinned to its line, or with no path at all, and
 	// every one of those names the analysis the search just delivered. Reserving
@@ -989,13 +989,7 @@ func (e *Engine) reserveSearchReferenceResult(selected *classifiedSearchSymbol, 
 	reserve := func(key string) bool {
 		unlock := state.toolLocks.lock(key)
 		defer unlock()
-		state.mu.Lock()
-		defer state.mu.Unlock()
-		if _, duplicate := state.seenToolCalls[key]; duplicate {
-			return false
-		}
-		state.seenToolCalls[key] = struct{}{}
-		return true
+		return state.reserveToolCall(toolCallID, key)
 	}
 	if !reserve(keys[0]) {
 		return false
@@ -1008,21 +1002,6 @@ func (e *Engine) reserveSearchReferenceResult(selected *classifiedSearchSymbol, 
 		reserve(key)
 	}
 	return true
-}
-
-func withLiteralSearchResults(structural string, results []retrieval.SearchResult, truncatedFiles []string) string {
-	if len(results) == 0 && len(truncatedFiles) == 0 {
-		return structural
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(structural), &payload); err != nil {
-		return structural
-	}
-	if len(results) > 0 {
-		payload["literal_result_count"] = len(results)
-		payload["literal_results"] = results
-	}
-	return mustToolResultJSON(withTruncatedFiles(payload, truncatedFiles))
 }
 
 // matchingIdentifierSpellings collects the identifiers on a matched line that
@@ -1169,7 +1148,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		// backends) so callers/uses in other files are still surfaced.
 		var unsupported *retrieval.UnsupportedLanguageError
 		if errors.As(err, &unsupported) {
-			return e.callHierarchySearchFallback(ctx, repoRoot, normalizedPath, args.Symbol, callers, key, state)
+			return e.callHierarchySearchFallback(ctx, repoRoot, toolCall.ID, normalizedPath, args.Symbol, callers, key, state)
 		}
 
 		// Low confidence indicates the analysis ran but has uncertain results due to
@@ -1181,16 +1160,8 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		}
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
-	return mustToolResultJSON(map[string]any{
-		"symbol": args.Symbol,
-		"path":   normalizedPath,
-		"mode":   hierarchy.Mode,
-		"depth":  hierarchy.Depth,
-		"root":   hierarchy.Root,
-	})
+	state.markToolCallSeen(toolCall.ID, key)
+	return mustToolResultJSON(&CallHierarchyResult{Symbol: args.Symbol, Path: normalizedPath, CallHierarchy: hierarchy})
 }
 
 // callHierarchySearchFallback runs a literal search for symbol when no structural
@@ -1199,7 +1170,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 // repo-wide search so callers/uses in other files are still found. The symbol is a
 // plain identifier, so the regex-metachar handling that executeSearch performs is not
 // needed here.
-func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, normalizedPath, symbol string, callers bool, key string, state *toolRoundState) string {
+func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, toolCallID, normalizedPath, symbol string, callers bool, key string, state *toolRoundState) string {
 	mode := "callees"
 	if callers {
 		mode = "callers"
@@ -1210,9 +1181,7 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, norm
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
+	state.markToolCallSeen(toolCallID, key)
 	return mustToolResultJSON(withTruncatedFiles(map[string]any{
 		"symbol":       symbol,
 		"path":         normalizedPath,
@@ -1409,9 +1378,7 @@ func (e *Engine) executeGitLog(ctx context.Context, repoRoot string, toolCall ll
 	if err != nil {
 		return historyToolError(err)
 	}
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
+	state.markToolCallSeen(toolCall.ID, key)
 	return mustToolResultJSON(result)
 }
 
@@ -1443,9 +1410,7 @@ func (e *Engine) executeGitShow(ctx context.Context, repoRoot string, toolCall l
 	if err != nil {
 		return historyToolError(err)
 	}
-	state.mu.Lock()
-	state.seenToolCalls[key] = struct{}{}
-	state.mu.Unlock()
+	state.markToolCallSeen(toolCall.ID, key)
 	return mustToolResultJSON(result)
 }
 

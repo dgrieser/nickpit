@@ -471,3 +471,33 @@ func TestToolResultLimiterKeepsShrinkingExhaustedReferencePayload(t *testing.T) 
 		t.Fatalf("payload = %d tokens, cap = 256: %s", tokenestimate.Estimate(got), got)
 	}
 }
+
+// A search that resolved a declaration keeps its structural analysis at the top
+// level and the matches it could not classify beside it, so the payload
+// classifies as the analysis. Its literal matches still have to be shortened
+// through the step that keeps literal_result_count true — the generic reducer
+// reaches the same array and leaves the count claiming matches the model can no
+// longer see.
+func TestToolResultLimiterKeepsLiteralCountTrueOnMixedSearchResult(t *testing.T) {
+	literals := make([]map[string]any, 40)
+	for i := range literals {
+		literals[i] = map[string]any{"code_location": map[string]any{
+			"file_path": fmt.Sprintf("notes-%d.txt", i),
+			"content":   strings.Repeat("mentioned here\n", 20),
+		}}
+	}
+	_, payload := limitedPayload(t, map[string]any{
+		"target": map[string]any{"name": "Shared"}, "functions": []any{}, "outside_functions": []any{},
+		"literal_result_count": len(literals), "literal_results": literals,
+	}, 512)
+	kept, _ := payload["literal_results"].([]any)
+	if len(kept) == len(literals) {
+		t.Fatalf("literal matches were not shortened: %d", len(kept))
+	}
+	if intFromJSON(payload["literal_result_count"]) != len(kept) {
+		t.Fatalf("literal_result_count = %v alongside %d matches", payload["literal_result_count"], len(kept))
+	}
+	if intFromJSON(payload["omitted_literal_results"]) != len(literals)-len(kept) {
+		t.Fatalf("omitted_literal_results = %v, want %d", payload["omitted_literal_results"], len(literals)-len(kept))
+	}
+}

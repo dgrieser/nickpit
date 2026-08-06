@@ -64,6 +64,45 @@ func limitToolResultBatch(meter *toolContextMeter, messages []llm.Message, tools
 	return limited
 }
 
+// releaseEmptiedToolResults hands back the dedup keys of every tool call whose
+// result the context limiter reduced to a bare truncation marker. That marker
+// tells the model to rerun with narrower arguments, so the calls it is being
+// pointed at must not all answer already_requested — and for a search that was
+// upgraded to a reference analysis, the reservation covers every spelling of
+// find_references for that symbol, leaving it unreachable for the rest of the
+// loop. inspect_file keeps its own reconciliation: a shortened file read still
+// covers the lines that survived.
+func releaseEmptiedToolResults(toolCalls []llm.ToolCall, raw, limited []llm.Message, state *toolRoundState) {
+	for i, toolCall := range toolCalls {
+		if i >= len(raw) || i >= len(limited) || raw[i].Content == limited[i].Content {
+			continue
+		}
+		if toolResultLostPayload(limited[i].Content) {
+			state.releaseToolCall(toolCall.ID)
+		}
+	}
+}
+
+// toolResultLostPayload reports whether limiting left nothing but the marker
+// that says so — the fallback limitToolResultJSON returns when no reduction
+// could fit the result in its allowance. A result that merely lost items still
+// answers the call that produced it, so its keys stay taken.
+func toolResultLostPayload(content string) bool {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return false
+	}
+	if truncated, _ := payload["truncated"].(bool); !truncated {
+		return false
+	}
+	for key := range payload {
+		if key != "truncated" && key != "truncated_note" {
+			return false
+		}
+	}
+	return true
+}
+
 // reconcileLimitedInspectFileCoverage makes deduplication reflect content the
 // model actually received, not larger ranges fetched before context limiting.
 func reconcileLimitedInspectFileCoverage(toolCalls []llm.ToolCall, raw, limited []llm.Message, state *toolRoundState) {
@@ -327,6 +366,9 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 			markReferenceAnalysisIncomplete(root)
 			return true
 		}
+		if dropLiteralSearchResults(root, over, size) {
+			return true
+		}
 		if target, ok := objectField(root, "target"); ok {
 			if definition, ok := objectField(target, "definition"); ok {
 				if trimStringField(definition, "content", over, true) {
@@ -343,6 +385,9 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 				addIntField(root, "omitted_nodes", omitted)
 				return true
 			}
+		}
+		if dropLiteralSearchResults(root, over, size) {
+			return true
 		}
 	case shapeGroupedSearch:
 		if reduceGroupedSearchResult(root, over, size) {
@@ -395,11 +440,21 @@ func reduceGroupedSearchResult(root map[string]any, over, size int) bool {
 	if largest != nil && reduceToolResult(largest, over, size) {
 		return true
 	}
-	if dropArrayTail(root, "literal_results", over, size, "omitted_literal_results") {
-		root["literal_result_count"] = len(arrayField(root, "literal_results"))
-		return true
+	return dropLiteralSearchResults(root, over, size)
+}
+
+// dropLiteralSearchResults drops a tail of the literal matches a search result
+// preserved next to its structural analysis, keeping the count that describes
+// them true. Every structural shape can carry them, so every branch has to
+// offer this step: the generic reducer finds the same array — it is usually the
+// largest one — but leaves literal_result_count claiming matches the model can
+// no longer see.
+func dropLiteralSearchResults(root map[string]any, over, size int) bool {
+	if !dropArrayTail(root, "literal_results", over, size, "omitted_literal_results") {
+		return false
 	}
-	return false
+	root["literal_result_count"] = len(arrayField(root, "literal_results"))
+	return true
 }
 
 // groupedStructuralPayloads returns the call-hierarchy and reference analyses a
@@ -467,6 +522,12 @@ func markToolResultTruncated(root map[string]any) {
 // Recognizing it in one place is what keeps a new field named `target` or
 // `results` on some unrelated result from silently rerouting pruning,
 // summarization, or the history label.
+//
+// A search result carries its structural analysis at the top level and adds the
+// literal matches it could not classify beside it, so it classifies as that
+// analysis and never as shapeSearchResults. The literal matches are pruned by
+// dropLiteralSearchResults, which every structural branch offers for exactly
+// that reason.
 type toolResultShape int
 
 const (

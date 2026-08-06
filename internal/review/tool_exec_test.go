@@ -619,7 +619,7 @@ func TestStandaloneSearchReturnsEachResultShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hierarchy, ok := callers.(*retrieval.CallHierarchy); !ok || hierarchy.Root.Name != "Run" {
+	if hierarchy, ok := callers.(*CallHierarchyResult); !ok || hierarchy.Root.Name != "Run" || hierarchy.Symbol != "Run" {
 		t.Fatalf("function search result = %#v", callers)
 	}
 
@@ -1833,5 +1833,68 @@ func TestMixedSearchResultMarshalsWithoutStructuralPart(t *testing.T) {
 	}
 	if intFromJSON(payload["literal_result_count"]) != 1 {
 		t.Fatalf("payload = %s", encoded)
+	}
+}
+
+// A search result the context limiter reduces to a bare truncation marker tells
+// the model to rerun with narrower arguments. The reservations that search took
+// have to come back, or every spelling of find_references for the symbol it
+// analyzed answers already_requested for the rest of the loop.
+func TestEmptiedSearchResultReleasesReferenceReservations(t *testing.T) {
+	backend := &countingRetrieval{hasCustomResults: true, literalResults: []retrieval.SearchResult{
+		{CodeLocation: testCallNodeLocation("pkg/decl.go", 3, 3, "var Shared = 1")},
+	}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	toolCalls := []llm.ToolCall{{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`}}
+	raw := engine.executeToolCalls(context.Background(), "", toolCalls, state)
+
+	limited := []llm.Message{{Role: "tool", ToolCallID: "c1", Content: limitToolResultJSON(raw[0].Content, 1)}}
+	if !toolResultLostPayload(limited[0].Content) {
+		t.Fatalf("limiting left a usable payload, nothing to release: %s", limited[0].Content)
+	}
+	releaseEmptiedToolResults(toolCalls, raw, limited, state)
+
+	for _, arguments := range []string{`{"symbol":"Shared"}`, `{"symbol":"Shared","path":"pkg/decl.go"}`} {
+		followup := decodeToolPayload(t, engine.executeToolCall(context.Background(), "", llm.ToolCall{
+			ID: "c2", Name: "find_references", Arguments: arguments,
+		}, state))
+		if followup["status"] == "error" {
+			t.Fatalf("find_references %s stayed reserved after its result was emptied: %#v", arguments, followup)
+		}
+	}
+}
+
+// A result that merely lost items still answers the call that produced it, so
+// its keys stay taken.
+func TestShortenedToolResultKeepsItsReservations(t *testing.T) {
+	if toolResultLostPayload(`{"truncated":true,"truncated_note":"x","target":{}}`) {
+		t.Fatal("a payload that kept its structure was treated as emptied")
+	}
+	if toolResultLostPayload(`{"target":{},"functions":[]}`) {
+		t.Fatal("an untruncated payload was treated as emptied")
+	}
+	if !toolResultLostPayload(`{"truncated":true,"truncated_note":"x"}`) {
+		t.Fatal("the bare marker was not recognized")
+	}
+}
+
+// The unsupported-language fallback answers with literal matches and no `root`,
+// and it decodes into an empty retrieval.CallHierarchy without error.
+func TestDecodeCallHierarchyResultRejectsSearchFallback(t *testing.T) {
+	fallback := mustToolResultJSON(map[string]any{
+		"symbol": "run", "path": "src/app.rb", "mode": "callers", "fallback": "search",
+		"result_count": 1, "results": []any{},
+	})
+	if hierarchy := decodeCallHierarchyResult(fallback); hierarchy != nil {
+		t.Fatalf("search fallback accepted as a call hierarchy: %#v", hierarchy)
+	}
+	real := mustToolResultJSON(&CallHierarchyResult{
+		Symbol: "Run", Path: "run.go",
+		CallHierarchy: &retrieval.CallHierarchy{Root: retrieval.CallNode{Name: "Run"}, Mode: "callers", Depth: 2},
+	})
+	hierarchy := decodeCallHierarchyResult(real)
+	if hierarchy == nil || hierarchy.Root.Name != "Run" || hierarchy.Symbol != "Run" || hierarchy.Depth != 2 {
+		t.Fatalf("hierarchy payload = %#v", hierarchy)
 	}
 }

@@ -92,8 +92,50 @@ type toolRoundState struct {
 	seenFiles      map[string]retrieval.FileContent
 	seenFileRanges map[string][]model.LineRange
 	seenToolCalls  map[string]struct{}
-	fileLocks      keyedLocker
-	toolLocks      keyedLocker
+	// reservedToolCalls records which tool call took each dedup key, so a
+	// result the context limiter later empties can hand its keys back. Without
+	// it a symbol whose analysis was reduced to a bare truncation marker stayed
+	// reserved, and every re-request the marker invites answered
+	// already_requested.
+	reservedToolCalls map[string][]string
+	fileLocks         keyedLocker
+	toolLocks         keyedLocker
+}
+
+// reserveToolCall records key as answered by toolCallID, reporting false when
+// another call already holds it. The bookkeeping map is created here rather
+// than at construction so a state assembled without it still records.
+func (s *toolRoundState) reserveToolCall(toolCallID, key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, duplicate := s.seenToolCalls[key]; duplicate {
+		return false
+	}
+	s.seenToolCalls[key] = struct{}{}
+	if toolCallID != "" {
+		if s.reservedToolCalls == nil {
+			s.reservedToolCalls = map[string][]string{}
+		}
+		s.reservedToolCalls[toolCallID] = append(s.reservedToolCalls[toolCallID], key)
+	}
+	return true
+}
+
+// markToolCallSeen is reserveToolCall for the callers that already checked the
+// key and are recording the answer they produced.
+func (s *toolRoundState) markToolCallSeen(toolCallID, key string) {
+	_ = s.reserveToolCall(toolCallID, key)
+}
+
+// releaseToolCall drops the dedup keys a tool call took, making the same
+// request answerable again.
+func (s *toolRoundState) releaseToolCall(toolCallID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range s.reservedToolCalls[toolCallID] {
+		delete(s.seenToolCalls, key)
+	}
+	delete(s.reservedToolCalls, toolCallID)
 }
 
 func NewEngine(source model.ReviewSource, llmClient llm.Client, retrievalEngine retrieval.Engine, profile config.Profile) *Engine {

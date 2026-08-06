@@ -329,6 +329,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		}
 		batch := limitToolResultBatch(contextMeter, messages, llmReq.Tools, llmReq.Schema, rawBatch, maxContextTokens, e.config.MaxToolResultPercent)
 		reconcileLimitedInspectFileCoverage(resp.ToolCalls, rawBatch, batch, state.toolState)
+		releaseEmptiedToolResults(resp.ToolCalls, rawBatch, batch, state.toolState)
 		messages = append(messages, batch...)
 		result.toolMessages = append(result.toolMessages, batch...)
 		result.toolCallHistory = append(result.toolCallHistory, collectToolCallHistory(resp.ToolCalls, batch)...)

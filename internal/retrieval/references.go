@@ -23,24 +23,43 @@ import (
 )
 
 type AmbiguousSymbolError struct {
-	Name       string
+	Name string
+	// Candidates carries at most toollimits.MaxAmbiguousReferenceTargets
+	// declarations, because that is all the message prints. Total counts every
+	// declaration found: building a target for each one meant reading and
+	// joining the declaration source of thousands of them for a common
+	// identifier, to name ten.
 	Candidates []ReferenceTarget
+	Total      int
 }
 
 func (e *AmbiguousSymbolError) Error() string {
 	count := min(len(e.Candidates), toollimits.MaxAmbiguousReferenceTargets)
+	total := max(e.Total, len(e.Candidates))
 	locations := make([]string, 0, count+1)
 	for _, candidate := range e.Candidates[:count] {
 		loc := candidate.Definition
 		locations = append(locations, fmt.Sprintf("%s at %s:%d", candidate.Kind, loc.FilePath, loc.LineRange.Start))
 	}
-	if omitted := len(e.Candidates) - count; omitted > 0 {
+	if omitted := total - count; omitted > 0 {
 		locations = append(locations, fmt.Sprintf("and %d more", omitted))
 	}
 	// The candidates are printed as file:line because that pair is what
 	// identifies one of them: a line alone cannot separate declarations that
 	// share it across files.
 	return fmt.Sprintf("symbol %q is ambiguous: %s; retry with the declaring file as path and its line to pick one", e.Name, strings.Join(locations, ", "))
+}
+
+// ambiguousSymbol reports total rival declarations while materializing targets
+// only for the ones the message can name. target is called with the index of
+// each candidate it needs.
+func ambiguousSymbol(name string, total int, target func(int) ReferenceTarget) *AmbiguousSymbolError {
+	count := min(total, toollimits.MaxAmbiguousReferenceTargets)
+	candidates := make([]ReferenceTarget, 0, count)
+	for i := range count {
+		candidates = append(candidates, target(i))
+	}
+	return &AmbiguousSymbolError{Name: name, Candidates: candidates, Total: total}
 }
 
 // FindReferences resolves one declaration inside the optional lookup path and
@@ -164,8 +183,11 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
+		// Building the target here also materializes the winner's parent map,
+		// which the stored candidate carries on to reference collection.
+		target := goCandidateTarget(&selected, lines)
 		return &resolvedReference{
-			target:     goCandidateTarget(selected, lines),
+			target:     target,
 			goPackages: pkgs, goSelected: selected, goComplete: complete, goLines: lines,
 		}, nil
 	}
@@ -349,8 +371,8 @@ func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*pars
 	if declarations := candidatesOtherThanImports(candidates); len(declarations) > 0 {
 		candidates = declarations
 	}
-	if pinned, requested := pinCandidatesToLine(candidates, symbol.Line, func(c definitionCandidate) LineRange {
-		return c.target.Definition.LineRange
+	if pinned, requested := pinCandidatesToLine(candidates, symbol.Line, func(i int) LineRange {
+		return candidates[i].target.Definition.LineRange
 	}); requested {
 		if len(pinned) == 0 {
 			return definitionCandidate{}, &SymbolNotFoundError{
@@ -361,11 +383,9 @@ func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*pars
 		candidates = pinned
 	}
 	if len(candidates) > 1 {
-		targets := make([]ReferenceTarget, 0, len(candidates))
-		for _, candidate := range candidates {
-			targets = append(targets, candidate.target)
-		}
-		return definitionCandidate{}, &AmbiguousSymbolError{Name: symbol.Name, Candidates: targets}
+		return definitionCandidate{}, ambiguousSymbol(symbol.Name, len(candidates), func(i int) ReferenceTarget {
+			return candidates[i].target
+		})
 	}
 	return candidates[0], nil
 }
@@ -387,13 +407,16 @@ func candidatesOtherThanImports(candidates []definitionCandidate) []definitionCa
 // reports whether a pin was requested at all; when it was and the first result
 // is empty, the line matched no declaration and the caller must say so rather
 // than quietly resolving to some other one.
-func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(T) LineRange) ([]T, bool) {
+//
+// rangeOf takes the candidate's index rather than its value so a backend that
+// derives the range expensively can memoize the work into its own slice.
+func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(int) LineRange) ([]T, bool) {
 	if line <= 0 {
 		return nil, false
 	}
 	var exact, spanning []T
-	for _, candidate := range candidates {
-		lines := rangeOf(candidate)
+	for i, candidate := range candidates {
+		lines := rangeOf(i)
 		switch {
 		case lines.Start == line:
 			exact = append(exact, candidate)
@@ -580,7 +603,7 @@ func compileDeclarationPatterns(language, name string) declarationPatterns {
 
 func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled declarationPatterns, source *referenceLineCache) []definitionCandidate {
 	patterns, goGroupedDefinition := compiled.byKind, compiled.goGrouped
-	lines := sourceLines(source, file.path)
+	lines := newLazySourceLines(source, file.path)
 	seenScope := map[string]struct{}{}
 	var out []definitionCandidate
 	// Parser symbols are the authoritative function declarations: they cover
@@ -593,7 +616,7 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 		}
 		declared = append(declared, symbol)
 		out = append(out, definitionCandidate{
-			target: ReferenceTarget{Name: name, Kind: "function", Definition: rangeLocation(file.path, file.language, lines, symbol.start, symbol.end)},
+			target: ReferenceTarget{Name: name, Kind: "function", Definition: rangeLocation(file.path, file.language, lines.get(), symbol.start, symbol.end)},
 			file:   file,
 		})
 	}
@@ -626,7 +649,7 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 					goGroupKind, goGroupDepth, goBraceDepth = "", 0, 0
 				}
 				if declares {
-					loc := lineLocation(file.path, file.language, lines, lineNo)
+					loc := lineLocation(file.path, file.language, lines.get(), lineNo)
 					out = append(out, definitionCandidate{target: ReferenceTarget{Name: name, Kind: kind, Definition: loc}, file: file})
 					continue
 				}
@@ -656,10 +679,10 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 				continue
 			}
 			seenScope[key] = struct{}{}
-			loc := lineLocation(file.path, file.language, lines, lineNo)
+			loc := lineLocation(file.path, file.language, lines.get(), lineNo)
 			for _, symbol := range file.functions {
 				if symbol.name == name && symbol.start == lineNo {
-					loc = rangeLocation(file.path, file.language, lines, symbol.start, symbol.end)
+					loc = rangeLocation(file.path, file.language, lines.get(), symbol.start, symbol.end)
 					break
 				}
 			}
@@ -880,6 +903,7 @@ func resolveReferenceImport(repoRoot string, file *parsedReferenceFile, spec str
 func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceFile, selected definitionCandidate, aliases map[string]map[string]string, source *referenceLineCache) {
 	functionContexts := map[string]*ReferenceContext{}
 	outsideContexts := map[string]*ReferenceContext{}
+	declarationLine := declarationNameLine(selected)
 	declarationSkipped := false
 	// Exact confidence rests on a binding proof: the declaring file's own
 	// lexical scope, or an import chain followed into another file. Neither
@@ -908,7 +932,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 		// lookup, so a declaration resolved here is never better than possible.
 		names := map[string]string{selected.target.Name: "possible"}
 		maps.Copy(names, aliases[file.path])
-		lines := sourceLines(source, file.path)
+		lines := newLazySourceLines(source, file.path)
 		for lineIndex, line := range file.masked {
 			lineNo := lineIndex + 1
 			for name, bound := range names {
@@ -921,16 +945,17 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 					confidence = "possible"
 				}
 				for _, column := range columns {
-					// The declaration is the target, not a reference to it. Its
-					// span can start above the declaration line (decorators,
-					// attributes), so skip the first occurrence anywhere in the
-					// span and keep every later self-reference.
-					if !declarationSkipped && file.path == selected.file.path && name == selected.target.Name &&
-						lineNo >= selected.target.Definition.LineRange.Start && lineNo <= selected.target.Definition.LineRange.End {
+					// The declaration is the target, not a reference to it. Only
+					// the line that spells the declaration is skipped, and only
+					// its first occurrence: the rest of the span belongs to
+					// decorators and attributes that name other symbols, and a
+					// rebinding such as `count = count + 1` reads the name it
+					// declares.
+					if !declarationSkipped && file.path == selected.file.path && name == selected.target.Name && lineNo == declarationLine {
 						declarationSkipped = true
 						continue
 					}
-					role := referenceRole(line, column-1, name)
+					role := referenceRole(file.language, line, column-1, name)
 					// An import binds the symbol whether or not it renames it;
 					// restricting the role to renamed aliases left the common
 					// `from mod import NAME` reported as an ordinary read.
@@ -939,7 +964,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 					}
 					occurrence := ReferenceOccurrence{
 						Role: role, Confidence: confidence, Column: column,
-						CodeLocation: lineLocation(file.path, file.language, lines, lineNo),
+						CodeLocation: lineLocation(file.path, file.language, lines.get(), lineNo),
 					}
 					if confidence == "exact" {
 						result.ExactReferenceCount++
@@ -951,7 +976,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 						key := fmt.Sprintf("%s:%d:%d", file.path, fn.start, fn.end)
 						ctx := functionContexts[key]
 						if ctx == nil {
-							ctx = &ReferenceContext{Name: fn.name, CodeLocation: rangeLocation(file.path, file.language, lines, fn.start, fn.end), References: []ReferenceOccurrence{}}
+							ctx = &ReferenceContext{Name: fn.name, CodeLocation: rangeLocation(file.path, file.language, lines.get(), fn.start, fn.end), References: []ReferenceOccurrence{}}
 							functionContexts[key] = ctx
 						}
 						ctx.References = appendUniqueOccurrence(ctx.References, occurrence)
@@ -985,6 +1010,60 @@ func sourceLines(cache *referenceLineCache, path string) []string {
 	}
 	lines, _ := cache.get(path)
 	return lines
+}
+
+// lazySourceLines defers reading a file's display text until a location
+// actually needs it. Both parsed-language passes visit every file in scope but
+// build a location only for the few that produce a candidate or an occurrence,
+// so reading up front put a second full copy of the repository's source next to
+// the masked snapshot — the doubling parsedReferenceFile.masked exists to avoid.
+type lazySourceLines struct {
+	cache  *referenceLineCache
+	path   string
+	lines  []string
+	loaded bool
+}
+
+func newLazySourceLines(cache *referenceLineCache, path string) *lazySourceLines {
+	return &lazySourceLines{cache: cache, path: path}
+}
+
+func (l *lazySourceLines) get() []string {
+	if !l.loaded {
+		l.lines, l.loaded = sourceLines(l.cache, l.path), true
+	}
+	return l.lines
+}
+
+// declarationNameLine returns the line inside the declaration's span that
+// actually spells the declaration: the first one that names the symbol and is
+// not a decorator or attribute. A parser span starts at the first annotation
+// above the declaration, and an annotation can name the symbol itself —
+// `@value.setter` refers to the property the setter extends — so taking the
+// span's first occurrence as the declaration both dropped a real reference and
+// left the declaring line reported as a use of itself.
+func declarationNameLine(selected definitionCandidate) int {
+	span := selected.target.Definition.LineRange
+	if span.End <= span.Start {
+		return span.Start
+	}
+	file, name := selected.file, selected.target.Name
+	for line := span.Start; line <= span.End && line <= len(file.masked); line++ {
+		masked := file.masked[line-1]
+		if len(identifierColumns(masked, name)) == 0 || isAnnotationLine(masked) {
+			continue
+		}
+		return line
+	}
+	return span.Start
+}
+
+// isAnnotationLine reports whether a line decorates the declaration below it
+// rather than being part of it: Python and TypeScript decorators, Rust
+// attributes.
+func isAnnotationLine(masked string) bool {
+	trimmed := strings.TrimSpace(masked)
+	return strings.HasPrefix(trimmed, "@") || strings.HasPrefix(trimmed, "#[") || strings.HasPrefix(trimmed, "#![")
 }
 
 // shadowingFunctionSpans returns the function spans in file that declare name
@@ -1049,15 +1128,43 @@ func isIdentifierByte(b byte) bool {
 	return b == '_' || b == '$' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
-func referenceRole(line string, zeroColumn int, name string) string {
+func referenceRole(language, line string, zeroColumn int, name string) string {
 	after := strings.TrimSpace(line[zeroColumn+len(name):])
 	if strings.HasPrefix(after, "++") || strings.HasPrefix(after, "--") || compoundAssignmentPattern.MatchString(after) {
 		return "read_write"
 	}
 	if strings.HasPrefix(after, "=") && !strings.HasPrefix(after, "==") && !strings.HasPrefix(after, "=>") {
+		// Python spells keyword arguments and parameter defaults with the same
+		// `=`: `process(count=1)` and `def f(count=10)` name a parameter rather
+		// than assigning to the symbol under lookup, and reporting them as
+		// writes told a reviewer the symbol is mutated at call sites that only
+		// pass it by name. Only an unclosed bracket on the same line proves the
+		// position, so an argument list wrapped over several lines still reads
+		// as an assignment. Every other language here assigns with a bare `=`
+		// inside parentheses too, so the exception is Python's alone.
+		if language == "python" && withinOpenBracket(line[:zeroColumn]) {
+			return "read"
+		}
 		return "write"
 	}
 	return "read"
+}
+
+// withinOpenBracket reports whether prefix leaves a bracket open, meaning the
+// position that follows it sits inside an argument or parameter list, a
+// subscript, or a literal. The line is masked, so brackets in strings and
+// comments are already gone.
+func withinOpenBracket(prefix string) bool {
+	depth := 0
+	for i := range len(prefix) {
+		switch prefix[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		}
+	}
+	return depth > 0
 }
 
 var compoundAssignmentPattern = regexp.MustCompile(`^(?:\+=|-=|\*=|/=|%=|&=|\|=|\^=|<<=|>>=)`)
@@ -1375,13 +1482,28 @@ type goReferenceCandidate struct {
 	key string
 	// name and line mirror the key's cheapest components so a use can be
 	// rejected without formatting one.
-	name   string
-	line   int
-	obj    types.Object
-	pkg    *packages.Package
-	ident  *ast.Ident
-	path   string
-	parent map[ast.Node]ast.Node
+	name  string
+	line  int
+	obj   types.Object
+	pkg   *packages.Package
+	ident *ast.Ident
+	path  string
+	// file is held instead of its parent map. A common identifier such as `err`
+	// is declared in nearly every file of a repository, and building one parent
+	// map per matching file — each retained for as long as its candidate is —
+	// cost hundreds of megabytes to produce a ten-entry ambiguity message. The
+	// map is built for the candidates that actually become a target.
+	file    *ast.File
+	parents map[ast.Node]ast.Node
+}
+
+// parentMap builds the candidate's child-to-parent index on first use. The
+// candidate must be addressed by pointer for the result to be reused.
+func (c *goReferenceCandidate) parentMap() map[ast.Node]ast.Node {
+	if c.parents == nil && c.file != nil {
+		c.parents = goParentMap(c.file)
+	}
+	return c.parents
 }
 
 type goReferenceCacheEntry struct {
@@ -1407,7 +1529,6 @@ func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, 
 		if len(pkg.Errors) > 0 {
 			complete = false
 		}
-		parentCache := map[*ast.File]map[ast.Node]ast.Node{}
 		for ident, obj := range pkg.TypesInfo.Defs {
 			if ident == nil || obj == nil || ident.Name != symbol.Name {
 				continue
@@ -1425,14 +1546,9 @@ func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, 
 				continue
 			}
 			seenCandidates[key] = struct{}{}
-			parents := parentCache[file]
-			if parents == nil {
-				parents = goParentMap(file)
-				parentCache[file] = parents
-			}
 			candidates = append(candidates, goReferenceCandidate{
 				key: key, name: ident.Name, line: pkg.Fset.Position(obj.Pos()).Line,
-				obj: obj, pkg: pkg, ident: ident, path: path, parent: parents,
+				obj: obj, pkg: pkg, ident: ident, path: path, file: file,
 			})
 		}
 	}
@@ -1461,8 +1577,8 @@ func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, 
 		}
 		return goReferenceCandidate{}, complete, notFound
 	}
-	if pinned, requested := pinCandidatesToLine(candidates, symbol.Line, func(candidate goReferenceCandidate) LineRange {
-		return goCandidateTarget(candidate, linesCache).Definition.LineRange
+	if pinned, requested := pinCandidatesToLine(candidates, symbol.Line, func(i int) LineRange {
+		return goCandidateTarget(&candidates[i], linesCache).Definition.LineRange
 	}); requested {
 		if len(pinned) == 0 {
 			return goReferenceCandidate{}, complete, &SymbolNotFoundError{
@@ -1473,18 +1589,18 @@ func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, 
 		candidates = pinned
 	}
 	if len(candidates) > 1 {
-		targets := make([]ReferenceTarget, 0, len(candidates))
-		for _, candidate := range candidates {
-			targets = append(targets, goCandidateTarget(candidate, linesCache))
-		}
-		return goReferenceCandidate{}, complete, &AmbiguousSymbolError{Name: symbol.Name, Candidates: targets}
+		return goReferenceCandidate{}, complete, ambiguousSymbol(symbol.Name, len(candidates), func(i int) ReferenceTarget {
+			// The message prints kind, file and line only, so the declaration
+			// source is not read back for a listing nobody sees.
+			return goCandidateTarget(&candidates[i], nil)
+		})
 	}
 	return candidates[0], complete, nil
 }
 
 // collectGoReferences gathers every use of an already-resolved declaration.
 func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goReferenceCandidate, complete bool, linesCache *referenceLineCache) *ReferenceResult {
-	result := &ReferenceResult{Target: goCandidateTarget(selected, linesCache), Functions: []ReferenceContext{}, OutsideFunctions: []ReferenceContext{}, Complete: complete}
+	result := &ReferenceResult{Target: goCandidateTarget(&selected, linesCache), Functions: []ReferenceContext{}, OutsideFunctions: []ReferenceContext{}, Complete: complete}
 	if !complete {
 		result.Notes = []string{"Go package loading reported errors; returned references may be incomplete"}
 	}
@@ -1633,14 +1749,17 @@ func sameGoObject(fset *token.FileSet, obj types.Object, selected goReferenceCan
 	return goObjectKey(fset, obj) == selected.key
 }
 
-func goCandidateTarget(candidate goReferenceCandidate, lines *referenceLineCache) ReferenceTarget {
-	node := goDefinitionNode(candidate.ident, candidate.parent)
+// goCandidateTarget describes one candidate declaration. A nil line cache asks
+// for the location without its source, which is what an ambiguity listing needs.
+func goCandidateTarget(candidate *goReferenceCandidate, lines *referenceLineCache) ReferenceTarget {
+	parents := candidate.parentMap()
+	node := goDefinitionNode(candidate.ident, parents)
 	start, end := candidate.pkg.Fset.Position(candidate.ident.Pos()).Line, candidate.pkg.Fset.Position(candidate.ident.End()).Line
 	if node != nil {
 		start, end = candidate.pkg.Fset.Position(node.Pos()).Line, candidate.pkg.Fset.Position(node.End()).Line
 	}
-	source, _ := lines.get(candidate.path)
-	return ReferenceTarget{Name: candidate.ident.Name, Kind: goObjectKind(candidate.obj, candidate.ident, candidate.parent), Definition: rangeLocation(candidate.path, "go", source, start, end)}
+	source := sourceLines(lines, candidate.path)
+	return ReferenceTarget{Name: candidate.ident.Name, Kind: goObjectKind(candidate.obj, candidate.ident, parents), Definition: rangeLocation(candidate.path, "go", source, start, end)}
 }
 
 // referenceLineCache reads each file at most once per lookup. Building a target
