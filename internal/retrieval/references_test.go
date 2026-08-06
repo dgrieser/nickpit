@@ -25,6 +25,50 @@ func TestFindReferencesBatchPreservesInputOrder(t *testing.T) {
 	}
 }
 
+func TestFindReferencesResolvesTypeScriptClassMethod(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "client.ts", "class Client {\n  fetch() { return 1 }\n}\nconst client = new Client()\nclient.fetch()\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "fetch", Path: "client.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "function" || result.Target.Definition.LineRange.Start != 2 {
+		t.Fatalf("method target = %#v", result.Target)
+	}
+}
+
+// A decorated Python definition is reported by the parser with a span starting
+// at the decorator and by the declaration regex at the def line; the two must
+// collapse into one candidate instead of an ambiguity.
+func TestFindReferencesResolvesDecoratedPythonFunction(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", "import functools\n\n@functools.cache\ndef helper(x):\n    return x\n\nhelper(1)\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "helper", Path: "mod.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "function" || result.Target.Definition.LineRange.Start != 3 || result.Target.Definition.LineRange.End != 5 {
+		t.Fatalf("decorated target = %#v", result.Target)
+	}
+}
+
+func TestRepoWideGoReferencesIgnoreRawStringDeclarations(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/rawrefs\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "real.go", "package rawrefs\n\nfunc Foo() {}\n")
+	writeRetrievalFile(t, repoRoot, "raw.go", "package rawrefs\n\nvar example = `\nfunc Foo() {}\n`\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Foo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Definition.FilePath != "real.go" || result.Target.Definition.LineRange.Start != 3 {
+		t.Fatalf("Foo target = %#v", result.Target)
+	}
+}
+
 func TestFindGoReferencesGroupsFunctionsAndTopLevelUses(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/refs\n\ngo 1.25\n")

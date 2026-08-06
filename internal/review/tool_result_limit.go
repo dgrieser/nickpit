@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/dgrieser/nickpit/internal/llm"
+	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
@@ -31,6 +32,55 @@ func limitToolResultBatch(messages []llm.Message, tools []llm.ToolDefinition, sc
 		current = append(current, limited[i])
 	}
 	return limited
+}
+
+// reconcileLimitedInspectFileCoverage makes deduplication reflect content the
+// model actually received, not larger ranges fetched before context limiting.
+func reconcileLimitedInspectFileCoverage(toolCalls []llm.ToolCall, raw, limited []llm.Message, state *toolRoundState) {
+	for i, toolCall := range toolCalls {
+		if toolCall.Name != "inspect_file" || i >= len(raw) || i >= len(limited) || raw[i].Content == limited[i].Content {
+			continue
+		}
+		var args struct {
+			Path      string `json:"path"`
+			LineStart int    `json:"line_start"`
+			LineEnd   int    `json:"line_end"`
+		}
+		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
+			continue
+		}
+		path := normalizeToolPath(strings.TrimSpace(args.Path))
+		if path == "" {
+			continue
+		}
+		state.mu.Lock()
+		if args.LineStart <= 0 && args.LineEnd <= 0 {
+			if content, ok := state.seenFiles[path]; ok {
+				content.Truncated = true
+				state.seenFiles[path] = content
+			}
+			state.mu.Unlock()
+			continue
+		}
+		var original, visible struct {
+			Start int `json:"start_line"`
+			End   int `json:"end_line"`
+		}
+		_ = json.Unmarshal([]byte(raw[i].Content), &original)
+		_ = json.Unmarshal([]byte(limited[i].Content), &visible)
+		ranges := state.seenFileRanges[path]
+		for j, covered := range ranges {
+			if covered.Start == original.Start && covered.End == original.End {
+				ranges = append(ranges[:j], ranges[j+1:]...)
+				break
+			}
+		}
+		if visible.Start > 0 && visible.End >= visible.Start {
+			ranges = append(ranges, model.LineRange{Start: visible.Start, End: visible.End})
+		}
+		state.seenFileRanges[path] = ranges
+		state.mu.Unlock()
+	}
 }
 
 func estimateToolContextTokens(messages []llm.Message, tools []llm.ToolDefinition, schema []byte) int {

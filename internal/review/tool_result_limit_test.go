@@ -234,3 +234,42 @@ func TestToolResultBatchZeroPercentDisablesContextCap(t *testing.T) {
 		t.Fatalf("result changed: %s", got[0].Content)
 	}
 }
+
+func TestLimitedFullFileAllowsOmittedRangeRetry(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "large.txt", strings.Repeat("line content\n", 500))
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	call := llm.ToolCall{ID: "full", Name: "inspect_file", Arguments: `{"path":"large.txt"}`}
+	raw := llm.Message{ToolCallID: call.ID, Content: engine.executeToolCall(context.Background(), repoRoot, call, state)}
+	limited := raw
+	limited.Content = limitToolResultJSON(raw.Content, 64)
+	reconcileLimitedInspectFileCoverage([]llm.ToolCall{call}, []llm.Message{raw}, []llm.Message{limited}, state)
+
+	retry := engine.executeToolCall(context.Background(), repoRoot, llm.ToolCall{
+		ID: "range", Name: "inspect_file", Arguments: `{"path":"large.txt","line_start":400,"line_end":410}`,
+	}, state)
+	if payload := decodeToolPayload(t, retry); payload["status"] == "error" {
+		t.Fatalf("omitted full-file range rejected: %#v", payload)
+	}
+}
+
+func TestLimitedFileRangeAllowsOmittedLinesRetry(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "large.txt", strings.Repeat("line content\n", 500))
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	call := llm.ToolCall{ID: "first", Name: "inspect_file", Arguments: `{"path":"large.txt","line_start":1,"line_end":400}`}
+	raw := llm.Message{ToolCallID: call.ID, Content: engine.executeToolCall(context.Background(), repoRoot, call, state)}
+	limited := raw
+	limited.Content = limitToolResultJSON(raw.Content, 64)
+	reconcileLimitedInspectFileCoverage([]llm.ToolCall{call}, []llm.Message{raw}, []llm.Message{limited}, state)
+
+	visible := decodeToolPayload(t, limited.Content)
+	retryStart := max(intFromJSON(visible["end_line"])+1, 1)
+	retryCall := llm.ToolCall{ID: "retry", Name: "inspect_file", Arguments: fmt.Sprintf(`{"path":"large.txt","line_start":%d,"line_end":400}`, retryStart)}
+	retry := engine.executeToolCall(context.Background(), repoRoot, retryCall, state)
+	if payload := decodeToolPayload(t, retry); payload["status"] == "error" {
+		t.Fatalf("omitted ranged lines rejected: %#v", payload)
+	}
+}

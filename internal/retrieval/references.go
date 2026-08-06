@@ -307,6 +307,20 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string) []definiti
 	goGroupedDefinition := regexp.MustCompile(`^\s*` + quoted + `\b`)
 	seenScope := map[string]struct{}{}
 	var out []definitionCandidate
+	// Parser symbols are the authoritative function declarations: they cover
+	// forms the regex fallback misses, such as JavaScript class methods, and
+	// they span decorators and attributes the declaration line excludes.
+	var declared []parsedFunction
+	for _, symbol := range file.functions {
+		if symbol.name != name {
+			continue
+		}
+		declared = append(declared, symbol)
+		out = append(out, definitionCandidate{
+			target: ReferenceTarget{Name: name, Kind: "function", Definition: rangeLocation(file.path, file.language, file.lines, symbol.start, symbol.end)},
+			file:   file,
+		})
+	}
 	goGroupKind := ""
 	for i, line := range file.masked {
 		lineNo := i + 1
@@ -336,6 +350,11 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string) []definiti
 			}
 			if !pattern.MatchString(line) {
 				continue
+			}
+			// The parser already reported this declaration; its span is the
+			// wider one, so do not add the declaration line as a rival.
+			if kind == "function" && lineWithinParsedFunctions(declared, lineNo) {
+				break
 			}
 			fn := enclosingParsedFunction(file.functions, lineNo)
 			// Python assignments rebind one lexical name; keep the first in a
@@ -651,15 +670,33 @@ func enclosingParsedFunction(functions []parsedFunction, line int) *parsedFuncti
 	return best
 }
 
+func lineWithinParsedFunctions(functions []parsedFunction, line int) bool {
+	for _, fn := range functions {
+		if line >= fn.start && line <= fn.end {
+			return true
+		}
+	}
+	return false
+}
+
 func maskReferenceSource(lines []string, language string) []string {
 	out := make([]string, len(lines))
-	inBlockComment, inTriple := false, byte(0)
+	inBlockComment, inGoRawString, inTriple := false, false, byte(0)
 	for i, line := range lines {
 		buf := []byte(line)
 		masked := append([]byte(nil), buf...)
 		quote := byte(0)
 		escaped := false
 		for j := 0; j < len(buf); j++ {
+			if inGoRawString {
+				if buf[j] != '\t' {
+					masked[j] = ' '
+				}
+				if buf[j] == '`' {
+					inGoRawString = false
+				}
+				continue
+			}
 			if inTriple != 0 {
 				if j+2 < len(buf) && buf[j] == inTriple && buf[j+1] == inTriple && buf[j+2] == inTriple {
 					masked[j], masked[j+1], masked[j+2] = ' ', ' ', ' '
@@ -714,6 +751,11 @@ func maskReferenceSource(lines []string, language string) []string {
 				continue
 			}
 			if buf[j] == '\'' && language == "rust" && rustCharLiteralEnd(buf, j) < 0 {
+				continue
+			}
+			if language == "go" && buf[j] == '`' {
+				inGoRawString = true
+				masked[j] = ' '
 				continue
 			}
 			if buf[j] == '\'' || buf[j] == '"' || language == "nodejs" && buf[j] == '`' {
