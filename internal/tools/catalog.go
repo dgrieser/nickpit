@@ -23,7 +23,12 @@ const (
 	MaxAmbiguousReferenceTargets   = 10
 	MaxRetrievedFileBytes          = 5 << 20
 	DefaultStaticGraphCacheEntries = 64
-	DefaultReferenceCacheEntries   = 4
+	// DefaultReferenceCacheEntries counts repository roots, and applies to the
+	// parsed-source snapshot and the type-checked Go snapshot separately, so
+	// two roots can retain up to two of each. Each snapshot holds a whole
+	// repository, so this stays small: one root covers a review, the second is
+	// headroom for a concurrent one.
+	DefaultReferenceCacheEntries = 2
 
 	DefaultGitLogLimit    = 20
 	MaxGitLogLimit        = 200

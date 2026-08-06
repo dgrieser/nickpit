@@ -187,18 +187,24 @@ func limitToolResultJSON(raw string, maxTokens int) string {
 	return string(encoded)
 }
 
+// applyToolItemLimits enforces the count limits that hold regardless of token
+// budget. Both reference context lists are capped: with token capping disabled
+// the payload would otherwise have no size bound at all.
 func applyToolItemLimits(root map[string]any) bool {
 	if !isReferencePayload(root) {
 		return false
 	}
-	functions := arrayField(root, "functions")
-	if len(functions) <= toolcatalog.MaxReferenceFunctions {
-		return false
+	changed := false
+	for _, field := range []string{"functions", "outside_functions"} {
+		contexts := arrayField(root, field)
+		if len(contexts) <= toolcatalog.MaxReferenceFunctions {
+			continue
+		}
+		root[field] = contexts[:toolcatalog.MaxReferenceFunctions]
+		addIntField(root, "omitted_contexts", len(contexts)-toolcatalog.MaxReferenceFunctions)
+		changed = true
 	}
-	omitted := len(functions) - toolcatalog.MaxReferenceFunctions
-	root["functions"] = functions[:toolcatalog.MaxReferenceFunctions]
-	addIntField(root, "omitted_contexts", omitted)
-	return true
+	return changed
 }
 
 // reduceToolResult shrinks the payload by one step, preferring a reduction that

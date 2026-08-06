@@ -208,8 +208,10 @@ type parsedReferenceFile struct {
 	imports   []tsparser.Import
 	exports   []tsparser.Export
 	// resolvedImports maps a symbol import's module spec to its repo-relative
-	// path. Resolution stats up to a dozen candidate filenames per spec, so it
-	// is done once per parsed snapshot rather than per alias-resolution pass.
+	// path, empty when the spec does not resolve inside the repository.
+	// Resolution stats up to a dozen candidate filenames per spec, so every
+	// spec — including the ones that resolve to nothing — is recorded once per
+	// parsed snapshot rather than re-stat'd per binding.
 	resolvedImports map[string]string
 }
 
@@ -270,7 +272,9 @@ func (c *referenceCacheStore[T]) entry(key string) *T {
 }
 
 // evictLocked drops least-recently-used roots until the cache fits its cap.
-// NICKPIT_REFERENCE_CACHE_MAX_ENTRIES tunes it; a value <= 0 disables eviction.
+// The cap counts roots per cache, so the parsed and Go snapshots each keep up
+// to that many. NICKPIT_REFERENCE_CACHE_MAX_ENTRIES tunes it; a value <= 0
+// disables eviction.
 func (c *referenceCacheStore[T]) evictLocked() {
 	limit := cacheCapFromEnv("NICKPIT_REFERENCE_CACHE_MAX_ENTRIES", toolcatalog.DefaultReferenceCacheEntries)
 	if limit <= 0 {
@@ -294,12 +298,20 @@ func (c *referenceCacheStore[T]) evictLocked() {
 func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*parsedReferenceFile) (definitionCandidate, error) {
 	var candidates []definitionCandidate
 	analyzed := 0
+	// The declaration patterns depend only on the language and the symbol, so
+	// they are compiled once per language rather than once per file.
+	patterns := map[string]declarationPatterns{}
 	for _, file := range parsed {
 		if !pathInLookupScope(file.path, scope) {
 			continue
 		}
 		analyzed++
-		candidates = append(candidates, findDefinitionCandidates(file, symbol.Name)...)
+		compiled, ok := patterns[file.language]
+		if !ok {
+			compiled = compileDeclarationPatterns(file.language, symbol.Name)
+			patterns[file.language] = compiled
+		}
+		candidates = append(candidates, findDefinitionCandidates(file, symbol.Name, compiled)...)
 	}
 	if len(candidates) == 0 {
 		if analyzed == 0 && !scope.IsFile {
@@ -310,9 +322,15 @@ func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*pars
 		return definitionCandidate{}, &SymbolNotFoundError{Name: symbol.Name, Path: scope.Path}
 	}
 	candidates = dedupeDefinitionCandidates(candidates)
-	if pinned := pinCandidatesToLine(candidates, symbol.Line, func(c definitionCandidate) LineRange {
+	if pinned, requested := pinCandidatesToLine(candidates, symbol.Line, func(c definitionCandidate) LineRange {
 		return c.target.Definition.LineRange
-	}); len(pinned) > 0 {
+	}); requested {
+		if len(pinned) == 0 {
+			return definitionCandidate{}, &SymbolNotFoundError{
+				Name: symbol.Name, Path: scope.Path,
+				Reason: fmt.Sprintf("no declaration at line %d", symbol.Line),
+			}
+		}
 		candidates = pinned
 	}
 	if len(candidates) > 1 {
@@ -328,11 +346,13 @@ func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*pars
 // pinCandidatesToLine narrows same-named declarations to the one the caller
 // pinned, which is the only way to disambiguate two declarations in one file.
 // A declaration line wins over a span that merely contains it, so a method
-// pinned inside an enclosing declaration still resolves. An empty result means
-// the line pinned nothing and the caller keeps its original candidates.
-func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(T) LineRange) []T {
-	if line <= 0 || len(candidates) < 2 {
-		return nil
+// pinned inside an enclosing declaration still resolves. The second result
+// reports whether a pin was requested at all; when it was and the first result
+// is empty, the line matched no declaration and the caller must say so rather
+// than quietly resolving to some other one.
+func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(T) LineRange) ([]T, bool) {
+	if line <= 0 {
+		return nil, false
 	}
 	var exact, spanning []T
 	for _, candidate := range candidates {
@@ -345,9 +365,9 @@ func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(T) LineRa
 		}
 	}
 	if len(exact) > 0 {
-		return exact
+		return exact, true
 	}
-	return spanning
+	return spanning, true
 }
 
 // buildParsedReferenceResult collects occurrences for a declaration the parser
@@ -382,9 +402,9 @@ func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedRe
 	if err != nil {
 		return nil, err
 	}
-	// Fingerprint first, so the common cache hit never holds a second copy of
-	// the repository in memory. A miss re-reads the files, but parses each one
-	// as it arrives instead of buffering every source at once.
+	// Fingerprint first: a hit costs one stat per file and never touches the
+	// contents, and a miss parses each file as it is read instead of buffering
+	// every source at once.
 	fingerprint, err := referenceSourceFingerprint(ctx, repoRoot, files)
 	if err != nil {
 		return nil, err
@@ -411,6 +431,9 @@ type referenceSource struct {
 
 // forEachReferenceSource reads the files in order and hands each to visit,
 // which must not retain the bytes: only one file's contents is live at a time.
+// Reads honor the same per-file byte cap as the rest of retrieval, so one
+// generated or vendored blob cannot blow up the parsed snapshot; a clipped file
+// simply yields no declarations past the cap.
 func forEachReferenceSource(ctx context.Context, repoRoot string, files []string, visit func(referenceSource)) error {
 	for _, fullPath := range files {
 		if err := ctx.Err(); err != nil {
@@ -420,7 +443,7 @@ func forEachReferenceSource(ctx context.Context, repoRoot string, files []string
 		if err != nil {
 			return err
 		}
-		data, err := repofs.ReadFile(repoRoot, fullPath)
+		data, _, err := readFileCapped(repoRoot, fullPath, toolcatalog.MaxRetrievedFileBytes)
 		if err != nil {
 			return err
 		}
@@ -429,16 +452,28 @@ func forEachReferenceSource(ctx context.Context, repoRoot string, files []string
 	return nil
 }
 
-// referenceSourceFingerprint identifies the exact content of a file set. Path
-// and length are hashed alongside the bytes so a rename or a shift of content
-// between files changes the fingerprint.
+// referenceSourceFingerprint identifies a file set by each file's path, size
+// and modification time. Hashing the contents would mean reading the entire
+// repository on every lookup purely to discover the cache is still valid — and
+// twice over for a Go lookup, which fingerprints its own file set as well.
+// Checkouts, edits and branch switches all move mtime, so stat metadata
+// notices the changes that matter; a rewrite that preserves both size and
+// mtime is the one case it cannot see.
 func referenceSourceFingerprint(ctx context.Context, repoRoot string, files []string) ([sha256.Size]byte, error) {
 	hash := sha256.New()
-	if err := forEachReferenceSource(ctx, repoRoot, files, func(source referenceSource) {
-		_, _ = fmt.Fprintf(hash, "%d:%s:%d:", len(source.path), source.path, len(source.data))
-		_, _ = hash.Write(source.data)
-	}); err != nil {
-		return [sha256.Size]byte{}, err
+	for _, fullPath := range files {
+		if err := ctx.Err(); err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		rel, err := repofs.RelPath(repoRoot, fullPath)
+		if err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		info, err := os.Stat(fullPath)
+		if err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		_, _ = fmt.Fprintf(hash, "%d:%s:%d:%d;", len(rel), rel, info.Size(), info.ModTime().UnixNano())
 	}
 	return [sha256.Size]byte(hash.Sum(nil)), nil
 }
@@ -464,10 +499,7 @@ func parseReferenceFile(repoRoot, path, source string) *parsedReferenceFile {
 		if _, done := file.resolvedImports[binding.ModuleSpec]; done {
 			continue
 		}
-		resolved, ok := resolveReferenceImport(repoRoot, file, binding.ModuleSpec)
-		if !ok {
-			continue
-		}
+		resolved, _ := resolveReferenceImport(repoRoot, file, binding.ModuleSpec)
 		if file.resolvedImports == nil {
 			file.resolvedImports = map[string]string{}
 		}
@@ -486,10 +518,24 @@ func pathInLookupScope(path string, scope lookupScope) bool {
 	return path == scope.Path || strings.HasPrefix(path, scope.Path+"/")
 }
 
-func findDefinitionCandidates(file *parsedReferenceFile, name string) []definitionCandidate {
+// declarationPatterns holds the compiled matchers for one (language, symbol)
+// pair, which every file of that language reuses.
+type declarationPatterns struct {
+	byKind map[string]*regexp.Regexp
+	// goGrouped matches a name inside a Go `const (`/`var (`/`type (` block.
+	goGrouped *regexp.Regexp
+}
+
+func compileDeclarationPatterns(language, name string) declarationPatterns {
 	quoted := regexp.QuoteMeta(name)
-	patterns := definitionPatterns(file.language, quoted)
-	goGroupedDefinition := regexp.MustCompile(`^\s*` + quoted + `\b`)
+	return declarationPatterns{
+		byKind:    definitionPatterns(language, quoted),
+		goGrouped: regexp.MustCompile(`^\s*` + quoted + `\b`),
+	}
+}
+
+func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled declarationPatterns) []definitionCandidate {
+	patterns, goGroupedDefinition := compiled.byKind, compiled.goGrouped
 	seenScope := map[string]struct{}{}
 	var out []definitionCandidate
 	// Parser symbols are the authoritative function declarations: they cover
@@ -668,8 +714,8 @@ func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate
 				if binding.Kind != "symbol" {
 					continue
 				}
-				resolved, ok := file.resolvedImports[binding.ModuleSpec]
-				if !ok || exported[resolved][binding.SymbolName] == "" {
+				resolved := file.resolvedImports[binding.ModuleSpec]
+				if resolved == "" || exported[resolved][binding.SymbolName] == "" {
 					continue
 				}
 				if locals[file.path] == nil {
@@ -747,6 +793,12 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 	outsideContexts := map[string]*ReferenceContext{}
 	declarationSkipped := false
 	for _, file := range files {
+		// A same-named identifier in another language is a different symbol —
+		// no import can bind a Python name to a Rust one — so scanning across
+		// parser families only manufactures false positives.
+		if file.language != selected.file.language {
+			continue
+		}
 		// Only go/types can prove binding identity, and it owns every Go
 		// lookup, so a declaration resolved here is never better than possible.
 		names := map[string]string{selected.target.Name: "possible"}
@@ -808,6 +860,10 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 }
 
 func identifierColumns(line, name string) []int {
+	if name == "" {
+		// strings.Index would match at every position without advancing.
+		return nil
+	}
 	var out []int
 	for start := 0; start < len(line); {
 		idx := strings.Index(line[start:], name)
@@ -1220,20 +1276,28 @@ func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, 
 		return left.Column < right.Column
 	})
 	if len(candidates) == 0 {
-		// A broken build is reported as a hard error: the symbol may well exist
-		// and the model needs to know the analysis could not see it. A clean
-		// miss is a genuine absence, and shares the parsed path's error type so
-		// callers can degrade to a literal search.
+		// Always the not-found type, so callers can degrade to a literal
+		// search. A package that failed to load may be why the symbol was
+		// missed, so say so — but any package in the repository can carry load
+		// errors, and letting that hide the fallback would defeat it.
+		notFound := &SymbolNotFoundError{Name: symbol.Name, Path: symbol.Path}
 		for _, pkg := range pkgs {
 			if pkg != nil && len(pkg.Errors) > 0 {
-				return goReferenceCandidate{}, complete, fmt.Errorf("symbol %q not found in %q: package analysis failed: %s", symbol.Name, symbol.Path, pkg.Errors[0].Msg)
+				notFound.Reason = "package analysis failed: " + pkg.Errors[0].Msg
+				break
 			}
 		}
-		return goReferenceCandidate{}, complete, &SymbolNotFoundError{Name: symbol.Name, Path: symbol.Path}
+		return goReferenceCandidate{}, complete, notFound
 	}
-	if pinned := pinCandidatesToLine(candidates, symbol.Line, func(candidate goReferenceCandidate) LineRange {
+	if pinned, requested := pinCandidatesToLine(candidates, symbol.Line, func(candidate goReferenceCandidate) LineRange {
 		return goCandidateTarget(candidate, linesCache).Definition.LineRange
-	}); len(pinned) > 0 {
+	}); requested {
+		if len(pinned) == 0 {
+			return goReferenceCandidate{}, complete, &SymbolNotFoundError{
+				Name: symbol.Name, Path: symbol.Path,
+				Reason: fmt.Sprintf("no declaration at line %d", symbol.Line),
+			}
+		}
 		candidates = pinned
 	}
 	if len(candidates) > 1 {
@@ -1594,7 +1658,7 @@ func readReferenceLines(repoRoot, path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := repofs.ReadFile(repoRoot, fullPath)
+	data, _, err := readFileCapped(repoRoot, fullPath, toolcatalog.MaxRetrievedFileBytes)
 	if err != nil {
 		return nil, err
 	}

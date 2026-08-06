@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/session"
+	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/spf13/cobra"
 )
@@ -628,6 +630,21 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	}
 	if cmd.PersistentFlags().Lookup("disable-reasoning-extract") == nil {
 		t.Fatal("disable-reasoning-extract flag missing")
+	}
+	// Flags whose effective default comes from config must advertise it, or
+	// --help tells the user the opposite of what the run will do.
+	for _, tt := range []struct{ name, want string }{
+		{"max-context-tokens", strconv.Itoa(config.DefaultMaxContextToken)},
+		{"max-tool-result-percent", strconv.Itoa(config.DefaultMaxToolResultPercent)},
+		{"max-duplicate-tool-calls", strconv.Itoa(toolcatalog.DefaultMaxDuplicateToolCalls)},
+	} {
+		flag := cmd.PersistentFlags().Lookup(tt.name)
+		if flag == nil {
+			t.Fatalf("%s flag missing", tt.name)
+		}
+		if flag.DefValue != tt.want {
+			t.Fatalf("%s default = %q, want %q", tt.name, flag.DefValue, tt.want)
+		}
 	}
 	diffScope := cmd.PersistentFlags().Lookup("disable-diff-scope")
 	if diffScope == nil || diffScope.DefValue != "false" {

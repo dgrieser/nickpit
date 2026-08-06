@@ -278,6 +278,7 @@ func isUserAbort(ctx context.Context, err error) bool {
 func newRootCmd() *cobra.Command {
 	cli := &app{
 		maxContextTokens:         config.DefaultMaxContextToken,
+		maxToolResultPercent:     config.DefaultMaxToolResultPercent,
 		maxDuplicateToolCalls:    toolcatalog.DefaultMaxDuplicateToolCalls,
 		maxOutputRetries:         config.DefaultMaxOutputRetries,
 		maxReasoningSeconds:      config.DefaultMaxReasoningSeconds,

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFindReferencesBatchPreservesInputOrder(t *testing.T) {
@@ -473,15 +476,23 @@ func TestFindReferencesPinsAmbiguousParsedDeclarationByLine(t *testing.T) {
 	}
 }
 
-// A line matching no declaration must not silently resolve to the wrong one.
-func TestFindReferencesIgnoresLineThatPinsNothing(t *testing.T) {
-	repoRoot := t.TempDir()
-	writeRetrievalFile(t, repoRoot, "handlers.ts", "class A {\n  run() { return 1 }\n}\nclass B {\n  run() { return 2 }\n}\n")
+// A line matching no declaration must be reported, not silently resolved to
+// some other declaration of the same name.
+func TestFindReferencesReportsLineThatPinsNothing(t *testing.T) {
+	for _, tt := range []struct{ name, file, content, symbol string }{
+		{"several declarations", "handlers.ts", "class A {\n  run() { return 1 }\n}\nclass B {\n  run() { return 2 }\n}\n", "run"},
+		{"one declaration", "single.ts", "export function run() { return 1 }\n", "run"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeRetrievalFile(t, repoRoot, tt.file, tt.content)
 
-	_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "run", Path: "handlers.ts", Line: 99})
-	var ambiguous *AmbiguousSymbolError
-	if !errors.As(err, &ambiguous) {
-		t.Fatalf("error = %v, want ambiguous", err)
+			_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: tt.symbol, Path: tt.file, Line: 99})
+			var notFound *SymbolNotFoundError
+			if !errors.As(err, &notFound) || notFound.Reason != "no declaration at line 99" {
+				t.Fatalf("error = %v (%T)", err, err)
+			}
+		})
 	}
 }
 
@@ -629,5 +640,83 @@ func TestResolveReferenceTargetsReportsAmbiguity(t *testing.T) {
 	var ambiguous *AmbiguousSymbolError
 	if !errors.As(targets[0].Err, &ambiguous) {
 		t.Fatalf("error = %v, want ambiguous", targets[0].Err)
+	}
+}
+
+// Any package in the repository can carry load errors. Letting that turn the
+// miss into a plain error would suppress the caller's literal-search fallback.
+func TestFindGoReferencesReportsAbsentSymbolDespiteBrokenPackage(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/broken\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "app.go", "package broken\n\nfunc Run() {}\n")
+	writeRetrievalFile(t, repoRoot, "bad/bad.go", "package bad\n\nfunc Oops() { undefinedCall() }\n")
+
+	_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Missing", Path: "app.go"})
+	var notFound *SymbolNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("error = %v (%T), want *SymbolNotFoundError", err, err)
+	}
+	if notFound.Reason == "" || !strings.Contains(err.Error(), "package analysis failed") {
+		t.Fatalf("error lost the load-failure detail: %v", err)
+	}
+}
+
+func TestIdentifierColumnsRejectsEmptyName(t *testing.T) {
+	if got := identifierColumns("value = 1", ""); got != nil {
+		t.Fatalf("columns = %v, want none", got)
+	}
+}
+
+// A same-named identifier in another language is a different symbol; no import
+// binds a Python name to a TypeScript one.
+func TestFindReferencesIgnoresOtherLanguages(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "settings.py", "TIMEOUT = 1\nprint(TIMEOUT)\n")
+	writeRetrievalFile(t, repoRoot, "client.ts", "const TIMEOUT = 2\nconsole.log(TIMEOUT)\n")
+	writeRetrievalFile(t, repoRoot, "lib.rs", "pub const TIMEOUT: u32 = 3;\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "TIMEOUT", Path: "settings.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, context := range append(append([]ReferenceContext{}, result.Functions...), result.OutsideFunctions...) {
+		if context.CodeLocation.FilePath != "settings.py" {
+			t.Fatalf("reference from another language: %#v", context.CodeLocation)
+		}
+	}
+	if result.PossibleReferenceCount != 1 {
+		t.Fatalf("reference count = %d, want only the Python use", result.PossibleReferenceCount)
+	}
+}
+
+// The cache must notice an edit. mtime moves on any real write, so an explicit
+// timestamp bump stands in for the wall-clock gap a real edit has.
+func TestParsedReferenceSnapshotRefreshesAfterEdit(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", "VALUE = 1\n")
+
+	first, err := loadParsedReferenceFiles(context.Background(), repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(first[0].lines) < 1 || !strings.Contains(first[0].lines[0], "VALUE = 1") {
+		t.Fatalf("first snapshot = %#v", first)
+	}
+
+	path := filepath.Join(repoRoot, "mod.py")
+	if err := os.WriteFile(path, []byte("VALUE = 2\nOTHER = 3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := loadParsedReferenceFiles(context.Background(), repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || !strings.Contains(second[0].lines[0], "VALUE = 2") {
+		t.Fatalf("snapshot was not refreshed: %#v", second[0].lines)
 	}
 }

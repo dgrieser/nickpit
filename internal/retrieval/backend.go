@@ -60,13 +60,21 @@ func (e *UnsupportedLanguageError) Error() string {
 type SymbolNotFoundError struct {
 	Name string
 	Path string
+	// Reason explains why the analysis may have missed a symbol that exists,
+	// such as a package that failed to load. It never changes how callers
+	// handle the error, only what they can tell the model.
+	Reason string
 }
 
 func (e *SymbolNotFoundError) Error() string {
-	if e.Path == "" {
-		return fmt.Sprintf("symbol %q not found", e.Name)
+	message := fmt.Sprintf("symbol %q not found", e.Name)
+	if e.Path != "" {
+		message = fmt.Sprintf("symbol %q not found in %q", e.Name, e.Path)
 	}
-	return fmt.Sprintf("symbol %q not found in %q", e.Name, e.Path)
+	if e.Reason != "" {
+		return message + ": " + e.Reason
+	}
+	return message
 }
 
 func languageBackends() []languageBackend {

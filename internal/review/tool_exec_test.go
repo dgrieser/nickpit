@@ -464,6 +464,67 @@ func TestStandaloneSearchReturnsEachResultShape(t *testing.T) {
 	}
 }
 
+// Repeating an ambiguous find_references is deterministic, so it has to count
+// as a duplicate; only a retry pinned to one declaration is a new call.
+func TestExecuteFindReferencesRecordsAmbiguousCallAsSeen(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "handlers.ts", "class A {\n  run() { return 1 }\n}\nclass B {\n  run() { return 2 }\n}\n")
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	call := llm.ToolCall{ID: "refs", Name: "find_references", Arguments: `{"symbol":"run","path":"handlers.ts"}`}
+
+	if got := nestedString(decodeToolPayload(t, engine.executeToolCall(context.Background(), repoRoot, call, state)), "error", "code"); got != "ambiguous_symbol" {
+		t.Fatalf("first call error = %q", got)
+	}
+	if got := nestedString(decodeToolPayload(t, engine.executeToolCall(context.Background(), repoRoot, call, state)), "error", "code"); got != "already_requested" {
+		t.Fatalf("identical retry error = %q, want already_requested", got)
+	}
+	pinned := llm.ToolCall{ID: "refs-pinned", Name: "find_references", Arguments: `{"symbol":"run","path":"handlers.ts","line":5}`}
+	payload := decodeToolPayload(t, engine.executeToolCall(context.Background(), repoRoot, pinned, state))
+	if payload["status"] == "error" {
+		t.Fatalf("pinned retry was blocked: %#v", payload)
+	}
+}
+
+// A failed reference lookup must not leave the dedup key reserved, or the model
+// can never call find_references for that symbol again.
+func TestExecuteSearchLeavesReferenceKeyFreeWhenLookupFails(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/reserve\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "value.go", "package reserve\n\nvar Value = 1\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, &failingReferenceRetrieval{Engine: retrieval.NewLocalEngine()}, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Value"}`},
+	}, state)
+
+	payload := decodeToolPayload(t, engine.executeToolCall(context.Background(), repoRoot, llm.ToolCall{
+		ID: "refs", Name: "find_references", Arguments: `{"symbol":"Value","path":"value.go"}`,
+	}, state))
+	if nestedString(payload, "error", "code") == "already_requested" {
+		t.Fatalf("failed search lookup reserved the dedup key: %#v", payload)
+	}
+}
+
+// failingReferenceRetrieval resolves declarations normally but fails every
+// reference collection, the shape of a lookup that dies after resolution.
+type failingReferenceRetrieval struct {
+	retrieval.Engine
+}
+
+func (r *failingReferenceRetrieval) FindReferences(context.Context, string, retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	return nil, errors.New("reference collection failed")
+}
+
+func (r *failingReferenceRetrieval) ResolveReferenceTargets(ctx context.Context, repoRoot string, symbols []retrieval.SymbolRef) []retrieval.ReferenceTargetResult {
+	resolver, ok := r.Engine.(retrieval.ReferenceTargetResolver)
+	if !ok {
+		return make([]retrieval.ReferenceTargetResult, len(symbols))
+	}
+	return resolver.ResolveReferenceTargets(ctx, repoRoot, symbols)
+}
+
 func TestExecuteSearchOptimizesReturnedCappedMatch(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "a.py", "VALUE = 1\n")

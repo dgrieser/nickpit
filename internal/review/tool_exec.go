@@ -198,6 +198,9 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 			note = "structural reference analysis is unavailable for this file type; showing case-sensitive literal matches instead"
 		case errors.As(err, &notFound):
 			note = "structural analysis found no declaration of this symbol; showing case-sensitive literal matches instead, which may be empty or defined in a file type without a structural backend"
+			if notFound.Reason != "" {
+				note += " (" + notFound.Reason + ")"
+			}
 		}
 		if note != "" {
 			searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
@@ -218,6 +221,12 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 		}
 		var ambiguous *retrieval.AmbiguousSymbolError
 		if errors.As(err, &ambiguous) {
+			// Recorded like a success: repeating the identical call is
+			// deterministic and would otherwise never trip the duplicate limit.
+			// A retry pinned to one declaration carries a different key.
+			state.mu.Lock()
+			state.seenToolCalls[key] = struct{}{}
+			state.mu.Unlock()
 			return toolError(normalizedPath, "ambiguous_symbol", err.Error())
 		}
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
@@ -724,6 +733,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	e.collectDeferredReferences(ctx, repoRoot, keys, resolved)
 	var callHierarchies, referenceResults []json.RawMessage
 	classifiedMatches := make(map[int]struct{})
 	for _, key := range keys {
@@ -757,19 +767,11 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 				}
 			}
 		} else {
-			if !e.reserveSearchReferenceResult(selected, state) {
+			// Reserve only once the analysis exists: reserving before it could
+			// fail would leave the key taken and block the model from ever
+			// calling find_references for this symbol.
+			if selected.references == nil || !e.reserveSearchReferenceResult(selected, state) {
 				continue
-			}
-			if selected.references == nil {
-				// Resolution stopped at the declaration; collect its references
-				// now that the symbol is known not to be a function.
-				references, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{
-					Name: selected.name, Path: selected.path, Line: selected.declarationLine,
-				})
-				if err != nil || references == nil {
-					continue
-				}
-				selected.references = references
 			}
 			e.logf(ctx, "Replacing search matches with find_references: query=%q symbol=%q path=%s kind=%s", query, selected.name, selected.path, selected.references.Target.Kind)
 			optimized = limitToolResultJSON(mustToolResultJSON(selected.references), 0)
@@ -847,6 +849,43 @@ func codeLocationsOverlap(left, right retrieval.CodeLocation) bool {
 		return false
 	}
 	return left.LineRange.Start <= right.LineRange.End && right.LineRange.Start <= left.LineRange.End
+}
+
+// collectDeferredReferences fills in the reference analysis for declarations
+// resolution deliberately stopped short of. One batch shares a single
+// repository snapshot; a lookup per symbol would rebuild it every time.
+func (e *Engine) collectDeferredReferences(ctx context.Context, repoRoot string, keys []string, resolved map[string]*classifiedSearchSymbol) {
+	var pending []*classifiedSearchSymbol
+	for _, key := range keys {
+		selected := resolved[key]
+		if selected.kind == "function" || selected.references != nil || selected.name == "" || selected.path == "" {
+			continue
+		}
+		pending = append(pending, selected)
+	}
+	if len(pending) == 0 {
+		return
+	}
+	symbols := make([]retrieval.SymbolRef, len(pending))
+	for i, selected := range pending {
+		symbols[i] = retrieval.SymbolRef{Name: selected.name, Path: selected.path, Line: selected.declarationLine}
+	}
+	if batchEngine, ok := e.retrieval.(retrieval.ReferenceBatchEngine); ok {
+		for i, batchResult := range batchEngine.FindReferencesBatch(ctx, repoRoot, symbols) {
+			if i >= len(pending) || batchResult.Err != nil {
+				continue
+			}
+			pending[i].references = batchResult.Result
+		}
+		return
+	}
+	for i, symbol := range symbols {
+		references, err := e.retrieval.FindReferences(ctx, repoRoot, symbol)
+		if err != nil {
+			continue
+		}
+		pending[i].references = references
+	}
 }
 
 func (e *Engine) reserveSearchReferenceResult(selected *classifiedSearchSymbol, state *toolRoundState) bool {

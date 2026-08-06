@@ -72,6 +72,24 @@ func TestToolResultLimiterZeroDisablesTokensButKeepsReferenceCountLimit(t *testi
 	}
 }
 
+// Both reference context lists carry contexts, so capping only one leaves the
+// payload unbounded whenever token capping is disabled.
+func TestToolResultLimiterCapsOutsideFunctionContexts(t *testing.T) {
+	contexts := make([]map[string]any, 40)
+	for i := range contexts {
+		contexts[i] = map[string]any{"code_location": map[string]any{"file_path": fmt.Sprintf("f%d.go", i)}}
+	}
+	_, payload := limitedPayload(t, map[string]any{
+		"target": map[string]any{"name": "Shared"}, "functions": []any{}, "outside_functions": contexts,
+	}, 0)
+	if got := len(payload["outside_functions"].([]any)); got != toolcatalog.MaxReferenceFunctions {
+		t.Fatalf("outside_functions = %d, want %d", got, toolcatalog.MaxReferenceFunctions)
+	}
+	if payload["truncated"] != true || intFromJSON(payload["omitted_contexts"]) != 15 {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
 func TestToolResultLimiterReducesToolPayloadShapes(t *testing.T) {
 	large := strings.Repeat("ü", 12<<10)
 	searchResults := make([]map[string]any, 20)
