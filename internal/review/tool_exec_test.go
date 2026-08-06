@@ -390,6 +390,178 @@ func TestExecuteSearchRetainsTruncatedFilesWhenOptimized(t *testing.T) {
 	}
 }
 
+// wideReferenceRetrieval answers with more reference contexts than one result
+// may carry, and reports a use in every one of them.
+type wideReferenceRetrieval struct {
+	*countingRetrieval
+	contexts int
+}
+
+func referenceContextFile(index int) string { return fmt.Sprintf("pkg/ref-%02d.go", index) }
+
+func (r *wideReferenceRetrieval) FindReferences(_ context.Context, _ string, symbol retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	result := &retrieval.ReferenceResult{
+		Target: retrieval.ReferenceTarget{
+			Name: symbol.Name, Kind: "variable",
+			Definition: testCallNodeLocation("pkg/decl.go", 3, 3, "var "+symbol.Name+" = 1"),
+		},
+		Functions: []retrieval.ReferenceContext{}, OutsideFunctions: []retrieval.ReferenceContext{}, Complete: true,
+	}
+	for i := range r.contexts {
+		location := testCallNodeLocation(referenceContextFile(i), 5, 9, "func use() {}")
+		result.Functions = append(result.Functions, retrieval.ReferenceContext{
+			Name: fmt.Sprintf("use%02d", i), CodeLocation: location,
+			References: []retrieval.ReferenceOccurrence{{
+				Role: "read", Confidence: "exact", Column: 9,
+				CodeLocation: testCallNodeLocation(referenceContextFile(i), 7, 7, "\t_ = "+symbol.Name),
+			}},
+		})
+		result.ExactReferenceCount++
+	}
+	return result, nil
+}
+
+// The reference analysis is cut to the item limit before the model sees it, so
+// a literal match only the dropped contexts covered has to stay in the literal
+// results: counting it as classified drops it from the answer altogether.
+func TestOptimizedSearchKeepsLiteralMatchesCutFromReferenceContexts(t *testing.T) {
+	dropped := toollimits.MaxReferenceFunctions + 4
+	literalResults := []retrieval.SearchResult{
+		{CodeLocation: testCallNodeLocation(referenceContextFile(0), 7, 7, "\t_ = Shared")},
+		{CodeLocation: testCallNodeLocation(referenceContextFile(dropped), 7, 7, "\t_ = Shared")},
+	}
+	backend := &wideReferenceRetrieval{
+		countingRetrieval: &countingRetrieval{literalResults: literalResults, hasCustomResults: true},
+		contexts:          dropped + 1,
+	}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	functions, _ := payload["functions"].([]any)
+	if len(functions) != toollimits.MaxReferenceFunctions {
+		t.Fatalf("emitted contexts = %d, want the item limit %d", len(functions), toollimits.MaxReferenceFunctions)
+	}
+	if payload["complete"] != false || intFromJSON(payload["omitted_contexts"]) == 0 || payload["truncated"] != true {
+		t.Fatalf("cut analysis is not marked incomplete: %#v", payload)
+	}
+	literals, _ := payload["literal_results"].([]any)
+	if len(literals) != 1 {
+		t.Fatalf("literal_results = %#v, want the match whose context was cut", literals)
+	}
+	location, _ := literals[0].(map[string]any)["code_location"].(map[string]any)
+	if location["file_path"] != referenceContextFile(dropped) {
+		t.Fatalf("kept literal match = %#v, want %s", location, referenceContextFile(dropped))
+	}
+}
+
+// caseSplitRetrieval resolves only the lowercase spelling, so an enrichment
+// that ignores case sensitivity answers with a symbol the query excluded.
+type caseSplitRetrieval struct {
+	*countingRetrieval
+}
+
+func (r *caseSplitRetrieval) FindReferences(ctx context.Context, repoRoot string, symbol retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	if symbol.Name != "shared" {
+		r.mu.Lock()
+		r.paths = append(r.paths, fmt.Sprintf("references:%s:%s", symbol.Path, symbol.Name))
+		r.mu.Unlock()
+		return nil, &retrieval.SymbolNotFoundError{Name: symbol.Name, Path: symbol.Path}
+	}
+	return r.countingRetrieval.FindReferences(ctx, repoRoot, symbol)
+}
+
+func TestCaseSensitiveSearchIsNotEnrichedWithAnotherSpelling(t *testing.T) {
+	literalResults := []retrieval.SearchResult{
+		{CodeLocation: testCallNodeLocation("pkg/use.go", 4, 4, "\tShared := newShared(shared)")},
+	}
+	backend := &caseSplitRetrieval{countingRetrieval: &countingRetrieval{
+		literalResults: literalResults, hasCustomResults: true,
+	}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared","case_sensitive":true}`},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	if _, structural := payload["target"]; structural {
+		t.Fatalf("case-sensitive search was answered with another spelling's references: %#v", payload)
+	}
+	for _, call := range backend.paths {
+		if strings.Contains(call, ":shared") {
+			t.Fatalf("case-sensitive search looked up a differently cased symbol: %v", backend.paths)
+		}
+	}
+}
+
+// The search delivered this symbol's references, so the follow-up the model
+// most naturally makes — no path, no line — must not run the whole analysis a
+// second time.
+func TestSearchReferenceReservationCoversPathlessFollowup(t *testing.T) {
+	backend := &countingRetrieval{hasCustomResults: true, literalResults: []retrieval.SearchResult{
+		{CodeLocation: testCallNodeLocation("pkg/decl.go", 3, 3, "var Shared = 1")},
+	}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`},
+	}, state)
+	before := len(backend.paths)
+
+	followup := engine.executeToolCall(context.Background(), "", llm.ToolCall{
+		ID: "c2", Name: "find_references", Arguments: `{"symbol":"Shared"}`,
+	}, state)
+	payload := decodeToolPayload(t, followup)
+	if payload["status"] != "error" {
+		t.Fatalf("pathless follow-up re-ran the analysis: %#v", payload)
+	}
+	if len(backend.paths) != before {
+		t.Fatalf("retrieval calls after follow-up = %v", backend.paths)
+	}
+}
+
+// Several declarations of one name cannot be looked up without a path — that
+// call is ambiguous — so the search must not reserve it.
+func TestSearchReferenceReservationLeavesAmbiguousPathlessCallOpen(t *testing.T) {
+	literalResults := make([]retrieval.SearchResult, 2)
+	for i := range literalResults {
+		literalResults[i] = retrieval.SearchResult{
+			CodeLocation: testCallNodeLocation(fmt.Sprintf("pkg/file-%d.go", i), 5, 5, "var Shared = 1"),
+		}
+	}
+	backend := &perFileReferenceRetrieval{countingRetrieval: &countingRetrieval{
+		literalResults: literalResults, hasCustomResults: true,
+	}}
+	engine := NewEngine(stubSource{}, &capturingLLM{}, backend, config.Profile{Model: "test"})
+	state := freshToolRoundState()
+	engine.executeToolCalls(context.Background(), "", []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared"}`},
+	}, state)
+
+	followup := engine.executeToolCall(context.Background(), "", llm.ToolCall{
+		ID: "c2", Name: "find_references", Arguments: `{"symbol":"Shared"}`,
+	}, state)
+	if payload := decodeToolPayload(t, followup); payload["status"] == "error" {
+		t.Fatalf("pathless call was reserved by one of several declarations: %#v", payload)
+	}
+}
+
+// perFileReferenceRetrieval reports a distinct declaration per lookup path.
+type perFileReferenceRetrieval struct {
+	*countingRetrieval
+}
+
+func (r *perFileReferenceRetrieval) FindReferences(ctx context.Context, repoRoot string, symbol retrieval.SymbolRef) (*retrieval.ReferenceResult, error) {
+	result, err := r.countingRetrieval.FindReferences(ctx, repoRoot, symbol)
+	if err != nil {
+		return nil, err
+	}
+	result.Target.Definition = testCallNodeLocation(pathOrDefault(symbol.Path, "pkg/file-0.go"), 5, 5, "var Shared = 1")
+	return result, nil
+}
+
 func TestExecuteSearchGroupsMatchesByDeclaration(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "a.py", "VALUE = 1\n")

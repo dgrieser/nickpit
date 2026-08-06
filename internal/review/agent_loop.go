@@ -124,6 +124,10 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		state = newAgentLoopState()
 	}
 	var syntheticFollowup *llm.Message
+	// One meter for the whole loop: every round measures the same transcript
+	// prefix, so encoding it again per round would grow with the square of the
+	// conversation.
+	contextMeter := &toolContextMeter{}
 	recordTokens := func(usage model.TokenUsage) {
 		result.tokensUsed = addTokenUsage(result.tokensUsed, usage)
 	}
@@ -323,7 +327,7 @@ func (e *Engine) runAgentLoop(ctx context.Context, req agentLoopRequest) (agentL
 		if maxContextTokens <= 0 {
 			maxContextTokens = config.DefaultMaxContextToken
 		}
-		batch := limitToolResultBatch(messages, llmReq.Tools, llmReq.Schema, rawBatch, maxContextTokens, e.config.MaxToolResultPercent)
+		batch := limitToolResultBatch(contextMeter, messages, llmReq.Tools, llmReq.Schema, rawBatch, maxContextTokens, e.config.MaxToolResultPercent)
 		reconcileLimitedInspectFileCoverage(resp.ToolCalls, rawBatch, batch, state.toolState)
 		messages = append(messages, batch...)
 		result.toolMessages = append(result.toolMessages, batch...)

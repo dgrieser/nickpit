@@ -3040,21 +3040,22 @@ func optimizedSearchResultTool(content string) string {
 	if err := json.Unmarshal([]byte(content), &payload); err != nil {
 		return ""
 	}
-	if _, hasRoot := payload["root"]; hasRoot {
+	switch classifyToolResult(payload) {
+	case shapeCallHierarchy:
 		return "find_callers"
-	}
-	if _, hasTarget := payload["target"]; hasTarget {
+	case shapeReferences:
 		return "find_references"
-	}
-	_, hasCallers := payload["call_hierarchies"]
-	_, hasReferences := payload["reference_results"]
-	switch {
-	case hasCallers && hasReferences:
-		return "find_callers/find_references"
-	case hasCallers:
-		return "find_callers"
-	case hasReferences:
-		return "find_references"
+	case shapeGroupedSearch:
+		_, hasCallers := payload["call_hierarchies"]
+		_, hasReferences := payload["reference_results"]
+		switch {
+		case hasCallers && hasReferences:
+			return "find_callers/find_references"
+		case hasCallers:
+			return "find_callers"
+		default:
+			return "find_references"
+		}
 	}
 	return ""
 }
@@ -3159,19 +3160,13 @@ func parseToolResultSummary(content string) toolResultSummary {
 // tool result carries: the result itself when it is one, or each entry of the
 // grouped arrays a multi-declaration search produces.
 func structuralSummaryPayloads(payload map[string]any) []map[string]any {
-	if payload["root"] != nil || payload["target"] != nil {
+	switch classifyToolResult(payload) {
+	case shapeReferences, shapeCallHierarchy:
 		return []map[string]any{payload}
+	case shapeGroupedSearch:
+		return groupedStructuralPayloads(payload)
 	}
-	var out []map[string]any
-	for _, field := range []string{"call_hierarchies", "reference_results"} {
-		items, _ := payload[field].([]any)
-		for _, item := range items {
-			if entry, ok := item.(map[string]any); ok {
-				out = append(out, entry)
-			}
-		}
-	}
-	return out
+	return nil
 }
 
 // accumulateStructuralSummary folds one structural payload into summary,

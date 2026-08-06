@@ -106,6 +106,110 @@ func TestToolResultLimiterClearsCompleteWhenContextsAreDropped(t *testing.T) {
 	}
 }
 
+// The same claim has to be cleared inside a grouped search result: its nested
+// analyses are the ones being shortened, and left to the generic reducer they
+// were tail-dropped while still reporting themselves as complete.
+func TestToolResultLimiterMarksNestedGroupedAnalysesIncomplete(t *testing.T) {
+	referenceResult := func(prefix string) map[string]any {
+		contexts := make([]map[string]any, 20)
+		for i := range contexts {
+			contexts[i] = map[string]any{
+				"name": fmt.Sprintf("%s%d", prefix, i),
+				"code_location": map[string]any{
+					"file_path": fmt.Sprintf("%s%d.go", prefix, i),
+					"content":   strings.Repeat("line of source\n", 20),
+				},
+			}
+		}
+		return map[string]any{
+			"target": map[string]any{"name": "Shared"}, "functions": contexts,
+			"outside_functions": []any{}, "exact_reference_count": 40, "complete": true,
+		}
+	}
+	_, payload := limitedPayload(t, map[string]any{
+		"structural_result_count": 2,
+		"reference_results":       []any{referenceResult("a"), referenceResult("b")},
+		"literal_result_count":    0,
+		"literal_results":         []any{},
+	}, 512)
+
+	nested, _ := payload["reference_results"].([]any)
+	if len(nested) != 2 {
+		t.Fatalf("grouped payload lost an analysis: %#v", payload)
+	}
+	for i, item := range nested {
+		analysis, _ := item.(map[string]any)
+		contexts, _ := analysis["functions"].([]any)
+		if len(contexts) == 20 {
+			continue // this one was not the analysis that had to shrink
+		}
+		if analysis["complete"] != false || intFromJSON(analysis["omitted_contexts"]) == 0 {
+			t.Fatalf("shortened analysis %d still claims completeness: %#v", i, analysis)
+		}
+	}
+}
+
+// The meter reuses what it measured on earlier rounds, so it has to keep
+// answering exactly what encoding the whole request would.
+func TestToolContextMeterMatchesFullMeasurement(t *testing.T) {
+	tools := []llm.ToolDefinition{{Name: "inspect_file", Description: "read a file"}}
+	schema := []byte(`{"type":"object"}`)
+	fullMeasurement := func(messages []llm.Message) int {
+		return jsonByteLen(struct {
+			Messages []llm.Message        `json:"messages"`
+			Tools    []llm.ToolDefinition `json:"tools,omitempty"`
+			Schema   json.RawMessage      `json:"schema,omitempty"`
+		}{Messages: messages, Tools: tools, Schema: schema})
+	}
+	meter := &toolContextMeter{}
+	messages := []llm.Message{}
+	if got, want := meter.contextByteLen(messages, tools, schema), fullMeasurement(messages); got != want {
+		t.Fatalf("empty transcript = %d bytes, want %d", got, want)
+	}
+	for i := range 6 {
+		messages = append(messages, llm.Message{
+			Role: "tool", ToolCallID: fmt.Sprintf("c%d", i), Content: strings.Repeat("x", 100+i),
+		})
+		if got, want := meter.contextByteLen(messages, tools, schema), fullMeasurement(messages); got != want {
+			t.Fatalf("round %d = %d bytes, want %d", i, got, want)
+		}
+	}
+	// A JSON repair rewinds the history, so one index can come back holding a
+	// different message of the same length.
+	messages[2] = llm.Message{Role: "user", Content: strings.Repeat("\"", len(messages[2].Content))}
+	if got, want := meter.contextByteLen(messages, tools, schema), fullMeasurement(messages); got != want {
+		t.Fatalf("rewound transcript = %d bytes, want %d", got, want)
+	}
+}
+
+// The per-result floor keeps one result readable; applied to every result of a
+// wide batch against a full window it added up to an unbounded overshoot.
+func TestToolResultBatchBoundsTheFloorAcrossOneBatch(t *testing.T) {
+	messages := []llm.Message{{Role: "system", Content: strings.Repeat("x", 40_000)}}
+	raw := fmt.Sprintf(`{"path":"a.go","start_line":1,"end_line":500,"content":%q}`, strings.Repeat("line content\n", 500))
+	batch := make([]llm.Message, 12)
+	for i := range batch {
+		batch[i] = llm.Message{Role: "tool", Content: raw}
+	}
+	limited := limitToolResultBatch(&toolContextMeter{}, messages, nil, nil, batch, 1000, 10)
+
+	total := 0
+	for _, message := range limited {
+		total += tokenestimate.Estimate(message.Content)
+	}
+	// Nothing of the window is left, so everything the batch spends is overshoot
+	// and has to fit inside the budget the floor is allowed to add.
+	if total > maxToolResultFloorTokens {
+		t.Fatalf("batch spent %d tokens against a full window, budget = %d", total, maxToolResultFloorTokens)
+	}
+	if payload := decodeToolPayload(t, limited[0].Content); payload["truncated"] != true {
+		t.Fatalf("first result is not marked truncated: %s", limited[0].Content)
+	}
+	if payload := decodeToolPayload(t, limited[len(limited)-1].Content); payload["truncated"] != true {
+		t.Fatalf("last result does not explain itself: %s", limited[len(limited)-1].Content)
+	}
+}
+
 func TestToolResultLimiterReducesToolPayloadShapes(t *testing.T) {
 	large := strings.Repeat("ü", 12<<10)
 	searchResults := make([]map[string]any, 20)
@@ -248,8 +352,8 @@ func TestToolResultBatchUsesPercentageOfRemainingContext(t *testing.T) {
 	schema := []byte(`{"type":"object"}`)
 	// Recomputed with the same helpers the limiter uses, so the expectation
 	// cannot drift away from the production accounting.
-	remaining := 10000 - tokenestimate.EstimateLen(toolContextByteLen(messages, tools, schema))
-	batch := limitToolResultBatch(messages, tools, schema, []llm.Message{
+	remaining := 10000 - tokenestimate.EstimateLen((&toolContextMeter{}).contextByteLen(messages, tools, schema))
+	batch := limitToolResultBatch(&toolContextMeter{}, messages, tools, schema, []llm.Message{
 		{Role: "tool", Content: result},
 		{Role: "tool", Content: result},
 	}, 10000, 10)
@@ -257,7 +361,7 @@ func TestToolResultBatchUsesPercentageOfRemainingContext(t *testing.T) {
 	if got := tokenestimate.Estimate(batch[0].Content); got > firstLimit {
 		t.Fatalf("first result = %d tokens, cap = %d", got, firstLimit)
 	}
-	secondRemaining := 10000 - tokenestimate.EstimateLen(toolContextByteLen(append(messages, batch[0]), tools, schema))
+	secondRemaining := 10000 - tokenestimate.EstimateLen((&toolContextMeter{}).contextByteLen(append(messages, batch[0]), tools, schema))
 	secondLimit := max(secondRemaining*10/100, 1)
 	if got := tokenestimate.Estimate(batch[1].Content); got > secondLimit {
 		t.Fatalf("second result = %d tokens, cap = %d", got, secondLimit)
@@ -273,7 +377,7 @@ func TestToolResultBatchUsesPercentageOfRemainingContext(t *testing.T) {
 func TestToolResultBatchKeepsResultsReadableWhenContextIsExhausted(t *testing.T) {
 	messages := []llm.Message{{Role: "system", Content: strings.Repeat("x", 40_000)}}
 	raw := fmt.Sprintf(`{"path":"a.go","start_line":1,"end_line":500,"content":%q}`, strings.Repeat("line content\n", 500))
-	batch := limitToolResultBatch(messages, nil, nil, []llm.Message{{Role: "tool", Content: raw}}, 1000, 10)
+	batch := limitToolResultBatch(&toolContextMeter{}, messages, nil, nil, []llm.Message{{Role: "tool", Content: raw}}, 1000, 10)
 
 	payload := decodeToolPayload(t, batch[0].Content)
 	if payload["truncated"] != true {
@@ -287,7 +391,7 @@ func TestToolResultBatchKeepsResultsReadableWhenContextIsExhausted(t *testing.T)
 func TestToolResultBatchZeroPercentDisablesContextCap(t *testing.T) {
 	raw := `{"path":"large.go","content":"unchanged"}`
 	batch := []llm.Message{{Role: "tool", Content: raw}}
-	got := limitToolResultBatch(nil, nil, nil, batch, 100, 0)
+	got := limitToolResultBatch(&toolContextMeter{}, nil, nil, nil, batch, 100, 0)
 	if got[0].Content != raw {
 		t.Fatalf("result changed: %s", got[0].Content)
 	}

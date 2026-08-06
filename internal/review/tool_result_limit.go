@@ -20,11 +20,19 @@ const toolResultTruncatedNote = "tool result exceeded configured item or size li
 // one it can act on.
 const minToolResultTokens = 256
 
+// maxToolResultFloorTokens bounds what the floor above may add across one
+// batch. Applied per result with no shared bound, a wide parallel batch against
+// an already-full window granted every result the floor and overshot the
+// context by their sum — the opposite of the shared remainder the batch is
+// supposed to divide. Once the batch has spent this much on floors, later
+// results take the allowance the remaining window actually affords.
+const maxToolResultFloorTokens = 4 * minToolResultTokens
+
 // limitToolResultBatch caps each result at a percentage of the context tokens
 // still available when that result is appended. Processing the batch in order
 // makes parallel results share the remaining window instead of each claiming
 // the same allowance.
-func limitToolResultBatch(messages []llm.Message, tools []llm.ToolDefinition, schema []byte, batch []llm.Message, maxContextTokens, percent int) []llm.Message {
+func limitToolResultBatch(meter *toolContextMeter, messages []llm.Message, tools []llm.ToolDefinition, schema []byte, batch []llm.Message, maxContextTokens, percent int) []llm.Message {
 	if percent <= 0 || maxContextTokens <= 0 {
 		return batch
 	}
@@ -32,13 +40,21 @@ func limitToolResultBatch(messages []llm.Message, tools []llm.ToolDefinition, sc
 	// The estimate is a byte count, so each appended result adds its own
 	// encoding plus a separator. Tracking that incrementally keeps batch
 	// limiting linear instead of re-encoding the whole transcript per result.
-	contextBytes := toolContextByteLen(messages, tools, schema)
+	contextBytes := meter.contextByteLen(messages, tools, schema)
 	appended := len(messages)
+	floorBudget := maxToolResultFloorTokens
 	for i := range limited {
 		used := tokenestimate.EstimateLen(contextBytes)
 		remaining := max(maxContextTokens-used, 0)
-		allowance := max(remaining*percent/100, minToolResultTokens)
-		limited[i].Content = limitToolResultJSON(limited[i].Content, allowance)
+		allowance := remaining * percent / 100
+		if grant := min(max(minToolResultTokens-allowance, 0), floorBudget); grant > 0 {
+			allowance += grant
+			floorBudget -= grant
+		}
+		// A zero allowance means "no token cap" to limitToolResultJSON, so a
+		// batch that has spent its floor budget asks for the smallest capped
+		// result instead — the self-describing truncation marker.
+		limited[i].Content = limitToolResultJSON(limited[i].Content, max(allowance, 1))
 		if appended > 0 {
 			contextBytes++ // the "," between array elements
 		}
@@ -97,23 +113,88 @@ func reconcileLimitedInspectFileCoverage(toolCalls []llm.ToolCall, raw, limited 
 	}
 }
 
-// toolContextByteLen returns the encoded size of the request the tool results
-// are appended to. The message slice is never nil so that appending an element
-// grows the JSON array by exactly a separator plus the element.
-func toolContextByteLen(messages []llm.Message, tools []llm.ToolDefinition, schema []byte) int {
-	if messages == nil {
-		messages = []llm.Message{}
+// toolContextMeter measures the encoded size of the request the tool results
+// are appended to, reusing what it measured on earlier rounds. Encoding the
+// whole transcript once per tool round made the agent loop quadratic in
+// transcript size purely to divide a byte count by four, so each message is
+// encoded once and re-encoded only when it changes.
+//
+// The zero value is usable, and a nil meter measures everything from scratch.
+type toolContextMeter struct {
+	lengths    []int
+	signatures []toolMessageSignature
+}
+
+// toolMessageSignature is a cheap stand-in for a message's identity. The agent
+// loop mostly appends, but it also rewinds the history on a JSON repair, so a
+// cached length is only reused when the message at that index still looks the
+// same. The content edges are sampled alongside its length: two different
+// messages of the same length would otherwise share a signature, and comparing
+// the whole content would cost as much as the encoding this avoids.
+type toolMessageSignature struct {
+	role       string
+	toolCallID string
+	content    int
+	toolCalls  int
+	head, tail string
+}
+
+const toolMessageSignatureSample = 24
+
+func toolMessageSignatureOf(message llm.Message) toolMessageSignature {
+	signature := toolMessageSignature{
+		role:       message.Role,
+		toolCallID: message.ToolCallID,
+		content:    len(message.Content),
+		toolCalls:  len(message.ToolCalls),
 	}
+	sample := min(len(message.Content), toolMessageSignatureSample)
+	signature.head = message.Content[:sample]
+	signature.tail = message.Content[len(message.Content)-sample:]
+	return signature
+}
+
+// contextByteLen returns the encoded size of the request. The message slice is
+// never nil so that appending an element grows the JSON array by exactly a
+// separator plus the element — the same accounting the batch loop continues.
+func (m *toolContextMeter) contextByteLen(messages []llm.Message, tools []llm.ToolDefinition, schema []byte) int {
 	payload := struct {
 		Messages []llm.Message        `json:"messages"`
 		Tools    []llm.ToolDefinition `json:"tools,omitempty"`
 		Schema   json.RawMessage      `json:"schema,omitempty"`
 	}{
-		Messages: messages,
+		Messages: []llm.Message{},
 		Tools:    tools,
 		Schema:   schema,
 	}
-	return jsonByteLen(payload)
+	// Everything but the messages is bounded by the tool definitions and the
+	// schema, so it is cheap to re-encode; the empty array it encodes here is
+	// exactly two bytes wider than the separators counted below.
+	total := jsonByteLen(payload)
+	for i, message := range messages {
+		if i > 0 {
+			total++ // the "," between array elements
+		}
+		total += m.messageByteLen(i, message)
+	}
+	return total
+}
+
+func (m *toolContextMeter) messageByteLen(index int, message llm.Message) int {
+	if m == nil {
+		return jsonByteLen(message)
+	}
+	signature := toolMessageSignatureOf(message)
+	if index < len(m.lengths) && m.signatures[index] == signature {
+		return m.lengths[index]
+	}
+	length := jsonByteLen(message)
+	for len(m.lengths) <= index {
+		m.lengths = append(m.lengths, 0)
+		m.signatures = append(m.signatures, toolMessageSignature{})
+	}
+	m.lengths[index], m.signatures[index] = length, signature
+	return length
 }
 
 func jsonByteLen(value any) int {
@@ -187,9 +268,24 @@ func limitToolResultJSON(raw string, maxTokens int) string {
 // budget. Both reference context lists are capped: with token capping disabled
 // the payload would otherwise have no size bound at all.
 func applyToolItemLimits(root map[string]any) bool {
-	if !isReferencePayload(root) {
-		return false
+	switch classifyToolResult(root) {
+	case shapeReferences:
+		return applyReferenceItemLimits(root)
+	case shapeGroupedSearch:
+		// One search can carry several reference analyses; the cap is per
+		// analysis, exactly as it is for a lone one.
+		changed := false
+		for _, nested := range groupedStructuralPayloads(root) {
+			if applyToolItemLimits(nested) {
+				changed = true
+			}
+		}
+		return changed
 	}
+	return false
+}
+
+func applyReferenceItemLimits(root map[string]any) bool {
 	changed := false
 	for _, field := range []string{"functions", "outside_functions"} {
 		contexts := arrayField(root, field)
@@ -221,8 +317,8 @@ func markReferenceAnalysisIncomplete(root map[string]any) {
 // would strand an oversized payload whose typed fields are already empty, and
 // the caller then discards it entirely.
 func reduceToolResult(root map[string]any, over, size int) bool {
-	switch {
-	case isReferencePayload(root):
+	switch classifyToolResult(root) {
+	case shapeReferences:
 		if dropArrayTail(root, "functions", over, size, "omitted_contexts") {
 			markReferenceAnalysisIncomplete(root)
 			return true
@@ -238,7 +334,7 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 				}
 			}
 		}
-	case root["root"] != nil:
+	case shapeCallHierarchy:
 		if hierarchy, ok := root["root"].(map[string]any); ok {
 			if trimDeepestHierarchyContent(hierarchy, over) {
 				return true
@@ -248,7 +344,11 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 				return true
 			}
 		}
-	case root["results"] != nil:
+	case shapeGroupedSearch:
+		if reduceGroupedSearchResult(root, over, size) {
+			return true
+		}
+	case shapeSearchResults:
 		if dropArrayTail(root, "results", over, size, "omitted_results") {
 			root["result_count"] = len(arrayField(root, "results"))
 			return true
@@ -256,15 +356,15 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 		if dropArrayTail(root, "truncated_files", over, size, "omitted_truncated_files") {
 			return true
 		}
-	case root["files"] != nil:
+	case shapeFileList:
 		if dropArrayTail(root, "files", over, size, "omitted_files") {
 			return true
 		}
-	case root["commits"] != nil:
+	case shapeHistory:
 		if reduceHistoryResult(root, over, size) {
 			return true
 		}
-	case root["content"] != nil:
+	case shapeFileContent:
 		if trimStringField(root, "content", over, true) {
 			if start, ok := intField(root, "start_line"); ok {
 				content, _ := root["content"].(string)
@@ -274,6 +374,53 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 		}
 	}
 	return reduceGenericJSON(root, over, size)
+}
+
+// reduceGroupedSearchResult shrinks the structural analyses a multi-declaration
+// search returned, through the reducer that suits each one. Left to the generic
+// reducer, the nested context lists were tail-dropped without an omitted count
+// and without clearing the analysis's completeness claim — the one thing the
+// reference branch exists to prevent.
+func reduceGroupedSearchResult(root map[string]any, over, size int) bool {
+	var largest map[string]any
+	most := -1
+	for _, nested := range groupedStructuralPayloads(root) {
+		// Item counts stand in for encoded size here: measuring each nested
+		// payload would mean re-encoding the whole result on every pass of the
+		// shrink loop.
+		if count := structuralPayloadItems(nested); count > most {
+			largest, most = nested, count
+		}
+	}
+	if largest != nil && reduceToolResult(largest, over, size) {
+		return true
+	}
+	if dropArrayTail(root, "literal_results", over, size, "omitted_literal_results") {
+		root["literal_result_count"] = len(arrayField(root, "literal_results"))
+		return true
+	}
+	return false
+}
+
+// groupedStructuralPayloads returns the call-hierarchy and reference analyses a
+// grouped search result carries.
+func groupedStructuralPayloads(root map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, field := range []string{"reference_results", "call_hierarchies"} {
+		for _, item := range arrayField(root, field) {
+			if nested, ok := item.(map[string]any); ok {
+				out = append(out, nested)
+			}
+		}
+	}
+	return out
+}
+
+func structuralPayloadItems(payload map[string]any) int {
+	if hierarchy, ok := payload["root"].(map[string]any); ok {
+		return countHierarchyNodes(hierarchy)
+	}
+	return len(arrayField(payload, "functions")) + len(arrayField(payload, "outside_functions"))
 }
 
 func reduceHistoryResult(root map[string]any, over, size int) bool {
@@ -314,11 +461,46 @@ func markToolResultTruncated(root map[string]any) {
 	}
 }
 
-func isReferencePayload(root map[string]any) bool {
+// toolResultShape names the decoded tool-result payloads the review layer has
+// to tell apart. The tools answer with an untagged union of the retrieval
+// result types, so the shape is recognized from the fields those types define.
+// Recognizing it in one place is what keeps a new field named `target` or
+// `results` on some unrelated result from silently rerouting pruning,
+// summarization, or the history label.
+type toolResultShape int
+
+const (
+	shapeUnknown       toolResultShape = iota
+	shapeReferences                    // retrieval.ReferenceResult
+	shapeCallHierarchy                 // retrieval.CallHierarchy
+	shapeGroupedSearch                 // GroupedSearchResult
+	shapeSearchResults                 // retrieval.SearchResults
+	shapeFileList                      // list_files
+	shapeFileContent                   // retrieval.FileContent / retrieval.FileSlice
+	shapeHistory                       // git_log / git_show
+)
+
+func classifyToolResult(root map[string]any) toolResultShape {
 	_, target := root["target"]
 	_, functions := root["functions"]
 	_, outside := root["outside_functions"]
-	return target && functions && outside
+	switch {
+	case target && functions && outside:
+		return shapeReferences
+	case root["root"] != nil:
+		return shapeCallHierarchy
+	case root["reference_results"] != nil || root["call_hierarchies"] != nil:
+		return shapeGroupedSearch
+	case root["results"] != nil:
+		return shapeSearchResults
+	case root["files"] != nil:
+		return shapeFileList
+	case root["commits"] != nil:
+		return shapeHistory
+	case root["content"] != nil:
+		return shapeFileContent
+	}
+	return shapeUnknown
 }
 
 func arrayField(object map[string]any, key string) []any {

@@ -130,7 +130,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string
 
 func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
 	if e.retrieval == nil {
-		return limitToolResultJSON(toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"})), 0)
+		return toolError("", "retrieval_unavailable", toolErrorMessage(toolErrorData{Code: "retrieval_unavailable"}))
 	}
 	var result string
 	switch toolCall.Name {
@@ -156,7 +156,16 @@ func (e *Engine) executeToolCall(ctx context.Context, repoRoot string, toolCall 
 	// Apply tool-specific item limits here. Context-aware token capping happens
 	// after the parallel batch completes, when the agent loop knows current
 	// prompt usage and can allocate results against one shared remainder.
-	return limitToolResultJSON(result, 0)
+	//
+	// Only the tools that can answer with a reference analysis carry item
+	// limits, and enforcing them means decoding the payload. Running every tool
+	// through it made an inspected file or a repository listing pay a full
+	// decode of its own result just to have the original string handed back.
+	switch toolCall.Name {
+	case "search", "find_references":
+		return limitToolResultJSON(result, 0)
+	}
+	return result
 }
 
 func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
@@ -446,71 +455,40 @@ func (e *Engine) ExecuteSearch(ctx context.Context, repoRoot string, options Sea
 		seenFileRanges: make(map[string][]model.LineRange),
 		seenToolCalls:  make(map[string]struct{}),
 	}
-	raw := e.executeSearch(ctx, repoRoot, llm.ToolCall{ID: "standalone-search", Name: "search", Arguments: arguments}, state)
-	var envelope searchResultEnvelope
-	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
-		return nil, fmt.Errorf("decode search result: %w", err)
+	result := e.searchToolResult(ctx, repoRoot, llm.ToolCall{ID: "standalone-search", Name: "search", Arguments: arguments}, state)
+	if result.value == nil {
+		return nil, errors.New(toolResultErrorMessage(result.payload))
 	}
-	if envelope.Status == "error" {
-		return nil, errors.New(envelope.Error.Message)
-	}
-	switch {
-	case envelope.CallHierarchies != nil || envelope.ReferenceResults != nil:
-		grouped := &GroupedSearchResult{}
-		if err := json.Unmarshal([]byte(raw), grouped); err != nil {
-			return nil, fmt.Errorf("decode grouped search result: %w", err)
-		}
-		return grouped, nil
-	case envelope.Root != nil:
-		callers := &retrieval.CallHierarchy{}
-		if err := json.Unmarshal([]byte(raw), callers); err != nil {
-			return nil, fmt.Errorf("decode caller hierarchy: %w", err)
-		}
-		return envelope.withLiteralMatches(&MixedSearchResult{Callers: callers}), nil
-	case envelope.Target != nil:
-		references := &retrieval.ReferenceResult{}
-		if err := json.Unmarshal([]byte(raw), references); err != nil {
-			return nil, fmt.Errorf("decode reference result: %w", err)
-		}
-		return envelope.withLiteralMatches(&MixedSearchResult{References: references}), nil
-	default:
-		results := &retrieval.SearchResults{}
-		if err := json.Unmarshal([]byte(raw), results); err != nil {
-			return nil, fmt.Errorf("decode search result: %w", err)
-		}
-		return results, nil
-	}
+	return result.value, nil
 }
 
-// searchResultEnvelope identifies which shape executeSearch returned. The
-// search tool answers with an untagged union — literal matches, one structural
-// result, or several grouped together — so the discriminating fields are
-// decoded once here instead of re-decoding the whole document per guess.
-type searchResultEnvelope struct {
-	Status string `json:"status"`
-	Error  struct {
-		Message string `json:"message"`
-	} `json:"error"`
-	Root             json.RawMessage          `json:"root"`
-	Target           json.RawMessage          `json:"target"`
-	CallHierarchies  json.RawMessage          `json:"call_hierarchies"`
-	ReferenceResults json.RawMessage          `json:"reference_results"`
-	LiteralResults   []retrieval.SearchResult `json:"literal_results"`
-	TruncatedFiles   []string                 `json:"truncated_files"`
+// searchToolResult is one search answer in both forms its callers need: the
+// JSON the model receives, and the typed result it was built from. The search
+// tool answers with an untagged union — literal matches, one structural result,
+// or several grouped together — so handing the value over directly is what
+// keeps a caller from decoding the document back into the retrieval types the
+// tool already held, guessing the shape from which keys are present.
+type searchToolResult struct {
+	payload string
+	// value is nil only for an error payload.
+	value any
 }
 
-// withLiteralMatches returns the structural result on its own unless literal
-// matches were preserved next to it.
-func (envelope searchResultEnvelope) withLiteralMatches(mixed *MixedSearchResult) any {
-	if len(envelope.LiteralResults) == 0 && len(envelope.TruncatedFiles) == 0 {
-		if mixed.Callers != nil {
-			return mixed.Callers
-		}
-		return mixed.References
+func searchToolError(payload string) searchToolResult {
+	return searchToolResult{payload: payload}
+}
+
+// toolResultErrorMessage reads the message out of an error payload.
+func toolResultErrorMessage(raw string) string {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	mixed.LiteralResults = envelope.LiteralResults
-	mixed.TruncatedFiles = envelope.TruncatedFiles
-	return mixed
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload.Error.Message == "" {
+		return "search failed"
+	}
+	return payload.Error.Message
 }
 
 // resolveSearchContextLines applies the per-mode default when the model omits
@@ -536,14 +514,18 @@ func normalizeSearchPath(path string) string {
 }
 
 func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
+	return e.searchToolResult(ctx, repoRoot, toolCall, state).payload
+}
+
+func (e *Engine) searchToolResult(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) searchToolResult {
 	var args searchToolArgs
 	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
-		return toolError("", "invalid_arguments", err.Error())
+		return searchToolError(toolError("", "invalid_arguments", err.Error()))
 	}
 	args.Query = retrieval.NormalizeSearchQuery(args.Query)
 	normalizedPath := normalizeSearchPath(args.Path)
 	if args.Query == "" {
-		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "query"))
+		return searchToolError(toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "query")))
 	}
 	contextLines := resolveSearchContextLines(args.ContextLines, args.Query)
 	multiLine := retrieval.FindLinesCount(args.Query) > 1
@@ -555,12 +537,12 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	state.mu.Unlock()
 	if seen {
 		e.logf(ctx, "Skipping duplicate tool call: name=%s path=%s query=%q", toolCall.Name, normalizedPath, args.Query)
-		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
+		return searchToolError(toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"})))
 	}
 	e.logf(ctx, "Executing tool call: name=%s path=%s query=%q query_lines=%d context_lines=%d max_results=%d case_sensitive=%t", toolCall.Name, normalizedPath, args.Query, retrieval.FindLinesCount(args.Query), contextLines, args.MaxResults, args.CaseSensitive)
 	results, err := e.retrieval.Search(ctx, repoRoot, normalizedPath, args.Query, contextLines, args.MaxResults, args.CaseSensitive)
 	if err != nil {
-		return toolError(normalizedPath, "retrieval_failed", err.Error())
+		return searchToolError(toolError(normalizedPath, "retrieval_failed", err.Error()))
 	}
 
 	// A multi-line block is always matched exactly (lean whitespace-insensitive
@@ -574,7 +556,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 			e.logf(ctx, "Executing regex search: name=%s path=%s pattern=%q context_lines=%d max_results=%d", toolCall.Name, normalizedPath, compiled.String(), contextLines, args.MaxResults)
 			regexResults, err := e.retrieval.SearchRegex(ctx, repoRoot, normalizedPath, compiled, contextLines, args.MaxResults)
 			if err != nil {
-				return toolError(normalizedPath, "retrieval_failed", err.Error())
+				return searchToolError(toolError(normalizedPath, "retrieval_failed", err.Error()))
 			}
 			merged := mergeSearchResults(results.Results, regexResults.Results, args.MaxResults)
 			results.Results = merged
@@ -586,7 +568,7 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	}
 
 	if e.searchToolOptimization {
-		if optimized, ok := e.optimizeSearchResults(ctx, repoRoot, toolCall.ID, args.Query, results.Results, results.TruncatedFiles, state); ok {
+		if optimized, ok := e.optimizeSearchResults(ctx, repoRoot, toolCall.ID, args.Query, args.CaseSensitive, results.Results, results.TruncatedFiles, state); ok {
 			state.mu.Lock()
 			state.seenToolCalls[key] = struct{}{}
 			state.mu.Unlock()
@@ -597,15 +579,18 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 	state.mu.Lock()
 	state.seenToolCalls[key] = struct{}{}
 	state.mu.Unlock()
-	return mustToolResultJSON(withTruncatedFiles(map[string]any{
-		"path":           results.Path,
-		"query":          results.Query,
-		"context_lines":  results.ContextLines,
-		"max_results":    results.MaxResults,
-		"case_sensitive": results.CaseSensitive,
-		"result_count":   results.ResultCount,
-		"results":        results.Results,
-	}, results.TruncatedFiles))
+	return searchToolResult{
+		payload: mustToolResultJSON(withTruncatedFiles(map[string]any{
+			"path":           results.Path,
+			"query":          results.Query,
+			"context_lines":  results.ContextLines,
+			"max_results":    results.MaxResults,
+			"case_sensitive": results.CaseSensitive,
+			"result_count":   results.ResultCount,
+			"results":        results.Results,
+		}, results.TruncatedFiles)),
+		value: results,
+	}
 }
 
 type classifiedSearchSymbol struct {
@@ -627,10 +612,10 @@ type classifiedSearchSymbol struct {
 // for the spelling found in its returned snippet. Matches are grouped by their
 // declaration and enriched with callers or references independently; unsupported
 // or unresolved matches remain literal.
-func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID, query string, results []retrieval.SearchResult, truncatedFiles []string, state *toolRoundState) (string, bool) {
+func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID, query string, caseSensitive bool, results []retrieval.SearchResult, truncatedFiles []string, state *toolRoundState) (searchToolResult, bool) {
 	matches := searchIdentifierQueryPattern.FindStringSubmatch(query)
 	if len(matches) != 2 || len(results) == 0 {
-		return "", false
+		return searchToolResult{}, false
 	}
 	queryName := matches[1]
 	type lookup struct{ name, path string }
@@ -639,7 +624,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 	names := map[string]struct{}{queryName: {}}
 	for _, result := range results {
 		path := normalizeSearchPath(result.CodeLocation.FilePath)
-		spellings := matchingIdentifierSpellings(result.CodeLocation.Content, queryName)
+		spellings := matchingIdentifierSpellings(result.CodeLocation.Content, queryName, caseSensitive)
 		if len(spellings) == 0 {
 			spellings = []string{queryName}
 		}
@@ -653,7 +638,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			lookups = append(lookups, candidate)
 			if len(lookups) > toollimits.MaxSearchStructuralLookups {
 				e.logf(ctx, "Keeping broad identifier search literal: query=%q structural_candidates>%d", query, toollimits.MaxSearchStructuralLookups)
-				return "", false
+				return searchToolResult{}, false
 			}
 		}
 	}
@@ -730,7 +715,7 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		resolveBatch(fallbacks, toollimits.MaxSearchStructuralLookups)
 	}
 	if len(resolved) == 0 {
-		return "", false
+		return searchToolResult{}, false
 	}
 
 	keys := make([]string, 0, len(resolved))
@@ -739,7 +724,15 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 	}
 	sort.Strings(keys)
 	e.collectDeferredReferences(ctx, repoRoot, keys, resolved)
-	var callHierarchies, referenceResults []json.RawMessage
+	// A name the search resolved to several declarations cannot be looked up
+	// without a path, which decides how far the dedup reservation reaches.
+	declarationsPerName := map[string]int{}
+	for _, key := range keys {
+		declarationsPerName[resolved[key].name]++
+	}
+	var callHierarchyPayloads, referencePayloads []json.RawMessage
+	var callHierarchies []*retrieval.CallHierarchy
+	var referenceResults []*retrieval.ReferenceResult
 	classifiedMatches := make(map[int]struct{})
 	for _, key := range keys {
 		selected := resolved[key]
@@ -761,11 +754,12 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			if toolResultIsError(optimized) {
 				continue
 			}
-			var hierarchy retrieval.CallHierarchy
-			if err := json.Unmarshal([]byte(optimized), &hierarchy); err != nil {
+			hierarchy := &retrieval.CallHierarchy{}
+			if err := json.Unmarshal([]byte(optimized), hierarchy); err != nil {
 				continue
 			}
-			callHierarchies = append(callHierarchies, json.RawMessage(optimized))
+			callHierarchyPayloads = append(callHierarchyPayloads, json.RawMessage(optimized))
+			callHierarchies = append(callHierarchies, hierarchy)
 			for resultIndex, result := range results {
 				if callHierarchyCoversLocation(hierarchy.Root, result.CodeLocation) {
 					classifiedMatches[resultIndex] = struct{}{}
@@ -775,25 +769,34 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			// Reserve only once the analysis exists: reserving before it could
 			// fail would leave the key taken and block the model from ever
 			// calling find_references for this symbol.
-			if selected.references == nil || !e.reserveSearchReferenceResult(selected, state) {
+			if selected.references == nil || !e.reserveSearchReferenceResult(selected, declarationsPerName[selected.name] == 1, state) {
 				continue
 			}
 			e.logf(ctx, "Replacing search matches with find_references: query=%q symbol=%q path=%s kind=%s", query, selected.name, selected.path, selected.references.Target.Kind)
-			optimized = limitToolResultJSON(mustToolResultJSON(selected.references), 0)
-			referenceResults = append(referenceResults, json.RawMessage(optimized))
+			// Classification has to see the analysis the model receives, not the
+			// one it was cut from: a match the item limit dropped is still a match
+			// the search found, and treating it as covered removed it from the
+			// literal results as well, so it left the answer entirely.
+			visible := limitReferenceContexts(selected.references)
+			optimized = mustToolResultJSON(visible)
+			if visible != selected.references {
+				optimized = withToolResultTruncationMarkers(optimized)
+			}
+			referencePayloads = append(referencePayloads, json.RawMessage(optimized))
+			referenceResults = append(referenceResults, visible)
 			// Classify against every literal match, not just the ones whose
 			// lookup produced this declaration: the repo-wide fallback resolves
 			// without a path and would otherwise leave a duplicate of each hit.
 			for resultIndex, result := range results {
-				if referenceResultCoversLocation(selected.references, result.CodeLocation) {
+				if referenceResultCoversLocation(visible, result.CodeLocation) {
 					classifiedMatches[resultIndex] = struct{}{}
 				}
 			}
 		}
 	}
-	structuralCount := len(callHierarchies) + len(referenceResults)
+	structuralCount := len(callHierarchyPayloads) + len(referencePayloads)
 	if structuralCount == 0 {
-		return "", false
+		return searchToolResult{}, false
 	}
 	literalResults := make([]retrieval.SearchResult, 0)
 	for resultIndex, result := range results {
@@ -802,23 +805,95 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		}
 	}
 	if structuralCount == 1 {
-		if len(callHierarchies) == 1 {
-			return withLiteralSearchResults(string(callHierarchies[0]), literalResults, truncatedFiles), true
+		mixed := &MixedSearchResult{LiteralResults: literalResults, TruncatedFiles: truncatedFiles}
+		structural := ""
+		if len(callHierarchyPayloads) == 1 {
+			mixed.Callers, structural = callHierarchies[0], string(callHierarchyPayloads[0])
+		} else {
+			mixed.References, structural = referenceResults[0], string(referencePayloads[0])
 		}
-		return withLiteralSearchResults(string(referenceResults[0]), literalResults, truncatedFiles), true
+		return searchToolResult{
+			payload: withLiteralSearchResults(structural, literalResults, truncatedFiles),
+			value:   mixed.structuralOrMixed(),
+		}, true
 	}
 	payload := map[string]any{
 		"structural_result_count": structuralCount,
 		"literal_result_count":    len(literalResults),
 		"literal_results":         literalResults,
 	}
-	if len(callHierarchies) > 0 {
-		payload["call_hierarchies"] = callHierarchies
+	if len(callHierarchyPayloads) > 0 {
+		payload["call_hierarchies"] = callHierarchyPayloads
 	}
-	if len(referenceResults) > 0 {
-		payload["reference_results"] = referenceResults
+	if len(referencePayloads) > 0 {
+		payload["reference_results"] = referencePayloads
 	}
-	return mustToolResultJSON(withTruncatedFiles(payload, truncatedFiles)), true
+	return searchToolResult{
+		payload: mustToolResultJSON(withTruncatedFiles(payload, truncatedFiles)),
+		value: &GroupedSearchResult{
+			StructuralResultCount: structuralCount,
+			CallHierarchies:       callHierarchies,
+			ReferenceResults:      referenceResults,
+			LiteralResultCount:    len(literalResults),
+			LiteralResults:        literalResults,
+			TruncatedFiles:        truncatedFiles,
+		},
+	}, true
+}
+
+// structuralOrMixed returns the structural result on its own unless literal
+// matches were preserved next to it.
+func (r *MixedSearchResult) structuralOrMixed() any {
+	if len(r.LiteralResults) == 0 && len(r.TruncatedFiles) == 0 {
+		if r.Callers != nil {
+			return r.Callers
+		}
+		return r.References
+	}
+	return r
+}
+
+// limitReferenceContexts returns the analysis as the model will see it: the
+// per-result context limit applied to the typed value, so the payload and every
+// decision made from it describe the same set of contexts. The original is
+// returned untouched when nothing has to be dropped.
+func limitReferenceContexts(result *retrieval.ReferenceResult) *retrieval.ReferenceResult {
+	if len(result.Functions) <= toollimits.MaxReferenceFunctions && len(result.OutsideFunctions) <= toollimits.MaxReferenceFunctions {
+		return result
+	}
+	limited := *result
+	omitted := 0
+	if extra := len(limited.Functions) - toollimits.MaxReferenceFunctions; extra > 0 {
+		limited.Functions = limited.Functions[:toollimits.MaxReferenceFunctions]
+		omitted += extra
+	}
+	if extra := len(limited.OutsideFunctions) - toollimits.MaxReferenceFunctions; extra > 0 {
+		limited.OutsideFunctions = limited.OutsideFunctions[:toollimits.MaxReferenceFunctions]
+		omitted += extra
+	}
+	limited.OmittedContexts += omitted
+	// The counts still describe the whole analysis, so leaving `complete` set
+	// beside a shortened context list would read as "these are all the uses".
+	limited.Complete = false
+	return &limited
+}
+
+// withToolResultTruncationMarkers adds the envelope fields that tell the model
+// its result was cut down. Only a payload that was actually shortened pays the
+// re-encoding.
+func withToolResultTruncationMarkers(raw string) string {
+	var root map[string]any
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&root); err != nil {
+		return raw
+	}
+	markToolResultTruncated(root)
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
 }
 
 func referenceResultCoversLocation(result *retrieval.ReferenceResult, location retrieval.CodeLocation) bool {
@@ -893,18 +968,45 @@ func (e *Engine) collectDeferredReferences(ctx context.Context, repoRoot string,
 	}
 }
 
-func (e *Engine) reserveSearchReferenceResult(selected *classifiedSearchSymbol, state *toolRoundState) bool {
-	// The search optimization resolves declarations without pinning a line, so
-	// it reserves the unpinned key an explicit find_references would use.
-	key := referenceDedupKey(normalizeSearchPath(selected.path), selected.name, 0)
-	unlock := state.toolLocks.lock(key)
-	defer unlock()
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if _, duplicate := state.seenToolCalls[key]; duplicate {
+func (e *Engine) reserveSearchReferenceResult(selected *classifiedSearchSymbol, uniqueName bool, state *toolRoundState) bool {
+	// A model that wants this symbol's references again can ask for it with the
+	// declaring file as path, pinned to its line, or with no path at all, and
+	// every one of those names the analysis the search just delivered. Reserving
+	// the declaration's path alone left the pathless call — the one an unprompted
+	// find_references makes — free to re-run the whole repository-wide analysis.
+	//
+	// The pathless key is only this declaration's when the search resolved a
+	// single one for the name; otherwise that call is ambiguous and answers
+	// something this result does not.
+	path := normalizeSearchPath(selected.path)
+	keys := []string{referenceDedupKey(path, selected.name, 0)}
+	if selected.declarationLine > 0 {
+		keys = append(keys, referenceDedupKey(path, selected.name, selected.declarationLine))
+	}
+	if uniqueName {
+		keys = append(keys, referenceDedupKey("", selected.name, 0))
+	}
+	reserve := func(key string) bool {
+		unlock := state.toolLocks.lock(key)
+		defer unlock()
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if _, duplicate := state.seenToolCalls[key]; duplicate {
+			return false
+		}
+		state.seenToolCalls[key] = struct{}{}
+		return true
+	}
+	if !reserve(keys[0]) {
 		return false
 	}
-	state.seenToolCalls[key] = struct{}{}
+	// The remaining keys name the same analysis, so an existing reservation on
+	// one of them is nothing to back out of. Each is taken under its own lock:
+	// holding several at once would order-couple this with the tool calls that
+	// take them individually.
+	for _, key := range keys[1:] {
+		reserve(key)
+	}
 	return true
 }
 
@@ -923,11 +1025,16 @@ func withLiteralSearchResults(structural string, results []retrieval.SearchResul
 	return mustToolResultJSON(withTruncatedFiles(payload, truncatedFiles))
 }
 
-func matchingIdentifierSpellings(content, queryName string) []string {
+// matchingIdentifierSpellings collects the identifiers on a matched line that
+// the query could have meant. A case-insensitive search matches differently
+// cased spellings, so the structural lookup follows all of them; a
+// case-sensitive one excluded them by definition, and enriching it with another
+// symbol's references would answer a question the model did not ask.
+func matchingIdentifierSpellings(content, queryName string, caseSensitive bool) []string {
 	seen := make(map[string]struct{})
 	var matches []string
 	for _, identifier := range searchIdentifierPattern.FindAllString(content, -1) {
-		if !strings.EqualFold(identifier, queryName) {
+		if caseSensitive && identifier != queryName || !caseSensitive && !strings.EqualFold(identifier, queryName) {
 			continue
 		}
 		if _, duplicate := seen[identifier]; duplicate {

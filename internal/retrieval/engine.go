@@ -160,7 +160,12 @@ type ReferenceResult struct {
 	ExactReferenceCount    int                `json:"exact_reference_count"`
 	PossibleReferenceCount int                `json:"possible_reference_count"`
 	Complete               bool               `json:"complete"`
-	Notes                  []string           `json:"notes,omitempty"`
+	// OmittedContexts counts contexts a caller-side item limit withheld from
+	// Functions and OutsideFunctions. The counts above still describe the whole
+	// analysis, so a non-zero value is what tells a reader that the listed
+	// contexts are not all of them.
+	OmittedContexts int      `json:"omitted_contexts,omitempty"`
+	Notes           []string `json:"notes,omitempty"`
 }
 
 type ReferenceTarget struct {

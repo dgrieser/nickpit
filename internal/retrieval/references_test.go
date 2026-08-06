@@ -376,6 +376,108 @@ func TestRangeLocationAlwaysReturnsConsistentRange(t *testing.T) {
 	}
 }
 
+// A position past the end of the text the reader could return names a line
+// that is genuinely unavailable. Moving it onto the last line that was read
+// would cite unrelated code under the reported number.
+func TestRangeLocationKeepsLineNumbersPastAvailableText(t *testing.T) {
+	location := rangeLocation("clipped.go", "go", []string{"package short", "", "var x = 1"}, 200000, 200000)
+	if location.LineRange.Start != 200000 || location.LineRange.End != 200000 {
+		t.Fatalf("location moved onto readable text: %#v", location)
+	}
+	if location.Content != "" {
+		t.Fatalf("location content = %q, want empty", location.Content)
+	}
+}
+
+// A use inside a function that binds the same name refers to that binding, not
+// to the symbol being looked up, so the declaring file's own scope cannot make
+// it exact.
+func TestFindPythonReferencesDowngradesShadowedUses(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", strings.Join([]string{
+		"config = load()",
+		"",
+		"def unrelated():",
+		"    config = {}",
+		"    return config['a']",
+		"",
+		"def uses_module_config():",
+		"    return config",
+		"",
+	}, "\n"))
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "config", Path: "mod.py", Line: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confidenceAt := map[int]string{}
+	for _, context := range append(append([]ReferenceContext{}, result.Functions...), result.OutsideFunctions...) {
+		for _, occurrence := range context.References {
+			confidenceAt[occurrence.CodeLocation.LineRange.Start] = occurrence.Confidence
+		}
+	}
+	for _, line := range []int{4, 5} {
+		if confidenceAt[line] != "possible" {
+			t.Fatalf("line %d confidence = %q, want possible: %#v", line, confidenceAt[line], confidenceAt)
+		}
+	}
+	if confidenceAt[8] != "exact" {
+		t.Fatalf("unshadowed use confidence = %q, want exact: %#v", confidenceAt[8], confidenceAt)
+	}
+	if result.Complete {
+		t.Fatal("result claims completeness with unproven references")
+	}
+}
+
+// A brace body inside a grouped declaration is not the group's own scope: its
+// members keep the group's paren depth, so an interface method or struct field
+// would otherwise be reported as a declaration of the group's kind and make
+// every real declaration of that name ambiguous.
+func TestFindGoReferencesIgnoresBraceBodyInsideGroupedDeclaration(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/grouped\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "iface.go", "package grouped\n\ntype (\n\tRunner interface {\n\t\tRun() error\n\t}\n)\n")
+	writeRetrievalFile(t, repoRoot, "run.go", "package grouped\n\nfunc Run() error { return nil }\n\nfunc Call() error { return Run() }\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Run"})
+	if err != nil {
+		t.Fatalf("interface method was treated as a rival declaration: %v", err)
+	}
+	if result.Target.Definition.FilePath != "run.go" || result.Target.Kind != "function" {
+		t.Fatalf("target = %#v", result.Target)
+	}
+	if result.ExactReferenceCount != 1 {
+		t.Fatalf("exact references = %d, want the call in Call: %s", result.ExactReferenceCount, result.Render())
+	}
+}
+
+// The loaded snapshot outlives the worktree it was built from. A use whose file
+// can no longer be read is still a proven use, and a result that quietly drops
+// it must not go on claiming to list them all.
+func TestCollectGoReferencesReportsUnreadableSources(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/gone\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "value.go", "package gone\n\nvar Value = 1\n\nfunc Use() int { return Value }\n")
+
+	pkgs, err := loadGoReferencePackages(context.Background(), repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := lookupScope{Path: "value.go", IsFile: true}
+	selected, complete, err := resolveGoDeclaration(repoRoot, SymbolRef{Name: "Value", Path: "value.go"}, scope, pkgs, newReferenceLineCache(repoRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A cache rooted elsewhere stands in for files the checkout moved away.
+	result := collectGoReferences(repoRoot, pkgs, selected, complete, newReferenceLineCache(t.TempDir()))
+	if result.ExactReferenceCount == 0 {
+		t.Fatalf("unreadable sources dropped every reference: %#v", result)
+	}
+	if result.Complete {
+		t.Fatalf("result claims completeness despite unreadable sources: %#v", result)
+	}
+}
+
 func TestFindReferencesIgnoresCommentsAndStrings(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRetrievalFile(t, repoRoot, "config.py", "VALUE = 1\n# VALUE\ntext = 'VALUE'\n")
@@ -700,7 +802,7 @@ func TestParsedReferenceSnapshotRefreshesAfterEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 1 || len(first[0].lines) < 1 || !strings.Contains(first[0].lines[0], "VALUE = 1") {
+	if len(first) != 1 || len(first[0].masked) < 1 || !strings.Contains(first[0].masked[0], "VALUE = 1") {
 		t.Fatalf("first snapshot = %#v", first)
 	}
 
@@ -717,8 +819,8 @@ func TestParsedReferenceSnapshotRefreshesAfterEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second) != 1 || !strings.Contains(second[0].lines[0], "VALUE = 2") {
-		t.Fatalf("snapshot was not refreshed: %#v", second[0].lines)
+	if len(second) != 1 || !strings.Contains(second[0].masked[0], "VALUE = 2") {
+		t.Fatalf("snapshot was not refreshed: %#v", second[0].masked)
 	}
 }
 

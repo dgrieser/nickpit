@@ -88,6 +88,17 @@ type referenceLoader struct {
 	goLoaded     bool
 	goPackages   []*packages.Package
 	goErr        error
+	lineRoot     string
+	lines        *referenceLineCache
+}
+
+// lineCache returns the display-source cache the whole batch shares, so a file
+// that several lookups locate is read once rather than once per lookup.
+func (l *referenceLoader) lineCache(repoRoot string) *referenceLineCache {
+	if l.lines == nil || l.lineRoot != repoRoot {
+		l.lines, l.lineRoot = newReferenceLineCache(repoRoot), repoRoot
+	}
+	return l.lines
 }
 
 func (l *referenceLoader) loadParsed(ctx context.Context, repoRoot string) ([]*parsedReferenceFile, error) {
@@ -129,7 +140,7 @@ func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol Symbo
 	if resolved.isGo() {
 		return collectGoReferences(repoRoot, resolved.goPackages, resolved.goSelected, resolved.goComplete, resolved.goLines), nil
 	}
-	return buildParsedReferenceResult(resolved.parsedAll, resolved.parsed), nil
+	return buildParsedReferenceResult(resolved.parsedAll, resolved.parsed, loader.lineCache(repoRoot)), nil
 }
 
 // resolveReferenceWithLoader picks the declaration symbol names and reports
@@ -148,7 +159,7 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		lines := newReferenceLineCache(repoRoot)
+		lines := loader.lineCache(repoRoot)
 		selected, complete, resolveErr := resolveGoDeclaration(repoRoot, symbol, scope, pkgs, lines)
 		if resolveErr != nil {
 			return nil, resolveErr
@@ -170,7 +181,7 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 		if loadErr != nil {
 			return nil, fmt.Errorf("finding references for %q: %w", symbol.Name, loadErr)
 		}
-		selected, resolveErr := resolveParsedDefinition(symbol, scope, parsed)
+		selected, resolveErr := resolveParsedDefinition(symbol, scope, parsed, loader.lineCache(repoRoot))
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
@@ -184,7 +195,7 @@ func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol Sym
 	if err != nil {
 		return nil, fmt.Errorf("finding references for %q: %w", symbol.Name, err)
 	}
-	selected, err := resolveParsedDefinition(symbol, scope, parsed)
+	selected, err := resolveParsedDefinition(symbol, scope, parsed, loader.lineCache(repoRoot))
 	if err != nil {
 		return nil, err
 	}
@@ -203,9 +214,14 @@ var referenceExtensions = map[string]struct{}{
 }
 
 type parsedReferenceFile struct {
-	path      string
-	language  string
-	lines     []string
+	path     string
+	language string
+	// masked is the source with strings and comments blanked out, one entry per
+	// original line. The original text is deliberately not retained: the parsed
+	// snapshot is cached for the life of the process, and keeping both forms
+	// doubled the resident source bytes of every repository the daemon has
+	// reviewed. Location content is read back per lookup for the handful of
+	// files that actually produce one.
 	masked    []string
 	functions []parsedFunction
 	imports   []tsparser.Import
@@ -298,7 +314,7 @@ func (c *referenceCacheStore[T]) evictLocked() {
 // It is separate from occurrence collection so a repo-wide lookup that lands on
 // a Go declaration can hand off to go/types without paying for a parsed-language
 // reference analysis it would discard.
-func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*parsedReferenceFile) (definitionCandidate, error) {
+func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*parsedReferenceFile, source *referenceLineCache) (definitionCandidate, error) {
 	var candidates []definitionCandidate
 	analyzed := 0
 	// The declaration patterns depend only on the language and the symbol, so
@@ -314,7 +330,7 @@ func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*pars
 			compiled = compileDeclarationPatterns(file.language, symbol.Name)
 			patterns[file.language] = compiled
 		}
-		candidates = append(candidates, findDefinitionCandidates(file, symbol.Name, compiled)...)
+		candidates = append(candidates, findDefinitionCandidates(file, symbol.Name, compiled, source)...)
 	}
 	if len(candidates) == 0 {
 		if analyzed == 0 && !scope.IsFile {
@@ -395,7 +411,7 @@ func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(T) LineRa
 // backends resolved. Go never reaches here — both callers route a Go
 // declaration to go/types first — so the result is always the conservative,
 // incomplete kind.
-func buildParsedReferenceResult(parsed []*parsedReferenceFile, selected definitionCandidate) *ReferenceResult {
+func buildParsedReferenceResult(parsed []*parsedReferenceFile, selected definitionCandidate, source *referenceLineCache) *ReferenceResult {
 	aliases := referenceAliases(parsed, selected)
 	result := &ReferenceResult{
 		Target:           selected.target,
@@ -403,7 +419,7 @@ func buildParsedReferenceResult(parsed []*parsedReferenceFile, selected definiti
 		OutsideFunctions: []ReferenceContext{},
 		Notes:            []string{"dynamic-language references include conservative same-name candidates when binding identity cannot be proven"},
 	}
-	collectParsedOccurrences(result, parsed, selected, aliases)
+	collectParsedOccurrences(result, parsed, selected, aliases, source)
 	sortReferenceResult(result)
 	return result
 }
@@ -510,7 +526,7 @@ func parseReferenceFile(repoRoot, path, source string) *parsedReferenceFile {
 	language := detectLanguage(path)
 	lines := strings.Split(strings.ReplaceAll(source, "\r\n", "\n"), "\n")
 	file := &parsedReferenceFile{
-		path: path, language: language, lines: lines,
+		path: path, language: language,
 		masked: maskReferenceSource(lines, language),
 	}
 	if ir, err := tsparser.ParseFile(path, []byte(source)); err == nil {
@@ -562,8 +578,9 @@ func compileDeclarationPatterns(language, name string) declarationPatterns {
 	}
 }
 
-func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled declarationPatterns) []definitionCandidate {
+func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled declarationPatterns, source *referenceLineCache) []definitionCandidate {
 	patterns, goGroupedDefinition := compiled.byKind, compiled.goGrouped
+	lines := sourceLines(source, file.path)
 	seenScope := map[string]struct{}{}
 	var out []definitionCandidate
 	// Parser symbols are the authoritative function declarations: they cover
@@ -576,35 +593,40 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 		}
 		declared = append(declared, symbol)
 		out = append(out, definitionCandidate{
-			target: ReferenceTarget{Name: name, Kind: "function", Definition: rangeLocation(file.path, file.language, file.lines, symbol.start, symbol.end)},
+			target: ReferenceTarget{Name: name, Kind: "function", Definition: rangeLocation(file.path, file.language, lines, symbol.start, symbol.end)},
 			file:   file,
 		})
 	}
-	goGroupKind, goGroupDepth := "", 0
+	goGroupKind, goGroupDepth, goBraceDepth := "", 0, 0
 	for i, line := range file.masked {
 		lineNo := i + 1
 		if file.language == "go" {
 			trimmed := strings.TrimSpace(line)
 			switch {
 			case goGroupKind == "" && trimmed == "const (":
-				goGroupKind, goGroupDepth = "constant", 1
+				goGroupKind, goGroupDepth, goBraceDepth = "constant", 1, 0
 			case goGroupKind == "" && trimmed == "var (":
-				goGroupKind, goGroupDepth = "variable", 1
+				goGroupKind, goGroupDepth, goBraceDepth = "variable", 1, 0
 			case goGroupKind == "" && trimmed == "type (":
-				goGroupKind, goGroupDepth = "type", 1
+				goGroupKind, goGroupDepth, goBraceDepth = "type", 1, 0
 			case goGroupKind != "":
 				// Only the paren balancing the opening one ends the group: an
 				// entry whose value spans lines opens and closes parens of its
 				// own, and treating those as the end hides every later entry.
-				// A declaration only ever starts at the group's own depth.
+				// A declaration only ever starts at the group's own depth, and
+				// outside any brace body: a struct or interface written inside
+				// the group keeps the paren depth of its entry, so its fields
+				// would otherwise each be reported as a declaration of the
+				// group's kind.
 				kind := goGroupKind
-				declares := goGroupDepth == 1 && goGroupedDefinition.MatchString(line)
+				declares := goGroupDepth == 1 && goBraceDepth == 0 && goGroupedDefinition.MatchString(line)
 				goGroupDepth += strings.Count(line, "(") - strings.Count(line, ")")
+				goBraceDepth = max(0, goBraceDepth+strings.Count(line, "{")-strings.Count(line, "}"))
 				if goGroupDepth <= 0 {
-					goGroupKind, goGroupDepth = "", 0
+					goGroupKind, goGroupDepth, goBraceDepth = "", 0, 0
 				}
 				if declares {
-					loc := lineLocation(file.path, file.language, file.lines, lineNo)
+					loc := lineLocation(file.path, file.language, lines, lineNo)
 					out = append(out, definitionCandidate{target: ReferenceTarget{Name: name, Kind: kind, Definition: loc}, file: file})
 					continue
 				}
@@ -634,10 +656,10 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 				continue
 			}
 			seenScope[key] = struct{}{}
-			loc := lineLocation(file.path, file.language, file.lines, lineNo)
+			loc := lineLocation(file.path, file.language, lines, lineNo)
 			for _, symbol := range file.functions {
 				if symbol.name == name && symbol.start == lineNo {
-					loc = rangeLocation(file.path, file.language, file.lines, symbol.start, symbol.end)
+					loc = rangeLocation(file.path, file.language, lines, symbol.start, symbol.end)
 					break
 				}
 			}
@@ -743,9 +765,23 @@ func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate
 			exported[selected.file.path][export.ExportedName] = "exact"
 		}
 	}
+	// Only a file of the declaration's own language can bind it — no import
+	// crosses parser families — and a file picks the binding up solely through
+	// a symbol import, so the fixpoint walks that subset instead of every file
+	// in the repository on every pass. The declaring file joins it for its own
+	// re-export propagation.
+	candidates := make([]*parsedReferenceFile, 0, len(files))
+	for _, file := range files {
+		if file.language != selected.file.language {
+			continue
+		}
+		if file.path == selected.file.path || fileImportsSymbols(file) {
+			candidates = append(candidates, file)
+		}
+	}
 	for changed := true; changed; {
 		changed = false
-		for _, file := range files {
+		for _, file := range candidates {
 			for _, binding := range file.imports {
 				if binding.Kind != "symbol" {
 					continue
@@ -795,26 +831,39 @@ func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate
 	//
 	// Rust module resolution is intentionally conservative in the existing
 	// backend. Preserve renamed `use` bindings as possible references instead
-	// of dropping them when a module cannot be proven.
-	rustAliasPattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(selected.target.Name) + `\b(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?`)
-	for _, file := range files {
-		if file.language != "rust" {
-			continue
-		}
-		for _, line := range file.masked {
-			if !strings.HasPrefix(strings.TrimSpace(line), "use ") {
+	// of dropping them when a module cannot be proven. Only a Rust declaration
+	// can be bound this way, so a lookup in another language never pays for the
+	// scan.
+	if selected.file.language == "rust" {
+		rustAliasPattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(selected.target.Name) + `\b(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?`)
+		for _, file := range files {
+			if file.language != "rust" {
 				continue
 			}
-			match := rustAliasPattern.FindStringSubmatch(line)
-			if len(match) == 2 && match[1] != "" {
-				if locals[file.path] == nil {
-					locals[file.path] = map[string]string{}
+			for _, line := range file.masked {
+				if !strings.HasPrefix(strings.TrimSpace(line), "use ") {
+					continue
 				}
-				locals[file.path][match[1]] = "possible"
+				match := rustAliasPattern.FindStringSubmatch(line)
+				if len(match) == 2 && match[1] != "" {
+					if locals[file.path] == nil {
+						locals[file.path] = map[string]string{}
+					}
+					locals[file.path][match[1]] = "possible"
+				}
 			}
 		}
 	}
 	return locals
+}
+
+func fileImportsSymbols(file *parsedReferenceFile) bool {
+	for _, binding := range file.imports {
+		if binding.Kind == "symbol" {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveReferenceImport(repoRoot string, file *parsedReferenceFile, spec string) (string, bool) {
@@ -828,10 +877,26 @@ func resolveReferenceImport(repoRoot string, file *parsedReferenceFile, spec str
 	}
 }
 
-func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceFile, selected definitionCandidate, aliases map[string]map[string]string) {
+func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceFile, selected definitionCandidate, aliases map[string]map[string]string, source *referenceLineCache) {
 	functionContexts := map[string]*ReferenceContext{}
 	outsideContexts := map[string]*ReferenceContext{}
 	declarationSkipped := false
+	// Exact confidence rests on a binding proof: the declaring file's own
+	// lexical scope, or an import chain followed into another file. Neither
+	// survives a function that declares the same name itself, so uses inside
+	// such a scope fall back to possible rather than claiming certainty about a
+	// symbol they cannot refer to. The spans are found per file and name only
+	// when an exact binding is in play.
+	shadowed := map[string][]parsedFunction{}
+	shadowingSpans := func(file *parsedReferenceFile, name string) []parsedFunction {
+		key := file.path + "\x00" + name
+		spans, ok := shadowed[key]
+		if !ok {
+			spans = shadowingFunctionSpans(file, name, selected)
+			shadowed[key] = spans
+		}
+		return spans
+	}
 	for _, file := range files {
 		// A same-named identifier in another language is a different symbol —
 		// no import can bind a Python name to a Rust one — so scanning across
@@ -843,10 +908,19 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 		// lookup, so a declaration resolved here is never better than possible.
 		names := map[string]string{selected.target.Name: "possible"}
 		maps.Copy(names, aliases[file.path])
+		lines := sourceLines(source, file.path)
 		for lineIndex, line := range file.masked {
 			lineNo := lineIndex + 1
-			for name, confidence := range names {
-				for _, column := range identifierColumns(line, name) {
+			for name, bound := range names {
+				columns := identifierColumns(line, name)
+				if len(columns) == 0 {
+					continue
+				}
+				confidence := bound
+				if confidence == "exact" && lineWithinParsedFunctions(shadowingSpans(file, name), lineNo) {
+					confidence = "possible"
+				}
+				for _, column := range columns {
 					// The declaration is the target, not a reference to it. Its
 					// span can start above the declaration line (decorators,
 					// attributes), so skip the first occurrence anywhere in the
@@ -865,7 +939,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 					}
 					occurrence := ReferenceOccurrence{
 						Role: role, Confidence: confidence, Column: column,
-						CodeLocation: lineLocation(file.path, file.language, file.lines, lineNo),
+						CodeLocation: lineLocation(file.path, file.language, lines, lineNo),
 					}
 					if confidence == "exact" {
 						result.ExactReferenceCount++
@@ -877,7 +951,7 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 						key := fmt.Sprintf("%s:%d:%d", file.path, fn.start, fn.end)
 						ctx := functionContexts[key]
 						if ctx == nil {
-							ctx = &ReferenceContext{Name: fn.name, CodeLocation: rangeLocation(file.path, file.language, file.lines, fn.start, fn.end), References: []ReferenceOccurrence{}}
+							ctx = &ReferenceContext{Name: fn.name, CodeLocation: rangeLocation(file.path, file.language, lines, fn.start, fn.end), References: []ReferenceOccurrence{}}
 							functionContexts[key] = ctx
 						}
 						ctx.References = appendUniqueOccurrence(ctx.References, occurrence)
@@ -900,6 +974,52 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 	for _, ctx := range outsideContexts {
 		result.OutsideFunctions = append(result.OutsideFunctions, *ctx)
 	}
+}
+
+// sourceLines returns the file's current text for building locations, or nil
+// when it cannot be read: a location then carries its true line numbers without
+// content, which beats dropping the reference or inventing a snippet.
+func sourceLines(cache *referenceLineCache, path string) []string {
+	if cache == nil {
+		return nil
+	}
+	lines, _ := cache.get(path)
+	return lines
+}
+
+// shadowingFunctionSpans returns the function spans in file that declare name
+// themselves. Inside one of them the name binds to that declaration, so a use
+// there is not a proven reference to the symbol being looked up. The span that
+// holds the looked-up declaration is excluded — that one is the binding.
+func shadowingFunctionSpans(file *parsedReferenceFile, name string, selected definitionCandidate) []parsedFunction {
+	definition := selected.target.Definition.LineRange
+	declaring := file.path == selected.file.path
+	seen := map[string]struct{}{}
+	var spans []parsedFunction
+	// Locations are not needed here, only declaration lines, so the candidates
+	// are built without reading the file back.
+	for _, candidate := range findDefinitionCandidates(file, name, compileDeclarationPatterns(file.language, name), nil) {
+		line := candidate.target.Definition.LineRange.Start
+		if declaring && line >= definition.Start && line <= definition.End {
+			continue
+		}
+		fn := enclosingParsedFunction(file.functions, line)
+		if fn == nil {
+			// A module-level rebinding is the same lexical scope as a
+			// module-level declaration, and an import binds the symbol itself.
+			continue
+		}
+		if declaring && fn.start <= definition.Start && definition.End <= fn.end {
+			continue
+		}
+		key := fmt.Sprintf("%d:%d", fn.start, fn.end)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		spans = append(spans, *fn)
+	}
+	return spans
 }
 
 func identifierColumns(line, name string) []int {
@@ -1121,9 +1241,12 @@ func lineLocation(path, language string, lines []string, line int) CodeLocation 
 	return rangeLocation(path, language, lines, line, line)
 }
 
-// rangeLocation clamps start/end into the file and never indexes past it: a
-// caller that could not read the file passes no lines at all, and reporting the
-// location without content beats losing the whole lookup to a panic.
+// rangeLocation never indexes past the text it was given: a caller that could
+// not read the file passes no lines at all, and a file clipped at the read cap
+// ends before a position the analyzer reported. Either way the location keeps
+// the line numbers it was asked for and simply carries no content — moving the
+// range to wherever the text happens to end would hand back a citation pointing
+// at unrelated code.
 func rangeLocation(path, language string, lines []string, start, end int) CodeLocation {
 	if start < 1 {
 		start = 1
@@ -1132,9 +1255,8 @@ func rangeLocation(path, language string, lines []string, start, end int) CodeLo
 		end = start
 	}
 	content := ""
-	if len(lines) > 0 {
-		start = min(start, len(lines))
-		end = min(max(end, start), len(lines))
+	if start <= len(lines) {
+		end = min(end, len(lines))
 		content = strings.Join(lines[start-1:end], "\n")
 	}
 	return CodeLocation{FilePath: path, LineRange: LineRange{Start: start, End: end, Count: max(0, end-start+1)}, Language: language, Content: content}
@@ -1369,6 +1491,7 @@ func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goR
 	functionContexts := map[string]*ReferenceContext{}
 	outsideContexts := map[string]*ReferenceContext{}
 	seenOccurrences := map[string]struct{}{}
+	unreadable := false
 	for _, pkg := range pkgs {
 		if pkg == nil || pkg.TypesInfo == nil || pkg.Fset == nil {
 			continue
@@ -1392,9 +1515,13 @@ func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goR
 				continue
 			}
 			seenOccurrences[occKey] = struct{}{}
-			lines, ok := linesCache.get(path)
-			if !ok {
-				continue
+			// The snapshot outlives the worktree it was loaded from, so a file
+			// can disappear between loading and reading. The use is still a
+			// proven one: report it with its position and no content instead of
+			// dropping it from a result that would still claim to be complete.
+			lines, readable := linesCache.get(path)
+			if !readable {
+				unreadable = true
 			}
 			parents := parentCache[file]
 			if parents == nil {
@@ -1433,6 +1560,10 @@ func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goR
 	}
 	for _, ctx := range outsideContexts {
 		result.OutsideFunctions = append(result.OutsideFunctions, *ctx)
+	}
+	if unreadable {
+		result.Complete = false
+		result.Notes = append(result.Notes, "source for at least one referencing file could not be read; those references are reported without content")
 	}
 	sortReferenceResult(result)
 	return result
