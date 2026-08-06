@@ -52,6 +52,11 @@ func TestFindReferencesResolvesDecoratedPythonFunction(t *testing.T) {
 	if result.Target.Kind != "function" || result.Target.Definition.LineRange.Start != 3 || result.Target.Definition.LineRange.End != 5 {
 		t.Fatalf("decorated target = %#v", result.Target)
 	}
+	// The `def helper` line sits inside the decorated span but below its start;
+	// it is the declaration, not a reference to itself.
+	if result.PossibleReferenceCount != 1 {
+		t.Fatalf("reference count = %d, want 1 (the call on line 7): %#v", result.PossibleReferenceCount, result)
+	}
 }
 
 func TestRepoWideGoReferencesIgnoreRawStringDeclarations(t *testing.T) {
@@ -349,9 +354,21 @@ func TestAmbiguousSymbolErrorCapsCandidateList(t *testing.T) {
 }
 
 func TestRangeLocationAlwaysReturnsConsistentRange(t *testing.T) {
-	location := rangeLocation("short.go", "go", []string{"package short", ""}, 910, 885)
-	if location.LineRange.Start > location.LineRange.End || location.LineRange.Count != location.LineRange.End-location.LineRange.Start+1 {
-		t.Fatalf("location = %#v", location)
+	for _, tt := range []struct {
+		name       string
+		lines      []string
+		start, end int
+	}{
+		{name: "beyond end of file", lines: []string{"package short", ""}, start: 910, end: 885},
+		{name: "unreadable file", lines: nil, start: 3, end: 7},
+		{name: "unreadable file at line one", lines: []string{}, start: 1, end: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			location := rangeLocation("short.go", "go", tt.lines, tt.start, tt.end)
+			if location.LineRange.Start < 1 || location.LineRange.Start > location.LineRange.End || location.LineRange.Count != location.LineRange.End-location.LineRange.Start+1 {
+				t.Fatalf("location = %#v", location)
+			}
+		})
 	}
 }
 
@@ -364,5 +381,106 @@ func TestFindReferencesIgnoresCommentsAndStrings(t *testing.T) {
 	}
 	if result.ExactReferenceCount != 0 || result.PossibleReferenceCount != 0 {
 		t.Fatalf("unexpected references: %#v", result)
+	}
+}
+
+func TestFindReferencesIgnoresMultiLineTemplateLiterals(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "docs.ts", "export function render() { return 1 }\nconst usage = `\nrender the page\ncall render()\n`\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "render", Path: "docs.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExactReferenceCount != 0 || result.PossibleReferenceCount != 0 {
+		t.Fatalf("template literal reported as references: %#v", result)
+	}
+}
+
+func TestReferenceCacheEvictsLeastRecentlyUsedRoots(t *testing.T) {
+	t.Setenv("NICKPIT_REFERENCE_CACHE_MAX_ENTRIES", "2")
+	var cache referenceCacheStore[parsedReferenceCacheEntry]
+
+	first := cache.entry("/repo/a")
+	cache.entry("/repo/b")
+	if got := cache.entry("/repo/a"); got != first {
+		t.Fatal("cached root was not reused")
+	}
+	cache.entry("/repo/c") // evicts /repo/b, the least recently used
+
+	if len(cache.entries) != 2 {
+		t.Fatalf("cache holds %d roots, want 2", len(cache.entries))
+	}
+	if _, ok := cache.entries["/repo/b"]; ok {
+		t.Fatal("least recently used root survived eviction")
+	}
+	if got := cache.entry("/repo/a"); got != first {
+		t.Fatal("recently used root was evicted")
+	}
+}
+
+func TestReferenceCacheCapZeroDisablesEviction(t *testing.T) {
+	t.Setenv("NICKPIT_REFERENCE_CACHE_MAX_ENTRIES", "0")
+	var cache referenceCacheStore[parsedReferenceCacheEntry]
+	for i := range 20 {
+		cache.entry(fmt.Sprintf("/repo/%d", i))
+	}
+	if len(cache.entries) != 20 {
+		t.Fatalf("cache holds %d roots, want 20", len(cache.entries))
+	}
+}
+
+// Two same-named Go declarations in one file cannot be told apart by --path, so
+// the declaration line is the only usable disambiguator.
+func TestFindGoReferencesPinsAmbiguousDeclarationByLine(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/pinned\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "types.go", "package pinned\n\ntype A struct{}\n\nfunc (A) String() string { return \"a\" }\n\ntype B struct{}\n\nfunc (B) String() string { return \"b\" }\n")
+
+	engine := NewLocalEngine()
+	_, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "String", Path: "types.go"})
+	var ambiguous *AmbiguousSymbolError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("error = %v, want ambiguous", err)
+	}
+	if !strings.Contains(err.Error(), "line") {
+		t.Fatalf("ambiguity message does not point at the disambiguator: %v", err)
+	}
+
+	result, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "String", Path: "types.go", Line: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Definition.LineRange.Start != 9 {
+		t.Fatalf("pinned target = %#v", result.Target)
+	}
+}
+
+func TestFindReferencesPinsAmbiguousParsedDeclarationByLine(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "handlers.ts", "class A {\n  run() { return 1 }\n}\nclass B {\n  run() { return 2 }\n}\n")
+
+	engine := NewLocalEngine()
+	if _, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "run", Path: "handlers.ts"}); err == nil {
+		t.Fatal("expected an ambiguity")
+	}
+	result, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "run", Path: "handlers.ts", Line: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Definition.LineRange.Start != 5 {
+		t.Fatalf("pinned target = %#v", result.Target)
+	}
+}
+
+// A line matching no declaration must not silently resolve to the wrong one.
+func TestFindReferencesIgnoresLineThatPinsNothing(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "handlers.ts", "class A {\n  run() { return 1 }\n}\nclass B {\n  run() { return 2 }\n}\n")
+
+	_, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "run", Path: "handlers.ts", Line: 99})
+	var ambiguous *AmbiguousSymbolError
+	if !errors.As(err, &ambiguous) {
+		t.Fatalf("error = %v, want ambiguous", err)
 	}
 }

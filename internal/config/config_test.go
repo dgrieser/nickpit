@@ -8,28 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dgrieser/nickpit/internal/config/configtest"
 	"github.com/dgrieser/nickpit/internal/model"
 )
 
 func TestMain(m *testing.M) {
-	clearAmbientConfigEnv()
+	configtest.ClearAmbientEnv()
 	os.Exit(m.Run())
-}
-
-func clearAmbientConfigEnv() {
-	for _, entry := range os.Environ() {
-		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "NICKPIT_") {
-			_ = os.Unsetenv(name)
-		}
-	}
-	for _, name := range []string{
-		"GITHUB_TOKEN", "GITLAB_TOKEN", "GITLAB_BASE_URL",
-		"OPENROUTER_API_KEY", "MITTWALD_LLM_API_KEY", "MISTRAL_API_KEY",
-		"DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "NVIDIA_API_KEY",
-	} {
-		_ = os.Unsetenv(name)
-	}
 }
 
 func intPtr(v int) *int {

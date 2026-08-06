@@ -129,6 +129,11 @@ type SymbolInfo struct {
 type SymbolRef struct {
 	Name string `json:"name"`
 	Path string `json:"path,omitempty"`
+	// Line pins one of several same-named declarations, using the line an
+	// AmbiguousSymbolError reported. Zero means "no preference"; a line that
+	// matches no declaration is ignored so the ambiguity is reported again
+	// rather than silently resolving to the wrong symbol.
+	Line int `json:"line,omitempty"`
 }
 
 // ReferenceResult is a flat, declaration-centered view of a symbol. References

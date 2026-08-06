@@ -14,6 +14,12 @@ import (
 
 const toolResultTruncatedNote = "tool result exceeded configured item or size limits; narrow path, range, depth, or result count for more detail"
 
+// minToolResultTokens is the floor for a single result's allowance. A prompt
+// that already fills the context would otherwise leave nothing for any result
+// in the batch, and a result the model cannot read at all is worse than a small
+// one it can act on.
+const minToolResultTokens = 256
+
 // limitToolResultBatch caps each result at a percentage of the context tokens
 // still available when that result is appended. Processing the batch in order
 // makes parallel results share the remaining window instead of each claiming
@@ -23,13 +29,21 @@ func limitToolResultBatch(messages []llm.Message, tools []llm.ToolDefinition, sc
 		return batch
 	}
 	limited := append([]llm.Message(nil), batch...)
-	current := append([]llm.Message(nil), messages...)
+	// The estimate is a byte count, so each appended result adds its own
+	// encoding plus a separator. Tracking that incrementally keeps batch
+	// limiting linear instead of re-encoding the whole transcript per result.
+	contextBytes := toolContextByteLen(messages, tools, schema)
+	appended := len(messages)
 	for i := range limited {
-		used := estimateToolContextTokens(current, tools, schema)
+		used := tokenestimate.EstimateLen(contextBytes)
 		remaining := max(maxContextTokens-used, 0)
-		allowance := max(remaining*percent/100, 1)
+		allowance := max(remaining*percent/100, minToolResultTokens)
 		limited[i].Content = limitToolResultJSON(limited[i].Content, allowance)
-		current = append(current, limited[i])
+		if appended > 0 {
+			contextBytes++ // the "," between array elements
+		}
+		contextBytes += jsonByteLen(limited[i])
+		appended++
 	}
 	return limited
 }
@@ -84,6 +98,16 @@ func reconcileLimitedInspectFileCoverage(toolCalls []llm.ToolCall, raw, limited 
 }
 
 func estimateToolContextTokens(messages []llm.Message, tools []llm.ToolDefinition, schema []byte) int {
+	return tokenestimate.EstimateLen(toolContextByteLen(messages, tools, schema))
+}
+
+// toolContextByteLen returns the encoded size of the request the tool results
+// are appended to. The message slice is never nil so that appending an element
+// grows the JSON array by exactly a separator plus the element.
+func toolContextByteLen(messages []llm.Message, tools []llm.ToolDefinition, schema []byte) int {
+	if messages == nil {
+		messages = []llm.Message{}
+	}
 	payload := struct {
 		Messages []llm.Message        `json:"messages"`
 		Tools    []llm.ToolDefinition `json:"tools,omitempty"`
@@ -93,11 +117,15 @@ func estimateToolContextTokens(messages []llm.Message, tools []llm.ToolDefinitio
 		Tools:    tools,
 		Schema:   schema,
 	}
-	encoded, err := json.Marshal(payload)
+	return jsonByteLen(payload)
+}
+
+func jsonByteLen(value any) int {
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return 0
 	}
-	return tokenestimate.Estimate(string(encoded))
+	return len(encoded)
 }
 
 // limitToolResultJSON applies tool-specific item limits and the profile-wide
@@ -145,19 +173,18 @@ func limitToolResultJSON(raw string, maxTokens int) string {
 		}
 	}
 
+	// Returned even when it exceeds the allowance: an unexplained empty object
+	// tells the model nothing and it retries the same call, while overshooting
+	// the cap by a marker costs a few dozen tokens.
 	fallback := map[string]any{
 		"truncated":      true,
 		"truncated_note": "tool result exceeded its remaining-context token allowance and could not retain its original structure; rerun with narrower arguments",
 	}
-	encoded, _ = json.Marshal(fallback)
-	if tokenestimate.Estimate(string(encoded)) <= maxTokens {
-		return string(encoded)
+	encoded, err = json.Marshal(fallback)
+	if err != nil {
+		return raw
 	}
-	minimal := `{"truncated":true}`
-	if tokenestimate.Estimate(minimal) <= maxTokens {
-		return minimal
-	}
-	return `{}`
+	return string(encoded)
 }
 
 func applyToolItemLimits(root map[string]any) bool {
@@ -193,7 +220,7 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 			if trimDeepestHierarchyContent(hierarchy, over) {
 				return true
 			}
-			if omitted := pruneDeepestHierarchyNode(hierarchy); omitted > 0 {
+			if omitted := pruneDeepestHierarchyNodes(hierarchy, over, size); omitted > 0 {
 				addIntField(root, "omitted_nodes", omitted)
 				return true
 			}
@@ -356,15 +383,23 @@ func trimDeepestHierarchyContent(root map[string]any, over int) bool {
 	return best.location != nil && trimStringField(best.location, "content", over, true)
 }
 
-func pruneDeepestHierarchyNode(root map[string]any) int {
-	var bestParent map[string]any
+// pruneDeepestHierarchyNodes drops a proportional tail of children from every
+// node at the deepest level that still has any. Pruning one leaf per pass makes
+// a wide hierarchy of small nodes take thousands of re-encodings to fit;
+// pruning the whole level shrinks it geometrically instead.
+func pruneDeepestHierarchyNodes(root map[string]any, over, size int) int {
+	var deepest []map[string]any
 	bestDepth := -1
 	var walk func(map[string]any, int)
 	walk = func(node map[string]any, depth int) {
 		children := arrayField(node, "children")
-		if len(children) > 0 && depth >= bestDepth {
-			bestParent = node
-			bestDepth = depth
+		if len(children) > 0 {
+			if depth > bestDepth {
+				bestDepth, deepest = depth, nil
+			}
+			if depth == bestDepth {
+				deepest = append(deepest, node)
+			}
 		}
 		for _, child := range children {
 			if childNode, ok := child.(map[string]any); ok {
@@ -373,13 +408,16 @@ func pruneDeepestHierarchyNode(root map[string]any) int {
 		}
 	}
 	walk(root, 0)
-	if bestParent == nil {
-		return 0
+	omitted := 0
+	for _, parent := range deepest {
+		children := arrayField(parent, "children")
+		drop := min(max(1, len(children)*max(1, over)/max(1, size)), len(children))
+		for _, dropped := range children[len(children)-drop:] {
+			omitted += countHierarchyNodes(dropped)
+		}
+		parent["children"] = children[:len(children)-drop]
 	}
-	children := arrayField(bestParent, "children")
-	last := children[len(children)-1]
-	bestParent["children"] = children[:len(children)-1]
-	return countHierarchyNodes(last)
+	return omitted
 }
 
 func countHierarchyNodes(value any) int {

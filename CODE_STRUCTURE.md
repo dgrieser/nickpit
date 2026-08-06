@@ -15,6 +15,7 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/config/example.go`: Provides the checked-in example config text.
 - `internal/config/generate.go`: Shared helpers for generator commands.
 - `internal/config/profiles.go`: Profile resolution (`ResolveProfile`) and profile merging (`mergeProfiles`); the built-in provider profiles live in `config.go` (`defaultProfiles`).
+- `internal/config/configtest/configtest.go`: Test-only helper that clears every config-influencing environment variable, shared by the config and CLI test suites.
 
 ## Review Pipeline
 

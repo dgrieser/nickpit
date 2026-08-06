@@ -1205,7 +1205,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path; leave empty to list the repo root")
-	listFilesCmd.Flags().IntVar(&depth, "depth", 1, "Directory depth to traverse when listing files")
+	listFilesCmd.Flags().IntVar(&depth, "depth", toolcatalog.DefaultListFilesDepth, "Directory depth to traverse when listing files")
 	registerRepoPathCompletion(listFilesCmd, "path", a, true)
 
 	searchCmd := &cobra.Command{
@@ -1240,6 +1240,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	registerRepoPathCompletion(searchCmd, "path", a, false)
 
 	var referencesSymbol, referencesPath string
+	var referencesLine int
 	referencesCmd := &cobra.Command{
 		Use:   "references",
 		Short: "Retrieve a symbol definition and all references",
@@ -1248,7 +1249,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := engine.FindReferences(cmd.Context(), repoRoot, retrieval.SymbolRef{Name: referencesSymbol, Path: referencesPath})
+			result, err := engine.FindReferences(cmd.Context(), repoRoot, retrieval.SymbolRef{Name: referencesSymbol, Path: referencesPath, Line: referencesLine})
 			if err != nil {
 				return err
 			}
@@ -1257,6 +1258,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	referencesCmd.Flags().StringVar(&referencesSymbol, "symbol", "", "Symbol name")
 	referencesCmd.Flags().StringVar(&referencesPath, "path", "", "Optional relative file or folder containing the declaration; references are collected repo-wide")
+	referencesCmd.Flags().IntVar(&referencesLine, "line", 0, "Optional declaration line, to pick one of several same-named declarations")
 	_ = referencesCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(referencesCmd, "path", a, false)
 
@@ -1279,7 +1281,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	callersCmd.Flags().StringVar(&callersSymbol, "symbol", "", "Function name")
 	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
-	callersCmd.Flags().IntVar(&callersDepth, "depth", 10, "Traversal depth")
+	callersCmd.Flags().IntVar(&callersDepth, "depth", toolcatalog.DefaultCallHierarchyDepth, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(callersCmd, "path", a, false)
 
@@ -1302,7 +1304,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	calleesCmd.Flags().StringVar(&calleesSymbol, "symbol", "", "Function name")
 	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
-	calleesCmd.Flags().IntVar(&calleesDepth, "depth", 10, "Traversal depth")
+	calleesCmd.Flags().IntVar(&calleesDepth, "depth", toolcatalog.DefaultCallHierarchyDepth, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(calleesCmd, "path", a, false)
 

@@ -64,13 +64,19 @@ type staticGraphCacheEntry struct {
 // NICKPIT_GRAPH_CACHE_MAX_ENTRIES lets large monorepos tune it, and a value <= 0
 // disables the cap entirely (unbounded — the pre-cap behavior).
 func staticGraphCacheCap() int {
-	raw := strings.TrimSpace(os.Getenv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES"))
+	return cacheCapFromEnv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES", toolcatalog.DefaultStaticGraphCacheEntries)
+}
+
+// cacheCapFromEnv reads a retrieval cache's entry cap, falling back to fallback
+// for an unset or unparsable value. A value <= 0 disables the cap entirely.
+func cacheCapFromEnv(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
-		return toolcatalog.DefaultStaticGraphCacheEntries
+		return fallback
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return toolcatalog.DefaultStaticGraphCacheEntries
+		return fallback
 	}
 	return n
 }

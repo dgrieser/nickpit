@@ -74,7 +74,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string
 			return uniqueKey
 		}
 		if args.Depth <= 0 {
-			args.Depth = 1
+			args.Depth = toolcatalog.DefaultListFilesDepth
 		}
 		return fmt.Sprintf("list_files\x00%s\x00%d", normalizeToolPath(args.Path), args.Depth)
 	case "find_callers", "find_callees", "find_references":
@@ -82,6 +82,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string
 			Path   string `json:"path"`
 			Symbol string `json:"symbol"`
 			Depth  int    `json:"depth"`
+			Line   int    `json:"line"`
 		}
 		if err := llm.LenientUnmarshal(toolCall.Arguments, &args); err != nil {
 			return uniqueKey
@@ -90,7 +91,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string
 			args.Depth = toolcatalog.DefaultCallHierarchyDepth
 		}
 		if toolCall.Name == "find_references" {
-			return referenceDedupKey(normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol))
+			return referenceDedupKey(normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol), args.Line)
 		}
 		return callHierarchyDedupKey(toolCall.Name, normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol), args.Depth)
 	case "search":
@@ -161,6 +162,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 	var args struct {
 		Symbol string `json:"symbol"`
 		Path   string `json:"path"`
+		Line   int    `json:"line"`
 	}
 	if err := parseToolArguments(toolCall.Name, toolCall.Arguments, &args); err != nil {
 		return toolError("", "invalid_arguments", err.Error())
@@ -170,7 +172,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 	if args.Symbol == "" {
 		return toolError(normalizedPath, "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
 	}
-	key := referenceDedupKey(normalizedPath, args.Symbol)
+	key := referenceDedupKey(normalizedPath, args.Symbol, args.Line)
 	unlock := state.toolLocks.lock(key)
 	defer unlock()
 	state.mu.Lock()
@@ -181,10 +183,23 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 		return toolError(normalizedPath, "already_requested", toolErrorMessage(toolErrorData{Code: "already_requested_tool"}))
 	}
 	e.logf(ctx, "Executing tool call: name=%s path=%s symbol=%q", toolCall.Name, normalizedPath, args.Symbol)
-	result, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{Name: args.Symbol, Path: normalizedPath})
+	result, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{Name: args.Symbol, Path: normalizedPath, Line: args.Line})
 	if err != nil {
-		var unsupported *retrieval.UnsupportedLanguageError
-		if errors.As(err, &unsupported) {
+		var (
+			unsupported *retrieval.UnsupportedLanguageError
+			notFound    *retrieval.SymbolNotFoundError
+		)
+		// Both degrade to a literal search, but they mean different things and
+		// the model must not be told the file type is unsupported when the
+		// analysis ran and simply found no declaration.
+		note := ""
+		switch {
+		case errors.As(err, &unsupported):
+			note = "structural reference analysis is unavailable for this file type; showing case-sensitive literal matches instead"
+		case errors.As(err, &notFound):
+			note = "structural analysis found no declaration of this symbol; showing case-sensitive literal matches instead, which may be empty or defined in a file type without a structural backend"
+		}
+		if note != "" {
 			searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
 			// Identifier spelling is case-sensitive even when the fallback cannot
 			// provide structural binding identity.
@@ -197,7 +212,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 			state.mu.Unlock()
 			return mustToolResultJSON(withTruncatedFiles(map[string]any{
 				"symbol": args.Symbol, "path": normalizedPath, "fallback": "search",
-				"note":         "structural reference analysis is unavailable for this file type; showing case-sensitive literal matches instead",
+				"note":         note,
 				"result_count": matches.ResultCount, "results": matches.Results,
 			}, matches.TruncatedFiles))
 		}
@@ -213,8 +228,11 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 	return mustToolResultJSON(result)
 }
 
-func referenceDedupKey(path, symbol string) string {
-	return fmt.Sprintf("find_references\x00%s\x00%s", path, symbol)
+// referenceDedupKey includes the declaration line so that retrying an ambiguous
+// symbol pinned to one declaration is a new call, not a duplicate of the
+// unpinned one that failed.
+func referenceDedupKey(path, symbol string, line int) string {
+	return fmt.Sprintf("find_references\x00%s\x00%s\x00%d", path, symbol, line)
 }
 
 func (e *Engine) executeInspectFile(ctx context.Context, repoRoot string, toolCall llm.ToolCall, state *toolRoundState) string {
@@ -304,7 +322,7 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Depth <= 0 {
-		args.Depth = 1
+		args.Depth = toolcatalog.DefaultListFilesDepth
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	key := fmt.Sprintf("list_files\x00%s\x00%d", normalizedPath, args.Depth)
@@ -569,7 +587,6 @@ type classifiedSearchSymbol struct {
 	name       string
 	path       string
 	references *retrieval.ReferenceResult
-	matches    map[int]struct{}
 }
 
 // optimizeSearchResults upgrades an identifier-shaped literal search only
@@ -586,9 +603,8 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 	type lookup struct{ name, path string }
 	lookups := make([]lookup, 0, len(results))
 	seenLookups := make(map[lookup]struct{}, len(results))
-	lookupMatches := make(map[lookup][]int, len(results))
 	names := map[string]struct{}{queryName: {}}
-	for resultIndex, result := range results {
+	for _, result := range results {
 		path := normalizeSearchPath(result.CodeLocation.FilePath)
 		spellings := matchingIdentifierSpellings(result.CodeLocation.Content, queryName)
 		if len(spellings) == 0 {
@@ -597,7 +613,6 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		for _, name := range spellings {
 			names[name] = struct{}{}
 			candidate := lookup{name: name, path: path}
-			lookupMatches[candidate] = append(lookupMatches[candidate], resultIndex)
 			if _, duplicate := seenLookups[candidate]; duplicate {
 				continue
 			}
@@ -612,26 +627,19 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 
 	resolved := make(map[string]*classifiedSearchSymbol)
 	lookupCount := 0
-	recordResolution := func(candidate lookup, result *retrieval.ReferenceResult, err error) {
+	recordResolution := func(result *retrieval.ReferenceResult, err error) {
 		if err != nil || result == nil {
 			return
 		}
 		target := result.Target
 		key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", target.Definition.FilePath, target.Definition.LineRange.Start, target.Definition.LineRange.End, target.Name)
-		selected := resolved[key]
-		if selected == nil {
-			selected = &classifiedSearchSymbol{
-				name:       target.Name,
-				path:       target.Definition.FilePath,
-				references: result,
-				matches:    make(map[int]struct{}),
-			}
-			resolved[key] = selected
+		if _, ok := resolved[key]; ok {
+			return
 		}
-		for _, resultIndex := range lookupMatches[candidate] {
-			if referenceResultCoversLocation(result, results[resultIndex].CodeLocation) {
-				selected.matches[resultIndex] = struct{}{}
-			}
+		resolved[key] = &classifiedSearchSymbol{
+			name:       target.Name,
+			path:       target.Definition.FilePath,
+			references: result,
 		}
 	}
 	resolveBatch := func(candidates []lookup) {
@@ -647,17 +655,14 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 				symbols[i] = retrieval.SymbolRef{Name: candidate.name, Path: candidate.path}
 			}
 			batchResults := batchEngine.FindReferencesBatch(ctx, repoRoot, symbols)
-			for i, candidate := range candidates {
-				if i >= len(batchResults) {
-					break
-				}
-				recordResolution(candidate, batchResults[i].Result, batchResults[i].Err)
+			for _, batchResult := range batchResults {
+				recordResolution(batchResult.Result, batchResult.Err)
 			}
 			return
 		}
 		for _, candidate := range candidates {
 			result, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{Name: candidate.name, Path: candidate.path})
-			recordResolution(candidate, result, err)
+			recordResolution(result, err)
 		}
 	}
 	resolveBatch(lookups)
@@ -719,8 +724,13 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			e.logf(ctx, "Replacing search matches with find_references: query=%q symbol=%q path=%s kind=%s", query, selected.name, selected.path, selected.references.Target.Kind)
 			optimized = limitToolResultJSON(mustToolResultJSON(selected.references), 0)
 			referenceResults = append(referenceResults, json.RawMessage(optimized))
-			for resultIndex := range selected.matches {
-				classifiedMatches[resultIndex] = struct{}{}
+			// Classify against every literal match, not just the ones whose
+			// lookup produced this declaration: the repo-wide fallback resolves
+			// without a path and would otherwise leave a duplicate of each hit.
+			for resultIndex, result := range results {
+				if referenceResultCoversLocation(selected.references, result.CodeLocation) {
+					classifiedMatches[resultIndex] = struct{}{}
+				}
 			}
 		}
 	}
@@ -790,7 +800,9 @@ func codeLocationsOverlap(left, right retrieval.CodeLocation) bool {
 }
 
 func (e *Engine) reserveSearchReferenceResult(selected *classifiedSearchSymbol, state *toolRoundState) bool {
-	key := referenceDedupKey(normalizeSearchPath(selected.path), selected.name)
+	// The search optimization resolves declarations without pinning a line, so
+	// it reserves the unpinned key an explicit find_references would use.
+	key := referenceDedupKey(normalizeSearchPath(selected.path), selected.name, 0)
 	unlock := state.toolLocks.lock(key)
 	defer unlock()
 	state.mu.Lock()

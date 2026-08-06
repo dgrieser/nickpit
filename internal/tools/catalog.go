@@ -24,6 +24,7 @@ const (
 	MaxAmbiguousReferenceTargets   = 10
 	MaxRetrievedFileBytes          = 5 << 20
 	DefaultStaticGraphCacheEntries = 64
+	DefaultReferenceCacheEntries   = 4
 
 	DefaultGitLogLimit        = 20
 	MaxGitLogLimit            = 200
@@ -126,6 +127,7 @@ var catalogDefinition = []catalogEntry{
 		Parameters: []CatalogParameter{
 			{Name: "symbol", Type: "string", Description: "Symbol name to inspect", Example: `"<symbol name>"`, Required: true},
 			{Name: "path", Type: "string", Description: "Optional repo-relative file or folder containing the declaration; does not limit where references are collected", Example: `"<repo-relative path>"`},
+			{Name: "line", Type: "integer", Description: "Optional declaration line, used to pick one of several same-named declarations after an ambiguous_symbol error reports them as `file:line`", Example: "int", Minimum: intPtr(1)},
 		},
 	},
 	{

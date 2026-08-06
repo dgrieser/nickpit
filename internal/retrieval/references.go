@@ -37,7 +37,7 @@ func (e *AmbiguousSymbolError) Error() string {
 	if omitted := len(e.Candidates) - count; omitted > 0 {
 		locations = append(locations, fmt.Sprintf("and %d more", omitted))
 	}
-	return fmt.Sprintf("symbol %q is ambiguous: %s", e.Name, strings.Join(locations, ", "))
+	return fmt.Sprintf("symbol %q is ambiguous: %s; retry with the declaration's line to pick one", e.Name, strings.Join(locations, ", "))
 }
 
 // FindReferences resolves one declaration inside the optional lookup path and
@@ -120,18 +120,18 @@ func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol Symbo
 	if err != nil {
 		return nil, fmt.Errorf("finding references for %q: %w", symbol.Name, err)
 	}
-	result, err := findParsedReferencesInFiles(repoRoot, symbol, scope, parsed)
+	selected, err := resolveParsedDefinition(symbol, scope, parsed)
 	if err != nil {
 		return nil, err
 	}
-	if strings.EqualFold(filepath.Ext(result.Target.Definition.FilePath), ".go") {
+	if strings.EqualFold(filepath.Ext(selected.file.path), ".go") {
 		pkgs, loadErr := loader.loadGo(ctx, repoRoot)
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		return findGoReferencesWithPackages(repoRoot, SymbolRef{Name: symbol.Name, Path: result.Target.Definition.FilePath}, lookupScope{Path: result.Target.Definition.FilePath, IsFile: true}, pkgs)
+		return findGoReferencesWithPackages(repoRoot, SymbolRef{Name: symbol.Name, Path: selected.file.path, Line: symbol.Line}, lookupScope{Path: selected.file.path, IsFile: true}, pkgs)
 	}
-	return result, nil
+	return buildParsedReferenceResult(repoRoot, parsed, selected), nil
 }
 
 var referenceExtensions = map[string]struct{}{
@@ -142,7 +142,6 @@ var referenceExtensions = map[string]struct{}{
 type parsedReferenceFile struct {
 	path      string
 	language  string
-	source    string
 	lines     []string
 	masked    []string
 	functions []parsedFunction
@@ -167,38 +166,135 @@ type parsedReferenceCacheEntry struct {
 	files       []*parsedReferenceFile
 }
 
-var parsedReferenceCache sync.Map // absolute repo root -> *parsedReferenceCacheEntry
+var parsedReferenceCache referenceCacheStore[parsedReferenceCacheEntry] // absolute repo root -> entry
+
+// referenceCacheStore memoizes one expensive per-repository artifact — parsed
+// sources or type-checked Go packages — keyed by absolute repository root. Both
+// artifacts retain the whole repository, so the daemon, which reviews a new
+// worktree per merge request, would otherwise grow without bound for the life of
+// the process. Least-recently-used roots are dropped once the cap is exceeded;
+// an evicted entry stays alive for whoever still holds it and is simply rebuilt
+// on the next lookup, so eviction can never produce a wrong answer.
+type referenceCacheStore[T any] struct {
+	mu      sync.Mutex
+	entries map[string]*referenceCacheSlot[T]
+	clock   uint64
+}
+
+type referenceCacheSlot[T any] struct {
+	value    *T
+	lastUsed uint64
+}
+
+// entry returns the cached entry for key, creating it when absent. Callers
+// serialize their own use of the returned entry.
+func (c *referenceCacheStore[T]) entry(key string) *T {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[string]*referenceCacheSlot[T]{}
+	}
+	c.clock++
+	if slot, ok := c.entries[key]; ok {
+		slot.lastUsed = c.clock
+		return slot.value
+	}
+	value := new(T)
+	c.entries[key] = &referenceCacheSlot[T]{value: value, lastUsed: c.clock}
+	c.evictLocked()
+	return value
+}
+
+// evictLocked drops least-recently-used roots until the cache fits its cap.
+// NICKPIT_REFERENCE_CACHE_MAX_ENTRIES tunes it; a value <= 0 disables eviction.
+func (c *referenceCacheStore[T]) evictLocked() {
+	limit := cacheCapFromEnv("NICKPIT_REFERENCE_CACHE_MAX_ENTRIES", toolcatalog.DefaultReferenceCacheEntries)
+	if limit <= 0 {
+		return
+	}
+	for len(c.entries) > limit {
+		oldestKey, oldest := "", uint64(0)
+		for key, slot := range c.entries {
+			if oldestKey == "" || slot.lastUsed < oldest {
+				oldestKey, oldest = key, slot.lastUsed
+			}
+		}
+		delete(c.entries, oldestKey)
+	}
+}
 
 func findParsedReferencesInFiles(repoRoot string, symbol SymbolRef, scope lookupScope, parsed []*parsedReferenceFile) (*ReferenceResult, error) {
+	selected, err := resolveParsedDefinition(symbol, scope, parsed)
+	if err != nil {
+		return nil, err
+	}
+	return buildParsedReferenceResult(repoRoot, parsed, selected), nil
+}
+
+// resolveParsedDefinition picks the single declaration of symbol inside scope.
+// It is separate from occurrence collection so a repo-wide lookup that lands on
+// a Go declaration can hand off to go/types without paying for a parsed-language
+// reference analysis it would discard.
+func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*parsedReferenceFile) (definitionCandidate, error) {
 	var candidates []definitionCandidate
+	analyzed := 0
 	for _, file := range parsed {
 		if !pathInLookupScope(file.path, scope) {
 			continue
 		}
+		analyzed++
 		candidates = append(candidates, findDefinitionCandidates(file, symbol.Name)...)
 	}
 	if len(candidates) == 0 {
-		if !scope.IsFile {
-			// Directory/repository scopes may contain languages this structural
-			// pass does not parse. Let callers perform their literal-search
-			// fallback instead of incorrectly concluding the symbol is absent.
-			return nil, &UnsupportedLanguageError{Path: scope.Path}
+		if analyzed == 0 && !scope.IsFile {
+			// Nothing in this directory/repository scope has a structural
+			// backend, so its absence says nothing about the symbol.
+			return definitionCandidate{}, &UnsupportedLanguageError{Path: scope.Path}
 		}
-		if scope.Path != "" {
-			return nil, fmt.Errorf("symbol %q not found in %q", symbol.Name, scope.Path)
-		}
-		return nil, fmt.Errorf("symbol %q not found", symbol.Name)
+		return definitionCandidate{}, &SymbolNotFoundError{Name: symbol.Name, Path: scope.Path}
 	}
 	candidates = dedupeDefinitionCandidates(candidates)
+	if pinned := pinCandidatesToLine(candidates, symbol.Line, func(c definitionCandidate) LineRange {
+		return c.target.Definition.LineRange
+	}); len(pinned) > 0 {
+		candidates = pinned
+	}
 	if len(candidates) > 1 {
 		targets := make([]ReferenceTarget, 0, len(candidates))
 		for _, candidate := range candidates {
 			targets = append(targets, candidate.target)
 		}
-		return nil, &AmbiguousSymbolError{Name: symbol.Name, Candidates: targets}
+		return definitionCandidate{}, &AmbiguousSymbolError{Name: symbol.Name, Candidates: targets}
 	}
+	return candidates[0], nil
+}
 
-	selected := candidates[0]
+// pinCandidatesToLine narrows same-named declarations to the one the caller
+// pinned, which is the only way to disambiguate two declarations in one file.
+// A declaration line wins over a span that merely contains it, so a method
+// pinned inside an enclosing declaration still resolves. An empty result means
+// the line pinned nothing and the caller keeps its original candidates.
+func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(T) LineRange) []T {
+	if line <= 0 || len(candidates) < 2 {
+		return nil
+	}
+	var exact, spanning []T
+	for _, candidate := range candidates {
+		lines := rangeOf(candidate)
+		switch {
+		case lines.Start == line:
+			exact = append(exact, candidate)
+		case line > lines.Start && line <= lines.End:
+			spanning = append(spanning, candidate)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return spanning
+}
+
+func buildParsedReferenceResult(repoRoot string, parsed []*parsedReferenceFile, selected definitionCandidate) *ReferenceResult {
 	aliases := referenceAliases(repoRoot, parsed, selected)
 	result := &ReferenceResult{
 		Target:           selected.target,
@@ -211,7 +307,7 @@ func findParsedReferencesInFiles(repoRoot string, symbol SymbolRef, scope lookup
 	}
 	collectParsedOccurrences(result, parsed, selected, aliases)
 	sortReferenceResult(result)
-	return result, nil
+	return result
 }
 
 func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedReferenceFile, error) {
@@ -219,8 +315,7 @@ func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedRe
 	if err != nil {
 		key = repoRoot
 	}
-	actual, _ := parsedReferenceCache.LoadOrStore(key, &parsedReferenceCacheEntry{})
-	entry := actual.(*parsedReferenceCacheEntry)
+	entry := parsedReferenceCache.entry(key)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -278,7 +373,7 @@ func parseReferenceFile(path, source string) *parsedReferenceFile {
 	language := detectLanguage(path)
 	lines := strings.Split(strings.ReplaceAll(source, "\r\n", "\n"), "\n")
 	file := &parsedReferenceFile{
-		path: path, language: language, source: source, lines: lines,
+		path: path, language: language, lines: lines,
 		masked: maskReferenceSource(lines, language),
 	}
 	if ir, err := tsparser.ParseFile(path, []byte(source)); err == nil {
@@ -546,6 +641,7 @@ func resolveReferenceImport(repoRoot string, file *parsedReferenceFile, spec str
 func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceFile, selected definitionCandidate, aliases map[string]map[string]string) {
 	functionContexts := map[string]*ReferenceContext{}
 	outsideContexts := map[string]*ReferenceContext{}
+	declarationSkipped := false
 	for _, file := range files {
 		names := map[string]string{selected.target.Name: "possible"}
 		if selected.file.language == "go" && file.path == selected.file.path {
@@ -556,12 +652,14 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 			lineNo := lineIndex + 1
 			for name, confidence := range names {
 				for _, column := range identifierColumns(line, name) {
-					if file.path == selected.file.path && lineNo == selected.target.Definition.LineRange.Start && name == selected.target.Name {
-						// Skip one canonical declaration occurrence but keep a
-						// self-reference later on the same line.
-						if column <= strings.Index(line, name)+1 {
-							continue
-						}
+					// The declaration is the target, not a reference to it. Its
+					// span can start above the declaration line (decorators,
+					// attributes), so skip the first occurrence anywhere in the
+					// span and keep every later self-reference.
+					if !declarationSkipped && file.path == selected.file.path && name == selected.target.Name &&
+						lineNo >= selected.target.Definition.LineRange.Start && lineNo <= selected.target.Definition.LineRange.End {
+						declarationSkipped = true
+						continue
 					}
 					role := referenceRole(line, column-1, name)
 					if name != selected.target.Name && isImportReferenceLine(file.language, line) {
@@ -681,19 +779,27 @@ func lineWithinParsedFunctions(functions []parsedFunction, line int) bool {
 
 func maskReferenceSource(lines []string, language string) []string {
 	out := make([]string, len(lines))
-	inBlockComment, inGoRawString, inTriple := false, false, byte(0)
+	// Backtick literals — Go raw strings and JavaScript template literals — span
+	// lines, so their state has to survive the per-line reset that single- and
+	// double-quoted strings rely on.
+	inBlockComment, inBacktick, backtickEscaped, inTriple := false, false, false, byte(0)
 	for i, line := range lines {
 		buf := []byte(line)
 		masked := append([]byte(nil), buf...)
 		quote := byte(0)
 		escaped := false
 		for j := 0; j < len(buf); j++ {
-			if inGoRawString {
+			if inBacktick {
 				if buf[j] != '\t' {
 					masked[j] = ' '
 				}
-				if buf[j] == '`' {
-					inGoRawString = false
+				switch {
+				case backtickEscaped:
+					backtickEscaped = false
+				case language == "nodejs" && buf[j] == '\\':
+					backtickEscaped = true
+				case buf[j] == '`':
+					inBacktick = false
 				}
 				continue
 			}
@@ -753,12 +859,12 @@ func maskReferenceSource(lines []string, language string) []string {
 			if buf[j] == '\'' && language == "rust" && rustCharLiteralEnd(buf, j) < 0 {
 				continue
 			}
-			if language == "go" && buf[j] == '`' {
-				inGoRawString = true
+			if buf[j] == '`' && (language == "go" || language == "nodejs") {
+				inBacktick = true
 				masked[j] = ' '
 				continue
 			}
-			if buf[j] == '\'' || buf[j] == '"' || language == "nodejs" && buf[j] == '`' {
+			if buf[j] == '\'' || buf[j] == '"' {
 				quote = buf[j]
 				masked[j] = ' '
 			}
@@ -813,21 +919,20 @@ func lineLocation(path, language string, lines []string, line int) CodeLocation 
 	return rangeLocation(path, language, lines, line, line)
 }
 
+// rangeLocation clamps start/end into the file and never indexes past it: a
+// caller that could not read the file passes no lines at all, and reporting the
+// location without content beats losing the whole lookup to a panic.
 func rangeLocation(path, language string, lines []string, start, end int) CodeLocation {
 	if start < 1 {
 		start = 1
-	}
-	if start > len(lines) {
-		start = len(lines)
-	}
-	if end > len(lines) {
-		end = len(lines)
 	}
 	if end < start {
 		end = start
 	}
 	content := ""
-	if start <= end && start <= len(lines) {
+	if len(lines) > 0 {
+		start = min(start, len(lines))
+		end = min(max(end, start), len(lines))
 		content = strings.Join(lines[start-1:end], "\n")
 	}
 	return CodeLocation{FilePath: path, LineRange: LineRange{Start: start, End: end, Count: max(0, end-start+1)}, Language: language, Content: content}
@@ -927,7 +1032,7 @@ type goReferenceCacheEntry struct {
 	pkgs        []*packages.Package
 }
 
-var goReferenceCache sync.Map // absolute repo root -> *goReferenceCacheEntry
+var goReferenceCache referenceCacheStore[goReferenceCacheEntry] // absolute repo root -> entry
 
 func findGoReferencesWithPackages(repoRoot string, symbol SymbolRef, scope lookupScope, pkgs []*packages.Package) (*ReferenceResult, error) {
 	var candidates []goReferenceCandidate
@@ -979,6 +1084,11 @@ func findGoReferencesWithPackages(repoRoot string, symbol SymbolRef, scope looku
 			}
 		}
 		return nil, fmt.Errorf("symbol %q not found in %q", symbol.Name, symbol.Path)
+	}
+	if pinned := pinCandidatesToLine(candidates, symbol.Line, func(candidate goReferenceCandidate) LineRange {
+		return goCandidateTarget(repoRoot, candidate).Definition.LineRange
+	}); len(pinned) > 0 {
+		candidates = pinned
 	}
 	if len(candidates) > 1 {
 		targets := make([]ReferenceTarget, 0, len(candidates))
@@ -1075,8 +1185,7 @@ func loadGoReferencePackages(ctx context.Context, repoRoot string) ([]*packages.
 	if err != nil {
 		key = repoRoot
 	}
-	actual, _ := goReferenceCache.LoadOrStore(key, &goReferenceCacheEntry{})
-	entry := actual.(*goReferenceCacheEntry)
+	entry := goReferenceCache.entry(key)
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 	if err := ctx.Err(); err != nil {

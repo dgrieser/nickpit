@@ -39,13 +39,20 @@ func TestToolResultLimiterLeavesSmallPayloadUnchanged(t *testing.T) {
 	}
 }
 
-func TestToolResultLimiterHonorsTinyTokenLimit(t *testing.T) {
+// A cap too small for any structure still has to explain itself: a bare "{}"
+// reads as a successful empty result and the model reruns the same call.
+func TestToolResultLimiterExplainsItselfUnderTinyTokenLimit(t *testing.T) {
 	got := limitToolResultJSON(`{"path":"a.go","content":"too large"}`, 1)
-	if estimated := tokenestimate.Estimate(got); estimated > 1 {
-		t.Fatalf("result = %d tokens, cap = 1: %s", estimated, got)
-	}
 	if !json.Valid([]byte(got)) {
 		t.Fatalf("result is not valid JSON: %s", got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(got), &payload); err != nil {
+		t.Fatal(err)
+	}
+	note, _ := payload["truncated_note"].(string)
+	if payload["truncated"] != true || !strings.Contains(note, "narrower arguments") {
+		t.Fatalf("result = %s", got)
 	}
 }
 
@@ -223,6 +230,22 @@ func TestToolResultBatchUsesPercentageOfRemainingContext(t *testing.T) {
 	payload := decodeToolPayload(t, batch[0].Content)
 	if payload["truncated"] != true || payload["path"] != "large.txt" {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+// A prompt that already fills the context leaves a zero percentage share. The
+// results still have to be readable rather than collapsing to a bare "{}".
+func TestToolResultBatchKeepsResultsReadableWhenContextIsExhausted(t *testing.T) {
+	messages := []llm.Message{{Role: "system", Content: strings.Repeat("x", 40_000)}}
+	raw := fmt.Sprintf(`{"path":"a.go","start_line":1,"end_line":500,"content":%q}`, strings.Repeat("line content\n", 500))
+	batch := limitToolResultBatch(messages, nil, nil, []llm.Message{{Role: "tool", Content: raw}}, 1000, 10)
+
+	payload := decodeToolPayload(t, batch[0].Content)
+	if payload["truncated"] != true {
+		t.Fatalf("exhausted-context result is not marked truncated: %s", batch[0].Content)
+	}
+	if payload["path"] != "a.go" {
+		t.Fatalf("exhausted-context result lost its payload: %s", batch[0].Content)
 	}
 }
 

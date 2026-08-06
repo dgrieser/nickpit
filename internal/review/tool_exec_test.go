@@ -181,6 +181,27 @@ func TestExecuteFindReferencesFallsBackForDirectoryAndRepoScopes(t *testing.T) {
 	}
 }
 
+// A repo-wide lookup for a symbol that does not exist must not claim the file
+// type is unsupported: the structural pass did run, it just found nothing.
+func TestExecuteFindReferencesReportsAbsentSymbolInAnalyzableRepo(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/absent\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "app.go", "package absent\n\nfunc Run() {}\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{{
+		ID: "refs-absent", Name: "find_references", Arguments: `{"symbol":"NotThere","path":""}`,
+	}}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	note, _ := payload["note"].(string)
+	if payload["fallback"] != "search" || intFromJSON(payload["result_count"]) != 0 {
+		t.Fatalf("absent-symbol payload = %#v", payload)
+	}
+	if !strings.Contains(note, "no declaration") || strings.Contains(note, "unavailable for this file type") {
+		t.Fatalf("absent-symbol note = %q", note)
+	}
+}
+
 // TestExecuteSearchReplacesFunctionMatchesForSupportedLanguage guards the
 // post-search optimization for languages with a structural backend.
 func TestExecuteSearchReplacesFunctionMatchesForSupportedLanguage(t *testing.T) {
@@ -252,6 +273,32 @@ func TestExecuteSearchPreservesUnclassifiedLiteralMatches(t *testing.T) {
 	location, _ := literal["code_location"].(map[string]any)
 	if location["file_path"] != "release.sh" {
 		t.Fatalf("preserved literal location = %#v", location)
+	}
+}
+
+// A path-scoped search can contain only usages, so the declaration is resolved
+// by the repo-wide fallback. Its reference analysis still covers the literal
+// hits, which must not be repeated alongside it.
+func TestExecuteSearchClassifiesFallbackResolvedMatches(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/fallbackrefs\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "config.go", "package fallbackrefs\n\nvar Timeout = 1\n")
+	writeRepoFile(t, repoRoot, "use.go", "package fallbackrefs\n\nfunc Use() int { return Timeout }\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Timeout","path":"use.go"}`},
+	}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	target, _ := payload["target"].(map[string]any)
+	if target["name"] != "Timeout" {
+		t.Fatalf("fallback payload target = %#v", payload)
+	}
+	if literals, _ := payload["literal_results"].([]any); len(literals) != 0 {
+		t.Fatalf("fallback payload duplicates literal hits: %#v", payload)
+	}
+	if _, literal := payload["results"]; literal {
+		t.Fatalf("literal snippets were not replaced: %#v", payload)
 	}
 }
 
@@ -874,7 +921,12 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "find_references",
 			call: llm.ToolCall{ID: "refs", Name: "find_references", Arguments: `{"path":"src/demo.go","symbol":"Run"}`},
-			want: referenceDedupKey(goPath, "Run"),
+			want: referenceDedupKey(goPath, "Run", 0),
+		},
+		{
+			name: "find_references pinned to a declaration line",
+			call: llm.ToolCall{ID: "refs-line", Name: "find_references", Arguments: `{"path":"src/demo.go","symbol":"Run","line":3}`},
+			want: referenceDedupKey(goPath, "Run", 3),
 		},
 		{
 			name: "search go function name starts as literal search",
