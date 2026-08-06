@@ -407,6 +407,11 @@ func (r MixedSearchResult) MarshalJSON() ([]byte, error) {
 	if err := json.Unmarshal(encoded, &payload); err != nil {
 		return nil, err
 	}
+	if payload == nil {
+		// Neither structural result was set, so the primary encoded to "null".
+		// The literal matches are still worth returning on their own.
+		payload = map[string]any{}
+	}
 	payload["literal_result_count"] = len(r.LiteralResults)
 	payload["literal_results"] = r.LiteralResults
 	if len(r.TruncatedFiles) > 0 {
@@ -432,60 +437,70 @@ func (e *Engine) ExecuteSearch(ctx context.Context, repoRoot string, options Sea
 		seenToolCalls:  make(map[string]struct{}),
 	}
 	raw := e.executeSearch(ctx, repoRoot, llm.ToolCall{ID: "standalone-search", Name: "search", Arguments: arguments}, state)
-	var shape map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &shape); err != nil {
+	var envelope searchResultEnvelope
+	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
 		return nil, fmt.Errorf("decode search result: %w", err)
 	}
-	if statusRaw, ok := shape["status"]; ok {
-		var status string
-		_ = json.Unmarshal(statusRaw, &status)
-		if status == "error" {
-			var payload struct {
-				Error struct {
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			_ = json.Unmarshal([]byte(raw), &payload)
-			return nil, errors.New(payload.Error.Message)
-		}
+	if envelope.Status == "error" {
+		return nil, errors.New(envelope.Error.Message)
 	}
-	var result any
-	if shape["call_hierarchies"] != nil || shape["reference_results"] != nil {
+	switch {
+	case envelope.CallHierarchies != nil || envelope.ReferenceResults != nil:
 		grouped := &GroupedSearchResult{}
 		if err := json.Unmarshal([]byte(raw), grouped); err != nil {
 			return nil, fmt.Errorf("decode grouped search result: %w", err)
 		}
 		return grouped, nil
-	}
-	switch {
-	case shape["root"] != nil:
-		result = &retrieval.CallHierarchy{}
-	case shape["target"] != nil:
-		result = &retrieval.ReferenceResult{}
+	case envelope.Root != nil:
+		callers := &retrieval.CallHierarchy{}
+		if err := json.Unmarshal([]byte(raw), callers); err != nil {
+			return nil, fmt.Errorf("decode caller hierarchy: %w", err)
+		}
+		return envelope.withLiteralMatches(&MixedSearchResult{Callers: callers}), nil
+	case envelope.Target != nil:
+		references := &retrieval.ReferenceResult{}
+		if err := json.Unmarshal([]byte(raw), references); err != nil {
+			return nil, fmt.Errorf("decode reference result: %w", err)
+		}
+		return envelope.withLiteralMatches(&MixedSearchResult{References: references}), nil
 	default:
-		result = &retrieval.SearchResults{}
-	}
-	if err := json.Unmarshal([]byte(raw), result); err != nil {
-		return nil, fmt.Errorf("decode search result: %w", err)
-	}
-	if (shape["root"] != nil || shape["target"] != nil) && (shape["literal_results"] != nil || shape["truncated_files"] != nil) {
-		var literals struct {
-			Results        []retrieval.SearchResult `json:"literal_results"`
-			TruncatedFiles []string                 `json:"truncated_files"`
+		results := &retrieval.SearchResults{}
+		if err := json.Unmarshal([]byte(raw), results); err != nil {
+			return nil, fmt.Errorf("decode search result: %w", err)
 		}
-		if err := json.Unmarshal([]byte(raw), &literals); err != nil {
-			return nil, fmt.Errorf("decode literal search matches: %w", err)
-		}
-		mixed := &MixedSearchResult{LiteralResults: literals.Results, TruncatedFiles: literals.TruncatedFiles}
-		switch typed := result.(type) {
-		case *retrieval.CallHierarchy:
-			mixed.Callers = typed
-		case *retrieval.ReferenceResult:
-			mixed.References = typed
-		}
-		return mixed, nil
+		return results, nil
 	}
-	return result, nil
+}
+
+// searchResultEnvelope identifies which shape executeSearch returned. The
+// search tool answers with an untagged union — literal matches, one structural
+// result, or several grouped together — so the discriminating fields are
+// decoded once here instead of re-decoding the whole document per guess.
+type searchResultEnvelope struct {
+	Status string `json:"status"`
+	Error  struct {
+		Message string `json:"message"`
+	} `json:"error"`
+	Root             json.RawMessage          `json:"root"`
+	Target           json.RawMessage          `json:"target"`
+	CallHierarchies  json.RawMessage          `json:"call_hierarchies"`
+	ReferenceResults json.RawMessage          `json:"reference_results"`
+	LiteralResults   []retrieval.SearchResult `json:"literal_results"`
+	TruncatedFiles   []string                 `json:"truncated_files"`
+}
+
+// withLiteralMatches returns the structural result on its own unless literal
+// matches were preserved next to it.
+func (envelope searchResultEnvelope) withLiteralMatches(mixed *MixedSearchResult) any {
+	if len(envelope.LiteralResults) == 0 && len(envelope.TruncatedFiles) == 0 {
+		if mixed.Callers != nil {
+			return mixed.Callers
+		}
+		return mixed.References
+	}
+	mixed.LiteralResults = envelope.LiteralResults
+	mixed.TruncatedFiles = envelope.TruncatedFiles
+	return mixed
 }
 
 // resolveSearchContextLines applies the per-mode default when the model omits
@@ -584,8 +599,16 @@ func (e *Engine) executeSearch(ctx context.Context, repoRoot string, toolCall ll
 }
 
 type classifiedSearchSymbol struct {
-	name       string
-	path       string
+	name string
+	path string
+	kind string
+	// declarationLine pins the declaration when the same name is declared more
+	// than once in its file, so the deferred reference lookup cannot re-ambiguate.
+	declarationLine int
+	// references is filled only once the symbol is known to need a reference
+	// analysis. A function is upgraded to a call hierarchy instead, so
+	// computing its references first would be a whole-repository pass thrown
+	// away.
 	references *retrieval.ReferenceResult
 }
 
@@ -627,21 +650,24 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 
 	resolved := make(map[string]*classifiedSearchSymbol)
 	lookupCount := 0
-	recordResolution := func(result *retrieval.ReferenceResult, err error) {
-		if err != nil || result == nil {
+	recordResolution := func(target *retrieval.ReferenceTarget, references *retrieval.ReferenceResult, err error) {
+		if err != nil || target == nil {
 			return
 		}
-		target := result.Target
 		key := fmt.Sprintf("%s\x00%d\x00%d\x00%s", target.Definition.FilePath, target.Definition.LineRange.Start, target.Definition.LineRange.End, target.Name)
 		if _, ok := resolved[key]; ok {
 			return
 		}
 		resolved[key] = &classifiedSearchSymbol{
-			name:       target.Name,
-			path:       target.Definition.FilePath,
-			references: result,
+			name:            target.Name,
+			path:            target.Definition.FilePath,
+			kind:            target.Kind,
+			declarationLine: target.Definition.LineRange.Start,
+			references:      references,
 		}
 	}
+	// Only the declaration is needed to decide between a call hierarchy and a
+	// reference analysis, so resolve targets when the engine can do that alone.
 	resolveBatch := func(candidates []lookup) {
 		remaining := toolcatalog.MaxSearchStructuralLookups - lookupCount
 		if remaining <= 0 || len(candidates) == 0 {
@@ -649,20 +675,33 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		}
 		candidates = candidates[:min(len(candidates), remaining)]
 		lookupCount += len(candidates)
-		if batchEngine, ok := e.retrieval.(retrieval.ReferenceBatchEngine); ok {
-			symbols := make([]retrieval.SymbolRef, len(candidates))
-			for i, candidate := range candidates {
-				symbols[i] = retrieval.SymbolRef{Name: candidate.name, Path: candidate.path}
-			}
-			batchResults := batchEngine.FindReferencesBatch(ctx, repoRoot, symbols)
-			for _, batchResult := range batchResults {
-				recordResolution(batchResult.Result, batchResult.Err)
+		symbols := make([]retrieval.SymbolRef, len(candidates))
+		for i, candidate := range candidates {
+			symbols[i] = retrieval.SymbolRef{Name: candidate.name, Path: candidate.path}
+		}
+		if resolver, ok := e.retrieval.(retrieval.ReferenceTargetResolver); ok {
+			for _, targetResult := range resolver.ResolveReferenceTargets(ctx, repoRoot, symbols) {
+				recordResolution(targetResult.Target, nil, targetResult.Err)
 			}
 			return
 		}
-		for _, candidate := range candidates {
-			result, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{Name: candidate.name, Path: candidate.path})
-			recordResolution(result, err)
+		if batchEngine, ok := e.retrieval.(retrieval.ReferenceBatchEngine); ok {
+			for _, batchResult := range batchEngine.FindReferencesBatch(ctx, repoRoot, symbols) {
+				if batchResult.Result == nil {
+					recordResolution(nil, nil, batchResult.Err)
+					continue
+				}
+				recordResolution(&batchResult.Result.Target, batchResult.Result, batchResult.Err)
+			}
+			return
+		}
+		for _, symbol := range symbols {
+			result, err := e.retrieval.FindReferences(ctx, repoRoot, symbol)
+			if result == nil {
+				recordResolution(nil, nil, err)
+				continue
+			}
+			recordResolution(&result.Target, result, err)
 		}
 	}
 	resolveBatch(lookups)
@@ -689,11 +728,11 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 	classifiedMatches := make(map[int]struct{})
 	for _, key := range keys {
 		selected := resolved[key]
-		if selected.name == "" || selected.path == "" || selected.references == nil {
+		if selected.name == "" || selected.path == "" {
 			continue
 		}
 		var optimized string
-		if selected.references.Target.Kind == "function" {
+		if selected.kind == "function" {
 			e.logf(ctx, "Replacing search matches with find_callers: query=%q symbol=%q path=%s depth=%d", query, selected.name, selected.path, toolcatalog.DefaultCallHierarchyDepth)
 			optimized = e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
 				ID:   toolCallID,
@@ -720,6 +759,17 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		} else {
 			if !e.reserveSearchReferenceResult(selected, state) {
 				continue
+			}
+			if selected.references == nil {
+				// Resolution stopped at the declaration; collect its references
+				// now that the symbol is known not to be a function.
+				references, err := e.retrieval.FindReferences(ctx, repoRoot, retrieval.SymbolRef{
+					Name: selected.name, Path: selected.path, Line: selected.declarationLine,
+				})
+				if err != nil || references == nil {
+					continue
+				}
+				selected.references = references
 			}
 			e.logf(ctx, "Replacing search matches with find_references: query=%q symbol=%q path=%s kind=%s", query, selected.name, selected.path, selected.references.Target.Kind)
 			optimized = limitToolResultJSON(mustToolResultJSON(selected.references), 0)

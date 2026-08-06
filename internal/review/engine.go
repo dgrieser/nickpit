@@ -3125,41 +3125,93 @@ func parseToolResultSummary(content string) toolResultSummary {
 		summary.HasResultCount = true
 		summary.ResultCount = int(resultCount)
 	}
-	if root, ok := payload["root"].(map[string]any); ok {
-		summary.Files = countCallHierarchyFiles(root)
-		summary.Lines = countCallHierarchyLines(root)
-	}
-	if target, ok := payload["target"].(map[string]any); ok {
+	// One search can return several structural payloads at once, so the
+	// structural shapes are summarized over every payload the result carries —
+	// a single top-level one, or the grouped call_hierarchies/reference_results
+	// arrays — and the file sets are unioned rather than overwritten.
+	structural := structuralSummaryPayloads(payload)
+	literals, hasLiterals := payload["literal_results"].([]any)
+	if len(structural) > 0 || hasLiterals {
 		distinct := map[string]struct{}{}
-		if definition, ok := target["definition"].(map[string]any); ok {
-			if path, _ := definition["file_path"].(string); path != "" {
-				distinct[path] = struct{}{}
-			}
-			if content, _ := definition["content"].(string); content != "" {
-				summary.Lines += lineCount(content)
-			}
+		for _, item := range structural {
+			accumulateStructuralSummary(item, &summary, distinct)
 		}
-		for _, field := range []string{"functions", "outside_functions"} {
-			contexts, _ := payload[field].([]any)
-			for _, item := range contexts {
-				context, _ := item.(map[string]any)
-				if path := nodeCodeLocationString(context, "file_path"); path != "" {
+		if hasLiterals {
+			summary.HasResultCount = true
+			summary.ResultCount += len(literals)
+			for _, item := range literals {
+				entry, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if path := nodeCodeLocationString(entry, "file_path"); path != "" {
 					distinct[path] = struct{}{}
 				}
-				summary.Lines += lineCount(nodeCodeLocationString(context, "content"))
 			}
 		}
 		summary.Files = len(distinct)
-		if exact, ok := payload["exact_reference_count"].(float64); ok {
-			summary.ResultCount += int(exact)
-			summary.HasResultCount = true
+	}
+	return summary
+}
+
+// structuralSummaryPayloads returns every call-hierarchy or reference payload a
+// tool result carries: the result itself when it is one, or each entry of the
+// grouped arrays a multi-declaration search produces.
+func structuralSummaryPayloads(payload map[string]any) []map[string]any {
+	if payload["root"] != nil || payload["target"] != nil {
+		return []map[string]any{payload}
+	}
+	var out []map[string]any
+	for _, field := range []string{"call_hierarchies", "reference_results"} {
+		items, _ := payload[field].([]any)
+		for _, item := range items {
+			if entry, ok := item.(map[string]any); ok {
+				out = append(out, entry)
+			}
 		}
-		if possible, ok := payload["possible_reference_count"].(float64); ok {
-			summary.ResultCount += int(possible)
+	}
+	return out
+}
+
+// accumulateStructuralSummary folds one structural payload into summary,
+// adding the files it touches to distinct.
+func accumulateStructuralSummary(payload map[string]any, summary *toolResultSummary, distinct map[string]struct{}) {
+	if root, ok := payload["root"].(map[string]any); ok {
+		walkCallHierarchy(root, func(node map[string]any) {
+			if path := nodeCodeLocationString(node, "file_path"); path != "" {
+				distinct[path] = struct{}{}
+			}
+			summary.Lines += lineCount(nodeCodeLocationString(node, "content"))
+		})
+	}
+	target, ok := payload["target"].(map[string]any)
+	if !ok {
+		return
+	}
+	if definition, ok := target["definition"].(map[string]any); ok {
+		if path, _ := definition["file_path"].(string); path != "" {
+			distinct[path] = struct{}{}
+		}
+		if content, _ := definition["content"].(string); content != "" {
+			summary.Lines += lineCount(content)
+		}
+	}
+	for _, field := range []string{"functions", "outside_functions"} {
+		contexts, _ := payload[field].([]any)
+		for _, item := range contexts {
+			context, _ := item.(map[string]any)
+			if path := nodeCodeLocationString(context, "file_path"); path != "" {
+				distinct[path] = struct{}{}
+			}
+			summary.Lines += lineCount(nodeCodeLocationString(context, "content"))
+		}
+	}
+	for _, field := range []string{"exact_reference_count", "possible_reference_count"} {
+		if count, ok := payload[field].(float64); ok {
+			summary.ResultCount += int(count)
 			summary.HasResultCount = true
 		}
 	}
-	return summary
 }
 
 // nodeCodeLocationString reads a string field from a node's nested
@@ -3183,24 +3235,6 @@ func countDuplicateToolCalls(toolMessages []llm.Message) int {
 		}
 	}
 	return count
-}
-
-func countCallHierarchyFiles(root map[string]any) int {
-	distinct := make(map[string]struct{})
-	walkCallHierarchy(root, func(node map[string]any) {
-		if path := nodeCodeLocationString(node, "file_path"); path != "" {
-			distinct[path] = struct{}{}
-		}
-	})
-	return len(distinct)
-}
-
-func countCallHierarchyLines(root map[string]any) int {
-	lines := 0
-	walkCallHierarchy(root, func(node map[string]any) {
-		lines += lineCount(nodeCodeLocationString(node, "content"))
-	})
-	return lines
 }
 
 func walkCallHierarchy(node map[string]any, visit func(map[string]any)) {

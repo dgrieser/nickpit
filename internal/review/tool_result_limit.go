@@ -201,6 +201,11 @@ func applyToolItemLimits(root map[string]any) bool {
 	return true
 }
 
+// reduceToolResult shrinks the payload by one step, preferring a reduction that
+// suits the tool's shape. Every branch falls through to the generic reducer when
+// its shape-specific reductions are exhausted; returning their result directly
+// would strand an oversized payload whose typed fields are already empty, and
+// the caller then discards it entirely.
 func reduceToolResult(root map[string]any, over, size int) bool {
 	switch {
 	case isReferencePayload(root):
@@ -212,7 +217,9 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 		}
 		if target, ok := objectField(root, "target"); ok {
 			if definition, ok := objectField(target, "definition"); ok {
-				return trimStringField(definition, "content", over, true)
+				if trimStringField(definition, "content", over, true) {
+					return true
+				}
 			}
 		}
 	case root["root"] != nil:
@@ -234,7 +241,9 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 			return true
 		}
 	case root["files"] != nil:
-		return dropArrayTail(root, "files", over, size, "omitted_files")
+		if dropArrayTail(root, "files", over, size, "omitted_files") {
+			return true
+		}
 	case root["commits"] != nil:
 		if reduceHistoryResult(root, over, size) {
 			return true

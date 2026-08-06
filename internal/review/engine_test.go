@@ -4544,6 +4544,30 @@ func TestParseToolResultSummaryCountsReferenceContexts(t *testing.T) {
 	}
 }
 
+// One identifier search can return several structural payloads at once. The
+// summary has to cover all of them plus the literal matches kept alongside,
+// not report zeros because there is no root-level target.
+func TestParseToolResultSummaryCountsGroupedStructuralPayloads(t *testing.T) {
+	result := `{"structural_result_count":2,"literal_result_count":1,` +
+		`"literal_results":[{"code_location":{"file_path":"notes.txt","content":"X"}}],` +
+		`"call_hierarchies":[{"root":{"code_location":{"file_path":"c.go","content":"func a() {\n b()\n}"},"children":[]}}],` +
+		`"reference_results":[{"target":{"definition":{"file_path":"a.go","content":"var X int"}},` +
+		`"functions":[{"code_location":{"file_path":"b.go","content":"func use() {\n X++\n}"}}],` +
+		`"outside_functions":[],"exact_reference_count":2,"possible_reference_count":0}]}`
+
+	summary := parseToolResultSummary(result)
+
+	if !summary.HasResultCount || summary.ResultCount != 3 {
+		t.Fatalf("result count = %d (has=%t), want 2 references plus 1 literal", summary.ResultCount, summary.HasResultCount)
+	}
+	if summary.Files != 4 {
+		t.Fatalf("files = %d, want a.go, b.go, c.go and notes.txt", summary.Files)
+	}
+	if summary.Lines != 7 {
+		t.Fatalf("lines = %d, want the hierarchy, definition and context contents", summary.Lines)
+	}
+}
+
 type blockingRetrieval struct {
 	started chan string
 	release chan struct{}

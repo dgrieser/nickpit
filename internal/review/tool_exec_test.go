@@ -202,6 +202,24 @@ func TestExecuteFindReferencesReportsAbsentSymbolInAnalyzableRepo(t *testing.T) 
 	}
 }
 
+// The Go path must share the parsed path's not-found error type, or an absent
+// Go symbol never reaches the literal-search fallback.
+func TestExecuteFindReferencesFallsBackForAbsentGoSymbolInFile(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/absentgo\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "app.go", "package absentgo\n\nfunc Run() {}\n")
+	writeRepoFile(t, repoRoot, "notes.txt", "Missing appears here\n")
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{{
+		ID: "refs-go-absent", Name: "find_references", Arguments: `{"symbol":"Missing","path":"app.go"}`,
+	}}, freshToolRoundState())
+	payload := decodeToolPayload(t, results[0].Content)
+	if payload["fallback"] != "search" || intFromJSON(payload["result_count"]) != 1 {
+		t.Fatalf("absent Go symbol payload = %#v", payload)
+	}
+}
+
 // TestExecuteSearchReplacesFunctionMatchesForSupportedLanguage guards the
 // post-search optimization for languages with a structural backend.
 func TestExecuteSearchReplacesFunctionMatchesForSupportedLanguage(t *testing.T) {
@@ -404,6 +422,45 @@ func TestStandaloneSearchReturnsGroupedStructuralResults(t *testing.T) {
 	grouped, ok := result.(*GroupedSearchResult)
 	if !ok || grouped.StructuralResultCount != 2 || len(grouped.ReferenceResults) != 2 || len(grouped.LiteralResults) != 0 {
 		t.Fatalf("standalone grouped result = %#v", result)
+	}
+}
+
+// The standalone API returns each shape executeSearch can produce as its own
+// concrete type, and keeps preserved literal matches next to structural ones.
+func TestStandaloneSearchReturnsEachResultShape(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/shapes\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "run.go", "package shapes\n\nfunc Run() {}\nfunc Start() { Run() }\n")
+	writeRepoFile(t, repoRoot, "value.go", "package shapes\n\nvar Value = 1\n")
+	writeRepoFile(t, repoRoot, "notes.txt", "Value mentioned here\n")
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+
+	literal, err := engine.ExecuteSearch(context.Background(), repoRoot, SearchOptions{Query: "mentioned here", ContextLines: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results, ok := literal.(*retrieval.SearchResults); !ok || results.ResultCount == 0 {
+		t.Fatalf("literal search result = %#v", literal)
+	}
+
+	callers, err := engine.ExecuteSearch(context.Background(), repoRoot, SearchOptions{Query: "Run", ContextLines: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hierarchy, ok := callers.(*retrieval.CallHierarchy); !ok || hierarchy.Root.Name != "Run" {
+		t.Fatalf("function search result = %#v", callers)
+	}
+
+	mixed, err := engine.ExecuteSearch(context.Background(), repoRoot, SearchOptions{Query: "Value", ContextLines: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	combined, ok := mixed.(*MixedSearchResult)
+	if !ok || combined.References == nil || combined.References.Target.Name != "Value" {
+		t.Fatalf("mixed search result = %#v", mixed)
+	}
+	if len(combined.LiteralResults) != 1 || combined.LiteralResults[0].CodeLocation.FilePath != "notes.txt" {
+		t.Fatalf("mixed search literals = %#v", combined.LiteralResults)
 	}
 }
 
@@ -1497,5 +1554,24 @@ func TestSupplementalContextLabelsHistoryResultsByRange(t *testing.T) {
 	}
 	if supplemental[0].Path != "git/aaa111..bbb222" {
 		t.Fatalf("supplemental path = %q", supplemental[0].Path)
+	}
+}
+
+// A MixedSearchResult with neither structural part encodes its primary as
+// "null", which decodes to a nil map. Writing the literal matches into it used
+// to panic.
+func TestMixedSearchResultMarshalsWithoutStructuralPart(t *testing.T) {
+	encoded, err := json.Marshal(MixedSearchResult{
+		LiteralResults: []retrieval.SearchResult{{CodeLocation: retrieval.CodeLocation{FilePath: "a.go"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if intFromJSON(payload["literal_result_count"]) != 1 {
+		t.Fatalf("payload = %s", encoded)
 	}
 }

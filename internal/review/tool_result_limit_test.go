@@ -296,3 +296,39 @@ func TestLimitedFileRangeAllowsOmittedLinesRetry(t *testing.T) {
 		t.Fatalf("omitted ranged lines rejected: %#v", payload)
 	}
 }
+
+// A mixed search result keeps its literal matches alongside the reference
+// analysis. Once the reference-specific fields are exhausted, the payload must
+// keep shrinking through the generic reducer instead of being discarded whole.
+func TestToolResultLimiterKeepsShrinkingExhaustedReferencePayload(t *testing.T) {
+	literals := make([]map[string]any, 40)
+	for i := range literals {
+		literals[i] = map[string]any{"code_location": map[string]any{
+			"file_path": fmt.Sprintf("notes/%02d.txt", i),
+			"content":   strings.Repeat("literal match text ", 20),
+		}}
+	}
+	raw := mustToolResultJSON(map[string]any{
+		"target": map[string]any{
+			"name":       "Value",
+			"kind":       "variable",
+			"definition": map[string]any{"file_path": "a.go", "content": ""},
+		},
+		"functions":            []any{},
+		"outside_functions":    []any{},
+		"literal_result_count": len(literals),
+		"literal_results":      literals,
+	})
+
+	got := limitToolResultJSON(raw, 256)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(got), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["target"]; !ok {
+		t.Fatalf("payload was discarded instead of shrinking: %s", got)
+	}
+	if tokenestimate.Estimate(got) > 256 {
+		t.Fatalf("payload = %d tokens, cap = 256: %s", tokenestimate.Estimate(got), got)
+	}
+}

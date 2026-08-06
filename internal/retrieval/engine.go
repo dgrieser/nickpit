@@ -29,6 +29,19 @@ type ReferenceBatchResult struct {
 	Err    error
 }
 
+// ReferenceTargetResolver resolves declarations without collecting their
+// references. A caller that only needs a symbol's kind or location — deciding
+// whether to trace callers or list usages, say — would otherwise pay for a
+// whole-repository occurrence scan it then discards.
+type ReferenceTargetResolver interface {
+	ResolveReferenceTargets(ctx context.Context, repoRoot string, symbols []SymbolRef) []ReferenceTargetResult
+}
+
+type ReferenceTargetResult struct {
+	Target *ReferenceTarget
+	Err    error
+}
+
 type FileContent struct {
 	Path      string `json:"path"`
 	Content   string `json:"content"`

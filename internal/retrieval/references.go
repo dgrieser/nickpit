@@ -60,6 +60,24 @@ func (e *LocalEngine) FindReferencesBatch(ctx context.Context, repoRoot string, 
 	return results
 }
 
+// ResolveReferenceTargets resolves each symbol's declaration against the same
+// shared snapshots, stopping before reference collection. Results preserve
+// input order.
+func (e *LocalEngine) ResolveReferenceTargets(ctx context.Context, repoRoot string, symbols []SymbolRef) []ReferenceTargetResult {
+	loader := &referenceLoader{}
+	results := make([]ReferenceTargetResult, len(symbols))
+	for i, symbol := range symbols {
+		resolved, err := resolveReferenceWithLoader(ctx, repoRoot, symbol, loader)
+		if err != nil {
+			results[i].Err = err
+			continue
+		}
+		target := resolved.target
+		results[i].Target = &target
+	}
+	return results
+}
+
 type referenceLoader struct {
 	parsedLoaded bool
 	parsed       []*parsedReferenceFile
@@ -85,7 +103,35 @@ func (l *referenceLoader) loadGo(ctx context.Context, repoRoot string) ([]*packa
 	return l.goPackages, l.goErr
 }
 
+// resolvedReference is one declaration plus everything needed to go on and
+// collect its references, so resolution and collection share one routing path.
+type resolvedReference struct {
+	target ReferenceTarget
+	// Exactly one of the two backends owns the declaration.
+	goPackages []*packages.Package
+	goSelected goReferenceCandidate
+	goComplete bool
+	goLines    *referenceLineCache
+	parsedAll  []*parsedReferenceFile
+	parsed     definitionCandidate
+}
+
+func (r *resolvedReference) isGo() bool { return r.goPackages != nil }
+
 func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol SymbolRef, loader *referenceLoader) (*ReferenceResult, error) {
+	resolved, err := resolveReferenceWithLoader(ctx, repoRoot, symbol, loader)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.isGo() {
+		return collectGoReferences(repoRoot, resolved.goPackages, resolved.goSelected, resolved.goComplete, resolved.goLines), nil
+	}
+	return buildParsedReferenceResult(resolved.parsedAll, resolved.parsed), nil
+}
+
+// resolveReferenceWithLoader picks the declaration symbol names and reports
+// which backend owns it. Callers that only need the declaration stop here.
+func resolveReferenceWithLoader(ctx context.Context, repoRoot string, symbol SymbolRef, loader *referenceLoader) (*resolvedReference, error) {
 	symbol.Name = strings.TrimSpace(symbol.Name)
 	if symbol.Name == "" {
 		return nil, fmt.Errorf("finding references: symbol name is empty")
@@ -94,14 +140,25 @@ func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol Symbo
 	if err != nil {
 		return nil, fmt.Errorf("finding references for %q in %q: %w", symbol.Name, symbol.Path, err)
 	}
+	resolveGo := func(symbol SymbolRef, scope lookupScope) (*resolvedReference, error) {
+		pkgs, loadErr := loader.loadGo(ctx, repoRoot)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		lines := newReferenceLineCache(repoRoot)
+		selected, complete, resolveErr := resolveGoDeclaration(repoRoot, symbol, scope, pkgs, lines)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		return &resolvedReference{
+			target:     goCandidateTarget(selected, lines),
+			goPackages: pkgs, goSelected: selected, goComplete: complete, goLines: lines,
+		}, nil
+	}
 	if scope.IsFile {
 		ext := strings.ToLower(filepath.Ext(scope.Path))
 		if ext == ".go" {
-			pkgs, loadErr := loader.loadGo(ctx, repoRoot)
-			if loadErr != nil {
-				return nil, loadErr
-			}
-			return findGoReferencesWithPackages(repoRoot, symbol, scope, pkgs)
+			return resolveGo(symbol, scope)
 		}
 		if _, ok := referenceExtensions[ext]; !ok {
 			return nil, &UnsupportedLanguageError{Path: scope.Path}
@@ -110,7 +167,11 @@ func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol Symbo
 		if loadErr != nil {
 			return nil, fmt.Errorf("finding references for %q: %w", symbol.Name, loadErr)
 		}
-		return findParsedReferencesInFiles(repoRoot, symbol, scope, parsed)
+		selected, resolveErr := resolveParsedDefinition(symbol, scope, parsed)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		return &resolvedReference{target: selected.target, parsedAll: parsed, parsed: selected}, nil
 	}
 
 	// A directory/repo lookup can span parser families. Resolve declarations
@@ -125,13 +186,12 @@ func findReferencesWithLoader(ctx context.Context, repoRoot string, symbol Symbo
 		return nil, err
 	}
 	if strings.EqualFold(filepath.Ext(selected.file.path), ".go") {
-		pkgs, loadErr := loader.loadGo(ctx, repoRoot)
-		if loadErr != nil {
-			return nil, loadErr
-		}
-		return findGoReferencesWithPackages(repoRoot, SymbolRef{Name: symbol.Name, Path: selected.file.path, Line: symbol.Line}, lookupScope{Path: selected.file.path, IsFile: true}, pkgs)
+		return resolveGo(
+			SymbolRef{Name: symbol.Name, Path: selected.file.path, Line: symbol.Line},
+			lookupScope{Path: selected.file.path, IsFile: true},
+		)
 	}
-	return buildParsedReferenceResult(repoRoot, parsed, selected), nil
+	return &resolvedReference{target: selected.target, parsedAll: parsed, parsed: selected}, nil
 }
 
 var referenceExtensions = map[string]struct{}{
@@ -147,6 +207,10 @@ type parsedReferenceFile struct {
 	functions []parsedFunction
 	imports   []tsparser.Import
 	exports   []tsparser.Export
+	// resolvedImports maps a symbol import's module spec to its repo-relative
+	// path. Resolution stats up to a dozen candidate filenames per spec, so it
+	// is done once per parsed snapshot rather than per alias-resolution pass.
+	resolvedImports map[string]string
 }
 
 type parsedFunction struct {
@@ -223,14 +287,6 @@ func (c *referenceCacheStore[T]) evictLocked() {
 	}
 }
 
-func findParsedReferencesInFiles(repoRoot string, symbol SymbolRef, scope lookupScope, parsed []*parsedReferenceFile) (*ReferenceResult, error) {
-	selected, err := resolveParsedDefinition(symbol, scope, parsed)
-	if err != nil {
-		return nil, err
-	}
-	return buildParsedReferenceResult(repoRoot, parsed, selected), nil
-}
-
 // resolveParsedDefinition picks the single declaration of symbol inside scope.
 // It is separate from occurrence collection so a repo-wide lookup that lands on
 // a Go declaration can hand off to go/types without paying for a parsed-language
@@ -294,16 +350,17 @@ func pinCandidatesToLine[T any](candidates []T, line int, rangeOf func(T) LineRa
 	return spanning
 }
 
-func buildParsedReferenceResult(repoRoot string, parsed []*parsedReferenceFile, selected definitionCandidate) *ReferenceResult {
-	aliases := referenceAliases(repoRoot, parsed, selected)
+// buildParsedReferenceResult collects occurrences for a declaration the parser
+// backends resolved. Go never reaches here — both callers route a Go
+// declaration to go/types first — so the result is always the conservative,
+// incomplete kind.
+func buildParsedReferenceResult(parsed []*parsedReferenceFile, selected definitionCandidate) *ReferenceResult {
+	aliases := referenceAliases(parsed, selected)
 	result := &ReferenceResult{
 		Target:           selected.target,
 		Functions:        []ReferenceContext{},
 		OutsideFunctions: []ReferenceContext{},
-		Complete:         selected.file.language == "go",
-	}
-	if selected.file.language != "go" {
-		result.Notes = []string{"dynamic-language references include conservative same-name candidates when binding identity cannot be proven"}
+		Notes:            []string{"dynamic-language references include conservative same-name candidates when binding identity cannot be proven"},
 	}
 	collectParsedOccurrences(result, parsed, selected, aliases)
 	sortReferenceResult(result)
@@ -325,7 +382,10 @@ func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedRe
 	if err != nil {
 		return nil, err
 	}
-	fingerprint, sources, err := referenceSourceSnapshot(ctx, repoRoot, files)
+	// Fingerprint first, so the common cache hit never holds a second copy of
+	// the repository in memory. A miss re-reads the files, but parses each one
+	// as it arrives instead of buffering every source at once.
+	fingerprint, err := referenceSourceFingerprint(ctx, repoRoot, files)
 	if err != nil {
 		return nil, err
 	}
@@ -333,8 +393,10 @@ func loadParsedReferenceFiles(ctx context.Context, repoRoot string) ([]*parsedRe
 		return entry.files, nil
 	}
 	parsed := make([]*parsedReferenceFile, 0, len(files))
-	for _, source := range sources {
-		parsed = append(parsed, parseReferenceFile(source.path, string(source.data)))
+	if err := forEachReferenceSource(ctx, repoRoot, files, func(source referenceSource) {
+		parsed = append(parsed, parseReferenceFile(repoRoot, source.path, string(source.data)))
+	}); err != nil {
+		return nil, err
 	}
 	entry.fingerprint = fingerprint
 	entry.initialized = true
@@ -347,29 +409,41 @@ type referenceSource struct {
 	data []byte
 }
 
-func referenceSourceSnapshot(ctx context.Context, repoRoot string, files []string) ([sha256.Size]byte, []referenceSource, error) {
-	hash := sha256.New()
-	sources := make([]referenceSource, 0, len(files))
+// forEachReferenceSource reads the files in order and hands each to visit,
+// which must not retain the bytes: only one file's contents is live at a time.
+func forEachReferenceSource(ctx context.Context, repoRoot string, files []string, visit func(referenceSource)) error {
 	for _, fullPath := range files {
 		if err := ctx.Err(); err != nil {
-			return [sha256.Size]byte{}, nil, err
+			return err
 		}
 		rel, err := repofs.RelPath(repoRoot, fullPath)
 		if err != nil {
-			return [sha256.Size]byte{}, nil, err
+			return err
 		}
 		data, err := repofs.ReadFile(repoRoot, fullPath)
 		if err != nil {
-			return [sha256.Size]byte{}, nil, err
+			return err
 		}
-		_, _ = fmt.Fprintf(hash, "%d:%s:%d:", len(rel), rel, len(data))
-		_, _ = hash.Write(data)
-		sources = append(sources, referenceSource{path: rel, data: data})
+		visit(referenceSource{path: rel, data: data})
 	}
-	return [sha256.Size]byte(hash.Sum(nil)), sources, nil
+	return nil
 }
 
-func parseReferenceFile(path, source string) *parsedReferenceFile {
+// referenceSourceFingerprint identifies the exact content of a file set. Path
+// and length are hashed alongside the bytes so a rename or a shift of content
+// between files changes the fingerprint.
+func referenceSourceFingerprint(ctx context.Context, repoRoot string, files []string) ([sha256.Size]byte, error) {
+	hash := sha256.New()
+	if err := forEachReferenceSource(ctx, repoRoot, files, func(source referenceSource) {
+		_, _ = fmt.Fprintf(hash, "%d:%s:%d:", len(source.path), source.path, len(source.data))
+		_, _ = hash.Write(source.data)
+	}); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return [sha256.Size]byte(hash.Sum(nil)), nil
+}
+
+func parseReferenceFile(repoRoot, path, source string) *parsedReferenceFile {
 	language := detectLanguage(path)
 	lines := strings.Split(strings.ReplaceAll(source, "\r\n", "\n"), "\n")
 	file := &parsedReferenceFile{
@@ -382,6 +456,22 @@ func parseReferenceFile(path, source string) *parsedReferenceFile {
 		for _, symbol := range ir.Symbols {
 			file.functions = append(file.functions, parsedFunction{name: symbol.Name, start: symbol.StartLine, end: symbol.EndLine})
 		}
+	}
+	for _, binding := range file.imports {
+		if binding.Kind != "symbol" {
+			continue
+		}
+		if _, done := file.resolvedImports[binding.ModuleSpec]; done {
+			continue
+		}
+		resolved, ok := resolveReferenceImport(repoRoot, file, binding.ModuleSpec)
+		if !ok {
+			continue
+		}
+		if file.resolvedImports == nil {
+			file.resolvedImports = map[string]string{}
+		}
+		file.resolvedImports[binding.ModuleSpec] = resolved
 	}
 	return file
 }
@@ -491,12 +581,18 @@ func definitionPatterns(language, name string) map[string]*regexp.Regexp {
 		}
 	case "nodejs":
 		return map[string]*regexp.Regexp{
-			"function":  compile(`\bfunction\s+` + word + `|\b(?:const|let|var)\s+` + word + `\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>`),
-			"type":      compile(`\b(?:class|interface|type|enum|namespace)\s+` + word),
-			"import":    compile(`^\s*import\b.*` + word + `|\brequire\s*\([^)]*\).*` + word),
-			"parameter": compile(`\b(?:function\b[^()]*)?\([^)]*` + word + `(?:\s*[:=,)]|$)`),
-			"variable":  compile(`\b(?:const|let|var)\s+` + word),
-			"field":     compile(`^\s*(?:public\s+|private\s+|protected\s+|static\s+|readonly\s+)*` + word + `\s*(?:[?:=!]|$)`),
+			"function": compile(`\bfunction\s+` + word + `|\b(?:const|let|var)\s+` + word + `\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>`),
+			"type":     compile(`\b(?:class|interface|type|enum|namespace)\s+` + word),
+			"import":   compile(`^\s*import\b.*` + word + `|\brequire\s*\([^)]*\).*` + word),
+			// Every alternative anchors on something only a parameter list has —
+			// the `function` keyword, a trailing `=>`, or a type annotation on a
+			// method signature. An optional prefix would match `show(total)` and
+			// report every call that passes the symbol as its declaration.
+			"parameter": compile(`\bfunction\b[^()]*\([^)]*` + word + `(?:\s*[:=,)]|$)` +
+				`|\([^()]*` + word + `[^()]*\)\s*(?::[^=]*)?=>` +
+				`|^\s*(?:(?:public|private|protected|readonly|static|async|get|set)\s+)*[A-Za-z_$][\w$]*\s*\([^(){}]*` + word + `\s*\??\s*:`),
+			"variable": compile(`\b(?:const|let|var)\s+` + word),
+			"field":    compile(`^\s*(?:public\s+|private\s+|protected\s+|static\s+|readonly\s+)*` + word + `\s*(?:[?:=!]|$)`),
 		}
 	case "rust":
 		return map[string]*regexp.Regexp{
@@ -510,11 +606,14 @@ func definitionPatterns(language, name string) map[string]*regexp.Regexp {
 		}
 	default: // Go is used only to select a language in repo-wide lookup.
 		return map[string]*regexp.Regexp{
-			"function":  compile(`\bfunc\s+(?:\([^)]*\)\s*)?` + word + `\s*\(`),
-			"type":      compile(`\btype\s+` + word),
-			"constant":  compile(`\bconst\s+` + word),
-			"variable":  compile(`\bvar\s+` + word + `|\b` + word + `\s*:=`),
-			"parameter": compile(`\b` + word + `\s+(?:\*|\[|map\[|chan\s+|func\b|interface\b|[A-Za-z_])`),
+			"function": compile(`\bfunc\s+(?:\([^)]*\)\s*)?` + word + `\s*\(`),
+			"type":     compile(`\btype\s+` + word),
+			"constant": compile(`\bconst\s+` + word),
+			"variable": compile(`\bvar\s+` + word + `|\b` + word + `\s*:=`),
+			// A pointer type binds to its name (`n *T`), while a multiplication is
+			// spaced on both sides (`n * m`); requiring the pointee keeps ordinary
+			// arithmetic from being reported as a declaration.
+			"parameter": compile(`\b` + word + `\s+(?:\*[\w\[(]|\[|map\[|chan\s+|func\b|interface\b|[A-Za-z_])`),
 		}
 	}
 }
@@ -533,17 +632,22 @@ func dedupeDefinitionCandidates(in []definitionCandidate) []definitionCandidate 
 	}
 	sort.Slice(out, func(i, j int) bool {
 		li, lj := out[i].target.Definition, out[j].target.Definition
-		if li.FilePath == lj.FilePath {
+		if li.FilePath != lj.FilePath {
+			return li.FilePath < lj.FilePath
+		}
+		if li.LineRange.Start != lj.LineRange.Start {
 			return li.LineRange.Start < lj.LineRange.Start
 		}
-		return li.FilePath < lj.FilePath
+		// The dedup key already made (file, line, kind) unique, so the kind
+		// completes the order and keeps ambiguity listings stable.
+		return out[i].target.Kind < out[j].target.Kind
 	})
 	return out
 }
 
-// referenceAliases follows direct repository-local symbol imports. Existing
-// module resolvers handle extension substitution and Python package paths.
-func referenceAliases(repoRoot string, files []*parsedReferenceFile, selected definitionCandidate) map[string]map[string]string {
+// referenceAliases follows direct repository-local symbol imports, using the
+// module paths each file resolved when it was parsed.
+func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate) map[string]map[string]string {
 	locals := map[string]map[string]string{selected.file.path: {selected.target.Name: "exact"}}
 	exported := map[string]map[string]string{}
 	if selected.file.language == "python" {
@@ -564,7 +668,7 @@ func referenceAliases(repoRoot string, files []*parsedReferenceFile, selected de
 				if binding.Kind != "symbol" {
 					continue
 				}
-				resolved, ok := resolveReferenceImport(repoRoot, file, binding.ModuleSpec)
+				resolved, ok := file.resolvedImports[binding.ModuleSpec]
 				if !ok || exported[resolved][binding.SymbolName] == "" {
 					continue
 				}
@@ -643,10 +747,9 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 	outsideContexts := map[string]*ReferenceContext{}
 	declarationSkipped := false
 	for _, file := range files {
+		// Only go/types can prove binding identity, and it owns every Go
+		// lookup, so a declaration resolved here is never better than possible.
 		names := map[string]string{selected.target.Name: "possible"}
-		if selected.file.language == "go" && file.path == selected.file.path {
-			names[selected.target.Name] = "exact"
-		}
 		maps.Copy(names, aliases[file.path])
 		for lineIndex, line := range file.masked {
 			lineNo := lineIndex + 1
@@ -949,10 +1052,10 @@ func appendUniqueOccurrence(in []ReferenceOccurrence, occurrence ReferenceOccurr
 
 func sortReferenceResult(result *ReferenceResult) {
 	sort.Slice(result.Functions, func(i, j int) bool {
-		return locationLess(result.Functions[i].CodeLocation, result.Functions[j].CodeLocation)
+		return referenceContextLess(result.Functions[i], result.Functions[j])
 	})
 	sort.Slice(result.OutsideFunctions, func(i, j int) bool {
-		return locationLess(result.OutsideFunctions[i].CodeLocation, result.OutsideFunctions[j].CodeLocation)
+		return referenceContextLess(result.OutsideFunctions[i], result.OutsideFunctions[j])
 	})
 	for i := range result.Functions {
 		sortOccurrences(result.Functions[i].References)
@@ -1003,15 +1106,46 @@ func renderReferenceKinds(references []ReferenceOccurrence) string {
 	return " [" + strings.Join(parts, ", ") + "]"
 }
 
+// sortOccurrences orders occurrences totally. Several can share one line, and
+// they are collected by iterating a map of candidate spellings, so anything
+// short of a total order under an unstable sort reshuffles output run to run.
 func sortOccurrences(in []ReferenceOccurrence) {
-	sort.Slice(in, func(i, j int) bool { return locationLess(in[i].CodeLocation, in[j].CodeLocation) })
+	sort.Slice(in, func(i, j int) bool {
+		left, right := in[i], in[j]
+		if !locationEqual(left.CodeLocation, right.CodeLocation) {
+			return locationLess(left.CodeLocation, right.CodeLocation)
+		}
+		if left.Column != right.Column {
+			return left.Column < right.Column
+		}
+		if left.Role != right.Role {
+			return left.Role < right.Role
+		}
+		return left.Confidence < right.Confidence
+	})
+}
+
+// referenceContextLess totally orders reference contexts, which are likewise
+// assembled from a map.
+func referenceContextLess(a, b ReferenceContext) bool {
+	if !locationEqual(a.CodeLocation, b.CodeLocation) {
+		return locationLess(a.CodeLocation, b.CodeLocation)
+	}
+	return a.Name < b.Name
 }
 
 func locationLess(a, b CodeLocation) bool {
-	if a.FilePath == b.FilePath {
+	if a.FilePath != b.FilePath {
+		return a.FilePath < b.FilePath
+	}
+	if a.LineRange.Start != b.LineRange.Start {
 		return a.LineRange.Start < b.LineRange.Start
 	}
-	return a.FilePath < b.FilePath
+	return a.LineRange.End < b.LineRange.End
+}
+
+func locationEqual(a, b CodeLocation) bool {
+	return a.FilePath == b.FilePath && a.LineRange.Start == b.LineRange.Start && a.LineRange.End == b.LineRange.End
 }
 
 // Go implementation ---------------------------------------------------------
@@ -1034,7 +1168,10 @@ type goReferenceCacheEntry struct {
 
 var goReferenceCache referenceCacheStore[goReferenceCacheEntry] // absolute repo root -> entry
 
-func findGoReferencesWithPackages(repoRoot string, symbol SymbolRef, scope lookupScope, pkgs []*packages.Package) (*ReferenceResult, error) {
+// resolveGoDeclaration picks the single go/types object symbol names, without
+// collecting its references: a caller that only needs the declaration's kind or
+// location should not pay for a whole-repository occurrence scan.
+func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, pkgs []*packages.Package, linesCache *referenceLineCache) (goReferenceCandidate, bool, error) {
 	var candidates []goReferenceCandidate
 	seenCandidates := map[string]struct{}{}
 	complete := true
@@ -1072,40 +1209,52 @@ func findGoReferencesWithPackages(repoRoot string, symbol SymbolRef, scope looku
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].path == candidates[j].path {
-			return candidates[i].pkg.Fset.Position(candidates[i].ident.Pos()).Line < candidates[j].pkg.Fset.Position(candidates[j].ident.Pos()).Line
+		if candidates[i].path != candidates[j].path {
+			return candidates[i].path < candidates[j].path
 		}
-		return candidates[i].path < candidates[j].path
+		left := candidates[i].pkg.Fset.Position(candidates[i].ident.Pos())
+		right := candidates[j].pkg.Fset.Position(candidates[j].ident.Pos())
+		if left.Line != right.Line {
+			return left.Line < right.Line
+		}
+		return left.Column < right.Column
 	})
 	if len(candidates) == 0 {
+		// A broken build is reported as a hard error: the symbol may well exist
+		// and the model needs to know the analysis could not see it. A clean
+		// miss is a genuine absence, and shares the parsed path's error type so
+		// callers can degrade to a literal search.
 		for _, pkg := range pkgs {
 			if pkg != nil && len(pkg.Errors) > 0 {
-				return nil, fmt.Errorf("symbol %q not found in %q: package analysis failed: %s", symbol.Name, symbol.Path, pkg.Errors[0].Msg)
+				return goReferenceCandidate{}, complete, fmt.Errorf("symbol %q not found in %q: package analysis failed: %s", symbol.Name, symbol.Path, pkg.Errors[0].Msg)
 			}
 		}
-		return nil, fmt.Errorf("symbol %q not found in %q", symbol.Name, symbol.Path)
+		return goReferenceCandidate{}, complete, &SymbolNotFoundError{Name: symbol.Name, Path: symbol.Path}
 	}
 	if pinned := pinCandidatesToLine(candidates, symbol.Line, func(candidate goReferenceCandidate) LineRange {
-		return goCandidateTarget(repoRoot, candidate).Definition.LineRange
+		return goCandidateTarget(candidate, linesCache).Definition.LineRange
 	}); len(pinned) > 0 {
 		candidates = pinned
 	}
 	if len(candidates) > 1 {
 		targets := make([]ReferenceTarget, 0, len(candidates))
 		for _, candidate := range candidates {
-			targets = append(targets, goCandidateTarget(repoRoot, candidate))
+			targets = append(targets, goCandidateTarget(candidate, linesCache))
 		}
-		return nil, &AmbiguousSymbolError{Name: symbol.Name, Candidates: targets}
+		return goReferenceCandidate{}, complete, &AmbiguousSymbolError{Name: symbol.Name, Candidates: targets}
 	}
-	selected := candidates[0]
-	result := &ReferenceResult{Target: goCandidateTarget(repoRoot, selected), Functions: []ReferenceContext{}, OutsideFunctions: []ReferenceContext{}, Complete: complete}
+	return candidates[0], complete, nil
+}
+
+// collectGoReferences gathers every use of an already-resolved declaration.
+func collectGoReferences(repoRoot string, pkgs []*packages.Package, selected goReferenceCandidate, complete bool, linesCache *referenceLineCache) *ReferenceResult {
+	result := &ReferenceResult{Target: goCandidateTarget(selected, linesCache), Functions: []ReferenceContext{}, OutsideFunctions: []ReferenceContext{}, Complete: complete}
 	if !complete {
 		result.Notes = []string{"Go package loading reported errors; returned references may be incomplete"}
 	}
 	functionContexts := map[string]*ReferenceContext{}
 	outsideContexts := map[string]*ReferenceContext{}
 	seenOccurrences := map[string]struct{}{}
-	linesCache := map[string][]string{}
 	for _, pkg := range pkgs {
 		if pkg == nil || pkg.TypesInfo == nil || pkg.Fset == nil {
 			continue
@@ -1129,14 +1278,9 @@ func findGoReferencesWithPackages(repoRoot string, symbol SymbolRef, scope looku
 				continue
 			}
 			seenOccurrences[occKey] = struct{}{}
-			lines := linesCache[path]
-			if lines == nil {
-				var readErr error
-				lines, readErr = readReferenceLines(repoRoot, path)
-				if readErr != nil {
-					continue
-				}
-				linesCache[path] = lines
+			lines, ok := linesCache.get(path)
+			if !ok {
+				continue
 			}
 			parents := parentCache[file]
 			if parents == nil {
@@ -1177,7 +1321,7 @@ func findGoReferencesWithPackages(repoRoot string, symbol SymbolRef, scope looku
 		result.OutsideFunctions = append(result.OutsideFunctions, *ctx)
 	}
 	sortReferenceResult(result)
-	return result, nil
+	return result
 }
 
 func loadGoReferencePackages(ctx context.Context, repoRoot string) ([]*packages.Package, error) {
@@ -1226,22 +1370,52 @@ func goReferenceSourceFingerprint(ctx context.Context, repoRoot string) ([sha256
 		}
 	}
 	sort.Strings(files)
-	fingerprint, _, err := referenceSourceSnapshot(ctx, repoRoot, files)
-	return fingerprint, err
+	return referenceSourceFingerprint(ctx, repoRoot, files)
 }
 
 func sameGoObject(fset *token.FileSet, obj types.Object, selected goReferenceCandidate) bool {
 	return obj == selected.obj || goObjectKey(fset, obj) == selected.key
 }
 
-func goCandidateTarget(repoRoot string, candidate goReferenceCandidate) ReferenceTarget {
+func goCandidateTarget(candidate goReferenceCandidate, lines *referenceLineCache) ReferenceTarget {
 	node := goDefinitionNode(candidate.ident, candidate.parent)
 	start, end := candidate.pkg.Fset.Position(candidate.ident.Pos()).Line, candidate.pkg.Fset.Position(candidate.ident.End()).Line
 	if node != nil {
 		start, end = candidate.pkg.Fset.Position(node.Pos()).Line, candidate.pkg.Fset.Position(node.End()).Line
 	}
-	lines, _ := readReferenceLines(repoRoot, candidate.path)
-	return ReferenceTarget{Name: candidate.ident.Name, Kind: goObjectKind(candidate.obj, candidate.ident, candidate.parent), Definition: rangeLocation(candidate.path, "go", lines, start, end)}
+	source, _ := lines.get(candidate.path)
+	return ReferenceTarget{Name: candidate.ident.Name, Kind: goObjectKind(candidate.obj, candidate.ident, candidate.parent), Definition: rangeLocation(candidate.path, "go", source, start, end)}
+}
+
+// referenceLineCache reads each file at most once per lookup. Building a target
+// needs the declaration's source, and every candidate is turned into a target
+// at least once during line pinning and ambiguity reporting.
+type referenceLineCache struct {
+	repoRoot string
+	lines    map[string][]string
+	failed   map[string]struct{}
+}
+
+func newReferenceLineCache(repoRoot string) *referenceLineCache {
+	return &referenceLineCache{repoRoot: repoRoot, lines: map[string][]string{}, failed: map[string]struct{}{}}
+}
+
+// get reports false when the file could not be read; callers decide whether to
+// skip the occurrence or report a location without content.
+func (c *referenceLineCache) get(path string) ([]string, bool) {
+	if lines, ok := c.lines[path]; ok {
+		return lines, true
+	}
+	if _, unreadable := c.failed[path]; unreadable {
+		return nil, false
+	}
+	lines, err := readReferenceLines(c.repoRoot, path)
+	if err != nil {
+		c.failed[path] = struct{}{}
+		return nil, false
+	}
+	c.lines[path] = lines
+	return lines, true
 }
 
 func goObjectKind(obj types.Object, ident *ast.Ident, parents map[ast.Node]ast.Node) string {
@@ -1398,7 +1572,12 @@ func goReferenceRole(ident *ast.Ident, parents map[ast.Node]ast.Node) string {
 	return "read"
 }
 
+// astContains reports whether target appears under root. root is optional: a
+// `for range x` has no Key or Value, and ast.Inspect panics on a nil node.
 func astContains(root ast.Node, target ast.Node) bool {
+	if root == nil {
+		return false
+	}
 	found := false
 	ast.Inspect(root, func(node ast.Node) bool {
 		if node == target {

@@ -15,6 +15,24 @@ import (
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
+// Limits on what git plumbing reads. These bound command output and network
+// work; they are not part of any tool's argument contract, so they live with
+// the code that enforces them rather than in the agent tool catalog. The
+// request-shape limits git_log/git_show advertise stay in that catalog.
+const (
+	// gitHistoryDeepenCommits is how far a shallow checkout is deepened when
+	// history is missing.
+	gitHistoryDeepenCommits = 200
+	// gitHistoryDeepenTimeout bounds that fetch, which talks to the remote.
+	gitHistoryDeepenTimeout = 60 * time.Second
+	// maxGitCommitPatchBytes caps one commit's patch.
+	maxGitCommitPatchBytes = 512 << 10
+	// maxGitShowPatchBytes caps the patch bytes one git_show returns in total.
+	maxGitShowPatchBytes = 2 << 20
+	// maxGitAmbiguousCandidates caps how many revisions an ambiguity reports.
+	maxGitAmbiguousCandidates = 5
+)
+
 // History exposes commit history of a checkout: a filtered commit listing
 // (metadata plus changed files, no patch) and per-commit diffs. Both agent
 // tools (git_log/git_show) and the `nickpit inspect log|show` commands run
@@ -333,7 +351,7 @@ func (h *ExecHistory) Show(ctx context.Context, repoRoot string, opts ShowOption
 		Shallow:    state.shallow,
 		Note:       state.note,
 	}
-	budget := toolcatalog.MaxGitShowPatchBytes
+	budget := maxGitShowPatchBytes
 	for _, sha := range shas {
 		diff, err := h.commitDiff(ctx, runner, sha, paths, format, &budget)
 		if err != nil {
@@ -407,7 +425,7 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 	// Read at most what this commit could still contribute. Whichever cap is
 	// lower decides, and hitting it means the patch is dropped either way, so
 	// git is stopped at that point instead of after emitting the whole diff.
-	limit := min(toolcatalog.MaxGitCommitPatchBytes, *budget)
+	limit := min(maxGitCommitPatchBytes, *budget)
 	res, err := h.commitPatch(ctx, runner, sha, paths, false, limit)
 	if err != nil {
 		return nil, err
@@ -420,7 +438,7 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 		// The combined read already spent part of the budget (its raw/numstat
 		// entries), so the fallback gets a freshly computed cap. Reusing the
 		// pre-combined limit would let one merge read the remaining budget twice.
-		fallbackLimit := min(toolcatalog.MaxGitCommitPatchBytes, *budget)
+		fallbackLimit := min(maxGitCommitPatchBytes, *budget)
 		if fallbackLimit <= 0 {
 			diff.Truncated = true
 			diff.Note = joinNotes(diff.Note, "combined diff was empty and the total patch size limit for this call was reached before the first-parent diff could be read")
@@ -448,8 +466,8 @@ func (h *ExecHistory) commitDiff(ctx context.Context, runner Runner, sha string,
 
 	if res.Truncated {
 		diff.Truncated = true
-		if limit == toolcatalog.MaxGitCommitPatchBytes {
-			diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: it exceeds the %d byte per-commit limit", toolcatalog.MaxGitCommitPatchBytes))
+		if limit == maxGitCommitPatchBytes {
+			diff.Note = joinNotes(diff.Note, fmt.Sprintf("patch omitted: it exceeds the %d byte per-commit limit", maxGitCommitPatchBytes))
 		} else {
 			diff.Note = joinNotes(diff.Note, "patch omitted: the total patch size limit for this call was reached")
 		}
@@ -631,8 +649,8 @@ func (h *ExecHistory) resolveRevision(ctx context.Context, runner Runner, rev st
 		return matches[0], nil
 	case len(matches) > 1:
 		candidates := matches
-		if len(candidates) > toolcatalog.MaxGitAmbiguousCandidates {
-			candidates = candidates[:toolcatalog.MaxGitAmbiguousCandidates]
+		if len(candidates) > maxGitAmbiguousCandidates {
+			candidates = candidates[:maxGitAmbiguousCandidates]
 		}
 		return "", fmt.Errorf("git: ambiguous revision %q matches %d commits (%s); pass a longer prefix", rev, len(matches), strings.Join(candidates, ", "))
 	default:
@@ -675,14 +693,14 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 	origin := remoteURL(ctx, runner)
 	auth := h.authArgsForRepo(origin)
 
-	fetchCtx, cancel := context.WithTimeout(ctx, toolcatalog.GitHistoryDeepenTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, gitHistoryDeepenTimeout)
 	defer cancel()
 	// The remote is named explicitly whenever credentials are attached. A bare
 	// `git fetch` follows branch.<name>.remote, which need not be origin, so it
 	// could send the header derived from remote.origin.url to an unrelated host
 	// — and in a fork PR/MR that host is attacker controlled.
 	args := append([]string(nil), auth...)
-	args = append(args, "fetch", "--deepen="+strconv.Itoa(toolcatalog.GitHistoryDeepenCommits))
+	args = append(args, "fetch", "--deepen="+strconv.Itoa(gitHistoryDeepenCommits))
 	if origin != "" {
 		args = append(args, "origin")
 	}
@@ -695,7 +713,7 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 		// that commit's history explicitly before giving up.
 		if origin != "" {
 			if head, headErr := runner.Run(fetchCtx, "rev-parse", "HEAD"); headErr == nil {
-				explicit := append(append([]string(nil), auth...), "fetch", "--deepen="+strconv.Itoa(toolcatalog.GitHistoryDeepenCommits), "--", origin, strings.TrimSpace(head))
+				explicit := append(append([]string(nil), auth...), "fetch", "--deepen="+strconv.Itoa(gitHistoryDeepenCommits), "--", origin, strings.TrimSpace(head))
 				_, err = runner.Run(fetchCtx, explicit...)
 			}
 		}
@@ -708,7 +726,7 @@ func (h *ExecHistory) deepenRepository(ctx context.Context, runner Runner) deepe
 	case state.shallow && reachableCommits(ctx, runner) <= before:
 		state.note = "repository is a shallow checkout; deepening returned no additional commits, so only the commits present locally are listed"
 	case state.shallow:
-		state.note = fmt.Sprintf("repository is a shallow checkout deepened by %d commits; older history is unavailable", toolcatalog.GitHistoryDeepenCommits)
+		state.note = fmt.Sprintf("repository is a shallow checkout deepened by %d commits; older history is unavailable", gitHistoryDeepenCommits)
 	}
 	return state
 }

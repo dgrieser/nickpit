@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/dgrieser/nickpit/internal/llm"
 )
@@ -26,15 +25,10 @@ const (
 	DefaultStaticGraphCacheEntries = 64
 	DefaultReferenceCacheEntries   = 4
 
-	DefaultGitLogLimit        = 20
-	MaxGitLogLimit            = 200
-	DefaultGitShowCommits     = 10
-	MaxGitShowCommits         = 50
-	GitHistoryDeepenCommits   = 200
-	GitHistoryDeepenTimeout   = 60 * time.Second
-	MaxGitCommitPatchBytes    = 512 << 10
-	MaxGitShowPatchBytes      = 2 << 20
-	MaxGitAmbiguousCandidates = 5
+	DefaultGitLogLimit    = 20
+	MaxGitLogLimit        = 200
+	DefaultGitShowCommits = 10
+	MaxGitShowCommits     = 50
 
 	// DefaultMaxToolCalls is 0, meaning unlimited calls per agent.
 	DefaultMaxToolCalls          = 0

@@ -484,3 +484,150 @@ func TestFindReferencesIgnoresLineThatPinsNothing(t *testing.T) {
 		t.Fatalf("error = %v, want ambiguous", err)
 	}
 }
+
+// `for range x` leaves RangeStmt.Key and .Value nil, which ast.Inspect refuses
+// to walk. Reaching a reference through one used to kill the process.
+func TestFindGoReferencesHandlesRangeWithoutKeyOrValue(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/rangenil\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "loop.go", "package rangenil\n\nvar Items = []int{1}\n\nfunc Count() int {\n\tn := 0\n\tfor range Items {\n\t\tn++\n\t}\n\treturn n\n}\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Items", Path: "loop.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExactReferenceCount != 1 {
+		t.Fatalf("reference count = %d, want the range clause: %#v", result.ExactReferenceCount, result)
+	}
+}
+
+// Passing a symbol as an argument is a use, not a parameter declaration.
+func TestFindReferencesDoesNotTreatCallArgumentsAsParameters(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "app.ts", "export const total = 1\nfunction show(v: number) { return v }\nshow(total)\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "total", Path: "app.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "variable" || result.Target.Definition.LineRange.Start != 1 {
+		t.Fatalf("target = %#v", result.Target)
+	}
+}
+
+// Multiplication is spaced on both sides; only a pointer type binds to its name.
+func TestFindGoReferencesDoesNotTreatMultiplicationAsParameter(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/mul\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "a.go", "package mul\n\nvar Factor = 2\n")
+	writeRetrievalFile(t, repoRoot, "b.go", "package mul\n\nfunc Scale(n int) int { return Factor * n }\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Factor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Definition.FilePath != "a.go" || result.Target.Kind != "variable" {
+		t.Fatalf("target = %#v", result.Target)
+	}
+}
+
+// The tightened parameter patterns must still recognize real declarations.
+func TestFindReferencesClassifiesParameterDeclarations(t *testing.T) {
+	for _, tt := range []struct{ name, file, content, symbol string }{
+		{"js function", "a.js", "function show(value) { return value }\n", "value"},
+		{"ts arrow", "c.ts", "const show = (value: number) => value\n", "value"},
+		{"ts class method", "e.ts", "class A {\n  show(value: number) { return value }\n}\n", "value"},
+		{"go pointer", "p.go", "package params\n\ntype Thing struct{}\n\nfunc Use(item *Thing) {}\n", "item"},
+		{"go value", "q.go", "package params\n\nfunc Count(total int) int { return total }\n", "total"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repoRoot := t.TempDir()
+			writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/params\n\ngo 1.25\n")
+			writeRetrievalFile(t, repoRoot, tt.file, tt.content)
+
+			result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: tt.symbol, Path: tt.file})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Target.Kind != "parameter" {
+				t.Fatalf("target = %#v, want a parameter", result.Target)
+			}
+		})
+	}
+}
+
+// Occurrences are collected by iterating maps, so anything short of a total
+// order under sort.Slice reshuffles the result between runs.
+func TestFindReferencesOrdersSameLineOccurrencesDeterministically(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/ordering\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "calc.go", "package ordering\n\nvar Base = 1\n\nfunc Sum() int { return Base + Base + Base }\n")
+
+	var first string
+	for range 20 {
+		result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "Base", Path: "calc.go"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rendered := fmt.Sprintf("%#v", result)
+		if first == "" {
+			first = rendered
+			continue
+		}
+		if rendered != first {
+			t.Fatalf("reference order is not stable:\nfirst: %s\nnow:   %s", first, rendered)
+		}
+	}
+}
+
+// Resolving a declaration must agree with the full analysis while skipping the
+// occurrence scan, so callers that only need the kind can stop early.
+func TestResolveReferenceTargetsMatchesFullAnalysis(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/resolve\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "app.go", "package resolve\n\nvar Limit = 1\n\nfunc Run() int { return Limit }\n")
+	writeRetrievalFile(t, repoRoot, "app.ts", "export const label = \"x\"\n")
+
+	engine := NewLocalEngine()
+	symbols := []SymbolRef{
+		{Name: "Run", Path: "app.go"},
+		{Name: "Limit", Path: "app.go"},
+		{Name: "label", Path: "app.ts"},
+		{Name: "Missing", Path: "app.go"},
+	}
+	targets := engine.ResolveReferenceTargets(context.Background(), repoRoot, symbols)
+	if len(targets) != len(symbols) {
+		t.Fatalf("got %d results for %d symbols", len(targets), len(symbols))
+	}
+
+	var notFound *SymbolNotFoundError
+	if !errors.As(targets[3].Err, &notFound) {
+		t.Fatalf("absent symbol error = %v", targets[3].Err)
+	}
+	for i, symbol := range symbols[:3] {
+		if targets[i].Err != nil {
+			t.Fatalf("%s: %v", symbol.Name, targets[i].Err)
+		}
+		full, err := engine.FindReferences(context.Background(), repoRoot, symbol)
+		if err != nil {
+			t.Fatalf("%s: %v", symbol.Name, err)
+		}
+		if *targets[i].Target != full.Target {
+			t.Fatalf("%s: resolved %#v, full analysis %#v", symbol.Name, *targets[i].Target, full.Target)
+		}
+	}
+	if targets[0].Target.Kind != "function" || targets[1].Target.Kind != "variable" {
+		t.Fatalf("kinds = %q, %q", targets[0].Target.Kind, targets[1].Target.Kind)
+	}
+}
+
+func TestResolveReferenceTargetsReportsAmbiguity(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "handlers.ts", "class A {\n  run() { return 1 }\n}\nclass B {\n  run() { return 2 }\n}\n")
+
+	targets := NewLocalEngine().ResolveReferenceTargets(context.Background(), repoRoot, []SymbolRef{{Name: "run", Path: "handlers.ts"}})
+	var ambiguous *AmbiguousSymbolError
+	if !errors.As(targets[0].Err, &ambiguous) {
+		t.Fatalf("error = %v, want ambiguous", targets[0].Err)
+	}
+}
