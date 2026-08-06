@@ -14,6 +14,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 )
 
@@ -74,7 +75,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string
 			return uniqueKey
 		}
 		if args.Depth <= 0 {
-			args.Depth = toolcatalog.DefaultListFilesDepth
+			args.Depth = toollimits.DefaultListFilesDepth
 		}
 		return fmt.Sprintf("list_files\x00%s\x00%d", normalizeToolPath(args.Path), args.Depth)
 	case "find_callers", "find_callees", "find_references":
@@ -88,7 +89,7 @@ func (e *Engine) toolCallConcurrencyKey(toolCall llm.ToolCall, index int) string
 			return uniqueKey
 		}
 		if toolCall.Name != "find_references" && args.Depth <= 0 {
-			args.Depth = toolcatalog.DefaultCallHierarchyDepth
+			args.Depth = toollimits.DefaultCallHierarchyDepth
 		}
 		if toolCall.Name == "find_references" {
 			return referenceDedupKey(normalizeSearchPath(args.Path), strings.TrimSpace(args.Symbol), args.Line)
@@ -206,7 +207,7 @@ func (e *Engine) executeFindReferences(ctx context.Context, repoRoot string, too
 			searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
 			// Identifier spelling is case-sensitive even when the fallback cannot
 			// provide structural binding identity.
-			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, toolcatalog.DefaultSearchContextLines, 0, true)
+			matches, searchErr := e.retrieval.Search(ctx, repoRoot, searchScope, args.Symbol, toollimits.DefaultSearchContextLines, 0, true)
 			if searchErr != nil {
 				return toolError(normalizedPath, "retrieval_failed", searchErr.Error())
 			}
@@ -331,7 +332,7 @@ func (e *Engine) executeListFiles(ctx context.Context, repoRoot string, toolCall
 	}
 	args.Path = strings.TrimSpace(args.Path)
 	if args.Depth <= 0 {
-		args.Depth = toolcatalog.DefaultListFilesDepth
+		args.Depth = toollimits.DefaultListFilesDepth
 	}
 	normalizedPath := normalizeToolPath(args.Path)
 	key := fmt.Sprintf("list_files\x00%s\x00%d", normalizedPath, args.Depth)
@@ -650,15 +651,14 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			}
 			seenLookups[candidate] = struct{}{}
 			lookups = append(lookups, candidate)
-			if len(lookups) > toolcatalog.MaxSearchStructuralLookups {
-				e.logf(ctx, "Keeping broad identifier search literal: query=%q structural_candidates>%d", query, toolcatalog.MaxSearchStructuralLookups)
+			if len(lookups) > toollimits.MaxSearchStructuralLookups {
+				e.logf(ctx, "Keeping broad identifier search literal: query=%q structural_candidates>%d", query, toollimits.MaxSearchStructuralLookups)
 				return "", false
 			}
 		}
 	}
 
 	resolved := make(map[string]*classifiedSearchSymbol)
-	lookupCount := 0
 	recordResolution := func(target *retrieval.ReferenceTarget, references *retrieval.ReferenceResult, err error) {
 		if err != nil || target == nil {
 			return
@@ -677,13 +677,14 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 	}
 	// Only the declaration is needed to decide between a call hierarchy and a
 	// reference analysis, so resolve targets when the engine can do that alone.
-	resolveBatch := func(candidates []lookup) {
-		remaining := toolcatalog.MaxSearchStructuralLookups - lookupCount
-		if remaining <= 0 || len(candidates) == 0 {
+	resolveBatch := func(candidates []lookup, budget int) {
+		if budget <= 0 || len(candidates) == 0 {
 			return
 		}
-		candidates = candidates[:min(len(candidates), remaining)]
-		lookupCount += len(candidates)
+		if len(candidates) > budget {
+			e.logf(ctx, "Capping structural lookups: query=%q candidates=%d budget=%d", query, len(candidates), budget)
+			candidates = candidates[:budget]
+		}
 		symbols := make([]retrieval.SymbolRef, len(candidates))
 		for i, candidate := range candidates {
 			symbols[i] = retrieval.SymbolRef{Name: candidate.name, Path: candidate.path}
@@ -713,16 +714,20 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 			recordResolution(&result.Target, result, err)
 		}
 	}
-	resolveBatch(lookups)
+	resolveBatch(lookups, toollimits.MaxSearchStructuralLookups)
 	// A path-scoped search may contain only usages. Fall back to repo-wide
-	// declaration resolution after every returned match has been tried.
+	// declaration resolution after every returned match has been tried. The
+	// fallback gets its own budget: the first pass resolved nothing, so letting
+	// what it spent starve the one lookup that could still succeed would keep
+	// the search literal for no gain. It is bounded by the distinct spellings,
+	// themselves already capped above.
 	if len(resolved) == 0 {
 		fallbacks := make([]lookup, 0, len(names))
 		for name := range names {
 			fallbacks = append(fallbacks, lookup{name: name})
 		}
 		sort.Slice(fallbacks, func(i, j int) bool { return fallbacks[i].name < fallbacks[j].name })
-		resolveBatch(fallbacks)
+		resolveBatch(fallbacks, toollimits.MaxSearchStructuralLookups)
 	}
 	if len(resolved) == 0 {
 		return "", false
@@ -743,14 +748,14 @@ func (e *Engine) optimizeSearchResults(ctx context.Context, repoRoot, toolCallID
 		}
 		var optimized string
 		if selected.kind == "function" {
-			e.logf(ctx, "Replacing search matches with find_callers: query=%q symbol=%q path=%s depth=%d", query, selected.name, selected.path, toolcatalog.DefaultCallHierarchyDepth)
+			e.logf(ctx, "Replacing search matches with find_callers: query=%q symbol=%q path=%s depth=%d", query, selected.name, selected.path, toollimits.DefaultCallHierarchyDepth)
 			optimized = e.executeCallHierarchy(ctx, repoRoot, llm.ToolCall{
 				ID:   toolCallID,
 				Name: "find_callers",
 				Arguments: mustToolResultJSON(map[string]any{
 					"path":   selected.path,
 					"symbol": selected.name,
-					"depth":  toolcatalog.DefaultCallHierarchyDepth,
+					"depth":  toollimits.DefaultCallHierarchyDepth,
 				}),
 			}, true, state)
 			if toolResultIsError(optimized) {
@@ -1020,7 +1025,7 @@ func (e *Engine) executeCallHierarchy(ctx context.Context, repoRoot string, tool
 		return toolError(normalizeSearchPath(args.Path), "missing_argument", missingToolArgumentMessage(toolCall.Name, "symbol"))
 	}
 	if args.Depth <= 0 {
-		args.Depth = toolcatalog.DefaultCallHierarchyDepth
+		args.Depth = toollimits.DefaultCallHierarchyDepth
 	}
 	// normalizeSearchPath (not normalizeToolPath) keeps the key and execution
 	// aligned with search calls rewritten into call-hierarchy lookups, which
@@ -1094,7 +1099,7 @@ func (e *Engine) callHierarchySearchFallback(ctx context.Context, repoRoot, norm
 	}
 	searchScope := retrieval.FallbackSearchScope(repoRoot, normalizedPath)
 	e.logf(ctx, "Falling back to literal search for unsupported call hierarchy: mode=%s path=%s symbol=%q search_scope=%q", mode, normalizedPath, symbol, searchScope)
-	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, toolcatalog.DefaultSearchContextLines, 0, false)
+	results, err := e.retrieval.Search(ctx, repoRoot, searchScope, symbol, toollimits.DefaultSearchContextLines, 0, false)
 	if err != nil {
 		return toolError(normalizedPath, "retrieval_failed", err.Error())
 	}

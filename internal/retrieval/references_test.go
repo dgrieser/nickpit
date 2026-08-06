@@ -56,9 +56,10 @@ func TestFindReferencesResolvesDecoratedPythonFunction(t *testing.T) {
 		t.Fatalf("decorated target = %#v", result.Target)
 	}
 	// The `def helper` line sits inside the decorated span but below its start;
-	// it is the declaration, not a reference to itself.
-	if result.PossibleReferenceCount != 1 {
-		t.Fatalf("reference count = %d, want 1 (the call on line 7): %#v", result.PossibleReferenceCount, result)
+	// it is the declaration, not a reference to itself. The call is in the
+	// declaring file's own scope, the strongest binding evidence available.
+	if result.ExactReferenceCount != 1 || result.PossibleReferenceCount != 0 {
+		t.Fatalf("counts = %d exact / %d possible, want the call on line 7 as exact: %#v", result.ExactReferenceCount, result.PossibleReferenceCount, result)
 	}
 }
 
@@ -684,8 +685,8 @@ func TestFindReferencesIgnoresOtherLanguages(t *testing.T) {
 			t.Fatalf("reference from another language: %#v", context.CodeLocation)
 		}
 	}
-	if result.PossibleReferenceCount != 1 {
-		t.Fatalf("reference count = %d, want only the Python use", result.PossibleReferenceCount)
+	if result.ExactReferenceCount+result.PossibleReferenceCount != 1 {
+		t.Fatalf("reference count = %d exact / %d possible, want only the Python use", result.ExactReferenceCount, result.PossibleReferenceCount)
 	}
 }
 
@@ -718,5 +719,193 @@ func TestParsedReferenceSnapshotRefreshesAfterEdit(t *testing.T) {
 	}
 	if len(second) != 1 || !strings.Contains(second[0].lines[0], "VALUE = 2") {
 		t.Fatalf("snapshot was not refreshed: %#v", second[0].lines)
+	}
+}
+
+// A grouped entry whose value spans lines closes parens of its own; treating
+// the first of those as the end of the group hides every later entry.
+func TestFindGoReferencesFindsEntryAfterMultiLineGroupedValue(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/grouped\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "decls.go", "package grouped\n\nimport \"fmt\"\n\nvar (\n\tfirst = fmt.Sprintf(\n\t\t\"%d\", 1,\n\t)\n\tsecond = 2\n)\n\nfunc Use() string { return first + fmt.Sprint(second) }\n")
+
+	engine := NewLocalEngine()
+	for _, name := range []string{"first", "second"} {
+		result, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: name})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if result.Target.Kind != "variable" || result.ExactReferenceCount != 1 {
+			t.Fatalf("%s target = %#v (%d refs)", name, result.Target, result.ExactReferenceCount)
+		}
+	}
+}
+
+// An import binds a name declared elsewhere; counting it as a rival
+// declaration made every widely-imported symbol resolve as ambiguous.
+func TestFindReferencesResolvesSymbolImportedElsewhere(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", "LIMIT = 10\n")
+	writeRetrievalFile(t, repoRoot, "other.py", "from mod import LIMIT\n\ndef use():\n    return LIMIT\n")
+	writeRetrievalFile(t, repoRoot, "third.py", "from mod import LIMIT\n\ndef also():\n    return LIMIT\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "variable" || result.Target.Definition.FilePath != "mod.py" {
+		t.Fatalf("target = %#v", result.Target)
+	}
+}
+
+// A file that only imports the symbol still has to answer a lookup scoped to
+// it: the import is the only thing there to point at.
+func TestFindReferencesResolvesImportWhenScopedToImportingFile(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", "LIMIT = 10\n")
+	writeRetrievalFile(t, repoRoot, "other.py", "from mod import LIMIT\n\ndef use():\n    return LIMIT\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT", Path: "other.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Target.Kind != "import" || result.Target.Definition.FilePath != "other.py" {
+		t.Fatalf("target = %#v", result.Target)
+	}
+}
+
+// The declaring file's own scope is the strongest binding evidence there is;
+// it must not be reported as less certain than a use reached via an import.
+func TestFindReferencesDoesNotInvertConfidence(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", "LIMIT = 10\n\ndef local():\n    return LIMIT\n")
+	writeRetrievalFile(t, repoRoot, "other.py", "from mod import LIMIT\n\ndef remote():\n    return LIMIT\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confidence := map[string]string{}
+	for _, context := range append(append([]ReferenceContext{}, result.Functions...), result.OutsideFunctions...) {
+		for _, reference := range context.References {
+			confidence[fmt.Sprintf("%s:%d", reference.CodeLocation.FilePath, reference.CodeLocation.LineRange.Start)] = reference.Confidence
+		}
+	}
+	if got := confidence["mod.py:4"]; got != "exact" {
+		t.Fatalf("declaring file use = %q, want exact: %#v", got, confidence)
+	}
+	if result.PossibleReferenceCount != 0 {
+		t.Fatalf("possible count = %d, want none: %#v", result.PossibleReferenceCount, confidence)
+	}
+	if strings.Contains(result.Render(), "analysis incomplete") {
+		t.Fatalf("clean lookup reported as incomplete:\n%s", result.Render())
+	}
+}
+
+// Writing through a container reads the identifiers that select it. Reporting
+// them as writes fabricates mutation sites for the exact question this tool
+// exists to answer.
+func TestFindGoReferencesRolesForContainerAssignments(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "go.mod", "module example.com/roles\n\ngo 1.25\n")
+	writeRetrievalFile(t, repoRoot, "roles.go", `package roles
+
+type Box struct{ Field int }
+
+func Mutate(m map[string]int, arr []int, p *Box, key string, idx int, direct int) {
+	m[key] = 1
+	arr[idx] = 5
+	p.Field = 2
+	m[key]++
+	direct = 3
+	direct++
+	_ = direct
+}
+`)
+
+	engine := NewLocalEngine()
+	for _, tt := range []struct{ symbol, want string }{
+		{"key", "read"},
+		{"idx", "read"},
+		{"p", "read"},
+		{"m", "read"},
+	} {
+		result, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: tt.symbol, Path: "roles.go"})
+		if err != nil {
+			t.Fatalf("%s: %v", tt.symbol, err)
+		}
+		for _, context := range result.Functions {
+			for _, reference := range context.References {
+				if reference.Role != tt.want {
+					t.Fatalf("%s at line %d = %q, want %q", tt.symbol, reference.CodeLocation.LineRange.Start, reference.Role, tt.want)
+				}
+			}
+		}
+	}
+
+	// A plain identifier target is still a write, and ++ on it a read_write.
+	result, err := engine.FindReferences(context.Background(), repoRoot, SymbolRef{Name: "direct", Path: "roles.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[int]string{}
+	for _, context := range result.Functions {
+		for _, reference := range context.References {
+			roles[reference.CodeLocation.LineRange.Start] = reference.Role
+		}
+	}
+	if roles[10] != "write" || roles[11] != "read_write" || roles[12] != "read" {
+		t.Fatalf("direct roles = %#v", roles)
+	}
+}
+
+// The catalog advertises `import` as a usage kind; an unrenamed import is the
+// common case and must carry that role, not be filed as an ordinary read.
+func TestFindReferencesLabelsUnrenamedImports(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", "LIMIT = 10\n")
+	writeRetrievalFile(t, repoRoot, "other.py", "from mod import LIMIT\n\ndef use():\n    return LIMIT\n")
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[string]string{}
+	for _, context := range append(append([]ReferenceContext{}, result.Functions...), result.OutsideFunctions...) {
+		for _, reference := range context.References {
+			roles[fmt.Sprintf("%s:%d", reference.CodeLocation.FilePath, reference.CodeLocation.LineRange.Start)] = reference.Role
+		}
+	}
+	if roles["other.py:1"] != "import" {
+		t.Fatalf("import line role = %q, want import: %#v", roles["other.py:1"], roles)
+	}
+	if roles["other.py:4"] != "read" {
+		t.Fatalf("use role = %q, want read: %#v", roles["other.py:4"], roles)
+	}
+}
+
+// Enumeration and reading are separate steps, and the daemon reviews worktrees
+// a checkout can still be touching. A file that vanishes in between must not
+// fail every lookup in the process.
+func TestParsedReferenceSnapshotSkipsUnreadableFiles(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRetrievalFile(t, repoRoot, "mod.py", "LIMIT = 10\n\ndef use():\n    return LIMIT\n")
+	writeRetrievalFile(t, repoRoot, "gone.py", "OTHER = 1\n")
+
+	unreadable := filepath.Join(repoRoot, "gone.py")
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+	if _, err := os.ReadFile(unreadable); err == nil {
+		t.Skip("running as a user that ignores file permissions")
+	}
+
+	result, err := NewLocalEngine().FindReferences(context.Background(), repoRoot, SymbolRef{Name: "LIMIT"})
+	if err != nil {
+		t.Fatalf("unreadable sibling failed the lookup: %v", err)
+	}
+	if result.Target.Definition.FilePath != "mod.py" {
+		t.Fatalf("target = %#v", result.Target)
 	}
 }

@@ -14,7 +14,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/model"
 	glscm "github.com/dgrieser/nickpit/internal/scm/gitlab"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/mappings"
 	"gopkg.in/yaml.v3"
 )
@@ -875,10 +875,10 @@ func applyProfileDefaults(profile Profile) Profile {
 		profile.MaxToolResultPercent = DefaultMaxToolResultPercent
 	}
 	if profile.MaxToolCalls == 0 && !profile.MaxToolCallsConfigured {
-		profile.MaxToolCalls = toolcatalog.DefaultMaxToolCalls
+		profile.MaxToolCalls = toollimits.DefaultMaxToolCalls
 	}
 	if profile.MaxDuplicateToolCalls == 0 && !profile.MaxDuplicateToolCallsConfigured {
-		profile.MaxDuplicateToolCalls = toolcatalog.DefaultMaxDuplicateToolCalls
+		profile.MaxDuplicateToolCalls = toollimits.DefaultMaxDuplicateToolCalls
 	}
 	if profile.MaxOutputRetries == 0 && !profile.MaxOutputRetriesConfigured {
 		profile.MaxOutputRetries = DefaultMaxOutputRetries

@@ -14,7 +14,7 @@ import (
 	"sync"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -210,8 +210,8 @@ func (g *Graph) Find(name, path string, depth int, reverse bool) (*Hierarchy, er
 	if depth <= 0 {
 		depth = 1
 	}
-	if depth > toolcatalog.MaxCallHierarchyDepth {
-		depth = toolcatalog.MaxCallHierarchyDepth
+	if depth > toollimits.MaxCallHierarchyDepth {
+		depth = toollimits.MaxCallHierarchyDepth
 	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"

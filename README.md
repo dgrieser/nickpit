@@ -623,8 +623,9 @@ nickpit inspect file --path internal/review/engine.go
 nickpit inspect file --path internal/review/engine.go --line-start 1 --line-end 80
 nickpit inspect list --path internal/review
 nickpit inspect search --path internal/review --query inspect_file
-nickpit inspect references --symbol defaultCallHierarchyDepth
-nickpit inspect references --path internal/review/engine.go --symbol defaultCallHierarchyDepth --output json
+nickpit inspect references --symbol DefaultListFilesDepth
+nickpit inspect references --path internal/tools/catalog.go --symbol DefaultListFilesDepth --output json
+nickpit inspect references --path internal/review/tool_result_limit.go --symbol toolResultTruncatedNote --line 15
 nickpit inspect callers --symbol Run --depth 2
 nickpit inspect callers --path internal/review --symbol Run --depth 2
 nickpit inspect callers --path internal/review/engine.go --symbol Run --depth 2

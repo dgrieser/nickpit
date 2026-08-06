@@ -25,7 +25,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/modelcheck"
 	"github.com/dgrieser/nickpit/internal/session"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/spf13/cobra"
 )
@@ -636,7 +636,7 @@ func TestRootCmdDropsVerifySkipFlags(t *testing.T) {
 	for _, tt := range []struct{ name, want string }{
 		{"max-context-tokens", strconv.Itoa(config.DefaultMaxContextToken)},
 		{"max-tool-result-percent", strconv.Itoa(config.DefaultMaxToolResultPercent)},
-		{"max-duplicate-tool-calls", strconv.Itoa(toolcatalog.DefaultMaxDuplicateToolCalls)},
+		{"max-duplicate-tool-calls", strconv.Itoa(toollimits.DefaultMaxDuplicateToolCalls)},
 	} {
 		flag := cmd.PersistentFlags().Lookup(tt.name)
 		if flag == nil {

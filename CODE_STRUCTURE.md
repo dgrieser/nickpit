@@ -137,7 +137,8 @@ This document maps the production Go code. Test files live beside the code they 
 - `internal/session/session.go`: Resumable discussion (chat) session store: atomic JSON files (one per session) under the user cache dir, caching the review source descriptor, the prepared review context plus the head SHA it was built at, `ReviewResult`, and the full message transcript; load/save/list/latest helpers, an unconditional sweep of orphaned temp files, and opt-in oldest-first pruning past a caller-supplied cap (`WithMaxStored`, wired from `--max-sessions`/`max_sessions`; unlimited by default, and the session just saved is never a victim).
 - `internal/clipboard/clipboard.go`: Cross-platform clipboard writes for `session --clipboard`: a per-GOOS chain of helper commands (`pbcopy`, `clip.exe` with UTF-16LE encoding, `wl-copy`/`xclip`/`xsel` ordered by session type, `termux-clipboard-set`) tried until one succeeds, bounded by a shared timeout.
 - `internal/toolchain/toolchain.go`: Toolchain version capture and normalization.
-- `internal/tools/catalog.go`: Tool catalog exposed to agents and central source for tool defaults and non-token limits.
+- `internal/tools/catalog.go`: Tool catalog exposed to agents; describes each tool and its arguments to the model.
+- `internal/toollimits/toollimits.go`: The tool defaults and non-token limits themselves, in a package with no dependencies so git, config and retrieval can honor them without depending on the LLM layer.
 - `internal/textsan/textsan.go`: Text sanitization utilities.
 - `internal/testutil/testutil.go`: Shared test fixture and golden-file helpers.
 

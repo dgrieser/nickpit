@@ -25,6 +25,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/textsan"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
 	"github.com/dgrieser/nickpit/internal/toolchain"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
 	"github.com/dgrieser/nickpit/internal/versionmatch"
 	"github.com/dgrieser/nickpit/mappings"
@@ -3259,6 +3260,7 @@ type toolCallArgs struct {
 	LineStart     int    `json:"line_start"`
 	LineEnd       int    `json:"line_end"`
 	Depth         int    `json:"depth"`
+	Line          int    `json:"line"`
 	Symbol        string `json:"symbol"`
 	Query         string `json:"query"`
 	ContextLines  *int   `json:"context_lines"`
@@ -3290,7 +3292,7 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 	case "list_files":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		if args.Depth <= 0 {
-			args.Depth = 1
+			args.Depth = toollimits.DefaultListFilesDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	case "search":
@@ -3307,12 +3309,18 @@ func syntheticToolArguments(toolName string, args toolCallArgs) string {
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
 		if args.Depth <= 0 {
-			args.Depth = toolcatalog.DefaultCallHierarchyDepth
+			args.Depth = toollimits.DefaultCallHierarchyDepth
 		}
 		parts = append(parts, fmt.Sprintf("depth=%d", args.Depth))
 	case "find_references":
 		parts = append(parts, fmt.Sprintf("path=%q", syntheticPathValue(args.Path, ".")))
 		parts = append(parts, fmt.Sprintf("symbol=%q", args.Symbol))
+		if args.Line > 0 {
+			// Without the pin, a retry that disambiguated an ambiguous symbol
+			// renders identically to the call that failed, and the model cannot
+			// tell from its own history which one it already tried.
+			parts = append(parts, fmt.Sprintf("line=%d", args.Line))
+		}
 	case "git_log":
 		parts = append(parts, fmt.Sprintf("commit=%q", syntheticPathValue(args.Commit, "HEAD")))
 		parts = appendOptionalToolArgs(parts, [][2]string{

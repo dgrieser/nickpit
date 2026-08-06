@@ -12,7 +12,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 func limitedPayload(t *testing.T, value any, maxTokens int) (string, map[string]any) {
@@ -64,7 +64,7 @@ func TestToolResultLimiterZeroDisablesTokensButKeepsReferenceCountLimit(t *testi
 	_, payload := limitedPayload(t, map[string]any{
 		"target": map[string]any{"name": "Shared"}, "functions": functions, "outside_functions": []any{},
 	}, 0)
-	if got := len(payload["functions"].([]any)); got != toolcatalog.MaxReferenceFunctions {
+	if got := len(payload["functions"].([]any)); got != toollimits.MaxReferenceFunctions {
 		t.Fatalf("functions = %d", got)
 	}
 	if payload["truncated"] != true || intFromJSON(payload["omitted_contexts"]) != 5 {
@@ -82,11 +82,27 @@ func TestToolResultLimiterCapsOutsideFunctionContexts(t *testing.T) {
 	_, payload := limitedPayload(t, map[string]any{
 		"target": map[string]any{"name": "Shared"}, "functions": []any{}, "outside_functions": contexts,
 	}, 0)
-	if got := len(payload["outside_functions"].([]any)); got != toolcatalog.MaxReferenceFunctions {
-		t.Fatalf("outside_functions = %d, want %d", got, toolcatalog.MaxReferenceFunctions)
+	if got := len(payload["outside_functions"].([]any)); got != toollimits.MaxReferenceFunctions {
+		t.Fatalf("outside_functions = %d, want %d", got, toollimits.MaxReferenceFunctions)
 	}
 	if payload["truncated"] != true || intFromJSON(payload["omitted_contexts"]) != 15 {
 		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+// Dropping contexts contradicts a completeness claim: the reader could
+// conclude a symbol is never written when the writes were in the dropped tail.
+func TestToolResultLimiterClearsCompleteWhenContextsAreDropped(t *testing.T) {
+	functions := make([]map[string]any, 40)
+	for i := range functions {
+		functions[i] = map[string]any{"name": fmt.Sprintf("f%d", i)}
+	}
+	_, payload := limitedPayload(t, map[string]any{
+		"target": map[string]any{"name": "Shared"}, "functions": functions, "outside_functions": []any{},
+		"exact_reference_count": 340, "complete": true,
+	}, 0)
+	if payload["complete"] != false {
+		t.Fatalf("complete = %v alongside %d omitted contexts", payload["complete"], intFromJSON(payload["omitted_contexts"]))
 	}
 }
 
@@ -230,8 +246,9 @@ func TestToolResultBatchUsesPercentageOfRemainingContext(t *testing.T) {
 	messages := []llm.Message{{Role: "system", Content: strings.Repeat("x", 2000)}}
 	tools := []llm.ToolDefinition{{Name: "inspect_file", Description: strings.Repeat("tool", 50)}}
 	schema := []byte(`{"type":"object"}`)
-	used := estimateToolContextTokens(messages, tools, schema)
-	remaining := 10000 - used
+	// Recomputed with the same helpers the limiter uses, so the expectation
+	// cannot drift away from the production accounting.
+	remaining := 10000 - tokenestimate.EstimateLen(toolContextByteLen(messages, tools, schema))
 	batch := limitToolResultBatch(messages, tools, schema, []llm.Message{
 		{Role: "tool", Content: result},
 		{Role: "tool", Content: result},
@@ -240,7 +257,7 @@ func TestToolResultBatchUsesPercentageOfRemainingContext(t *testing.T) {
 	if got := tokenestimate.Estimate(batch[0].Content); got > firstLimit {
 		t.Fatalf("first result = %d tokens, cap = %d", got, firstLimit)
 	}
-	secondRemaining := 10000 - estimateToolContextTokens(append(messages, batch[0]), tools, schema)
+	secondRemaining := 10000 - tokenestimate.EstimateLen(toolContextByteLen(append(messages, batch[0]), tools, schema))
 	secondLimit := max(secondRemaining*10/100, 1)
 	if got := tokenestimate.Estimate(batch[1].Content); got > secondLimit {
 		t.Fatalf("second result = %d tokens, cap = %d", got, secondLimit)

@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/dgrieser/nickpit/internal/model"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 // Limits on what git plumbing reads. These bound command output and network
 // work; they are not part of any tool's argument contract, so they live with
-// the code that enforces them rather than in the agent tool catalog. The
-// request-shape limits git_log/git_show advertise stay in that catalog.
+// the code that enforces them. The limits that ARE part of the contract — how
+// many commits git_log and git_show accept and return — live in
+// internal/toollimits, which the tool catalog documents from.
 const (
 	// gitHistoryDeepenCommits is how far a shallow checkout is deepened when
 	// history is missing.
@@ -43,7 +44,7 @@ type History interface {
 }
 
 // LogOptions filters a commit listing. Every field is optional; the zero value
-// lists the newest toolcatalog.DefaultGitLogLimit commits reachable from HEAD.
+// lists the newest toollimits.DefaultGitLogLimit commits reachable from HEAD.
 type LogOptions struct {
 	// Commit is a revision to list history from (default HEAD) or a range
 	// ("a..b"/"a...b"). SHAs may be abbreviated to any length.
@@ -237,7 +238,7 @@ func (h *ExecHistory) Log(ctx context.Context, repoRoot string, opts LogOptions)
 	}
 	state := h.ensureHistory(ctx, repoRoot, runner)
 
-	limit := clampLimit(opts.Limit, toolcatalog.DefaultGitLogLimit, toolcatalog.MaxGitLogLimit)
+	limit := clampLimit(opts.Limit, toollimits.DefaultGitLogLimit, toollimits.MaxGitLogLimit)
 	revision, err := h.resolveRevisionArg(ctx, runner, opts.Commit, "")
 	if err != nil {
 		return nil, err
@@ -325,7 +326,7 @@ func (h *ExecHistory) Show(ctx context.Context, repoRoot string, opts ShowOption
 	}
 	state := h.ensureHistory(ctx, repoRoot, runner)
 
-	maxCommits := clampLimit(opts.MaxCommits, toolcatalog.DefaultGitShowCommits, toolcatalog.MaxGitShowCommits)
+	maxCommits := clampLimit(opts.MaxCommits, toollimits.DefaultGitShowCommits, toollimits.MaxGitShowCommits)
 	revision, err := h.resolveRevisionArg(ctx, runner, opts.Commit, opts.To)
 	if err != nil {
 		return nil, err

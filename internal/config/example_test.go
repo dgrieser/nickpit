@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/dgrieser/nickpit/internal/model"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"gopkg.in/yaml.v3"
 )
 
@@ -47,10 +47,10 @@ func TestExampleYAMLContainsDefaultProfiles(t *testing.T) {
 		if profile.MaxToolResultPercent != DefaultMaxToolResultPercent {
 			t.Fatalf("%s max tool result percent = %d", entry.name, profile.MaxToolResultPercent)
 		}
-		if profile.MaxToolCalls != toolcatalog.DefaultMaxToolCalls {
+		if profile.MaxToolCalls != toollimits.DefaultMaxToolCalls {
 			t.Fatalf("%s max tool calls = %d", entry.name, profile.MaxToolCalls)
 		}
-		if profile.MaxDuplicateToolCalls != toolcatalog.DefaultMaxDuplicateToolCalls {
+		if profile.MaxDuplicateToolCalls != toollimits.DefaultMaxDuplicateToolCalls {
 			t.Fatalf("%s max duplicate tool calls = %d", entry.name, profile.MaxDuplicateToolCalls)
 		}
 		if profile.MaxOutputRetries != DefaultMaxOutputRetries {

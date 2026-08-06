@@ -18,7 +18,7 @@ import (
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
 	"github.com/dgrieser/nickpit/internal/retrieval/tsparser"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -28,7 +28,7 @@ type AmbiguousSymbolError struct {
 }
 
 func (e *AmbiguousSymbolError) Error() string {
-	count := min(len(e.Candidates), toolcatalog.MaxAmbiguousReferenceTargets)
+	count := min(len(e.Candidates), toollimits.MaxAmbiguousReferenceTargets)
 	locations := make([]string, 0, count+1)
 	for _, candidate := range e.Candidates[:count] {
 		loc := candidate.Definition
@@ -37,7 +37,10 @@ func (e *AmbiguousSymbolError) Error() string {
 	if omitted := len(e.Candidates) - count; omitted > 0 {
 		locations = append(locations, fmt.Sprintf("and %d more", omitted))
 	}
-	return fmt.Sprintf("symbol %q is ambiguous: %s; retry with the declaration's line to pick one", e.Name, strings.Join(locations, ", "))
+	// The candidates are printed as file:line because that pair is what
+	// identifies one of them: a line alone cannot separate declarations that
+	// share it across files.
+	return fmt.Sprintf("symbol %q is ambiguous: %s; retry with the declaring file as path and its line to pick one", e.Name, strings.Join(locations, ", "))
 }
 
 // FindReferences resolves one declaration inside the optional lookup path and
@@ -276,7 +279,7 @@ func (c *referenceCacheStore[T]) entry(key string) *T {
 // to that many. NICKPIT_REFERENCE_CACHE_MAX_ENTRIES tunes it; a value <= 0
 // disables eviction.
 func (c *referenceCacheStore[T]) evictLocked() {
-	limit := cacheCapFromEnv("NICKPIT_REFERENCE_CACHE_MAX_ENTRIES", toolcatalog.DefaultReferenceCacheEntries)
+	limit := cacheCapFromEnv("NICKPIT_REFERENCE_CACHE_MAX_ENTRIES", toollimits.DefaultReferenceCacheEntries)
 	if limit <= 0 {
 		return
 	}
@@ -322,6 +325,14 @@ func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*pars
 		return definitionCandidate{}, &SymbolNotFoundError{Name: symbol.Name, Path: scope.Path}
 	}
 	candidates = dedupeDefinitionCandidates(candidates)
+	// An import binds a name declared somewhere else, so it is a usage kind,
+	// not a rival declaration. Keeping it as one made every symbol imported
+	// anywhere in the repository resolve as ambiguous with itself. It still
+	// answers a lookup scoped to a file that only imports the symbol, where
+	// there is nothing better to point at.
+	if declarations := candidatesOtherThanImports(candidates); len(declarations) > 0 {
+		candidates = declarations
+	}
 	if pinned, requested := pinCandidatesToLine(candidates, symbol.Line, func(c definitionCandidate) LineRange {
 		return c.target.Definition.LineRange
 	}); requested {
@@ -341,6 +352,16 @@ func resolveParsedDefinition(symbol SymbolRef, scope lookupScope, parsed []*pars
 		return definitionCandidate{}, &AmbiguousSymbolError{Name: symbol.Name, Candidates: targets}
 	}
 	return candidates[0], nil
+}
+
+func candidatesOtherThanImports(candidates []definitionCandidate) []definitionCandidate {
+	out := make([]definitionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.target.Kind != "import" {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
 // pinCandidatesToLine narrows same-named declarations to the one the caller
@@ -434,6 +455,11 @@ type referenceSource struct {
 // Reads honor the same per-file byte cap as the rest of retrieval, so one
 // generated or vendored blob cannot blow up the parsed snapshot; a clipped file
 // simply yields no declarations past the cap.
+//
+// A file that cannot be read is skipped, matching walkRepoTextFiles. Enumeration
+// and reading are separate steps, and the daemon reviews worktrees that a
+// checkout or build can still be touching, so failing the whole lookup would
+// turn that race into a hard tool failure for the entire review.
 func forEachReferenceSource(ctx context.Context, repoRoot string, files []string, visit func(referenceSource)) error {
 	for _, fullPath := range files {
 		if err := ctx.Err(); err != nil {
@@ -441,11 +467,11 @@ func forEachReferenceSource(ctx context.Context, repoRoot string, files []string
 		}
 		rel, err := repofs.RelPath(repoRoot, fullPath)
 		if err != nil {
-			return err
+			continue
 		}
-		data, _, err := readFileCapped(repoRoot, fullPath, toolcatalog.MaxRetrievedFileBytes)
+		data, _, err := readFileCapped(repoRoot, fullPath, toollimits.MaxRetrievedFileBytes)
 		if err != nil {
-			return err
+			continue
 		}
 		visit(referenceSource{path: rel, data: data})
 	}
@@ -467,11 +493,13 @@ func referenceSourceFingerprint(ctx context.Context, repoRoot string, files []st
 		}
 		rel, err := repofs.RelPath(repoRoot, fullPath)
 		if err != nil {
-			return [sha256.Size]byte{}, err
+			continue
 		}
 		info, err := os.Stat(fullPath)
 		if err != nil {
-			return [sha256.Size]byte{}, err
+			// Skipped here and in forEachReferenceSource alike, so the
+			// fingerprint keeps describing exactly the set that gets parsed.
+			continue
 		}
 		_, _ = fmt.Fprintf(hash, "%d:%s:%d:%d;", len(rel), rel, info.Size(), info.ModTime().UnixNano())
 	}
@@ -552,24 +580,32 @@ func findDefinitionCandidates(file *parsedReferenceFile, name string, compiled d
 			file:   file,
 		})
 	}
-	goGroupKind := ""
+	goGroupKind, goGroupDepth := "", 0
 	for i, line := range file.masked {
 		lineNo := i + 1
 		if file.language == "go" {
 			trimmed := strings.TrimSpace(line)
-			switch trimmed {
-			case "const (":
-				goGroupKind = "constant"
-			case "var (":
-				goGroupKind = "variable"
-			case "type (":
-				goGroupKind = "type"
-			case ")":
-				goGroupKind = ""
-			default:
-				if goGroupKind != "" && goGroupedDefinition.MatchString(line) {
+			switch {
+			case goGroupKind == "" && trimmed == "const (":
+				goGroupKind, goGroupDepth = "constant", 1
+			case goGroupKind == "" && trimmed == "var (":
+				goGroupKind, goGroupDepth = "variable", 1
+			case goGroupKind == "" && trimmed == "type (":
+				goGroupKind, goGroupDepth = "type", 1
+			case goGroupKind != "":
+				// Only the paren balancing the opening one ends the group: an
+				// entry whose value spans lines opens and closes parens of its
+				// own, and treating those as the end hides every later entry.
+				// A declaration only ever starts at the group's own depth.
+				kind := goGroupKind
+				declares := goGroupDepth == 1 && goGroupedDefinition.MatchString(line)
+				goGroupDepth += strings.Count(line, "(") - strings.Count(line, ")")
+				if goGroupDepth <= 0 {
+					goGroupKind, goGroupDepth = "", 0
+				}
+				if declares {
 					loc := lineLocation(file.path, file.language, file.lines, lineNo)
-					out = append(out, definitionCandidate{target: ReferenceTarget{Name: name, Kind: goGroupKind, Definition: loc}, file: file})
+					out = append(out, definitionCandidate{target: ReferenceTarget{Name: name, Kind: kind, Definition: loc}, file: file})
 					continue
 				}
 			}
@@ -752,6 +788,11 @@ func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate
 			}
 		}
 	}
+	// The declaring file's own lexical scope is the strongest binding evidence
+	// there is, so its uses are marked at least as confidently as the ones
+	// reached by following an import into another file. Dropping the name here
+	// inverted that: same-file uses came out possible, cross-file ones exact.
+	//
 	// Rust module resolution is intentionally conservative in the existing
 	// backend. Preserve renamed `use` bindings as possible references instead
 	// of dropping them when a module cannot be proven.
@@ -773,7 +814,6 @@ func referenceAliases(files []*parsedReferenceFile, selected definitionCandidate
 			}
 		}
 	}
-	delete(locals[selected.file.path], selected.target.Name)
 	return locals
 }
 
@@ -817,7 +857,10 @@ func collectParsedOccurrences(result *ReferenceResult, files []*parsedReferenceF
 						continue
 					}
 					role := referenceRole(line, column-1, name)
-					if name != selected.target.Name && isImportReferenceLine(file.language, line) {
+					// An import binds the symbol whether or not it renames it;
+					// restricting the role to renamed aliases left the common
+					// `from mod import NAME` reported as an ordinary read.
+					if isImportReferenceLine(file.language, line) {
 						role = "import"
 					}
 					occurrence := ReferenceOccurrence{
@@ -1141,7 +1184,7 @@ func (r *ReferenceResult) Render() string {
 		b.WriteString(context.CodeLocation.Content)
 		b.WriteString("\n")
 	}
-	if !r.Complete {
+	if !r.Complete && r.PossibleReferenceCount > 0 {
 		fmt.Fprintf(&b, "\nanalysis incomplete: %d possible reference(s)\n", r.PossibleReferenceCount)
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -1207,7 +1250,11 @@ func locationEqual(a, b CodeLocation) bool {
 // Go implementation ---------------------------------------------------------
 
 type goReferenceCandidate struct {
-	key    string
+	key string
+	// name and line mirror the key's cheapest components so a use can be
+	// rejected without formatting one.
+	name   string
+	line   int
 	obj    types.Object
 	pkg    *packages.Package
 	ident  *ast.Ident
@@ -1261,7 +1308,10 @@ func resolveGoDeclaration(repoRoot string, symbol SymbolRef, scope lookupScope, 
 				parents = goParentMap(file)
 				parentCache[file] = parents
 			}
-			candidates = append(candidates, goReferenceCandidate{key: key, obj: obj, pkg: pkg, ident: ident, path: path, parent: parents})
+			candidates = append(candidates, goReferenceCandidate{
+				key: key, name: ident.Name, line: pkg.Fset.Position(obj.Pos()).Line,
+				obj: obj, pkg: pkg, ident: ident, path: path, parent: parents,
+			})
 		}
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -1437,8 +1487,19 @@ func goReferenceSourceFingerprint(ctx context.Context, repoRoot string) ([sha256
 	return referenceSourceFingerprint(ctx, repoRoot, files)
 }
 
+// sameGoObject runs for every identifier use in every loaded package, so it
+// rejects on name and line — the key's cheapest components — before formatting
+// a key. The key itself stays necessary: loading with tests gives a package and
+// its test variant distinct objects for one declaration, so pointer identity
+// alone would miss uses from the other variant.
 func sameGoObject(fset *token.FileSet, obj types.Object, selected goReferenceCandidate) bool {
-	return obj == selected.obj || goObjectKey(fset, obj) == selected.key
+	if obj == selected.obj {
+		return true
+	}
+	if obj.Name() != selected.name || fset.Position(obj.Pos()).Line != selected.line {
+		return false
+	}
+	return goObjectKey(fset, obj) == selected.key
 }
 
 func goCandidateTarget(candidate goReferenceCandidate, lines *referenceLineCache) ReferenceTarget {
@@ -1613,27 +1674,55 @@ func goReferenceRole(ident *ast.Ident, parents map[ast.Node]ast.Node) string {
 		switch parent := parents[node].(type) {
 		case *ast.AssignStmt:
 			for _, lhs := range parent.Lhs {
-				if astContains(lhs, ident) {
-					if parent.Tok == token.ASSIGN || parent.Tok == token.DEFINE {
-						return "write"
-					}
-					return "read_write"
+				if !astContains(lhs, ident) {
+					continue
 				}
+				if goAssignedIdent(lhs) != ident {
+					// Appearing under a target is not being one: `m[key] = 1`
+					// writes a map entry and only reads key and m.
+					return "read"
+				}
+				if parent.Tok == token.ASSIGN || parent.Tok == token.DEFINE {
+					return "write"
+				}
+				return "read_write"
 			}
 			return "read"
 		case *ast.IncDecStmt:
-			if astContains(parent.X, ident) {
+			if goAssignedIdent(parent.X) == ident {
 				return "read_write"
 			}
+			if astContains(parent.X, ident) {
+				return "read"
+			}
 		case *ast.RangeStmt:
-			if astContains(parent.Key, ident) || astContains(parent.Value, ident) {
+			if goAssignedIdent(parent.Key) == ident || goAssignedIdent(parent.Value) == ident {
 				return "write"
+			}
+			if astContains(parent.Key, ident) || astContains(parent.Value, ident) {
+				return "read"
 			}
 		case *ast.FuncDecl, *ast.FuncLit, *ast.GenDecl:
 			return "read"
 		}
 	}
 	return "read"
+}
+
+// goAssignedIdent returns the identifier an assignment target writes, or nil
+// when the write goes through a container: an index or a pointer dereference
+// stores into the value the expression selects, leaving every identifier in it
+// merely read. A selector writes its field, not the operand it selects from.
+func goAssignedIdent(target ast.Expr) *ast.Ident {
+	switch typed := target.(type) {
+	case *ast.Ident:
+		return typed
+	case *ast.ParenExpr:
+		return goAssignedIdent(typed.X)
+	case *ast.SelectorExpr:
+		return typed.Sel
+	}
+	return nil
 }
 
 // astContains reports whether target appears under root. root is optional: a
@@ -1658,7 +1747,7 @@ func readReferenceLines(repoRoot, path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, _, err := readFileCapped(repoRoot, fullPath, toolcatalog.MaxRetrievedFileBytes)
+	data, _, err := readFileCapped(repoRoot, fullPath, toollimits.MaxRetrievedFileBytes)
 	if err != nil {
 		return nil, err
 	}

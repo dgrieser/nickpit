@@ -19,7 +19,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/retrieval"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 func writeRepoFile(t *testing.T, root, rel, content string) {
@@ -144,7 +144,7 @@ func TestToolResultLimiterCapsReferenceFunctionsAndBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	functions, _ := bounded["functions"].([]any)
-	if bounded["truncated"] != true || intFromJSON(bounded["omitted_contexts"]) == 0 || len(functions) > toolcatalog.MaxReferenceFunctions || tokenestimate.Estimate(limited) > 8192 {
+	if bounded["truncated"] != true || intFromJSON(bounded["omitted_contexts"]) == 0 || len(functions) > toollimits.MaxReferenceFunctions || tokenestimate.Estimate(limited) > 8192 {
 		t.Fatalf("bounded result: truncated=%v omitted=%v functions=%d bytes=%d", bounded["truncated"], bounded["omitted_contexts"], len(functions), len(limited))
 	}
 }
@@ -525,6 +525,33 @@ func (r *failingReferenceRetrieval) ResolveReferenceTargets(ctx context.Context,
 	return resolver.ResolveReferenceTargets(ctx, repoRoot, symbols)
 }
 
+// A path-scoped search whose matches are all usages spends the whole lookup
+// budget resolving nothing. The repo-wide fallback is the one lookup that can
+// still succeed, so it must not be starved by that spend.
+func TestExecuteSearchFallsBackAfterBudgetSpentOnUsages(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeRepoFile(t, repoRoot, "go.mod", "module example.com/budget\n\ngo 1.25\n")
+	writeRepoFile(t, repoRoot, "decl.go", "package budget\n\nvar Shared = 1\n")
+
+	// One usage file per lookup the budget allows, none of them declaring it,
+	// so the first pass consumes the entire budget and resolves nothing.
+	for i := range toollimits.MaxSearchStructuralLookups {
+		writeRepoFile(t, repoRoot, fmt.Sprintf("uses/use%02d.go", i),
+			fmt.Sprintf("package uses\n\nimport \"example.com/budget\"\n\nfunc Use%d() int { return budget.Shared }\n", i))
+	}
+
+	engine := NewEngine(stubSource{}, &capturingLLM{}, retrieval.NewLocalEngine(), config.Profile{Model: "test"})
+	results := engine.executeToolCalls(context.Background(), repoRoot, []llm.ToolCall{
+		{ID: "c1", Name: "search", Arguments: `{"query":"Shared","path":"uses"}`},
+	}, freshToolRoundState())
+
+	payload := decodeToolPayload(t, results[0].Content)
+	target, _ := payload["target"].(map[string]any)
+	if target["name"] != "Shared" {
+		t.Fatalf("usage-only search was not upgraded by the fallback: %#v", payload)
+	}
+}
+
 func TestExecuteSearchOptimizesReturnedCappedMatch(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeRepoFile(t, repoRoot, "a.py", "VALUE = 1\n")
@@ -542,7 +569,7 @@ func TestExecuteSearchOptimizesReturnedCappedMatch(t *testing.T) {
 }
 
 func TestExecuteSearchBoundsStructuralLookupsForBroadIdentifiers(t *testing.T) {
-	results := make([]retrieval.SearchResult, toolcatalog.MaxSearchStructuralLookups+1)
+	results := make([]retrieval.SearchResult, toollimits.MaxSearchStructuralLookups+1)
 	for i := range results {
 		results[i] = retrieval.SearchResult{CodeLocation: retrieval.CodeLocation{
 			FilePath: fmt.Sprintf("pkg/file-%02d.go", i),
@@ -1029,7 +1056,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "find_callers default depth",
 			call: llm.ToolCall{ID: "d", Name: "find_callers", Arguments: `{"path":"src/demo.go","symbol":"Run"}`},
-			want: callHierarchyDedupKey("find_callers", goPath, "Run", toolcatalog.DefaultCallHierarchyDepth),
+			want: callHierarchyDedupKey("find_callers", goPath, "Run", toollimits.DefaultCallHierarchyDepth),
 		},
 		{
 			name: "find_callees explicit depth",
@@ -1049,42 +1076,42 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "search go function name starts as literal search",
 			call: llm.ToolCall{ID: "f", Name: "search", Arguments: `{"path":"src/demo.go","query":"Run()"}`},
-			want: searchDedupKey("src/demo.go", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.go", "Run()", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search python function name starts as literal search",
 			call: llm.ToolCall{ID: "g", Name: "search", Arguments: `{"path":"src/demo.py","query":"Run()"}`},
-			want: searchDedupKey("src/demo.py", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.py", "Run()", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search typescript function name starts as literal search",
 			call: llm.ToolCall{ID: "h", Name: "search", Arguments: `{"path":"src/demo.ts","query":"Run()"}`},
-			want: searchDedupKey("src/demo.ts", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.ts", "Run()", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search rust function name starts as literal search",
 			call: llm.ToolCall{ID: "i", Name: "search", Arguments: `{"path":"src/demo.rs","query":"Run()"}`},
-			want: searchDedupKey("src/demo.rs", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.rs", "Run()", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search ruby function name keys as literal search",
 			call: llm.ToolCall{ID: "j", Name: "search", Arguments: `{"path":"src/demo.rb","query":"Run()"}`},
-			want: searchDedupKey("src/demo.rb", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.rb", "Run()", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search java function name keys as literal search",
 			call: llm.ToolCall{ID: "k", Name: "search", Arguments: `{"path":"src/Demo.java","query":"Run()"}`},
-			want: searchDedupKey("src/Demo.java", "Run()", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/Demo.java", "Run()", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search non-function query keys as literal search",
 			call: llm.ToolCall{ID: "l", Name: "search", Arguments: `{"path":"src/demo.go","query":"return x"}`},
-			want: searchDedupKey("src/demo.go", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.go", "return x", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search normalizes path and query for the dedup key",
 			call: llm.ToolCall{ID: "m", Name: "search", Arguments: `{"path":"./src/demo.go","query":"  return x ","context_lines":-1}`},
-			want: searchDedupKey("src/demo.go", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.go", "return x", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name:   "search empty query stays unique",
@@ -1094,7 +1121,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "search omitted context_lines defaults per single-line query",
 			call: llm.ToolCall{ID: "o", Name: "search", Arguments: `{"path":"src/demo.go","query":"return x"}`},
-			want: searchDedupKey("src/demo.go", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("src/demo.go", "return x", toollimits.DefaultSearchContextLines, 0, false),
 		},
 		{
 			name: "search multi-line block keys with zero default context",
@@ -1104,7 +1131,7 @@ func TestToolCallConcurrencyKey(t *testing.T) {
 		{
 			name: "search repo-root alias keys as empty path",
 			call: llm.ToolCall{ID: "q", Name: "search", Arguments: `{"path":".","query":"return x"}`},
-			want: searchDedupKey("", "return x", toolcatalog.DefaultSearchContextLines, 0, false),
+			want: searchDedupKey("", "return x", toollimits.DefaultSearchContextLines, 0, false),
 		},
 	}
 

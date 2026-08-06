@@ -37,7 +37,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/serve/loki"
 	"github.com/dgrieser/nickpit/internal/styleguide"
 	"github.com/dgrieser/nickpit/internal/textsan"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 	"github.com/dgrieser/nickpit/internal/workflow"
 	"github.com/dgrieser/nickpit/mappings"
 	"github.com/spf13/cobra"
@@ -279,7 +279,7 @@ func newRootCmd() *cobra.Command {
 	cli := &app{
 		maxContextTokens:         config.DefaultMaxContextToken,
 		maxToolResultPercent:     config.DefaultMaxToolResultPercent,
-		maxDuplicateToolCalls:    toolcatalog.DefaultMaxDuplicateToolCalls,
+		maxDuplicateToolCalls:    toollimits.DefaultMaxDuplicateToolCalls,
 		maxOutputRetries:         config.DefaultMaxOutputRetries,
 		maxReasoningSeconds:      config.DefaultMaxReasoningSeconds,
 		maxRateLimitDelaySeconds: config.DefaultMaxRateLimitDelaySeconds,
@@ -1206,7 +1206,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 		},
 	}
 	listFilesCmd.Flags().StringVar(&path, "path", "", "Relative folder path; leave empty to list the repo root")
-	listFilesCmd.Flags().IntVar(&depth, "depth", toolcatalog.DefaultListFilesDepth, "Directory depth to traverse when listing files")
+	listFilesCmd.Flags().IntVar(&depth, "depth", toollimits.DefaultListFilesDepth, "Directory depth to traverse when listing files")
 	registerRepoPathCompletion(listFilesCmd, "path", a, true)
 
 	searchCmd := &cobra.Command{
@@ -1282,7 +1282,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	callersCmd.Flags().StringVar(&callersSymbol, "symbol", "", "Function name")
 	callersCmd.Flags().StringVar(&callersPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
-	callersCmd.Flags().IntVar(&callersDepth, "depth", toolcatalog.DefaultCallHierarchyDepth, "Traversal depth")
+	callersCmd.Flags().IntVar(&callersDepth, "depth", toollimits.DefaultCallHierarchyDepth, "Traversal depth")
 	_ = callersCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(callersCmd, "path", a, false)
 
@@ -1305,7 +1305,7 @@ func (a *app) newInspectCmd() *cobra.Command {
 	}
 	calleesCmd.Flags().StringVar(&calleesSymbol, "symbol", "", "Function name")
 	calleesCmd.Flags().StringVar(&calleesPath, "path", "", "Relative file or folder path containing the function; leave empty to search from the repo root")
-	calleesCmd.Flags().IntVar(&calleesDepth, "depth", toolcatalog.DefaultCallHierarchyDepth, "Traversal depth")
+	calleesCmd.Flags().IntVar(&calleesDepth, "depth", toollimits.DefaultCallHierarchyDepth, "Traversal depth")
 	_ = calleesCmd.MarkFlagRequired("symbol")
 	registerRepoPathCompletion(calleesCmd, "path", a, false)
 

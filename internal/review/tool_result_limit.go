@@ -9,7 +9,7 @@ import (
 	"github.com/dgrieser/nickpit/internal/llm"
 	"github.com/dgrieser/nickpit/internal/model"
 	"github.com/dgrieser/nickpit/internal/tokenestimate"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 const toolResultTruncatedNote = "tool result exceeded configured item or size limits; narrow path, range, depth, or result count for more detail"
@@ -95,10 +95,6 @@ func reconcileLimitedInspectFileCoverage(toolCalls []llm.ToolCall, raw, limited 
 		state.seenFileRanges[path] = ranges
 		state.mu.Unlock()
 	}
-}
-
-func estimateToolContextTokens(messages []llm.Message, tools []llm.ToolDefinition, schema []byte) int {
-	return tokenestimate.EstimateLen(toolContextByteLen(messages, tools, schema))
 }
 
 // toolContextByteLen returns the encoded size of the request the tool results
@@ -197,14 +193,26 @@ func applyToolItemLimits(root map[string]any) bool {
 	changed := false
 	for _, field := range []string{"functions", "outside_functions"} {
 		contexts := arrayField(root, field)
-		if len(contexts) <= toolcatalog.MaxReferenceFunctions {
+		if len(contexts) <= toollimits.MaxReferenceFunctions {
 			continue
 		}
-		root[field] = contexts[:toolcatalog.MaxReferenceFunctions]
-		addIntField(root, "omitted_contexts", len(contexts)-toolcatalog.MaxReferenceFunctions)
+		root[field] = contexts[:toollimits.MaxReferenceFunctions]
+		addIntField(root, "omitted_contexts", len(contexts)-toollimits.MaxReferenceFunctions)
+		markReferenceAnalysisIncomplete(root)
 		changed = true
 	}
 	return changed
+}
+
+// markReferenceAnalysisIncomplete clears the completeness claim once contexts
+// have been dropped. The reference counts still describe the whole analysis, so
+// leaving `complete` true alongside a truncated context list reads as "these
+// are all the uses" — the reader could conclude a symbol is never written when
+// the writes were in the dropped tail.
+func markReferenceAnalysisIncomplete(root map[string]any) {
+	if _, ok := root["complete"]; ok {
+		root["complete"] = false
+	}
 }
 
 // reduceToolResult shrinks the payload by one step, preferring a reduction that
@@ -216,9 +224,11 @@ func reduceToolResult(root map[string]any, over, size int) bool {
 	switch {
 	case isReferencePayload(root):
 		if dropArrayTail(root, "functions", over, size, "omitted_contexts") {
+			markReferenceAnalysisIncomplete(root)
 			return true
 		}
 		if dropArrayTail(root, "outside_functions", over, size, "omitted_contexts") {
+			markReferenceAnalysisIncomplete(root)
 			return true
 		}
 		if target, ok := objectField(root, "target"); ok {

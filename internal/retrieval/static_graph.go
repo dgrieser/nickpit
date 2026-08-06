@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/dgrieser/nickpit/internal/retrieval/repofs"
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 type staticNode struct {
@@ -64,7 +64,7 @@ type staticGraphCacheEntry struct {
 // NICKPIT_GRAPH_CACHE_MAX_ENTRIES lets large monorepos tune it, and a value <= 0
 // disables the cap entirely (unbounded — the pre-cap behavior).
 func staticGraphCacheCap() int {
-	return cacheCapFromEnv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES", toolcatalog.DefaultStaticGraphCacheEntries)
+	return cacheCapFromEnv("NICKPIT_GRAPH_CACHE_MAX_ENTRIES", toollimits.DefaultStaticGraphCacheEntries)
 }
 
 // cacheCapFromEnv reads a retrieval cache's entry cap, falling back to fallback
@@ -184,8 +184,8 @@ func (g *staticGraph) find(name, path string, depth int, reverse bool) (*CallHie
 	if depth <= 0 {
 		depth = 1
 	}
-	if depth > toolcatalog.MaxCallHierarchyDepth {
-		depth = toolcatalog.MaxCallHierarchyDepth
+	if depth > toollimits.MaxCallHierarchyDepth {
+		depth = toollimits.MaxCallHierarchyDepth
 	}
 	seen := map[string]struct{}{key: {}}
 	mode := "callees"

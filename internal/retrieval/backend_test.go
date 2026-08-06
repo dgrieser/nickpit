@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	toolcatalog "github.com/dgrieser/nickpit/internal/tools"
+	"github.com/dgrieser/nickpit/internal/toollimits"
 )
 
 func TestFallbackSearchScope(t *testing.T) {
@@ -150,8 +150,8 @@ func TestStaticGraphCacheCap(t *testing.T) {
 		env  string
 		want int
 	}{
-		{"empty falls back to default", "", toolcatalog.DefaultStaticGraphCacheEntries},
-		{"garbage falls back to default", "abc", toolcatalog.DefaultStaticGraphCacheEntries},
+		{"empty falls back to default", "", toollimits.DefaultStaticGraphCacheEntries},
+		{"garbage falls back to default", "abc", toollimits.DefaultStaticGraphCacheEntries},
 		{"custom value", "10", 10},
 		{"surrounding whitespace", "  32  ", 32},
 		{"zero disables the cap", "0", 0},
